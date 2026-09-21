@@ -32,7 +32,7 @@ Jev だけを外部 API として使い、録音、VAD、ASR、ダイアライ�
 - 最低動作環境は macOS 15.0 とする。
   FluidAudio の offline diarization は macOS 14 以降で利用できるが、macOS 14 の Core ML と BNNS 経路には既知の不安定要因があるため、V1 は macOS 15 以降で検証する。
 - アプリ構成は `pasrom/meeting-transcriber` の SwiftPM macOS アプリ構造を参考にし、必要な録音、権限、VAD、ダイアライゼーション周辺だけを選択的に移植する。
-- FluidAudio は実装開始時点の安定 release を exact version で固定する。
+- FluidAudio は `0.12.4` を exact version で固定する。
 - Qwen3-ASR Swift は実装開始時点の HEAD を取得し、40 文字 commit SHA を `Package.swift` の `.revision(...)` で固定する。
   branch `main` を shipping dependency として残さない。
 - upstream 由来コードを移植した場合は、元ライセンスと著作権表示を `THIRD-PARTY-NOTICES.md` に残す。
@@ -73,6 +73,7 @@ app/MacAmbientJev/
 │   │   └── ProcessingTimeline.swift
 │   ├── Storage/
 │   │   ├── SessionManifest.swift
+│   │   ├── ProcessingMetadata.swift
 │   │   ├── EventEnvelope.swift
 │   │   ├── SessionWriter.swift
 │   │   ├── ActiveRuns.swift
@@ -86,7 +87,6 @@ app/MacAmbientJev/
 │   │   ├── ModelStore.swift
 │   │   └── NativeQwen3ASREngine.swift
 │   ├── Diarization/
-│   │   ├── SpeakerSpan.swift
 │   │   └── FluidDiarizationEngine.swift
 │   ├── Scene/
 │   │   ├── SceneState.swift
@@ -94,7 +94,6 @@ app/MacAmbientJev/
 │   │   └── SceneStateMachine.swift
 │   ├── Scope/
 │   │   ├── ProximityEvidence.swift
-│   │   ├── ScopeSpan.swift
 │   │   └── ScopeClassifier.swift
 │   ├── Jev/
 │   │   ├── DecisionProvider.swift
@@ -308,6 +307,7 @@ git commit -m "feat: bootstrap macOS transcription app"
 **Files:**
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Domain/TranscriptTypes.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/SessionManifest.swift`
+- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/ProcessingMetadata.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/EventEnvelope.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/SessionWriter.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/ActiveRuns.swift`
@@ -327,12 +327,12 @@ git commit -m "feat: bootstrap macOS transcription app"
 - [ ] **Step 1: 共有 domain 型の failing test を書く**
 
 ```swift
-func testUnknownScopeAndProvisionalPriorityRemainRepresentable() {
+func testUnknownScopeAndMissingPriorityRemainRepresentable() {
     let scope: AcousticScope = .unknown
-    let priority: ContentPriority = .primaryProvisional
+    let priority: ContentPriority? = nil
 
     XCTAssertEqual(scope, .unknown)
-    XCTAssertEqual(priority, .primaryProvisional)
+    XCTAssertNil(priority)
 }
 ```
 
@@ -342,7 +342,6 @@ func testUnknownScopeAndProvisionalPriorityRemainRepresentable() {
 enum ContentPriority: String, Codable, Sendable {
     case primary
     case lowPriority
-    case primaryProvisional
 }
 
 enum SceneState: String, Codable, Sendable {
@@ -460,10 +459,13 @@ func testRecoveryDropsOnlyIncompleteFinalJSONLine() throws {
 - [ ] **Step 7: active run 切り替えの failing test を書く**
 
 ```swift
-func testFailedRunDoesNotReplaceActiveASRRun() {
+func testFailedRunCannotReplaceActiveASRRun() throws {
     var runs = ActiveRuns(asr: "asr_run_01")
-    runs.registerCompleted(stage: .asr, runID: "asr_run_02", succeeded: false)
+    runs.markCompleted(stage: .asr, runID: "asr_run_02", succeeded: false)
 
+    XCTAssertThrowsError(
+        try runs.select(stage: .asr, runID: "asr_run_02")
+    )
     XCTAssertEqual(runs.asr, "asr_run_01")
 }
 ```
@@ -483,7 +485,8 @@ enum ProcessingStage: String, Codable, Sendable {
 }
 ```
 
-active pointer は完了成功した run に対してだけ切り替える。
+run completion と active selection は別操作にする。
+`markCompleted` が成功を記録した run だけを `select(stage:runID:)` で active にできる。
 
 - [ ] **Step 9: Storage tests を通す**
 
@@ -495,7 +498,34 @@ swift test --filter Storage
 
 Expected: PASS。
 
-- [ ] **Step 10: commit**
+- [ ] **Step 10: processing metadata の version test を書く**
+
+```swift
+func testProcessingMetadataPersistsReprocessingVersions() throws {
+    let metadata = ProcessingMetadata(
+        timelineVersion: 1,
+        vadVersion: "fluidaudio-vad",
+        vadConfigHash: "abc123",
+        asrEngine: "qwen3-asr-swift",
+        asrModel: "aufklarer/Qwen3-ASR-1.7B-MLX-8bit",
+        asrVersion: "pinned-revision",
+        diarizationVersion: "fluidaudio-0.12.4",
+        sceneAnalyzerVersion: 1,
+        jevSchemaVersion: 1,
+        policyVersion: 1,
+        materializerSchemaVersion: 1
+    )
+
+    let data = try JSONEncoder().encode(metadata)
+    let restored = try JSONDecoder().decode(ProcessingMetadata.self, from: data)
+
+    XCTAssertEqual(restored, metadata)
+}
+```
+
+`processing_metadata.json` は session 作成時に書き、再処理 run ごとの version も event payload に記録する。
+
+- [ ] **Step 11: commit**
 
 ```bash
 git add app/MacAmbientJev/Sources/MacAmbientJev/Domain app/MacAmbientJev/Sources/MacAmbientJev/Storage app/MacAmbientJev/Tests/MacAmbientJevTests/DomainTypesTests.swift app/MacAmbientJev/Tests/MacAmbientJevTests/Storage
@@ -784,13 +814,26 @@ enum ASREngineState: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 3: managed model store を実装する**
+- [ ] **Step 3: managed model store の failing test と実装を書く**
+
+```swift
+func testModelStoreNeverUsesSessionDirectoryForDownloads() {
+    let paths = AppPaths(
+        applicationSupportURL: URL(fileURLWithPath: "/tmp/support"),
+        cacheURL: URL(fileURLWithPath: "/tmp/cache")
+    )
+    let store = ModelStore(paths: paths)
+
+    XCTAssertTrue(store.cacheRoot.path.hasSuffix("/mac-ambient-jev/models"))
+    XCTAssertFalse(store.cacheRoot.path.contains("/sessions/"))
+}
+```
 
 `ModelStore` は `AppPaths.modelsRoot` 以下を Qwen3-ASR の cache root とする。
 model load 前に process 内の `QWEN3_CACHE_DIR` をこの directory へ設定し、load 後に model directory が存在することを確認する。
 途中 download の一時ファイルを session directory に置かない。
 
-- [ ] **Step 5: NativeQwen3ASREngine を actor として実装する**
+- [ ] **Step 4: NativeQwen3ASREngine を actor として実装する**
 
 ```swift
 actor NativeQwen3ASREngine: ASREngine {
@@ -811,7 +854,7 @@ actor NativeQwen3ASREngine: ASREngine {
 
 `transcribe` は `ProcessingTimeline` から指定 frame range を読み、Qwen3-ASR に渡す。
 
-- [ ] **Step 4: model 未準備中の backlog test を書く**
+- [ ] **Step 5: model 未準備中の backlog test を書く**
 
 ASR model が `loadingModel` でも segment reference が保持され、後で処理されることを fake engine で確認する。
 
@@ -913,11 +956,11 @@ struct MaterializedTranscriptSegment: Identifiable, Sendable {
     let text: String
     let speakers: [SpeakerSpan]
     let scopeSpans: [ScopeSpan]
-    let contentPriority: ContentPriority
+    let contentPriority: ContentPriority?
 }
 ```
 
-Jev 未判定は `.primaryProvisional` として UI 側で通常表示する。
+Jev 未判定は `contentPriority == nil` として保持し、UI 側では通常表示する。
 
 - [ ] **Step 4: ASR 完了直後表示の view-model test を書く**
 
@@ -943,7 +986,23 @@ Jev 未判定     通常表示
 
 ユーザーが上へスクロールしたら自動追従を停止し、「最新へ戻る」を表示する。
 
-- [ ] **Step 6: UI と Materializer tests を通す**
+- [ ] **Step 6: materialized view の schema stability test を書く**
+
+```swift
+func testMaterializedViewEncodesStableAgentFields() throws {
+    let segment = FixtureMaterialized.segment()
+    let data = try JSONEncoder().encode(segment)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+    XCTAssertNotNil(object["segment_id"])
+    XCTAssertNotNil(object["text"])
+    XCTAssertNotNil(object["scope_spans"])
+}
+```
+
+V2 の CLI と stdio MCP はこの materialized schema を読む前提なので、field rename は schema version を上げる変更として扱う。
+
+- [ ] **Step 7: UI と Materializer tests を通す**
 
 Run:
 
@@ -953,7 +1012,7 @@ swift test --filter "TranscriptMaterializerTests|LiveTranscriptViewModelTests"
 
 Expected: PASS。
 
-- [ ] **Step 7: commit**
+- [ ] **Step 8: commit**
 
 ```bash
 git add app/MacAmbientJev/Sources/MacAmbientJev/Materialization app/MacAmbientJev/Sources/MacAmbientJev/UI app/MacAmbientJev/Tests/MacAmbientJevTests/Materialization app/MacAmbientJev/Tests/MacAmbientJevTests/UI
@@ -965,7 +1024,6 @@ git commit -m "feat: add live transcript materialization"
 ### Task 7: ローカル streaming と offline diarization
 
 **Files:**
-- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Diarization/SpeakerSpan.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Diarization/FluidDiarizationEngine.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/Diarization/FluidDiarizationEngineTests.swift`
 
@@ -1000,13 +1058,14 @@ streaming result は provisional run として保存する。
 - [ ] **Step 3: offline run の active 切り替え test を書く**
 
 ```swift
-func testCompletedOfflineRunCanReplaceStreamingRun() {
+func testCompletedOfflineRunCanReplaceStreamingRun() throws {
     var runs = ActiveRuns(diarization: "diar_stream_01")
-    runs.registerCompleted(
+    runs.markCompleted(
         stage: .diarization,
         runID: "diar_offline_02",
         succeeded: true
     )
+    try runs.select(stage: .diarization, runID: "diar_offline_02")
 
     XCTAssertEqual(runs.diarization, "diar_offline_02")
 }
@@ -1046,7 +1105,6 @@ git commit -m "feat: add local diarization runs"
 
 **Files:**
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scope/ProximityEvidence.swift`
-- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scope/ScopeSpan.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scope/ScopeClassifier.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scene/SceneState.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scene/AcousticSceneFeatures.swift`
@@ -1211,7 +1269,7 @@ func testJevFailureLeavesSegmentPrimaryAndRetryable() async {
 
 endpoint は `POST https://api.typesafe.ai/v1/systemone` とし、既定 model は `jev-latest` を使う。
 header は `Authorization: Bearer <API key>` と `Content-Type: application/json` とする。
-response の resolved `model` と `usage.input_tokens` を保存し、cache fingerprint と利用量診断へ使う。
+response の resolved `model` と `usage.input_tokens` を `content_priority.assigned` または scene cue 用 event の metadata に保存し、cache fingerprint と利用量診断へ使う。
 
 内容優先度は Choice question で `PRIMARY` と `LOW_PRIORITY` の二択にする。
 scene cue は Choice question で `discussion_start`、`discussion_end`、`none` の三択にする。
@@ -1642,7 +1700,18 @@ Jev 停止時も録音が継続すること
 V1 に汎用 LLM が含まれないこと
 ```
 
-- [ ] **Step 8: 全 verification を実行する**
+- [ ] **Step 8: 日本語 UI 文言の regression test を追加する**
+
+状態表示を code 上の一か所へ集約し、少なくとも次を test する。
+
+```swift
+func testUserFacingStatusStringsAreJapanese() {
+    XCTAssertEqual(UserFacingStatus.loadingASR.text, "音声認識モデルを読み込んでいます")
+    XCTAssertEqual(UserFacingStatus.jevDeferred.text, "意味分類を後で再試行します")
+}
+```
+
+- [ ] **Step 9: 全 verification を実行する**
 
 Run:
 
@@ -1652,7 +1721,7 @@ Run:
 
 Expected: unit tests 0 failure、build exit 0。
 
-- [ ] **Step 9: commit**
+- [ ] **Step 10: commit**
 
 ```bash
 git add scripts .github/workflows/ci.yml docs/v1-acceptance.md README.md
