@@ -153,7 +153,7 @@ Do not aggressively delete upstream features. Features not required by this proj
 The new project-specific core is centered on:
 
 - utterance collection from VAD;
-- native Qwen3-ASR 1.7B integration on Apple Silicon, with a Python/MLX reference backend available during validation;
+- native Qwen3-ASR 1.7B integration on Apple Silicon through Swift + MLX Swift;
 - structured transcript storage;
 - Jev priority classification;
 - scene state inference;
@@ -259,109 +259,77 @@ The source audio is canonical. VAD segmentation is reproducible derived data and
 
 ## 8. ASR architecture
 
-### 8.1 Engine abstraction
+### 8.1 Native Swift from the start
 
-The application owns an internal `ASREngine` abstraction so capture, VAD, transcript storage, and UI do not depend on the language/runtime used by the ASR implementation.
+v1 is implemented with a native Swift ASR path from the beginning.
 
-Conceptually:
+The application owns an internal `ASREngine` protocol so capture, VAD, transcript storage, and UI are not coupled to one concrete model implementation, but v1 ships only one engine:
 
 ```text
 ASREngine
-  ├── NativeQwen3ASREngine   // Swift + MLX Swift
-  └── PythonQwen3ASREngine   // validation/reference fallback
+  └── NativeQwen3ASREngine
+          Swift + MLX Swift
+          Qwen3-ASR 1.7B
 ```
 
-Only one production engine needs to ship. The abstraction exists to permit early validation and future replacement without changing the rest of the application.
+Do not build a Python worker, IPC protocol, embedded Python runtime, or second production ASR backend unless the Swift path proves unusable.
 
-### 8.2 Preferred production path: native Swift
+The purpose of `ASREngine` is architectural isolation and future replaceability, not multi-backend support in v1.
 
-The preferred production path is Qwen3-ASR 1.7B running directly in the macOS process through MLX Swift, using an existing Swift implementation rather than hand-porting the model.
+### 8.2 Qwen3-ASR integration
 
-Reasons:
+Use an existing native Swift implementation of Qwen3-ASR 1.7B on MLX Swift where it meets the project's accuracy and stability needs. Do not begin by hand-porting the Python model implementation.
 
-- no Python interpreter or virtual environment in the end-user installation;
-- no stdin/stdout IPC or temporary worker lifecycle;
-- direct handoff from Swift audio buffers to ASR;
-- simpler app launch, signing, packaging, crash reporting, and model lifecycle;
-- one process and one dependency/runtime family for the normal application;
-- easier future reuse by the daily-life mode.
+The ASR engine runs inside the macOS application process.
+
+Benefits:
+
+- no Python interpreter or virtual environment;
+- no subprocess lifecycle;
+- no stdin/stdout or socket IPC;
+- direct audio-buffer handoff from Swift;
+- simpler signing, notarization, packaging, logging, and crash handling;
+- one application process during normal use;
+- easier reuse by a future daily-life mode.
 
 The app must not depend on a separately running ASR server.
 
-The Qwen3-ASR model loads on demand when live recording or imported-file processing first requires ASR. The application may keep it resident while a session is active and release it after the session/processing workflow ends or under memory pressure.
+### 8.3 Validation strategy
 
-Model weights are not embedded in the application bundle. Store downloaded weights in the application's support/cache area so app updates do not require re-downloading multi-gigabyte model data.
+Swift is the implementation path, not a candidate that must first defeat a separately implemented Python backend.
 
-### 8.3 Native-Swift acceptance gate
+Validate the native path directly on the user's real Japanese lecture recordings.
 
-Native Swift is not accepted merely because it runs.
+Required properties:
 
-Before choosing it as the v1 production engine, compare it against the Python/MLX Qwen3-ASR 1.7B reference path on the user's real Japanese lecture recordings.
-
-The native path must demonstrate:
-
-- no material semantic/technical-term accuracy regression;
+- useful Japanese transcription and technical-term retention;
 - sustained real-time factor comfortably below 1.0 on the target M4 16 GB Mac;
-- stable operation across 60–90 minute sessions;
+- stable 60–90 minute sessions;
 - bounded memory without progressive growth;
 - reliable repeated model load/unload;
-- no systematic transcript divergence caused by tokenizer, quantization, preprocessing, or decoding differences.
+- no obvious preprocessing, tokenizer, or decoding defects.
 
-If the native implementation fails this gate, v1 uses the Python worker path instead. Do not maintain both as equally supported production backends unless there is a demonstrated need.
+If an ASR-quality problem appears, a Python/MLX implementation or another independent ASR may be run externally as a diagnostic/reference comparison. That reference tooling is not part of the macOS application's v1 architecture and is not shipped to users.
 
-### 8.4 Python reference/fallback path
+Only if native Swift proves fundamentally unsuitable should the design be revisited to introduce a non-Swift production backend.
 
-The reference path uses a long-lived Python process with MLX Qwen3-ASR 1.7B.
-
-```text
-Swift app
-   |
-   | JSONL stdin/stdout
-   v
-Python ASR worker
-   |
-   v
-Qwen3-ASR 1.7B / MLX
-```
-
-The worker loads the model once and processes one ordered ASR queue.
-
-A request identifies:
-
-- request ID;
-- segment ID;
-- audio source reference;
-- start/end range or materialized utterance file.
-
-A response returns:
-
-- request ID;
-- segment ID;
-- transcript text;
-- language if available;
-- status/error information.
-
-Do not embed large PCM buffers as base64 JSON.
-
-If this path becomes the production fallback, the final application must manage the worker automatically. The user must not need to open Terminal, activate a virtual environment, or start a server manually.
-
-### 8.5 Live behavior
+### 8.4 Live behavior
 
 Qwen3-ASR remains utterance-based rather than token-streaming.
 
 The sequence is:
 
 1. VAD detects utterance end.
-2. The utterance is submitted to the selected ASR engine.
+2. The utterance is submitted to `NativeQwen3ASREngine`.
 3. The completed transcript is returned.
 4. The transcript appears immediately in the live UI.
 5. Scene, speaker, acoustic-scope, and Jev metadata are attached asynchronously.
 
 No general LLM sits between ASR and live display.
 
-### 8.6 ASR lifecycle
+### 8.5 ASR lifecycle
 
-During application launch, the UI may start without the ASR model loaded.
+The application UI starts without loading the ASR model.
 
 For a live session:
 
@@ -370,9 +338,9 @@ app launch
    |
 user starts recording
    |
-ensure ASR model is loading/ready
+load Qwen3-ASR on demand
    |
-recording continues even while model finishes loading
+recording continues while loading
    |
 completed VAD segments queue
    |
@@ -381,10 +349,9 @@ ASR becomes ready and drains queue
 
 For imported files, processing may wait for the model to become ready before beginning ASR work.
 
-The app exposes coarse states such as:
+The engine exposes coarse states such as:
 
 - `STOPPED`;
-- `STARTING`;
 - `LOADING_MODEL`;
 - `READY`;
 - `TRANSCRIBING`;
@@ -401,18 +368,21 @@ Per-segment states include at least:
 
 ASR failure must never stop source-audio capture.
 
-### 8.7 Memory policy
+### 8.6 Model and memory policy
 
-The ASR model is the dominant optional runtime allocation, so loading policy is explicit:
+The Qwen3-ASR model is the dominant optional runtime allocation.
+
+Policy:
 
 - do not load Qwen3-ASR merely because the app is open;
-- load on first ASR-requiring action;
-- keep it resident through an active live session;
-- allow unload after processing ends;
-- do not run multiple copies of the 1.7B model in v1;
-- do not run a Python reference model simultaneously with the Swift production model during normal use.
+- load on the first ASR-requiring action;
+- keep one model instance resident through an active live session;
+- allow unload after processing ends or under memory pressure;
+- never load multiple copies of the 1.7B model in v1.
 
-Benchmark both resident and unloaded idle memory during acceptance testing.
+Model weights are not embedded in the application bundle. Store downloaded weights in the application's support/cache area so app updates do not require re-downloading multi-gigabyte model data.
+
+Benchmark model load time, resident memory, unloaded idle memory, and long-session stability.
 
 ## 9. Transcript data model
 
@@ -734,7 +704,7 @@ No audio replay control is required in v1. The user is expected to consult the l
 
 ## 14. Application runtime and distribution
 
-### 15.1 User-facing execution model
+### 14.1 User-facing execution model
 
 v1 is a normal native macOS `.app` launched manually by the user.
 
@@ -758,7 +728,7 @@ After class
 
 v1 does not require Docker, a background HTTP service, a system-wide daemon, or a separately launched terminal process.
 
-### 15.2 App process
+### 14.2 App process
 
 The main application is Swift/SwiftUI and owns:
 
@@ -771,11 +741,9 @@ The main application is Swift/SwiftUI and owns:
 - Jev requests;
 - ASR engine lifecycle.
 
-If the native Swift ASR acceptance gate passes, Qwen3-ASR runs in this same process via MLX Swift.
+Qwen3-ASR runs in this same process through MLX Swift. v1 has no Python worker or ASR subprocess.
 
-If the Python fallback is required, the Swift app owns its subprocess lifecycle and hides that implementation detail from the user.
-
-### 15.3 Local data layout
+### 14.3 Local data layout
 
 Conceptually use an application-owned support directory:
 
@@ -783,7 +751,6 @@ Conceptually use an application-owned support directory:
 ~/Library/Application Support/mac-ambient-jev/
   ├── sessions/
   ├── models/
-  ├── runtime/      // only if a fallback runtime needs managed files
   └── config/
 ```
 
@@ -791,7 +758,7 @@ Caches that can be safely re-created may use `~/Library/Caches/`.
 
 The model location must be configurable internally so a package-specific MLX cache can be used without coupling session data to a third-party default cache path.
 
-### 15.4 First-run/model download
+### 14.4 First-run/model download
 
 The app bundle should remain small relative to the ASR weights.
 
@@ -804,15 +771,15 @@ When the selected ASR model is missing:
 
 An interrupted model download must not corrupt existing sessions.
 
-### 15.5 Distribution target
+### 14.5 Distribution target
 
 The intended distribution format is a signed/notarized macOS application bundle.
 
 App Store distribution is not a v1 requirement.
 
-The design should avoid introducing a Python runtime into the shipping bundle if the validated native Swift engine is sufficient, because a single native runtime simplifies distribution and lifecycle management.
+The shipping application uses the native Swift runtime only. No Python interpreter, virtual environment, or ASR worker is bundled in v1.
 
-### 15.6 Future daily-life mode
+### 14.6 Future daily-life mode
 
 A later daily-life mode may require login launch, menu-bar presence, or a lightweight helper/LaunchAgent.
 
@@ -978,7 +945,7 @@ Measure:
 - memory use;
 - long-session thermal/stability behavior.
 
-If one Qwen3-ASR 1.7B worker cannot keep up on the actual M4 16GB machine, only then evaluate fallbacks such as a smaller model or other scheduling changes. Do not pre-build multiple ASR paths into v1.
+If the native Qwen3-ASR 1.7B engine cannot keep up on the actual M4 16GB machine, only then evaluate alternatives such as a smaller model, quantization change, or scheduling changes. Do not pre-build multiple ASR paths into v1.
 
 ## 21. Privacy boundary
 
@@ -1033,5 +1000,5 @@ Neither category should require a rewrite of capture, VAD, ASR, or canonical sto
 6. **One pipeline handles live and imported audio.**
 7. **Use existing upstream macOS/audio infrastructure where it saves work.**
 8. **Optimize the transcript for downstream AI utility, not post-class human reading.**
-9. **Prefer a single native runtime when validated; keep Python as a reference/fallback rather than a mandatory shipping dependency.**
+9. **Implement v1 as a single native Swift runtime; use Python only as external diagnostic tooling if ever needed.**
 10. **YAGNI: downstream notes and daily-agent behavior are separate later phases.**
