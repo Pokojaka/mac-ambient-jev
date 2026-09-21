@@ -62,9 +62,13 @@ app/MacAmbientJev/
 │   │   ├── MacAmbientJevApp.swift
 │   │   ├── AppState.swift
 │   │   └── AppPaths.swift
+│   ├── Domain/
+│   │   └── TranscriptTypes.swift
 │   ├── Audio/
 │   │   ├── AudioCaptureEngine.swift
 │   │   ├── AudioImporter.swift
+│   │   ├── AudioBlockRing.swift
+│   │   ├── DiskSpaceMonitor.swift
 │   │   ├── DurableAudioWriter.swift
 │   │   └── ProcessingTimeline.swift
 │   ├── Storage/
@@ -79,6 +83,7 @@ app/MacAmbientJev/
 │   ├── ASR/
 │   │   ├── ASREngine.swift
 │   │   ├── ASRState.swift
+│   │   ├── ModelStore.swift
 │   │   └── NativeQwen3ASREngine.swift
 │   ├── Diarization/
 │   │   ├── SpeakerSpan.swift
@@ -148,19 +153,22 @@ app/MacAmbientJev/
 Run:
 
 ```bash
-git ls-remote https://github.com/ivan-digital/qwen3-asr-swift.git HEAD
+cd app/MacAmbientJev
+QWEN_REV="$(git ls-remote https://github.com/ivan-digital/qwen3-asr-swift.git HEAD | awk '{print $1}')"
+test "${#QWEN_REV}" -eq 40
+printf '%s\n' "$QWEN_REV" > /tmp/mac-ambient-jev-qwen-revision
 ```
 
-Expected: 40 文字 SHA と `HEAD` が 1 行返る。
-
-その SHA を後続の `.revision("...")` に使用する。
-branch dependency は残さない。
+Expected: command が exit 0 で終わり、`/tmp/mac-ambient-jev-qwen-revision` に 40 文字 SHA が 1 行保存される。
 
 - [ ] **Step 2: アプリ用 package と最小 target を作る**
 
-`Package.swift` は次の形を基準にする。
+次の shell を実行し、取得した SHA を literal revision として `Package.swift` に書き込む。
 
-```swift
+```bash
+cd app/MacAmbientJev
+QWEN_REV="$(cat /tmp/mac-ambient-jev-qwen-revision)"
+cat > Package.swift <<EOF
 // swift-tools-version: 6.0
 import PackageDescription
 
@@ -177,7 +185,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/ivan-digital/qwen3-asr-swift.git",
-            revision: "<STEP_1_SHA>"
+            revision: "$QWEN_REV"
         )
     ],
     targets: [
@@ -194,9 +202,11 @@ let package = Package(
         )
     ]
 )
+EOF
+grep -F "$QWEN_REV" Package.swift
 ```
 
-`<STEP_1_SHA>` は Step 1 で得た SHA へ置換し、置換前の文字列を commit に残さない。
+Expected: `Package.swift` に実 SHA が書かれ、`branch: "main"` は存在しない。
 
 - [ ] **Step 3: AppPaths の failing test を書く**
 
@@ -296,22 +306,84 @@ git commit -m "feat: bootstrap macOS transcription app"
 ### Task 2: セッション、イベントログ、active run、復旧
 
 **Files:**
+- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Domain/TranscriptTypes.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/SessionManifest.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/EventEnvelope.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/SessionWriter.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/ActiveRuns.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Storage/SessionRecovery.swift`
+- Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/DomainTypesTests.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/Storage/EventStoreTests.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/Storage/SessionRecoveryTests.swift`
 
 **Interfaces:**
+- Produces: shared `ContentPriority`, `SceneState`, `AcousticScope`, `SpeakerSpan`, `ScopeSpan`
 - Produces: `SessionManifest`
 - Produces: `EventEnvelope<Payload>`
 - Produces: actor `SessionWriter.append(_:)`
 - Produces: `ActiveRuns.select(stage:runID:)`
 - Produces: `SessionRecovery.recover(sessionURL:)`
 
-- [ ] **Step 1: event ordering の failing test を書く**
+- [ ] **Step 1: 共有 domain 型の failing test を書く**
+
+```swift
+func testUnknownScopeAndProvisionalPriorityRemainRepresentable() {
+    let scope: AcousticScope = .unknown
+    let priority: ContentPriority = .primaryProvisional
+
+    XCTAssertEqual(scope, .unknown)
+    XCTAssertEqual(priority, .primaryProvisional)
+}
+```
+
+`TranscriptTypes.swift` に、後続 Task が共有する型を定義する。
+
+```swift
+enum ContentPriority: String, Codable, Sendable {
+    case primary
+    case lowPriority
+    case primaryProvisional
+}
+
+enum SceneState: String, Codable, Sendable {
+    case unknown
+    case lecture
+    case discussionCandidate
+    case discussion
+    case lectureCandidate
+}
+
+enum AcousticScope: String, Codable, Sendable {
+    case near
+    case background
+    case unknown
+}
+
+struct SpeakerSpan: Codable, Sendable, Equatable {
+    let speakerID: String
+    let startFrame: Int64
+    let endFrame: Int64
+    let confidence: Double?
+}
+
+struct ScopeSpan: Codable, Sendable, Equatable {
+    let startFrame: Int64
+    let endFrame: Int64
+    let scope: AcousticScope
+    let confidence: Double
+}
+```
+
+Run:
+
+```bash
+swift test --filter DomainTypesTests
+```
+
+Expected: 最初は型未定義で FAIL。
+最小実装後は PASS。
+
+- [ ] **Step 2: event ordering の failing test を書く**
 
 ```swift
 func testSessionWriterAssignsMonotonicEventSequence() async throws {
@@ -330,7 +402,7 @@ func testSessionWriterAssignsMonotonicEventSequence() async throws {
 }
 ```
 
-- [ ] **Step 2: test を実行して失敗を確認する**
+- [ ] **Step 3: test を実行して失敗を確認する**
 
 Run:
 
@@ -340,7 +412,7 @@ swift test --filter EventStoreTests
 
 Expected: `SessionWriter` 未定義で FAIL。
 
-- [ ] **Step 3: EventEnvelope と single writer を実装する**
+- [ ] **Step 4: EventEnvelope と single writer を実装する**
 
 共通 envelope は最低限次を持つ。
 
@@ -363,7 +435,7 @@ struct EventEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
 
 `SessionWriter` だけが `events.jsonl` を開き、1 event を 1 JSON 行として append する。
 
-- [ ] **Step 4: 末尾破損復旧の failing test を書く**
+- [ ] **Step 5: 末尾破損復旧の failing test を書く**
 
 ```swift
 func testRecoveryDropsOnlyIncompleteFinalJSONLine() throws {
@@ -380,12 +452,12 @@ func testRecoveryDropsOnlyIncompleteFinalJSONLine() throws {
 }
 ```
 
-- [ ] **Step 5: 復旧処理を実装する**
+- [ ] **Step 6: 復旧処理を実装する**
 
 最終改行より後ろが JSON として decode できない場合だけ、その末尾を破棄する。
 途中行の decode 失敗は silent recovery せず、session を `partial_failure` として報告する。
 
-- [ ] **Step 6: active run 切り替えの failing test を書く**
+- [ ] **Step 7: active run 切り替えの failing test を書く**
 
 ```swift
 func testFailedRunDoesNotReplaceActiveASRRun() {
@@ -396,7 +468,7 @@ func testFailedRunDoesNotReplaceActiveASRRun() {
 }
 ```
 
-- [ ] **Step 7: ActiveRuns を実装する**
+- [ ] **Step 8: ActiveRuns を実装する**
 
 stage は次を持つ。
 
@@ -413,7 +485,7 @@ enum ProcessingStage: String, Codable, Sendable {
 
 active pointer は完了成功した run に対してだけ切り替える。
 
-- [ ] **Step 8: Storage tests を通す**
+- [ ] **Step 9: Storage tests を通す**
 
 Run:
 
@@ -423,10 +495,10 @@ swift test --filter Storage
 
 Expected: PASS。
 
-- [ ] **Step 9: commit**
+- [ ] **Step 10: commit**
 
 ```bash
-git add app/MacAmbientJev/Sources/MacAmbientJev/Storage app/MacAmbientJev/Tests/MacAmbientJevTests/Storage
+git add app/MacAmbientJev/Sources/MacAmbientJev/Domain app/MacAmbientJev/Sources/MacAmbientJev/Storage app/MacAmbientJev/Tests/MacAmbientJevTests/DomainTypesTests.swift app/MacAmbientJev/Tests/MacAmbientJevTests/Storage
 git commit -m "feat: add crash-safe session event store"
 ```
 
@@ -437,6 +509,8 @@ git commit -m "feat: add crash-safe session event store"
 **Files:**
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Audio/AudioCaptureEngine.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Audio/AudioImporter.swift`
+- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Audio/AudioBlockRing.swift`
+- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Audio/DiskSpaceMonitor.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Audio/DurableAudioWriter.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Audio/ProcessingTimeline.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/Audio/DurableAudioWriterTests.swift`
@@ -479,7 +553,9 @@ Expected: FAIL。
 - [ ] **Step 3: DurableAudioWriter を actor として実装する**
 
 録音 callback から直接ディスク書き込みを await しない。
-callback は bounded ring buffer または lock-free handoff へ PCM block を渡し、writer task が順番に durable chunk へ書く。
+callback は preallocated bounded SPSC ring buffer の `AudioBlockRing` へ PCM block をコピーし、writer task が順番に 5 秒単位の durable chunk へ書く。
+ring が満杯の場合は capture callback を待たせず overflow counter を増やし、UI と診断 log へ即時に異常を出す。
+正常時の crash loss window は最後の未確定 chunk だけなので 5 秒以下を受け入れ基準とする。
 
 checkpoint には最低限次を保存する。
 
@@ -492,7 +568,19 @@ struct AudioCheckpoint: Codable, Sendable {
 }
 ```
 
-- [ ] **Step 4: processing timeline の failing test を書く**
+- [ ] **Step 4: disk space monitor の failing test を書く**
+
+```swift
+func testDiskSpaceMonitorWarnsBeforeCaptureBecomesUnsafe() throws {
+    let monitor = DiskSpaceMonitor(warningThresholdBytes: 2_000_000_000)
+    XCTAssertEqual(monitor.level(forAvailableBytes: 1_000_000_000), .critical)
+}
+```
+
+残容量が warning threshold を下回ったら日本語警告を出し、critical threshold を下回ったら新規録音開始を拒否する。
+録音中に critical へ落ちた場合は可能な限り current chunk を確定し、capture failure を記録する。
+
+- [ ] **Step 5: processing timeline の failing test を書く**
 
 ```swift
 func testTimelineUsesFrameCoordinatesIndependentOfASRResampling() throws {
@@ -506,12 +594,12 @@ func testTimelineUsesFrameCoordinatesIndependentOfASRResampling() throws {
 }
 ```
 
-- [ ] **Step 5: ProcessingTimeline を実装する**
+- [ ] **Step 6: ProcessingTimeline を実装する**
 
 ASR 内部の 16 kHz sample index を public coordinate にしない。
 VAD、diarization、scene、scope は `sourceStartFrame` と `sourceEndFrame` でやり取りする。
 
-- [ ] **Step 6: file import test を書く**
+- [ ] **Step 7: file import test を書く**
 
 fixture WAV を import し、original asset が session directory にコピーされ、元ファイルが変更されていないことを検証する。
 
@@ -528,12 +616,12 @@ func testImportCopiesOriginalWithoutMutatingSource() async throws {
 }
 ```
 
-- [ ] **Step 7: microphone capture を upstream の `MicRecorder.swift` を参考に実装する**
+- [ ] **Step 8: microphone capture を upstream の `MicRecorder.swift` を参考に実装する**
 
 移植する場合も、録音 callback の責務を「PCM block を handoff するだけ」に限定する。
 meeting detection、system audio tap、LLM protocol generation は持ち込まない。
 
-- [ ] **Step 8: Audio tests を通す**
+- [ ] **Step 9: Audio tests を通す**
 
 Run:
 
@@ -543,7 +631,7 @@ swift test --filter Audio
 
 Expected: PASS。
 
-- [ ] **Step 9: commit**
+- [ ] **Step 10: commit**
 
 ```bash
 git add app/MacAmbientJev/Sources/MacAmbientJev/Audio app/MacAmbientJev/Tests/MacAmbientJevTests/Audio
@@ -643,6 +731,7 @@ git commit -m "feat: add VAD segmentation queue"
 **Files:**
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/ASR/ASREngine.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/ASR/ASRState.swift`
+- Create: `app/MacAmbientJev/Sources/MacAmbientJev/ASR/ModelStore.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/ASR/NativeQwen3ASREngine.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/ASR/ASREngineTests.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/ASR/ASRIntegrationTests.swift`
@@ -671,13 +760,17 @@ struct ASRResult: Sendable, Equatable {
 test:
 
 ```swift
-func testASRFailureDoesNotBecomeCaptureFailure() async {
-    let state = SessionProcessingState()
-    await state.recordASRFailure(segmentID: "seg_1")
+func testASREngineFailureIsRepresentedInsideASRState() {
+    let state = ASREngineState.failed(message: "model unavailable")
 
-    XCTAssertNotEqual(await state.captureState, .failed)
+    XCTAssertEqual(
+        state,
+        .failed(message: "model unavailable")
+    )
 }
 ```
+
+capture state との障害分離は Task 10 の integration test で固定する。
 
 - [ ] **Step 2: ASR lifecycle state を実装する**
 
@@ -691,7 +784,13 @@ enum ASREngineState: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 3: NativeQwen3ASREngine を actor として実装する**
+- [ ] **Step 3: managed model store を実装する**
+
+`ModelStore` は `AppPaths.modelsRoot` 以下を Qwen3-ASR の cache root とする。
+model load 前に process 内の `QWEN3_CACHE_DIR` をこの directory へ設定し、load 後に model directory が存在することを確認する。
+途中 download の一時ファイルを session directory に置かない。
+
+- [ ] **Step 5: NativeQwen3ASREngine を actor として実装する**
 
 ```swift
 actor NativeQwen3ASREngine: ASREngine {
@@ -716,7 +815,7 @@ actor NativeQwen3ASREngine: ASREngine {
 
 ASR model が `loadingModel` でも segment reference が保持され、後で処理されることを fake engine で確認する。
 
-- [ ] **Step 5: real model smoke test を opt-in にする**
+- [ ] **Step 6: real model smoke test を opt-in にする**
 
 環境変数 `RUN_MODEL_TESTS=1` のときだけ短い日本語 fixture を実モデルへ渡す。
 
@@ -730,7 +829,7 @@ Expected: 空文字ではない日本語 transcript を返す。
 
 通常の `swift test` では数 GB の model download を要求しない。
 
-- [ ] **Step 6: model cache と download state を UI へ渡す**
+- [ ] **Step 7: model cache と download state を UI へ渡す**
 
 ユーザー表示は次を使う。
 
@@ -740,7 +839,7 @@ Expected: 空文字ではない日本語 transcript を返す。
 文字起こし処理が遅れています
 ```
 
-- [ ] **Step 7: ASR tests を通す**
+- [ ] **Step 8: ASR tests を通す**
 
 Run:
 
@@ -750,7 +849,7 @@ swift test --filter ASR
 
 Expected: model opt-in test を除き PASS。
 
-- [ ] **Step 8: commit**
+- [ ] **Step 9: commit**
 
 ```bash
 git add app/MacAmbientJev/Sources/MacAmbientJev/ASR app/MacAmbientJev/Tests/MacAmbientJevTests/ASR
@@ -770,7 +869,7 @@ git commit -m "feat: add native Qwen3 ASR engine"
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/UI/LiveTranscriptViewModelTests.swift`
 
 **Interfaces:**
-- Consumes: ordered events and `ActiveRuns`
+- Consumes: Task 2 の shared domain types、ordered events、`ActiveRuns`
 - Produces: `[MaterializedTranscriptSegment]`
 - Produces: `LiveTranscriptViewModel.rows`
 
@@ -894,14 +993,7 @@ func testDiarizationSecondsAreMappedToCanonicalFrames() {
 
 - [ ] **Step 2: FluidAudio adapter を実装する**
 
-```swift
-struct SpeakerSpan: Codable, Sendable, Equatable {
-    let speakerID: String
-    let startFrame: Int64
-    let endFrame: Int64
-    let confidence: Double?
-}
-```
+Task 2 で定義した `SpeakerSpan` をそのまま使い、diarization adapter 内で別の話者型を増やさない。
 
 streaming result は provisional run として保存する。
 
@@ -958,6 +1050,7 @@ git commit -m "feat: add local diarization runs"
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scope/ScopeClassifier.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scene/SceneState.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scene/AcousticSceneFeatures.swift`
+- Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scene/AcousticSceneFeatureExtractor.swift`
 - Create: `app/MacAmbientJev/Sources/MacAmbientJev/Scene/SceneStateMachine.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/Scope/ScopeClassifierTests.swift`
 - Test: `app/MacAmbientJev/Tests/MacAmbientJevTests/Scene/SceneStateMachineTests.swift`
@@ -1014,14 +1107,29 @@ discussion 中に複数話者活動が下がり、dominant speaker が一定時�
 
 - [ ] **Step 5: SceneStateMachine を実装する**
 
-```swift
-enum SceneState: String, Codable, Sendable {
-    case unknown
-    case lecture
-    case discussionCandidate
-    case discussion
-    case lectureCandidate
-}
+Task 2 で定義した `SceneState` を使う。
+`AcousticSceneFeatureExtractor` は 20 秒 rolling window から active speaker count、turn rate、overlap ratio、dominant speaker ratio、voiced duration ratio を計算する。
+
+初期 production config は次を使い、golden corpus で変更するときは config version を上げる。
+
+```text
+discussion candidate:
+  activeSpeakerCount >= 3
+  turnRate >= 0.25 / sec
+  dominantSpeakerRatio <= 0.65
+  8 sec 継続
+
+discussion confirm:
+  candidate 条件を 12 sec 継続
+
+lecture candidate:
+  activeSpeakerCount <= 2
+  turnRate <= 0.15 / sec
+  dominantSpeakerRatio >= 0.75
+  10 sec 継続
+
+lecture confirm:
+  candidate 条件を 15 sec 継続
 ```
 
 start と end で別の hysteresis threshold を持つ。
@@ -1099,14 +1207,42 @@ func testJevFailureLeavesSegmentPrimaryAndRetryable() async {
 }
 ```
 
-- [ ] **Step 3: JevClient を URLSession で実装する**
+- [ ] **Step 3: JevClient を TypeSafe direct API に対して実装する**
+
+endpoint は `POST https://api.typesafe.ai/v1/systemone` とし、既定 model は `jev-latest` を使う。
+header は `Authorization: Bearer <API key>` と `Content-Type: application/json` とする。
+response の resolved `model` と `usage.input_tokens` を保存し、cache fingerprint と利用量診断へ使う。
+
+内容優先度は Choice question で `PRIMARY` と `LOW_PRIORITY` の二択にする。
+scene cue は Choice question で `discussion_start`、`discussion_end`、`none` の三択にする。
 
 raw audio、speaker embedding、session 全文を送らない。
+内容優先度判定では current utterance だけを `state` に入れる。
+scene cue 判定では current utterance、直前 3 発話まで、current scene だけを `state` に入れる。
 
-内容優先度判定では current utterance だけを送る。
-scene cue 判定では current utterance、直前の少数発話、current scene だけを送る。
+request の形は次に固定する。
 
-request と response の Codable schema を専用型で定義する。
+```json
+{
+  "model": "jev-latest",
+  "state": {
+    "current_text": "では隣の人と話し合ってください",
+    "previous_texts": [],
+    "current_scene": "lecture"
+  },
+  "questions": {
+    "scene_cue": {
+      "type": "choice",
+      "instructions": "発話が講義とグループ討論の切り替えを明示しているか判定してください。",
+      "criteria": {
+        "discussion_start": "討論開始を明示している",
+        "discussion_end": "討論終了と講義再開を明示している",
+        "none": "どちらでもない"
+      }
+    }
+  }
+}
+```
 
 - [ ] **Step 4: KeychainStore を実装する**
 
@@ -1156,7 +1292,20 @@ Jev 送信回数
 Jev cue だけで即時に final state へ移さない。
 candidate state へ進め、ローカル音響確認で確定する。
 
-- [ ] **Step 8: Jev tests を通す**
+- [ ] **Step 8: Jev request に音声 path や raw audio が含まれない test を書く**
+
+```swift
+func testJevRequestContainsTextContextOnly() throws {
+    let body = try JevRequestFactory().priorityRequest(text: "えー")
+    let encoded = String(data: try JSONEncoder().encode(body), encoding: .utf8)!
+
+    XCTAssertFalse(encoded.contains("/audio/"))
+    XCTAssertFalse(encoded.contains("speaker_embedding"))
+    XCTAssertTrue(encoded.contains("えー"))
+}
+```
+
+- [ ] **Step 9: Jev tests を通す**
 
 Run:
 
@@ -1166,7 +1315,7 @@ swift test --filter Jev
 
 Expected: PASS。
 
-- [ ] **Step 9: commit**
+- [ ] **Step 10: commit**
 
 ```bash
 git add app/MacAmbientJev/Sources/MacAmbientJev/Jev app/MacAmbientJev/Sources/MacAmbientJev/UI app/MacAmbientJev/Tests/MacAmbientJevTests/Jev
