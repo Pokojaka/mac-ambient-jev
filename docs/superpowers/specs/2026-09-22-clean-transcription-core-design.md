@@ -32,52 +32,61 @@ v1 succeeds when it can:
 
 ## 3. Planned after v1
 
-Post-v1 work is split by responsibility. The Clean Transcription Core and macOS app should remain responsible for local audio/runtime concerns; higher-level interpretation and knowledge work belong to external agents such as Hermes.
+Only capabilities that extend the macOS capture/transcription runtime belong in this section.
 
-### 3.1 External agent layer (Hermes or equivalent)
-
-These capabilities should consume structured session/transcript data rather than be implemented inside the transcription app:
-
-- lecture-note generation;
-- explanations and structured study materials;
-- summaries and important-point extraction;
-- quiz and flashcard generation;
-- retrieval and Q&A across past sessions;
-- long-term semantic memory over sessions and conversations;
-- conversational-context interpretation for deciding whether an AI response is appropriate;
-- response planning and response-content generation.
-
-The agent layer may read `PRIMARY`, `LOW_PRIORITY`, and `BACKGROUND` data according to its own retrieval strategy. That retrieval policy is intentionally outside v1.
-
-### 3.2 Local app / transcription-runtime extensions
-
-These capabilities require access to local audio, device state, or real-time presentation and therefore belong in the macOS app or a closely coupled local runtime:
+Planned local-runtime extensions:
 
 - a daily-life capture mode built on the same VAD/ASR/transcript core;
 - persistent speaker verification for `SELF` recognition;
-- local routing of live transcript events to an external conversational agent;
-- receiving an agent response/action and presenting it locally;
-- VOICEVOX or other speech output for agent responses.
+- local routing of selected live transcript events to an external daily-assistant runtime;
+- receiving a daily-assistant response/action and presenting it locally;
+- VOICEVOX or other speech output for daily-assistant responses.
 
-### 3.3 Responsibility boundary for daily-life assistant mode
+### 3.1 External post-session workflows are outside this app
 
-A future daily-life assistant spans both sides:
+Lecture-note generation, explanations, summaries, important-point extraction, quizzes, flashcards, historical-session Q&A, Web research, and other study-material generation are not features of this macOS application.
+
+After a session, the app's responsibility ends after it has produced durable session data. The user may separately start Hermes or another agent/harness and point it at that session data.
+
+```text
+macOS Clean Transcription Core
+        |
+        +--> completed session data
+                  |
+                  | user or external workflow starts separately
+                  v
+           Hermes / other agent
+                  |
+                  +--> notes
+                  +--> explanations
+                  +--> quizzes
+                  +--> research
+                  +--> other artifacts
+```
+
+v1 does not need to launch, schedule, supervise, or choose the harness for these post-session jobs.
+
+Hindsight may still be shared by external agents, but Hindsight integration for lecture-material generation is not a responsibility of this app.
+
+### 3.2 Responsibility boundary for future daily-life assistant mode
+
+A future daily-life assistant is different because it is interactive and latency-sensitive. The macOS runtime may emit selected live transcript events to an external daily-assistant runtime and present the returned action/response.
 
 ```text
 macOS app / local runtime
-  audio -> VAD -> ASR -> speaker/SELF -> structured transcript event
+  audio -> VAD -> ASR -> speaker/SELF -> selected transcript event
                                       |
                                       v
-                              Hermes / agent layer
-                              context + memory + retrieval
-                              should respond? + response content
+                         external daily-agent runtime
+                         context + memory + tools
+                         should respond? + response
                                       |
                                       v
 macOS app / local runtime
-  receive action/response -> optional VOICEVOX/TTS
+  receive response/action -> optional VOICEVOX/TTS
 ```
 
-The transcription app must not become the owner of lecture synthesis, long-term knowledge, retrieval, or response reasoning. Those capabilities must build on the v1 session/transcript interfaces rather than requiring a redesign of audio capture, VAD, ASR, or canonical storage.
+The daily-agent runtime is an integration boundary, not a fixed choice of Hermes, Pi, or any other harness. A direct custom runtime with no harness must remain possible.
 
 ## 4. Upstream strategy
 
@@ -780,29 +789,32 @@ Future downstream cloud LLM use is outside this core's live path and will be des
 
 ## 21. Extension points
 
-The core intentionally exposes structured session data and live transcript events through stable interfaces.
+The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces.
 
-### 21.1 Agent-side extensions
+### 21.1 External post-session consumers
 
-External agents such as Hermes may add:
+Post-session consumers are independent programs, agents, or harnesses. They may use completed session data for:
 
 - lecture-note and explanation generation;
 - quiz/flashcard generation;
 - retrieval and Q&A over historical sessions;
+- Web research and enrichment;
 - long-term semantic memory;
-- richer use of `LOW_PRIORITY` and `BACKGROUND`;
-- conversational-context reasoning, including whether a response should be produced;
-- response-content generation.
+- richer use of `LOW_PRIORITY` and `BACKGROUND`.
 
-### 21.2 Local-runtime extensions
+The macOS application does not own or orchestrate these workflows.
 
-The macOS app/local runtime may add:
+### 21.2 Future interactive local integration
+
+The macOS app/local runtime may later add:
 
 - daily-life capture/session behavior;
 - speaker verification for persistent `SELF`;
-- transcript-event delivery to external agents;
+- delivery of selected transcript events to an external daily-agent runtime;
 - reception of agent actions/responses;
 - VOICEVOX or other TTS/presentation of agent responses.
+
+The external daily-agent runtime may be implemented directly or with a harness such as Pi or Hermes. The transcription core must not depend on a specific harness.
 
 Neither category should require a rewrite of capture, VAD, ASR, or canonical storage.
 
