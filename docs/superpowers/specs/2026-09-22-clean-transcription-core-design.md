@@ -88,6 +88,46 @@ macOS app / local runtime
 
 The daily-agent runtime is an integration boundary, not a fixed choice of Hermes, Pi, or any other harness. A direct custom runtime with no harness must remain possible.
 
+### 3.3 V2 external-agent integration API
+
+External-agent integration is planned for V2, not v1.
+
+v1 must therefore stabilize the session schema, segment identity, processing metadata, and append-only transcript event model, but it does not need to run an HTTP or MCP server.
+
+V2 should expose a local, versioned, read-oriented API over the same canonical session store. The preferred layering is:
+
+```text
+Canonical Session Store
+        |
+        +--> local HTTP API (/v1/...)
+        |
+        +--> MCP adapter
+        |
+        +--> optional live event stream
+```
+
+The HTTP API is the transport-neutral base for custom runtimes and harnesses that do not need MCP. The MCP adapter exposes the same data to MCP-capable agents such as Hermes without making the core depend on a specific harness.
+
+Initial V2 HTTP surface should be small and stable, conceptually:
+
+- `GET /v1/capabilities`;
+- `GET /v1/sessions`;
+- `GET /v1/sessions/{session_id}`;
+- `GET /v1/sessions/{session_id}/segments` with filters for time range, content priority, acoustic scope, scene, and speaker;
+- an optional local event stream for newly completed transcript segments or scene changes.
+
+The MCP adapter should expose session/transcript data primarily as resources and narrow retrieval/search operations as tools. It must not expose a large mutation surface.
+
+Security defaults:
+
+- bind to loopback only;
+- require a local authentication token for HTTP;
+- expose transcript text and metadata by default, not raw audio;
+- keep canonical transcript/audio data read-only to external agents unless a future explicit write contract is designed;
+- version both the wire API and the underlying session schema.
+
+This keeps Hermes, Pi, direct custom runtimes, and future harnesses interchangeable. External agents may use MCP where convenient or call the HTTP API directly.
+
 ## 4. Upstream strategy
 
 Use `pasrom/meeting-transcriber` as the implementation baseline where practical instead of rebuilding macOS audio infrastructure from scratch.
@@ -787,9 +827,11 @@ External services such as Jev receive text only, not raw audio.
 
 Future downstream cloud LLM use is outside this core's live path and will be designed separately.
 
+The planned V2 external-agent API is local-first. Raw audio is not exposed through the default API surface; external agents receive transcript text and structured metadata unless a later explicit audio-access permission model is designed.
+
 ## 21. Extension points
 
-The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces.
+The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces. v1 establishes the data contract; V2 may expose that contract through a local HTTP API plus an MCP adapter.
 
 ### 21.1 External post-session consumers
 
