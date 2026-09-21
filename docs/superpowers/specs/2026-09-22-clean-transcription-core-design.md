@@ -1,269 +1,307 @@
-# Clean Transcription Core — Design Spec
+# Clean Transcription Core — 設計仕様
 
-Date: 2026-09-22
-Repository: `Pokojaka/mac-ambient-jev`
-Status: Approved conversational design, awaiting written-spec review
+日付: 2026-09-22  
+リポジトリ: `Pokojaka/mac-ambient-jev`  
+状態: 設計レビュー反映済み、書面レビュー待ち
 
-## 1. Purpose
+## 1. 目的
 
-Build a macOS transcription core that turns live microphone audio or imported recordings into structured, lossless, AI-consumable transcripts.
+macOS 上で、ライブのマイク音声または既存録音から、**構造化され、再処理可能で、AI が利用しやすい文字起こしデータ**を生成する。
 
-The v1 product is not a lecture-note generator and not yet a daily-life voice assistant. Its job is to create a reliable intermediate representation that later agents can use for lecture notes, explanations, Q&A, daily conversational context, or other downstream tasks.
+v1 は講義ノート生成器ではなく、日常生活向け音声アシスタントでもない。役割は、後段の Hermes、Pi、独自エージェント、LLM、検索処理などが利用できる、信頼できる中間表現を作ることである。
 
-Humans may read the live transcript during a lecture to recover a recently missed statement. After the session, the transcript is primarily machine-facing intermediate data rather than the final human-facing artifact.
+ユーザーは講義中、聞き逃した直前の発言を確認するためにライブ文字起こしを読むことがある。講義終了後の主な利用者は人間ではなく後段の AI である。
 
-## 2. Success criteria
+本設計では次を基本原則とする。
 
-v1 succeeds when it can:
+1. 原音声が最上位の正本である。
+2. 文字起こしや分類は、音声から再生成可能な派生データである。
+3. 不確実な情報は捨てない。
+4. 録音経路は、ASR・Jev・ダイアライゼーション・scene 判定から独立させる。
+5. v1 は Swift ネイティブの単一アプリとして実装する。
 
-1. Record a 60–90 minute session without losing the original audio.
-2. Import an existing lecture recording and run it through the same processing pipeline as live audio.
-3. Segment speech with VAD and transcribe each completed utterance locally with Qwen3-ASR 1.7B on Apple Silicon.
-4. Show each ASR result promptly in a live transcript without waiting for Jev or a general-purpose LLM.
-5. Preserve all ASR results while assigning two independent metadata axes:
-   - content priority: `PRIMARY` / `LOW_PRIORITY`;
-   - acoustic scope: `NEAR` / `BACKGROUND` / `UNKNOWN`.
-6. Use Jev conservatively to demote only clearly low-information speech.
-7. Infer `LECTURE` vs `DISCUSSION` with a stable state machine rather than per-utterance guesses.
-8. During discussion, separate likely near-group speech from likely background speech and perform anonymous session-local diarization where possible.
-9. Continue recording if ASR, Jev, diarization, or scene analysis fails.
-10. Preserve enough metadata to re-run later processing without re-recording.
-11. Support automated, AI-based quality evaluation without requiring a human-labeled transcript corpus.
+## 2. v1 の成功条件
 
-## 3. Planned after v1
+v1 は次を満たした時点で成功とする。
 
-Only capabilities that extend the macOS capture/transcription runtime belong in this section.
+1. 60〜90 分の録音を継続し、アプリ異常終了時にも損失区間を限定できる。
+2. 既存録音を読み込み、ライブ録音と同一の派生処理経路で処理できる。
+3. VAD で発話候補区間を作り、Apple Silicon 上の Qwen3-ASR 1.7B でローカル文字起こしできる。
+4. ASR が完了した発話を、Jev や汎用 LLM を待たずにライブ表示できる。
+5. ASR の結果を破棄せず、意味上の優先度と音響上の範囲を独立した軸として保持できる。
+6. Jev などの意味分類器は、明白な低情報発話だけを保守的に降格する。
+7. `LECTURE` / `DISCUSSION` を、一発ごとの判定ではなく履歴を持つ状態機械で推定する。
+8. discussion 中は、近傍グループらしい発話と周辺会話らしい発話を区別し、可能な範囲で匿名ダイアライゼーションを行う。
+9. ASR、Jev、ダイアライゼーション、scene 判定が失敗しても録音を継続する。
+10. VAD、ASR、scene、speaker、scope、意味分類を後から独立して再処理できる。
+11. 自動評価を主としつつ、小規模な人手確認用データを校正基準として品質を追跡できる。
+12. ユーザー向け UI、状態表示、エラー表示、設定名は日本語を既定とする。
 
-Planned local-runtime extensions:
+## 3. v1 の範囲外
 
-- a daily-life capture mode built on the same VAD/ASR/transcript core;
-- persistent speaker verification for `SELF` recognition;
-- local routing of selected live transcript events to an external daily-assistant runtime;
-- receiving a daily-assistant response/action and presenting it locally;
-- VOICEVOX or other speech output for daily-assistant responses.
+v1 では次を行わない。
 
-### 3.1 External post-session workflows are outside this app
+- 講義ノート生成
+- 要約、説明、重要点抽出
+- クイズ、暗記カード生成
+- Web 調査
+- 長期履歴を横断した Q&A
+- 常時起動の日常生活アシスタント
+- 永続的な本人話者認証
+- VOICEVOX 等による応答読み上げ
+- HTTP 常駐 API
+- MCP 常駐サーバー
+- Python ASR バックエンド
 
-Lecture-note generation, explanations, summaries, important-point extraction, quizzes, flashcards, historical-session Q&A, Web research, and other study-material generation are not features of this macOS application.
+これらは、必要性が確認された段階で別設計として追加する。
 
-After a session, the app's responsibility ends after it has produced durable session data. The user may separately start Hermes or another agent/harness and point it at that session data.
+### 3.1 講義後処理は外部ワークフロー
+
+講義後のノート作成や説明生成は、この macOS アプリの責任ではない。
 
 ```text
 macOS Clean Transcription Core
         |
-        +--> completed session data
+        +--> 完了した session data
                   |
-                  | user or external workflow starts separately
+                  | ユーザーまたは外部ワークフローが開始
                   v
-           Hermes / other agent
+           Hermes / Pi / 独自エージェント
                   |
-                  +--> notes
-                  +--> explanations
-                  +--> quizzes
-                  +--> research
-                  +--> other artifacts
+                  +--> ノート
+                  +--> 説明
+                  +--> クイズ
+                  +--> Web 調査
+                  +--> その他成果物
 ```
 
-v1 does not need to launch, schedule, supervise, or choose the harness for these post-session jobs.
+v1 は外部エージェントを起動、監視、選択しない。
 
-Hindsight may still be shared by external agents, but Hindsight integration for lecture-material generation is not a responsibility of this app.
+### 3.2 将来の日常生活アシスタント
 
-### 3.2 Responsibility boundary for future daily-life assistant mode
+将来の日常生活モードでは、低遅延の対話が必要になるため、選択されたライブ transcript event を外部 runtime に渡し、その応答を macOS 側で提示できるようにする。
 
-A future daily-life assistant is different because it is interactive and latency-sensitive. The macOS runtime may emit selected live transcript events to an external daily-assistant runtime and present the returned action/response.
+外部 runtime は Hermes、Pi、独自実装のいずれでもよく、文字起こし core は特定 harness に依存しない。
 
-```text
-macOS app / local runtime
-  audio -> VAD -> ASR -> speaker/SELF -> selected transcript event
-                                      |
-                                      v
-                         external daily-agent runtime
-                         context + memory + tools
-                         should respond? + response
-                                      |
-                                      v
-macOS app / local runtime
-  receive response/action -> optional VOICEVOX/TTS
-```
+### 3.3 V2 の外部エージェント連携
 
-The daily-agent runtime is an integration boundary, not a fixed choice of Hermes, Pi, or any other harness. A direct custom runtime with no harness must remain possible.
-
-### 3.3 V2 external-agent integration
-
-External-agent integration is planned for V2, not v1.
-
-v1 must stabilize the session schema, segment identity, processing metadata, and append-only transcript event model. It does not need to run any API daemon.
-
-The V2 default should remain zero-daemon:
+V2 の既定は zero-daemon とする。
 
 ```text
 Canonical Session Store
         |
-        +--> direct read-only file/schema access
+        +--> 直接の read-only file/schema access
         |
-        +--> small CLI/library adapter
+        +--> 小さな CLI / library adapter
         |
-        +--> optional stdio MCP adapter
-               (spawned only when a client needs it)
+        +--> 必要時のみ起動する stdio MCP adapter
 ```
 
-A post-session agent should be able to consume session data without requiring the macOS app or any server process to remain running.
+macOS アプリを起動し続けなくても、講義後の session data を外部エージェントが読めることを要件とする。
 
-The CLI/library surface should provide narrow read operations conceptually equivalent to:
+HTTP / Streamable HTTP は、同時複数クライアントや live event 配信など、実需が生じた場合のみ追加する。
 
-- list sessions;
-- inspect one session;
-- retrieve segments with filters for time range, content priority, acoustic scope, scene, and speaker;
-- materialize the current state of append-only segment events.
+既定では listen socket を持たない。
 
-For MCP-capable agents, provide an optional stdio MCP adapter. The MCP client owns the subprocess lifecycle: it starts the adapter when needed and can terminate it when the connection closes. This avoids paying a permanent memory cost for an HTTP MCP daemon.
+## 4. upstream 利用方針
 
-The MCP adapter should expose transcript/session data primarily as read-only resources and narrow retrieval/search tools. It must not expose a broad mutation surface.
+`pasrom/meeting-transcriber` の macOS 基盤を、必要な範囲で再利用する。
 
-A loopback HTTP/Streamable-HTTP API is a later optional transport, justified only if a real use case needs concurrent clients, live event delivery, or integration with a runtime that cannot use files, a local library, CLI, or stdio. It should not be a default always-on service.
+再利用候補:
 
-Security defaults:
+- macOS マイク入力
+- マイク権限
+- 音声デバイス選択
+- session 開始 / 終了
+- SwiftUI app shell
+- file import
+- FluidAudio / VAD
+- diarization / speaker embedding
+- audio queue 周辺
+- 既存テストやアプリ基盤
 
-- no listening socket in the default V2 configuration;
-- transcript text and metadata are exposed by default, not raw audio;
-- canonical transcript/audio data remain read-only to external agents unless a future explicit write contract is designed;
-- version the session schema and every external adapter contract;
-- if HTTP is later enabled, bind to loopback by default and require local authentication.
+ただし、upstream との将来同期を最優先の設計制約にはしない。
 
-This keeps Hermes, Pi, direct custom runtimes, and future harnesses interchangeable without requiring a resident integration server.
+本プロジェクトの canonical data model、Qwen3-ASR、再処理モデル、ライブ表示要件が upstream と衝突する場合は、本プロジェクト側の責務分離を優先する。
 
-## 4. Upstream strategy
+不要な upstream 機能を残すこと自体を目的にしない。同期しやすさより、core の境界が理解しやすくテスト可能であることを優先する。
 
-Use `pasrom/meeting-transcriber` as the implementation baseline where practical instead of rebuilding macOS audio infrastructure from scratch.
+## 5. 上位アーキテクチャ
 
-Prefer reusing its existing concepts and components for:
-
-- macOS microphone capture;
-- microphone permissions and device selection;
-- session start/stop;
-- background processing;
-- audio streaming/queue infrastructure;
-- FluidAudio / VAD integration;
-- diarization and speaker embedding infrastructure;
-- SwiftUI application shell;
-- tests and app plumbing.
-
-Do not aggressively delete upstream features. Features not required by this project should normally be hidden, disabled, or bypassed so future upstream synchronization remains possible.
-
-The new project-specific core is centered on:
-
-- utterance collection from VAD;
-- native Qwen3-ASR 1.7B integration on Apple Silicon through Swift + MLX Swift;
-- structured transcript storage;
-- Jev priority classification;
-- scene state inference;
-- near/background classification during discussions;
-- live transcript UI;
-- imported-audio processing.
-
-## 5. Top-level architecture
+canonical な対象は `TranscriptSegment` ではなく、**原音声上の時間座標と、それに対して追加される派生イベント群**である。
 
 ```text
-                  AudioSource
-                      |
-          +-----------+-----------+
-          |                       |
- LiveMicrophoneSource       FileAudioSource
-          |                       |
-          +-----------+-----------+
-                      |
-                Audio Capture
-                      |
-          +-----------+-----------+
-          |                       |
-     source audio               VAD
-                                  |
-                         UtteranceCollector
-                                  |
-                           AudioSegmentQueue
-                                  |
-                         Qwen3-ASR 1.7B
-                                  |
-                         TranscriptSegment
-                                  |
-                 +----------------+----------------+
-                 |                |                |
-           Scene Analyzer   Acoustic Scope     Jev Cleaner
-                 |                |                |
-                 +----------------+----------------+
-                                  |
-                           Transcript Store
-                                  |
-               content_priority + acoustic_scope
-                                  |
-                           downstream agents
+                    AudioSource
+                        |
+                        v
+                  Capture Engine
+                  |            |
+                  |            +----> live audio bus
+                  v
+             Durable Audio Writer
+                        |
+                  source timeline
+                        |
+          +-------------+------------------+
+          |                                |
+          v                                v
+     VAD Segmenter                  Diarization Engine
+          |                                |
+   segmentation events               speaker timeline
+          |
+          v
+       ASR Actor
+          |
+       ASR events
+          |
+    +-----+-----------+----------------+
+    |                 |                |
+    v                 v                v
+Semantic          Scene Analyzer   Proximity Evidence
+Classifier              |                |
+    |                    |                |
+    +--------------------+----------------+
+                         |
+                     Event Store
+                         |
+                    Materializer
+                  +------+------+
+                  |             |
+                  v             v
+              SwiftUI       外部エージェント
 ```
 
-The recording path is independent from the enrichment path. Slow or failed downstream processing must not interrupt audio capture.
+録音・永続化は最優先経路であり、ASR や enrichment の遅延に依存しない。
 
-## 6. Audio sources
+## 6. 時間座標と正本
 
-### 6.1 Live microphone
+### 6.1 正本
 
-The user explicitly starts and stops a session.
+正本は source audio とする。
 
-On start:
+すべての派生処理は、最終的に source audio 上の範囲へ戻れる必要がある。
 
-1. create a session;
-2. begin continuous source-audio persistence;
-3. stream audio to VAD;
-4. enqueue completed utterances for ASR.
+### 6.2 時間座標
 
-Always prioritize source-audio persistence over downstream work.
+内部では、可能な限りミリ秒だけでなく sample index を持つ。
 
-### 6.2 Imported recording
+概念上:
 
-The user can choose an existing audio file, especially previously recorded lecture audio.
+```text
+source_start_sample
+source_end_sample
+sample_rate
+```
 
-Imported recordings create a normal session with `source.type = imported_file`.
+を永続的な基準座標とする。
 
-The imported path feeds the same VAD → ASR → scene → Jev → store pipeline as live capture. It must not have a separate transcription implementation.
+表示や外部 API では必要に応じて `start_ms` / `end_ms` を派生する。
 
-Initial supported formats should use the reliable formats already handled by the chosen macOS audio stack; target common formats such as M4A, WAV, MP3, and AAC where the underlying framework supports them.
+### 6.3 segment は派生物
 
-The original imported file must not be modified. By default, create a session-owned immutable copy under the session audio directory so later processing does not depend on the external file remaining at its original path.
+segment は永久固定の実体ではない。
 
-## 7. VAD and utterance segmentation
+VAD 設定を変えれば境界が変化し得るため、segment は特定の `segmentation_run_id` に属する。
 
-VAD is responsible only for identifying safe acoustic utterance boundaries.
+```text
+source audio
+   |
+   +--> segmentation_run_A
+   |       +--> seg_A1
+   |       +--> seg_A2
+   |
+   +--> segmentation_run_B
+           +--> seg_B1
+           +--> seg_B2
+```
 
-It must not decide whether speech is meaningful.
+この構造により、再 VAD 後も旧結果と新結果を混同しない。
 
-Behavior:
+## 7. AudioSource
 
-- begin buffering when speech starts;
-- tolerate short internal pauses;
-- end the utterance after configurable sustained silence;
-- include short pre-roll and post-roll to avoid clipping phoneme boundaries;
-- never discard a segment solely because it is short;
-- if an utterance becomes too long, prefer the most suitable recent pause near the limit, otherwise force a hard split;
-- represent overlap explicitly when detected rather than inventing a single-speaker assignment.
+### 7.1 ライブ録音
 
-Configuration is internal and tunable. Parameters include:
+ユーザーが明示的に session を開始・終了する。
 
-- speech start threshold;
-- speech end threshold;
-- minimum end-silence duration;
-- pre-roll;
-- post-roll;
-- hard maximum utterance duration.
+開始時:
 
-Exact timing values are calibration parameters, not product invariants.
+1. session を作成する。
+2. Durable Audio Writer を先に開始する。
+3. live audio bus へ音声を供給する。
+4. VAD を開始する。
+5. ASR model の読み込みを非同期に開始する。
 
-The source audio is canonical. VAD segmentation is reproducible derived data and can be regenerated from stored audio.
+録音コールバックは ASR、ネットワーク、JSON 書き込み、SwiftUI 更新を待ってはならない。
 
-## 8. ASR architecture
+### 7.2 既存録音
 
-### 8.1 Native Swift from the start
+既存ファイルも通常の session として扱う。
 
-v1 is implemented with a native Swift ASR path from the beginning.
+`source.type = imported_file`
 
-The application owns an internal `ASREngine` protocol so capture, VAD, transcript storage, and UI are not coupled to one concrete model implementation, but v1 ships only one engine:
+元ファイルは変更しない。
+
+既定では session 管理下へ不変コピーを作成し、後日元ファイルが移動・削除されても再処理できるようにする。
+
+ライブと import で別の ASR 実装や別の transcript schema を持たない。
+
+## 8. Durable Audio Writer
+
+### 8.1 責務
+
+Durable Audio Writer は、最優先で source audio を永続化する。
+
+次を満たす。
+
+- 音声入力スレッドを長時間ブロックしない。
+- downstream の処理速度に依存しない。
+- 異常終了時の損失範囲を限定する。
+- session manifest から最後に永続化済みの位置を判定できる。
+- 後から VAD / ASR を再実行できる。
+
+### 8.2 保存方式
+
+単一連続ファイルか短い durable chunk 群かは実装検証で選ぶ。
+
+ただし方式にかかわらず、v1 の受け入れ条件として以下を要求する。
+
+- process kill 後に既存の長時間録音全体が破損しない。
+- 最後の未確定区間を除き復旧可能である。
+- session manifest が保存済み範囲を追跡できる。
+- audio persistence の失敗を UI 上で即座に日本語で通知できる。
+
+## 9. VAD と segmentation
+
+VAD の責務は、安全な発話候補境界を作ることだけである。
+
+意味の有無は判断しない。
+
+挙動:
+
+- speech 開始前の短い pre-roll を保持する。
+- speech 中の短い pause を許容する。
+- 継続 silence で segment を閉じる。
+- 短い発話だけを理由に破棄しない。
+- 長すぎる発話は適切な pause 付近で分割する。
+- overlap の可能性を隠さない。
+- exact timing は calibration parameter とする。
+
+出力には最低限以下を含める。
+
+```text
+segmentation_run_id
+segment_id
+source_start_sample
+source_end_sample
+vad_version
+vad_config_hash
+```
+
+## 10. ASR アーキテクチャ
+
+### 10.1 Swift ネイティブ一本化
+
+v1 は最初から Swift ネイティブで実装する。
 
 ```text
 ASREngine
@@ -272,480 +310,533 @@ ASREngine
           Qwen3-ASR 1.7B
 ```
 
-Do not build a Python worker, IPC protocol, embedded Python runtime, or second production ASR backend unless the Swift path proves unusable.
+`ASREngine` protocol は将来置換可能性のために置くが、v1 で複数 backend を実装しない。
 
-The purpose of `ASREngine` is architectural isolation and future replaceability, not multi-backend support in v1.
+Python worker、IPC protocol、埋め込み Python、ASR server は作らない。
 
-### 8.2 Qwen3-ASR integration
+### 10.2 Qwen3-ASR
 
-Use an existing native Swift implementation of Qwen3-ASR 1.7B on MLX Swift where it meets the project's accuracy and stability needs. Do not begin by hand-porting the Python model implementation.
+既存の Swift + MLX Swift 実装を優先して利用する。
 
-The ASR engine runs inside the macOS application process.
+手動 port から始めない。
 
-Benefits:
+ASR は macOS アプリと同じ process 内で動かす。
 
-- no Python interpreter or virtual environment;
-- no subprocess lifecycle;
-- no stdin/stdout or socket IPC;
-- direct audio-buffer handoff from Swift;
-- simpler signing, notarization, packaging, logging, and crash handling;
-- one application process during normal use;
-- easier reuse by a future daily-life mode.
+### 10.3 依存バージョン
 
-The app must not depend on a separately running ASR server.
+外部 Swift package は shipping 時に branch head へ追従しない。
 
-### 8.3 Validation strategy
+可能なら release tag、なければ特定 commit SHA へ固定する。
 
-Swift is the implementation path, not a candidate that must first defeat a separately implemented Python backend.
+依存更新は明示的に行い、ASR regression test を通す。
 
-Validate the native path directly on the user's real Japanese lecture recordings.
+### 10.4 ライブ動作
 
-Required properties:
+Qwen3-ASR は utterance 単位で処理する。
 
-- useful Japanese transcription and technical-term retention;
-- sustained real-time factor comfortably below 1.0 on the target M4 16 GB Mac;
-- stable 60–90 minute sessions;
-- bounded memory without progressive growth;
-- reliable repeated model load/unload;
-- no obvious preprocessing, tokenizer, or decoding defects.
+1. VAD segment が確定する。
+2. ASR queue に segment reference を入れる。
+3. ASR Actor が原音声の該当区間を読む。
+4. ASR 完了 event を書く。
+5. UI は ASR 完了直後に表示する。
+6. scene、speaker、scope、意味分類は後から更新される。
 
-If an ASR-quality or stability problem appears, first diagnose it within the native Swift path. A Python/MLX backend is not prebuilt for comparison.
+### 10.5 ASR lifecycle
 
-Only if the native Swift implementation proves fundamentally unsuitable or a concrete debugging need arises should a Python/MLX implementation be considered later. That would be a new design decision, not part of the v1 implementation plan.
-
-### 8.4 Live behavior
-
-Qwen3-ASR remains utterance-based rather than token-streaming.
-
-The sequence is:
-
-1. VAD detects utterance end.
-2. The utterance is submitted to `NativeQwen3ASREngine`.
-3. The completed transcript is returned.
-4. The transcript appears immediately in the live UI.
-5. Scene, speaker, acoustic-scope, and Jev metadata are attached asynchronously.
-
-No general LLM sits between ASR and live display.
-
-### 8.5 ASR lifecycle
-
-The application UI starts without loading the ASR model.
-
-For a live session:
+UI 起動時には model を読み込まない。
 
 ```text
-app launch
+app 起動
    |
-user starts recording
+録音開始
    |
-load Qwen3-ASR on demand
+Qwen3-ASR を非同期 load
    |
-recording continues while loading
+録音は継続
    |
-completed VAD segments queue
+segment reference が queue に蓄積
    |
-ASR becomes ready and drains queue
+ASR READY
+   |
+queue を順次処理
 ```
 
-For imported files, processing may wait for the model to become ready before beginning ASR work.
+状態例:
 
-The engine exposes coarse states such as:
+- `STOPPED`
+- `LOADING_MODEL`
+- `READY`
+- `TRANSCRIBING`
+- `FAILED`
 
-- `STOPPED`;
-- `LOADING_MODEL`;
-- `READY`;
-- `TRANSCRIBING`;
-- `FAILED`.
+segment 単位:
 
-Per-segment states include at least:
+- `PENDING`
+- `OK`
+- `EMPTY`
+- `FAILED`
+- `TIMEOUT`
+- `ENGINE_UNAVAILABLE`
 
-- `PENDING`;
-- `OK`;
-- `EMPTY`;
-- `FAILED`;
-- `TIMEOUT`;
-- `ENGINE_UNAVAILABLE`.
+ASR failure は capture を停止させない。
 
-ASR failure must never stop source-audio capture.
+### 10.6 memory policy
 
-### 8.6 Model and memory policy
+- app 起動だけでは model を load しない。
+- ASR が必要なときだけ load する。
+- active session 中は 1 instance を保持する。
+- session 終了後は必要に応じて unload できる。
+- v1 で複数 model instance を持たない。
 
-The Qwen3-ASR model is the dominant optional runtime allocation.
+測定対象:
 
-Policy:
+- model load time
+- resident memory
+- unloaded idle memory
+- 60〜90 分連続動作
+- progressive memory growth
+- thermal behavior
 
-- do not load Qwen3-ASR merely because the app is open;
-- load on the first ASR-requiring action;
-- keep one model instance resident through an active live session;
-- allow unload after processing ends or under memory pressure;
-- never load multiple copies of the 1.7B model in v1.
+## 11. キュー、逆圧、並行実行
 
-Model weights are not embedded in the application bundle. Store downloaded weights in the application's support/cache area so app updates do not require re-downloading multi-gigabyte model data.
+### 11.1 原則
 
-Benchmark model load time, resident memory, unloaded idle memory, and long-session stability.
+PCM を無制限に RAM queue へ蓄積しない。
 
-## 9. Transcript data model
+downstream が遅れても、source audio が durable なら後から読み直せる。
 
-### 9.1 Canonical store
+### 11.2 ASR queue
 
-Use one canonical append-safe transcript representation rather than duplicating records into several independently authoritative files.
+queue に置くのは原則として音声本体ではなく参照情報とする。
 
-Primary file:
+```text
+segment_id
+segmentation_run_id
+source_start_sample
+source_end_sample
+```
+
+### 11.3 bounded queue
+
+capture 以外の in-memory queue は bounded とする。
+
+queue が上限へ近づいた場合:
+
+- source audio 保存は継続する。
+- 未処理 job を durable state として残す。
+- UI へ「文字起こし処理が遅れています」など日本語で通知する。
+- capture を止めない。
+
+### 11.4 Swift concurrency の境界
+
+最低限、次の責務を分離する。
+
+- `AudioCaptureEngine`
+- `SessionWriter`
+- `SegmentationEngine`
+- `ASREngine` actor
+- `DiarizationEngine`
+- `EnrichmentCoordinator`
+- `TranscriptMaterializer`
+
+1 つの巨大 manager に集約しない。
+
+## 12. canonical event store
+
+### 12.1 基本形式
+
+canonical store は append-only event log とする。
+
+主ファイル:
 
 `transcript.jsonl`
 
-Each record represents one segment and includes, as available:
+ただし「1 行 = 完成した segment」ではなく、「1 行 = 1 event」と定義する。
+
+### 12.2 event envelope
+
+概念例:
 
 ```json
 {
-  "id": "seg_000042",
+  "event_id": "evt_...",
+  "event_type": "asr.completed",
+  "schema_version": 1,
   "session_id": "session_20260922_01",
-  "start_ms": 199100,
-  "end_ms": 201970,
-  "text": "あれ、画面出ないな。ちょっと待ってください",
-  "asr": {
+  "processing_run_id": "run_...",
+  "segmentation_run_id": "seg_run_...",
+  "segment_id": "seg_000042",
+  "source_start_sample": 3185600,
+  "source_end_sample": 3231520,
+  "created_at": "2026-09-22T03:20:00+09:00",
+  "payload": {
+    "text": "あれ、画面出ないな。ちょっと待ってください",
     "engine": "qwen3-asr",
-    "model": "1.7b",
-    "status": "ok"
-  },
-  "scene": {
-    "state": "lecture",
-    "confidence": 0.91
-  },
-  "speaker": {
-    "id": "speaker_2",
-    "confidence": 0.81
-  },
-  "scope": {
-    "class": "near",
-    "confidence": 0.76
-  },
-  "content_priority": "low_priority",
-  "jev": {
-    "schema_version": "v1",
-    "scores": {}
+    "model": "1.7b"
   }
 }
 ```
 
-Not every enrichment field is required before a transcript segment becomes visible or persistent.
+event type の例:
 
-### 9.2 Content priority and acoustic scope
+- `segment.created`
+- `asr.pending`
+- `asr.completed`
+- `asr.failed`
+- `speaker.span`
+- `scene.changed`
+- `scope.assigned`
+- `content_priority.assigned`
+- `processing.invalidated`
 
-Do not use destructive `DROPPED` semantics, and do not conflate semantic priority with acoustic relevance.
+### 12.3 MaterializedTranscriptSegment
 
-Content priority is one axis:
+人間 UI や外部エージェントは、原則として event log を直接解釈しない。
 
-- `PRIMARY`: normal downstream context;
-- `LOW_PRIORITY`: obvious filler, hesitation-only speech, operational friction, or similarly low-information speech; normally excluded from first-pass downstream context but still queryable.
+`TranscriptMaterializer` が最新状態を組み立てる。
 
-Acoustic scope is a separate axis:
+概念例:
 
-- `NEAR`: likely part of the nearby relevant conversation;
-- `BACKGROUND`: likely outside the relevant discussion group;
-- `UNKNOWN`: insufficient evidence.
+```json
+{
+  "segment_id": "seg_000042",
+  "start_ms": 199100,
+  "end_ms": 201970,
+  "text": "あれ、画面出ないな。ちょっと待ってください",
+  "scene": "lecture",
+  "speakers": [
+    {
+      "id": "speaker_2",
+      "start_ms": 199100,
+      "end_ms": 200500,
+      "confidence": 0.81
+    },
+    {
+      "id": "speaker_3",
+      "start_ms": 200500,
+      "end_ms": 201970,
+      "confidence": 0.74
+    }
+  ],
+  "scope": "near",
+  "content_priority": "low_priority"
+}
+```
 
-In `LECTURE`, distance alone must never cause lecturer speech to become `BACKGROUND`.
+speaker は segment に 1 個だけとは限らない。
 
-Uncertain semantic content defaults to `PRIMARY`. Uncertain discussion scope defaults to `NEAR`/retained behavior rather than exclusion.
+### 12.4 derived views
 
-A default downstream view first excludes records whose scope is confidently `BACKGROUND`, then prefers `PRIMARY` over `LOW_PRIORITY`. Both axes remain queryable.
+必要なら次の view を生成する。
 
-### 9.3 Append-safe revisions
+- `views/primary.jsonl`
+- `views/low_priority.jsonl`
+- `views/background.jsonl`
 
-`transcript.jsonl` is an append-safe event log, not an in-place mutable JSON array.
+これらは cache / derived artifact であり正本ではない。
 
-The first record for a segment contains its stable identity, timing, ASR text, and any metadata already available. Later asynchronous enrichment or retroactive scene relabeling is written as an additional update event referencing the same `segment_id`.
+## 13. 意味分類
 
-Consumers materialize the latest state by applying updates in file order. This preserves crash safety while allowing scene, speaker, scope, and Jev metadata to arrive or change after the transcript text has already been shown.
+### 13.1 抽象化
 
-### 9.4 Derived views
+アーキテクチャを Jev 固有にしない。
 
-Optional derived files may be generated for convenience, for example:
+```text
+ContentPriorityClassifier
+        |
+        v
+DecisionProvider
+        |
+        +--> JevDecisionProvider
+```
 
-- `views/primary.jsonl`;
-- `views/low_priority.jsonl`;
-- `views/background.jsonl`.
+scene の semantic transition detector も同じ `DecisionProvider` を利用できる。
 
-The background view is derived from acoustic scope; primary/low-priority views are derived from content priority.
+これにより、将来別 API やローカル分類器へ交換できる。
 
-They are never canonical.
+### 13.2 ContentPriority
 
-## 10. Jev Cleaner
+意味上の優先度:
 
-Jev is a conservative low-information classifier, not a summarizer or importance model.
+- `PRIMARY`
+- `LOW_PRIORITY`
 
-### 10.1 Responsibility
+`LOW_PRIORITY` 候補:
 
-It may help identify:
+- 単独 filler
+- 内容のない相槌
+- 機材・画面操作の明白な手間取り
+- 待機中の無内容発話
+- 明白な独り言ノイズ
 
-- standalone fillers;
-- content-free acknowledgements;
-- equipment/interface fumbling;
-- waiting-time remarks;
-- incidental operational friction;
-- clearly irrelevant muttering.
+混合発話は保持する。
 
-It must not attempt to identify “important lecture content,” summarize, rewrite, correct terminology, or extract exam material.
+例:
 
-### 10.2 Local exact filler fast path
+「えー、RSA では公開鍵を使います」
 
-A tiny, conservative local rule may mark exact standalone fillers such as clearly content-free hesitation tokens without calling Jev.
+は `PRIMARY`。
 
-The rule is exact/narrow. It must not grow into an NLP subsystem.
+### 13.3 分類入力
 
-A mixed utterance such as “えー、RSAでは公開鍵を使います” remains `PRIMARY`.
+原則として current utterance のみを使う。
 
-### 10.3 Jev questions
+全講義を毎回送らない。
 
-Use a small typed schema with narrow independent scores, conceptually:
+曖昧なら `PRIMARY` のままにする。
 
-- `meaningful_information`;
-- `filler_only`;
-- `incidental_noise`.
+### 13.4 cache
 
-The application policy, not Jev itself, maps scores to `PRIMARY` or `LOW_PRIORITY`.
+最低限以下を fingerprint に含める。
 
-The policy is deliberately conservative:
+- normalized text
+- question/schema version
+- provider/model version
+- policy version
 
-- only very high-confidence low-information cases become `LOW_PRIORITY`;
-- ambiguity remains `PRIMARY`.
+### 13.5 failure
 
-Exact thresholds are calibration settings derived from recorded-session evaluation.
+Jev 等の provider が失敗した場合は `PRIMARY` 相当として扱う。
 
-### 10.4 Context policy
+分類失敗で transcript を隠さない。
 
-Cleaner input is normally the current utterance only.
+## 14. scene 判定
 
-Do not send the whole lecture or broad context just to become more aggressive about demotion.
+scene state:
 
-If an utterance is ambiguous in isolation, leave it `PRIMARY`.
+- `LECTURE`
+- `DISCUSSION`
+- `UNKNOWN`
 
-### 10.5 Caching
-
-Cache Jev results using a fingerprint containing at least:
-
-- normalized text;
-- Jev question/schema version;
-- model/version identifier when available.
-
-Repeated identical classification inputs reuse stored results.
-
-### 10.6 Failure
-
-If Jev is unavailable or times out, retain the utterance as `PRIMARY`/unclassified-equivalent for normal use. Jev failure must never hide content or block ASR/capture.
-
-## 11. Scene Analyzer
-
-Scene state is session-local:
-
-- `LECTURE`;
-- `DISCUSSION`;
-- `UNKNOWN`.
-
-It is not predicted independently for each utterance. Use a hysteretic state machine with candidate states:
+候補状態を持つ。
 
 ```text
 LECTURE
    |
    v
 DISCUSSION_CANDIDATE
-   | confirmed
+   |
    v
 DISCUSSION
    |
    v
 LECTURE_CANDIDATE
-   | confirmed
+   |
    v
 LECTURE
 ```
 
-Candidate states prevent transient questions, brief side conversations, or one long student turn from causing rapid mode oscillation.
+### 14.1 acoustic evidence
 
-### 11.1 Rolling acoustic window
+rolling window で次を観測できる。
 
-Maintain a rolling acoustic observation window, initially around tens of seconds and tunable from recorded data.
+- active speaker count
+- turn rate
+- overlap ratio
+- dominant speaker ratio
+- voiced duration
+- proximity evidence
 
-Features may include:
+ここで使う `proximity evidence` は、生の音響特徴であり `BACKGROUND` 判定そのものではない。
 
-- estimated active speaker count;
-- turn count/rate;
-- overlap ratio;
-- near-speech ratio;
-- dominant-speaker ratio;
-- voiced duration.
+### 14.2 semantic transition
 
-Recompute periodically.
+別の狭い semantic classifier で次を推定する。
 
-### 11.2 Semantic transition detector
+- `discussion_start`
+- `discussion_end`
+- `none`
 
-Use a separate narrow semantic classifier for scene transition cues.
+例:
 
-Examples of start cues:
+- 「では隣の人と話し合ってください」
+- 「5分間グループで考えてください」
+- 「はい、そこまでです」
+- 「それでは解説します」
 
-- “では隣の人と話し合ってください”
-- “5分間グループで考えてください”
-- “3人組を作ってください”
+### 14.3 LECTURE → DISCUSSION
 
-Examples of end cues:
+強い経路:
 
-- “はい、そこまでです”
-- “グループワークは終了です”
-- “それでは解説します”
-- “では前に戻ってください”
+1. semantic start cue
+2. `DISCUSSION_CANDIDATE`
+3. multi-speaker activity / turn-taking の増加確認
+4. `DISCUSSION`
 
-This detector is separate from `JevCleaner` even if both use Jev as a backend.
+弱い経路:
 
-Its typed output is conceptually:
+semantic cue がなくても、十分長い acoustic evidence が続けば candidate に入れる。
 
-- `discussion_start` probability;
-- `discussion_end` probability;
-- `none` probability.
+短い質疑だけで `DISCUSSION` にしない。
 
-It may use the current utterance, previous utterance, and current scene only. It must not require the full transcript.
+### 14.4 DISCUSSION → LECTURE
 
-### 11.3 LECTURE → DISCUSSION
+終了判定は開始判定より厳しくする。
 
-Strong path:
+1. semantic end cue
+2. `LECTURE_CANDIDATE`
+3. multi-speaker activity の低下確認
+4. dominant speaker の復帰確認
+5. `LECTURE`
 
-1. a semantic start cue appears;
-2. state becomes `DISCUSSION_CANDIDATE`;
-3. within a confirmation interval, near multi-speaker activity or turn-taking actually rises;
-4. state becomes `DISCUSSION`.
+### 14.5 retroactive timestamp
 
-If conversation does not actually begin, return to `LECTURE`.
+scene 確定時刻と実際の転換時刻は一致しない。
 
-Weak path:
+確定後に recent window 内の最も妥当な時点へ遡って `scene.changed` event を書けるようにする。
 
-Sustained acoustic evidence alone may move `LECTURE` to `DISCUSSION_CANDIDATE`, then to `DISCUSSION` only after continued confirmation.
+## 15. proximity evidence と acoustic scope
 
-A brief student/teacher exchange must not trigger discussion mode.
+循環依存を避けるため、生の proximity evidence と、意味上の scope assignment を分離する。
 
-### 11.4 DISCUSSION → LECTURE
+### 15.1 proximity evidence
 
-This transition is stricter than the start transition.
+proximity evidence は scene に関係なく計算してよい。
 
-Strong path:
+これは、
 
-1. a semantic end cue appears;
-2. state becomes `LECTURE_CANDIDATE`;
-3. observe the following interval;
-4. confirm that near multi-speaker activity/turn-taking falls and one speaker becomes dominant;
-5. transition to `LECTURE`.
+- 音量
+- direct/reverberant 傾向
+- speaker embedding の安定性
+- microphone relative evidence
+- その他利用可能な音響特徴
 
-If group conversation continues, revert to `DISCUSSION`.
+から得る内部証拠であり、それ自体は `BACKGROUND` を意味しない。
 
-Acoustic-only transition is allowed only with strong sustained evidence. A single group member talking for a long time is insufficient by itself.
+### 15.2 scope assignment
 
-### 11.5 Transition timestamp
+scope:
 
-Detection may happen after the real transition.
+- `NEAR`
+- `BACKGROUND`
+- `UNKNOWN`
 
-When a candidate is confirmed, retroactively assign the best-supported transition time within the recent observation window rather than using the confirmation time.
+`BACKGROUND` として除外候補にする policy は `DISCUSSION` 中だけ有効にする。
 
-Recent segments must therefore support scene relabeling through append-only segment update events rather than destructive rewriting.
+`LECTURE` 中は、遠く聞こえる話者でも講師の可能性があるため、距離を理由に `BACKGROUND` にしない。
 
-### 11.6 UNKNOWN behavior
+不確実なら `NEAR` または `UNKNOWN` として保持する。
 
-At startup or when evidence is insufficient, state may be `UNKNOWN`.
+## 16. diarization
 
-Once in a stable state, ambiguity alone does not force `UNKNOWN`; maintain the current state until there is sufficient evidence for transition.
+diarization は VAD segment と同じ境界で動く必要はない。
 
-## 12. Discussion acoustic scope and diarization
+speaker timeline は独立した time span として保持する。
 
-Distance/scope filtering is active only in `DISCUSSION`.
+例:
 
-Never classify distant speech as background simply because it is distant while in `LECTURE`, because the lecturer may be physically far from the Mac.
+```text
+VAD:
+12.0 ---------------------------- 18.0
 
-During discussion:
+speaker:
+12.0 ------ A ------ 14.7
+                      14.7 ------ B ------ 18.0
+```
 
-1. estimate whether speech is likely `NEAR`, `BACKGROUND`, or `UNKNOWN`;
-2. apply diarization primarily to likely relevant near speech;
-3. assign anonymous session-local speaker labels such as `SPEAKER_1`, `SPEAKER_2`;
-4. use `mixed`/unknown representations rather than false precision when overlap cannot be resolved.
+anonymous session-local ID を使う。
 
-`NEAR` means “likely relevant to the Mac's nearby discussion group,” not a guaranteed social-group identity.
+- `SPEAKER_1`
+- `SPEAKER_2`
 
-Conservative rule: if uncertain between near and background, prefer near/primary retention.
+overlap や不確実性がある場合は、無理に 1 speaker に決めない。
 
-Long-term speaker identity and speaker naming are out of scope.
+長期的な人物名付け、本人識別は v1 の範囲外。
 
-## 13. Live transcript UI
+## 17. ライブ文字起こし UI
 
-During an active live session, the transcript is a primary UI because the user may need to recover a recently missed statement.
+ライブ中は transcript を主要 UI とする。
 
-### 13.1 Critical latency rule
+### 17.1 遅延原則
 
-Display the transcript as soon as local ASR completes.
+ASR 完了直後に表示する。
 
-Do not wait for:
+待たないもの:
 
-- Jev;
-- scene analysis;
-- diarization;
-- a general LLM;
-- downstream note generation.
+- Jev
+- scene 判定
+- diarization
+- scope assignment
+- 汎用 LLM
+- 講義ノート生成
 
-Later metadata updates may change styling asynchronously.
+### 17.2 表示
 
-### 13.2 Display behavior
+表示上の日本語例:
 
-- `PRIMARY`: normal display.
-- `LOW_PRIORITY`: reduced visual emphasis after classification completes.
-- scope `BACKGROUND`: hidden by default during discussion, with optional diagnostics access. Lecture mode does not background-filter distant lecturer speech.
-- unclassified/pending metadata: display normally.
+- `PRIMARY` → 通常表示
+- `LOW_PRIORITY` → 薄く表示
+- `BACKGROUND` → discussion 中は既定で非表示
+- 処理待ち → 通常表示のまま
+- ASR 遅延 → 「文字起こし処理が遅れています」
+- ASR 読み込み中 → 「音声認識モデルを読み込んでいます」
+- 録音保存失敗 → 「録音データを保存できません。空き容量を確認してください」
 
-When the user scrolls upward to inspect previous statements, automatic “follow latest” scrolling must pause. Provide a clear action to return to the newest utterance.
+ユーザーが上へスクロールした場合は自動追従を止める。
 
-Show timestamps and anonymous speaker IDs if available.
+「最新へ戻る」を用意する。
 
-No audio replay control is required in v1. The user is expected to consult the live text, not play recorded audio during class.
+timestamp と anonymous speaker ID は利用可能なら表示する。
 
-## 14. Application runtime and distribution
+v1 では録音再生 UI は必須ではない。
 
-### 14.1 User-facing execution model
+### 17.3 言語方針
 
-v1 is a normal native macOS `.app` launched manually by the user.
+ユーザー向けテキストは日本語を既定とする。
 
-The user-facing model is:
+内部 identifier、schema key、event type、enum 値は英語でよい。
+
+例:
+
+```text
+内部: ENGINE_UNAVAILABLE
+表示: 音声認識エンジンを利用できません
+```
+
+developer log は英語でもよいが、ユーザーへそのまま露出しない。
+
+## 18. アプリ実行モデル
+
+v1 は通常の macOS `.app` とする。
 
 ```text
 Mac idle
-  -> no app/runtime required
+  -> 常駐 runtime なし
 
-Before class
-  -> launch mac-ambient-jev.app
+講義前
+  -> mac-ambient-jev.app 起動
 
-During class
-  -> recording + local processing
+講義中
+  -> 録音 + ローカル処理
 
-After class
-  -> stop session
-  -> optionally let pending processing finish
-  -> quit app
+講義後
+  -> session 停止
+  -> pending 処理を必要に応じて完了
+  -> app 終了可能
 ```
 
-v1 does not require Docker, a background HTTP service, a system-wide daemon, or a separately launched terminal process.
+Docker、常駐 HTTP service、system daemon、別 Terminal process は不要。
 
-### 14.2 App process
+### 18.1 app process
 
-The main application is Swift/SwiftUI and owns:
+Swift / SwiftUI アプリが次を所有する。
 
-- microphone/audio capture;
-- VAD pipeline;
-- transcript UI;
-- session state and persistence;
-- scene analysis;
-- diarization/acoustic-scope logic;
-- Jev requests;
-- ASR engine lifecycle.
+- microphone capture
+- durable audio persistence
+- VAD
+- Qwen3-ASR lifecycle
+- transcript UI
+- session persistence
+- scene analyzer
+- diarization
+- proximity / scope
+- semantic decision provider client
 
-Qwen3-ASR runs in this same process through MLX Swift. v1 has no Python worker or ASR subprocess.
+Qwen3-ASR は同一 process 内で MLX Swift により実行する。
 
-### 14.3 Local data layout
+## 19. ローカルデータ配置
 
-Conceptually use an application-owned support directory:
+概念上:
 
 ```text
 ~/Library/Application Support/mac-ambient-jev/
@@ -754,40 +845,9 @@ Conceptually use an application-owned support directory:
   └── config/
 ```
 
-Caches that can be safely re-created may use `~/Library/Caches/`.
+再生成可能 cache は `~/Library/Caches/` を利用できる。
 
-The model location must be configurable internally so a package-specific MLX cache can be used without coupling session data to a third-party default cache path.
-
-### 14.4 First-run/model download
-
-The app bundle should remain small relative to the ASR weights.
-
-When the selected ASR model is missing:
-
-1. show that local ASR requires a model download;
-2. download into the managed model/cache directory;
-3. verify that required files are present;
-4. only then mark the engine ready.
-
-An interrupted model download must not corrupt existing sessions.
-
-### 14.5 Distribution target
-
-The intended distribution format is a signed/notarized macOS application bundle.
-
-App Store distribution is not a v1 requirement.
-
-The shipping application uses the native Swift runtime only. No Python interpreter, virtual environment, or ASR worker is bundled in v1.
-
-### 14.6 Future daily-life mode
-
-A later daily-life mode may require login launch, menu-bar presence, or a lightweight helper/LaunchAgent.
-
-That is not part of v1. The v1 app remains manually launched and may fully terminate when not in use.
-
-## 15. Session lifecycle and storage
-
-A session directory conceptually contains:
+session:
 
 ```text
 sessions/
@@ -795,91 +855,114 @@ sessions/
     ├── session.json
     ├── processing_metadata.json
     ├── audio/
-    │   └── source.<ext>
+    │   ├── source.<ext>
+    │   └── または durable chunks
     ├── transcript.jsonl
     ├── views/
-    │   ├── primary.jsonl
-    │   ├── low_priority.jsonl
-    │   └── background.jsonl
     └── logs/
-        └── processing.log
 ```
 
-Persist progressively throughout the session, not only at stop time.
+API key 等の secret は JSON 設定ファイルに平文保存せず、macOS Keychain を使う。
 
-A segment lifecycle may include:
+## 20. model download
 
-- `CAPTURED`;
-- `ASR_PENDING`;
-- `ASR_DONE`;
-- enrichment/classification pending;
-- complete.
+ASR weight は app bundle に含めない。
 
-Stopping a session stops new capture but allows queued work to drain.
+未取得時:
 
-If work remains because a dependency is unavailable, the session records a completed-with-pending-work state and can resume later.
+1. 日本語で model download が必要であることを表示する。
+2. managed model directory へ download する。
+3. 一時領域へ download 後、整合性確認してから本配置へ移す。
+4. 必須ファイル確認後に engine を `READY` とする。
 
-## 16. Crash recovery and idempotency
+中断 download が既存 session を壊してはならない。
 
-The application must survive partial processing.
+## 21. session lifecycle
 
-On restart:
+session state は少なくとも次を区別する。
 
-1. detect unfinished sessions;
-2. inspect persisted segment states;
-3. restart necessary local workers;
-4. resume only incomplete work.
+- recording
+- capture_stopped
+- processing_pending
+- complete
+- complete_with_pending_work
+- failed_capture
 
-Use stable `session_id + segment_id` identity to avoid duplicate transcript rows.
+segment / task は独立状態を持つ。
 
-Classification caches and processing versions make enrichment re-runnable without repeating unrelated stages.
+停止時は新規 capture を止めるが、pending ASR / enrichment は続行可能とする。
 
-## 17. Processing versions and reprocessing
+## 22. crash recovery と冪等性
 
-Store processing metadata such as:
+再起動時:
 
-- VAD configuration/version;
-- ASR engine/model/version;
-- scene analyzer version;
-- Jev schema/model version;
-- policy version.
+1. 未完了 session を検出する。
+2. source audio の durable range を確認する。
+3. processing event を materialize する。
+4. 未完了 task のみ再開する。
+5. 完了済み event を重複生成しない。
 
-Reprocessing should reuse earlier stages when possible.
+「local worker を再起動する」という表現は使わない。v1 は Python worker を持たない。
 
-Examples:
+再開単位は processing engine / task とする。
 
-- priority-threshold change → reuse stored Jev scores;
-- scene algorithm change → reuse audio/ASR;
-- Jev schema change → reuse ASR;
-- ASR model change → reuse source audio/VAD segments where compatible.
+冪等性 key は単純な `session_id + segment_id` だけに依存しない。
 
-A sophisticated multi-run comparison UI is not required in v1, but the data model must not prevent later comparison.
+必要に応じて以下を含める。
 
-## 18. Error handling priorities
+- session_id
+- segmentation_run_id
+- segment_id
+- processing_run_id
+- stage
+- version
 
-Priority order:
+## 23. processing version と再処理
 
-1. preserve source audio;
-2. preserve segment boundaries or enough data to regenerate them;
-3. preserve ASR text;
-4. add scene/speaker/scope metadata;
-5. add Jev priority metadata.
+記録するもの:
 
-Failure of step N must not erase or block already viable work at steps 1..N-1.
+- source audio format/version
+- VAD version/config hash
+- segmentation_run_id
+- ASR engine/model/version
+- diarization version
+- scene analyzer version
+- decision schema/provider version
+- policy version
+- materializer schema version
 
-Monitor disk space because storage exhaustion is one of the few downstream failures that can directly threaten source capture.
+例:
 
-## 19. Evaluation strategy
+- threshold 変更 → 既存 provider score を再利用
+- scene algorithm 変更 → audio / ASR を再利用
+- semantic schema 変更 → ASR を再利用
+- ASR model 変更 → source audio を再利用
+- VAD 設定変更 → 新しい segmentation_run を生成
 
-The main consumer after a session is an AI agent, not a person reading the raw transcript.
+旧結果を破壊的に上書きしない。
 
-Therefore v1 evaluation focuses on information usability rather than human transcript polish.
+## 24. エラー処理優先順位
 
-### 19.1 Automated evaluation harness
+優先順位:
 
-Keep evaluation separate from production processing.
+1. source audio を保存する。
+2. source timeline と durable range を保存する。
+3. segmentation を保存する。
+4. ASR text を保存する。
+5. speaker / scene / scope を追加する。
+6. content priority を追加する。
 
-Conceptually:
+段階 N の失敗で、N-1 以前の成果を失わない。
+
+disk space は capture を直接脅かすため、早期監視する。
+
+残容量が危険な場合は日本語で明示する。
+
+## 25. 評価戦略
+
+主評価は自動化するが、完全自動だけにはしない。
+
+### 25.1 自動評価
 
 ```text
 recorded session
@@ -889,116 +972,153 @@ Clean Transcription Core
       |
       +-------------------+
       |                   |
-   PRIMARY          full structured data
+   default view       fuller context
       |                   |
-      +--------+----------+
-               |
-          AI evaluator
-               |
-     information-retention report
+      +---------+---------+
+                |
+           AI evaluator
+                |
+        retention report
 ```
 
-An evaluation LLM may:
+比較対象:
 
-1. derive factual questions/tasks from the fuller session data;
-2. answer them using the normal default context (non-background `PRIMARY`);
-3. compare against answers available when `LOW_PRIORITY` and `BACKGROUND` data are also available;
-4. identify cases where content-priority assignment, scene classification, scope classification, or VAD likely caused information loss.
+- non-background + PRIMARY
+- LOW_PRIORITY を含む view
+- BACKGROUND を含む fuller context
 
-This comparison alone cannot independently measure ASR transcription errors because both views may share the same ASR text. For ASR evaluation, the harness may run selected source-audio segments through an independent reference path using a different ASR or audio-capable evaluator, then compare semantic recovery and important technical terms. This reference path is evaluation-only and is not part of live processing.
+確認するもの:
 
-No human-labeled full transcript dataset is required for v1.
+- 情報落ち
+- false LOW_PRIORITY
+- false BACKGROUND
+- scene transition 異常
+- VAD 異常
+- technical term loss
 
-### 19.2 Human review
+### 25.2 小規模 gold set
 
-Human review is not a required production or evaluation stage for v1.
+全講義の人手 transcript は不要。
 
-The system should expose enough diagnostics to investigate failures when desired, but quality evaluation is designed to run automatically.
+代わりに、実際の講義録音から小規模な固定評価集合を作る。
 
-### 19.3 Core automated metrics
+目安:
 
-Track at least:
+- 15〜30 分程度
+- scene transition を含む
+- discussion を含む
+- technical term を含む
+- filler / low-priority 候補を含む
 
-- downstream information-retention delta between primary-only and fuller context;
-- number/rate of likely false `LOW_PRIORITY` assignments identified by the evaluator;
-- discussion transition timing and stability;
-- number of scene oscillations;
-- near-group retention relative to background filtering;
-- disagreement with the independent ASR evaluation path on selected segments;
-- ASR failures/timeouts;
-- ASR real-time factor;
-- queue depth and oldest pending age;
-- memory usage and long-session stability.
+人手確認する対象:
 
-Exact target thresholds should be calibrated using the user's real recorded lecture data rather than invented in advance.
+- 重要専門用語
+- 明白な ASR 誤り
+- scene 境界
+- false LOW_PRIORITY
+- false BACKGROUND
+- speaker 取り違えの代表例
 
-## 20. Performance model
+この gold set は calibration anchor と regression test に使う。
 
-The architecture assumes local ASR can process completed utterances at or faster than sustained real-time input on the target Mac.
+### 25.3 性能指標
 
-Measure:
+最低限:
 
-- real-time factor;
-- average and maximum ASR processing time;
-- maximum queue depth;
-- oldest pending segment age;
-- memory use;
-- long-session thermal/stability behavior.
+- ASR real-time factor
+- ASR queue depth
+- oldest pending age
+- model load time
+- memory usage
+- long-session memory growth
+- thermal stability
+- capture dropout
+- crash recovery loss window
+- scene oscillation count
+- false LOW_PRIORITY rate
+- false BACKGROUND rate
+- technical-term retention
 
-If the native Qwen3-ASR 1.7B engine cannot keep up on the actual M4 16GB machine, only then evaluate alternatives such as a smaller model, quantization change, or scheduling changes. Do not pre-build multiple ASR paths into v1.
+## 26. performance model
 
-## 21. Privacy boundary
+ASR が継続入力より速いことを期待するが、設計はそれに依存しすぎない。
 
-Raw audio remains local.
+ASR が一時的に追いつかなくても、
 
-Qwen3-ASR runs locally.
+```text
+source audio -> 保存継続
+ASR queue   -> 遅延可
+UI          -> 遅延状態を表示
+```
 
-External services such as Jev receive text only, not raw audio.
+とする。
 
-Future downstream cloud LLM use is outside this core's live path and will be designed separately.
+M4 16GB 実機で Qwen3-ASR 1.7B が不足する場合のみ、量子化変更、小型モデル、スケジューリング変更を検討する。
 
-The planned V2 external-agent API is local-first. Raw audio is not exposed through the default API surface; external agents receive transcript text and structured metadata unless a later explicit audio-access permission model is designed.
+v1 では先回りして複数 ASR backend を作らない。
 
-## 22. Extension points
+## 27. privacy
 
-The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces. v1 establishes the data contract; V2 should first expose that contract through direct file/schema access, a small CLI/library, and optionally an on-demand stdio MCP adapter. HTTP remains optional for use cases that actually require a listening service.
+raw audio はローカルに保持する。
 
-### 22.1 External post-session consumers
+Qwen3-ASR はローカルで動く。
 
-Post-session consumers are independent programs, agents, or harnesses. They may use completed session data for:
+外部 decision provider を使う場合、送信するのは原則として transcript text と必要最小限の文脈だけである。
 
-- lecture-note and explanation generation;
-- quiz/flashcard generation;
-- retrieval and Q&A over historical sessions;
-- Web research and enrichment;
-- long-term semantic memory;
-- richer use of `LOW_PRIORITY` and `BACKGROUND`.
+ユーザーには、意味分類を有効にした場合に文字起こしテキストが外部 provider へ送信されることを明示する。
 
-The macOS application does not own or orchestrate these workflows.
+raw audio を外部へ送信しない。
 
-### 22.2 Future interactive local integration
+API key は Keychain 管理とする。
 
-The macOS app/local runtime may later add:
+V2 の外部 agent API でも、raw audio は既定で公開しない。
 
-- daily-life capture/session behavior;
-- speaker verification for persistent `SELF`;
-- delivery of selected transcript events to an external daily-agent runtime;
-- reception of agent actions/responses;
-- VOICEVOX or other TTS/presentation of agent responses.
+## 28. 外部連携の安定境界
 
-The external daily-agent runtime may be implemented directly or with a harness such as Pi or Hermes. The transcription core must not depend on a specific harness.
+v1 が安定させるべき契約:
 
-Neither category should require a rewrite of capture, VAD, ASR, or canonical storage.
+- session schema
+- source timeline
+- event envelope
+- processing version
+- segmentation run identity
+- materialized transcript view
 
-## 23. Design principles
+V2 の CLI / stdio MCP はこの contract を読むだけにする。
 
-1. **Audio is canonical.**
-2. **No destructive transcript filtering.**
-3. **When uncertain, retain information.**
-4. **Live transcript latency depends on local ASR, not an LLM.**
-5. **Scene, speaker, scope, and Jev are enrichments, not capture prerequisites.**
-6. **One pipeline handles live and imported audio.**
-7. **Use existing upstream macOS/audio infrastructure where it saves work.**
-8. **Optimize the transcript for downstream AI utility, not post-class human reading.**
-9. **Implement v1 as a single native Swift runtime; do not build a Python backend unless a later concrete need justifies it.**
-10. **YAGNI: downstream notes and daily-agent behavior are separate later phases.**
+外部 agent に canonical event store の自由書き換え権限を与えない。
+
+## 29. 将来拡張
+
+後から追加できるもの:
+
+- daily-life capture
+- persistent SELF verification
+- live transcript event routing
+- external daily-agent response
+- VOICEVOX / TTS
+- historical retrieval
+- post-session research
+- optional HTTP transport
+
+これらの追加で、capture、durable audio、event store、ASR の再設計を要求しないことを目標とする。
+
+## 30. 設計原則
+
+1. **音声が正本。**
+2. **時間軸が共通座標。**
+3. **segment は派生物であり、VAD 再実行で変わり得る。**
+4. **canonical store は append-only event log。**
+5. **UI や外部 agent は materialized view を使う。**
+6. **録音経路は enrichment から独立。**
+7. **RAM queue に音声を無制限蓄積しない。**
+8. **不確実なら保持する。**
+9. **意味上の優先度と音響上の範囲を混同しない。**
+10. **proximity evidence と BACKGROUND policy を分離する。**
+11. **ライブ表示は ASR 完了を待つだけで、Jev 等を待たない。**
+12. **v1 は Swift ネイティブの単一 runtime。**
+13. **Python backend は具体的必要性が出るまで作らない。**
+14. **外部 decision provider は交換可能な境界の内側へ閉じ込める。**
+15. **ユーザー向けテキストは日本語を既定とする。**
+16. **評価は自動中心だが、小規模 gold set を校正基準にする。**
+17. **YAGNI: 講義後の成果物生成と日常アシスタントは別フェーズ。**
