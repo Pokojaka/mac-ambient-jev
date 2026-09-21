@@ -6,6 +6,10 @@ on:
       - work/clean-transcription-v1-native
   workflow_dispatch:
 
+concurrency:
+  group: native-v1-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   swift-test:
     runs-on: macos-15
