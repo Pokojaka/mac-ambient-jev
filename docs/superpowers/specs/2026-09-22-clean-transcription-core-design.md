@@ -20,10 +20,9 @@ v1 succeeds when it can:
 2. Import an existing lecture recording and run it through the same processing pipeline as live audio.
 3. Segment speech with VAD and transcribe each completed utterance locally with Qwen3-ASR 1.7B on Apple Silicon.
 4. Show each ASR result promptly in a live transcript without waiting for Jev or a general-purpose LLM.
-5. Preserve all ASR results while assigning an AI-consumption priority:
-   - `PRIMARY`
-   - `LOW_PRIORITY`
-   - `BACKGROUND`
+5. Preserve all ASR results while assigning two independent metadata axes:
+   - content priority: `PRIMARY` / `LOW_PRIORITY`;
+   - acoustic scope: `NEAR` / `BACKGROUND` / `UNKNOWN`.
 6. Use Jev conservatively to demote only clearly low-information speech.
 7. Infer `LECTURE` vs `DISCUSSION` with a stable state machine rather than per-utterance guesses.
 8. During discussion, separate likely near-group speech from likely background speech and perform anonymous session-local diarization where possible.
@@ -113,7 +112,7 @@ The new project-specific core is centered on:
                                   |
                            Transcript Store
                                   |
-               PRIMARY / LOW_PRIORITY / BACKGROUND
+               content_priority + acoustic_scope
                                   |
                            downstream agents
 ```
@@ -145,7 +144,7 @@ The imported path feeds the same VAD → ASR → scene → Jev → store pipelin
 
 Initial supported formats should use the reliable formats already handled by the chosen macOS audio stack; target common formats such as M4A, WAV, MP3, and AAC where the underlying framework supports them.
 
-The original imported file must not be modified.
+The original imported file must not be modified. By default, create a session-owned immutable copy under the session audio directory so later processing does not depend on the external file remaining at its original path.
 
 ## 7. VAD and utterance segmentation
 
@@ -296,7 +295,7 @@ Each record represents one segment and includes, as available:
     "class": "near",
     "confidence": 0.76
   },
-  "priority": "low_priority",
+  "content_priority": "low_priority",
   "jev": {
     "schema_version": "v1",
     "scores": {}
@@ -306,27 +305,44 @@ Each record represents one segment and includes, as available:
 
 Not every enrichment field is required before a transcript segment becomes visible or persistent.
 
-### 9.2 Priority model
+### 9.2 Content priority and acoustic scope
 
-Do not use destructive `DROPPED` semantics.
+Do not use destructive `DROPPED` semantics, and do not conflate semantic priority with acoustic relevance.
 
-Use:
+Content priority is one axis:
 
 - `PRIMARY`: normal downstream context;
-- `LOW_PRIORITY`: obvious filler, hesitation-only speech, operational friction, or similarly low-information speech; normally excluded from the first-pass downstream context but still queryable;
-- `BACKGROUND`: speech likely outside the relevant discussion group; retained and queryable but normally excluded.
+- `LOW_PRIORITY`: obvious filler, hesitation-only speech, operational friction, or similarly low-information speech; normally excluded from first-pass downstream context but still queryable.
 
-These are AI-consumption priorities, not deletion states.
+Acoustic scope is a separate axis:
 
-Uncertain content must default toward `PRIMARY`.
+- `NEAR`: likely part of the nearby relevant conversation;
+- `BACKGROUND`: likely outside the relevant discussion group;
+- `UNKNOWN`: insufficient evidence.
 
-### 9.3 Derived views
+In `LECTURE`, distance alone must never cause lecturer speech to become `BACKGROUND`.
+
+Uncertain semantic content defaults to `PRIMARY`. Uncertain discussion scope defaults to `NEAR`/retained behavior rather than exclusion.
+
+A default downstream view first excludes records whose scope is confidently `BACKGROUND`, then prefers `PRIMARY` over `LOW_PRIORITY`. Both axes remain queryable.
+
+### 9.3 Append-safe revisions
+
+`transcript.jsonl` is an append-safe event log, not an in-place mutable JSON array.
+
+The first record for a segment contains its stable identity, timing, ASR text, and any metadata already available. Later asynchronous enrichment or retroactive scene relabeling is written as an additional update event referencing the same `segment_id`.
+
+Consumers materialize the latest state by applying updates in file order. This preserves crash safety while allowing scene, speaker, scope, and Jev metadata to arrive or change after the transcript text has already been shown.
+
+### 9.4 Derived views
 
 Optional derived files may be generated for convenience, for example:
 
 - `views/primary.jsonl`;
 - `views/low_priority.jsonl`;
 - `views/background.jsonl`.
+
+The background view is derived from acoustic scope; primary/low-priority views are derived from content priority.
 
 They are never canonical.
 
@@ -503,7 +519,7 @@ Detection may happen after the real transition.
 
 When a candidate is confirmed, retroactively assign the best-supported transition time within the recent observation window rather than using the confirmation time.
 
-Recent segments must therefore support scene relabeling.
+Recent segments must therefore support scene relabeling through append-only segment update events rather than destructive rewriting.
 
 ### 11.6 UNKNOWN behavior
 
@@ -552,7 +568,7 @@ Later metadata updates may change styling asynchronously.
 
 - `PRIMARY`: normal display.
 - `LOW_PRIORITY`: reduced visual emphasis after classification completes.
-- `BACKGROUND`: hidden by default in live lecture use, with optional diagnostics access.
+- scope `BACKGROUND`: hidden by default during discussion, with optional diagnostics access. Lecture mode does not background-filter distant lecturer speech.
 - unclassified/pending metadata: display normally.
 
 When the user scrolls upward to inspect previous statements, automatic “follow latest” scrolling must pause. Provide a clear action to return to the newest utterance.
@@ -677,9 +693,11 @@ Clean Transcription Core
 An evaluation LLM may:
 
 1. derive factual questions/tasks from the fuller session data;
-2. answer them using the normal `PRIMARY` context;
-3. compare against answers available when lower-priority data is also available;
-4. identify cases where priority assignment, scene classification, VAD, or ASR caused information loss.
+2. answer them using the normal default context (non-background `PRIMARY`);
+3. compare against answers available when `LOW_PRIORITY` and `BACKGROUND` data are also available;
+4. identify cases where content-priority assignment, scene classification, scope classification, or VAD likely caused information loss.
+
+This comparison alone cannot independently measure ASR transcription errors because both views may share the same ASR text. For ASR evaluation, the harness may run selected source-audio segments through an independent reference path using a different ASR or audio-capable evaluator, then compare semantic recovery and important technical terms. This reference path is evaluation-only and is not part of live processing.
 
 No human-labeled full transcript dataset is required for v1.
 
@@ -698,6 +716,7 @@ Track at least:
 - discussion transition timing and stability;
 - number of scene oscillations;
 - near-group retention relative to background filtering;
+- disagreement with the independent ASR evaluation path on selected segments;
 - ASR failures/timeouts;
 - ASR real-time factor;
 - queue depth and oldest pending age;
