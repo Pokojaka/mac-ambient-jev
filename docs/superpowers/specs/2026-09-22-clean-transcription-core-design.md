@@ -153,7 +153,7 @@ Do not aggressively delete upstream features. Features not required by this proj
 The new project-specific core is centered on:
 
 - utterance collection from VAD;
-- Qwen3-ASR 1.7B local worker integration;
+- native Qwen3-ASR 1.7B integration on Apple Silicon, with a Python/MLX reference backend available during validation;
 - structured transcript storage;
 - Jev priority classification;
 - scene state inference;
@@ -259,20 +259,64 @@ The source audio is canonical. VAD segmentation is reproducible derived data and
 
 ## 8. ASR architecture
 
-### 8.1 Default engine
+### 8.1 Engine abstraction
 
-Default v1 engine: Qwen3-ASR 1.7B via MLX on Apple Silicon.
+The application owns an internal `ASREngine` abstraction so capture, VAD, transcript storage, and UI do not depend on the language/runtime used by the ASR implementation.
 
-The engine should fit behind the transcription abstraction already used by the upstream application where practical.
+Conceptually:
 
-### 8.2 Worker model
+```text
+ASREngine
+  ├── NativeQwen3ASREngine   // Swift + MLX Swift
+  └── PythonQwen3ASREngine   // validation/reference fallback
+```
 
-Run ASR as one long-lived local worker rather than loading the model per utterance.
+Only one production engine needs to ship. The abstraction exists to permit early validation and future replacement without changing the rest of the application.
+
+### 8.2 Preferred production path: native Swift
+
+The preferred production path is Qwen3-ASR 1.7B running directly in the macOS process through MLX Swift, using an existing Swift implementation rather than hand-porting the model.
+
+Reasons:
+
+- no Python interpreter or virtual environment in the end-user installation;
+- no stdin/stdout IPC or temporary worker lifecycle;
+- direct handoff from Swift audio buffers to ASR;
+- simpler app launch, signing, packaging, crash reporting, and model lifecycle;
+- one process and one dependency/runtime family for the normal application;
+- easier future reuse by the daily-life mode.
+
+The app must not depend on a separately running ASR server.
+
+The Qwen3-ASR model loads on demand when live recording or imported-file processing first requires ASR. The application may keep it resident while a session is active and release it after the session/processing workflow ends or under memory pressure.
+
+Model weights are not embedded in the application bundle. Store downloaded weights in the application's support/cache area so app updates do not require re-downloading multi-gigabyte model data.
+
+### 8.3 Native-Swift acceptance gate
+
+Native Swift is not accepted merely because it runs.
+
+Before choosing it as the v1 production engine, compare it against the Python/MLX Qwen3-ASR 1.7B reference path on the user's real Japanese lecture recordings.
+
+The native path must demonstrate:
+
+- no material semantic/technical-term accuracy regression;
+- sustained real-time factor comfortably below 1.0 on the target M4 16 GB Mac;
+- stable operation across 60–90 minute sessions;
+- bounded memory without progressive growth;
+- reliable repeated model load/unload;
+- no systematic transcript divergence caused by tokenizer, quantization, preprocessing, or decoding differences.
+
+If the native implementation fails this gate, v1 uses the Python worker path instead. Do not maintain both as equally supported production backends unless there is a demonstrated need.
+
+### 8.4 Python reference/fallback path
+
+The reference path uses a long-lived Python process with MLX Qwen3-ASR 1.7B.
 
 ```text
 Swift app
    |
-   | JSONL request/response
+   | JSONL stdin/stdout
    v
 Python ASR worker
    |
@@ -280,27 +324,7 @@ Python ASR worker
 Qwen3-ASR 1.7B / MLX
 ```
 
-The model loads once and remains resident.
-
-v1 uses one worker and one ordered ASR queue. Multiple ASR workers are out of scope unless measurements later prove one worker cannot keep up.
-
-### 8.3 Live behavior
-
-This is not token-streaming ASR.
-
-The sequence is:
-
-1. VAD detects utterance end.
-2. The utterance is sent to the ASR worker.
-3. The completed transcript is returned.
-4. The transcript appears immediately in the live UI.
-5. Scene, speaker, acoustic-scope, and Jev metadata are attached asynchronously.
-
-No general LLM sits between ASR and live display.
-
-### 8.4 Worker protocol
-
-Use simple local process IPC, preferably newline-delimited JSON over stdin/stdout for v1.
+The worker loads the model once and processes one ordered ASR queue.
 
 A request identifies:
 
@@ -319,27 +343,76 @@ A response returns:
 
 Do not embed large PCM buffers as base64 JSON.
 
-The implementation plan must choose between safe range-reading from the active source file and materializing a temporary utterance audio file based on the actual upstream recording APIs.
+If this path becomes the production fallback, the final application must manage the worker automatically. The user must not need to open Terminal, activate a virtual environment, or start a server manually.
 
-### 8.5 Failure states
+### 8.5 Live behavior
 
-Per-segment ASR states include at least:
+Qwen3-ASR remains utterance-based rather than token-streaming.
+
+The sequence is:
+
+1. VAD detects utterance end.
+2. The utterance is submitted to the selected ASR engine.
+3. The completed transcript is returned.
+4. The transcript appears immediately in the live UI.
+5. Scene, speaker, acoustic-scope, and Jev metadata are attached asynchronously.
+
+No general LLM sits between ASR and live display.
+
+### 8.6 ASR lifecycle
+
+During application launch, the UI may start without the ASR model loaded.
+
+For a live session:
+
+```text
+app launch
+   |
+user starts recording
+   |
+ensure ASR model is loading/ready
+   |
+recording continues even while model finishes loading
+   |
+completed VAD segments queue
+   |
+ASR becomes ready and drains queue
+```
+
+For imported files, processing may wait for the model to become ready before beginning ASR work.
+
+The app exposes coarse states such as:
+
+- `STOPPED`;
+- `STARTING`;
+- `LOADING_MODEL`;
+- `READY`;
+- `TRANSCRIBING`;
+- `FAILED`.
+
+Per-segment states include at least:
 
 - `PENDING`;
 - `OK`;
 - `EMPTY`;
 - `FAILED`;
 - `TIMEOUT`;
-- `WORKER_UNAVAILABLE`.
+- `ENGINE_UNAVAILABLE`.
 
-If the worker crashes:
+ASR failure must never stop source-audio capture.
 
-- recording continues;
-- VAD continues;
-- segments remain queued/persisted;
-- the app restarts the worker;
-- the model reloads;
-- pending segments resume.
+### 8.7 Memory policy
+
+The ASR model is the dominant optional runtime allocation, so loading policy is explicit:
+
+- do not load Qwen3-ASR merely because the app is open;
+- load on first ASR-requiring action;
+- keep it resident through an active live session;
+- allow unload after processing ends;
+- do not run multiple copies of the 1.7B model in v1;
+- do not run a Python reference model simultaneously with the Swift production model during normal use.
+
+Benchmark both resident and unloaded idle memory during acceptance testing.
 
 ## 9. Transcript data model
 
@@ -659,7 +732,93 @@ Show timestamps and anonymous speaker IDs if available.
 
 No audio replay control is required in v1. The user is expected to consult the live text, not play recorded audio during class.
 
-## 14. Session lifecycle and storage
+## 14. Application runtime and distribution
+
+### 15.1 User-facing execution model
+
+v1 is a normal native macOS `.app` launched manually by the user.
+
+The user-facing model is:
+
+```text
+Mac idle
+  -> no app/runtime required
+
+Before class
+  -> launch mac-ambient-jev.app
+
+During class
+  -> recording + local processing
+
+After class
+  -> stop session
+  -> optionally let pending processing finish
+  -> quit app
+```
+
+v1 does not require Docker, a background HTTP service, a system-wide daemon, or a separately launched terminal process.
+
+### 15.2 App process
+
+The main application is Swift/SwiftUI and owns:
+
+- microphone/audio capture;
+- VAD pipeline;
+- transcript UI;
+- session state and persistence;
+- scene analysis;
+- diarization/acoustic-scope logic;
+- Jev requests;
+- ASR engine lifecycle.
+
+If the native Swift ASR acceptance gate passes, Qwen3-ASR runs in this same process via MLX Swift.
+
+If the Python fallback is required, the Swift app owns its subprocess lifecycle and hides that implementation detail from the user.
+
+### 15.3 Local data layout
+
+Conceptually use an application-owned support directory:
+
+```text
+~/Library/Application Support/mac-ambient-jev/
+  ├── sessions/
+  ├── models/
+  ├── runtime/      // only if a fallback runtime needs managed files
+  └── config/
+```
+
+Caches that can be safely re-created may use `~/Library/Caches/`.
+
+The model location must be configurable internally so a package-specific MLX cache can be used without coupling session data to a third-party default cache path.
+
+### 15.4 First-run/model download
+
+The app bundle should remain small relative to the ASR weights.
+
+When the selected ASR model is missing:
+
+1. show that local ASR requires a model download;
+2. download into the managed model/cache directory;
+3. verify that required files are present;
+4. only then mark the engine ready.
+
+An interrupted model download must not corrupt existing sessions.
+
+### 15.5 Distribution target
+
+The intended distribution format is a signed/notarized macOS application bundle.
+
+App Store distribution is not a v1 requirement.
+
+The design should avoid introducing a Python runtime into the shipping bundle if the validated native Swift engine is sufficient, because a single native runtime simplifies distribution and lifecycle management.
+
+### 15.6 Future daily-life mode
+
+A later daily-life mode may require login launch, menu-bar presence, or a lightweight helper/LaunchAgent.
+
+That is not part of v1. The v1 app remains manually launched and may fully terminate when not in use.
+
+## 15. Session lifecycle and storage
 
 A session directory conceptually contains:
 
@@ -693,7 +852,7 @@ Stopping a session stops new capture but allows queued work to drain.
 
 If work remains because a dependency is unavailable, the session records a completed-with-pending-work state and can resume later.
 
-## 15. Crash recovery and idempotency
+## 16. Crash recovery and idempotency
 
 The application must survive partial processing.
 
@@ -708,7 +867,7 @@ Use stable `session_id + segment_id` identity to avoid duplicate transcript rows
 
 Classification caches and processing versions make enrichment re-runnable without repeating unrelated stages.
 
-## 16. Processing versions and reprocessing
+## 17. Processing versions and reprocessing
 
 Store processing metadata such as:
 
@@ -729,7 +888,7 @@ Examples:
 
 A sophisticated multi-run comparison UI is not required in v1, but the data model must not prevent later comparison.
 
-## 17. Error handling priorities
+## 18. Error handling priorities
 
 Priority order:
 
@@ -743,13 +902,13 @@ Failure of step N must not erase or block already viable work at steps 1..N-1.
 
 Monitor disk space because storage exhaustion is one of the few downstream failures that can directly threaten source capture.
 
-## 18. Evaluation strategy
+## 19. Evaluation strategy
 
 The main consumer after a session is an AI agent, not a person reading the raw transcript.
 
 Therefore v1 evaluation focuses on information usability rather than human transcript polish.
 
-### 18.1 Automated evaluation harness
+### 19.1 Automated evaluation harness
 
 Keep evaluation separate from production processing.
 
@@ -783,13 +942,13 @@ This comparison alone cannot independently measure ASR transcription errors beca
 
 No human-labeled full transcript dataset is required for v1.
 
-### 18.2 Human review
+### 19.2 Human review
 
 Human review is not a required production or evaluation stage for v1.
 
 The system should expose enough diagnostics to investigate failures when desired, but quality evaluation is designed to run automatically.
 
-### 18.3 Core automated metrics
+### 19.3 Core automated metrics
 
 Track at least:
 
@@ -806,7 +965,7 @@ Track at least:
 
 Exact target thresholds should be calibrated using the user's real recorded lecture data rather than invented in advance.
 
-## 19. Performance model
+## 20. Performance model
 
 The architecture assumes local ASR can process completed utterances at or faster than sustained real-time input on the target Mac.
 
@@ -821,7 +980,7 @@ Measure:
 
 If one Qwen3-ASR 1.7B worker cannot keep up on the actual M4 16GB machine, only then evaluate fallbacks such as a smaller model or other scheduling changes. Do not pre-build multiple ASR paths into v1.
 
-## 20. Privacy boundary
+## 21. Privacy boundary
 
 Raw audio remains local.
 
@@ -833,11 +992,11 @@ Future downstream cloud LLM use is outside this core's live path and will be des
 
 The planned V2 external-agent API is local-first. Raw audio is not exposed through the default API surface; external agents receive transcript text and structured metadata unless a later explicit audio-access permission model is designed.
 
-## 21. Extension points
+## 22. Extension points
 
 The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces. v1 establishes the data contract; V2 should first expose that contract through direct file/schema access, a small CLI/library, and optionally an on-demand stdio MCP adapter. HTTP remains optional for use cases that actually require a listening service.
 
-### 21.1 External post-session consumers
+### 22.1 External post-session consumers
 
 Post-session consumers are independent programs, agents, or harnesses. They may use completed session data for:
 
@@ -850,7 +1009,7 @@ Post-session consumers are independent programs, agents, or harnesses. They may 
 
 The macOS application does not own or orchestrate these workflows.
 
-### 21.2 Future interactive local integration
+### 22.2 Future interactive local integration
 
 The macOS app/local runtime may later add:
 
@@ -864,7 +1023,7 @@ The external daily-agent runtime may be implemented directly or with a harness s
 
 Neither category should require a rewrite of capture, VAD, ASR, or canonical storage.
 
-## 22. Design principles
+## 23. Design principles
 
 1. **Audio is canonical.**
 2. **No destructive transcript filtering.**
@@ -874,4 +1033,5 @@ Neither category should require a rewrite of capture, VAD, ASR, or canonical sto
 6. **One pipeline handles live and imported audio.**
 7. **Use existing upstream macOS/audio infrastructure where it saves work.**
 8. **Optimize the transcript for downstream AI utility, not post-class human reading.**
-9. **YAGNI: downstream notes and daily-agent behavior are separate later phases.**
+9. **Prefer a single native runtime when validated; keep Python as a reference/fallback rather than a mandatory shipping dependency.**
+10. **YAGNI: downstream notes and daily-agent behavior are separate later phases.**
