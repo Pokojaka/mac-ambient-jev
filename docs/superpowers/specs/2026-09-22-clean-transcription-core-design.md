@@ -309,9 +309,9 @@ Required properties:
 - reliable repeated model load/unload;
 - no obvious preprocessing, tokenizer, or decoding defects.
 
-If an ASR-quality problem appears, a Python/MLX implementation or another independent ASR may be run externally as a diagnostic/reference comparison. That reference tooling is not part of the macOS application's v1 architecture and is not shipped to users.
+If an ASR-quality or stability problem appears, first diagnose it within the native Swift path. A Python/MLX backend is not prebuilt for comparison.
 
-Only if native Swift proves fundamentally unsuitable should the design be revisited to introduce a non-Swift production backend.
+Only if the native Swift implementation proves fundamentally unsuitable or a concrete debugging need arises should a Python/MLX implementation be considered later. That would be a new design decision, not part of the v1 implementation plan.
 
 ### 8.4 Live behavior
 
@@ -1000,5 +1000,5 @@ Neither category should require a rewrite of capture, VAD, ASR, or canonical sto
 6. **One pipeline handles live and imported audio.**
 7. **Use existing upstream macOS/audio infrastructure where it saves work.**
 8. **Optimize the transcript for downstream AI utility, not post-class human reading.**
-9. **Implement v1 as a single native Swift runtime; use Python only as external diagnostic tooling if ever needed.**
+9. **Implement v1 as a single native Swift runtime; do not build a Python backend unless a later concrete need justifies it.**
 10. **YAGNI: downstream notes and daily-agent behavior are separate later phases.**
