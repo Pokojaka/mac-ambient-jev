@@ -1,0 +1,20 @@
+name: Native V1
+
+on:
+  push:
+    branches:
+      - work/clean-transcription-v1-native
+  workflow_dispatch:
+
+jobs:
+  swift-test:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: app/MacAmbientJev
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test
+        run: swift test
