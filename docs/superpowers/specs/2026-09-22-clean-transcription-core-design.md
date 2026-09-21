@@ -30,25 +30,22 @@ v1 succeeds when it can:
 10. Preserve enough metadata to re-run later processing without re-recording.
 11. Support automated, AI-based quality evaluation without requiring a human-labeled transcript corpus.
 
-## 3. Non-goals for v1
+## 3. Planned after v1
 
-v1 does not implement:
+The following capabilities are intentionally deferred until the Clean Transcription Core is stable. They are planned as later phases that consume the structured session data produced by v1:
 
 - lecture-note generation;
-- summarization, explanations, quizzes, or course-material synthesis;
-- general LLM processing in the live path;
-- wake-word-free AI response behavior;
-- VOICEVOX or other speech output;
-- long-term speaker identity;
-- permanent `SELF` identity;
-- long-term memory;
-- cloud sync;
-- manual transcript correction as a primary workflow;
-- in-lecture playback of captured audio;
-- a full waveform editor;
-- semantic importance ranking of lecture content.
+- explanations and structured study materials;
+- summaries and important-point extraction;
+- quiz and flashcard generation;
+- retrieval and Q&A across past sessions;
+- daily-life conversational-agent mode;
+- wake-word-free response decisions based on conversational context;
+- speaker verification for persistent `SELF` recognition;
+- longer-term conversational/session memory;
+- VOICEVOX or other speech output for agent responses.
 
-The original audio remains available as source data, but v1 does not expose “click transcript line to replay audio” during a lecture.
+These later features must build on the v1 transcript/session interfaces rather than requiring a redesign of audio capture, VAD, ASR, or canonical storage.
 
 ## 4. Upstream strategy
 
