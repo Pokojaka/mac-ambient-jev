@@ -88,45 +88,49 @@ macOS app / local runtime
 
 The daily-agent runtime is an integration boundary, not a fixed choice of Hermes, Pi, or any other harness. A direct custom runtime with no harness must remain possible.
 
-### 3.3 V2 external-agent integration API
+### 3.3 V2 external-agent integration
 
 External-agent integration is planned for V2, not v1.
 
-v1 must therefore stabilize the session schema, segment identity, processing metadata, and append-only transcript event model, but it does not need to run an HTTP or MCP server.
+v1 must stabilize the session schema, segment identity, processing metadata, and append-only transcript event model. It does not need to run any API daemon.
 
-V2 should expose a local, versioned, read-oriented API over the same canonical session store. The preferred layering is:
+The V2 default should remain zero-daemon:
 
 ```text
 Canonical Session Store
         |
-        +--> local HTTP API (/v1/...)
+        +--> direct read-only file/schema access
         |
-        +--> MCP adapter
+        +--> small CLI/library adapter
         |
-        +--> optional live event stream
+        +--> optional stdio MCP adapter
+               (spawned only when a client needs it)
 ```
 
-The HTTP API is the transport-neutral base for custom runtimes and harnesses that do not need MCP. The MCP adapter exposes the same data to MCP-capable agents such as Hermes without making the core depend on a specific harness.
+A post-session agent should be able to consume session data without requiring the macOS app or any server process to remain running.
 
-Initial V2 HTTP surface should be small and stable, conceptually:
+The CLI/library surface should provide narrow read operations conceptually equivalent to:
 
-- `GET /v1/capabilities`;
-- `GET /v1/sessions`;
-- `GET /v1/sessions/{session_id}`;
-- `GET /v1/sessions/{session_id}/segments` with filters for time range, content priority, acoustic scope, scene, and speaker;
-- an optional local event stream for newly completed transcript segments or scene changes.
+- list sessions;
+- inspect one session;
+- retrieve segments with filters for time range, content priority, acoustic scope, scene, and speaker;
+- materialize the current state of append-only segment events.
 
-The MCP adapter should expose session/transcript data primarily as resources and narrow retrieval/search operations as tools. It must not expose a large mutation surface.
+For MCP-capable agents, provide an optional stdio MCP adapter. The MCP client owns the subprocess lifecycle: it starts the adapter when needed and can terminate it when the connection closes. This avoids paying a permanent memory cost for an HTTP MCP daemon.
+
+The MCP adapter should expose transcript/session data primarily as read-only resources and narrow retrieval/search tools. It must not expose a broad mutation surface.
+
+A loopback HTTP/Streamable-HTTP API is a later optional transport, justified only if a real use case needs concurrent clients, live event delivery, or integration with a runtime that cannot use files, a local library, CLI, or stdio. It should not be a default always-on service.
 
 Security defaults:
 
-- bind to loopback only;
-- require a local authentication token for HTTP;
-- expose transcript text and metadata by default, not raw audio;
-- keep canonical transcript/audio data read-only to external agents unless a future explicit write contract is designed;
-- version both the wire API and the underlying session schema.
+- no listening socket in the default V2 configuration;
+- transcript text and metadata are exposed by default, not raw audio;
+- canonical transcript/audio data remain read-only to external agents unless a future explicit write contract is designed;
+- version the session schema and every external adapter contract;
+- if HTTP is later enabled, bind to loopback by default and require local authentication.
 
-This keeps Hermes, Pi, direct custom runtimes, and future harnesses interchangeable. External agents may use MCP where convenient or call the HTTP API directly.
+This keeps Hermes, Pi, direct custom runtimes, and future harnesses interchangeable without requiring a resident integration server.
 
 ## 4. Upstream strategy
 
@@ -831,7 +835,7 @@ The planned V2 external-agent API is local-first. Raw audio is not exposed throu
 
 ## 21. Extension points
 
-The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces. v1 establishes the data contract; V2 may expose that contract through a local HTTP API plus an MCP adapter.
+The core exposes durable session data and, for future interactive use, selected live transcript events through stable interfaces. v1 establishes the data contract; V2 should first expose that contract through direct file/schema access, a small CLI/library, and optionally an on-demand stdio MCP adapter. HTTP remains optional for use cases that actually require a listening service.
 
 ### 21.1 External post-session consumers
 
