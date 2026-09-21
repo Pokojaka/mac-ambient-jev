@@ -32,20 +32,52 @@ v1 succeeds when it can:
 
 ## 3. Planned after v1
 
-The following capabilities are intentionally deferred until the Clean Transcription Core is stable. They are planned as later phases that consume the structured session data produced by v1:
+Post-v1 work is split by responsibility. The Clean Transcription Core and macOS app should remain responsible for local audio/runtime concerns; higher-level interpretation and knowledge work belong to external agents such as Hermes.
+
+### 3.1 External agent layer (Hermes or equivalent)
+
+These capabilities should consume structured session/transcript data rather than be implemented inside the transcription app:
 
 - lecture-note generation;
 - explanations and structured study materials;
 - summaries and important-point extraction;
 - quiz and flashcard generation;
 - retrieval and Q&A across past sessions;
-- daily-life conversational-agent mode;
-- wake-word-free response decisions based on conversational context;
-- speaker verification for persistent `SELF` recognition;
-- longer-term conversational/session memory;
+- long-term semantic memory over sessions and conversations;
+- conversational-context interpretation for deciding whether an AI response is appropriate;
+- response planning and response-content generation.
+
+The agent layer may read `PRIMARY`, `LOW_PRIORITY`, and `BACKGROUND` data according to its own retrieval strategy. That retrieval policy is intentionally outside v1.
+
+### 3.2 Local app / transcription-runtime extensions
+
+These capabilities require access to local audio, device state, or real-time presentation and therefore belong in the macOS app or a closely coupled local runtime:
+
+- a daily-life capture mode built on the same VAD/ASR/transcript core;
+- persistent speaker verification for `SELF` recognition;
+- local routing of live transcript events to an external conversational agent;
+- receiving an agent response/action and presenting it locally;
 - VOICEVOX or other speech output for agent responses.
 
-These later features must build on the v1 transcript/session interfaces rather than requiring a redesign of audio capture, VAD, ASR, or canonical storage.
+### 3.3 Responsibility boundary for daily-life assistant mode
+
+A future daily-life assistant spans both sides:
+
+```text
+macOS app / local runtime
+  audio -> VAD -> ASR -> speaker/SELF -> structured transcript event
+                                      |
+                                      v
+                              Hermes / agent layer
+                              context + memory + retrieval
+                              should respond? + response content
+                                      |
+                                      v
+macOS app / local runtime
+  receive action/response -> optional VOICEVOX/TTS
+```
+
+The transcription app must not become the owner of lecture synthesis, long-term knowledge, retrieval, or response reasoning. Those capabilities must build on the v1 session/transcript interfaces rather than requiring a redesign of audio capture, VAD, ASR, or canonical storage.
 
 ## 4. Upstream strategy
 
@@ -748,18 +780,31 @@ Future downstream cloud LLM use is outside this core's live path and will be des
 
 ## 21. Extension points
 
-The core intentionally exposes structured session data so later phases can add:
+The core intentionally exposes structured session data and live transcript events through stable interfaces.
 
-- lecture-note and explanation agents;
+### 21.1 Agent-side extensions
+
+External agents such as Hermes may add:
+
+- lecture-note and explanation generation;
 - quiz/flashcard generation;
-- retrieval over historical sessions;
-- daily-life conversational agents;
-- speaker verification for `SELF`;
-- wake-word-free response decisions;
-- VOICEVOX or other TTS;
-- richer downstream use of `LOW_PRIORITY` and `BACKGROUND`.
+- retrieval and Q&A over historical sessions;
+- long-term semantic memory;
+- richer use of `LOW_PRIORITY` and `BACKGROUND`;
+- conversational-context reasoning, including whether a response should be produced;
+- response-content generation.
 
-These later capabilities must consume the structured transcript rather than requiring a rewrite of capture, VAD, ASR, or storage.
+### 21.2 Local-runtime extensions
+
+The macOS app/local runtime may add:
+
+- daily-life capture/session behavior;
+- speaker verification for persistent `SELF`;
+- transcript-event delivery to external agents;
+- reception of agent actions/responses;
+- VOICEVOX or other TTS/presentation of agent responses.
+
+Neither category should require a rewrite of capture, VAD, ASR, or canonical storage.
 
 ## 22. Design principles
 
