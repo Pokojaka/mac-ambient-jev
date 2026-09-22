@@ -54,7 +54,7 @@ actor NativeSessionProcessor {
         }
     }
 
-    func processRecordedSession(
+    func processTimelineSession(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
         onStatus: StatusHandler? = nil,
