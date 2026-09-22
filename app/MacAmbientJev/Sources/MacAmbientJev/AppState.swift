@@ -13,7 +13,7 @@ final class AppState: ObservableObject {
         case stopping
     }
 
-    enum StatusTone {
+    enum StatusTone: Equatable {
         case neutral
         case recording
         case warning
@@ -72,6 +72,11 @@ final class AppState: ObservableObject {
         } else {
             await startRecording()
         }
+    }
+
+    func showImportPending() {
+        guard recordingPhase == .idle else { return }
+        setStatus("音声ファイルの読み込みは次の実装段階で接続します", tone: .neutral)
     }
 
     func startRecording() async {
