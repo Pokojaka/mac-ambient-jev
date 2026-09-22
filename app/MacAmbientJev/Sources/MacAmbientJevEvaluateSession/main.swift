@@ -1,6 +1,17 @@
 import Foundation
 import MacAmbientJevCore
 
+private enum EvaluateSessionError: LocalizedError {
+    case invalidArguments
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidArguments:
+            return "manifest.json と segments.json を指定してください"
+        }
+    }
+}
+
 @main
 struct EvaluateSessionCommand {
     static func main() throws {
@@ -16,7 +27,7 @@ struct EvaluateSessionCommand {
                     """.utf8
                 )
             )
-            Foundation.exit(2)
+            throw EvaluateSessionError.invalidArguments
         }
 
         let decoder = JSONDecoder()
