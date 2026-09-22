@@ -41,6 +41,13 @@ public actor AudioFileTimelineBuilder {
             sampleRate: format.sampleRate,
             channelCount: Int(format.channelCount)
         )
+        let existing = try await writer.checkpoint()
+
+        if existing.committedFrames >= file.length {
+            return existing
+        }
+
+        file.framePosition = existing.committedFrames
 
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: format,
