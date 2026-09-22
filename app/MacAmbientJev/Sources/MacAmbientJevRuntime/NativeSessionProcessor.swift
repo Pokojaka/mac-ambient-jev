@@ -145,7 +145,7 @@ public actor NativeSessionProcessor {
                     )
                 }
                 return .fallbackRequired(
-                    "録音中の文字起こしで\(completion.failedCount)区間失敗しました"
+                    "録音中の文字起こしを完了できませんでした（失敗 \(completion.failedCount)区間、未処理 \(completion.pendingCount)区間）"
                 )
             }
 
