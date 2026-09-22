@@ -145,7 +145,6 @@ public actor NativeSessionProcessor {
             )
 
             if completion.completedCount == 0 {
-                await asr.unload()
                 if let onStatus {
                     await onStatus("発話区間は検出されませんでした")
                 }
@@ -154,8 +153,6 @@ public actor NativeSessionProcessor {
                 }
                 return .noSpeech
             }
-
-            await asr.unload()
 
             do {
                 try await runOfflineDiarization(
