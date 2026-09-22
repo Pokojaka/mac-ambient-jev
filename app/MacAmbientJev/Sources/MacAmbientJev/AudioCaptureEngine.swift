@@ -32,6 +32,7 @@ final class AudioCaptureEngine {
     private let paths: AppPaths
     private let bufferFrameCount: AVAudioFrameCount
     private let ringCapacity: Int
+    private let chunkDurationSeconds: Double
 
     private var engine: AVAudioEngine?
     private var ring: AudioBlockRing?
@@ -49,13 +50,16 @@ final class AudioCaptureEngine {
     init(
         paths: AppPaths,
         bufferFrameCount: AVAudioFrameCount = 2_048,
-        ringCapacity: Int = 64
+        ringCapacity: Int = 64,
+        chunkDurationSeconds: Double = 1.0
     ) {
         precondition(bufferFrameCount > 0)
         precondition(ringCapacity > 0)
+        precondition(chunkDurationSeconds > 0)
         self.paths = paths
         self.bufferFrameCount = bufferFrameCount
         self.ringCapacity = ringCapacity
+        self.chunkDurationSeconds = chunkDurationSeconds
     }
 
     func start(sessionID: UUID) async throws {
@@ -80,7 +84,8 @@ final class AudioCaptureEngine {
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
             sampleRate: inputFormat.sampleRate,
-            channelCount: channelCount
+            channelCount: channelCount,
+            chunkDurationSeconds: chunkDurationSeconds
         )
         let ring = AudioBlockRing(
             capacity: ringCapacity,
