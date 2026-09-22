@@ -56,9 +56,14 @@ public actor AudioFileTimelineBuilder {
             throw AudioFileTimelineBuilderError.unsupportedPCMFormat
         }
 
-        while true {
+        while file.framePosition < file.length {
+            let remainingFrames = file.length - file.framePosition
+            let requestedFrames = AVAudioFrameCount(
+                min(Int64(readFrameCount), remainingFrames)
+            )
+
             buffer.frameLength = 0
-            try file.read(into: buffer, frameCount: readFrameCount)
+            try file.read(into: buffer, frameCount: requestedFrames)
 
             let frameCount = Int(buffer.frameLength)
             guard frameCount > 0 else { break }
