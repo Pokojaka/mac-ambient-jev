@@ -138,3 +138,45 @@ func jevSceneClientLimitsContextToPreviousThreeUtterances() async throws {
     #expect(previous == ["b", "c", "d"])
     #expect(state["current_scene"] as? String == "lecture")
 }
+
+@Test
+func mixedContentCannotBeDemotedByPolicy() {
+    let policy = ContentPriorityPolicy()
+    let result = policy.apply(
+        providerDecision: ContentPriorityDecision(
+            priority: .lowPriority,
+            confidence: 0.91
+        ),
+        text: "えー、RSAでは公開鍵を使います"
+    )
+
+    #expect(result == .primary)
+}
+
+@Test
+func confidentFillerOnlyUtteranceCanBeDemotedByPolicy() {
+    let policy = ContentPriorityPolicy()
+    let result = policy.apply(
+        providerDecision: ContentPriorityDecision(
+            priority: .lowPriority,
+            confidence: 0.96
+        ),
+        text: "えー"
+    )
+
+    #expect(result == .lowPriority)
+}
+
+@Test
+func lowConfidenceDemotionFallsBackToPrimary() {
+    let policy = ContentPriorityPolicy(minimumDemotionConfidence: 0.90)
+    let result = policy.apply(
+        providerDecision: ContentPriorityDecision(
+            priority: .lowPriority,
+            confidence: 0.89
+        ),
+        text: "えー"
+    )
+
+    #expect(result == .primary)
+}
