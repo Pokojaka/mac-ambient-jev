@@ -28,36 +28,80 @@ private struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    appState.statusText = "音声ファイルを選択してください"
+                    appState.statusText = "音声ファイルの読み込みは次の実装段階で接続します"
                 } label: {
                     Label("音声ファイルを読み込む", systemImage: "doc.badge.plus")
                 }
+                .disabled(appState.isBusy || appState.isRecording)
 
                 Button {
-                    appState.statusText = "録音の準備をしています"
+                    Task {
+                        await appState.toggleRecording()
+                    }
                 } label: {
-                    Label("録音を開始", systemImage: "record.circle")
+                    Label(
+                        appState.isRecording ? "録音を停止" : "録音を開始",
+                        systemImage: appState.isRecording ? "stop.circle.fill" : "record.circle"
+                    )
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
+                .disabled(appState.isBusy)
             }
         }
     }
 
     private var statusBar: some View {
         HStack(spacing: AppSpacing.sm) {
-            Image(systemName: "circle.fill")
-                .font(.system(size: AppIconSize.small))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            statusIcon
 
             Text(appState.statusText)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(statusTextStyle)
+                .lineLimit(2)
 
             Spacer()
+
+            if appState.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("処理中")
+            }
         }
         .padding(.horizontal, AppSpacing.lg)
         .padding(.vertical, AppSpacing.sm)
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch appState.statusTone {
+        case .neutral:
+            Image(systemName: "circle.fill")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        case .recording:
+            Image(systemName: "record.circle.fill")
+                .foregroundStyle(.red)
+                .accessibilityLabel("録音中")
+        case .warning:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("警告")
+        case .error:
+            Image(systemName: "xmark.octagon.fill")
+                .foregroundStyle(.red)
+                .accessibilityLabel("エラー")
+        }
+    }
+
+    private var statusTextStyle: some ShapeStyle {
+        switch appState.statusTone {
+        case .neutral, .recording:
+            AnyShapeStyle(Color.secondary)
+        case .warning:
+            AnyShapeStyle(Color.primary)
+        case .error:
+            AnyShapeStyle(Color.primary)
+        }
     }
 }
