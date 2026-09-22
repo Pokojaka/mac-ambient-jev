@@ -70,6 +70,52 @@ public struct ProvisionalPriorityDecision: Sendable, Equatable {
     }
 }
 
+
+public struct ContentPriorityPolicy: Sendable {
+    public let minimumDemotionConfidence: Double
+
+    private static let fillerOnlyTokens: Set<String> = [
+        "えー",
+        "ええ",
+        "あー",
+        "ああ",
+        "えっと",
+        "えーと",
+        "ええと",
+        "うーん",
+        "んー"
+    ]
+
+    public init(minimumDemotionConfidence: Double = 0.90) {
+        precondition((0...1).contains(minimumDemotionConfidence))
+        self.minimumDemotionConfidence = minimumDemotionConfidence
+    }
+
+    public func apply(
+        providerDecision: ContentPriorityDecision,
+        text: String
+    ) -> ContentPriority {
+        guard providerDecision.priority == .lowPriority,
+              providerDecision.confidence >= minimumDemotionConfidence,
+              isFillerOnly(text) else {
+            return .primary
+        }
+
+        return .lowPriority
+    }
+
+    private func isFillerOnly(_ text: String) -> Bool {
+        let separators = CharacterSet.whitespacesAndNewlines
+            .union(.punctuationCharacters)
+        let tokens = text
+            .components(separatedBy: separators)
+            .filter { !$0.isEmpty }
+
+        return !tokens.isEmpty
+            && tokens.allSatisfy(Self.fillerOnlyTokens.contains)
+    }
+}
+
 public actor JevDecisionCoordinator {
     private let provider: any DecisionProvider
 
