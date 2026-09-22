@@ -90,6 +90,12 @@ struct LiveTranscriptView: View {
                     Text(speaker)
                 }
 
+                sceneLabel(row.scene)
+
+                if let scope = scopeLabel(row.scopeSpans) {
+                    Text(scope)
+                }
+
                 if row.isLowPriority {
                     Label("低優先度", systemImage: "arrow.down.circle")
                         .help("意味分類により優先度が低いと判定された発話です")
@@ -99,6 +105,44 @@ struct LiveTranscriptView: View {
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func sceneLabel(_ scene: SceneState) -> some View {
+        switch scene {
+        case .lecture:
+            Label("講義", systemImage: "person.fill")
+        case .discussion:
+            Label("討論", systemImage: "person.2.fill")
+        case .discussionCandidate:
+            Label("討論候補", systemImage: "person.2")
+        case .lectureCandidate:
+            Label("講義候補", systemImage: "person")
+        case .unknown:
+            EmptyView()
+        }
+    }
+
+    private func scopeLabel(
+        _ spans: [MaterializedScopeSpan]
+    ) -> String? {
+        guard !spans.isEmpty else { return nil }
+
+        let scopes = Set(spans.map(\.scope))
+        if scopes.count > 1 {
+            return "音響範囲: 混在"
+        }
+
+        switch scopes.first {
+        case .near:
+            return "音響範囲: 近傍"
+        case .background:
+            return "音響範囲: 背景"
+        case .unknown:
+            return "音響範囲: 未判定"
+        case nil:
+            return nil
+        }
     }
 
     private func formatTime(_ milliseconds: Int64) -> String {
