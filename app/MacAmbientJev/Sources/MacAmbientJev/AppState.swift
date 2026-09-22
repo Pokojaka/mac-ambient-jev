@@ -27,6 +27,7 @@ final class AppState: ObservableObject {
     private enum PendingProcessing {
         case imported(sessionID: UUID, originalURL: URL)
         case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
+        case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
         case resumeASR(
             sessionID: UUID,
             checkpoint: AudioCheckpoint,
@@ -42,6 +43,11 @@ final class AppState: ObservableObject {
             checkpoint: AudioCheckpoint,
             plan: ASRRecoveryPlan
         )
+    }
+
+    private struct LiveASRBatch {
+        let segments: [SegmentReference]
+        let checkpoint: AudioCheckpoint
     }
 
     @Published private(set) var statusText = UserFacingStatus.idle.text
@@ -69,6 +75,10 @@ final class AppState: ObservableObject {
     private var liveVADTask: Task<Void, Never>?
     private var liveVADSegmentCount = 0
     private var liveVADFailureText: String?
+
+    private var liveASRQueues: [UUID: [LiveASRBatch]] = [:]
+    private var liveASRTasks: [UUID: Task<Void, Never>] = [:]
+    private var liveASRFailures: [UUID: String] = [:]
 
     init(fileManager: FileManager = .default) {
         let paths = AppPaths.systemDefault(fileManager: fileManager)
@@ -281,6 +291,11 @@ final class AppState: ObservableObject {
                         checkpoint: checkpoint
                     )
                     liveVADSegmentCount = progress.totalSegmentCount
+                    enqueueLiveASR(
+                        sessionID: sessionID,
+                        segments: progress.emittedSegments,
+                        checkpoint: checkpoint
+                    )
                 } catch {
                     liveVADFailureText = error.localizedDescription
                 }
@@ -301,7 +316,7 @@ final class AppState: ObservableObject {
                 )
             } else if let liveVADFailureText {
                 setCaptureStatus(
-                    "録音を保存しました。発話検出の一部に失敗しました: \(liveVADFailureText)",
+                    "録音を保存しました。発話検出を後で再実行します: \(liveVADFailureText)",
                     tone: .warning
                 )
             } else {
@@ -314,20 +329,37 @@ final class AppState: ObservableObject {
                 )
             }
 
+            if liveVADFailureText == nil {
+                enqueueProcessing(
+                    .finishLive(
+                        sessionID: sessionID,
+                        checkpoint: checkpoint
+                    )
+                )
+            } else {
+                await sessionProcessor.cancelLiveTranscription(
+                    sessionID: sessionID
+                )
+                cleanupLiveASRState(sessionID: sessionID)
+                enqueueProcessing(
+                    .timeline(
+                        sessionID: sessionID,
+                        checkpoint: checkpoint
+                    )
+                )
+            }
+
             liveVADFailureText = nil
             liveVADSegmentCount = 0
-
-            enqueueProcessing(
-                .timeline(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint
-                )
-            )
         } catch {
             await stopLiveVADPolling()
             liveVADSession = nil
             liveVADFailureText = nil
             liveVADSegmentCount = 0
+            await sessionProcessor.cancelLiveTranscription(
+                sessionID: sessionID
+            )
+            cleanupLiveASRState(sessionID: sessionID)
             recordingSessionID = nil
             recordingPhase = .idle
             setCaptureStatus(error.localizedDescription, tone: .error)
@@ -343,10 +375,25 @@ final class AppState: ObservableObject {
 
         liveVADFailureText = nil
         liveVADSegmentCount = 0
-        liveVADSession = try await LiveVADSession.make(
+        let vadSession = try await LiveVADSession.make(
             processingDirectory: directory,
             initialCheckpoint: checkpoint
         )
+        liveVADSession = vadSession
+
+        liveASRQueues[sessionID] = []
+        liveASRFailures[sessionID] = nil
+        do {
+            _ = try await sessionProcessor.startLiveTranscription(
+                sessionID: sessionID,
+                segmentationRunID: vadSession.segmentationRunID,
+                sampleRate: checkpoint.sampleRate
+            )
+        } catch {
+            liveASRFailures[sessionID] = error.localizedDescription
+            processingStatusText =
+                "録音は継続しています。ライブ文字起こしを開始できませんでした: \(error.localizedDescription)"
+        }
 
         liveVADTask?.cancel()
         liveVADTask = Task { [weak self] in
@@ -378,6 +425,11 @@ final class AppState: ObservableObject {
                 liveVADSegmentCount = progress.totalSegmentCount
 
                 if !progress.emittedSegments.isEmpty {
+                    enqueueLiveASR(
+                        sessionID: sessionID,
+                        segments: progress.emittedSegments,
+                        checkpoint: checkpoint
+                    )
                     processingStatusText =
                         "録音中に発話を検出しています（\(progress.totalSegmentCount)区間）"
                 }
@@ -395,6 +447,92 @@ final class AppState: ObservableObject {
         liveVADTask.cancel()
         _ = await liveVADTask.value
         self.liveVADTask = nil
+    }
+
+    private func enqueueLiveASR(
+        sessionID: UUID,
+        segments: [SegmentReference],
+        checkpoint: AudioCheckpoint
+    ) {
+        guard !segments.isEmpty,
+              liveASRFailures[sessionID] == nil else {
+            return
+        }
+
+        liveASRQueues[sessionID, default: []].append(
+            LiveASRBatch(
+                segments: segments,
+                checkpoint: checkpoint
+            )
+        )
+
+        guard liveASRTasks[sessionID] == nil else { return }
+        liveASRTasks[sessionID] = Task { [weak self] in
+            await self?.drainLiveASRQueue(sessionID: sessionID)
+        }
+    }
+
+    private func drainLiveASRQueue(sessionID: UUID) async {
+        while liveASRFailures[sessionID] == nil,
+              var queue = liveASRQueues[sessionID],
+              !queue.isEmpty {
+            let batch = queue.removeFirst()
+            liveASRQueues[sessionID] = queue
+
+            let statusHandler: NativeSessionProcessor.StatusHandler = {
+                [weak self] text in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.processingStatusText = text
+                    self.transcriptViewModel.setStatus(text)
+                }
+            }
+            let updateHandler: NativeSessionProcessor.UpdateHandler = {
+                [weak self] segments, state in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.processingState = state
+                    self.transcriptViewModel.update(segments: segments)
+                }
+            }
+
+            do {
+                _ = try await sessionProcessor.processLiveSegments(
+                    sessionID: sessionID,
+                    segments: batch.segments,
+                    checkpoint: batch.checkpoint,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            } catch {
+                liveASRFailures[sessionID] = error.localizedDescription
+                liveASRQueues[sessionID] = []
+                processingStatusText =
+                    "録音は継続しています。ライブ文字起こしを停止しました: \(error.localizedDescription)"
+            }
+        }
+
+        liveASRTasks[sessionID] = nil
+
+        if liveASRFailures[sessionID] == nil,
+           let queue = liveASRQueues[sessionID],
+           !queue.isEmpty {
+            liveASRTasks[sessionID] = Task { [weak self] in
+                await self?.drainLiveASRQueue(sessionID: sessionID)
+            }
+        }
+    }
+
+    private func waitForLiveASRDrain(sessionID: UUID) async {
+        if let task = liveASRTasks[sessionID] {
+            _ = await task.value
+        }
+    }
+
+    private func cleanupLiveASRState(sessionID: UUID) {
+        liveASRQueues[sessionID] = nil
+        liveASRTasks[sessionID] = nil
+        liveASRFailures[sessionID] = nil
     }
 
     private func enqueueProcessing(_ request: PendingProcessing) {
@@ -448,6 +586,44 @@ final class AppState: ObservableObject {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
+            case .finishLive(let sessionID, let checkpoint):
+                await waitForLiveASRDrain(sessionID: sessionID)
+
+                if let failure = liveASRFailures[sessionID] {
+                    await sessionProcessor.cancelLiveTranscription(
+                        sessionID: sessionID
+                    )
+                    cleanupLiveASRState(sessionID: sessionID)
+                    processingStatusText =
+                        "ライブ文字起こしを再処理します: \(failure)"
+                    pendingProcessing.insert(
+                        .timeline(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint
+                        ),
+                        at: 0
+                    )
+                } else {
+                    let result = await sessionProcessor.finishLiveTranscription(
+                        sessionID: sessionID,
+                        checkpoint: checkpoint,
+                        onStatus: statusHandler,
+                        onUpdate: updateHandler
+                    )
+                    cleanupLiveASRState(sessionID: sessionID)
+
+                    if case .fallbackRequired(let reason) = result {
+                        processingStatusText =
+                            "録音後に文字起こしを再実行します: \(reason)"
+                        pendingProcessing.insert(
+                            .timeline(
+                                sessionID: sessionID,
+                                checkpoint: checkpoint
+                            ),
+                            at: 0
+                        )
+                    }
+                }
             case .resumeASR(let sessionID, let checkpoint, let plan):
                 await sessionProcessor.resumePendingASRSession(
                     sessionID: sessionID,
