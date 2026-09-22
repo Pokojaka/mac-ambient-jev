@@ -150,3 +150,143 @@ func pipelineKeepsFailedASRSeparateFromAudioAndSegmentEvents() async throws {
     #expect(log.contains(#""event_type":"segment.created""#))
     #expect(log.contains(#""event_type":"asr.failed""#))
 }
+
+
+@Test
+func resumePendingASRDoesNotDuplicateRegisteredOrCompletedEvents() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let audioDirectory = root.appending(path: "audio/processing", directoryHint: .isDirectory)
+    let audioWriter = try DurableAudioWriter(
+        directory: audioDirectory,
+        sampleRate: 10,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    try await audioWriter.append(samples: Array(repeating: 0.25, count: 20))
+    let checkpoint = try await audioWriter.finish()
+
+    let sessionID = UUID()
+    let segmentationRunID = "seg_resume"
+    let asrRunID = "asr_resume"
+    let writer = try SessionWriter(sessionURL: root)
+
+    let firstCreated = try await writer.append(EventDraft(
+        eventType: "segment.created",
+        sessionID: sessionID,
+        segmentationRunID: segmentationRunID,
+        segmentID: "seg_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 10,
+        payload: EmptyPayload()
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "asr.pending",
+        sessionID: sessionID,
+        processingRunID: asrRunID,
+        segmentationRunID: segmentationRunID,
+        segmentID: "seg_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 10,
+        payload: EmptyPayload()
+    ))
+    let secondCreated = try await writer.append(EventDraft(
+        eventType: "segment.created",
+        sessionID: sessionID,
+        segmentationRunID: segmentationRunID,
+        segmentID: "seg_000002",
+        sourceStartFrame: 10,
+        sourceEndFrame: 20,
+        payload: EmptyPayload()
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "asr.pending",
+        sessionID: sessionID,
+        processingRunID: asrRunID,
+        segmentationRunID: segmentationRunID,
+        segmentID: "seg_000002",
+        sourceStartFrame: 10,
+        sourceEndFrame: 20,
+        payload: EmptyPayload()
+    ))
+    let firstCompleted = try await writer.append(EventDraft(
+        eventType: "asr.completed",
+        sessionID: sessionID,
+        processingRunID: asrRunID,
+        segmentationRunID: segmentationRunID,
+        segmentID: "seg_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 10,
+        payload: ASRCompletedEventPayload(
+            text: "一つ目",
+            detectedLanguage: "ja",
+            engine: "qwen3-asr",
+            model: "test"
+        )
+    ))
+
+    let existingEvents: [TranscriptEvent] = [
+        .segmentCreated(
+            seq: firstCreated.eventSeq,
+            segmentationRunID: segmentationRunID,
+            segmentID: "seg_000001",
+            startFrame: 0,
+            endFrame: 10
+        ),
+        .segmentCreated(
+            seq: secondCreated.eventSeq,
+            segmentationRunID: segmentationRunID,
+            segmentID: "seg_000002",
+            startFrame: 10,
+            endFrame: 20
+        ),
+        .asrCompleted(
+            seq: firstCompleted.eventSeq,
+            runID: asrRunID,
+            segmentationRunID: segmentationRunID,
+            segmentID: "seg_000001",
+            text: "一つ目",
+            detectedLanguage: "ja"
+        )
+    ]
+
+    let state = SessionProcessingState(captureState: .stopped)
+    let coordinator = PipelineCoordinator(
+        sessionID: sessionID,
+        segmentationRunID: segmentationRunID,
+        asrRunID: asrRunID,
+        writer: writer,
+        asr: SuccessfulPipelineASR(),
+        loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+            directory: audioDirectory,
+            checkpoint: checkpoint
+        )),
+        materializer: TranscriptMaterializer(sampleRate: 10),
+        state: state
+    )
+
+    let result = await coordinator.resumePendingASR(
+        segments: [
+            SegmentReference(
+                segmentationRunID: segmentationRunID,
+                segmentID: "seg_000002",
+                startFrame: 10,
+                endFrame: 20
+            )
+        ],
+        existingEvents: existingEvents
+    )
+
+    #expect(result.completedCount == 2)
+    #expect(result.failedCount == 0)
+    #expect(result.materializedSegments.count == 2)
+
+    let log = try String(
+        contentsOf: root.appending(path: "events.jsonl"),
+        encoding: .utf8
+    )
+    #expect(log.components(separatedBy: #""event_type":"segment.created""#).count - 1 == 2)
+    #expect(log.components(separatedBy: #""event_type":"asr.pending""#).count - 1 == 2)
+    #expect(log.components(separatedBy: #""event_type":"asr.completed""#).count - 1 == 2)
+}
