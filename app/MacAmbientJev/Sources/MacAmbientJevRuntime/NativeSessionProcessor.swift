@@ -73,6 +73,17 @@ public actor NativeSessionProcessor {
     }
 
     @discardableResult
+    public func registerLiveSegments(
+        sessionID: UUID,
+        segments: [SegmentReference]
+    ) async throws -> LiveASRProgress {
+        guard let liveSession = liveASRSessions[sessionID] else {
+            throw NativeSessionProcessorError.liveASRSessionNotStarted
+        }
+        return try await liveSession.register(segments: segments)
+    }
+
+    @discardableResult
     public func processLiveSegments(
         sessionID: UUID,
         segments: [SegmentReference],
