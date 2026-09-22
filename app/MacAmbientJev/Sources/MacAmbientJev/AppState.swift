@@ -77,11 +77,9 @@ final class AppState: ObservableObject {
     private var processingTask: Task<Void, Never>?
 
     private var liveVADSession: LiveVADSession?
-    private var liveASRSession: LiveASRSession?
     private var liveVADTask: Task<Void, Never>?
     private var liveVADSegmentCount = 0
     private var liveVADFailureText: String?
-    private var liveASRFailureText: String?
 
     private var liveASRQueues: [UUID: [LiveASRBatch]] = [:]
     private var liveASRTasks: [UUID: Task<Void, Never>] = [:]
@@ -398,14 +396,11 @@ final class AppState: ObservableObject {
             }
 
             liveVADFailureText = nil
-            liveASRFailureText = nil
             liveVADSegmentCount = 0
         } catch {
             await stopLiveVADPolling()
             liveVADSession = nil
-            liveASRSession = nil
             liveVADFailureText = nil
-            liveASRFailureText = nil
             liveVADSegmentCount = 0
             await sessionProcessor.cancelLiveTranscription(
                 sessionID: sessionID
