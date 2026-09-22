@@ -29,12 +29,68 @@ public enum EventLogRecoveryAnalyzerError: Error, Equatable {
     case malformedEvent
 }
 
+private struct PendingASREvent {
+    let seq: UInt64
+    let asrRunID: String
+    let segmentationRunID: String
+    let segmentID: String
+    let startFrame: Int64
+    let endFrame: Int64
+}
+
 public struct EventLogRecoveryAnalyzer: Sendable {
     public init() {}
 
     public func latestASRPlan(
         lines: [Data]
     ) throws -> ASRRecoveryPlan? {
+        let dictionaries = try decode(lines: lines)
+        let pendingEvents = pendingEvents(in: dictionaries)
+
+        guard let latestPending = pendingEvents.max(
+            by: { $0.seq < $1.seq }
+        ) else {
+            return nil
+        }
+
+        return makePlan(
+            asrRunID: latestPending.asrRunID,
+            segmentationRunID: latestPending.segmentationRunID,
+            dictionaries: dictionaries,
+            pendingEvents: pendingEvents
+        )
+    }
+
+    /// Reconstructs one specific ASR run even when a newer failed run exists.
+    ///
+    /// Active-run recovery must be anchored to the run selected in processing
+    /// metadata rather than whichever reprocessing attempt happened most
+    /// recently.
+    public func asrPlan(
+        runID: String,
+        lines: [Data]
+    ) throws -> ASRRecoveryPlan? {
+        let dictionaries = try decode(lines: lines)
+        let pendingEvents = pendingEvents(in: dictionaries)
+
+        guard let latestPending = pendingEvents
+            .filter({ $0.asrRunID == runID })
+            .max(by: { $0.seq < $1.seq })
+        else {
+            return nil
+        }
+
+        return makePlan(
+            asrRunID: runID,
+            segmentationRunID: latestPending.segmentationRunID,
+            dictionaries: dictionaries,
+            pendingEvents: pendingEvents
+        )
+    }
+
+    private func decode(
+        lines: [Data]
+    ) throws -> [[String: Any]] {
         var dictionaries: [[String: Any]] = []
         dictionaries.reserveCapacity(lines.count)
 
@@ -47,79 +103,93 @@ public struct EventLogRecoveryAnalyzer: Sendable {
             dictionaries.append(object)
         }
 
-        let pendingEvents = dictionaries.compactMap { event -> (
-            seq: UInt64,
-            asrRunID: String,
-            segmentationRunID: String,
-            segmentID: String,
-            startFrame: Int64,
-            endFrame: Int64
-        )? in
+        return dictionaries
+    }
+
+    private func pendingEvents(
+        in dictionaries: [[String: Any]]
+    ) -> [PendingASREvent] {
+        dictionaries.compactMap { event in
             guard event["event_type"] as? String == "asr.pending",
                   let seq = uint64(event["event_seq"]),
-                  let asrRunID = event["processing_run_id"] as? String,
-                  let segmentationRunID = event["segmentation_run_id"] as? String,
+                  let asrRunID =
+                    event["processing_run_id"] as? String,
+                  let segmentationRunID =
+                    event["segmentation_run_id"] as? String,
                   let segmentID = event["segment_id"] as? String,
-                  let startFrame = int64(event["source_start_frame"]),
-                  let endFrame = int64(event["source_end_frame"])
+                  let startFrame =
+                    int64(event["source_start_frame"]),
+                  let endFrame =
+                    int64(event["source_end_frame"])
             else {
                 return nil
             }
 
-            return (
-                seq,
-                asrRunID,
-                segmentationRunID,
-                segmentID,
-                startFrame,
-                endFrame
+            return PendingASREvent(
+                seq: seq,
+                asrRunID: asrRunID,
+                segmentationRunID: segmentationRunID,
+                segmentID: segmentID,
+                startFrame: startFrame,
+                endFrame: endFrame
             )
         }
+    }
 
-        guard let latestPending = pendingEvents.max(
-            by: { $0.seq < $1.seq }
-        ) else {
-            return nil
-        }
-
-        let asrRunID = latestPending.asrRunID
-        let segmentationRunID = latestPending.segmentationRunID
+    private func makePlan(
+        asrRunID: String,
+        segmentationRunID: String,
+        dictionaries: [[String: Any]],
+        pendingEvents: [PendingASREvent]
+    ) -> ASRRecoveryPlan {
         let runPending = pendingEvents.filter {
             $0.asrRunID == asrRunID
                 && $0.segmentationRunID == segmentationRunID
         }
 
-        let completedIDs = Set(dictionaries.compactMap { event -> String? in
-            guard event["event_type"] as? String == "asr.completed",
-                  event["processing_run_id"] as? String == asrRunID,
-                  event["segmentation_run_id"] as? String == segmentationRunID
-            else {
-                return nil
+        let completedIDs = Set(
+            dictionaries.compactMap { event -> String? in
+                guard event["event_type"] as? String
+                        == "asr.completed",
+                      event["processing_run_id"] as? String
+                        == asrRunID,
+                      event["segmentation_run_id"] as? String
+                        == segmentationRunID
+                else {
+                    return nil
+                }
+                return event["segment_id"] as? String
             }
-            return event["segment_id"] as? String
-        })
+        )
 
-        let failedIDs = Set(dictionaries.compactMap { event -> String? in
-            guard event["event_type"] as? String == "asr.failed",
-                  event["processing_run_id"] as? String == asrRunID,
-                  event["segmentation_run_id"] as? String == segmentationRunID
-            else {
-                return nil
+        let failedIDs = Set(
+            dictionaries.compactMap { event -> String? in
+                guard event["event_type"] as? String
+                        == "asr.failed",
+                      event["processing_run_id"] as? String
+                        == asrRunID,
+                      event["segmentation_run_id"] as? String
+                        == segmentationRunID
+                else {
+                    return nil
+                }
+                return event["segment_id"] as? String
             }
-            return event["segment_id"] as? String
-        })
+        )
 
         var seenPendingIDs = Set<String>()
         let pendingSegments = runPending
             .sorted { $0.seq < $1.seq }
             .compactMap { event -> SegmentReference? in
-                guard !seenPendingIDs.contains(event.segmentID) else {
+                guard !seenPendingIDs.contains(event.segmentID)
+                else {
                     return nil
                 }
                 seenPendingIDs.insert(event.segmentID)
 
                 guard !completedIDs.contains(event.segmentID),
-                      !failedIDs.contains(event.segmentID) else {
+                      !failedIDs.contains(event.segmentID)
+                else {
                     return nil
                 }
 
@@ -142,10 +212,14 @@ public struct EventLogRecoveryAnalyzer: Sendable {
 
             switch eventType {
             case "segment.created":
-                guard event["segmentation_run_id"] as? String == segmentationRunID,
-                      let segmentID = event["segment_id"] as? String,
-                      let startFrame = int64(event["source_start_frame"]),
-                      let endFrame = int64(event["source_end_frame"])
+                guard event["segmentation_run_id"] as? String
+                        == segmentationRunID,
+                      let segmentID =
+                        event["segment_id"] as? String,
+                      let startFrame =
+                        int64(event["source_start_frame"]),
+                      let endFrame =
+                        int64(event["source_end_frame"])
                 else {
                     continue
                 }
@@ -159,10 +233,14 @@ public struct EventLogRecoveryAnalyzer: Sendable {
                 ))
 
             case "asr.completed":
-                guard event["processing_run_id"] as? String == asrRunID,
-                      event["segmentation_run_id"] as? String == segmentationRunID,
-                      let segmentID = event["segment_id"] as? String,
-                      let payload = event["payload"] as? [String: Any],
+                guard event["processing_run_id"] as? String
+                        == asrRunID,
+                      event["segmentation_run_id"] as? String
+                        == segmentationRunID,
+                      let segmentID =
+                        event["segment_id"] as? String,
+                      let payload =
+                        event["payload"] as? [String: Any],
                       let text = payload["text"] as? String
                 else {
                     continue
@@ -174,7 +252,8 @@ public struct EventLogRecoveryAnalyzer: Sendable {
                     segmentationRunID: segmentationRunID,
                     segmentID: segmentID,
                     text: text,
-                    detectedLanguage: payload["detected_language"] as? String
+                    detectedLanguage:
+                        payload["detected_language"] as? String
                 ))
 
             default:
@@ -183,10 +262,14 @@ public struct EventLogRecoveryAnalyzer: Sendable {
         }
 
         let runSucceeded = dictionaries.contains { event in
-            guard event["event_type"] as? String == "processing.run.completed",
-                  event["processing_run_id"] as? String == asrRunID,
-                  let payload = event["payload"] as? [String: Any],
-                  payload["stage"] as? String == ProcessingStage.asr.rawValue
+            guard event["event_type"] as? String
+                    == "processing.run.completed",
+                  event["processing_run_id"] as? String
+                    == asrRunID,
+                  let payload =
+                    event["payload"] as? [String: Any],
+                  payload["stage"] as? String
+                    == ProcessingStage.asr.rawValue
             else {
                 return false
             }
