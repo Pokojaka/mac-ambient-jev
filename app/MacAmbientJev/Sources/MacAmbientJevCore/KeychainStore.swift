@@ -19,18 +19,9 @@ public struct KeychainStore: SecretStore, Sendable {
     public func save(_ value: String, account: String) throws {
         let data = Data(value.utf8)
 
-        var query = baseQuery(account: account)
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] =
-            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-
         let updateStatus = SecItemUpdate(
             baseQuery(account: account) as CFDictionary,
-            [
-                kSecValueData as String: data,
-                kSecAttrAccessible as String:
-                    kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            ] as CFDictionary
+            [kSecValueData as String: data] as CFDictionary
         )
 
         if updateStatus == errSecSuccess {
@@ -40,6 +31,11 @@ public struct KeychainStore: SecretStore, Sendable {
         guard updateStatus == errSecItemNotFound else {
             throw KeychainStoreError(status: updateStatus)
         }
+
+        var query = baseQuery(account: account)
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] =
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
         let addStatus = SecItemAdd(query as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
@@ -98,7 +94,7 @@ public struct KeychainStoreError: LocalizedError, Sendable {
     }
 
     public var errorDescription: String? {
-        if let message = SecCopyErrorMessageString(status, nil) as String? {
+        if let message = SecCopyErrorMessageString(status, nil) {
             return "Keychain の操作に失敗しました: \(message)"
         }
         return "Keychain の操作に失敗しました（OSStatus \(status)）"
