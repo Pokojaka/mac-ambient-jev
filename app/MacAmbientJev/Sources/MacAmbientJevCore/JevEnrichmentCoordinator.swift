@@ -61,7 +61,8 @@ public actor JevEnrichmentCoordinator {
 
     public func process(
         existingEvents: [TranscriptEvent],
-        activeRuns: ActiveRuns
+        activeRuns: ActiveRuns,
+        retryOnlySegmentIDs: Set<String>? = nil
     ) async throws -> JevEnrichmentBatchResult {
         let baseSegments = materializer.materialize(
             events: existingEvents,
@@ -72,15 +73,37 @@ public actor JevEnrichmentCoordinator {
         var retryPendingSegmentIDs: [String] = []
 
         for segment in baseSegments {
-            let result = await decisions.classify(text: segment.text)
+            let shouldCallProvider = retryOnlySegmentIDs == nil
+                || retryOnlySegmentIDs?.contains(segment.segmentID) == true
 
-            let payload = ContentPriorityEventPayload(
-                priority: result.visiblePriority,
-                confidence: result.decision?.confidence,
-                model: result.decision?.model,
-                inputTokens: result.decision?.inputTokens,
-                needsRetry: result.needsRetry
-            )
+            let payload: ContentPriorityEventPayload
+            if shouldCallProvider {
+                let result = await decisions.classify(
+                    text: segment.text
+                )
+                payload = ContentPriorityEventPayload(
+                    priority: result.visiblePriority,
+                    confidence: result.decision?.confidence,
+                    model: result.decision?.model,
+                    inputTokens: result.decision?.inputTokens,
+                    needsRetry: result.needsRetry
+                )
+
+                if result.needsRetry {
+                    retryPendingSegmentIDs.append(segment.segmentID)
+                }
+            } else {
+                // A retry run becomes the new active run, so copy the
+                // previously materialized value for segments that do not need
+                // another API request.
+                payload = ContentPriorityEventPayload(
+                    priority: segment.contentPriority ?? .primary,
+                    confidence: nil,
+                    model: nil,
+                    inputTokens: nil,
+                    needsRetry: false
+                )
+            }
 
             let envelope = try await writer.append(EventDraft(
                 eventType: "content_priority.assigned",
@@ -93,11 +116,10 @@ public actor JevEnrichmentCoordinator {
                 seq: envelope.eventSeq,
                 runID: runID,
                 segmentID: segment.segmentID,
-                priority: result.visiblePriority
+                priority: payload.priority
             ))
 
-            if result.needsRetry {
-                retryPendingSegmentIDs.append(segment.segmentID)
+            if payload.needsRetry {
                 _ = try await writer.append(EventDraft(
                     eventType: "content_priority.pending_retry",
                     sessionID: sessionID,
