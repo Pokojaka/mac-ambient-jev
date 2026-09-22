@@ -9,6 +9,27 @@ public struct AppPaths: Sendable {
         self.cacheURL = cacheURL
     }
 
+    public static func systemDefault(
+        fileManager: FileManager = .default
+    ) -> AppPaths {
+        let applicationSupport = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? fileManager.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support", directoryHint: .isDirectory)
+
+        let cache = fileManager.urls(
+            for: .cachesDirectory,
+            in: .userDomainMask
+        ).first ?? fileManager.homeDirectoryForCurrentUser
+            .appending(path: "Library/Caches", directoryHint: .isDirectory)
+
+        return AppPaths(
+            applicationSupportURL: applicationSupport,
+            cacheURL: cache
+        )
+    }
+
     public var root: URL {
         applicationSupportURL
             .appending(path: "mac-ambient-jev", directoryHint: .isDirectory)
