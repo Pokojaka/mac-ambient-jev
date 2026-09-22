@@ -135,7 +135,6 @@ public struct SessionRecoveryScanner: Sendable {
 
     private func decodeManifest(at url: URL) throws -> SessionManifest {
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(
             SessionManifest.self,
