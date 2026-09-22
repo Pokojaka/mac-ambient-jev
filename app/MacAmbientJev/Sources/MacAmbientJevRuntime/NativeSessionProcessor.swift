@@ -65,7 +65,7 @@ public actor NativeSessionProcessor {
             segmentationRunID: segmentationRunID,
             asrRunID: asrRunID,
             processingDirectory: processingDirectory(for: sessionID),
-            writer: SessionWriter(sessionURL: sessionURL(for: sessionID)),
+            writer: try SessionWriter(sessionURL: sessionURL(for: sessionID)),
             asr: asr,
             sampleRate: sampleRate
         )
