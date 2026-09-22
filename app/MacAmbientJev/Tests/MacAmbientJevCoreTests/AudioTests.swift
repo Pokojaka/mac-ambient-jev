@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import MacAmbientJevCore
@@ -194,4 +195,48 @@ func durableWriterResumesFromPersistedCheckpointWithoutOverwritingChunks() async
         Array(repeating: Float(1), count: 10)
         + Array(repeating: Float(2), count: 10)
     ))
+}
+
+
+@Test
+func audioFileTimelineBuilderCreatesDiskBackedProcessingTimeline() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let source = root.appending(path: "fixture.caf")
+    let format = AVAudioFormat(
+        standardFormatWithSampleRate: 8_000,
+        channels: 1
+    )!
+    let file = try AVAudioFile(
+        forWriting: source,
+        settings: format.settings
+    )
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12)!
+    buffer.frameLength = 12
+    for index in 0..<12 {
+        buffer.floatChannelData![0][index] = Float(index) / 12
+    }
+    try file.write(from: buffer)
+
+    let processingDirectory = root.appending(
+        path: "processing",
+        directoryHint: .isDirectory
+    )
+    let checkpoint = try await AudioFileTimelineBuilder(
+        readFrameCount: 4
+    ).build(from: source, into: processingDirectory)
+
+    #expect(checkpoint.sampleRate == 8_000)
+    #expect(checkpoint.channelCount == 1)
+    #expect(checkpoint.committedFrames == 12)
+
+    let samples = try ProcessingTimelineReader(
+        directory: processingDirectory,
+        checkpoint: checkpoint
+    ).readSamples(frameRange: 0..<12)
+
+    #expect(samples.count == 12)
+    #expect(abs(samples[6] - 0.5) < 0.0001)
 }
