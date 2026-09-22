@@ -12,6 +12,7 @@ public enum UserFacingStatus: Sendable, Equatable {
     case asrBacklogged
     case preparingDiarization
     case diarizing
+    case analyzingScene
     case jevDeferred
 
     public var text: String {
@@ -38,6 +39,8 @@ public enum UserFacingStatus: Sendable, Equatable {
             return "話者分離を準備しています"
         case .diarizing:
             return "話者を分離しています"
+        case .analyzingScene:
+            return "会話の場面を判定しています"
         case .jevDeferred:
             return "意味分類を後で再試行します"
         }
