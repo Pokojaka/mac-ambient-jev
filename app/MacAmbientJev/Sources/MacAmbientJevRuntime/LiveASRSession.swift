@@ -226,7 +226,6 @@ public actor LiveASRSession {
             return currentCompletion()
         }
 
-        finalized = true
         let pendingCount =
             registeredSegmentIDs.subtracting(finishedSegmentIDs).count
         _ = try await writer.append(EventDraft(
@@ -240,6 +239,7 @@ public actor LiveASRSession {
                 failedCount: failedCount
             )
         ))
+        finalized = true
 
         return currentCompletion()
     }
