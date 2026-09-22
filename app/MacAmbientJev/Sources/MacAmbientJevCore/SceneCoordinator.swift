@@ -1,5 +1,15 @@
 import Foundation
 
+public struct TimedSemanticSceneCue: Sendable, Equatable {
+    public let frame: Int64
+    public let cue: SemanticSceneCue
+
+    public init(frame: Int64, cue: SemanticSceneCue) {
+        self.frame = frame
+        self.cue = cue
+    }
+}
+
 public struct SceneBatchResult: Sendable, Equatable {
     public let transitions: [SceneTransition]
     public let events: [TranscriptEvent]
@@ -51,7 +61,8 @@ public actor SceneCoordinator {
         totalFrames: Int64,
         sampleRate: Double,
         existingEvents: [TranscriptEvent],
-        activeRuns: ActiveRuns
+        activeRuns: ActiveRuns,
+        semanticCues: [TimedSemanticSceneCue] = []
     ) async throws -> SceneBatchResult {
         precondition(sampleRate > 0)
         precondition(totalFrames >= 0)
@@ -87,9 +98,38 @@ public actor SceneCoordinator {
         )
         let extractor = AcousticSceneFeatureExtractor()
 
+        let orderedSemanticCues = semanticCues
+            .filter { $0.frame >= 0 && $0.frame <= totalFrames }
+            .sorted { $0.frame < $1.frame }
+        var semanticCueIndex = 0
+
         var endFrame = min(windowFrames, totalFrames)
         if totalFrames > 0 {
             while endFrame <= totalFrames {
+                while semanticCueIndex < orderedSemanticCues.count,
+                      orderedSemanticCues[semanticCueIndex].frame <= endFrame {
+                    let timedCue = orderedSemanticCues[semanticCueIndex]
+                    if let transition = machine.observeSemanticCue(
+                        timedCue.cue
+                    ) {
+                        transitions.append(transition)
+                        let envelope = try await writer.append(EventDraft(
+                            eventType: "scene.changed",
+                            sessionID: sessionID,
+                            processingRunID: runID,
+                            sourceStartFrame: timedCue.frame,
+                            payload: transition.to
+                        ))
+                        events.append(.sceneChanged(
+                            seq: envelope.eventSeq,
+                            runID: runID,
+                            atFrame: timedCue.frame,
+                            scene: transition.to
+                        ))
+                    }
+                    semanticCueIndex += 1
+                }
+
                 let startFrame = max(0, endFrame - windowFrames)
                 let features = extractor.extract(
                     speakerSpans: speakerSpans,
