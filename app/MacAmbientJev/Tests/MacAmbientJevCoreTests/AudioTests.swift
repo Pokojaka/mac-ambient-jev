@@ -137,3 +137,61 @@ import Testing
     let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(try reader.readSamples(frameRange: 0..<6) == [1, 2, 3, 4, 5, 6])
 }
+
+
+@Test
+func durableWriterPersistsCheckpointBesideChunks() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let writer = try DurableAudioWriter(
+        directory: root,
+        sampleRate: 10,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+
+    try await writer.append(samples: Array(repeating: 0.5, count: 10))
+
+    let checkpointURL = root.appending(path: "checkpoint.json")
+    let data = try Data(contentsOf: checkpointURL)
+    let checkpoint = try JSONDecoder().decode(AudioCheckpoint.self, from: data)
+
+    #expect(checkpoint.committedFrames == 10)
+    #expect(checkpoint.chunkFiles == ["chunk-000000.f32le"])
+}
+
+@Test
+func durableWriterResumesFromPersistedCheckpointWithoutOverwritingChunks() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let first = try DurableAudioWriter(
+        directory: root,
+        sampleRate: 10,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    try await first.append(samples: Array(repeating: 1, count: 10))
+
+    let resumed = try DurableAudioWriter(
+        directory: root,
+        sampleRate: 10,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    try await resumed.append(samples: Array(repeating: 2, count: 10))
+    let checkpoint = try await resumed.finish()
+
+    #expect(checkpoint.committedFrames == 20)
+    #expect(checkpoint.chunkFiles == [
+        "chunk-000000.f32le",
+        "chunk-000001.f32le"
+    ])
+
+    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    #expect(try reader.readSamples(frameRange: 0..<20) == (
+        Array(repeating: Float(1), count: 10)
+        + Array(repeating: Float(2), count: 10)
+    ))
+}
