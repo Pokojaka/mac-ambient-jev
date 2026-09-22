@@ -186,3 +186,341 @@ final class AppState: ObservableObject {
             setCaptureStatus(
                 "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
                 tone: .error
+            )
+            return
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: paths.root,
+                withIntermediateDirectories: true
+            )
+
+            switch try currentDiskSpaceLevel() {
+            case .critical:
+                recordingPhase = .idle
+                setCaptureStatus(
+                    "空き容量が1 GB未満のため、新しい録音を開始できません。",
+                    tone: .error
+                )
+                return
+            case .warning:
+                setCaptureStatus(
+                    "空き容量が2 GB未満です。長時間録音では容量不足に注意してください。",
+                    tone: .warning
+                )
+            case .normal:
+                break
+            }
+        } catch {
+            setCaptureStatus(
+                "空き容量を確認できませんでした。録音を開始します。",
+                tone: .warning
+            )
+        }
+
+        recordingPhase = .starting
+        if statusTone != .warning {
+            setCaptureStatus(UserFacingStatus.startingRecording.text, tone: .neutral)
+        }
+
+        let sessionID = UUID()
+        let sessionURL = paths.sessionsRoot
+            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+
+        do {
+            try prepareSession(
+                sessionID: sessionID,
+                sessionURL: sessionURL,
+                sourceKind: .live,
+                originalFilename: nil
+            )
+            try await captureEngine.start(sessionID: sessionID)
+            recordingSessionID = sessionID
+            recordingPhase = .recording
+            setCaptureStatus("録音中", tone: .recording)
+        } catch {
+            try? FileManager.default.removeItem(at: sessionURL)
+            recordingSessionID = nil
+            recordingPhase = .idle
+            setCaptureStatus(error.localizedDescription, tone: .error)
+        }
+    }
+
+    func stopRecording() async {
+        guard recordingPhase == .recording,
+              let sessionID = recordingSessionID else {
+            return
+        }
+
+        recordingPhase = .stopping
+        setCaptureStatus("録音を保存しています", tone: .neutral)
+
+        do {
+            let result = try await captureEngine.stop()
+            let checkpoint = result.checkpoint
+            let durationSeconds = checkpoint.sampleRate > 0
+                ? Double(checkpoint.committedFrames) / checkpoint.sampleRate
+                : 0
+
+            recordingSessionID = nil
+            recordingPhase = .idle
+
+            if result.didOverflow {
+                setCaptureStatus(
+                    "録音は保存しましたが、一部の音声が欠落した可能性があります。",
+                    tone: .warning
+                )
+            } else {
+                setCaptureStatus(
+                    "録音を保存しました（\(Self.formatDuration(durationSeconds))）",
+                    tone: .neutral
+                )
+            }
+
+            enqueueProcessing(
+                .timeline(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint
+                )
+            )
+        } catch {
+            recordingSessionID = nil
+            recordingPhase = .idle
+            setCaptureStatus(error.localizedDescription, tone: .error)
+        }
+    }
+
+    private func enqueueProcessing(_ request: PendingProcessing) {
+        pendingProcessing.append(request)
+
+        if processingTask != nil {
+            processingState = .backlogged
+            processingStatusText = "文字起こし処理が待機中です"
+            transcriptViewModel.setStatus("文字起こし処理が待機中です")
+            return
+        }
+
+        processingTask = Task { [weak self] in
+            await self?.drainProcessingQueue()
+        }
+    }
+
+    private func drainProcessingQueue() async {
+        while !pendingProcessing.isEmpty {
+            let request = pendingProcessing.removeFirst()
+            processingState = .running
+
+            let statusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.processingStatusText = text
+                    self.transcriptViewModel.setStatus(text)
+                }
+            }
+
+            let updateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.processingState = state
+                    self.transcriptViewModel.update(segments: segments)
+                }
+            }
+
+            switch request {
+            case .imported(let sessionID, let originalURL):
+                await sessionProcessor.processImportedSession(
+                    sessionID: sessionID,
+                    originalURL: originalURL,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            case .timeline(let sessionID, let checkpoint):
+                await sessionProcessor.processTimelineSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            case .resumeASR(let sessionID, let checkpoint, let plan):
+                await sessionProcessor.resumePendingASRSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    plan: plan,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            case .selectCompletedASR(let sessionID, let checkpoint, let plan):
+                await sessionProcessor.selectCompletedASRSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    plan: plan,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            case .diarization(let sessionID, let checkpoint, let plan):
+                await sessionProcessor.runRecoveredDiarizationSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    plan: plan,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            }
+
+            if !pendingProcessing.isEmpty {
+                processingState = .backlogged
+                processingStatusText = "次の文字起こし処理を開始します"
+                transcriptViewModel.setStatus("次の文字起こし処理を開始します")
+            }
+        }
+
+        if processingState == .running || processingState == .backlogged {
+            processingState = .complete
+        }
+        processingTask = nil
+    }
+
+    private func recoverPendingSessions() async {
+        do {
+            let candidates = try SessionRecoveryScanner(
+                sessionsRoot: paths.sessionsRoot
+            ).pendingSessions()
+
+            guard !candidates.isEmpty else { return }
+
+            processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"
+            transcriptViewModel.setStatus(
+                "未完了の文字起こしを復旧しています"
+            )
+
+            for candidate in candidates {
+                let sessionID = candidate.manifest.sessionID
+
+                switch (candidate.action, candidate.source) {
+                case (.resumeASR(let plan), .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .resumeASR(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            plan: plan
+                        )
+                    )
+
+                case (.selectCompletedASR(let plan), .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .selectCompletedASR(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            plan: plan
+                        )
+                    )
+
+                case (.runDiarization(let plan), .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .diarization(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            plan: plan
+                        )
+                    )
+
+                case (.reprocess, .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .timeline(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint
+                        )
+                    )
+
+                case (_, .importedOriginal(let originalURL)):
+                    // Old sessions without a durable checkpoint cannot safely
+                    // resume frame-addressed ASR. Rebuild the timeline
+                    // idempotently from the preserved original instead.
+                    enqueueProcessing(
+                        .imported(
+                            sessionID: sessionID,
+                            originalURL: originalURL
+                        )
+                    )
+                }
+            }
+        } catch {
+            processingState = .partialFailure(error.localizedDescription)
+            processingStatusText =
+                "未完了セッションを復旧できませんでした: \(error.localizedDescription)"
+            transcriptViewModel.setStatus(
+                "未完了セッションを復旧できませんでした"
+            )
+        }
+    }
+
+    private func requestMicrophoneAccessIfNeeded() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await AVCaptureDevice.requestAccess(for: .audio)
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func currentDiskSpaceLevel() throws -> DiskSpaceLevel {
+        let values = try paths.applicationSupportURL.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        )
+
+        guard let bytes = values.volumeAvailableCapacityForImportantUsage else {
+            return .normal
+        }
+
+        return diskMonitor.level(forAvailableBytes: bytes)
+    }
+
+    private func prepareSession(
+        sessionID: UUID,
+        sessionURL: URL,
+        sourceKind: SessionSourceKind,
+        originalFilename: String?
+    ) throws {
+        let createdURL = try SessionBootstrapper().createSession(
+            paths: paths,
+            sessionID: sessionID,
+            sourceKind: sourceKind,
+            originalFilename: originalFilename
+        )
+        precondition(
+            createdURL.standardizedFileURL == sessionURL.standardizedFileURL
+        )
+    }
+
+    private func setCaptureStatus(_ text: String, tone: StatusTone) {
+        statusText = text
+        statusTone = tone
+    }
+
+    private static func formatDuration(_ seconds: Double) -> String {
+        let totalSeconds = max(0, Int(seconds.rounded(.down)))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let remainingSeconds = totalSeconds % 60
+
+        if hours > 0 {
+            return String(
+                format: "%d:%02d:%02d",
+                hours,
+                minutes,
+                remainingSeconds
+            )
+        }
+
+        return String(
+            format: "%02d:%02d",
+            minutes,
+            remainingSeconds
+        )
+    }
+}
