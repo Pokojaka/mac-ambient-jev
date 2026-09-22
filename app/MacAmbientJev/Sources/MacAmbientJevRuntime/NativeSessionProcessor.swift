@@ -12,6 +12,12 @@ enum NativeSessionProcessorError: LocalizedError {
     }
 }
 
+private struct SceneEnrichmentContext: Sendable {
+    let runID: String
+    let events: [TranscriptEvent]
+    let materializedSegments: [MaterializedTranscriptSegment]
+}
+
 public actor NativeSessionProcessor {
     public typealias StatusHandler = @Sendable (_ text: String) async -> Void
     public typealias UpdateHandler = @Sendable (
@@ -476,6 +482,21 @@ public actor NativeSessionProcessor {
             sceneRunID: sceneRunID
         )
 
+        let sceneContext = try await runSemanticSceneEnrichmentIfAvailable(
+            sessionID: sessionID,
+            checkpoint: checkpoint,
+            speakerSpans: result.speakerSpans,
+            localSceneRunID: sceneRunID,
+            localSceneResult: sceneResult,
+            baseActiveRuns: ActiveRuns(
+                segmentation: segmentationRunID,
+                asr: asrRunID,
+                diarization: diarizationRunID,
+                scene: sceneRunID
+            ),
+            onStatus: onStatus
+        )
+
         if let onStatus {
             await onStatus(UserFacingStatus.analyzingScope.text)
         }
@@ -494,13 +515,13 @@ public actor NativeSessionProcessor {
             )
         )
         let scopeResult = try await scopeCoordinator.process(
-            existingEvents: sceneResult.events,
+            existingEvents: sceneContext.events,
             speakerSpans: result.speakerSpans,
             activeRuns: ActiveRuns(
                 segmentation: segmentationRunID,
                 asr: asrRunID,
                 diarization: diarizationRunID,
-                scene: sceneRunID,
+                scene: sceneContext.runID,
                 scope: scopeRunID
             )
         )
@@ -518,7 +539,7 @@ public actor NativeSessionProcessor {
                 segmentation: segmentationRunID,
                 asr: asrRunID,
                 diarization: diarizationRunID,
-                scene: sceneRunID,
+                scene: sceneContext.runID,
                 scope: scopeRunID
             ),
             fallbackSegments: scopeResult.materializedSegments,
@@ -530,6 +551,119 @@ public actor NativeSessionProcessor {
         }
     }
 
+    private func runSemanticSceneEnrichmentIfAvailable(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        speakerSpans: [SpeakerSpan],
+        localSceneRunID: String,
+        localSceneResult: SceneBatchResult,
+        baseActiveRuns: ActiveRuns,
+        onStatus: StatusHandler?
+    ) async throws -> SceneEnrichmentContext {
+        guard let decisions = try makeJevDecisionCoordinatorIfAvailable() else {
+            return SceneEnrichmentContext(
+                runID: localSceneRunID,
+                events: localSceneResult.events,
+                materializedSegments: localSceneResult.materializedSegments
+            )
+        }
+
+        if let onStatus {
+            await onStatus(UserFacingStatus.classifyingWithJev.text)
+        }
+
+        let semanticRunID =
+            "jev_scene_\(UUID().uuidString.lowercased())"
+        let collector = JevSceneCueCollector(
+            sessionID: sessionID,
+            runID: semanticRunID,
+            writer: try SessionWriter(
+                sessionURL: sessionURL(for: sessionID)
+            ),
+            decisions: decisions,
+            sampleRate: checkpoint.sampleRate
+        )
+        let collection = try await collector.collect(
+            segments: localSceneResult.materializedSegments
+        )
+
+        if !collection.retryPendingSegmentIDs.isEmpty,
+           let onStatus {
+            await onStatus(UserFacingStatus.jevDeferred.text)
+        }
+
+        guard !collection.cues.isEmpty else {
+            return SceneEnrichmentContext(
+                runID: localSceneRunID,
+                events: localSceneResult.events,
+                materializedSegments: localSceneResult.materializedSegments
+            )
+        }
+
+        let enhancedRunID =
+            "scene_semantic_\(UUID().uuidString.lowercased())"
+        let coordinator = SceneCoordinator(
+            sessionID: sessionID,
+            runID: enhancedRunID,
+            writer: try SessionWriter(
+                sessionURL: sessionURL(for: sessionID)
+            ),
+            materializer: TranscriptMaterializer(
+                sampleRate: checkpoint.sampleRate
+            )
+        )
+        let result = try await coordinator.process(
+            speakerSpans: speakerSpans,
+            totalFrames: checkpoint.committedFrames,
+            sampleRate: checkpoint.sampleRate,
+            existingEvents: localSceneResult.events,
+            activeRuns: ActiveRuns(
+                segmentation: baseActiveRuns.segmentation,
+                asr: baseActiveRuns.asr,
+                diarization: baseActiveRuns.diarization,
+                scene: enhancedRunID,
+                scope: baseActiveRuns.scope,
+                contentPriority: baseActiveRuns.contentPriority
+            ),
+            semanticCues: collection.cues
+        )
+
+        try selectSceneRun(
+            sessionID: sessionID,
+            sceneRunID: enhancedRunID
+        )
+
+        return SceneEnrichmentContext(
+            runID: enhancedRunID,
+            events: result.events,
+            materializedSegments: result.materializedSegments
+        )
+    }
+
+    private func makeJevDecisionCoordinatorIfAvailable() throws
+        -> JevDecisionCoordinator? {
+        guard allowExternalJev else {
+            return nil
+        }
+
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "jev.isPaused") else {
+            return nil
+        }
+
+        guard let apiKey = try KeychainStore().load(
+            account: Self.jevAPIKeyAccount
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !apiKey.isEmpty else {
+            return nil
+        }
+
+        return JevDecisionCoordinator(
+            provider: JevClient(apiKey: apiKey),
+            usageCounter: jevUsageCounter
+        )
+    }
+
     private func runJevEnrichmentIfAvailable(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
@@ -538,19 +672,7 @@ public actor NativeSessionProcessor {
         fallbackSegments: [MaterializedTranscriptSegment],
         onStatus: StatusHandler?
     ) async throws -> [MaterializedTranscriptSegment] {
-        guard allowExternalJev else {
-            return fallbackSegments
-        }
-
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: "jev.isPaused") else {
-            return fallbackSegments
-        }
-
-        guard let apiKey = try KeychainStore().load(
-            account: Self.jevAPIKeyAccount
-        )?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !apiKey.isEmpty else {
+        guard let decisions = try makeJevDecisionCoordinatorIfAvailable() else {
             return fallbackSegments
         }
 
@@ -559,10 +681,6 @@ public actor NativeSessionProcessor {
         }
 
         let runID = "priority_\(UUID().uuidString.lowercased())"
-        let decisions = JevDecisionCoordinator(
-            provider: JevClient(apiKey: apiKey),
-            usageCounter: jevUsageCounter
-        )
         let coordinator = JevEnrichmentCoordinator(
             sessionID: sessionID,
             runID: runID,
