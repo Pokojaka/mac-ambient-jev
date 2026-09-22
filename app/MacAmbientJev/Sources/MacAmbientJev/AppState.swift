@@ -291,7 +291,7 @@ final class AppState: ObservableObject {
                         checkpoint: checkpoint
                     )
                     liveVADSegmentCount = progress.totalSegmentCount
-                    enqueueLiveASR(
+                    await enqueueLiveASR(
                         sessionID: sessionID,
                         segments: progress.emittedSegments,
                         checkpoint: checkpoint
@@ -425,7 +425,7 @@ final class AppState: ObservableObject {
                 liveVADSegmentCount = progress.totalSegmentCount
 
                 if !progress.emittedSegments.isEmpty {
-                    enqueueLiveASR(
+                    await enqueueLiveASR(
                         sessionID: sessionID,
                         segments: progress.emittedSegments,
                         checkpoint: checkpoint
@@ -453,9 +453,21 @@ final class AppState: ObservableObject {
         sessionID: UUID,
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint
-    ) {
+    ) async {
         guard !segments.isEmpty,
               liveASRFailures[sessionID] == nil else {
+            return
+        }
+
+        do {
+            _ = try await sessionProcessor.registerLiveSegments(
+                sessionID: sessionID,
+                segments: segments
+            )
+        } catch {
+            liveASRFailures[sessionID] = error.localizedDescription
+            processingStatusText =
+                "録音は継続しています。発話区間を保存できませんでした: \(error.localizedDescription)"
             return
         }
 
