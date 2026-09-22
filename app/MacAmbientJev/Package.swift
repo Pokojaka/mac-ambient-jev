@@ -6,7 +6,11 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
-        .executable(name: "MacAmbientJev", targets: ["MacAmbientJev"])
+        .executable(name: "MacAmbientJev", targets: ["MacAmbientJev"]),
+        .executable(
+            name: "MacAmbientJevEvaluateSession",
+            targets: ["MacAmbientJevEvaluateSession"]
+        )
     ],
     dependencies: [
         .package(
@@ -27,6 +31,10 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "Qwen3ASR", package: "speech-swift")
             ]
+        ),
+        .executableTarget(
+            name: "MacAmbientJevEvaluateSession",
+            dependencies: ["MacAmbientJevCore"]
         ),
         .testTarget(
             name: "MacAmbientJevCoreTests",
