@@ -25,7 +25,7 @@ final class AppState: ObservableObject {
 
     private enum PendingProcessing {
         case imported(sessionID: UUID, originalURL: URL)
-        case recorded(sessionID: UUID, checkpoint: AudioCheckpoint)
+        case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
     }
 
     @Published private(set) var statusText = "待機中"
@@ -69,6 +69,10 @@ final class AppState: ObservableObject {
         self.paths = paths
         self.captureEngine = AudioCaptureEngine(paths: paths)
         self.sessionProcessor = NativeSessionProcessor(paths: paths)
+
+        Task { [weak self] in
+            await self?.recoverPendingSessions()
+        }
     }
 
     var isRecording: Bool {
@@ -266,7 +270,7 @@ final class AppState: ObservableObject {
             }
 
             enqueueProcessing(
-                .recorded(
+                .timeline(
                     sessionID: sessionID,
                     checkpoint: checkpoint
                 )
@@ -322,8 +326,8 @@ final class AppState: ObservableObject {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
-            case .recorded(let sessionID, let checkpoint):
-                await sessionProcessor.processRecordedSession(
+            case .timeline(let sessionID, let checkpoint):
+                await sessionProcessor.processTimelineSession(
                     sessionID: sessionID,
                     checkpoint: checkpoint,
                     onStatus: statusHandler,
@@ -342,6 +346,47 @@ final class AppState: ObservableObject {
             processingState = .complete
         }
         processingTask = nil
+    }
+
+    private func recoverPendingSessions() async {
+        do {
+            let candidates = try SessionRecoveryScanner(
+                sessionsRoot: paths.sessionsRoot
+            ).pendingSessions()
+
+            guard !candidates.isEmpty else { return }
+
+            processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"
+            transcriptViewModel.setStatus(
+                "未完了の文字起こしを復旧しています"
+            )
+
+            for candidate in candidates {
+                switch candidate.source {
+                case .processingTimeline(let checkpoint):
+                    enqueueProcessing(
+                        .timeline(
+                            sessionID: candidate.manifest.sessionID,
+                            checkpoint: checkpoint
+                        )
+                    )
+                case .importedOriginal(let originalURL):
+                    enqueueProcessing(
+                        .imported(
+                            sessionID: candidate.manifest.sessionID,
+                            originalURL: originalURL
+                        )
+                    )
+                }
+            }
+        } catch {
+            processingState = .partialFailure(error.localizedDescription)
+            processingStatusText =
+                "未完了セッションを復旧できませんでした: \(error.localizedDescription)"
+            transcriptViewModel.setStatus(
+                "未完了セッションを復旧できませんでした"
+            )
+        }
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
