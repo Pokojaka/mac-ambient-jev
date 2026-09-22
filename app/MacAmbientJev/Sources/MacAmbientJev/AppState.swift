@@ -126,6 +126,47 @@ final class AppState: ObservableObject {
         }
     }
 
+    func retryDeferredJev() async {
+        do {
+            let candidates = try SessionRecoveryScanner(
+                sessionsRoot: paths.sessionsRoot
+            ).pendingSessions()
+
+            var queuedCount = 0
+            for candidate in candidates {
+                guard case .retryContentPriority(let segmentIDs)
+                        = candidate.action,
+                      case .processingTimeline(let checkpoint)
+                        = candidate.source else {
+                    continue
+                }
+
+                enqueueProcessing(
+                    .retryContentPriority(
+                        sessionID: candidate.manifest.sessionID,
+                        checkpoint: checkpoint,
+                        segmentIDs: segmentIDs
+                    )
+                )
+                queuedCount += 1
+            }
+
+            if queuedCount == 0 {
+                processingStatusText =
+                    "再試行が必要な意味分類はありません"
+                transcriptViewModel.setStatus(
+                    "再試行が必要な意味分類はありません"
+                )
+            }
+        } catch {
+            processingStatusText =
+                "保留中の意味分類を確認できませんでした: \(error.localizedDescription)"
+            transcriptViewModel.setStatus(
+                "保留中の意味分類を確認できませんでした"
+            )
+        }
+    }
+
     func toggleRecording() async {
         if isRecording {
             await stopRecording()
