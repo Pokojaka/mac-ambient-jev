@@ -240,3 +240,46 @@ func audioFileTimelineBuilderCreatesDiskBackedProcessingTimeline() async throws 
     #expect(samples.count == 12)
     #expect(abs(samples[6] - 0.5) < 0.0001)
 }
+
+
+@Test
+func audioFileTimelineBuilderResumesWithoutDuplicatingImportedAudio() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let source = root.appending(path: "fixture-resume.caf")
+    let format = AVAudioFormat(
+        standardFormatWithSampleRate: 8_000,
+        channels: 1
+    )!
+    let file = try AVAudioFile(
+        forWriting: source,
+        settings: format.settings
+    )
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12)!
+    buffer.frameLength = 12
+    for index in 0..<12 {
+        buffer.floatChannelData![0][index] = Float(index) / 12
+    }
+    try file.write(from: buffer)
+
+    let processingDirectory = root.appending(
+        path: "processing-resume",
+        directoryHint: .isDirectory
+    )
+    let builder = AudioFileTimelineBuilder(readFrameCount: 4)
+
+    let first = try await builder.build(
+        from: source,
+        into: processingDirectory
+    )
+    let second = try await builder.build(
+        from: source,
+        into: processingDirectory
+    )
+
+    #expect(first.committedFrames == 12)
+    #expect(second.committedFrames == 12)
+    #expect(second.chunkFiles == first.chunkFiles)
+}
