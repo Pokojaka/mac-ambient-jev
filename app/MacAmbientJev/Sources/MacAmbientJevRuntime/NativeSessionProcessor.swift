@@ -60,7 +60,7 @@ public actor NativeSessionProcessor {
         try persistProcessingMetadata(sessionID: sessionID)
 
         let asrRunID = "asr_live_\(UUID().uuidString.lowercased())"
-        liveASRSessions[sessionID] = try LiveASRSession(
+        liveASRSessions[sessionID] = LiveASRSession(
             sessionID: sessionID,
             segmentationRunID: segmentationRunID,
             asrRunID: asrRunID,
