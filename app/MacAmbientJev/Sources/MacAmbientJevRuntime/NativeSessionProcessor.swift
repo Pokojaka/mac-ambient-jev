@@ -319,6 +319,25 @@ public actor NativeSessionProcessor {
         }
     }
 
+    public func makeLiveASRSession(
+        sessionID: UUID,
+        processingDirectory: URL,
+        segmentationRunID: String,
+        sampleRate: Double
+    ) throws -> LiveASRSession {
+        LiveASRSession(
+            sessionID: sessionID,
+            segmentationRunID: segmentationRunID,
+            asrRunID: "asr_live_\(UUID().uuidString.lowercased())",
+            processingDirectory: processingDirectory,
+            writer: try SessionWriter(
+                sessionURL: sessionURL(for: sessionID)
+            ),
+            asr: asr,
+            sampleRate: sampleRate
+        )
+    }
+
     public func processImportedSession(
         sessionID: UUID,
         originalURL: URL,
