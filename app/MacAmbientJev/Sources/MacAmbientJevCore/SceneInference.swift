@@ -218,6 +218,39 @@ public struct SceneStateMachine: Sendable {
         return SceneTransition(from: previous, to: state)
     }
 
+    @discardableResult
+    public mutating func observeSemanticCue(
+        _ cue: SemanticSceneCue
+    ) -> SceneTransition? {
+        let previous = state
+
+        switch cue {
+        case .discussionStart:
+            guard state != .discussion else { return nil }
+            discussionEvidenceCount = max(
+                discussionEvidenceCount,
+                config.discussionCandidateObservations
+            )
+            lectureEvidenceCount = 0
+            state = .discussionCandidate
+
+        case .discussionEnd:
+            guard state != .lecture else { return nil }
+            lectureEvidenceCount = max(
+                lectureEvidenceCount,
+                config.lectureCandidateObservations
+            )
+            discussionEvidenceCount = 0
+            state = .lectureCandidate
+
+        case .none:
+            return nil
+        }
+
+        guard state != previous else { return nil }
+        return SceneTransition(from: previous, to: state)
+    }
+
     private func isDiscussionEvidence(_ features: AcousticSceneFeatures) -> Bool {
         features.activeSpeakerCount >= 3
             && features.turnRate >= 0.25
