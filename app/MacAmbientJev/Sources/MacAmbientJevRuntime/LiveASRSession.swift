@@ -5,15 +5,18 @@ public struct LiveASRProgress: Sendable, Equatable {
     public let materializedSegments: [MaterializedTranscriptSegment]
     public let completedCount: Int
     public let failedCount: Int
+    public let pendingCount: Int
 
     public init(
         materializedSegments: [MaterializedTranscriptSegment],
         completedCount: Int,
-        failedCount: Int
+        failedCount: Int,
+        pendingCount: Int
     ) {
         self.materializedSegments = materializedSegments
         self.completedCount = completedCount
         self.failedCount = failedCount
+        self.pendingCount = pendingCount
     }
 }
 
@@ -29,27 +32,33 @@ public struct LiveASRCompletion: Sendable, Equatable {
     public let materializedSegments: [MaterializedTranscriptSegment]
     public let completedCount: Int
     public let failedCount: Int
+    public let pendingCount: Int
 
-    public var succeeded: Bool { failedCount == 0 }
+    public var succeeded: Bool {
+        failedCount == 0 && pendingCount == 0
+    }
 
     public init(
         events: [TranscriptEvent],
         materializedSegments: [MaterializedTranscriptSegment],
         completedCount: Int,
-        failedCount: Int
+        failedCount: Int,
+        pendingCount: Int
     ) {
         self.events = events
         self.materializedSegments = materializedSegments
         self.completedCount = completedCount
         self.failedCount = failedCount
+        self.pendingCount = pendingCount
     }
 }
 
 /// Incremental ASR run used while recording.
 ///
-/// A segment is registered in the append-only event log before transcription.
-/// Re-supplying an already-seen segment is a no-op. Model preparation is lazy,
-/// so starting capture never waits for the ASR model to load.
+/// Detection and transcription are intentionally separate. register first
+/// persists segment.created and asr.pending, making the backlog recoverable
+/// before model inference starts. process is idempotent for both registration
+/// and transcription.
 public actor LiveASRSession {
     public nonisolated let segmentationRunID: String
     public nonisolated let asrRunID: String
@@ -61,7 +70,8 @@ public actor LiveASRSession {
     private let materializer: TranscriptMaterializer
 
     private var transcriptEvents: [TranscriptEvent] = []
-    private var seenSegmentIDs: Set<String> = []
+    private var registeredSegmentIDs: Set<String> = []
+    private var finishedSegmentIDs: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
     private var prepared = false
@@ -85,36 +95,17 @@ public actor LiveASRSession {
         self.materializer = TranscriptMaterializer(sampleRate: sampleRate)
     }
 
-    public func process(
-        segments: [SegmentReference],
-        checkpoint: AudioCheckpoint
+    /// Durably registers newly detected speech before it enters the ASR queue.
+    @discardableResult
+    public func register(
+        segments: [SegmentReference]
     ) async throws -> LiveASRProgress {
         guard !finalized else {
             return currentProgress()
         }
 
-        let newSegments = segments.filter { segment in
-            !seenSegmentIDs.contains(segment.segmentID)
-        }
-        guard !newSegments.isEmpty else {
-            return currentProgress()
-        }
-
-        if !prepared {
-            try await asr.prepare()
-            prepared = true
-        }
-
-        let loader = ASRAudioLoader(
-            reader: ProcessingTimelineReader(
-                directory: processingDirectory,
-                checkpoint: checkpoint
-            )
-        )
-
-        for segment in newSegments {
-            seenSegmentIDs.insert(segment.segmentID)
-
+        for segment in segments
+        where !registeredSegmentIDs.contains(segment.segmentID) {
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,
@@ -142,7 +133,44 @@ public actor LiveASRSession {
                 sourceEndFrame: segment.endFrame,
                 payload: EmptyPayload()
             ))
+            registeredSegmentIDs.insert(segment.segmentID)
+        }
 
+        return currentProgress()
+    }
+
+    @discardableResult
+    public func process(
+        segments: [SegmentReference],
+        checkpoint: AudioCheckpoint
+    ) async throws -> LiveASRProgress {
+        guard !finalized else {
+            return currentProgress()
+        }
+
+        _ = try await register(segments: segments)
+
+        let pendingSegments = segments.filter { segment in
+            registeredSegmentIDs.contains(segment.segmentID)
+                && !finishedSegmentIDs.contains(segment.segmentID)
+        }
+        guard !pendingSegments.isEmpty else {
+            return currentProgress()
+        }
+
+        if !prepared {
+            try await asr.prepare()
+            prepared = true
+        }
+
+        let loader = ASRAudioLoader(
+            reader: ProcessingTimelineReader(
+                directory: processingDirectory,
+                checkpoint: checkpoint
+            )
+        )
+
+        for segment in pendingSegments {
             do {
                 let result = try await asr.transcribe(
                     loader.load(segment: segment)
@@ -186,6 +214,8 @@ public actor LiveASRSession {
                     )
                 ))
             }
+
+            finishedSegmentIDs.insert(segment.segmentID)
         }
 
         return currentProgress()
@@ -197,13 +227,15 @@ public actor LiveASRSession {
         }
 
         finalized = true
+        let pendingCount =
+            registeredSegmentIDs.subtracting(finishedSegmentIDs).count
         _ = try await writer.append(EventDraft(
             eventType: "processing.run.completed",
             sessionID: sessionID,
             processingRunID: asrRunID,
             payload: ProcessingRunCompletedPayload(
                 stage: .asr,
-                succeeded: failedCount == 0,
+                succeeded: failedCount == 0 && pendingCount == 0,
                 completedCount: completedCount,
                 failedCount: failedCount
             )
@@ -222,7 +254,9 @@ public actor LiveASRSession {
                 )
             ),
             completedCount: completedCount,
-            failedCount: failedCount
+            failedCount: failedCount,
+            pendingCount:
+                registeredSegmentIDs.subtracting(finishedSegmentIDs).count
         )
     }
 
@@ -232,7 +266,8 @@ public actor LiveASRSession {
             events: transcriptEvents,
             materializedSegments: progress.materializedSegments,
             completedCount: completedCount,
-            failedCount: failedCount
+            failedCount: failedCount,
+            pendingCount: progress.pendingCount
         )
     }
 }
