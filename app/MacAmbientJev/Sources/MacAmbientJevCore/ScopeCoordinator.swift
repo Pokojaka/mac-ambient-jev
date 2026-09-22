@@ -108,12 +108,6 @@ public actor ScopeCoordinator {
                 continue
             }
 
-            let scene = sceneAt(
-                frame: startFrame,
-                events: ordered,
-                activeSceneRunID: activeRuns.scene
-            )
-
             let evidenceSpans = try await provider.evidenceSpans(
                 startFrame: startFrame,
                 endFrame: endFrame,
@@ -125,35 +119,61 @@ public actor ScopeCoordinator {
                 let clippedEnd = min(endFrame, evidenceSpan.endFrame)
                 guard clippedEnd > clippedStart else { continue }
 
-                let classification = classifier.classify(
-                    evidence: evidenceSpan.evidence,
-                    scene: scene
-                )
-                let scopeSpan = ScopeSpan(
+                var boundaries = Set<Int64>([
+                    clippedStart,
+                    clippedEnd
+                ])
+                for transitionFrame in sceneTransitionFrames(
                     startFrame: clippedStart,
                     endFrame: clippedEnd,
-                    scope: classification.scope,
-                    confidence: classification.confidence
-                )
+                    events: ordered,
+                    activeSceneRunID: activeRuns.scene
+                ) {
+                    boundaries.insert(transitionFrame)
+                }
+                let points = boundaries.sorted()
+                guard points.count >= 2 else { continue }
 
-                let envelope = try await writer.append(EventDraft(
-                    eventType: "scope.span",
-                    sessionID: sessionID,
-                    processingRunID: runID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: clippedStart,
-                    sourceEndFrame: clippedEnd,
-                    payload: scopeSpan
-                ))
-                events.append(.scopeSpan(
-                    seq: envelope.eventSeq,
-                    runID: runID,
-                    startFrame: clippedStart,
-                    endFrame: clippedEnd,
-                    scope: classification.scope,
-                    confidence: classification.confidence
-                ))
-                resultSpans.append(scopeSpan)
+                for index in 0..<(points.count - 1) {
+                    let spanStart = points[index]
+                    let spanEnd = points[index + 1]
+                    guard spanEnd > spanStart else { continue }
+
+                    let spanScene = sceneAt(
+                        frame: spanStart,
+                        events: ordered,
+                        activeSceneRunID: activeRuns.scene
+                    )
+                    let classification = classifier.classify(
+                        evidence: evidenceSpan.evidence,
+                        scene: spanScene
+                    )
+                    let scopeSpan = ScopeSpan(
+                        startFrame: spanStart,
+                        endFrame: spanEnd,
+                        scope: classification.scope,
+                        confidence: classification.confidence
+                    )
+
+                    let envelope = try await writer.append(EventDraft(
+                        eventType: "scope.span",
+                        sessionID: sessionID,
+                        processingRunID: runID,
+                        segmentID: segment.segmentID,
+                        sourceStartFrame: spanStart,
+                        sourceEndFrame: spanEnd,
+                        payload: scopeSpan
+                    ))
+                    events.append(.scopeSpan(
+                        seq: envelope.eventSeq,
+                        runID: runID,
+                        startFrame: spanStart,
+                        endFrame: spanEnd,
+                        scope: classification.scope,
+                        confidence: classification.confidence
+                    ))
+                    resultSpans.append(scopeSpan)
+                }
             }
         }
 
@@ -185,6 +205,27 @@ public actor ScopeCoordinator {
                 activeRuns: selectedRuns
             )
         )
+    }
+
+    private func sceneTransitionFrames(
+        startFrame: Int64,
+        endFrame: Int64,
+        events: [TranscriptEvent],
+        activeSceneRunID: String?
+    ) -> [Int64] {
+        events.compactMap { event -> Int64? in
+            guard event.processingRunID == activeSceneRunID,
+                  let frame = event.sourceStartFrame,
+                  frame > startFrame,
+                  frame < endFrame else {
+                return nil
+            }
+            if case .sceneChanged = event.kind {
+                return frame
+            }
+            return nil
+        }
+        .sorted()
     }
 
     private func sceneAt(
