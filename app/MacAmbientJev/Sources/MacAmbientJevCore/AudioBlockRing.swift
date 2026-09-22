@@ -48,7 +48,7 @@ public final class AudioBlockRing: @unchecked Sendable {
 
     @discardableResult
     public func pushPlanarFloat32(
-        channelData: UnsafeMutablePointer<UnsafeMutablePointer<Float>>,
+        channelData: UnsafePointer<UnsafeMutablePointer<Float>>,
         channelCount: Int,
         frameCount: Int
     ) -> Bool {
