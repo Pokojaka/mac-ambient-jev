@@ -7,6 +7,7 @@ enum AudioCaptureEngineError: LocalizedError {
     case notRecording
     case invalidInputFormat
     case ringOverflow
+    case writerFailure(String)
 
     var errorDescription: String? {
         switch self {
@@ -17,7 +18,9 @@ enum AudioCaptureEngineError: LocalizedError {
         case .invalidInputFormat:
             "マイクの音声形式を利用できません"
         case .ringOverflow:
-            "録音データの保存が追いついていません"
+            "録音データの保存が追いつかず、一部の音声が欠落した可能性があります"
+        case .writerFailure(let message):
+            "録音データの保存中にエラーが発生しました: \(message)"
         }
     }
 }
@@ -31,11 +34,15 @@ final class AudioCaptureEngine {
     private var engine: AVAudioEngine?
     private var ring: AudioBlockRing?
     private var drain: AudioCaptureDrain?
-    private var drainTask: Task<Void, Never>?
+    private var drainTask: Task<String?, Never>?
     private var overflowAtStart: UInt64 = 0
 
     private(set) var activeSessionID: UUID?
     private(set) var timeline: ProcessingTimeline?
+
+    var isRecording: Bool {
+        engine != nil
+    }
 
     init(
         paths: AppPaths,
@@ -106,16 +113,22 @@ final class AudioCaptureEngine {
             throw error
         }
 
-        let task = Task.detached(priority: .utility) {
+        let task = Task.detached(priority: .utility) { () -> String? in
             while !Task.isCancelled {
                 do {
                     _ = try await drain.drainAvailable()
                 } catch {
-                    return
+                    return error.localizedDescription
                 }
 
-                try? await Task.sleep(for: .milliseconds(20))
+                do {
+                    try await Task.sleep(for: .milliseconds(20))
+                } catch {
+                    return nil
+                }
             }
+
+            return nil
         }
 
         self.engine = audioEngine
@@ -143,18 +156,29 @@ final class AudioCaptureEngine {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
 
-        drainTask?.cancel()
-        drainTask = nil
+        defer {
+            self.engine = nil
+            self.ring = nil
+            self.drain = nil
+            self.drainTask = nil
+            self.activeSessionID = nil
+        }
+
+        let backgroundFailure: String?
+        if let drainTask {
+            drainTask.cancel()
+            backgroundFailure = await drainTask.value
+        } else {
+            backgroundFailure = nil
+        }
 
         let checkpoint = try await drain.finish()
-        let overflowed = ring.overflowCount > overflowAtStart
 
-        self.engine = nil
-        self.ring = nil
-        self.drain = nil
-        self.activeSessionID = nil
+        if let backgroundFailure {
+            throw AudioCaptureEngineError.writerFailure(backgroundFailure)
+        }
 
-        if overflowed {
+        if ring.overflowCount > overflowAtStart {
             throw AudioCaptureEngineError.ringOverflow
         }
 
