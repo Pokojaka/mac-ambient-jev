@@ -10,29 +10,54 @@ struct MacAmbientJevApp: App {
             ContentView()
                 .environmentObject(appState)
         }
+        .defaultSize(width: 900, height: 620)
     }
 }
 
 private struct ContentView: View {
     @EnvironmentObject private var appState: AppState
+    @StateObject private var transcriptViewModel = LiveTranscriptViewModel()
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Clean Transcription Core")
-                .font(.title2)
+        VStack(spacing: 0) {
+            statusBar
+            Divider()
+            LiveTranscriptView(viewModel: transcriptViewModel)
+        }
+        .frame(minWidth: 720, minHeight: 480)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    appState.statusText = "音声ファイルを選択してください"
+                } label: {
+                    Label("音声ファイルを読み込む", systemImage: "doc.badge.plus")
+                }
 
-            Button("録音を開始") {
-                appState.statusText = "録音の準備をしています"
+                Button {
+                    appState.statusText = "録音の準備をしています"
+                } label: {
+                    Label("録音を開始", systemImage: "record.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
             }
+        }
+    }
 
-            Button("音声ファイルを読み込む") {
-                appState.statusText = "音声ファイルを選択してください"
-            }
+    private var statusBar: some View {
+        HStack(spacing: AppSpacing.sm) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: AppIconSize.small))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
 
             Text(appState.statusText)
+                .font(.callout)
                 .foregroundStyle(.secondary)
+
+            Spacer()
         }
-        .frame(minWidth: 520, minHeight: 320)
-        .padding(24)
+        .padding(.horizontal, AppSpacing.lg)
+        .padding(.vertical, AppSpacing.sm)
     }
 }
