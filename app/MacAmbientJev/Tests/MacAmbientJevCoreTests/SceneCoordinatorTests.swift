@@ -14,26 +14,17 @@ func sceneCoordinatorPersistsInitialAndDetectedSceneStates() async throws {
     let sessionID = UUID()
     let sampleRate = 10.0
 
-    let spans = [
+    let speakerIDs = ["a", "b", "c"]
+    let spans = stride(from: 0, to: 200, by: 5).enumerated().map {
+        index,
+        startFrame in
         SpeakerSpan(
-            speakerID: "a",
-            startFrame: 0,
-            endFrame: 200,
-            confidence: 1
-        ),
-        SpeakerSpan(
-            speakerID: "b",
-            startFrame: 20,
-            endFrame: 180,
-            confidence: 1
-        ),
-        SpeakerSpan(
-            speakerID: "c",
-            startFrame: 40,
-            endFrame: 160,
+            speakerID: speakerIDs[index % speakerIDs.count],
+            startFrame: Int64(startFrame),
+            endFrame: Int64(min(startFrame + 5, 200)),
             confidence: 1
         )
-    ]
+    }
 
     let coordinator = SceneCoordinator(
         sessionID: sessionID,
