@@ -59,3 +59,27 @@ func segmentationAssemblerKeepsShortUtterancesAndAppliesPreRoll() {
     #expect(segment?.startFrame == 900)
     #expect(segment?.endFrame == 1_080)
 }
+
+@Test
+func segmentationAssemblerSplitsLongUtteranceWithoutDroppingContinuation() {
+    var assembler = SegmentationAssembler(
+        segmentationRunID: "seg_run_01",
+        preRollFrames: 0,
+        maxSegmentFrames: 1_000
+    )
+
+    assembler.speechStarted(atFrame: 500)
+    let first = assembler.splitIfNeeded(atFrame: 1_500)
+    let second = assembler.speechEnded(atFrame: 1_800)
+
+    #expect(first?.startFrame == 500)
+    #expect(first?.endFrame == 1_500)
+    #expect(second?.startFrame == 1_500)
+    #expect(second?.endFrame == 1_800)
+}
+
+@Test
+func vadFrameMapperMaps16kSamplesOntoCanonicalTimeline() {
+    let mapper = VADFrameMapper(canonicalSampleRate: 48_000)
+    #expect(mapper.canonicalFrame(forVADSample: 16_000) == 48_000)
+}
