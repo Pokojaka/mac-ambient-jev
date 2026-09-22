@@ -4,7 +4,6 @@ import MacAmbientJevCore
 @main
 struct MacAmbientJevApp: App {
     @StateObject private var appState = AppState()
-    private let jevUsageCounter = JevUsageCounter()
 
     var body: some Scene {
         WindowGroup {
@@ -20,7 +19,7 @@ struct MacAmbientJevApp: App {
                         Label("Jev", systemImage: "sparkles")
                     }
 
-                DiagnosticsView(usageCounter: jevUsageCounter)
+                DiagnosticsView(usageCounter: appState.jevUsageCounter)
                     .tabItem {
                         Label("診断", systemImage: "waveform.path.ecg")
                     }
