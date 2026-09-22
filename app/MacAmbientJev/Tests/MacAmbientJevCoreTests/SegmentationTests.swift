@@ -83,3 +83,30 @@ func vadFrameMapperMaps16kSamplesOntoCanonicalTimeline() {
     let mapper = VADFrameMapper(canonicalSampleRate: 48_000)
     #expect(mapper.canonicalFrame(forVADSample: 16_000) == 48_000)
 }
+
+
+@Test
+func segmentationAssemblerFlushesOpenSpeechAtEndOfInput() {
+    var assembler = SegmentationAssembler(
+        segmentationRunID: "seg_run_01",
+        preRollFrames: 100,
+        maxSegmentFrames: 10_000
+    )
+
+    assembler.speechStarted(atFrame: 1_000)
+    let segment = assembler.finish(atFrame: 1_750)
+
+    #expect(segment?.startFrame == 900)
+    #expect(segment?.endFrame == 1_750)
+}
+
+@Test
+func segmentationAssemblerFinishIsIdempotentWithoutOpenSpeech() {
+    var assembler = SegmentationAssembler(
+        segmentationRunID: "seg_run_01",
+        preRollFrames: 0,
+        maxSegmentFrames: 10_000
+    )
+
+    #expect(assembler.finish(atFrame: 1_000) == nil)
+}
