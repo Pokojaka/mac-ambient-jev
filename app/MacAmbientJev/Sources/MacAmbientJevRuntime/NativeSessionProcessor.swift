@@ -19,16 +19,26 @@ public actor NativeSessionProcessor {
         _ state: ProcessingState
     ) async -> Void
 
+    private static let jevAPIKeyAccount = "jev-api-key"
+
     private let paths: AppPaths
     private let asr: NativeQwen3ASREngine
     private let diarization: FluidOfflineDiarizationEngine
+    private let allowExternalJev: Bool
+    public let jevUsageCounter: JevUsageCounter
 
-    public init(paths: AppPaths) {
+    public init(
+        paths: AppPaths,
+        allowExternalJev: Bool = false,
+        jevUsageCounter: JevUsageCounter = JevUsageCounter()
+    ) {
         self.paths = paths
         self.asr = NativeQwen3ASREngine(
             modelStore: ModelStore(paths: paths)
         )
         self.diarization = FluidOfflineDiarizationEngine(paths: paths)
+        self.allowExternalJev = allowExternalJev
+        self.jevUsageCounter = jevUsageCounter
     }
 
     public func processImportedSession(
@@ -500,9 +510,86 @@ public actor NativeSessionProcessor {
             scopeRunID: scopeRunID
         )
 
+        let finalSegments = try await runJevEnrichmentIfAvailable(
+            sessionID: sessionID,
+            checkpoint: checkpoint,
+            existingEvents: scopeResult.events,
+            activeRuns: ActiveRuns(
+                segmentation: segmentationRunID,
+                asr: asrRunID,
+                diarization: diarizationRunID,
+                scene: sceneRunID,
+                scope: scopeRunID
+            ),
+            fallbackSegments: scopeResult.materializedSegments,
+            onStatus: onStatus
+        )
+
         if let onUpdate {
-            await onUpdate(scopeResult.materializedSegments, .complete)
+            await onUpdate(finalSegments, .complete)
         }
+    }
+
+    private func runJevEnrichmentIfAvailable(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        existingEvents: [TranscriptEvent],
+        activeRuns: ActiveRuns,
+        fallbackSegments: [MaterializedTranscriptSegment],
+        onStatus: StatusHandler?
+    ) async throws -> [MaterializedTranscriptSegment] {
+        guard allowExternalJev else {
+            return fallbackSegments
+        }
+
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "jev.isPaused") else {
+            return fallbackSegments
+        }
+
+        guard let apiKey = try KeychainStore().load(
+            account: Self.jevAPIKeyAccount
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !apiKey.isEmpty else {
+            return fallbackSegments
+        }
+
+        if let onStatus {
+            await onStatus(UserFacingStatus.classifyingWithJev.text)
+        }
+
+        let runID = "priority_\(UUID().uuidString.lowercased())"
+        let decisions = JevDecisionCoordinator(
+            provider: JevClient(apiKey: apiKey),
+            usageCounter: jevUsageCounter
+        )
+        let coordinator = JevEnrichmentCoordinator(
+            sessionID: sessionID,
+            runID: runID,
+            writer: try SessionWriter(
+                sessionURL: sessionURL(for: sessionID)
+            ),
+            decisions: decisions,
+            materializer: TranscriptMaterializer(
+                sampleRate: checkpoint.sampleRate
+            )
+        )
+        let result = try await coordinator.process(
+            existingEvents: existingEvents,
+            activeRuns: activeRuns
+        )
+
+        try selectContentPriorityRun(
+            sessionID: sessionID,
+            runID: runID
+        )
+
+        if !result.retryPendingSegmentIDs.isEmpty,
+           let onStatus {
+            await onStatus(UserFacingStatus.jevDeferred.text)
+        }
+
+        return result.materializedSegments
     }
 
     private func reportFailure(
@@ -599,6 +686,26 @@ public actor NativeSessionProcessor {
             scene: metadata.activeRuns?.scene,
             scope: scopeRunID,
             contentPriority: metadata.activeRuns?.contentPriority
+        )
+        try store.save(metadata.withActiveRuns(activeRuns))
+    }
+
+    private func selectContentPriorityRun(
+        sessionID: UUID,
+        runID: String
+    ) throws {
+        let store = ProcessingMetadataStore(
+            sessionURL: sessionURL(for: sessionID)
+        )
+        guard let metadata = try store.load() else { return }
+
+        let activeRuns = ActiveRuns(
+            segmentation: metadata.activeRuns?.segmentation,
+            asr: metadata.activeRuns?.asr,
+            diarization: metadata.activeRuns?.diarization,
+            scene: metadata.activeRuns?.scene,
+            scope: metadata.activeRuns?.scope,
+            contentPriority: runID
         )
         try store.save(metadata.withActiveRuns(activeRuns))
     }
