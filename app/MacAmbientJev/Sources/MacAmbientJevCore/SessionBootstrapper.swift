@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SessionBootstrapper: Sendable {
+public struct SessionBootstrapper {
     private let fileManager: FileManager
 
     public init(fileManager: FileManager = .default) {
