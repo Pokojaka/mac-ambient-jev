@@ -2,6 +2,26 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+private struct DistantEvidenceProvider: ProximityEvidenceProvider {
+    func evidenceSpans(
+        startFrame: Int64,
+        endFrame: Int64,
+        speakerSpans: [SpeakerSpan]
+    ) async throws -> [ProximityEvidenceSpan] {
+        [
+            ProximityEvidenceSpan(
+                startFrame: startFrame,
+                endFrame: endFrame,
+                evidence: ProximityEvidence(
+                    distanceHint: .distant,
+                    levelConfidence: 0.9,
+                    spectralConfidence: 0.9
+                )
+            )
+        ]
+    }
+}
+
 private struct MixedEvidenceProvider: ProximityEvidenceProvider {
     func evidenceSpans(
         startFrame: Int64,
@@ -131,4 +151,67 @@ func mixedScopeEvidenceRemainsSplitWithinOneSegment() async throws {
     #expect(result.scopeSpans.count == 2)
     #expect(result.scopeSpans[0].scope == .near)
     #expect(result.scopeSpans[1].scope == .background)
+}
+
+
+@Test
+func scopeClassificationSplitsAtSceneTransitionInsideSegment() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let coordinator = ScopeCoordinator(
+        sessionID: UUID(),
+        runID: "scope-test",
+        writer: try SessionWriter(sessionURL: root),
+        provider: DistantEvidenceProvider(),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+
+    let events: [TranscriptEvent] = [
+        .segmentCreated(
+            seq: 1,
+            segmentationRunID: "seg",
+            segmentID: "seg-1",
+            startFrame: 0,
+            endFrame: 1_000
+        ),
+        .asrCompleted(
+            seq: 2,
+            runID: "asr",
+            segmentationRunID: "seg",
+            segmentID: "seg-1",
+            text: "討論終了から講義へ戻る区間"
+        ),
+        .sceneChanged(
+            seq: 3,
+            runID: "scene",
+            atFrame: 0,
+            scene: .discussion
+        ),
+        .sceneChanged(
+            seq: 4,
+            runID: "scene",
+            atFrame: 500,
+            scene: .lecture
+        )
+    ]
+
+    let result = try await coordinator.process(
+        existingEvents: events,
+        speakerSpans: [],
+        activeRuns: ActiveRuns(
+            segmentation: "seg",
+            asr: "asr",
+            scene: "scene"
+        )
+    )
+
+    #expect(result.scopeSpans.count == 2)
+    #expect(result.scopeSpans[0].startFrame == 0)
+    #expect(result.scopeSpans[0].endFrame == 500)
+    #expect(result.scopeSpans[0].scope == .background)
+    #expect(result.scopeSpans[1].startFrame == 500)
+    #expect(result.scopeSpans[1].endFrame == 1_000)
+    #expect(result.scopeSpans[1].scope == .unknown)
 }
