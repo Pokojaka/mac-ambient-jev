@@ -1,3 +1,252 @@
+import Foundation
+
+public enum TranscriptEventKind: Sendable, Equatable {
+    case segmentCreated
+    case asrCompleted(ASRResult)
+    case speakerSpan(SpeakerSpan)
+    case sceneChanged(SceneState)
+    case scopeSpan(ScopeSpan)
+    case contentPriority(ContentPriority)
+}
+
+public struct TranscriptEvent: Sendable, Equatable {
+    public let eventSeq: UInt64
+    public let processingRunID: String?
+    public let segmentationRunID: String?
+    public let segmentID: String?
+    public let sourceStartFrame: Int64?
+    public let sourceEndFrame: Int64?
+    public let kind: TranscriptEventKind
+
+    public init(
+        eventSeq: UInt64,
+        processingRunID: String? = nil,
+        segmentationRunID: String? = nil,
+        segmentID: String? = nil,
+        sourceStartFrame: Int64? = nil,
+        sourceEndFrame: Int64? = nil,
+        kind: TranscriptEventKind
+    ) {
+        self.eventSeq = eventSeq
+        self.processingRunID = processingRunID
+        self.segmentationRunID = segmentationRunID
+        self.segmentID = segmentID
+        self.sourceStartFrame = sourceStartFrame
+        self.sourceEndFrame = sourceEndFrame
+        self.kind = kind
+    }
+
+    public static func segmentCreated(
+        seq: UInt64, segmentationRunID: String, segmentID: String,
+        startFrame: Int64, endFrame: Int64
+    ) -> TranscriptEvent {
+        TranscriptEvent(
+            eventSeq: seq,
+            segmentationRunID: segmentationRunID,
+            segmentID: segmentID,
+            sourceStartFrame: startFrame,
+            sourceEndFrame: endFrame,
+            kind: .segmentCreated
+        )
+    }
+
+    public static func asrCompleted(
+        seq: UInt64, runID: String, segmentationRunID: String,
+        segmentID: String, text: String, detectedLanguage: String? = nil
+    ) -> TranscriptEvent {
+        TranscriptEvent(
+            eventSeq: seq,
+            processingRunID: runID,
+            segmentationRunID: segmentationRunID,
+            segmentID: segmentID,
+            kind: .asrCompleted(ASRResult(text: text, detectedLanguage: detectedLanguage))
+        )
+    }
+
+    public static func speakerSpan(
+        seq: UInt64, runID: String, speakerID: String,
+        startFrame: Int64, endFrame: Int64, confidence: Double?
+    ) -> TranscriptEvent {
+        TranscriptEvent(
+            eventSeq: seq,
+            processingRunID: runID,
+            sourceStartFrame: startFrame,
+            sourceEndFrame: endFrame,
+            kind: .speakerSpan(
+                SpeakerSpan(
+                    speakerID: speakerID,
+                    startFrame: startFrame,
+                    endFrame: endFrame,
+                    confidence: confidence
+                )
+            )
+        )
+    }
+
+    public static func sceneChanged(
+        seq: UInt64, runID: String, atFrame: Int64, scene: SceneState
+    ) -> TranscriptEvent {
+        TranscriptEvent(
+            eventSeq: seq,
+            processingRunID: runID,
+            sourceStartFrame: atFrame,
+            kind: .sceneChanged(scene)
+        )
+    }
+
+    public static func scopeSpan(
+        seq: UInt64, runID: String, startFrame: Int64, endFrame: Int64,
+        scope: AcousticScope, confidence: Double
+    ) -> TranscriptEvent {
+        TranscriptEvent(
+            eventSeq: seq,
+            processingRunID: runID,
+            sourceStartFrame: startFrame,
+            sourceEndFrame: endFrame,
+            kind: .scopeSpan(
+                ScopeSpan(
+                    startFrame: startFrame,
+                    endFrame: endFrame,
+                    scope: scope,
+                    confidence: confidence
+                )
+            )
+        )
+    }
+
+    public static func contentPriority(
+        seq: UInt64, runID: String, segmentID: String, priority: ContentPriority
+    ) -> TranscriptEvent {
+        TranscriptEvent(
+            eventSeq: seq,
+            processingRunID: runID,
+            segmentID: segmentID,
+            kind: .contentPriority(priority)
+        )
+    }
+}
+
+public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
+    public let id: String
+    public let startMilliseconds: Int64
+    public let endMilliseconds: Int64
+    public let confidence: Double?
+
+    public init(id: String, startMilliseconds: Int64, endMilliseconds: Int64, confidence: Double?) {
+        self.id = id
+        self.startMilliseconds = startMilliseconds
+        self.endMilliseconds = endMilliseconds
+        self.confidence = confidence
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case startMilliseconds = "start_ms"
+        case endMilliseconds = "end_ms"
+        case confidence
+    }
+}
+
+public struct MaterializedScopeSpan: Codable, Sendable, Equatable {
+    public let startMilliseconds: Int64
+    public let endMilliseconds: Int64
+    public let scope: AcousticScope
+    public let confidence: Double
+
+    public init(
+        startMilliseconds: Int64, endMilliseconds: Int64,
+        scope: AcousticScope, confidence: Double
+    ) {
+        self.startMilliseconds = startMilliseconds
+        self.endMilliseconds = endMilliseconds
+        self.scope = scope
+        self.confidence = confidence
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case startMilliseconds = "start_ms"
+        case endMilliseconds = "end_ms"
+        case scope
+        case confidence
+    }
+}
+
+public struct MaterializedTranscriptSegment: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { segmentID }
+    public let segmentID: String
+    public let startMilliseconds: Int64
+    public let endMilliseconds: Int64
+    public let text: String
+    public let scene: SceneState
+    public let speakers: [MaterializedSpeakerSpan]
+    public let scopeSpans: [MaterializedScopeSpan]
+    public let contentPriority: ContentPriority?
+
+    public init(
+        segmentID: String, startMilliseconds: Int64, endMilliseconds: Int64,
+        text: String, scene: SceneState, speakers: [MaterializedSpeakerSpan],
+        scopeSpans: [MaterializedScopeSpan], contentPriority: ContentPriority?
+    ) {
+        self.segmentID = segmentID
+        self.startMilliseconds = startMilliseconds
+        self.endMilliseconds = endMilliseconds
+        self.text = text
+        self.scene = scene
+        self.speakers = speakers
+        self.scopeSpans = scopeSpans
+        self.contentPriority = contentPriority
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case segmentID = "segment_id"
+        case startMilliseconds = "start_ms"
+        case endMilliseconds = "end_ms"
+        case text
+        case scene
+        case speakers
+        case scopeSpans = "scope_spans"
+        case contentPriority = "content_priority"
+    }
+}
+
+public struct TranscriptMaterializer: Sendable {
+    public let sampleRate: Double
+
+    public init(sampleRate: Double) {
+        self.sampleRate = sampleRate
+    }
+
+    public func materialize(
+        events: [TranscriptEvent],
+        activeRuns: ActiveRuns
+    ) -> [MaterializedTranscriptSegment] {
+        let ordered = events.sorted { $0.eventSeq < $1.eventSeq }
+        let segmentEvents = ordered.filter { event in
+            guard case .segmentCreated = event.kind else { return false }
+            return activeRuns.segmentation == nil
+                || event.segmentationRunID == activeRuns.segmentation
+        }
+
+        return segmentEvents.compactMap { segmentEvent in
+            guard let segmentID = segmentEvent.segmentID,
+                  let startFrame = segmentEvent.sourceStartFrame,
+                  let endFrame = segmentEvent.sourceEndFrame else {
+                return nil
+            }
+
+            guard let asr = ordered.last(where: { event in
+                guard event.segmentID == segmentID,
+                      event.segmentationRunID == segmentEvent.segmentationRunID,
+                      event.processingRunID == activeRuns.asr else {
+                    return false
+                }
+                if case .asrCompleted = event.kind { return true }
+                return false
+            }), case .asrCompleted(let asrResult) = asr.kind else {
+                return nil
+            }
+
+            let speakers = ordered.compactMap { event -> MaterializedSpeakerSpan? in
                 guard event.processingRunID == activeRuns.diarization,
                       case .speakerSpan(let span) = event.kind else { return nil }
                 let clippedStart = max(startFrame, span.startFrame)
