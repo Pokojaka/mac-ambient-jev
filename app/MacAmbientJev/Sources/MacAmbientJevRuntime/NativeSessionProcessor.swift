@@ -153,7 +153,7 @@ public actor NativeSessionProcessor {
             if let onStatus {
                 if result.failedCount == 0 {
                     await onStatus(
-                        "文字起こしと話者分離を復旧しました（\(result.completedCount)区間）"
+                        "文字起こし、話者分離、場面判定を復旧しました（\(result.completedCount)区間）"
                     )
                 } else {
                     await onStatus(
@@ -218,7 +218,7 @@ public actor NativeSessionProcessor {
 
             if let onStatus {
                 await onStatus(
-                    "完了済みの文字起こしと話者分離を復旧しました（\(materialized.count)区間）"
+                    "完了済みの文字起こし、話者分離、場面判定を復旧しました（\(materialized.count)区間）"
                 )
             }
         } catch {
@@ -328,7 +328,7 @@ public actor NativeSessionProcessor {
         if let onStatus {
             if result.failedCount == 0 {
                 await onStatus(
-                    "文字起こしと話者分離が完了しました（\(result.completedCount)区間）"
+                    "文字起こし、話者分離、場面判定が完了しました（\(result.completedCount)区間）"
                 )
             } else {
                 await onStatus(
@@ -432,8 +432,42 @@ public actor NativeSessionProcessor {
             diarizationRunID: diarizationRunID
         )
 
+        if let onStatus {
+            await onStatus(UserFacingStatus.analyzingScene.text)
+        }
+
+        let sceneRunID =
+            "scene_\(UUID().uuidString.lowercased())"
+        let sceneCoordinator = SceneCoordinator(
+            sessionID: sessionID,
+            runID: sceneRunID,
+            writer: try SessionWriter(
+                sessionURL: sessionURL(for: sessionID)
+            ),
+            materializer: TranscriptMaterializer(
+                sampleRate: checkpoint.sampleRate
+            )
+        )
+        let sceneResult = try await sceneCoordinator.process(
+            speakerSpans: result.speakerSpans,
+            totalFrames: checkpoint.committedFrames,
+            sampleRate: checkpoint.sampleRate,
+            existingEvents: result.events,
+            activeRuns: ActiveRuns(
+                segmentation: segmentationRunID,
+                asr: asrRunID,
+                diarization: diarizationRunID,
+                scene: sceneRunID
+            )
+        )
+
+        try selectSceneRun(
+            sessionID: sessionID,
+            sceneRunID: sceneRunID
+        )
+
         if let onUpdate {
-            await onUpdate(result.materializedSegments, .complete)
+            await onUpdate(sceneResult.materializedSegments, .complete)
         }
     }
 
@@ -489,6 +523,26 @@ public actor NativeSessionProcessor {
             asr: metadata.activeRuns?.asr,
             diarization: diarizationRunID,
             scene: metadata.activeRuns?.scene,
+            scope: metadata.activeRuns?.scope,
+            contentPriority: metadata.activeRuns?.contentPriority
+        )
+        try store.save(metadata.withActiveRuns(activeRuns))
+    }
+
+    private func selectSceneRun(
+        sessionID: UUID,
+        sceneRunID: String
+    ) throws {
+        let store = ProcessingMetadataStore(
+            sessionURL: sessionURL(for: sessionID)
+        )
+        guard let metadata = try store.load() else { return }
+
+        let activeRuns = ActiveRuns(
+            segmentation: metadata.activeRuns?.segmentation,
+            asr: metadata.activeRuns?.asr,
+            diarization: metadata.activeRuns?.diarization,
+            scene: sceneRunID,
             scope: metadata.activeRuns?.scope,
             contentPriority: metadata.activeRuns?.contentPriority
         )
