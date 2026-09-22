@@ -667,7 +667,9 @@ public actor NativeSessionProcessor {
             writer: try SessionWriter(
                 sessionURL: sessionURL(for: sessionID)
             ),
-            provider: UnknownProximityEvidenceProvider(),
+            provider: TimelineProximityEvidenceProvider(
+                reader: reader
+            ),
             materializer: TranscriptMaterializer(
                 sampleRate: checkpoint.sampleRate
             )
