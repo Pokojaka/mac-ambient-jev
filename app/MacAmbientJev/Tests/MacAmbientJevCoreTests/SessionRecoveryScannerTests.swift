@@ -695,3 +695,95 @@ func recoveryScannerUsesActiveGoodASREvenWhenNewerRunFailed() async throws {
     #expect(plan.asrRunID == "asr_active")
     #expect(plan.hasFailures == false)
 }
+
+
+@Test
+func recoveryScannerSchedulesOnlyDeferredPrioritySegments() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sessionID = UUID()
+    let sessionURL = root.appending(
+        path: sessionID.uuidString,
+        directoryHint: .isDirectory
+    )
+    try writeRecoveryManifest(
+        sessionID: sessionID,
+        sourceKind: .live,
+        to: sessionURL
+    )
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 100,
+        sampleRate: 100,
+        channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    )
+    try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
+
+    let writer = try SessionWriter(sessionURL: sessionURL)
+    try await appendCompletedRecoveryASRRun(
+        writer: writer,
+        sessionID: sessionID,
+        segmentationRunID: "seg-active",
+        asrRunID: "asr-active",
+        text: "意味分類待ち"
+    )
+
+    _ = try await writer.append(EventDraft(
+        eventType: "content_priority.assigned",
+        sessionID: sessionID,
+        processingRunID: "priority-active",
+        segmentID: "seg_000001",
+        payload: ContentPriorityEventPayload(
+            priority: .primary,
+            confidence: nil,
+            model: nil,
+            inputTokens: nil,
+            needsRetry: true
+        )
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "content_priority.pending_retry",
+        sessionID: sessionID,
+        processingRunID: "priority-active",
+        segmentID: "seg_000001",
+        payload: EmptyPayload()
+    ))
+
+    let metadata = ProcessingMetadata(
+        timelineVersion: 1,
+        vadVersion: "vad",
+        vadConfigHash: "hash",
+        asrEngine: "qwen",
+        asrModel: "model",
+        asrVersion: "version",
+        diarizationVersion: "diar",
+        sceneAnalyzerVersion: 1,
+        jevSchemaVersion: 1,
+        policyVersion: 1,
+        materializerSchemaVersion: 1,
+        activeRuns: ActiveRuns(
+            segmentation: "seg-active",
+            asr: "asr-active",
+            diarization: "diar-active",
+            scene: "scene-active",
+            scope: "scope-active",
+            contentPriority: "priority-active"
+        )
+    )
+    try ProcessingMetadataStore(
+        sessionURL: sessionURL
+    ).save(metadata)
+
+    let candidates = try SessionRecoveryScanner(
+        sessionsRoot: root
+    ).pendingSessions()
+
+    guard case .retryContentPriority(let segmentIDs)
+            = candidates.first?.action else {
+        Issue.record("保留中のJev分類だけを再試行する必要がある")
+        return
+    }
+    #expect(segmentIDs == ["seg_000001"])
+}
