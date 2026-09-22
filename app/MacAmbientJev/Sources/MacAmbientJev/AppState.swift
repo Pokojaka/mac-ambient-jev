@@ -1,7 +1,9 @@
+import AppKit
 import AVFoundation
 import Combine
 import Foundation
 import MacAmbientJevCore
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppState: ObservableObject {
@@ -11,6 +13,7 @@ final class AppState: ObservableObject {
         case starting
         case recording
         case stopping
+        case importing
     }
 
     enum StatusTone: Equatable {
@@ -59,7 +62,7 @@ final class AppState: ObservableObject {
 
     var isBusy: Bool {
         switch recordingPhase {
-        case .requestingPermission, .starting, .stopping:
+        case .requestingPermission, .starting, .stopping, .importing:
             true
         case .idle, .recording:
             false
@@ -74,9 +77,69 @@ final class AppState: ObservableObject {
         }
     }
 
-    func showImportPending() {
+    func importAudioFile() async {
         guard recordingPhase == .idle else { return }
-        setStatus("音声ファイルの読み込みは次の実装段階で接続します", tone: .neutral)
+
+        let panel = NSOpenPanel()
+        panel.title = "文字起こしする音声ファイルを選択"
+        panel.prompt = "読み込む"
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+
+        guard panel.runModal() == .OK, let sourceURL = panel.url else {
+            return
+        }
+
+        recordingPhase = .importing
+        setStatus("音声ファイルを読み込んでいます", tone: .neutral)
+        defer { recordingPhase = .idle }
+
+        let accessed = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let sessionID = UUID()
+        let sessionURL = paths.sessionsRoot
+            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+
+        do {
+            let manifest = SessionManifest(
+                sessionID: sessionID,
+                createdAt: Date(),
+                sourceKind: .importedFile,
+                originalFilename: sourceURL.lastPathComponent
+            )
+
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            encoder.dateEncodingStrategy = .iso8601
+
+            try FileManager.default.createDirectory(
+                at: sessionURL,
+                withIntermediateDirectories: true
+            )
+            try encoder.encode(manifest).write(
+                to: sessionURL.appending(path: "session.json"),
+                options: .atomic
+            )
+            _ = try SessionWriter(sessionURL: sessionURL)
+            _ = try AudioImporter().importFile(sourceURL, into: sessionURL)
+
+            setStatus(
+                "「\(sourceURL.lastPathComponent)」を読み込みました",
+                tone: .neutral
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: sessionURL)
+            setStatus(
+                "音声ファイルを読み込めませんでした: \(error.localizedDescription)",
+                tone: .error
+            )
+        }
     }
 
     func startRecording() async {
