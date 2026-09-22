@@ -64,25 +64,42 @@ public struct SessionRecoveryScanner: Sendable {
 
             let manifest = try decodeManifest(at: manifestURL)
             let recoveredLines = try recoverEventLog(sessionURL: sessionURL)
-            let latestASRPlan = try EventLogRecoveryAnalyzer().latestASRPlan(
+            let analyzer = EventLogRecoveryAnalyzer()
+            let latestASRPlan = try analyzer.latestASRPlan(
                 lines: recoveredLines
             )
             let metadata = try ProcessingMetadataStore(
                 sessionURL: sessionURL
             ).load()
+            let activeASRPlan: ASRRecoveryPlan?
+            if let activeASRRunID = metadata?.activeRuns?.asr {
+                activeASRPlan = try analyzer.asrPlan(
+                    runID: activeASRRunID,
+                    lines: recoveredLines
+                )
+            } else {
+                activeASRPlan = nil
+            }
 
             let action: RecoverableProcessingAction?
-            if let plan = latestASRPlan {
+            if let activePlan = activeASRPlan,
+               activePlan.pendingSegments.isEmpty,
+               activePlan.runSucceeded,
+               !activePlan.hasFailures {
+                // Scope is the final mandatory local stage. If it was not
+                // selected, rerun diarization and all later local stages from
+                // the known-good active ASR run. This deliberately trades some
+                // duplicate computation for simple, crash-safe recovery.
+                if metadata?.activeRuns?.scope == nil {
+                    action = .runDiarization(activePlan)
+                } else {
+                    action = nil
+                }
+            } else if let plan = latestASRPlan {
                 if metadata?.activeRuns?.asr == plan.asrRunID {
-                    if metadata?.activeRuns?.diarization == nil,
-                       plan.pendingSegments.isEmpty,
-                       plan.runSucceeded,
-                       !plan.hasFailures {
-                        action = .runDiarization(plan)
-                    } else {
-                        action = nil
-                    }
-                } else if !plan.pendingSegments.isEmpty && !plan.hasFailures {
+                    action = nil
+                } else if !plan.pendingSegments.isEmpty
+                            && !plan.hasFailures {
                     action = .resumeASR(plan)
                 } else if plan.pendingSegments.isEmpty
                             && plan.runSucceeded
