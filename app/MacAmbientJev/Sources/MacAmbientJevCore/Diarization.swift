@@ -22,3 +22,12 @@ public struct SpeakerSpanMapper: Sendable, Equatable {
         )
     }
 }
+
+
+public protocol DiarizationEngine: Sendable {
+    func prepare() async throws
+    func diarize(
+        fileURL: URL,
+        canonicalSampleRate: Double
+    ) async throws -> [SpeakerSpan]
+}
