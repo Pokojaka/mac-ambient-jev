@@ -23,7 +23,7 @@ public struct LiveVADProgress: Sendable, Equatable {
 /// timeline. It never participates in microphone capture, so VAD latency or
 /// failure cannot block audio persistence.
 public actor LiveVADSession {
-    public let segmentationRunID: String
+    public nonisolated let segmentationRunID: String
 
     private let processor: FluidVADTimelineProcessor
     private var segments: [SegmentReference] = []
