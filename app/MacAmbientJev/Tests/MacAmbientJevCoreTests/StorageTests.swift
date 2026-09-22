@@ -89,3 +89,37 @@ import Testing
         try restored.select(stage: .asr, runID: "asr_run_02")
     }
 }
+
+
+@Test
+func processingMetadataStorePersistsActiveRunsAtomically() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let active = ActiveRuns(
+        segmentation: "seg_run_03",
+        asr: "asr_run_07"
+    )
+    let metadata = ProcessingMetadata(
+        timelineVersion: 1,
+        vadVersion: "fluidaudio-0.15.8",
+        vadConfigHash: "default-v1",
+        asrEngine: "qwen3-asr-swift",
+        asrModel: ModelStore.qwen3ASRModelID,
+        asrVersion: "speech-swift-c4c2fab",
+        diarizationVersion: "fluidaudio-0.15.8",
+        sceneAnalyzerVersion: 1,
+        jevSchemaVersion: 1,
+        policyVersion: 1,
+        materializerSchemaVersion: 1,
+        activeRuns: active
+    )
+
+    let store = ProcessingMetadataStore(sessionURL: root)
+    try store.save(metadata)
+    let restored = try store.load()
+
+    #expect(restored?.activeRuns?.segmentation == "seg_run_03")
+    #expect(restored?.activeRuns?.asr == "asr_run_07")
+}
