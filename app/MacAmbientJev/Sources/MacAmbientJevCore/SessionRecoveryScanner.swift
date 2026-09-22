@@ -9,6 +9,7 @@ public enum RecoverableProcessingAction: Sendable, Equatable {
     case reprocess
     case resumeASR(ASRRecoveryPlan)
     case selectCompletedASR(ASRRecoveryPlan)
+    case runDiarization(ASRRecoveryPlan)
 }
 
 public struct RecoverableSession: Sendable, Equatable {
@@ -73,7 +74,14 @@ public struct SessionRecoveryScanner: Sendable {
             let action: RecoverableProcessingAction?
             if let plan = latestASRPlan {
                 if metadata?.activeRuns?.asr == plan.asrRunID {
-                    action = nil
+                    if metadata?.activeRuns?.diarization == nil,
+                       plan.pendingSegments.isEmpty,
+                       plan.runSucceeded,
+                       !plan.hasFailures {
+                        action = .runDiarization(plan)
+                    } else {
+                        action = nil
+                    }
                 } else if !plan.pendingSegments.isEmpty && !plan.hasFailures {
                     action = .resumeASR(plan)
                 } else if plan.pendingSegments.isEmpty
