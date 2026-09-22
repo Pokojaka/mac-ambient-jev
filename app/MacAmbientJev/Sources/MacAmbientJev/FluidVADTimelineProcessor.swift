@@ -48,7 +48,7 @@ actor FluidVADTimelineProcessor {
             throw FluidVADTimelineProcessorError.invalidSourceFormat
         }
 
-        let converter = FluidAudio.AudioConverter()
+        let converter = AudioConverter()
         var emitted: [SegmentReference] = []
         var pending16k: [Float] = []
         var pendingOffset = 0
