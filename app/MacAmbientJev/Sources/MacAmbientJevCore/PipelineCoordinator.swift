@@ -104,54 +104,98 @@ public actor PipelineCoordinator {
         segments: [SegmentReference],
         onUpdate: UpdateHandler? = nil
     ) async -> PipelineBatchResult {
+        await run(
+            segments: segments,
+            existingEvents: [],
+            registerPending: true,
+            onUpdate: onUpdate
+        )
+    }
+
+    public func resumePendingASR(
+        segments: [SegmentReference],
+        existingEvents: [TranscriptEvent],
+        onUpdate: UpdateHandler? = nil
+    ) async -> PipelineBatchResult {
+        await run(
+            segments: segments,
+            existingEvents: existingEvents,
+            registerPending: false,
+            onUpdate: onUpdate
+        )
+    }
+
+    private func run(
+        segments: [SegmentReference],
+        existingEvents: [TranscriptEvent],
+        registerPending: Bool,
+        onUpdate: UpdateHandler?
+    ) async -> PipelineBatchResult {
         await state.setProcessing(.running)
 
-        var transcriptEvents: [TranscriptEvent] = []
-        var completedCount = 0
+        var transcriptEvents = existingEvents
+        var completedCount = existingEvents.reduce(into: 0) { count, event in
+            guard event.processingRunID == asrRunID else { return }
+            if case .asrCompleted = event.kind {
+                count += 1
+            }
+        }
         var failedCount = 0
 
-        do {
-            for segment in segments {
-                let created = try await writer.append(EventDraft(
-                    eventType: "segment.created",
-                    sessionID: sessionID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: EmptyPayload()
-                ))
-                transcriptEvents.append(.segmentCreated(
-                    seq: created.eventSeq,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    startFrame: segment.startFrame,
-                    endFrame: segment.endFrame
-                ))
+        if registerPending {
+            do {
+                for segment in segments {
+                    let created = try await writer.append(EventDraft(
+                        eventType: "segment.created",
+                        sessionID: sessionID,
+                        segmentationRunID: segmentationRunID,
+                        segmentID: segment.segmentID,
+                        sourceStartFrame: segment.startFrame,
+                        sourceEndFrame: segment.endFrame,
+                        payload: EmptyPayload()
+                    ))
+                    transcriptEvents.append(.segmentCreated(
+                        seq: created.eventSeq,
+                        segmentationRunID: segmentationRunID,
+                        segmentID: segment.segmentID,
+                        startFrame: segment.startFrame,
+                        endFrame: segment.endFrame
+                    ))
 
-                _ = try await writer.append(EventDraft(
-                    eventType: "asr.pending",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: EmptyPayload()
-                ))
+                    _ = try await writer.append(EventDraft(
+                        eventType: "asr.pending",
+                        sessionID: sessionID,
+                        processingRunID: asrRunID,
+                        segmentationRunID: segmentationRunID,
+                        segmentID: segment.segmentID,
+                        sourceStartFrame: segment.startFrame,
+                        sourceEndFrame: segment.endFrame,
+                        payload: EmptyPayload()
+                    ))
+                }
+            } catch {
+                let message =
+                    "イベントログへ未処理区間を保存できませんでした: \(error.localizedDescription)"
+                let stateValue = ProcessingState.partialFailure(message)
+                await state.setProcessing(stateValue)
+
+                let materialized = materializer.materialize(
+                    events: transcriptEvents,
+                    activeRuns: ActiveRuns(
+                        segmentation: segmentationRunID,
+                        asr: asrRunID
+                    )
+                )
+                if let onUpdate {
+                    await onUpdate(materialized, stateValue)
+                }
+                return PipelineBatchResult(
+                    events: transcriptEvents,
+                    materializedSegments: materialized,
+                    completedCount: completedCount,
+                    failedCount: segments.count
+                )
             }
-        } catch {
-            let message = "イベントログへ未処理区間を保存できませんでした: \(error.localizedDescription)"
-            await state.setProcessing(.partialFailure(message))
-            if let onUpdate {
-                await onUpdate([], .partialFailure(message))
-            }
-            return PipelineBatchResult(
-                events: transcriptEvents,
-                materializedSegments: [],
-                completedCount: 0,
-                failedCount: segments.count
-            )
         }
 
         do {
@@ -177,13 +221,21 @@ public actor PipelineCoordinator {
                 "音声認識モデルを準備できませんでした: \(message)"
             )
             await state.setProcessing(stateValue)
+
+            let materialized = materializer.materialize(
+                events: transcriptEvents,
+                activeRuns: ActiveRuns(
+                    segmentation: segmentationRunID,
+                    asr: asrRunID
+                )
+            )
             if let onUpdate {
-                await onUpdate([], stateValue)
+                await onUpdate(materialized, stateValue)
             }
             return PipelineBatchResult(
                 events: transcriptEvents,
-                materializedSegments: [],
-                completedCount: 0,
+                materializedSegments: materialized,
+                completedCount: completedCount,
                 failedCount: failedCount
             )
         }
