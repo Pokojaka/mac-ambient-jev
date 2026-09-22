@@ -14,6 +14,7 @@ public enum UserFacingStatus: Sendable, Equatable {
     case diarizing
     case analyzingScene
     case analyzingScope
+    case classifyingWithJev
     case jevDeferred
 
     public var text: String {
@@ -44,6 +45,8 @@ public enum UserFacingStatus: Sendable, Equatable {
             return "会話の場面を判定しています"
         case .analyzingScope:
             return "発話の音響範囲を整理しています"
+        case .classifyingWithJev:
+            return "Jev で発話の意味を分類しています"
         case .jevDeferred:
             return "意味分類を後で再試行します"
         }
