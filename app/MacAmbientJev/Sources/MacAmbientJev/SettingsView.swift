@@ -11,9 +11,14 @@ struct SettingsView: View {
     @State private var statusIsError = false
 
     private let secretStore: any SecretStore
+    private let onRetryDeferred: () -> Void
 
-    init(secretStore: any SecretStore = KeychainStore()) {
+    init(
+        secretStore: any SecretStore = KeychainStore(),
+        onRetryDeferred: @escaping () -> Void = {}
+    ) {
         self.secretStore = secretStore
+        self.onRetryDeferred = onRetryDeferred
     }
 
     var body: some View {
@@ -48,6 +53,11 @@ struct SettingsView: View {
                     .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     if hasStoredKey {
+                        Button("保留中の分類を再試行") {
+                            onRetryDeferred()
+                        }
+                        .disabled(isJevPaused)
+
                         Button("削除", role: .destructive) {
                             deleteAPIKey()
                         }
@@ -84,7 +94,12 @@ struct SettingsView: View {
     private var jevEnabledBinding: Binding<Bool> {
         Binding(
             get: { !isJevPaused },
-            set: { isJevPaused = !$0 }
+            set: { enabled in
+                isJevPaused = !enabled
+                if enabled {
+                    onRetryDeferred()
+                }
+            }
         )
     }
 
@@ -98,6 +113,9 @@ struct SettingsView: View {
             hasStoredKey = true
             statusIsError = false
             statusMessage = "APIキーを Keychain に保存しました"
+            if !isJevPaused {
+                onRetryDeferred()
+            }
         } catch {
             statusIsError = true
             statusMessage = error.localizedDescription
