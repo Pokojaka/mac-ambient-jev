@@ -1,5 +1,5 @@
 import MacAmbientJevCore
-import Qwen3ASR
+@preconcurrency import Qwen3ASR
 
 enum NativeQwen3ASREngineError: Error {
     case notPrepared
