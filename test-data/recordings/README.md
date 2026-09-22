@@ -70,3 +70,43 @@ swift tools/evaluate-session.swift \
 ```
 
 最初は annotation がなくてもよい。まず録音ファイルだけ置き、パイプラインを通した後に保持必須語・誤除外禁止区間・場面転換時刻を追加していく運用を想定する。
+
+## 1件を処理して評価まで実行
+
+```bash
+swift tools/test-recording.swift \
+  test-data/recordings/local/lecture-ja-001/audio.m4a
+```
+
+このコマンドは `segments.json` を生成した後、そのまま評価し、同じディレクトリへ `report.json` を保存する。
+`scene-transitions.json` が存在する場合は自動的に評価へ含める。
+
+通常、処理中に作成するアプリ側セッションは終了時に削除する。
+パイプラインのデバッグでセッションを残したい場合だけ、下位コマンドを直接使う。
+
+```bash
+swift run --package-path app/MacAmbientJev \
+  MacAmbientJevProcessRecording \
+  --keep-session \
+  test-data/recordings/local/lecture-ja-001/audio.m4a
+```
+
+## corpus を一括実行
+
+`test-data/recordings/local/` 直下の各ディレクトリを走査し、音声ファイルがある corpus をまとめて処理できる。
+
+```bash
+swift tools/test-corpus.swift
+```
+
+既に `report.json` がある corpus はスキップする。全件を再処理する場合:
+
+```bash
+swift tools/test-corpus.swift --force
+```
+
+別の corpus root を指定する場合:
+
+```bash
+swift tools/test-corpus.swift /path/to/corpus
+```
