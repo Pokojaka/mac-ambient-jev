@@ -36,6 +36,11 @@ final class AppState: ObservableObject {
             checkpoint: AudioCheckpoint,
             plan: ASRRecoveryPlan
         )
+        case diarization(
+            sessionID: UUID,
+            checkpoint: AudioCheckpoint,
+            plan: ASRRecoveryPlan
+        )
     }
 
     @Published private(set) var statusText = "待機中"
@@ -359,6 +364,14 @@ final class AppState: ObservableObject {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
+            case .diarization(let sessionID, let checkpoint, let plan):
+                await sessionProcessor.runRecoveredDiarizationSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    plan: plan,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
             }
 
             if !pendingProcessing.isEmpty {
@@ -403,6 +416,15 @@ final class AppState: ObservableObject {
                 case (.selectCompletedASR(let plan), .processingTimeline(let checkpoint)):
                     enqueueProcessing(
                         .selectCompletedASR(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            plan: plan
+                        )
+                    )
+
+                case (.runDiarization(let plan), .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .diarization(
                             sessionID: sessionID,
                             checkpoint: checkpoint,
                             plan: plan
