@@ -42,7 +42,8 @@ private actor ProcessingResultCollector {
 @main
 struct ProcessRecordingCommand {
     static func main() async throws {
-        let arguments = Array(CommandLine.arguments.dropFirst())
+        var arguments = Array(CommandLine.arguments.dropFirst())
+        let keepSession = removeFlag("--keep-session", from: &arguments)
 
         guard arguments.count == 1 || arguments.count == 2 else {
             printUsage()
@@ -102,6 +103,20 @@ struct ProcessRecordingCommand {
             sourceKind: .importedFile,
             originalFilename: audioURL.lastPathComponent
         )
+
+        defer {
+            guard !keepSession else { return }
+            do {
+                try FileManager.default.removeItem(at: sessionURL)
+            } catch {
+                FileHandle.standardError.write(
+                    Data(
+                        "一時セッションを削除できませんでした: \(error.localizedDescription)\n".utf8
+                    )
+                )
+            }
+        }
+
         let imported = try AudioImporter().importFile(
             audioURL,
             into: sessionURL
@@ -151,17 +166,35 @@ struct ProcessRecordingCommand {
         )
 
         print("segments.json を生成しました: \(outputURL.path)")
-        print("セッションデータ: \(sessionURL.path)")
+        if keepSession {
+            print("セッションデータを保持しました: \(sessionURL.path)")
+        } else {
+            print("テスト用セッションは処理終了後に削除します")
+        }
+    }
+
+    private static func removeFlag(
+        _ flag: String,
+        from arguments: inout [String]
+    ) -> Bool {
+        guard let index = arguments.firstIndex(of: flag) else {
+            return false
+        }
+        arguments.remove(at: index)
+        return true
     }
 
     private static func printUsage() {
         print(
             """
             使い方:
-              MacAmbientJevProcessRecording <audio-file> [segments.json]
+              MacAmbientJevProcessRecording [--keep-session] <audio-file> [segments.json]
 
             出力先を省略すると、音声ファイルと同じディレクトリへ
             segments.json を生成します。
+
+            通常はテスト用セッションを処理後に削除します。
+            デバッグ用にセッションを残す場合だけ --keep-session を指定します。
             """
         )
     }
