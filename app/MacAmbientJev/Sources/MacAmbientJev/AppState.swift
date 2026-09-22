@@ -44,7 +44,7 @@ final class AppState: ObservableObject {
         )
     }
 
-    @Published private(set) var statusText = "待機中"
+    @Published private(set) var statusText = UserFacingStatus.idle.text
     @Published private(set) var statusTone: StatusTone = .neutral
     @Published private(set) var recordingPhase: RecordingPhase = .idle
     @Published private(set) var processingState: ProcessingState = .idle
@@ -121,7 +121,7 @@ final class AppState: ObservableObject {
         }
 
         recordingPhase = .importing
-        setCaptureStatus("音声ファイルを読み込んでいます", tone: .neutral)
+        setCaptureStatus(UserFacingStatus.importingAudio.text, tone: .neutral)
 
         let accessed = sourceURL.startAccessingSecurityScopedResource()
         defer {
@@ -171,7 +171,7 @@ final class AppState: ObservableObject {
         guard recordingPhase == .idle else { return }
 
         recordingPhase = .requestingPermission
-        setCaptureStatus("マイクへのアクセスを確認しています", tone: .neutral)
+        setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
 
         guard await requestMicrophoneAccessIfNeeded() else {
             recordingPhase = .idle
@@ -213,7 +213,7 @@ final class AppState: ObservableObject {
 
         recordingPhase = .starting
         if statusTone != .warning {
-            setCaptureStatus("録音を開始しています", tone: .neutral)
+            setCaptureStatus(UserFacingStatus.startingRecording.text, tone: .neutral)
         }
 
         let sessionID = UUID()
