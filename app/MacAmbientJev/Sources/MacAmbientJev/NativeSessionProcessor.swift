@@ -200,6 +200,11 @@ actor NativeSessionProcessor {
     }
 
     private func persistProcessingMetadata(sessionID: UUID) throws {
+        let store = ProcessingMetadataStore(
+            sessionURL: sessionURL(for: sessionID)
+        )
+        let existingActiveRuns = try store.load()?.activeRuns
+
         let metadata = ProcessingMetadata(
             timelineVersion: 1,
             vadVersion: "fluidaudio-0.15.8",
@@ -211,17 +216,11 @@ actor NativeSessionProcessor {
             sceneAnalyzerVersion: 1,
             jevSchemaVersion: 1,
             policyVersion: 1,
-            materializerSchemaVersion: 1
+            materializerSchemaVersion: 1,
+            activeRuns: existingActiveRuns
         )
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(metadata)
-        try data.write(
-            to: sessionURL(for: sessionID)
-                .appending(path: "processing_metadata.json"),
-            options: .atomic
-        )
+        try store.save(metadata)
     }
 
     private func sessionURL(for sessionID: UUID) -> URL {
