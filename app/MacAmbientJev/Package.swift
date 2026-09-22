@@ -6,10 +6,15 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
+        .library(name: "MacAmbientJevRuntime", targets: ["MacAmbientJevRuntime"]),
         .executable(name: "MacAmbientJev", targets: ["MacAmbientJev"]),
         .executable(
             name: "MacAmbientJevEvaluateSession",
             targets: ["MacAmbientJevEvaluateSession"]
+        ),
+        .executable(
+            name: "MacAmbientJevProcessRecording",
+            targets: ["MacAmbientJevProcessRecording"]
         )
     ],
     dependencies: [
@@ -24,6 +29,15 @@ let package = Package(
     ],
     targets: [
         .target(name: "MacAmbientJevCore"),
+        .target(
+            name: "MacAmbientJevRuntime",
+            dependencies: [
+                "MacAmbientJevCore",
+                "MacAmbientJevRuntime",
+                .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "Qwen3ASR", package: "speech-swift")
+            ]
+        ),
         .executableTarget(
             name: "MacAmbientJev",
             dependencies: [
@@ -35,6 +49,13 @@ let package = Package(
         .executableTarget(
             name: "MacAmbientJevEvaluateSession",
             dependencies: ["MacAmbientJevCore"]
+        ),
+        .executableTarget(
+            name: "MacAmbientJevProcessRecording",
+            dependencies: [
+                "MacAmbientJevCore",
+                "MacAmbientJevRuntime"
+            ]
         ),
         .testTarget(
             name: "MacAmbientJevCoreTests",
