@@ -209,16 +209,18 @@ func audioFileTimelineBuilderCreatesDiskBackedProcessingTimeline() async throws 
         standardFormatWithSampleRate: 8_000,
         channels: 1
     )!
-    let file = try AVAudioFile(
-        forWriting: source,
-        settings: format.settings
-    )
-    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12)!
-    buffer.frameLength = 12
-    for index in 0..<12 {
-        buffer.floatChannelData![0][index] = Float(index) / 12
+    try autoreleasepool {
+        let file = try AVAudioFile(
+            forWriting: source,
+            settings: format.settings
+        )
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12)!
+        buffer.frameLength = 12
+        for index in 0..<12 {
+            buffer.floatChannelData![0][index] = Float(index) / 12
+        }
+        try file.write(from: buffer)
     }
-    try file.write(from: buffer)
 
     let processingDirectory = root.appending(
         path: "processing",
@@ -253,16 +255,18 @@ func audioFileTimelineBuilderResumesWithoutDuplicatingImportedAudio() async thro
         standardFormatWithSampleRate: 8_000,
         channels: 1
     )!
-    let file = try AVAudioFile(
-        forWriting: source,
-        settings: format.settings
-    )
-    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12)!
-    buffer.frameLength = 12
-    for index in 0..<12 {
-        buffer.floatChannelData![0][index] = Float(index) / 12
+    try autoreleasepool {
+        let file = try AVAudioFile(
+            forWriting: source,
+            settings: format.settings
+        )
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12)!
+        buffer.frameLength = 12
+        for index in 0..<12 {
+            buffer.floatChannelData![0][index] = Float(index) / 12
+        }
+        try file.write(from: buffer)
     }
-    try file.write(from: buffer)
 
     let processingDirectory = root.appending(
         path: "processing-resume",
