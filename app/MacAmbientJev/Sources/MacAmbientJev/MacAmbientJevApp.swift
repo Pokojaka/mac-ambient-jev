@@ -16,13 +16,14 @@ struct MacAmbientJevApp: App {
 
 private struct ContentView: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var transcriptViewModel = LiveTranscriptViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
             statusBar
             Divider()
-            LiveTranscriptView(viewModel: transcriptViewModel)
+            LiveTranscriptView(
+                viewModel: appState.transcriptViewModel
+            )
         }
         .frame(minWidth: 720, minHeight: 480)
         .toolbar {
@@ -32,7 +33,10 @@ private struct ContentView: View {
                         await appState.importAudioFile()
                     }
                 } label: {
-                    Label("音声ファイルを読み込む", systemImage: "doc.badge.plus")
+                    Label(
+                        "音声ファイルを読み込む",
+                        systemImage: "doc.badge.plus"
+                    )
                 }
                 .disabled(appState.isBusy || appState.isRecording)
 
@@ -43,7 +47,9 @@ private struct ContentView: View {
                 } label: {
                     Label(
                         appState.isRecording ? "録音を停止" : "録音を開始",
-                        systemImage: appState.isRecording ? "stop.circle.fill" : "record.circle"
+                        systemImage: appState.isRecording
+                            ? "stop.circle.fill"
+                            : "record.circle"
                     )
                 }
                 .buttonStyle(.borderedProminent)
@@ -54,20 +60,41 @@ private struct ContentView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: AppSpacing.sm) {
-            statusIcon
+        VStack(spacing: AppSpacing.xs) {
+            HStack(spacing: AppSpacing.sm) {
+                captureStatusIcon
 
-            Text(appState.statusText)
-                .font(.callout)
-                .foregroundStyle(statusTextStyle)
-                .lineLimit(2)
+                Text(appState.statusText)
+                    .font(.callout)
+                    .foregroundStyle(captureStatusTextStyle)
+                    .lineLimit(2)
 
-            Spacer()
+                Spacer()
 
-            if appState.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel("処理中")
+                if appState.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("録音操作を処理中")
+                }
+            }
+
+            if let processingStatusText = appState.processingStatusText {
+                HStack(spacing: AppSpacing.sm) {
+                    processingStatusIcon
+
+                    Text(processingStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    Spacer()
+
+                    if appState.isProcessing {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .accessibilityLabel("文字起こし処理中")
+                    }
+                }
             }
         }
         .padding(.horizontal, AppSpacing.lg)
@@ -75,7 +102,7 @@ private struct ContentView: View {
     }
 
     @ViewBuilder
-    private var statusIcon: some View {
+    private var captureStatusIcon: some View {
         switch appState.statusTone {
         case .neutral:
             Image(systemName: "circle.fill")
@@ -88,21 +115,45 @@ private struct ContentView: View {
         case .warning:
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-                .accessibilityLabel("警告")
+                .accessibilityLabel("録音の警告")
         case .error:
             Image(systemName: "xmark.octagon.fill")
                 .foregroundStyle(.red)
-                .accessibilityLabel("エラー")
+                .accessibilityLabel("録音エラー")
         }
     }
 
-    private var statusTextStyle: some ShapeStyle {
+    @ViewBuilder
+    private var processingStatusIcon: some View {
+        switch appState.processingState {
+        case .idle:
+            Image(systemName: "circle")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        case .running:
+            Image(systemName: "waveform")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("文字起こし処理中")
+        case .backlogged:
+            Image(systemName: "clock")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("文字起こし待機中")
+        case .complete:
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("文字起こし完了")
+        case .partialFailure:
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("文字起こしに一部失敗")
+        }
+    }
+
+    private var captureStatusTextStyle: some ShapeStyle {
         switch appState.statusTone {
         case .neutral, .recording:
             AnyShapeStyle(Color.secondary)
-        case .warning:
-            AnyShapeStyle(Color.primary)
-        case .error:
+        case .warning, .error:
             AnyShapeStyle(Color.primary)
         }
     }
