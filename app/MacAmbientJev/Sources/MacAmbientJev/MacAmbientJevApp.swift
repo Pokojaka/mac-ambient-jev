@@ -28,7 +28,7 @@ private struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    appState.statusText = "音声ファイルの読み込みは次の実装段階で接続します"
+                    appState.showImportPending()
                 } label: {
                     Label("音声ファイルを読み込む", systemImage: "doc.badge.plus")
                 }
