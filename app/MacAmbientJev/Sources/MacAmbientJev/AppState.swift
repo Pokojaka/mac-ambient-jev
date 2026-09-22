@@ -65,22 +65,7 @@ final class AppState: ObservableObject {
     private var processingTask: Task<Void, Never>?
 
     init(fileManager: FileManager = .default) {
-        let applicationSupport = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library/Application Support", directoryHint: .isDirectory)
-
-        let cache = fileManager.urls(
-            for: .cachesDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library/Caches", directoryHint: .isDirectory)
-
-        let paths = AppPaths(
-            applicationSupportURL: applicationSupport,
-            cacheURL: cache
-        )
+        let paths = AppPaths.systemDefault(fileManager: fileManager)
 
         self.paths = paths
         self.captureEngine = AudioCaptureEngine(paths: paths)
@@ -493,26 +478,15 @@ final class AppState: ObservableObject {
         sourceKind: SessionSourceKind,
         originalFilename: String?
     ) throws {
-        let manifest = SessionManifest(
+        let createdURL = try SessionBootstrapper().createSession(
+            paths: paths,
             sessionID: sessionID,
-            createdAt: Date(),
             sourceKind: sourceKind,
             originalFilename: originalFilename
         )
-
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.dateEncodingStrategy = .iso8601
-
-        try FileManager.default.createDirectory(
-            at: sessionURL,
-            withIntermediateDirectories: true
+        precondition(
+            createdURL.standardizedFileURL == sessionURL.standardizedFileURL
         )
-        try encoder.encode(manifest).write(
-            to: sessionURL.appending(path: "session.json"),
-            options: .atomic
-        )
-        _ = try SessionWriter(sessionURL: sessionURL)
     }
 
     private func setCaptureStatus(_ text: String, tone: StatusTone) {
