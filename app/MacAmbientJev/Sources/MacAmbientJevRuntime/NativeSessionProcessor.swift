@@ -3,11 +3,14 @@ import MacAmbientJevCore
 
 enum NativeSessionProcessorError: LocalizedError {
     case invalidRecoveredRun
+    case liveASRSessionNotStarted
 
     var errorDescription: String? {
         switch self {
         case .invalidRecoveredRun:
             "復旧対象の文字起こし run が完了状態ではありません"
+        case .liveASRSessionNotStarted:
+            "録音中の文字起こしセッションが開始されていません"
         }
     }
 }
@@ -32,6 +35,7 @@ public actor NativeSessionProcessor {
     private let diarization: FluidOfflineDiarizationEngine
     private let allowExternalJev: Bool
     public let jevUsageCounter: JevUsageCounter
+    private var liveASRSessions: [UUID: LiveASRSession] = [:]
 
     public init(
         paths: AppPaths,
@@ -45,6 +49,152 @@ public actor NativeSessionProcessor {
         self.diarization = FluidOfflineDiarizationEngine(paths: paths)
         self.allowExternalJev = allowExternalJev
         self.jevUsageCounter = jevUsageCounter
+    }
+
+    @discardableResult
+    public func startLiveTranscription(
+        sessionID: UUID,
+        segmentationRunID: String,
+        sampleRate: Double
+    ) throws -> String {
+        try persistProcessingMetadata(sessionID: sessionID)
+
+        let asrRunID = "asr_live_\(UUID().uuidString.lowercased())"
+        liveASRSessions[sessionID] = try LiveASRSession(
+            sessionID: sessionID,
+            segmentationRunID: segmentationRunID,
+            asrRunID: asrRunID,
+            processingDirectory: processingDirectory(for: sessionID),
+            writer: SessionWriter(sessionURL: sessionURL(for: sessionID)),
+            asr: asr,
+            sampleRate: sampleRate
+        )
+        return asrRunID
+    }
+
+    @discardableResult
+    public func processLiveSegments(
+        sessionID: UUID,
+        segments: [SegmentReference],
+        checkpoint: AudioCheckpoint,
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async throws -> LiveASRProgress {
+        guard let liveSession = liveASRSessions[sessionID] else {
+            throw NativeSessionProcessorError.liveASRSessionNotStarted
+        }
+
+        if let onStatus, !segments.isEmpty {
+            await onStatus("録音中の発話を文字起こししています")
+        }
+
+        let progress = try await liveSession.process(
+            segments: segments,
+            checkpoint: checkpoint
+        )
+
+        if let onUpdate {
+            await onUpdate(progress.materializedSegments, .running)
+        }
+        return progress
+    }
+
+    public func finishLiveTranscription(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        finalSegments: [SegmentReference] = [],
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async -> LiveTranscriptionFinishResult {
+        guard let liveSession = liveASRSessions[sessionID] else {
+            return .fallbackRequired(
+                NativeSessionProcessorError.liveASRSessionNotStarted.localizedDescription
+            )
+        }
+
+        do {
+            if !finalSegments.isEmpty {
+                _ = try await processLiveSegments(
+                    sessionID: sessionID,
+                    segments: finalSegments,
+                    checkpoint: checkpoint,
+                    onStatus: onStatus,
+                    onUpdate: onUpdate
+                )
+            }
+
+            let completion = try await liveSession.finish()
+            liveASRSessions[sessionID] = nil
+
+            guard completion.succeeded else {
+                if let onUpdate {
+                    await onUpdate(
+                        completion.materializedSegments,
+                        .partialFailure("一部の発話を録音中に文字起こしできませんでした")
+                    )
+                }
+                return .fallbackRequired(
+                    "録音中の文字起こしで\(completion.failedCount)区間失敗しました"
+                )
+            }
+
+            try selectSuccessfulRuns(
+                sessionID: sessionID,
+                segmentationRunID: liveSession.segmentationRunID,
+                asrRunID: liveSession.asrRunID
+            )
+
+            if completion.completedCount == 0 {
+                await asr.unload()
+                if let onStatus {
+                    await onStatus("発話区間は検出されませんでした")
+                }
+                if let onUpdate {
+                    await onUpdate([], .complete)
+                }
+                return .noSpeech
+            }
+
+            await asr.unload()
+
+            do {
+                try await runOfflineDiarization(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    existingEvents: completion.events,
+                    segmentationRunID: liveSession.segmentationRunID,
+                    asrRunID: liveSession.asrRunID,
+                    onStatus: onStatus,
+                    onUpdate: onUpdate
+                )
+                return .completed
+            } catch {
+                if let onStatus {
+                    await onStatus(
+                        "文字起こしは保存しましたが、後処理に失敗しました: \(error.localizedDescription)"
+                    )
+                }
+                if let onUpdate {
+                    await onUpdate(
+                        completion.materializedSegments,
+                        .partialFailure(error.localizedDescription)
+                    )
+                }
+                return .postProcessingFailed(error.localizedDescription)
+            }
+        } catch {
+            liveASRSessions[sessionID] = nil
+            if let onStatus {
+                await onStatus(
+                    "録音中の文字起こしを完了できませんでした: \(error.localizedDescription)"
+                )
+            }
+            return .fallbackRequired(error.localizedDescription)
+        }
+    }
+
+    public func cancelLiveTranscription(sessionID: UUID) async {
+        liveASRSessions[sessionID] = nil
     }
 
     public func processImportedSession(
