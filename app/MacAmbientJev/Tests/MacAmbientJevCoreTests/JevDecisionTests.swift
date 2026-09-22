@@ -29,7 +29,6 @@ func jevFailureLeavesSegmentPrimaryAndRetryable() async {
     #expect(result.decision == nil)
 }
 
-
 private actor MockJevTransport: JevHTTPTransport {
     private var request: URLRequest?
     private let data: Data
@@ -179,4 +178,67 @@ func lowConfidenceDemotionFallsBackToPrimary() {
     )
 
     #expect(result == .primary)
+}
+
+private struct LowPriorityDecisionProvider: DecisionProvider {
+    let confidence: Double
+    let inputTokens: Int
+
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        ContentPriorityDecision(
+            priority: .lowPriority,
+            confidence: confidence,
+            model: "jev-test",
+            inputTokens: inputTokens
+        )
+    }
+
+    func classifySceneCue(
+        currentText: String,
+        previousTexts: [String],
+        currentScene: SceneState
+    ) async throws -> SemanticSceneDecision {
+        SemanticSceneDecision(
+            cue: .none,
+            confidence: 1,
+            model: "jev-test",
+            inputTokens: 1
+        )
+    }
+}
+
+@Test
+func coordinatorAppliesMixedContentGuardBeforeVisibleDemotion() async {
+    let coordinator = JevDecisionCoordinator(
+        provider: LowPriorityDecisionProvider(
+            confidence: 0.99,
+            inputTokens: 23
+        )
+    )
+
+    let result = await coordinator.classify(
+        text: "えー、RSAでは公開鍵を使います"
+    )
+
+    #expect(result.visiblePriority == .primary)
+    #expect(result.decision?.priority == .lowPriority)
+    #expect(!result.needsRetry)
+}
+
+@Test
+func usageCounterTracksSuccessFailureAndRetryBacklog() async {
+    let counter = JevUsageCounter()
+
+    await counter.recordAttempt()
+    await counter.recordSuccess(inputTokens: 42)
+    await counter.recordAttempt()
+    await counter.recordFailure(retryPending: true)
+
+    let snapshot = await counter.snapshot()
+
+    #expect(snapshot.sendCount == 2)
+    #expect(snapshot.estimatedInputTokens == 42)
+    #expect(snapshot.successCount == 1)
+    #expect(snapshot.failureCount == 1)
+    #expect(snapshot.retryPendingCount == 1)
 }
