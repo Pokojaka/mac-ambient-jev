@@ -107,26 +107,12 @@ final class AppState: ObservableObject {
             .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
 
         do {
-            let manifest = SessionManifest(
+            try prepareSession(
                 sessionID: sessionID,
-                createdAt: Date(),
+                sessionURL: sessionURL,
                 sourceKind: .importedFile,
                 originalFilename: sourceURL.lastPathComponent
             )
-
-            let encoder = JSONEncoder()
-            encoder.keyEncodingStrategy = .convertToSnakeCase
-            encoder.dateEncodingStrategy = .iso8601
-
-            try FileManager.default.createDirectory(
-                at: sessionURL,
-                withIntermediateDirectories: true
-            )
-            try encoder.encode(manifest).write(
-                to: sessionURL.appending(path: "session.json"),
-                options: .atomic
-            )
-            _ = try SessionWriter(sessionURL: sessionURL)
             _ = try AudioImporter().importFile(sourceURL, into: sessionURL)
 
             setStatus(
@@ -189,11 +175,22 @@ final class AppState: ObservableObject {
             setStatus("録音を開始しています", tone: .neutral)
         }
 
+        let sessionID = UUID()
+        let sessionURL = paths.sessionsRoot
+            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+
         do {
-            try await captureEngine.start(sessionID: UUID())
+            try prepareSession(
+                sessionID: sessionID,
+                sessionURL: sessionURL,
+                sourceKind: .live,
+                originalFilename: nil
+            )
+            try await captureEngine.start(sessionID: sessionID)
             recordingPhase = .recording
             setStatus("録音中", tone: .recording)
         } catch {
+            try? FileManager.default.removeItem(at: sessionURL)
             recordingPhase = .idle
             setStatus(error.localizedDescription, tone: .error)
         }
@@ -251,6 +248,34 @@ final class AppState: ObservableObject {
         }
 
         return diskMonitor.level(forAvailableBytes: bytes)
+    }
+
+    private func prepareSession(
+        sessionID: UUID,
+        sessionURL: URL,
+        sourceKind: SessionSourceKind,
+        originalFilename: String?
+    ) throws {
+        let manifest = SessionManifest(
+            sessionID: sessionID,
+            createdAt: Date(),
+            sourceKind: sourceKind,
+            originalFilename: originalFilename
+        )
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+
+        try FileManager.default.createDirectory(
+            at: sessionURL,
+            withIntermediateDirectories: true
+        )
+        try encoder.encode(manifest).write(
+            to: sessionURL.appending(path: "session.json"),
+            options: .atomic
+        )
+        _ = try SessionWriter(sessionURL: sessionURL)
     }
 
     private func setStatus(_ text: String, tone: StatusTone) {
