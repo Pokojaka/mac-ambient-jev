@@ -70,6 +70,21 @@ public struct ProvisionalPriorityDecision: Sendable, Equatable {
     }
 }
 
+public struct ProvisionalSceneDecision: Sendable, Equatable {
+    public let cue: SemanticSceneCue
+    public let needsRetry: Bool
+    public let decision: SemanticSceneDecision?
+
+    public init(
+        cue: SemanticSceneCue,
+        needsRetry: Bool,
+        decision: SemanticSceneDecision?
+    ) {
+        self.cue = cue
+        self.needsRetry = needsRetry
+        self.decision = decision
+    }
+}
 
 public struct ContentPriorityPolicy: Sendable {
     public let minimumDemotionConfidence: Double
@@ -118,22 +133,83 @@ public struct ContentPriorityPolicy: Sendable {
 
 public actor JevDecisionCoordinator {
     private let provider: any DecisionProvider
+    private let policy: ContentPriorityPolicy
+    private let usageCounter: JevUsageCounter?
 
-    public init(provider: any DecisionProvider) {
+    public init(
+        provider: any DecisionProvider,
+        policy: ContentPriorityPolicy = ContentPriorityPolicy(),
+        usageCounter: JevUsageCounter? = nil
+    ) {
         self.provider = provider
+        self.policy = policy
+        self.usageCounter = usageCounter
     }
 
     public func classify(text: String) async -> ProvisionalPriorityDecision {
+        if let usageCounter {
+            await usageCounter.recordAttempt()
+        }
+
         do {
             let decision = try await provider.classifyPriority(text: text)
+            if let usageCounter {
+                await usageCounter.recordSuccess(inputTokens: decision.inputTokens)
+            }
+
             return ProvisionalPriorityDecision(
-                visiblePriority: decision.priority,
+                visiblePriority: policy.apply(
+                    providerDecision: decision,
+                    text: text
+                ),
                 needsRetry: false,
                 decision: decision
             )
         } catch {
+            if let usageCounter {
+                await usageCounter.recordFailure(retryPending: true)
+            }
+
             return ProvisionalPriorityDecision(
                 visiblePriority: .primary,
+                needsRetry: true,
+                decision: nil
+            )
+        }
+    }
+
+    public func classifySceneCue(
+        currentText: String,
+        previousTexts: [String],
+        currentScene: SceneState
+    ) async -> ProvisionalSceneDecision {
+        if let usageCounter {
+            await usageCounter.recordAttempt()
+        }
+
+        do {
+            let decision = try await provider.classifySceneCue(
+                currentText: currentText,
+                previousTexts: previousTexts,
+                currentScene: currentScene
+            )
+
+            if let usageCounter {
+                await usageCounter.recordSuccess(inputTokens: decision.inputTokens)
+            }
+
+            return ProvisionalSceneDecision(
+                cue: decision.cue,
+                needsRetry: false,
+                decision: decision
+            )
+        } catch {
+            if let usageCounter {
+                await usageCounter.recordFailure(retryPending: true)
+            }
+
+            return ProvisionalSceneDecision(
+                cue: .none,
                 needsRetry: true,
                 decision: nil
             )
