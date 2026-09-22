@@ -28,6 +28,11 @@ final class AppState: ObservableObject {
         case imported(sessionID: UUID, originalURL: URL)
         case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
         case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
+        case retryContentPriority(
+            sessionID: UUID,
+            checkpoint: AudioCheckpoint,
+            segmentIDs: [String]
+        )
         case resumeASR(
             sessionID: UUID,
             checkpoint: AudioCheckpoint,
@@ -636,6 +641,18 @@ final class AppState: ObservableObject {
                         )
                     }
                 }
+            case .retryContentPriority(
+                let sessionID,
+                let checkpoint,
+                let segmentIDs
+            ):
+                await sessionProcessor.retryContentPrioritySession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    segmentIDs: segmentIDs,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
             case .resumeASR(let sessionID, let checkpoint, let plan):
                 await sessionProcessor.resumePendingASRSession(
                     sessionID: sessionID,
@@ -692,6 +709,18 @@ final class AppState: ObservableObject {
                 let sessionID = candidate.manifest.sessionID
 
                 switch (candidate.action, candidate.source) {
+                case (
+                    .retryContentPriority(let segmentIDs),
+                    .processingTimeline(let checkpoint)
+                ):
+                    enqueueProcessing(
+                        .retryContentPriority(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            segmentIDs: segmentIDs
+                        )
+                    )
+
                 case (.resumeASR(let plan), .processingTimeline(let checkpoint)):
                     enqueueProcessing(
                         .resumeASR(
