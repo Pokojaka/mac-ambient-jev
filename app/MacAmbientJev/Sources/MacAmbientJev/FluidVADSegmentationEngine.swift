@@ -83,6 +83,13 @@ actor FluidVADSegmentationEngine {
         return emitted
     }
 
+    func finish(totalCanonicalFrames: Int64) -> [SegmentReference] {
+        guard let segment = assembler.finish(atFrame: totalCanonicalFrames) else {
+            return []
+        }
+        return [segment]
+    }
+
     func reset() {
         streamState = VadStreamState.initial()
     }
