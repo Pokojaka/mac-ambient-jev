@@ -41,7 +41,7 @@ public actor NativeSessionProcessor {
 
         do {
             if let onStatus {
-                await onStatus("音声ファイルを処理用タイムラインへ変換しています")
+                await onStatus(UserFacingStatus.convertingTimeline.text)
             }
 
             let checkpoint = try await AudioFileTimelineBuilder()
@@ -259,7 +259,7 @@ public actor NativeSessionProcessor {
         let state = SessionProcessingState(captureState: .stopped)
 
         if let onStatus {
-            await onStatus("発話区間を検出しています")
+            await onStatus(UserFacingStatus.detectingSpeech.text)
         }
 
         let vad = try await FluidVADSegmentationEngine.make(
@@ -283,7 +283,7 @@ public actor NativeSessionProcessor {
         }
 
         if let onStatus {
-            await onStatus("音声認識モデルを準備しています")
+            await onStatus(UserFacingStatus.preparingASR.text)
         }
 
         let coordinator = PipelineCoordinator(
@@ -375,7 +375,7 @@ public actor NativeSessionProcessor {
         onUpdate: UpdateHandler?
     ) async throws {
         if let onStatus {
-            await onStatus("話者分離を準備しています")
+            await onStatus(UserFacingStatus.preparingDiarization.text)
         }
 
         let reader = ProcessingTimelineReader(
@@ -399,7 +399,7 @@ public actor NativeSessionProcessor {
         )
 
         if let onStatus {
-            await onStatus("話者を分離しています")
+            await onStatus(UserFacingStatus.diarizing.text)
         }
 
         let diarizationRunID =
