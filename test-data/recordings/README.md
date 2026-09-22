@@ -47,6 +47,17 @@ test-data/recordings/local/
 }
 ```
 
+## 録音から segments.json を生成
+
+音声ファイルだけ置けば、同じディレクトリに `segments.json` と、未作成の場合は空の `manifest.json` を生成できる。
+
+```bash
+swift tools/process-recording.swift \
+  test-data/recordings/local/lecture-ja-001/audio.m4a
+```
+
+既存の `manifest.json` は上書きしない。
+
 ## 評価
 
 リポジトリのルートから次の形で実行する。
