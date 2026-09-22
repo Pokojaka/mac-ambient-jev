@@ -205,6 +205,120 @@ public actor NativeSessionProcessor {
         liveASRSessions[sessionID] = nil
     }
 
+    public func retryContentPrioritySession(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        segmentIDs: [String],
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async {
+        do {
+            guard !segmentIDs.isEmpty else {
+                return
+            }
+
+            guard let decisions =
+                    try makeJevDecisionCoordinatorIfAvailable()
+            else {
+                if let onStatus {
+                    await onStatus(
+                        UserFacingStatus.jevDeferred.text
+                    )
+                }
+                return
+            }
+
+            let metadataStore = ProcessingMetadataStore(
+                sessionURL: sessionURL(for: sessionID)
+            )
+            guard let metadata = try metadataStore.load(),
+                  let activeRuns = metadata.activeRuns,
+                  activeRuns.segmentation != nil,
+                  activeRuns.asr != nil,
+                  activeRuns.scope != nil else {
+                throw NativeSessionProcessorError.invalidRecoveredRun
+            }
+
+            let eventsURL = sessionURL(for: sessionID)
+                .appending(path: "events.jsonl")
+            let recovered = try SessionRecovery.recoverJSONL(
+                Data(contentsOf: eventsURL)
+            )
+            if recovered.droppedIncompleteTail {
+                try recovered.normalizedData.write(
+                    to: eventsURL,
+                    options: .atomic
+                )
+            }
+
+            let events = try EventLogTranscriptReader().events(
+                lines: recovered.lines,
+                activeRuns: activeRuns
+            )
+            let materializer = TranscriptMaterializer(
+                sampleRate: checkpoint.sampleRate
+            )
+            let fallback = materializer.materialize(
+                events: events,
+                activeRuns: activeRuns
+            )
+
+            if let onStatus {
+                await onStatus(
+                    "保留中の意味分類を再試行しています（\(segmentIDs.count)区間）"
+                )
+            }
+            if let onUpdate {
+                await onUpdate(fallback, .running)
+            }
+
+            let runID =
+                "priority_retry_\(UUID().uuidString.lowercased())"
+            let coordinator = JevEnrichmentCoordinator(
+                sessionID: sessionID,
+                runID: runID,
+                writer: try SessionWriter(
+                    sessionURL: sessionURL(for: sessionID)
+                ),
+                decisions: decisions,
+                materializer: materializer
+            )
+            let result = try await coordinator.process(
+                existingEvents: events,
+                activeRuns: activeRuns,
+                retryOnlySegmentIDs: Set(segmentIDs)
+            )
+
+            try selectContentPriorityRun(
+                sessionID: sessionID,
+                runID: runID
+            )
+
+            if let onUpdate {
+                await onUpdate(
+                    result.materializedSegments,
+                    .complete
+                )
+            }
+
+            if let onStatus {
+                if result.retryPendingSegmentIDs.isEmpty {
+                    await onStatus("保留中の意味分類を更新しました")
+                } else {
+                    await onStatus(
+                        "意味分類を後で再試行します（残り\(result.retryPendingSegmentIDs.count)区間）"
+                    )
+                }
+            }
+        } catch {
+            if let onStatus {
+                await onStatus(
+                    "意味分類を再試行できませんでした: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
     public func processImportedSession(
         sessionID: UUID,
         originalURL: URL,
