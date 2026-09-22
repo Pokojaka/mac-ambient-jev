@@ -524,7 +524,7 @@ final class AppState: ObservableObject {
     }
 
     private func waitForLiveASRDrain(sessionID: UUID) async {
-        if let task = liveASRTasks[sessionID] {
+        while let task = liveASRTasks[sessionID] {
             _ = await task.value
         }
     }
