@@ -157,6 +157,14 @@ actor NativeSessionProcessor {
             }
         }
 
+        if result.failedCount == 0 {
+            try selectSuccessfulRuns(
+                sessionID: sessionID,
+                segmentationRunID: segmentationRunID,
+                asrRunID: asrRunID
+            )
+        }
+
         if let onStatus {
             if result.failedCount == 0 {
                 await onStatus(
@@ -168,6 +176,27 @@ actor NativeSessionProcessor {
                 )
             }
         }
+    }
+
+    private func selectSuccessfulRuns(
+        sessionID: UUID,
+        segmentationRunID: String,
+        asrRunID: String
+    ) throws {
+        let store = ProcessingMetadataStore(
+            sessionURL: sessionURL(for: sessionID)
+        )
+        guard let metadata = try store.load() else { return }
+
+        let activeRuns = ActiveRuns(
+            segmentation: segmentationRunID,
+            asr: asrRunID,
+            diarization: metadata.activeRuns?.diarization,
+            scene: metadata.activeRuns?.scene,
+            scope: metadata.activeRuns?.scope,
+            contentPriority: metadata.activeRuns?.contentPriority
+        )
+        try store.save(metadata.withActiveRuns(activeRuns))
     }
 
     private func persistProcessingMetadata(sessionID: UUID) throws {
