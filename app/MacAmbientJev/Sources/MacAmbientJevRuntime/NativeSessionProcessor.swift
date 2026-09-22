@@ -31,7 +31,7 @@ public actor NativeSessionProcessor {
     private static let jevAPIKeyAccount = "jev-api-key"
 
     private let paths: AppPaths
-    private let asr: NativeQwen3ASREngine
+    private let asr: any ASREngine
     private let diarization: FluidOfflineDiarizationEngine
     private let allowExternalJev: Bool
     public let jevUsageCounter: JevUsageCounter
@@ -40,10 +40,11 @@ public actor NativeSessionProcessor {
     public init(
         paths: AppPaths,
         allowExternalJev: Bool = false,
-        jevUsageCounter: JevUsageCounter = JevUsageCounter()
+        jevUsageCounter: JevUsageCounter = JevUsageCounter(),
+        asr: (any ASREngine)? = nil
     ) {
         self.paths = paths
-        self.asr = NativeQwen3ASREngine(
+        self.asr = asr ?? NativeQwen3ASREngine(
             modelStore: ModelStore(paths: paths)
         )
         self.diarization = FluidOfflineDiarizationEngine(paths: paths)
