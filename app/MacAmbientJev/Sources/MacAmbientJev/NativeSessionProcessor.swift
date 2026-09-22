@@ -21,12 +21,14 @@ actor NativeSessionProcessor {
 
     private let paths: AppPaths
     private let asr: NativeQwen3ASREngine
+    private let diarization: FluidOfflineDiarizationEngine
 
     init(paths: AppPaths) {
         self.paths = paths
         self.asr = NativeQwen3ASREngine(
             modelStore: ModelStore(paths: paths)
         )
+        self.diarization = FluidOfflineDiarizationEngine(paths: paths)
     }
 
     func processImportedSession(
@@ -137,12 +139,21 @@ actor NativeSessionProcessor {
                     segmentationRunID: plan.segmentationRunID,
                     asrRunID: plan.asrRunID
                 )
+                try await runOfflineDiarization(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    existingEvents: result.events,
+                    segmentationRunID: plan.segmentationRunID,
+                    asrRunID: plan.asrRunID,
+                    onStatus: onStatus,
+                    onUpdate: onUpdate
+                )
             }
 
             if let onStatus {
                 if result.failedCount == 0 {
                     await onStatus(
-                        "未完了の文字起こしを復旧しました（\(result.completedCount)区間）"
+                        "文字起こしと話者分離を復旧しました（\(result.completedCount)区間）"
                     )
                 } else {
                     await onStatus(
@@ -192,11 +203,22 @@ actor NativeSessionProcessor {
             )
 
             if let onUpdate {
-                await onUpdate(materialized, .complete)
+                await onUpdate(materialized, .running)
             }
+
+            try await runOfflineDiarization(
+                sessionID: sessionID,
+                checkpoint: checkpoint,
+                existingEvents: plan.transcriptEvents,
+                segmentationRunID: plan.segmentationRunID,
+                asrRunID: plan.asrRunID,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
+
             if let onStatus {
                 await onStatus(
-                    "完了済みの文字起こしを復旧しました（\(materialized.count)区間）"
+                    "完了済みの文字起こしと話者分離を復旧しました（\(materialized.count)区間）"
                 )
             }
         } catch {
@@ -291,18 +313,127 @@ actor NativeSessionProcessor {
                 segmentationRunID: segmentationRunID,
                 asrRunID: asrRunID
             )
+
+            try await runOfflineDiarization(
+                sessionID: sessionID,
+                checkpoint: checkpoint,
+                existingEvents: result.events,
+                segmentationRunID: segmentationRunID,
+                asrRunID: asrRunID,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
         }
 
         if let onStatus {
             if result.failedCount == 0 {
                 await onStatus(
-                    "文字起こしが完了しました（\(result.completedCount)区間）"
+                    "文字起こしと話者分離が完了しました（\(result.completedCount)区間）"
                 )
             } else {
                 await onStatus(
                     "文字起こしが完了しました（成功 \(result.completedCount)区間、失敗 \(result.failedCount)区間）"
                 )
             }
+        }
+    }
+
+    func runRecoveredDiarizationSession(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        plan: ASRRecoveryPlan,
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async {
+        do {
+            try await runOfflineDiarization(
+                sessionID: sessionID,
+                checkpoint: checkpoint,
+                existingEvents: plan.transcriptEvents,
+                segmentationRunID: plan.segmentationRunID,
+                asrRunID: plan.asrRunID,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
+        } catch {
+            await reportFailure(
+                prefix: "話者分離を復旧できませんでした",
+                error: error,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
+        }
+    }
+
+    private func runOfflineDiarization(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        existingEvents: [TranscriptEvent],
+        segmentationRunID: String,
+        asrRunID: String,
+        onStatus: StatusHandler?,
+        onUpdate: UpdateHandler?
+    ) async throws {
+        if let onStatus {
+            await onStatus("話者分離を準備しています")
+        }
+
+        let reader = ProcessingTimelineReader(
+            directory: processingDirectory(for: sessionID),
+            checkpoint: checkpoint
+        )
+        let derivedDirectory = sessionURL(for: sessionID)
+            .appending(path: "audio", directoryHint: .isDirectory)
+            .appending(path: "derived", directoryHint: .isDirectory)
+        let diarizationInputURL = derivedDirectory
+            .appending(path: "diarization-input.caf")
+
+        try ProcessingTimelineAudioExporter(
+            framesPerBuffer: max(
+                1,
+                Int64(checkpoint.sampleRate.rounded())
+            )
+        ).export(
+            reader: reader,
+            to: diarizationInputURL
+        )
+
+        if let onStatus {
+            await onStatus("話者を分離しています")
+        }
+
+        let diarizationRunID =
+            "diar_offline_\(UUID().uuidString.lowercased())"
+        let coordinator = DiarizationCoordinator(
+            sessionID: sessionID,
+            runID: diarizationRunID,
+            writer: try SessionWriter(
+                sessionURL: sessionURL(for: sessionID)
+            ),
+            engine: diarization,
+            materializer: TranscriptMaterializer(
+                sampleRate: checkpoint.sampleRate
+            )
+        )
+        let activeRuns = ActiveRuns(
+            segmentation: segmentationRunID,
+            asr: asrRunID,
+            diarization: diarizationRunID
+        )
+        let result = try await coordinator.process(
+            fileURL: diarizationInputURL,
+            canonicalSampleRate: checkpoint.sampleRate,
+            existingEvents: existingEvents,
+            activeRuns: activeRuns
+        )
+
+        try selectDiarizationRun(
+            sessionID: sessionID,
+            diarizationRunID: diarizationRunID
+        )
+
+        if let onUpdate {
+            await onUpdate(result.materializedSegments, .complete)
         }
     }
 
@@ -337,6 +468,26 @@ actor NativeSessionProcessor {
             segmentation: segmentationRunID,
             asr: asrRunID,
             diarization: metadata.activeRuns?.diarization,
+            scene: metadata.activeRuns?.scene,
+            scope: metadata.activeRuns?.scope,
+            contentPriority: metadata.activeRuns?.contentPriority
+        )
+        try store.save(metadata.withActiveRuns(activeRuns))
+    }
+
+    private func selectDiarizationRun(
+        sessionID: UUID,
+        diarizationRunID: String
+    ) throws {
+        let store = ProcessingMetadataStore(
+            sessionURL: sessionURL(for: sessionID)
+        )
+        guard let metadata = try store.load() else { return }
+
+        let activeRuns = ActiveRuns(
+            segmentation: metadata.activeRuns?.segmentation,
+            asr: metadata.activeRuns?.asr,
+            diarization: diarizationRunID,
             scene: metadata.activeRuns?.scene,
             scope: metadata.activeRuns?.scope,
             contentPriority: metadata.activeRuns?.contentPriority
