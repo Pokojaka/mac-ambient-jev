@@ -11,6 +11,13 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     public let sourceKind: SessionSourceKind
     public let originalFilename: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case createdAt = "created_at"
+        case sourceKind = "source_kind"
+        case originalFilename = "original_filename"
+    }
+
     public init(
         sessionID: UUID,
         createdAt: Date,
