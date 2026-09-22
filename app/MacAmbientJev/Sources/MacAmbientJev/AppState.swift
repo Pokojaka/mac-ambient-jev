@@ -26,6 +26,16 @@ final class AppState: ObservableObject {
     private enum PendingProcessing {
         case imported(sessionID: UUID, originalURL: URL)
         case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
+        case resumeASR(
+            sessionID: UUID,
+            checkpoint: AudioCheckpoint,
+            plan: ASRRecoveryPlan
+        )
+        case selectCompletedASR(
+            sessionID: UUID,
+            checkpoint: AudioCheckpoint,
+            plan: ASRRecoveryPlan
+        )
     }
 
     @Published private(set) var statusText = "待機中"
@@ -333,6 +343,22 @@ final class AppState: ObservableObject {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
+            case .resumeASR(let sessionID, let checkpoint, let plan):
+                await sessionProcessor.resumePendingASRSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    plan: plan,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            case .selectCompletedASR(let sessionID, let checkpoint, let plan):
+                await sessionProcessor.selectCompletedASRSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    plan: plan,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
             }
 
             if !pendingProcessing.isEmpty {
@@ -362,18 +388,42 @@ final class AppState: ObservableObject {
             )
 
             for candidate in candidates {
-                switch candidate.source {
-                case .processingTimeline(let checkpoint):
+                let sessionID = candidate.manifest.sessionID
+
+                switch (candidate.action, candidate.source) {
+                case (.resumeASR(let plan), .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .resumeASR(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            plan: plan
+                        )
+                    )
+
+                case (.selectCompletedASR(let plan), .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .selectCompletedASR(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            plan: plan
+                        )
+                    )
+
+                case (.reprocess, .processingTimeline(let checkpoint)):
                     enqueueProcessing(
                         .timeline(
-                            sessionID: candidate.manifest.sessionID,
+                            sessionID: sessionID,
                             checkpoint: checkpoint
                         )
                     )
-                case .importedOriginal(let originalURL):
+
+                case (_, .importedOriginal(let originalURL)):
+                    // Old sessions without a durable checkpoint cannot safely
+                    // resume frame-addressed ASR. Rebuild the timeline
+                    // idempotently from the preserved original instead.
                     enqueueProcessing(
                         .imported(
-                            sessionID: candidate.manifest.sessionID,
+                            sessionID: sessionID,
                             originalURL: originalURL
                         )
                     )
