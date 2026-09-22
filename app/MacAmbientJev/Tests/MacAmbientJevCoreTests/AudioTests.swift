@@ -112,3 +112,28 @@ import Testing
     #expect(accepted)
     #expect(ring.pop() == [1, 10, 2, 20])
 }
+
+
+@Test func captureDrainWritesQueuedAudioOutsideRealtimeCallback() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 4)
+    let writer = try DurableAudioWriter(
+        directory: root,
+        sampleRate: 4,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+
+    #expect(ring.push(samples: [1, 2, 3, 4]))
+    #expect(ring.push(samples: [5, 6]))
+
+    #expect(try await drain.drainAvailable() == 2)
+    let checkpoint = try await drain.finish()
+
+    #expect(checkpoint.committedFrames == 6)
+    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    #expect(try reader.readSamples(frameRange: 0..<6) == [1, 2, 3, 4, 5, 6])
+}
