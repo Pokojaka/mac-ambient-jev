@@ -1,0 +1,134 @@
+import Foundation
+import Testing
+@testable import MacAmbientJevCore
+
+private struct MixedEvidenceProvider: ProximityEvidenceProvider {
+    func evidenceSpans(
+        startFrame: Int64,
+        endFrame: Int64,
+        speakerSpans: [SpeakerSpan]
+    ) async throws -> [ProximityEvidenceSpan] {
+        let middle = startFrame + (endFrame - startFrame) / 2
+        return [
+            ProximityEvidenceSpan(
+                startFrame: startFrame,
+                endFrame: middle,
+                evidence: .near
+            ),
+            ProximityEvidenceSpan(
+                startFrame: middle,
+                endFrame: endFrame,
+                evidence: ProximityEvidence(
+                    distanceHint: .distant,
+                    levelConfidence: 0.9,
+                    spectralConfidence: 0.9
+                )
+            )
+        ]
+    }
+}
+
+@Test
+func unknownScopeProviderNeverCreatesBackground() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let writer = try SessionWriter(sessionURL: root)
+    let coordinator = ScopeCoordinator(
+        sessionID: UUID(),
+        runID: "scope-test",
+        writer: writer,
+        provider: UnknownProximityEvidenceProvider(),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+
+    let events: [TranscriptEvent] = [
+        .segmentCreated(
+            seq: 1,
+            segmentationRunID: "seg",
+            segmentID: "seg-1",
+            startFrame: 0,
+            endFrame: 1_000
+        ),
+        .asrCompleted(
+            seq: 2,
+            runID: "asr",
+            segmentationRunID: "seg",
+            segmentID: "seg-1",
+            text: "重要な発話"
+        ),
+        .sceneChanged(
+            seq: 3,
+            runID: "scene",
+            atFrame: 0,
+            scene: .discussion
+        )
+    ]
+
+    let result = try await coordinator.process(
+        existingEvents: events,
+        speakerSpans: [],
+        activeRuns: ActiveRuns(
+            segmentation: "seg",
+            asr: "asr",
+            scene: "scene"
+        )
+    )
+
+    #expect(result.scopeSpans.count == 1)
+    #expect(result.scopeSpans[0].scope == .unknown)
+}
+
+@Test
+func mixedScopeEvidenceRemainsSplitWithinOneSegment() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let writer = try SessionWriter(sessionURL: root)
+    let coordinator = ScopeCoordinator(
+        sessionID: UUID(),
+        runID: "scope-test",
+        writer: writer,
+        provider: MixedEvidenceProvider(),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+
+    let events: [TranscriptEvent] = [
+        .segmentCreated(
+            seq: 1,
+            segmentationRunID: "seg",
+            segmentID: "seg-1",
+            startFrame: 0,
+            endFrame: 1_000
+        ),
+        .asrCompleted(
+            seq: 2,
+            runID: "asr",
+            segmentationRunID: "seg",
+            segmentID: "seg-1",
+            text: "近距離と背景が混在する発話"
+        ),
+        .sceneChanged(
+            seq: 3,
+            runID: "scene",
+            atFrame: 0,
+            scene: .discussion
+        )
+    ]
+
+    let result = try await coordinator.process(
+        existingEvents: events,
+        speakerSpans: [],
+        activeRuns: ActiveRuns(
+            segmentation: "seg",
+            asr: "asr",
+            scene: "scene"
+        )
+    )
+
+    #expect(result.scopeSpans.count == 2)
+    #expect(result.scopeSpans[0].scope == .near)
+    #expect(result.scopeSpans[1].scope == .background)
+}
