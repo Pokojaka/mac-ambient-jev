@@ -10,6 +10,7 @@ public enum RecoverableProcessingAction: Sendable, Equatable {
     case resumeASR(ASRRecoveryPlan)
     case selectCompletedASR(ASRRecoveryPlan)
     case runDiarization(ASRRecoveryPlan)
+    case retryContentPriority(segmentIDs: [String])
 }
 
 public struct RecoverableSession: Sendable, Equatable {
@@ -93,7 +94,46 @@ public struct SessionRecoveryScanner: Sendable {
                 if metadata?.activeRuns?.scope == nil {
                     action = .runDiarization(activePlan)
                 } else {
-                    action = nil
+                    let jevState = try JevRetryAnalyzer()
+                        .contentPriorityState(
+                            lines: recoveredLines
+                        )
+
+                    if jevState.hasAssignments {
+                        let activePriorityRunID =
+                            metadata?.activeRuns?.contentPriority
+
+                        if jevState.latestRunID
+                            == activePriorityRunID {
+                            let pendingIDs =
+                                jevState.pendingSegmentIDs
+                            action = pendingIDs.isEmpty
+                                ? nil
+                                : .retryContentPriority(
+                                    segmentIDs: pendingIDs
+                                )
+                        } else {
+                            // A newer priority run exists in the log but was
+                            // never selected, which indicates an interrupted
+                            // retry. Rebuild a complete fresh run rather than
+                            // adopting a possibly partial result.
+                            let allSegmentIDs = activePlan
+                                .transcriptEvents
+                                .compactMap { event -> String? in
+                                    if case .segmentCreated = event.kind {
+                                        return event.segmentID
+                                    }
+                                    return nil
+                                }
+                            action = allSegmentIDs.isEmpty
+                                ? nil
+                                : .retryContentPriority(
+                                    segmentIDs: allSegmentIDs
+                                )
+                        }
+                    } else {
+                        action = nil
+                    }
                 }
             } else if let plan = latestASRPlan {
                 if metadata?.activeRuns?.asr == plan.asrRunID {
