@@ -4,6 +4,7 @@ public enum DurableAudioWriterError: Error, Equatable {
     case invalidChannelSampleCount
     case incompatibleCheckpoint
     case corruptChunk(String)
+    case checkpointFrameCountMismatch
 }
 
 public struct AudioCheckpoint: Codable, Sendable, Equatable {
@@ -11,17 +12,20 @@ public struct AudioCheckpoint: Codable, Sendable, Equatable {
     public let sampleRate: Double
     public let channelCount: Int
     public let chunkFiles: [String]
+    public let chunkFrameCounts: [Int]?
 
     public init(
         committedFrames: Int64,
         sampleRate: Double,
         channelCount: Int,
-        chunkFiles: [String]
+        chunkFiles: [String],
+        chunkFrameCounts: [Int]? = nil
     ) {
         self.committedFrames = committedFrames
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.chunkFiles = chunkFiles
+        self.chunkFrameCounts = chunkFrameCounts
     }
 }
 
@@ -37,6 +41,7 @@ public actor DurableAudioWriter {
     private var pendingSamples: [Float] = []
     private var committedFrames: Int64
     private var chunkFiles: [String]
+    private var chunkFrameCounts: [Int]
     private var nextChunkIndex: Int
 
     public init(
@@ -63,10 +68,17 @@ public actor DurableAudioWriter {
             withIntermediateDirectories: true
         )
 
-        let checkpointURL = directory.appending(path: Self.checkpointFilename)
+        let bytesPerFrame = MemoryLayout<Float>.size * channelCount
+        let checkpointURL = directory.appending(
+            path: Self.checkpointFilename
+        )
+
         if FileManager.default.fileExists(atPath: checkpointURL.path) {
             let data = try Data(contentsOf: checkpointURL)
-            let checkpoint = try JSONDecoder().decode(AudioCheckpoint.self, from: data)
+            let checkpoint = try JSONDecoder().decode(
+                AudioCheckpoint.self,
+                from: data
+            )
 
             guard checkpoint.sampleRate == sampleRate,
                   checkpoint.channelCount == channelCount else {
@@ -76,37 +88,81 @@ public actor DurableAudioWriter {
             self.committedFrames = checkpoint.committedFrames
             self.chunkFiles = checkpoint.chunkFiles
             self.nextChunkIndex = checkpoint.chunkFiles.count
+
+            if let persistedCounts = checkpoint.chunkFrameCounts,
+               persistedCounts.count == checkpoint.chunkFiles.count {
+                let countedFrames = persistedCounts.reduce(Int64.zero) {
+                    $0 + Int64($1)
+                }
+                guard countedFrames == checkpoint.committedFrames else {
+                    throw DurableAudioWriterError.checkpointFrameCountMismatch
+                }
+                self.chunkFrameCounts = persistedCounts
+            } else {
+                var recoveredCounts: [Int] = []
+                var countedFrames: Int64 = 0
+
+                for filename in checkpoint.chunkFiles {
+                    let url = directory.appending(path: filename)
+                    let values = try url.resourceValues(
+                        forKeys: [.fileSizeKey]
+                    )
+                    guard let fileSize = values.fileSize,
+                          fileSize > 0,
+                          fileSize % bytesPerFrame == 0 else {
+                        throw DurableAudioWriterError.corruptChunk(
+                            filename
+                        )
+                    }
+
+                    let frames = fileSize / bytesPerFrame
+                    recoveredCounts.append(frames)
+                    countedFrames += Int64(frames)
+                }
+
+                guard countedFrames == checkpoint.committedFrames else {
+                    throw DurableAudioWriterError.checkpointFrameCountMismatch
+                }
+                self.chunkFrameCounts = recoveredCounts
+            }
         } else {
             self.committedFrames = 0
             self.chunkFiles = []
+            self.chunkFrameCounts = []
             self.nextChunkIndex = 0
         }
 
-        let bytesPerFrame = MemoryLayout<Float>.size * channelCount
         while true {
-            let filename = String(format: "chunk-%06d.f32le", nextChunkIndex)
+            let filename = String(
+                format: "chunk-%06d.f32le",
+                nextChunkIndex
+            )
             let url = directory.appending(path: filename)
-            guard FileManager.default.fileExists(atPath: url.path) else { break }
+            guard FileManager.default.fileExists(
+                atPath: url.path
+            ) else {
+                break
+            }
 
-            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            let values = try url.resourceValues(
+                forKeys: [.fileSizeKey]
+            )
             guard let fileSize = values.fileSize,
                   fileSize > 0,
                   fileSize % bytesPerFrame == 0 else {
                 throw DurableAudioWriterError.corruptChunk(filename)
             }
 
-            committedFrames += Int64(fileSize / bytesPerFrame)
+            let frames = fileSize / bytesPerFrame
+            committedFrames += Int64(frames)
             chunkFiles.append(filename)
+            chunkFrameCounts.append(frames)
             nextChunkIndex += 1
         }
 
-        let initialCheckpoint = AudioCheckpoint(
-            committedFrames: committedFrames,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            chunkFiles: chunkFiles
-        )
-        let initialData = try JSONEncoder().encode(initialCheckpoint)
+        // Persist on every initialization so legacy checkpoints without
+        // chunkFrameCounts are migrated before further processing begins.
+        let initialData = try JSONEncoder().encode(currentCheckpoint())
         try initialData.write(to: checkpointURL, options: .atomic)
     }
 
@@ -121,7 +177,7 @@ public actor DurableAudioWriter {
 
     /// Returns only frames that have already been atomically committed as chunk files.
     ///
-    /// Unlike `checkpoint()`, this does not flush the in-memory partial chunk. It is
+    /// Unlike checkpoint(), this does not flush the in-memory partial chunk. It is
     /// therefore safe to poll while capture continues without fragmenting the timeline.
     public func committedSnapshot() -> AudioCheckpoint {
         currentCheckpoint()
@@ -142,7 +198,9 @@ public actor DurableAudioWriter {
         let samplesPerChunk = framesPerChunk * channelCount
 
         while pendingSamples.count >= samplesPerChunk {
-            let samples = Array(pendingSamples.prefix(samplesPerChunk))
+            let samples = Array(
+                pendingSamples.prefix(samplesPerChunk)
+            )
             try writeChunk(samples)
             pendingSamples.removeFirst(samplesPerChunk)
         }
@@ -157,7 +215,10 @@ public actor DurableAudioWriter {
     }
 
     private func writeChunk(_ samples: [Float]) throws {
-        let filename = String(format: "chunk-%06d.f32le", nextChunkIndex)
+        let filename = String(
+            format: "chunk-%06d.f32le",
+            nextChunkIndex
+        )
         let url = directory.appending(path: filename)
         let data = samples.withUnsafeBytes { Data($0) }
         try data.write(to: url, options: .atomic)
@@ -165,6 +226,7 @@ public actor DurableAudioWriter {
         let frames = samples.count / channelCount
         committedFrames += Int64(frames)
         chunkFiles.append(filename)
+        chunkFrameCounts.append(frames)
         nextChunkIndex += 1
 
         try persist(currentCheckpoint())
@@ -175,14 +237,17 @@ public actor DurableAudioWriter {
             committedFrames: committedFrames,
             sampleRate: sampleRate,
             channelCount: channelCount,
-            chunkFiles: chunkFiles
+            chunkFiles: chunkFiles,
+            chunkFrameCounts: chunkFrameCounts
         )
     }
 
     private func persist(_ checkpoint: AudioCheckpoint) throws {
         let data = try JSONEncoder().encode(checkpoint)
         try data.write(
-            to: directory.appending(path: Self.checkpointFilename),
+            to: directory.appending(
+                path: Self.checkpointFilename
+            ),
             options: .atomic
         )
     }
