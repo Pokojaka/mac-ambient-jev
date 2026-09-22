@@ -78,6 +78,13 @@ public struct SegmentationAssembler: Sendable {
         return makeSegment(startFrame: start, endFrame: end)
     }
 
+    public mutating func finish(atFrame frame: Int64) -> SegmentReference? {
+        guard let start = activeStartFrame else { return nil }
+        activeStartFrame = nil
+        guard frame > start else { return nil }
+        return makeSegment(startFrame: start, endFrame: frame)
+    }
+
     private mutating func makeSegment(startFrame: Int64, endFrame: Int64) -> SegmentReference {
         defer { nextSegmentIndex &+= 1 }
 
