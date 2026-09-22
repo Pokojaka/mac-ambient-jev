@@ -90,7 +90,8 @@ public actor DurableAudioWriter {
             self.nextChunkIndex = checkpoint.chunkFiles.count
 
             if let persistedCounts = checkpoint.chunkFrameCounts,
-               persistedCounts.count == checkpoint.chunkFiles.count {
+               persistedCounts.count == checkpoint.chunkFiles.count,
+               persistedCounts.allSatisfy({ $0 > 0 }) {
                 let countedFrames = persistedCounts.reduce(Int64.zero) {
                     $0 + Int64($1)
                 }
