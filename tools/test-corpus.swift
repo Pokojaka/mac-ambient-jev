@@ -56,10 +56,11 @@ for directory in directories {
         options: [.skipsHiddenFiles]
     )
 
-    guard let audioURL = files
+    let audioFiles = files
         .filter { supportedExtensions.contains($0.pathExtension.lowercased()) }
-        .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
-        .first else {
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+    guard let audioURL = audioFiles.first else {
         continue
     }
 
