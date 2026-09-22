@@ -1,4 +1,4 @@
-import FluidAudio
+@preconcurrency import FluidAudio
 import Foundation
 import MacAmbientJevCore
 
