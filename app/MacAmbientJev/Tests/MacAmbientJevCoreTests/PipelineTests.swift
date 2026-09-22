@@ -290,3 +290,85 @@ func resumePendingASRDoesNotDuplicateRegisteredOrCompletedEvents() async throws 
     #expect(log.components(separatedBy: #""event_type":"asr.pending""#).count - 1 == 2)
     #expect(log.components(separatedBy: #""event_type":"asr.completed""#).count - 1 == 2)
 }
+
+
+private actor SuccessfulDiarizationEngine: DiarizationEngine {
+    func prepare() async throws {}
+
+    func diarize(
+        fileURL: URL,
+        canonicalSampleRate: Double
+    ) async throws -> [SpeakerSpan] {
+        [
+            SpeakerSpan(
+                speakerID: "S1",
+                startFrame: 0,
+                endFrame: 50,
+                confidence: 0.9
+            ),
+            SpeakerSpan(
+                speakerID: "S2",
+                startFrame: 50,
+                endFrame: 100,
+                confidence: 0.8
+            )
+        ]
+    }
+}
+
+@Test
+func diarizationCoordinatorAppendsSpeakerSpansAndMaterializesThem() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sessionID = UUID()
+    let writer = try SessionWriter(sessionURL: root)
+    let existing: [TranscriptEvent] = [
+        .segmentCreated(
+            seq: 1,
+            segmentationRunID: "seg_01",
+            segmentID: "seg_000001",
+            startFrame: 0,
+            endFrame: 100
+        ),
+        .asrCompleted(
+            seq: 2,
+            runID: "asr_01",
+            segmentationRunID: "seg_01",
+            segmentID: "seg_000001",
+            text: "話者が交代します",
+            detectedLanguage: "ja"
+        )
+    ]
+
+    let coordinator = DiarizationCoordinator(
+        sessionID: sessionID,
+        runID: "diar_01",
+        writer: writer,
+        engine: SuccessfulDiarizationEngine(),
+        materializer: TranscriptMaterializer(sampleRate: 100)
+    )
+
+    let result = try await coordinator.process(
+        fileURL: root.appending(path: "dummy.caf"),
+        canonicalSampleRate: 100,
+        existingEvents: existing,
+        activeRuns: ActiveRuns(
+            segmentation: "seg_01",
+            asr: "asr_01",
+            diarization: "diar_01"
+        )
+    )
+
+    #expect(result.speakerSpans.count == 2)
+    #expect(result.materializedSegments.first?.speakers.count == 2)
+
+    let log = try String(
+        contentsOf: root.appending(path: "events.jsonl"),
+        encoding: .utf8
+    )
+    #expect(
+        log.components(separatedBy: #""event_type":"speaker.span""#).count - 1 == 2
+    )
+    #expect(log.contains(#""stage":"diarization""#))
+}
