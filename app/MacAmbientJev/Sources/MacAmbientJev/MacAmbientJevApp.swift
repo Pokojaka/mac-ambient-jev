@@ -14,7 +14,13 @@ struct MacAmbientJevApp: App {
 
         Settings {
             TabView {
-                SettingsView()
+                SettingsView(
+                    onRetryDeferred: {
+                        Task {
+                            await appState.retryDeferredJev()
+                        }
+                    }
+                )
                     .tabItem {
                         Label("Jev", systemImage: "sparkles")
                     }
