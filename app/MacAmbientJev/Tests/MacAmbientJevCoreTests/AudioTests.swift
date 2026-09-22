@@ -89,3 +89,26 @@ import Testing
 
     #expect(samples == [8, 9, 10, 11, 12])
 }
+
+
+@Test func audioBlockRingInterleavesPlanarInputWithoutCallbackArray() {
+    let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 4)
+    var left: [Float] = [1, 2]
+    var right: [Float] = [10, 20]
+
+    let accepted = left.withUnsafeMutableBufferPointer { leftBuffer in
+        right.withUnsafeMutableBufferPointer { rightBuffer in
+            var channels = [leftBuffer.baseAddress!, rightBuffer.baseAddress!]
+            return channels.withUnsafeMutableBufferPointer { channelBuffer in
+                ring.pushPlanarFloat32(
+                    channelData: channelBuffer.baseAddress!,
+                    channelCount: 2,
+                    frameCount: 2
+                )
+            }
+        }
+    }
+
+    #expect(accepted)
+    #expect(ring.pop() == [1, 10, 2, 20])
+}
