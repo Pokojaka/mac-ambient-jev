@@ -119,6 +119,14 @@ public actor DurableAudioWriter {
         try flushFullChunks()
     }
 
+    /// Returns only frames that have already been atomically committed as chunk files.
+    ///
+    /// Unlike `checkpoint()`, this does not flush the in-memory partial chunk. It is
+    /// therefore safe to poll while capture continues without fragmenting the timeline.
+    public func committedSnapshot() -> AudioCheckpoint {
+        currentCheckpoint()
+    }
+
     public func checkpoint() throws -> AudioCheckpoint {
         try flushPendingChunk()
         let checkpoint = currentCheckpoint()

@@ -146,6 +146,15 @@ final class AudioCaptureEngine {
         )
     }
 
+    /// Returns the portion of the recording that is already durable on disk.
+    /// The current partial writer chunk is intentionally left in memory.
+    func committedCheckpoint() async throws -> AudioCheckpoint {
+        guard let drain else {
+            throw AudioCaptureEngineError.notRecording
+        }
+        return try await drain.committedSnapshot()
+    }
+
     func stop() async throws -> AudioCaptureStopResult {
         guard
             let engine,

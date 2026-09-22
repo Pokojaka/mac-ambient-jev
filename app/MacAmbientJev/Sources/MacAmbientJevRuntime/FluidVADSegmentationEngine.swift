@@ -1,7 +1,12 @@
 import FluidAudio
 import MacAmbientJevCore
 
-actor FluidVADSegmentationEngine {
+protocol VADChunkSegmenting: Sendable {
+    func process16kChunk(_ samples: [Float]) async throws -> [SegmentReference]
+    func finish(totalCanonicalFrames: Int64) async -> [SegmentReference]
+}
+
+actor FluidVADSegmentationEngine: VADChunkSegmenting {
     private let manager: VadManager
     private var streamState: VadStreamState
     private var assembler: SegmentationAssembler
@@ -83,7 +88,7 @@ actor FluidVADSegmentationEngine {
         return emitted
     }
 
-    func finish(totalCanonicalFrames: Int64) -> [SegmentReference] {
+    func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] {
         guard let segment = assembler.finish(atFrame: totalCanonicalFrames) else {
             return []
         }

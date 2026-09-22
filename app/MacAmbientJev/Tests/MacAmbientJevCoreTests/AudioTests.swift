@@ -319,3 +319,33 @@ func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() a
     #expect(file.processingFormat.sampleRate == 8_000)
     #expect(file.processingFormat.channelCount == 1)
 }
+
+
+@Test
+func durableWriterCommittedSnapshotDoesNotFlushPartialChunk() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let writer = try DurableAudioWriter(
+        directory: root,
+        sampleRate: 10,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+
+    try await writer.append(
+        samples: Array(repeating: Float(0.25), count: 15)
+    )
+
+    let live = await writer.committedSnapshot()
+    #expect(live.committedFrames == 10)
+    #expect(live.chunkFiles == ["chunk-000000.f32le"])
+
+    let final = try await writer.finish()
+    #expect(final.committedFrames == 15)
+    #expect(final.chunkFiles == [
+        "chunk-000000.f32le",
+        "chunk-000001.f32le"
+    ])
+}

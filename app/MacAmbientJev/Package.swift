@@ -58,6 +58,13 @@ let package = Package(
         .testTarget(
             name: "MacAmbientJevCoreTests",
             dependencies: ["MacAmbientJevCore"]
+        ),
+        .testTarget(
+            name: "MacAmbientJevRuntimeTests",
+            dependencies: [
+                "MacAmbientJevCore",
+                "MacAmbientJevRuntime"
+            ]
         )
     ]
 )
