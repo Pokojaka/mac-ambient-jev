@@ -65,6 +65,11 @@ final class AppState: ObservableObject {
     private var pendingProcessing: [PendingProcessing] = []
     private var processingTask: Task<Void, Never>?
 
+    private var liveVADSession: LiveVADSession?
+    private var liveVADTask: Task<Void, Never>?
+    private var liveVADSegmentCount = 0
+    private var liveVADFailureText: String?
+
     init(fileManager: FileManager = .default) {
         let paths = AppPaths.systemDefault(fileManager: fileManager)
 
@@ -239,6 +244,14 @@ final class AppState: ObservableObject {
             recordingSessionID = sessionID
             recordingPhase = .recording
             setCaptureStatus("録音中", tone: .recording)
+
+            do {
+                try await startLiveVAD(sessionID: sessionID)
+            } catch {
+                liveVADFailureText = error.localizedDescription
+                processingStatusText =
+                    "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
+            }
         } catch {
             try? FileManager.default.removeItem(at: sessionURL)
             recordingSessionID = nil
@@ -257,8 +270,23 @@ final class AppState: ObservableObject {
         setCaptureStatus("録音を保存しています", tone: .neutral)
 
         do {
+            await stopLiveVADPolling()
+
             let result = try await captureEngine.stop()
             let checkpoint = result.checkpoint
+
+            if let liveVADSession {
+                do {
+                    let progress = try await liveVADSession.finish(
+                        checkpoint: checkpoint
+                    )
+                    liveVADSegmentCount = progress.totalSegmentCount
+                } catch {
+                    liveVADFailureText = error.localizedDescription
+                }
+            }
+            liveVADSession = nil
+
             let durationSeconds = checkpoint.sampleRate > 0
                 ? Double(checkpoint.committedFrames) / checkpoint.sampleRate
                 : 0
@@ -271,12 +299,23 @@ final class AppState: ObservableObject {
                     "録音は保存しましたが、一部の音声が欠落した可能性があります。",
                     tone: .warning
                 )
-            } else {
+            } else if let liveVADFailureText {
                 setCaptureStatus(
-                    "録音を保存しました（\(Self.formatDuration(durationSeconds))）",
+                    "録音を保存しました。発話検出の一部に失敗しました: \(liveVADFailureText)",
+                    tone: .warning
+                )
+            } else {
+                let segmentSuffix = liveVADSegmentCount > 0
+                    ? "・発話 \(liveVADSegmentCount)区間"
+                    : ""
+                setCaptureStatus(
+                    "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
                     tone: .neutral
                 )
             }
+
+            liveVADFailureText = nil
+            liveVADSegmentCount = 0
 
             enqueueProcessing(
                 .timeline(
@@ -285,10 +324,77 @@ final class AppState: ObservableObject {
                 )
             )
         } catch {
+            await stopLiveVADPolling()
+            liveVADSession = nil
+            liveVADFailureText = nil
+            liveVADSegmentCount = 0
             recordingSessionID = nil
             recordingPhase = .idle
             setCaptureStatus(error.localizedDescription, tone: .error)
         }
+    }
+
+    private func startLiveVAD(sessionID: UUID) async throws {
+        let checkpoint = try await captureEngine.committedCheckpoint()
+        let directory = paths.sessionsRoot
+            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+            .appending(path: "audio", directoryHint: .isDirectory)
+            .appending(path: "processing", directoryHint: .isDirectory)
+
+        liveVADFailureText = nil
+        liveVADSegmentCount = 0
+        liveVADSession = try await LiveVADSession.make(
+            processingDirectory: directory,
+            initialCheckpoint: checkpoint
+        )
+
+        liveVADTask?.cancel()
+        liveVADTask = Task { [weak self] in
+            await self?.runLiveVADLoop(sessionID: sessionID)
+        }
+    }
+
+    private func runLiveVADLoop(sessionID: UUID) async {
+        while !Task.isCancelled,
+              recordingSessionID == sessionID,
+              recordingPhase == .recording {
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled,
+                  recordingSessionID == sessionID,
+                  let liveVADSession else {
+                return
+            }
+
+            do {
+                let checkpoint = try await captureEngine.committedCheckpoint()
+                let progress = try await liveVADSession.processAvailable(
+                    checkpoint: checkpoint
+                )
+                liveVADSegmentCount = progress.totalSegmentCount
+
+                if !progress.emittedSegments.isEmpty {
+                    processingStatusText =
+                        "録音中に発話を検出しています（\(progress.totalSegmentCount)区間）"
+                }
+            } catch {
+                liveVADFailureText = error.localizedDescription
+                processingStatusText =
+                    "録音は継続しています。発話検出を停止しました: \(error.localizedDescription)"
+                return
+            }
+        }
+    }
+
+    private func stopLiveVADPolling() async {
+        guard let liveVADTask else { return }
+        liveVADTask.cancel()
+        _ = await liveVADTask.value
+        self.liveVADTask = nil
     }
 
     private func enqueueProcessing(_ request: PendingProcessing) {
