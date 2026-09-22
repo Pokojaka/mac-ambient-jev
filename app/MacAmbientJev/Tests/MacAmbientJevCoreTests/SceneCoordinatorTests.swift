@@ -55,3 +55,54 @@ func sceneCoordinatorPersistsInitialAndDetectedSceneStates() async throws {
     #expect(sceneEvents.contains(.discussionCandidate))
     #expect(sceneEvents.contains(.discussion))
 }
+
+@Test
+func semanticCueOnlySeedsCandidateUntilAcousticsConfirm() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    let writer = try SessionWriter(sessionURL: root)
+    let coordinator = SceneCoordinator(
+        sessionID: UUID(),
+        runID: "scene-semantic-test",
+        writer: writer,
+        materializer: TranscriptMaterializer(sampleRate: 10),
+        config: .test,
+        windowSeconds: 2,
+        hopSeconds: 1
+    )
+
+    let result = try await coordinator.process(
+        speakerSpans: [
+            SpeakerSpan(
+                speakerID: "lecturer",
+                startFrame: 0,
+                endFrame: 100,
+                confidence: 1
+            )
+        ],
+        totalFrames: 100,
+        sampleRate: 10,
+        existingEvents: [],
+        activeRuns: ActiveRuns(),
+        semanticCues: [
+            TimedSemanticSceneCue(
+                frame: 10,
+                cue: .discussionStart
+            )
+        ]
+    )
+
+    let states = result.events.compactMap { event -> SceneState? in
+        guard case .sceneChanged(let scene) = event.kind else {
+            return nil
+        }
+        return scene
+    }
+
+    #expect(states.contains(.discussionCandidate))
+    #expect(!states.contains(.discussion))
+}
