@@ -6,7 +6,6 @@ enum AudioCaptureEngineError: LocalizedError {
     case alreadyRecording
     case notRecording
     case invalidInputFormat
-    case ringOverflow
     case writerFailure(String)
 
     var errorDescription: String? {
@@ -17,12 +16,15 @@ enum AudioCaptureEngineError: LocalizedError {
             "録音は開始されていません"
         case .invalidInputFormat:
             "マイクの音声形式を利用できません"
-        case .ringOverflow:
-            "録音データの保存が追いつかず、一部の音声が欠落した可能性があります"
         case .writerFailure(let message):
             "録音データの保存中にエラーが発生しました: \(message)"
         }
     }
+}
+
+struct AudioCaptureStopResult: Sendable, Equatable {
+    let checkpoint: AudioCheckpoint
+    let didOverflow: Bool
 }
 
 @MainActor
@@ -144,7 +146,7 @@ final class AudioCaptureEngine {
         )
     }
 
-    func stop() async throws -> AudioCheckpoint {
+    func stop() async throws -> AudioCaptureStopResult {
         guard
             let engine,
             let ring,
@@ -178,10 +180,9 @@ final class AudioCaptureEngine {
             throw AudioCaptureEngineError.writerFailure(backgroundFailure)
         }
 
-        if ring.overflowCount > overflowAtStart {
-            throw AudioCaptureEngineError.ringOverflow
-        }
-
-        return checkpoint
+        return AudioCaptureStopResult(
+            checkpoint: checkpoint,
+            didOverflow: ring.overflowCount > overflowAtStart
+        )
     }
 }
