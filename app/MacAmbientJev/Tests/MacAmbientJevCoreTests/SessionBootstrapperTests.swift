@@ -1,0 +1,47 @@
+import Foundation
+import Testing
+@testable import MacAmbientJevCore
+
+@Test
+func sessionBootstrapperCreatesManifestAndEventLog() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support"),
+        cacheURL: root.appending(path: "cache")
+    )
+    let sessionID = UUID()
+
+    let sessionURL = try SessionBootstrapper().createSession(
+        paths: paths,
+        sessionID: sessionID,
+        sourceKind: .importedFile,
+        originalFilename: "lecture.m4a"
+    )
+
+    #expect(
+        FileManager.default.fileExists(
+            atPath: sessionURL.appending(path: "session.json").path
+        )
+    )
+    #expect(
+        FileManager.default.fileExists(
+            atPath: sessionURL.appending(path: "events.jsonl").path
+        )
+    )
+
+    let data = try Data(
+        contentsOf: sessionURL.appending(path: "session.json")
+    )
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let manifest = try decoder.decode(SessionManifest.self, from: data)
+
+    #expect(manifest.sessionID == sessionID)
+    #expect(manifest.sourceKind == .importedFile)
+    #expect(manifest.originalFilename == "lecture.m4a")
+}
