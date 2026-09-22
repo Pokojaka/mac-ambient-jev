@@ -26,4 +26,11 @@ fi
 
 bash "$ROOT/scripts/build_app.sh"
 
+USER_SELECTED_READ_ONLY="$(
+  /usr/libexec/PlistBuddy \
+    -c "Print :com.apple.security.files.user-selected.read-only" \
+    "$PACKAGE/Entitlements/MacAmbientJev.entitlements"
+)"
+test "$USER_SELECTED_READ_ONLY" = "true"
+
 echo "V1 verification passed"
