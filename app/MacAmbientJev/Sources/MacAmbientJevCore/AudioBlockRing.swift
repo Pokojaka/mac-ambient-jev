@@ -45,6 +45,46 @@ public final class AudioBlockRing: @unchecked Sendable {
         return true
     }
 
+
+    @discardableResult
+    public func pushPlanarFloat32(
+        channelData: UnsafeMutablePointer<UnsafeMutablePointer<Float>>,
+        channelCount: Int,
+        frameCount: Int
+    ) -> Bool {
+        guard channelCount > 0, frameCount >= 0 else {
+            recordOverflow()
+            return false
+        }
+
+        let sampleCount = channelCount * frameCount
+        guard sampleCount <= blockFrameCapacity else {
+            recordOverflow()
+            return false
+        }
+        guard lock.try() else {
+            return false
+        }
+        defer { lock.unlock() }
+
+        guard storedCount < blocks.count else {
+            recordedOverflowCount += 1
+            return false
+        }
+
+        for frame in 0..<frameCount {
+            let destinationBase = frame * channelCount
+            for channel in 0..<channelCount {
+                blocks[head][destinationBase + channel] = channelData[channel][frame]
+            }
+        }
+
+        lengths[head] = sampleCount
+        head = (head + 1) % blocks.count
+        storedCount += 1
+        return true
+    }
+
     public func pop() -> [Float]? {
         lock.lock()
         defer { lock.unlock() }
