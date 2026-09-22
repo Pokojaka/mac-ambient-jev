@@ -296,3 +296,101 @@ func recoveryScannerPromotesCompletedUnselectedASRRun() async throws {
     #expect(plan.asrRunID == "asr_complete")
     #expect(plan.pendingSegments.isEmpty)
 }
+
+
+@Test
+func recoveryScannerRunsDiarizationWhenSelectedASRHasNoDiarizationRun() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sessionID = UUID()
+    let sessionURL = root.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+    try writeRecoveryManifest(
+        sessionID: sessionID,
+        sourceKind: .live,
+        to: sessionURL
+    )
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 100,
+        sampleRate: 100,
+        channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    )
+    try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
+
+    let writer = try SessionWriter(sessionURL: sessionURL)
+    _ = try await writer.append(EventDraft(
+        eventType: "segment.created",
+        sessionID: sessionID,
+        segmentationRunID: "seg_active",
+        segmentID: "seg_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 100,
+        payload: EmptyPayload()
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "asr.pending",
+        sessionID: sessionID,
+        processingRunID: "asr_active",
+        segmentationRunID: "seg_active",
+        segmentID: "seg_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 100,
+        payload: EmptyPayload()
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "asr.completed",
+        sessionID: sessionID,
+        processingRunID: "asr_active",
+        segmentationRunID: "seg_active",
+        segmentID: "seg_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 100,
+        payload: ASRCompletedEventPayload(
+            text: "話者分離待ち",
+            detectedLanguage: "ja",
+            engine: "qwen3-asr",
+            model: "test"
+        )
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "processing.run.completed",
+        sessionID: sessionID,
+        processingRunID: "asr_active",
+        payload: ProcessingRunCompletedPayload(
+            stage: .asr,
+            succeeded: true,
+            completedCount: 1,
+            failedCount: 0
+        )
+    ))
+
+    let metadata = ProcessingMetadata(
+        timelineVersion: 1,
+        vadVersion: "vad",
+        vadConfigHash: "hash",
+        asrEngine: "qwen",
+        asrModel: "model",
+        asrVersion: "version",
+        diarizationVersion: "diar",
+        sceneAnalyzerVersion: 1,
+        jevSchemaVersion: 1,
+        policyVersion: 1,
+        materializerSchemaVersion: 1,
+        activeRuns: ActiveRuns(
+            segmentation: "seg_active",
+            asr: "asr_active"
+        )
+    )
+    try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+
+    let candidates = try SessionRecoveryScanner(
+        sessionsRoot: root
+    ).pendingSessions()
+
+    guard case .runDiarization(let plan) = candidates.first?.action else {
+        Issue.record("selected ASR without diarization should resume diarization")
+        return
+    }
+    #expect(plan.asrRunID == "asr_active")
+}
