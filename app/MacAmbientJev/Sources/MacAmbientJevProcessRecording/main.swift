@@ -105,15 +105,16 @@ struct ProcessRecordingCommand {
         )
 
         defer {
-            guard !keepSession else { return }
-            do {
-                try FileManager.default.removeItem(at: sessionURL)
-            } catch {
-                FileHandle.standardError.write(
-                    Data(
-                        "一時セッションを削除できませんでした: \(error.localizedDescription)\n".utf8
+            if !keepSession {
+                do {
+                    try FileManager.default.removeItem(at: sessionURL)
+                } catch {
+                    FileHandle.standardError.write(
+                        Data(
+                            "一時セッションを削除できませんでした: \(error.localizedDescription)\n".utf8
+                        )
                     )
-                )
+                }
             }
         }
 
