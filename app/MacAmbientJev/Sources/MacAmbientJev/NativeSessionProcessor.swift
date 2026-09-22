@@ -1,6 +1,17 @@
 import Foundation
 import MacAmbientJevCore
 
+enum NativeSessionProcessorError: LocalizedError {
+    case invalidRecoveredRun
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRecoveredRun:
+            "復旧対象の文字起こし run が完了状態ではありません"
+        }
+    }
+}
+
 actor NativeSessionProcessor {
     typealias StatusHandler = @Sendable (_ text: String) async -> Void
     typealias UpdateHandler = @Sendable (
@@ -42,15 +53,12 @@ actor NativeSessionProcessor {
                 onUpdate: onUpdate
             )
         } catch {
-            if let onStatus {
-                await onStatus("音声ファイルを処理できませんでした: \(error.localizedDescription)")
-            }
-            if let onUpdate {
-                await onUpdate(
-                    [],
-                    .partialFailure(error.localizedDescription)
-                )
-            }
+            await reportFailure(
+                prefix: "音声ファイルを処理できませんでした",
+                error: error,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
         }
     }
 
@@ -69,15 +77,135 @@ actor NativeSessionProcessor {
                 onUpdate: onUpdate
             )
         } catch {
+            await reportFailure(
+                prefix: "録音を処理できませんでした",
+                error: error,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
+        }
+    }
+
+    func resumePendingASRSession(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        plan: ASRRecoveryPlan,
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async {
+        do {
+            try persistProcessingMetadata(sessionID: sessionID)
+
             if let onStatus {
-                await onStatus("録音を処理できませんでした: \(error.localizedDescription)")
-            }
-            if let onUpdate {
-                await onUpdate(
-                    [],
-                    .partialFailure(error.localizedDescription)
+                await onStatus(
+                    "未完了の文字起こしを再開しています（残り\(plan.pendingSegments.count)区間）"
                 )
             }
+
+            let reader = ProcessingTimelineReader(
+                directory: processingDirectory(for: sessionID),
+                checkpoint: checkpoint
+            )
+            let state = SessionProcessingState(captureState: .stopped)
+            let coordinator = PipelineCoordinator(
+                sessionID: sessionID,
+                segmentationRunID: plan.segmentationRunID,
+                asrRunID: plan.asrRunID,
+                writer: try SessionWriter(
+                    sessionURL: sessionURL(for: sessionID)
+                ),
+                asr: asr,
+                loader: ASRAudioLoader(reader: reader),
+                materializer: TranscriptMaterializer(
+                    sampleRate: checkpoint.sampleRate
+                ),
+                state: state
+            )
+
+            let result = await coordinator.resumePendingASR(
+                segments: plan.pendingSegments,
+                existingEvents: plan.transcriptEvents
+            ) { materialized, processingState in
+                if let onUpdate {
+                    await onUpdate(materialized, processingState)
+                }
+            }
+
+            if result.failedCount == 0 {
+                try selectSuccessfulRuns(
+                    sessionID: sessionID,
+                    segmentationRunID: plan.segmentationRunID,
+                    asrRunID: plan.asrRunID
+                )
+            }
+
+            if let onStatus {
+                if result.failedCount == 0 {
+                    await onStatus(
+                        "未完了の文字起こしを復旧しました（\(result.completedCount)区間）"
+                    )
+                } else {
+                    await onStatus(
+                        "文字起こしの復旧中に\(result.failedCount)区間失敗しました"
+                    )
+                }
+            }
+        } catch {
+            await reportFailure(
+                prefix: "文字起こしを復旧できませんでした",
+                error: error,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
+        }
+    }
+
+    func selectCompletedASRSession(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        plan: ASRRecoveryPlan,
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async {
+        do {
+            guard plan.runSucceeded,
+                  plan.pendingSegments.isEmpty,
+                  !plan.hasFailures else {
+                throw NativeSessionProcessorError.invalidRecoveredRun
+            }
+
+            try persistProcessingMetadata(sessionID: sessionID)
+            try selectSuccessfulRuns(
+                sessionID: sessionID,
+                segmentationRunID: plan.segmentationRunID,
+                asrRunID: plan.asrRunID
+            )
+
+            let materialized = TranscriptMaterializer(
+                sampleRate: checkpoint.sampleRate
+            ).materialize(
+                events: plan.transcriptEvents,
+                activeRuns: ActiveRuns(
+                    segmentation: plan.segmentationRunID,
+                    asr: plan.asrRunID
+                )
+            )
+
+            if let onUpdate {
+                await onUpdate(materialized, .complete)
+            }
+            if let onStatus {
+                await onStatus(
+                    "完了済みの文字起こしを復旧しました（\(materialized.count)区間）"
+                )
+            }
+        } catch {
+            await reportFailure(
+                prefix: "完了済みの文字起こしを復旧できませんでした",
+                error: error,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
         }
     }
 
@@ -175,6 +303,23 @@ actor NativeSessionProcessor {
                     "文字起こしが完了しました（成功 \(result.completedCount)区間、失敗 \(result.failedCount)区間）"
                 )
             }
+        }
+    }
+
+    private func reportFailure(
+        prefix: String,
+        error: Error,
+        onStatus: StatusHandler?,
+        onUpdate: UpdateHandler?
+    ) async {
+        if let onStatus {
+            await onStatus("\(prefix): \(error.localizedDescription)")
+        }
+        if let onUpdate {
+            await onUpdate(
+                [],
+                .partialFailure(error.localizedDescription)
+            )
         }
     }
 
