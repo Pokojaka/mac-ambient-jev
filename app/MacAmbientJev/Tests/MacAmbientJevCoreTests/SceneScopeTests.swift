@@ -107,3 +107,50 @@ func featureExtractorMeasuresMultiSpeakerWindow() {
     #expect(features.voicedDurationRatio == 1)
     #expect(features.turnRate > 0)
 }
+
+@Test
+func semanticDiscussionCueOnlyEntersCandidateUntilAcousticConfirmation() {
+    var machine = SceneStateMachine(config: .test)
+
+    _ = machine.observeSemanticCue(.discussionStart)
+    _ = machine.observeSemanticCue(.discussionStart)
+
+    #expect(machine.state == .discussionCandidate)
+
+    for _ in 0..<3 {
+        _ = machine.observe(
+            AcousticSceneFeatures(
+                activeSpeakerCount: 4,
+                turnRate: 0.8,
+                overlapRatio: 0.25,
+                dominantSpeakerRatio: 0.25,
+                voicedDurationRatio: 0.75
+            )
+        )
+    }
+
+    #expect(machine.state == .discussion)
+}
+
+@Test
+func semanticDiscussionEndOnlyEntersLectureCandidateUntilAcousticConfirmation() {
+    var machine = SceneStateMachine(state: .discussion, config: .test)
+
+    _ = machine.observeSemanticCue(.discussionEnd)
+
+    #expect(machine.state == .lectureCandidate)
+
+    for _ in 0..<3 {
+        _ = machine.observe(
+            AcousticSceneFeatures(
+                activeSpeakerCount: 1,
+                turnRate: 0.05,
+                overlapRatio: 0.01,
+                dominantSpeakerRatio: 0.9,
+                voicedDurationRatio: 0.8
+            )
+        )
+    }
+
+    #expect(machine.state == .lecture)
+}
