@@ -33,7 +33,6 @@ let package = Package(
             name: "MacAmbientJevRuntime",
             dependencies: [
                 "MacAmbientJevCore",
-                "MacAmbientJevRuntime",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "Qwen3ASR", package: "speech-swift")
             ]
@@ -42,8 +41,7 @@ let package = Package(
             name: "MacAmbientJev",
             dependencies: [
                 "MacAmbientJevCore",
-                .product(name: "FluidAudio", package: "FluidAudio"),
-                .product(name: "Qwen3ASR", package: "speech-swift")
+                "MacAmbientJevRuntime"
             ]
         ),
         .executableTarget(
