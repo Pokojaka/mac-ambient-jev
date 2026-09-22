@@ -28,7 +28,9 @@ private struct ContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    appState.showImportPending()
+                    Task {
+                        await appState.importAudioFile()
+                    }
                 } label: {
                     Label("音声ファイルを読み込む", systemImage: "doc.badge.plus")
                 }
