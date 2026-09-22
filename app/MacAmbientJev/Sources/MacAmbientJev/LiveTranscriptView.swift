@@ -128,20 +128,20 @@ struct LiveTranscriptView: View {
     ) -> String? {
         guard !spans.isEmpty else { return nil }
 
-        let scopes = Set(spans.map(\.scope))
-        if scopes.count > 1 {
+        guard let firstScope = spans.first?.scope else {
+            return nil
+        }
+        if spans.contains(where: { $0.scope != firstScope }) {
             return "音響範囲: 混在"
         }
 
-        switch scopes.first {
+        switch firstScope {
         case .near:
             return "音響範囲: 近傍"
         case .background:
             return "音響範囲: 背景"
         case .unknown:
             return "音響範囲: 未判定"
-        case nil:
-            return nil
         }
     }
 
