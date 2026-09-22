@@ -1,50 +1,62 @@
 import Foundation
+import Synchronization
 
 public final class AudioBlockRing: @unchecked Sendable {
-    private let lock = NSLock()
-    private var blocks: [[Float]]
-    private var lengths: [Int]
-    private var head = 0
-    private var tail = 0
-    private var storedCount = 0
-    private var recordedOverflowCount: UInt64 = 0
-    private let blockFrameCapacity: Int
+    private let capacity: Int
+    private let blockSampleCapacity: Int
+    private let storage: UnsafeMutablePointer<Float>
+    private let lengths: UnsafeMutablePointer<Int>
+
+    private let writeSequence = Atomic<UInt64>(0)
+    private let readSequence = Atomic<UInt64>(0)
+    private let recordedOverflowCount = Atomic<UInt64>(0)
 
     public init(capacity: Int, blockFrameCapacity: Int) {
         precondition(capacity > 0)
         precondition(blockFrameCapacity > 0)
-        self.blockFrameCapacity = blockFrameCapacity
-        self.blocks = (0..<capacity).map { _ in
-            Array(repeating: 0, count: blockFrameCapacity)
-        }
-        self.lengths = Array(repeating: 0, count: capacity)
+
+        self.capacity = capacity
+        self.blockSampleCapacity = blockFrameCapacity
+
+        let totalSampleCapacity = capacity * blockFrameCapacity
+        self.storage = .allocate(capacity: totalSampleCapacity)
+        self.storage.initialize(
+            repeating: 0,
+            count: totalSampleCapacity
+        )
+
+        self.lengths = .allocate(capacity: capacity)
+        self.lengths.initialize(repeating: 0, count: capacity)
+    }
+
+    deinit {
+        storage.deinitialize(count: capacity * blockSampleCapacity)
+        storage.deallocate()
+        lengths.deinitialize(count: capacity)
+        lengths.deallocate()
     }
 
     @discardableResult
     public func push(samples: [Float]) -> Bool {
-        guard samples.count <= blockFrameCapacity else {
+        guard samples.count <= blockSampleCapacity else {
             recordOverflow()
             return false
         }
-        guard lock.try() else {
-            return false
-        }
-        defer { lock.unlock() }
 
-        guard storedCount < blocks.count else {
-            recordedOverflowCount += 1
+        guard let slot = reserveProducerSlot() else {
             return false
         }
 
+        let destination = storage.advanced(
+            by: slot * blockSampleCapacity
+        )
         for index in samples.indices {
-            blocks[head][index] = samples[index]
+            destination[index] = samples[index]
         }
-        lengths[head] = samples.count
-        head = (head + 1) % blocks.count
-        storedCount += 1
+        lengths[slot] = samples.count
+        publishProducedSlot()
         return true
     }
-
 
     @discardableResult
     public func pushPlanarFloat32(
@@ -58,55 +70,84 @@ public final class AudioBlockRing: @unchecked Sendable {
         }
 
         let sampleCount = channelCount * frameCount
-        guard sampleCount <= blockFrameCapacity else {
+        guard sampleCount <= blockSampleCapacity else {
             recordOverflow()
             return false
         }
-        guard lock.try() else {
-            return false
-        }
-        defer { lock.unlock() }
 
-        guard storedCount < blocks.count else {
-            recordedOverflowCount += 1
+        guard let slot = reserveProducerSlot() else {
             return false
         }
 
+        let destination = storage.advanced(
+            by: slot * blockSampleCapacity
+        )
         for frame in 0..<frameCount {
             let destinationBase = frame * channelCount
             for channel in 0..<channelCount {
-                blocks[head][destinationBase + channel] = channelData[channel][frame]
+                destination[destinationBase + channel] =
+                    channelData[channel][frame]
             }
         }
 
-        lengths[head] = sampleCount
-        head = (head + 1) % blocks.count
-        storedCount += 1
+        lengths[slot] = sampleCount
+        publishProducedSlot()
         return true
     }
 
     public func pop() -> [Float]? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard storedCount > 0 else { return nil }
+        let read = readSequence.load(ordering: .relaxed)
+        let write = writeSequence.load(ordering: .acquiring)
 
-        let length = lengths[tail]
-        let result = Array(blocks[tail][0..<length])
-        lengths[tail] = 0
-        tail = (tail + 1) % blocks.count
-        storedCount -= 1
+        guard read < write else {
+            return nil
+        }
+
+        let slot = Int(read % UInt64(capacity))
+        let length = lengths[slot]
+        let source = UnsafeBufferPointer(
+            start: storage.advanced(
+                by: slot * blockSampleCapacity
+            ),
+            count: length
+        )
+        let result = Array(source)
+
+        readSequence.store(
+            read &+ 1,
+            ordering: .releasing
+        )
         return result
     }
 
     public var overflowCount: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedOverflowCount
+        recordedOverflowCount.load(ordering: .relaxed)
+    }
+
+    private func reserveProducerSlot() -> Int? {
+        let write = writeSequence.load(ordering: .relaxed)
+        let read = readSequence.load(ordering: .acquiring)
+
+        guard write &- read < UInt64(capacity) else {
+            recordOverflow()
+            return nil
+        }
+
+        return Int(write % UInt64(capacity))
+    }
+
+    private func publishProducedSlot() {
+        let write = writeSequence.load(ordering: .relaxed)
+        writeSequence.store(
+            write &+ 1,
+            ordering: .releasing
+        )
     }
 
     private func recordOverflow() {
-        lock.lock()
-        recordedOverflowCount += 1
-        lock.unlock()
+        _ = recordedOverflowCount.add(
+            1,
+            ordering: .relaxed
+        )
     }
 }
