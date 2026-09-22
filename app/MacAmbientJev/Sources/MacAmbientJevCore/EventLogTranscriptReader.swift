@@ -22,8 +22,9 @@ public struct EventLogTranscriptReader: Sendable {
 
             switch eventType {
             case "segment.created":
-                guard event["segmentation_run_id"] as? String
-                        == activeRuns.segmentation,
+                guard let segmentationRunID =
+                        event["segmentation_run_id"] as? String,
+                      segmentationRunID == activeRuns.segmentation,
                       let segmentID =
                         event["segment_id"] as? String,
                       let startFrame =
@@ -36,16 +37,16 @@ public struct EventLogTranscriptReader: Sendable {
 
                 events.append(.segmentCreated(
                     seq: seq,
-                    segmentationRunID:
-                        event["segmentation_run_id"] as! String,
+                    segmentationRunID: segmentationRunID,
                     segmentID: segmentID,
                     startFrame: startFrame,
                     endFrame: endFrame
                 ))
 
             case "asr.completed":
-                guard event["processing_run_id"] as? String
-                        == activeRuns.asr,
+                guard let runID =
+                        event["processing_run_id"] as? String,
+                      runID == activeRuns.asr,
                       event["segmentation_run_id"] as? String
                         == activeRuns.segmentation,
                       let segmentationRunID =
@@ -61,7 +62,7 @@ public struct EventLogTranscriptReader: Sendable {
 
                 events.append(.asrCompleted(
                     seq: seq,
-                    runID: event["processing_run_id"] as! String,
+                    runID: runID,
                     segmentationRunID: segmentationRunID,
                     segmentID: segmentID,
                     text: text,
@@ -257,7 +258,11 @@ public struct JevRetryAnalyzer: Sendable {
                 continue
             }
 
-            if latestRun == nil || seq > latestRun!.seq {
+            if let currentLatest = latestRun {
+                if seq > currentLatest.seq {
+                    latestRun = (seq, runID)
+                }
+            } else {
                 latestRun = (seq, runID)
             }
 
