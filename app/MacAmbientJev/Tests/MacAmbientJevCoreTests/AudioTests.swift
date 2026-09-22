@@ -69,3 +69,23 @@ import Testing
     #expect(ring.pop() == [5, 6, 7, 8])
     #expect(ring.pop() == nil)
 }
+
+
+@Test func processingTimelineReaderReadsAcrossDurableChunkBoundaries() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let writer = try DurableAudioWriter(
+        directory: root,
+        sampleRate: 10,
+        channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    try await writer.append(samples: (0..<25).map(Float.init))
+    let checkpoint = try await writer.finish()
+
+    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let samples = try reader.readSamples(frameRange: 8..<13)
+
+    #expect(samples == [8, 9, 10, 11, 12])
+}
