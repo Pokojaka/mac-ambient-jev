@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# SwiftPM
+.build/
+app/MacAmbientJev/.build/
+
+# Local evaluation recordings and annotations.
+# Real lectures, conversations, and personal recordings must stay local.
+test-data/recordings/local/
