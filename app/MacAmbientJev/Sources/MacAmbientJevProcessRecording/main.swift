@@ -67,6 +67,33 @@ struct ProcessRecordingCommand {
                 .appending(path: "segments.json")
         }
 
+        let corpusDirectory = outputURL.deletingLastPathComponent()
+        let manifestURL = corpusDirectory.appending(path: "manifest.json")
+
+        if !FileManager.default.fileExists(atPath: manifestURL.path) {
+            try FileManager.default.createDirectory(
+                at: corpusDirectory,
+                withIntermediateDirectories: true
+            )
+            let manifest = GoldenCorpusManifest(
+                id: corpusDirectory.lastPathComponent,
+                audio: audioURL.lastPathComponent,
+                annotations: GoldenCorpusAnnotations(
+                    sceneTransitions: [],
+                    mustKeepTerms: [],
+                    mustNotBeLowPriority: [],
+                    mustNotBeBackground: []
+                )
+            )
+            let manifestEncoder = JSONEncoder()
+            manifestEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try manifestEncoder.encode(manifest).write(
+                to: manifestURL,
+                options: .atomic
+            )
+            print("manifest.json を生成しました: \(manifestURL.path)")
+        }
+
         let paths = AppPaths.systemDefault()
         let sessionID = UUID()
         let sessionURL = try SessionBootstrapper().createSession(
