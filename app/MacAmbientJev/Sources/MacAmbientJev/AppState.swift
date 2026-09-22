@@ -23,16 +23,30 @@ final class AppState: ObservableObject {
         case error
     }
 
+    private enum PendingProcessing {
+        case imported(sessionID: UUID, originalURL: URL)
+        case recorded(sessionID: UUID, checkpoint: AudioCheckpoint)
+    }
+
     @Published private(set) var statusText = "待機中"
     @Published private(set) var statusTone: StatusTone = .neutral
     @Published private(set) var recordingPhase: RecordingPhase = .idle
+    @Published private(set) var processingState: ProcessingState = .idle
+    @Published private(set) var processingStatusText: String?
+
+    let transcriptViewModel = LiveTranscriptViewModel()
 
     private let paths: AppPaths
     private let captureEngine: AudioCaptureEngine
+    private let sessionProcessor: NativeSessionProcessor
     private let diskMonitor = DiskSpaceMonitor(
         warningThresholdBytes: 2_000_000_000,
         criticalThresholdBytes: 1_000_000_000
     )
+
+    private var recordingSessionID: UUID?
+    private var pendingProcessing: [PendingProcessing] = []
+    private var processingTask: Task<Void, Never>?
 
     init(fileManager: FileManager = .default) {
         let applicationSupport = fileManager.urls(
@@ -54,6 +68,7 @@ final class AppState: ObservableObject {
 
         self.paths = paths
         self.captureEngine = AudioCaptureEngine(paths: paths)
+        self.sessionProcessor = NativeSessionProcessor(paths: paths)
     }
 
     var isRecording: Bool {
@@ -65,6 +80,15 @@ final class AppState: ObservableObject {
         case .requestingPermission, .starting, .stopping, .importing:
             true
         case .idle, .recording:
+            false
+        }
+    }
+
+    var isProcessing: Bool {
+        switch processingState {
+        case .running, .backlogged:
+            true
+        case .idle, .complete, .partialFailure:
             false
         }
     }
@@ -92,8 +116,7 @@ final class AppState: ObservableObject {
         }
 
         recordingPhase = .importing
-        setStatus("音声ファイルを読み込んでいます", tone: .neutral)
-        defer { recordingPhase = .idle }
+        setCaptureStatus("音声ファイルを読み込んでいます", tone: .neutral)
 
         let accessed = sourceURL.startAccessingSecurityScopedResource()
         defer {
@@ -113,15 +136,26 @@ final class AppState: ObservableObject {
                 sourceKind: .importedFile,
                 originalFilename: sourceURL.lastPathComponent
             )
-            _ = try AudioImporter().importFile(sourceURL, into: sessionURL)
+            let imported = try AudioImporter().importFile(
+                sourceURL,
+                into: sessionURL
+            )
 
-            setStatus(
+            recordingPhase = .idle
+            setCaptureStatus(
                 "「\(sourceURL.lastPathComponent)」を読み込みました",
                 tone: .neutral
             )
+            enqueueProcessing(
+                .imported(
+                    sessionID: sessionID,
+                    originalURL: imported.originalURL
+                )
+            )
         } catch {
             try? FileManager.default.removeItem(at: sessionURL)
-            setStatus(
+            recordingPhase = .idle
+            setCaptureStatus(
                 "音声ファイルを読み込めませんでした: \(error.localizedDescription)",
                 tone: .error
             )
@@ -132,11 +166,11 @@ final class AppState: ObservableObject {
         guard recordingPhase == .idle else { return }
 
         recordingPhase = .requestingPermission
-        setStatus("マイクへのアクセスを確認しています", tone: .neutral)
+        setCaptureStatus("マイクへのアクセスを確認しています", tone: .neutral)
 
         guard await requestMicrophoneAccessIfNeeded() else {
             recordingPhase = .idle
-            setStatus(
+            setCaptureStatus(
                 "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
                 tone: .error
             )
@@ -152,13 +186,13 @@ final class AppState: ObservableObject {
             switch try currentDiskSpaceLevel() {
             case .critical:
                 recordingPhase = .idle
-                setStatus(
+                setCaptureStatus(
                     "空き容量が1 GB未満のため、新しい録音を開始できません。",
                     tone: .error
                 )
                 return
             case .warning:
-                setStatus(
+                setCaptureStatus(
                     "空き容量が2 GB未満です。長時間録音では容量不足に注意してください。",
                     tone: .warning
                 )
@@ -166,13 +200,15 @@ final class AppState: ObservableObject {
                 break
             }
         } catch {
-            // 容量取得に失敗しても録音自体は拒否しない。
-            setStatus("空き容量を確認できませんでした。録音を開始します。", tone: .warning)
+            setCaptureStatus(
+                "空き容量を確認できませんでした。録音を開始します。",
+                tone: .warning
+            )
         }
 
         recordingPhase = .starting
         if statusTone != .warning {
-            setStatus("録音を開始しています", tone: .neutral)
+            setCaptureStatus("録音を開始しています", tone: .neutral)
         }
 
         let sessionID = UUID()
@@ -187,42 +223,125 @@ final class AppState: ObservableObject {
                 originalFilename: nil
             )
             try await captureEngine.start(sessionID: sessionID)
+            recordingSessionID = sessionID
             recordingPhase = .recording
-            setStatus("録音中", tone: .recording)
+            setCaptureStatus("録音中", tone: .recording)
         } catch {
             try? FileManager.default.removeItem(at: sessionURL)
+            recordingSessionID = nil
             recordingPhase = .idle
-            setStatus(error.localizedDescription, tone: .error)
+            setCaptureStatus(error.localizedDescription, tone: .error)
         }
     }
 
     func stopRecording() async {
-        guard recordingPhase == .recording else { return }
+        guard recordingPhase == .recording,
+              let sessionID = recordingSessionID else {
+            return
+        }
 
         recordingPhase = .stopping
-        setStatus("録音を保存しています", tone: .neutral)
+        setCaptureStatus("録音を保存しています", tone: .neutral)
 
         do {
-            let checkpoint = try await captureEngine.stop()
+            let result = try await captureEngine.stop()
+            let checkpoint = result.checkpoint
             let durationSeconds = checkpoint.sampleRate > 0
                 ? Double(checkpoint.committedFrames) / checkpoint.sampleRate
                 : 0
 
+            recordingSessionID = nil
             recordingPhase = .idle
-            setStatus(
-                "録音を保存しました（\(Self.formatDuration(durationSeconds))）",
-                tone: .neutral
-            )
-        } catch AudioCaptureEngineError.ringOverflow {
-            recordingPhase = .idle
-            setStatus(
-                "録音は保存しましたが、保存処理が追いつかず一部の音声が欠落した可能性があります。",
-                tone: .warning
+
+            if result.didOverflow {
+                setCaptureStatus(
+                    "録音は保存しましたが、一部の音声が欠落した可能性があります。",
+                    tone: .warning
+                )
+            } else {
+                setCaptureStatus(
+                    "録音を保存しました（\(Self.formatDuration(durationSeconds))）",
+                    tone: .neutral
+                )
+            }
+
+            enqueueProcessing(
+                .recorded(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint
+                )
             )
         } catch {
+            recordingSessionID = nil
             recordingPhase = .idle
-            setStatus(error.localizedDescription, tone: .error)
+            setCaptureStatus(error.localizedDescription, tone: .error)
         }
+    }
+
+    private func enqueueProcessing(_ request: PendingProcessing) {
+        pendingProcessing.append(request)
+
+        if processingTask != nil {
+            processingState = .backlogged
+            processingStatusText = "文字起こし処理が待機中です"
+            transcriptViewModel.setStatus("文字起こし処理が待機中です")
+            return
+        }
+
+        processingTask = Task { [weak self] in
+            await self?.drainProcessingQueue()
+        }
+    }
+
+    private func drainProcessingQueue() async {
+        while !pendingProcessing.isEmpty {
+            let request = pendingProcessing.removeFirst()
+            processingState = .running
+
+            let statusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.processingStatusText = text
+                    self.transcriptViewModel.setStatus(text)
+                }
+            }
+
+            let updateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.processingState = state
+                    self.transcriptViewModel.update(segments: segments)
+                }
+            }
+
+            switch request {
+            case .imported(let sessionID, let originalURL):
+                await sessionProcessor.processImportedSession(
+                    sessionID: sessionID,
+                    originalURL: originalURL,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            case .recorded(let sessionID, let checkpoint):
+                await sessionProcessor.processRecordedSession(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+            }
+
+            if !pendingProcessing.isEmpty {
+                processingState = .backlogged
+                processingStatusText = "次の文字起こし処理を開始します"
+                transcriptViewModel.setStatus("次の文字起こし処理を開始します")
+            }
+        }
+
+        if processingState == .running || processingState == .backlogged {
+            processingState = .complete
+        }
+        processingTask = nil
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
@@ -278,7 +397,7 @@ final class AppState: ObservableObject {
         _ = try SessionWriter(sessionURL: sessionURL)
     }
 
-    private func setStatus(_ text: String, tone: StatusTone) {
+    private func setCaptureStatus(_ text: String, tone: StatusTone) {
         statusText = text
         statusTone = tone
     }
@@ -290,9 +409,18 @@ final class AppState: ObservableObject {
         let remainingSeconds = totalSeconds % 60
 
         if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+            return String(
+                format: "%d:%02d:%02d",
+                hours,
+                minutes,
+                remainingSeconds
+            )
         }
 
-        return String(format: "%02d:%02d", minutes, remainingSeconds)
+        return String(
+            format: "%02d:%02d",
+            minutes,
+            remainingSeconds
+        )
     }
 }
