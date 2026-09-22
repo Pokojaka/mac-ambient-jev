@@ -3,6 +3,18 @@ import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
+private actor LiveUpdateRecorder {
+    private var segments: [MaterializedTranscriptSegment] = []
+
+    func record(_ value: [MaterializedTranscriptSegment]) {
+        segments = value
+    }
+
+    func snapshot() -> [MaterializedTranscriptSegment] {
+        segments
+    }
+}
+
 private actor StubLiveProcessorASR: ASREngine {
     private var prepareCount = 0
     private var transcribeCount = 0
@@ -97,13 +109,13 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         segments: segments
     )
 
-    var lastUpdate: [MaterializedTranscriptSegment] = []
+    let recorder = LiveUpdateRecorder()
     let progress = try await processor.processLiveSegments(
         sessionID: sessionID,
         segments: segments,
         checkpoint: checkpoint,
         onUpdate: { segments, _ in
-            lastUpdate = segments
+            await recorder.record(segments)
         }
     )
 
@@ -114,7 +126,9 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         "ライブ文字起こし1",
         "ライブ文字起こし2"
     ])
-    #expect(lastUpdate == progress.materializedSegments)
+    #expect(
+        await recorder.snapshot() == progress.materializedSegments
+    )
 
     let counts = await asr.counts()
     #expect(counts.prepare == 1)
