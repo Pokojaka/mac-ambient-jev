@@ -283,3 +283,35 @@ func audioFileTimelineBuilderResumesWithoutDuplicatingImportedAudio() async thro
     #expect(second.committedFrames == 12)
     #expect(second.chunkFiles == first.chunkFiles)
 }
+
+
+@Test
+func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let processing = root.appending(path: "processing", directoryHint: .isDirectory)
+    let writer = try DurableAudioWriter(
+        directory: processing,
+        sampleRate: 8_000,
+        channelCount: 1,
+        chunkDurationSeconds: 0.001
+    )
+    try await writer.append(samples: (0..<24).map { Float($0) / 24 })
+    let checkpoint = try await writer.finish()
+
+    let reader = ProcessingTimelineReader(
+        directory: processing,
+        checkpoint: checkpoint
+    )
+    let output = root.appending(path: "diarization.caf")
+
+    try ProcessingTimelineAudioExporter(
+        framesPerBuffer: 5
+    ).export(reader: reader, to: output)
+
+    let file = try AVAudioFile(forReading: output)
+    #expect(file.length == 24)
+    #expect(file.processingFormat.sampleRate == 8_000)
+    #expect(file.processingFormat.channelCount == 1)
+}
