@@ -5,19 +5,28 @@ public enum RecoverableAudioSource: Sendable, Equatable {
     case importedOriginal(URL)
 }
 
+public enum RecoverableProcessingAction: Sendable, Equatable {
+    case reprocess
+    case resumeASR(ASRRecoveryPlan)
+    case selectCompletedASR(ASRRecoveryPlan)
+}
+
 public struct RecoverableSession: Sendable, Equatable {
     public let manifest: SessionManifest
     public let sessionURL: URL
     public let source: RecoverableAudioSource
+    public let action: RecoverableProcessingAction
 
     public init(
         manifest: SessionManifest,
         sessionURL: URL,
-        source: RecoverableAudioSource
+        source: RecoverableAudioSource,
+        action: RecoverableProcessingAction
     ) {
         self.manifest = manifest
         self.sessionURL = sessionURL
         self.source = source
+        self.action = action
     }
 }
 
@@ -53,22 +62,46 @@ public struct SessionRecoveryScanner: Sendable {
             }
 
             let manifest = try decodeManifest(at: manifestURL)
-            try normalizeEventLogIfNeeded(sessionURL: sessionURL)
-
+            let recoveredLines = try recoverEventLog(sessionURL: sessionURL)
+            let latestASRPlan = try EventLogRecoveryAnalyzer().latestASRPlan(
+                lines: recoveredLines
+            )
             let metadata = try ProcessingMetadataStore(
                 sessionURL: sessionURL
             ).load()
 
-            if metadata?.activeRuns?.asr != nil {
-                continue
+            let action: RecoverableProcessingAction?
+            if let plan = latestASRPlan {
+                if metadata?.activeRuns?.asr == plan.asrRunID {
+                    action = nil
+                } else if !plan.pendingSegments.isEmpty && !plan.hasFailures {
+                    action = .resumeASR(plan)
+                } else if plan.pendingSegments.isEmpty
+                            && plan.runSucceeded
+                            && !plan.hasFailures {
+                    action = .selectCompletedASR(plan)
+                } else if metadata?.activeRuns?.asr == nil {
+                    action = .reprocess
+                } else {
+                    // A failed reprocessing run must not displace the existing
+                    // active run or be retried indefinitely on every launch.
+                    action = nil
+                }
+            } else if metadata?.activeRuns?.asr == nil {
+                action = .reprocess
+            } else {
+                action = nil
             }
+
+            guard let action else { continue }
 
             if let checkpoint = try loadCheckpoint(sessionURL: sessionURL) {
                 candidates.append(
                     RecoverableSession(
                         manifest: manifest,
                         sessionURL: sessionURL,
-                        source: .processingTimeline(checkpoint)
+                        source: .processingTimeline(checkpoint),
+                        action: action
                     )
                 )
                 continue
@@ -80,7 +113,8 @@ public struct SessionRecoveryScanner: Sendable {
                     RecoverableSession(
                         manifest: manifest,
                         sessionURL: sessionURL,
-                        source: .importedOriginal(original)
+                        source: .importedOriginal(original),
+                        action: action
                     )
                 )
             }
@@ -101,10 +135,10 @@ public struct SessionRecoveryScanner: Sendable {
         )
     }
 
-    private func normalizeEventLogIfNeeded(sessionURL: URL) throws {
+    private func recoverEventLog(sessionURL: URL) throws -> [Data] {
         let eventsURL = sessionURL.appending(path: "events.jsonl")
         guard FileManager.default.fileExists(atPath: eventsURL.path) else {
-            return
+            return []
         }
 
         let recovered = try SessionRecovery.recoverJSONL(
@@ -116,6 +150,7 @@ public struct SessionRecoveryScanner: Sendable {
                 options: .atomic
             )
         }
+        return recovered.lines
     }
 
     private func loadCheckpoint(
