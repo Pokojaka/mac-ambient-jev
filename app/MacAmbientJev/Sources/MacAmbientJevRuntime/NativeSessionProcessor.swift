@@ -1,5 +1,6 @@
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
 
 enum NativeSessionProcessorError: LocalizedError {
     case invalidRecoveredRun
