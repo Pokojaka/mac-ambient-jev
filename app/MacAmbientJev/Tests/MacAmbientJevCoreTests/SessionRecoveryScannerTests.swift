@@ -62,6 +62,40 @@ func recoveryScannerFindsImportedSessionBeforeTimelineExists() throws {
 }
 
 @Test
+func completedEmptyScopeDoesNotQueueSilentImportForReprocessing() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let url = root.appending(path: id.uuidString)
+    try writeRecoveryManifest(sessionID: id, sourceKind: .importedFile, to: url)
+    try writeRecoveryCheckpoint(AudioCheckpoint(
+        committedFrames: 100, sampleRate: 100, channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    ), to: url)
+    let scanner = SessionRecoveryScanner(sessionsRoot: root)
+    #expect(try scanner.inspect(sessionID: id)?.action == .reprocess)
+
+    let scopeID = "scope_empty_test"
+    _ = try await SessionWriter(sessionURL: url).append(EventDraft(
+        eventType: "processing.run.completed",
+        sessionID: id,
+        processingRunID: scopeID,
+        payload: ProcessingRunCompletedPayload(
+            stage: .scope, succeeded: true, completedCount: 0, failedCount: 0
+        )
+    ))
+    try ProcessingMetadataStore(sessionURL: url).save(ProcessingMetadata(
+        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
+        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
+        diarizationVersion: "diar", sceneAnalyzerVersion: 1, jevSchemaVersion: 1,
+        policyVersion: 1, materializerSchemaVersion: 1,
+        activeRuns: ActiveRuns(scope: scopeID)
+    ))
+    #expect(try scanner.inspect(sessionID: id) == nil)
+    #expect(try scanner.pendingSessions().isEmpty)
+}
+
+@Test
 func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -151,6 +185,34 @@ private func writeRecoveryCheckpoint(
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
+}
+
+@Test
+func inspectSessionReadsOnlyRequestedSessionAndDoesNotRepairItsTail() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sessionID = UUID()
+    let sessionURL = root.appending(path: sessionID.uuidString)
+    try writeRecoveryManifest(sessionID: sessionID, sourceKind: .importedFile, to: sessionURL)
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 100, sampleRate: 100, channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    )
+    try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
+    let eventsURL = sessionURL.appending(path: "events.jsonl")
+    let original = Data("{\"event_seq\":1,\"event_type\":\"unused\"}\n{\"unfinished\"".utf8)
+    try original.write(to: eventsURL)
+
+    let otherID = UUID()
+    let otherURL = root.appending(path: otherID.uuidString)
+    try FileManager.default.createDirectory(at: otherURL, withIntermediateDirectories: true)
+    try Data("invalid manifest".utf8).write(to: otherURL.appending(path: "session.json"))
+
+    let result = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
+    #expect(result?.manifest.sessionID == sessionID)
+    #expect(result?.source == .processingTimeline(checkpoint))
+    #expect(try Data(contentsOf: eventsURL) == original)
 }
 
 @Test
@@ -783,6 +845,48 @@ func recoveryScannerSchedulesOnlyDeferredPrioritySegments() async throws {
     guard case .retryContentPriority(let segmentIDs)
             = candidates.first?.action else {
         Issue.record("保留中のJev分類だけを再試行する必要がある")
+        return
+    }
+    #expect(segmentIDs == ["seg_000001"])
+}
+
+@Test
+func recoveryScannerFindsDeferredContentPriorityWithoutJevEvents() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let sessionID = UUID()
+    let sessionURL = root.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+    try writeRecoveryManifest(sessionID: sessionID, sourceKind: .live, to: sessionURL)
+    try writeRecoveryCheckpoint(AudioCheckpoint(
+        committedFrames: 1_600,
+        sampleRate: 16_000,
+        channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    ), to: sessionURL)
+    try await appendCompletedRecoveryASRRun(
+        writer: SessionWriter(sessionURL: sessionURL),
+        sessionID: sessionID,
+        segmentationRunID: "seg-active",
+        asrRunID: "asr-active",
+        text: "意味分類待ち"
+    )
+    let metadata = ProcessingMetadata(
+        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
+        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
+        diarizationVersion: "diar", sceneAnalyzerVersion: 1, jevSchemaVersion: 1,
+        policyVersion: 1, materializerSchemaVersion: 1,
+        activeRuns: ActiveRuns(
+            segmentation: "seg-active", asr: "asr-active", diarization: "diar-active",
+            scene: "scene-active", scope: "scope-active"
+        )
+    ).withPendingContentPrioritySegmentIDs(["seg_000001"])
+    try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+
+    let maybeCandidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
+    let candidate = try #require(maybeCandidate)
+    guard case .retryContentPriority(let segmentIDs) = candidate.action else {
+        Issue.record("A deferred Jev classification should be retryable without Jev events")
         return
     }
     #expect(segmentIDs == ["seg_000001"])

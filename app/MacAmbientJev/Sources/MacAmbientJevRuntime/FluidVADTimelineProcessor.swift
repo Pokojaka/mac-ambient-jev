@@ -161,6 +161,11 @@ actor FluidVADTimelineProcessor {
         return emitted
     }
 
+    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
+        guard !finished else { return nil }
+        return await engine.openSpeechRange(upToFrame: durableFrame)
+    }
+
     private func drainFullVADChunks() async throws -> [SegmentReference] {
         var emitted: [SegmentReference] = []
 

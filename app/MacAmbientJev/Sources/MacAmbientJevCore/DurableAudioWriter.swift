@@ -163,7 +163,14 @@ public actor DurableAudioWriter {
 
         // Persist on every initialization so legacy checkpoints without
         // chunkFrameCounts are migrated before further processing begins.
-        let initialData = try JSONEncoder().encode(currentCheckpoint())
+        let initialCheckpoint = AudioCheckpoint(
+            committedFrames: committedFrames,
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            chunkFiles: chunkFiles,
+            chunkFrameCounts: chunkFrameCounts
+        )
+        let initialData = try JSONEncoder().encode(initialCheckpoint)
         try initialData.write(to: checkpointURL, options: .atomic)
     }
 

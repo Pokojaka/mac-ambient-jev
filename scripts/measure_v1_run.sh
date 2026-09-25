@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+id="" audio="" resume="" root="" output="" low_heat=0 keep_session=0
+while (($#)); do
+  case "$1" in
+    --id|--audio|--resume-session|--sessions-root|--output)
+      (($# >= 2)) || { echo "missing value for $1" >&2; exit 2; }
+      case "$1" in
+        --id) id="$2" ;;
+        --audio) audio="$2" ;;
+        --resume-session) resume="$2" ;;
+        --sessions-root) root="$2" ;;
+        --output) output="$2" ;;
+      esac
+      shift 2 ;;
+    --low-heat) low_heat=1; shift ;;
+    --keep-session) keep_session=1; shift ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$id" && -n "$output" ]] || { echo "--id and --output required" >&2; exit 2; }
+[[ "$id" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "invalid id" >&2; exit 2; }
+if [[ -n "$resume" ]]; then
+  [[ -z "$audio" && -n "$root" ]] || { echo "resume requires --sessions-root and no --audio" >&2; exit 2; }
+else
+  [[ -n "$audio" && -z "$root" && "$keep_session" == 1 ]] || { echo "import requires --audio and --keep-session" >&2; exit 2; }
+fi
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+available_bytes="$(python3 -c 'import shutil,sys;print(shutil.disk_usage(sys.argv[1]).free)' "$repo")"
+if (( available_bytes < 4 * 1024 * 1024 * 1024 )); then
+  echo "at least 4 GiB of free disk space is required for a measured run" >&2
+  exit 1
+fi
+bin_dir="$(swift build --package-path "$repo/app/MacAmbientJev" -c release --show-bin-path)"
+bin="$bin_dir/MacAmbientJevProcessRecording"
+[[ -x "$bin" ]] || { echo "build the release CLI before measuring" >&2; exit 2; }
+run_id="${id}-$(date -u +%Y%m%dT%H%M%SZ)"
+output="$(python3 -c 'import os,sys;print(os.path.abspath(sys.argv[1]))' "$output")"
+run_dir="$(dirname "$output")/$run_id"
+mkdir "$run_dir"
+tar -czf "$run_dir/source-snapshot.tar.gz" -C "$repo" \
+  app/MacAmbientJev/Sources app/MacAmbientJev/Package.swift \
+  app/MacAmbientJev/Package.resolved scripts/measure_v1_run.sh tools/process-recording.swift
+
+args=(--run-id "$run_id" --metrics-output "$run_dir/engine-metrics.json" --thermal-output "$run_dir/thermal.jsonl" --memory-output "$run_dir/memory.jsonl")
+if [[ -n "$resume" ]]; then
+  args+=(--resume-session "$resume" --sessions-root "$root")
+else
+  args+=(--keep-session "$audio")
+fi
+if (( low_heat )); then args+=(--low-heat); fi
+args+=("$output")
+
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+set +e
+/usr/bin/time -l "$bin" "${args[@]}" > "$run_dir/stdout.log" 2> "$run_dir/stderr.log"
+exit_code=$?
+set -e
+finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+python3 - "$repo" "$run_dir" "$id" "$run_id" "$audio" "$resume" "$root" "$output" "$started" "$finished" "$exit_code" "$available_bytes" "${args[@]}" <<'PY'
+import datetime, hashlib, json, pathlib, platform, re, statistics, subprocess, sys, shutil
+repo, folder, recording, run, audio, resume, root, output, started, finished, exit_code, disk_before, *args = sys.argv[1:]
+folder = pathlib.Path(folder)
+def command(*argv):
+    return subprocess.check_output(argv, cwd=repo).decode().strip()
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''): h.update(block)
+    return h.hexdigest()
+metric_path = folder / 'engine-metrics.json'
+reason = {}
+try:
+    metric = json.loads(metric_path.read_text())
+    if metric.get('runID') != run: raise ValueError('run ID mismatch')
+except (OSError, ValueError) as error:
+    metric = {}
+    reason['engine_metrics'] = str(error)
+time_output = (folder / 'stderr.log').read_text(errors='replace')
+def value(pattern):
+    match = re.search(pattern, time_output)
+    return int(match.group(1)) if match else None
+peak = value(r'(\d+)\s+peak memory footprint')
+rss = value(r'(\d+)\s+maximum resident set size')
+if peak is None: reason['peak_memory_mb'] = 'not reported by /usr/bin/time -l'
+asr = metric.get('asr') or {}
+processed = asr.get('processedAudioSeconds') or 0
+rtf = asr.get('asrCallSeconds', 0) / processed if processed else None
+if rtf is None: reason['asr_rtf'] = 'no measured ASR audio in this invocation'
+memory_path = folder / 'memory.jsonl'
+samples = [json.loads(s) for s in memory_path.read_text().splitlines()] if memory_path.exists() else []
+thermal_path = folder / 'thermal.jsonl'
+thermal_samples = [json.loads(s) for s in thermal_path.read_text().splitlines()] if thermal_path.exists() else []
+if not samples: reason['memory_samples'] = 'memory.jsonl missing or empty'
+if not thermal_samples: reason['thermal_samples'] = 'thermal.jsonl missing or empty'
+if any(s.get('run_id') != run for s in samples): reason['memory_run_id'] = 'memory sample run ID mismatch'
+if any(s.get('run_id') != run for s in thermal_samples): reason['thermal_run_id'] = 'thermal sample run ID mismatch'
+asr_samples = [s['footprint_bytes'] for s in samples if s.get('phase') == 'asr' and isinstance(s.get('footprint_bytes'), int)]
+asr_timed = [(datetime.datetime.fromisoformat(s['timestamp'].replace('Z', '+00:00')), s['footprint_bytes']) for s in samples if s.get('phase') == 'asr' and isinstance(s.get('footprint_bytes'), int)]
+growth = None
+memory_verdict = 'INCONCLUSIVE'
+if len(asr_timed) >= 96 and (asr_timed[-1][0] - asr_timed[0][0]).total_seconds() >= 600:
+    first_end = asr_timed[0][0] + datetime.timedelta(minutes=5)
+    last_start = asr_timed[-1][0] - datetime.timedelta(minutes=5)
+    first = [v for t, v in asr_timed if t < first_end]
+    last = [v for t, v in asr_timed if t > last_start]
+    if len(first) >= 48 and len(last) >= 48 and first_end <= last_start:
+        growth = (statistics.median(last) - statistics.median(first)) / (1024 * 1024)
+        if int(exit_code) == 0 and peak is not None:
+            memory_verdict = 'VERIFIED' if growth <= 512 and peak <= 12 * 1024**3 else 'FAILED'
+if growth is None: reason['memory_growth_mb'] = 'two nonoverlapping five-minute ASR windows with 48 samples each are required'
+events = None
+session = resume
+if resume:
+    events = pathlib.Path(root) / resume / 'events.jsonl'
+    original = list((pathlib.Path(root) / resume / 'audio').glob('original.*'))
+    if original: audio = str(original[0])
+else:
+    match = re.search(r'session_id: ([A-F0-9-]+)', (folder / 'stdout.log').read_text())
+    if match:
+        session = match.group(1)
+        events = pathlib.Path.home() / 'Library/Application Support/mac-ambient-jev/sessions' / session / 'events.jsonl'
+duration = None
+if audio:
+    probe = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',audio], capture_output=True, text=True)
+    if probe.returncode == 0:
+        try: duration = float(probe.stdout.strip())
+        except ValueError: pass
+if duration is None: reason['recording_duration_seconds'] = 'ffprobe could not read the audio'
+event_lines = []
+if events and events.exists():
+    try: event_lines = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
+    except ValueError as error: reason['event_log'] = str(error)
+else:
+    reason['event_log'] = 'no session event log was found'
+session_dir = events.parent if events else None
+metadata = session_dir / 'processing_metadata.json' if session_dir else None
+checkpoint = session_dir / 'audio/processing/checkpoint.json' if session_dir else None
+active_runs = {}
+sample_rate = None
+if metadata and metadata.exists():
+    active_runs = json.loads(metadata.read_text()).get('active_runs') or {}
+if checkpoint and checkpoint.exists():
+    sample_rate = json.loads(checkpoint.read_text()).get('sampleRate')
+completed = [e for e in event_lines if e.get('event_type') == 'processing.run.completed' and e.get('payload', {}).get('succeeded') is True]
+diarization = next((e for e in reversed(completed) if e.get('processing_run_id') == active_runs.get('diarization') and e.get('payload', {}).get('stage') == 'diarization'), None)
+if not diarization: reason['diarization_completed_at'] = 'no successful active diarization run was observed'
+scene_changes = [e for e in event_lines if e.get('event_type') == 'scene.changed' and e.get('processing_run_id') == active_runs.get('scene')]
+oscillations = None
+if sample_rate and active_runs.get('scene'):
+    ordered = sorted(scene_changes, key=lambda e: e['source_start_frame'])
+    oscillations = sum(a['payload'] == c['payload'] != b['payload'] and
+                       c['source_start_frame'] - a['source_start_frame'] <= 30 * sample_rate
+                       for a, b, c in zip(ordered, ordered[1:], ordered[2:]))
+else:
+    reason['scene_oscillation_count'] = 'no active scene run or checkpoint sample rate'
+for key in ('capture_dropout_count', 'jev_success_count', 'jev_failure_count', 'jev_retry_pending_count', 'crash_recovery_loss_window_seconds'):
+    reason[key] = 'file import or offline session recovery cannot measure this live-session value'
+report = {
+ 'run_id': run, 'recording_id': recording, 'session_id': session,
+ 'metric_scope': 'this_invocation', 'started_at': started, 'finished_at': finished,
+ 'wall_seconds': (datetime.datetime.fromisoformat(finished.replace('Z','+00:00')) - datetime.datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds(),
+ 'exit_code': int(exit_code), 'status': metric.get('disposition', 'failed'),
+ 'command': ['MacAmbientJevProcessRecording', *args],
+ 'build_configuration': 'release', 'output_path': output,
+ 'environment': {'os': platform.platform(), 'machine': platform.machine(),
+                 'mac_model': command('sysctl', '-n', 'hw.model'),
+                 'physical_memory_bytes': int(command('sysctl', '-n', 'hw.memsize'))},
+ 'disk_available_bytes_before': int(disk_before),
+ 'commit': command('git', 'rev-parse', 'HEAD'),
+ 'tracked_diff_sha256': hashlib.sha256(subprocess.check_output(['git','diff','--binary'], cwd=repo)).hexdigest(),
+ 'source_snapshot_sha256': digest(folder / 'source-snapshot.tar.gz'),
+ 'package_resolved_sha256': digest(pathlib.Path(repo) / 'app/MacAmbientJev/Package.resolved'),
+ 'working_tree_status': command('git', 'status', '--porcelain'),
+ 'input_sha256': digest(audio) if audio else None,
+ 'recording_duration_seconds': duration,
+ 'event_log_sha256': digest(events) if events and events.exists() else None,
+ 'asr_call_seconds': asr.get('asrCallSeconds'),
+ 'model_load_seconds': asr.get('modelLoadSeconds'),
+ 'processed_audio_seconds': asr.get('processedAudioSeconds'),
+ 'pacing_wait_seconds': asr.get('pacingWaitSeconds'),
+ 'asr_rtf': rtf,
+ 'maximum_pending_count': asr.get('maximumPendingCount'),
+ 'oldest_pending_age_ms': round(asr['oldestPendingAgeSeconds'] * 1000) if 'oldestPendingAgeSeconds' in asr else None,
+ 'peak_memory_mb': peak / (1024 * 1024) if peak is not None else None,
+ 'max_rss_bytes': rss,
+ 'memory_growth_mb': growth, 'memory_verdict': memory_verdict,
+ 'memory_sample_count': len(asr_samples),
+ 'thermal_sample_count': len(thermal_samples),
+ 'diarization_completed_at': diarization.get('created_at') if diarization else None,
+ 'scene_change_count': len(scene_changes) if active_runs.get('scene') else None,
+ 'scene_oscillation_count': oscillations,
+ 'capture_dropout_count': None, 'jev_success_count': None,
+ 'jev_failure_count': None, 'jev_retry_pending_count': None,
+ 'crash_recovery_loss_window_seconds': None,
+ 'unavailable_reason': reason
+}
+if int(exit_code) == 0 and pathlib.Path(output).exists():
+    shutil.copy2(output, folder / 'segments.json')
+(folder / 'run.json').write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+print(folder / 'run.json')
+PY
+
+if [[ ! -s "$run_dir/engine-metrics.json" ]]; then
+  echo "engine metrics missing" >&2
+  exit 1
+fi
+if ! python3 - "$run_dir/run.json" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1]))
+if (any(k in report['unavailable_reason'] for k in ('engine_metrics', 'memory_samples', 'thermal_samples', 'memory_run_id', 'thermal_run_id'))
+        or report['status'] != 'completed' or report['memory_verdict'] == 'FAILED'):
+    sys.exit(1)
+PY
+then
+  echo "engine metrics invalid or processing did not complete" >&2
+  exit 1
+fi
+exit "$exit_code"

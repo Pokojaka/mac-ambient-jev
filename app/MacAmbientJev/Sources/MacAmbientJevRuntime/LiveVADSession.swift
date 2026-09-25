@@ -1,19 +1,23 @@
 import Foundation
+import Dispatch
 import MacAmbientJevCore
 
 public struct LiveVADProgress: Sendable, Equatable {
     public let emittedSegments: [SegmentReference]
     public let totalSegmentCount: Int
     public let committedFrames: Int64
+    public let openSpeech: OpenSpeechRange?
 
     public init(
         emittedSegments: [SegmentReference],
         totalSegmentCount: Int,
-        committedFrames: Int64
+        committedFrames: Int64,
+        openSpeech: OpenSpeechRange? = nil
     ) {
         self.emittedSegments = emittedSegments
         self.totalSegmentCount = totalSegmentCount
         self.committedFrames = committedFrames
+        self.openSpeech = openSpeech
     }
 }
 
@@ -26,14 +30,17 @@ public actor LiveVADSession {
     public nonisolated let segmentationRunID: String
 
     private let processor: FluidVADTimelineProcessor
+    private let latencyTrace: LiveLatencyTrace?
     private var segments: [SegmentReference] = []
     private var lastCommittedFrames: Int64
     private var isFinished = false
+    private var observedOpenUtteranceID: String?
 
     public static func make(
         processingDirectory: URL,
         initialCheckpoint: AudioCheckpoint,
-        segmentationRunID: String = "seg_live_\(UUID().uuidString.lowercased())"
+        segmentationRunID: String = "seg_live_\(UUID().uuidString.lowercased())",
+        latencyTrace: LiveLatencyTrace? = nil
     ) async throws -> LiveVADSession {
         let engine = try await FluidVADSegmentationEngine.make(
             segmentationRunID: segmentationRunID,
@@ -49,18 +56,21 @@ public actor LiveVADSession {
                 reader: reader,
                 engine: engine
             ),
-            initialCommittedFrames: initialCheckpoint.committedFrames
+            initialCommittedFrames: initialCheckpoint.committedFrames,
+            latencyTrace: latencyTrace
         )
     }
 
     init(
         segmentationRunID: String,
         processor: FluidVADTimelineProcessor,
-        initialCommittedFrames: Int64
+        initialCommittedFrames: Int64,
+        latencyTrace: LiveLatencyTrace? = nil
     ) {
         self.segmentationRunID = segmentationRunID
         self.processor = processor
         self.lastCommittedFrames = initialCommittedFrames
+        self.latencyTrace = latencyTrace
     }
 
     @discardableResult
@@ -71,20 +81,55 @@ public actor LiveVADSession {
             return LiveVADProgress(
                 emittedSegments: [],
                 totalSegmentCount: segments.count,
-                committedFrames: lastCommittedFrames
+                committedFrames: lastCommittedFrames,
+                openSpeech: nil
             )
         }
 
+        let checkpointTimestamp = DispatchTime.now().uptimeNanoseconds
         let emitted = try await processor.processAvailable(
             checkpoint: checkpoint
         )
         segments.append(contentsOf: emitted)
         lastCommittedFrames = checkpoint.committedFrames
 
+        let openSpeech = await processor.openSpeechRange(
+            upToFrame: checkpoint.committedFrames
+        )
+        if let openSpeech,
+           openSpeech.utteranceID != observedOpenUtteranceID {
+            observedOpenUtteranceID = openSpeech.utteranceID
+            let framesBeforeCheckpoint = max(
+                0,
+                checkpoint.committedFrames - openSpeech.startFrame
+            )
+            let elapsedNanoseconds = UInt64(
+                (Double(framesBeforeCheckpoint) / checkpoint.sampleRate
+                    * 1_000_000_000).rounded()
+            )
+            await latencyTrace?.record(LiveLatencyTraceEvent(
+                utteranceID: openSpeech.utteranceID,
+                snapshotID: nil,
+                kind: .speechStart,
+                timestampNanoseconds: checkpointTimestamp >= elapsedNanoseconds
+                    ? checkpointTimestamp - elapsedNanoseconds
+                    : 0
+            ))
+        }
+        if let openSpeech {
+            await latencyTrace?.record(LiveLatencyTraceEvent(
+                utteranceID: openSpeech.utteranceID,
+                snapshotID: nil,
+                kind: .checkpointCommitted,
+                timestampNanoseconds: checkpointTimestamp
+            ))
+        }
+
         return LiveVADProgress(
             emittedSegments: emitted,
             totalSegmentCount: segments.count,
-            committedFrames: checkpoint.committedFrames
+            committedFrames: checkpoint.committedFrames,
+            openSpeech: openSpeech
         )
     }
 
@@ -96,7 +141,8 @@ public actor LiveVADSession {
             return LiveVADProgress(
                 emittedSegments: [],
                 totalSegmentCount: segments.count,
-                committedFrames: lastCommittedFrames
+                committedFrames: lastCommittedFrames,
+                openSpeech: nil
             )
         }
 
@@ -108,7 +154,8 @@ public actor LiveVADSession {
         return LiveVADProgress(
             emittedSegments: emitted,
             totalSegmentCount: segments.count,
-            committedFrames: checkpoint.committedFrames
+            committedFrames: checkpoint.committedFrames,
+            openSpeech: nil
         )
     }
 

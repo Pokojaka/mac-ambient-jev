@@ -4,6 +4,7 @@ import MacAmbientJevCore
 protocol VADChunkSegmenting: Sendable {
     func process16kChunk(_ samples: [Float]) async throws -> [SegmentReference]
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference]
+    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange?
 }
 
 actor FluidVADSegmentationEngine: VADChunkSegmenting {
@@ -45,7 +46,10 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         self.assembler = SegmentationAssembler(
             segmentationRunID: segmentationRunID,
             preRollFrames: Int64((preRollSeconds * canonicalSampleRate).rounded()),
-            maxSegmentFrames: Int64((maxSegmentSeconds * canonicalSampleRate).rounded())
+            maxSegmentFrames: Int64((maxSegmentSeconds * canonicalSampleRate).rounded()),
+            minimumSegmentFrames: Int64(
+                (ASRAudioInput.minimumDurationSeconds * canonicalSampleRate).rounded()
+            )
         )
         self.segmentationConfig = VadSegmentationConfig(
             minSpeechDuration: 0,
@@ -93,6 +97,10 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
             return []
         }
         return [segment]
+    }
+
+    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
+        assembler.openSpeechRange(upToFrame: durableFrame)
     }
 
     func reset() {

@@ -131,12 +131,17 @@ public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
     public let startMilliseconds: Int64
     public let endMilliseconds: Int64
     public let confidence: Double?
+    public let displayLabel: String?
 
-    public init(id: String, startMilliseconds: Int64, endMilliseconds: Int64, confidence: Double?) {
+    public init(
+        id: String, startMilliseconds: Int64, endMilliseconds: Int64,
+        confidence: Double?, displayLabel: String? = nil
+    ) {
         self.id = id
         self.startMilliseconds = startMilliseconds
         self.endMilliseconds = endMilliseconds
         self.confidence = confidence
+        self.displayLabel = displayLabel
     }
 
     enum CodingKeys: String, CodingKey {
@@ -144,6 +149,23 @@ public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
         case startMilliseconds = "start_ms"
         case endMilliseconds = "end_ms"
         case confidence
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        startMilliseconds = try container.decode(Int64.self, forKey: .startMilliseconds)
+        endMilliseconds = try container.decode(Int64.self, forKey: .endMilliseconds)
+        confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
+        displayLabel = nil
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(startMilliseconds, forKey: .startMilliseconds)
+        try container.encode(endMilliseconds, forKey: .endMilliseconds)
+        try container.encodeIfPresent(confidence, forKey: .confidence)
     }
 }
 
@@ -221,6 +243,12 @@ public struct TranscriptMaterializer: Sendable {
         activeRuns: ActiveRuns
     ) -> [MaterializedTranscriptSegment] {
         let ordered = events.sorted { $0.eventSeq < $1.eventSeq }
+        let allActiveSpeakerSpans = ordered.compactMap { event -> SpeakerSpan? in
+            guard event.processingRunID == activeRuns.diarization,
+                  case .speakerSpan(let span) = event.kind else { return nil }
+            return span
+        }
+        let speakerLabels = SpeakerDisplayMapper.makeLabels(spans: allActiveSpeakerSpans)
         let segmentEvents = ordered.filter { event in
             guard case .segmentCreated = event.kind else { return false }
             return activeRuns.segmentation == nil
@@ -256,7 +284,8 @@ public struct TranscriptMaterializer: Sendable {
                     id: span.speakerID,
                     startMilliseconds: milliseconds(forFrame: clippedStart),
                     endMilliseconds: milliseconds(forFrame: clippedEnd),
-                    confidence: span.confidence
+                    confidence: span.confidence,
+                    displayLabel: speakerLabels[span.speakerID]
                 )
             }
 
@@ -318,26 +347,35 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
     public var id: String { segmentID }
     public let segmentID: String
     public let startMilliseconds: Int64
+    public let endMilliseconds: Int64
     public let text: String
+    public let textFragments: [TranscriptTextFragment]
     public let scene: SceneState
     public let speakers: [MaterializedSpeakerSpan]
+    public let displaySpeakerLabels: [String]
     public let scopeSpans: [MaterializedScopeSpan]
     public let isLowPriority: Bool
 
     public init(
         segmentID: String,
         startMilliseconds: Int64,
+        endMilliseconds: Int64 = 0,
         text: String,
+        textFragments: [TranscriptTextFragment]? = nil,
         scene: SceneState,
         speakers: [MaterializedSpeakerSpan],
+        displaySpeakerLabels: [String] = [],
         scopeSpans: [MaterializedScopeSpan],
         isLowPriority: Bool
     ) {
         self.segmentID = segmentID
         self.startMilliseconds = startMilliseconds
+        self.endMilliseconds = endMilliseconds
         self.text = text
+        self.textFragments = textFragments ?? FillerTextSpanDetector().fragments(in: text)
         self.scene = scene
         self.speakers = speakers
+        self.displaySpeakerLabels = displaySpeakerLabels
         self.scopeSpans = scopeSpans
         self.isLowPriority = isLowPriority
     }
@@ -346,20 +384,57 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
 public struct LiveTranscriptProjection: Sendable {
     public init() {}
 
-    public func rows(for segments: [MaterializedTranscriptSegment]) -> [LiveTranscriptRow] {
-        segments.compactMap { segment in
+    public func rows(
+        for segments: [MaterializedTranscriptSegment]
+    ) -> [LiveTranscriptRow] {
+        let allSpeakerSpans = segments.flatMap(\.speakers).map { span in
+            SpeakerSpan(
+                speakerID: span.id,
+                startFrame: span.startMilliseconds,
+                endFrame: span.endMilliseconds,
+                confidence: span.confidence
+            )
+        }
+        let labels = SpeakerDisplayMapper.makeLabels(spans: allSpeakerSpans)
+
+        return segments.compactMap { segment in
             let isBackgroundOnly = segment.scene == .discussion
                 && !segment.scopeSpans.isEmpty
                 && segment.scopeSpans.allSatisfy { $0.scope == .background }
 
-            guard !isBackgroundOnly else { return nil }
+            guard !isBackgroundOnly,
+                  JevTranscriptEligibility.isEligible(segment.text) else { return nil }
+
+            let overlapBySpeaker = Dictionary(grouping: segment.speakers.compactMap { span -> (String, Int64)? in
+                let duration = max(0, min(segment.endMilliseconds, span.endMilliseconds)
+                    - max(segment.startMilliseconds, span.startMilliseconds))
+                return duration > 0 ? (span.id, duration) : nil
+            }, by: { $0.0 }).mapValues { overlaps in
+                overlaps.reduce(Int64.zero) { $0 + $1.1 }
+            }
+            let labeledDuration = overlapBySpeaker.values.reduce(Int64.zero, +)
+            let displaySpeakerLabels: [String]
+            if labeledDuration == 0 {
+                displaySpeakerLabels = [SpeakerDisplayMapper.label(for: nil, labels: labels)]
+            } else if let dominant = overlapBySpeaker.max(by: { $0.value < $1.value }),
+                      Double(dominant.value) / Double(labeledDuration) >= 0.8 {
+                let span = segment.speakers.first(where: { $0.id == dominant.key })
+                displaySpeakerLabels = [span?.displayLabel ?? SpeakerDisplayMapper.label(for: dominant.key, labels: labels)]
+            } else if overlapBySpeaker.count > 1 {
+                displaySpeakerLabels = ["複数話者"]
+            } else {
+                displaySpeakerLabels = [SpeakerDisplayMapper.label(for: nil, labels: labels)]
+            }
 
             return LiveTranscriptRow(
                 segmentID: segment.segmentID,
                 startMilliseconds: segment.startMilliseconds,
+                endMilliseconds: segment.endMilliseconds,
                 text: segment.text,
+                textFragments: FillerTextSpanDetector().fragments(in: segment.text),
                 scene: segment.scene,
                 speakers: segment.speakers,
+                displaySpeakerLabels: displaySpeakerLabels,
                 scopeSpans: segment.scopeSpans,
                 isLowPriority: segment.contentPriority == .lowPriority
             )

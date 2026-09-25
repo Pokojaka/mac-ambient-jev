@@ -67,7 +67,7 @@ public actor JevEnrichmentCoordinator {
         let baseSegments = materializer.materialize(
             events: existingEvents,
             activeRuns: activeRuns
-        )
+        ).filter { JevTranscriptEligibility.isEligible($0.text) }
 
         var events = existingEvents
         var retryPendingSegmentIDs: [String] = []

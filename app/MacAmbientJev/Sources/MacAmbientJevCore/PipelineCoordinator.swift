@@ -51,18 +51,60 @@ public struct PipelineBatchResult: Sendable, Equatable {
     public let materializedSegments: [MaterializedTranscriptSegment]
     public let completedCount: Int
     public let failedCount: Int
+    public let disposition: BatchDisposition
+    public let metrics: ASRBatchMetrics
 
     public init(
         events: [TranscriptEvent],
         materializedSegments: [MaterializedTranscriptSegment],
         completedCount: Int,
-        failedCount: Int
+        failedCount: Int,
+        disposition: BatchDisposition = .completed,
+        metrics: ASRBatchMetrics = .zero
     ) {
         self.events = events
         self.materializedSegments = materializedSegments
         self.completedCount = completedCount
         self.failedCount = failedCount
+        self.disposition = disposition
+        self.metrics = metrics
     }
+}
+
+public enum BatchDisposition: String, Codable, Sendable, Equatable {
+    case completed
+    case failed
+    case paused
+}
+
+public enum RunPhase: String, Codable, Sendable {
+    case preparing
+    case asr
+    case postprocessing
+    case complete
+}
+
+public struct ASRBatchMetrics: Codable, Sendable, Equatable {
+    public var modelLoadSeconds: Double = 0
+    public var asrCallSeconds: Double = 0
+    public var processedAudioSeconds: Double = 0
+    public var pacingWaitSeconds: Double = 0
+    public var pacingWaitCount: Int = 0
+    public var initialPendingCount: Int = 0
+    public var maximumPendingCount: Int = 0
+    public var oldestPendingAgeSeconds: Double = 0
+
+    public static let zero = ASRBatchMetrics()
+    public init() {}
+
+    public var asrRTF: Double? {
+        processedAudioSeconds > 0 ? asrCallSeconds / processedAudioSeconds : nil
+    }
+}
+
+public enum ASRPacingMode: Sendable, Equatable {
+    case normal
+    case lowHeat
 }
 
 public actor PipelineCoordinator {
@@ -79,6 +121,11 @@ public actor PipelineCoordinator {
     private let loader: ASRAudioLoader
     private let materializer: TranscriptMaterializer
     private let state: SessionProcessingState
+    private let pacingMode: ASRPacingMode
+    private let sleep: @Sendable (Duration) async throws -> Void
+    private let shouldPause: @Sendable () async -> Bool
+    private let pendingSince: [String: Date]
+    private let onPhase: @Sendable (RunPhase) async -> Void
 
     public init(
         sessionID: UUID,
@@ -88,7 +135,12 @@ public actor PipelineCoordinator {
         asr: any ASREngine,
         loader: ASRAudioLoader,
         materializer: TranscriptMaterializer,
-        state: SessionProcessingState
+        state: SessionProcessingState,
+        pacingMode: ASRPacingMode = .normal,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        shouldPause: @escaping @Sendable () async -> Bool = { false },
+        pendingSince: [String: Date] = [:],
+        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in }
     ) {
         self.sessionID = sessionID
         self.segmentationRunID = segmentationRunID
@@ -98,6 +150,11 @@ public actor PipelineCoordinator {
         self.loader = loader
         self.materializer = materializer
         self.state = state
+        self.pacingMode = pacingMode
+        self.sleep = sleep
+        self.shouldPause = shouldPause
+        self.pendingSince = pendingSince
+        self.onPhase = onPhase
     }
 
     public func process(
@@ -141,6 +198,11 @@ public actor PipelineCoordinator {
             }
         }
         var failedCount = 0
+        var metrics = ASRBatchMetrics()
+        metrics.initialPendingCount = segments.count
+        metrics.maximumPendingCount = segments.count
+        let batchStarted = Date()
+        let clock = ContinuousClock()
 
         if registerPending {
             do {
@@ -193,13 +255,20 @@ public actor PipelineCoordinator {
                     events: transcriptEvents,
                     materializedSegments: materialized,
                     completedCount: completedCount,
-                    failedCount: segments.count
+                    failedCount: segments.count,
+                    disposition: .failed,
+                    metrics: metrics
                 )
             }
         }
 
         do {
-            try await asr.prepare()
+            if !segments.isEmpty {
+                let start = clock.now
+                try await asr.prepare()
+                metrics.modelLoadSeconds = seconds(start.duration(to: clock.now))
+            }
+            await onPhase(.asr)
         } catch {
             let message = error.localizedDescription
 
@@ -236,7 +305,9 @@ public actor PipelineCoordinator {
                 events: transcriptEvents,
                 materializedSegments: materialized,
                 completedCount: completedCount,
-                failedCount: failedCount
+                failedCount: failedCount,
+                disposition: .failed,
+                metrics: metrics
             )
         }
 
@@ -245,10 +316,36 @@ public actor PipelineCoordinator {
             asr: asrRunID
         )
 
-        for segment in segments {
+        var paused = false
+        for (index, segment) in segments.enumerated() {
+            if await shouldPause() {
+                paused = true
+                break
+            }
+            let pending = segments[index...]
+            if let oldest = pending.map({ pendingSince[$0.segmentID] ?? batchStarted }).min() {
+                metrics.oldestPendingAgeSeconds = max(
+                    metrics.oldestPendingAgeSeconds,
+                    Date().timeIntervalSince(oldest)
+                )
+            }
+            var didComplete = false
             do {
                 let input = try loader.load(segment: segment)
-                let result = try await asr.transcribe(input)
+                let start = clock.now
+                let result: ASRResult
+                do {
+                    result = try await asr.transcribe(input)
+                } catch {
+                    if !input.isShorterThanMinimumASRDuration {
+                        metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                    }
+                    throw error
+                }
+                if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
+                    metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                    metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
+                }
 
                 let completed = try await writer.append(EventDraft(
                     eventType: "asr.completed",
@@ -275,6 +372,7 @@ public actor PipelineCoordinator {
                     detectedLanguage: result.detectedLanguage
                 ))
                 completedCount += 1
+                didComplete = true
 
                 if let onUpdate {
                     let materialized = materializer.materialize(
@@ -298,28 +396,49 @@ public actor PipelineCoordinator {
                     )
                 ))
             }
+
+            if pacingMode == .lowHeat,
+               index < segments.count - 1,
+               didComplete {
+                do {
+                    let start = clock.now
+                    try await sleep(.seconds(2))
+                    metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
+                    metrics.pacingWaitCount += 1
+                } catch {
+                    paused = true
+                    break
+                }
+            }
         }
 
-        let succeeded = failedCount == 0
-        _ = try? await writer.append(EventDraft(
-            eventType: "processing.run.completed",
-            sessionID: sessionID,
-            processingRunID: asrRunID,
-            payload: ProcessingRunCompletedPayload(
-                stage: .asr,
-                succeeded: succeeded,
-                completedCount: completedCount,
-                failedCount: failedCount
-            )
-        ))
+        var succeeded = failedCount == 0 && !paused
+        if !paused {
+            do {
+                _ = try await writer.append(EventDraft(
+                    eventType: "processing.run.completed",
+                    sessionID: sessionID,
+                    processingRunID: asrRunID,
+                    payload: ProcessingRunCompletedPayload(
+                        stage: .asr,
+                        succeeded: succeeded,
+                        completedCount: completedCount,
+                        failedCount: failedCount
+                    )
+                ))
+            } catch {
+                succeeded = false
+                failedCount += 1
+            }
+        }
 
         let materialized = materializer.materialize(
             events: transcriptEvents,
             activeRuns: activeRuns
         )
-        let finalState: ProcessingState = succeeded
-            ? .complete
-            : .partialFailure("一部の発話を文字起こしできませんでした")
+        let finalState: ProcessingState = paused
+            ? .backlogged
+            : (succeeded ? .complete : .partialFailure("一部の発話を文字起こしできませんでした"))
 
         await state.setProcessing(finalState)
         if let onUpdate {
@@ -330,7 +449,14 @@ public actor PipelineCoordinator {
             events: transcriptEvents,
             materializedSegments: materialized,
             completedCount: completedCount,
-            failedCount: failedCount
+            failedCount: failedCount,
+            disposition: paused ? .paused : (succeeded ? .completed : .failed),
+            metrics: metrics
         )
+    }
+
+    private func seconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
     }
 }

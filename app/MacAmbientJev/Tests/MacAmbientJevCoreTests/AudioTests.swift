@@ -33,6 +33,23 @@ import Testing
     #expect(checkpoint.chunkFrameCounts == [10, 10, 5])
 }
 
+@Test func liveTranscriptionCheckpointCommitsAtHalfSecondBoundary() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sampleRate = 16_000.0
+    let writer = try DurableAudioWriter(
+        directory: root,
+        sampleRate: sampleRate,
+        channelCount: 1,
+        chunkDurationSeconds: LiveTranscriptionCadence.durableChunkDurationSeconds
+    )
+
+    try await writer.append(samples: Array(repeating: 0.1, count: 7_999))
+    #expect(await writer.committedSnapshot().committedFrames == 0)
+    try await writer.append(samples: [0.1])
+    #expect(await writer.committedSnapshot().committedFrames == 8_000)
+}
+
 @Test func timelineUsesFrameCoordinatesIndependentOfASRResampling() {
     let timeline = ProcessingTimeline(sampleRate: 48_000, channelCount: 1, sampleFormat: .float32LE)
     #expect(timeline.milliseconds(forFrame: 48_000) == 1_000)

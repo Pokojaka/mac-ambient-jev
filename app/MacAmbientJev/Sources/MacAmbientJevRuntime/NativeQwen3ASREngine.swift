@@ -8,6 +8,7 @@ enum NativeQwen3ASREngineError: Error {
 actor NativeQwen3ASREngine: ASREngine {
     private let modelStore: ModelStore
     private var model: Qwen3ASRModel?
+    private var preparationTask: Task<Void, Error>?
     private(set) var state: ASREngineState = .stopped
 
     init(modelStore: ModelStore) {
@@ -15,21 +16,40 @@ actor NativeQwen3ASREngine: ASREngine {
     }
 
     func prepare() async throws {
+        try await prepare(onProgress: { _, _ in })
+    }
+
+    func prepare(onProgress: @escaping @Sendable (Double, String) -> Void) async throws {
         guard model == nil else {
             state = .ready
+            onProgress(1, "Ready")
+            return
+        }
+
+        if let preparationTask {
+            try await preparationTask.value
+            onProgress(1, "Ready")
             return
         }
 
         state = .loadingModel
 
-        do {
+        let task = Task {
             let cacheDirectory = try modelStore.prepareQwen3ASRDirectory()
             model = try await Qwen3ASRModel.fromPretrained(
                 modelId: ModelStore.qwen3ASRModelID,
-                cacheDir: cacheDirectory
+                cacheDir: cacheDirectory,
+                progressHandler: onProgress
             )
             state = .ready
+        }
+        preparationTask = task
+
+        do {
+            try await task.value
+            preparationTask = nil
         } catch {
+            preparationTask = nil
             state = .failed(message: error.localizedDescription)
             throw error
         }
@@ -40,10 +60,15 @@ actor NativeQwen3ASREngine: ASREngine {
             throw NativeQwen3ASREngineError.notPrepared
         }
 
+        guard !input.isShorterThanMinimumASRDuration else {
+            return ASRResult(text: "")
+        }
+
         state = .transcribing(segmentID: "")
         let text = model.transcribe(
             audio: input.samples,
-            sampleRate: input.sampleRate
+            sampleRate: input.sampleRate,
+            language: "ja"
         )
         state = .ready
 

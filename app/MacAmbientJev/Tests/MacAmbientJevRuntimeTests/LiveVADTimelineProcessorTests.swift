@@ -19,6 +19,15 @@ private actor RecordingVADChunkSegmenter: VADChunkSegmenting {
         []
     }
 
+    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
+        guard durableFrame > 0 else { return nil }
+        return OpenSpeechRange(
+            utteranceID: "open",
+            startFrame: 0,
+            endFrame: durableFrame
+        )
+    }
+
     func recordedChunkSizes() -> [Int] {
         sizes
     }

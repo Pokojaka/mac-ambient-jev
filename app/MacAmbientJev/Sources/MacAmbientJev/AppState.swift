@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import Dispatch
 import Foundation
 import MacAmbientJevCore
 import MacAmbientJevRuntime
@@ -24,10 +25,30 @@ final class AppState: ObservableObject {
         case error
     }
 
+    enum ModelPreparation: Equatable {
+        case idle
+        case preparing(Double)
+        case ready
+        case failed(String)
+
+        var statusText: String {
+            switch self {
+            case .idle: "録音開始時に準備します"
+            case .preparing(let progress) where progress < 0.8:
+                "音声認識モデルをダウンロード中（\(Int(progress * 100))%）"
+            case .preparing(let progress):
+                "音声認識モデルを読み込み中（\(Int(progress * 100))%）"
+            case .ready: "準備完了"
+            case .failed(let message): "準備できませんでした: \(message)"
+            }
+        }
+    }
+
     private enum PendingProcessing {
         case imported(sessionID: UUID, originalURL: URL)
         case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
         case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
+        case finalize(sessionID: UUID, source: SavedSessionAudioSource)
         case retryContentPriority(
             sessionID: UUID,
             checkpoint: AudioCheckpoint,
@@ -48,18 +69,36 @@ final class AppState: ObservableObject {
             checkpoint: AudioCheckpoint,
             plan: ASRRecoveryPlan
         )
+
+        var sessionID: UUID {
+            switch self {
+            case .imported(let sessionID, _),
+                 .timeline(let sessionID, _),
+                 .finishLive(let sessionID, _),
+                 .finalize(let sessionID, _),
+                 .retryContentPriority(let sessionID, _, _),
+                 .resumeASR(let sessionID, _, _),
+                 .selectCompletedASR(let sessionID, _, _),
+                 .diarization(let sessionID, _, _):
+                sessionID
+            }
+        }
     }
 
     private struct LiveASRBatch {
         let segments: [SegmentReference]
         let checkpoint: AudioCheckpoint
+        let enqueuedAt: Date
     }
 
     @Published private(set) var statusText = UserFacingStatus.idle.text
     @Published private(set) var statusTone: StatusTone = .neutral
     @Published private(set) var recordingPhase: RecordingPhase = .idle
+    @Published private(set) var modelPreparation: ModelPreparation = .idle
     @Published private(set) var processingState: ProcessingState = .idle
     @Published private(set) var processingStatusText: String?
+    @Published private(set) var savedSessions: [SavedSessionSummary] = []
+    @Published private(set) var selectedSavedSessionID: UUID?
 
     let transcriptViewModel = LiveTranscriptViewModel()
     let jevUsageCounter: JevUsageCounter
@@ -74,7 +113,10 @@ final class AppState: ObservableObject {
 
     private var recordingSessionID: UUID?
     private var pendingProcessing: [PendingProcessing] = []
+    private var currentlyProcessingSessionID: UUID?
+    private var finalizationGate = SavedSessionReprocessGate()
     private var processingTask: Task<Void, Never>?
+    private var modelPreparationTask: Task<Void, Never>?
 
     private var liveVADSession: LiveVADSession?
     private var liveVADTask: Task<Void, Never>?
@@ -123,6 +165,125 @@ final class AppState: ObservableObject {
             true
         case .idle, .complete, .partialFailure:
             false
+        }
+    }
+
+    var queuedFinalizationSessionIDs: Set<UUID> {
+        finalizationGate.sessionIDs
+            .union(pendingProcessing.map(\.sessionID))
+            .union(currentlyProcessingSessionID.map { [$0] } ?? [])
+    }
+
+    func refreshSavedSessions() {
+        do {
+            savedSessions = try SavedSessionCatalog().list(
+                sessionsRoot: paths.sessionsRoot
+            )
+        } catch {
+            processingStatusText = "保存済み録音を読み込めませんでした: \(error.localizedDescription)"
+        }
+    }
+
+    func selectSavedSession(sessionID: UUID) {
+        guard SavedSessionSelectionPolicy.canSelect(
+            isRecording: recordingPhase != .idle
+        ) else {
+            return
+        }
+        selectedSavedSessionID = sessionID
+        transcriptViewModel.update(segments: [])
+        transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
+
+        do {
+            let sessionURL = paths.sessionsRoot.appending(
+                path: sessionID.uuidString,
+                directoryHint: .isDirectory
+            )
+            guard let metadata = try ProcessingMetadataStore(
+                sessionURL: sessionURL
+            ).load(), let activeRuns = metadata.activeRuns,
+                  activeRuns.asr != nil else {
+                transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
+                return
+            }
+            guard let audioSource = savedSessions
+                .first(where: { $0.sessionID == sessionID })?.audioSource else {
+                transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
+                return
+            }
+            let sampleRate: Double
+            switch audioSource {
+            case .processingTimeline(let checkpoint):
+                sampleRate = checkpoint.sampleRate
+            case .importedOriginal(let originalURL):
+                let original = try AVAudioFile(forReading: originalURL)
+                sampleRate = original.processingFormat.sampleRate
+                guard sampleRate.isFinite, sampleRate > 0 else {
+                    transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
+                    return
+                }
+            }
+
+            let eventsURL = sessionURL.appending(path: "events.jsonl")
+            let lines: [Data]
+            if FileManager.default.fileExists(atPath: eventsURL.path) {
+                lines = try SessionRecovery.recoverJSONL(
+                    Data(contentsOf: eventsURL)
+                ).lines
+            } else {
+                lines = []
+            }
+            let events = try EventLogTranscriptReader().events(
+                lines: lines,
+                activeRuns: activeRuns
+            )
+            let segments = TranscriptMaterializer(
+                sampleRate: sampleRate
+            ).materialize(events: events, activeRuns: activeRuns)
+            transcriptViewModel.update(segments: segments)
+            transcriptViewModel.setStatus(
+                segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
+            )
+        } catch {
+            transcriptViewModel.setStatus(
+                "保存済み文字起こしを読み込めませんでした: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    func reprocess(sessionID: UUID) {
+        guard recordingPhase == .idle,
+              !finalizationGate.sessionIDs.contains(sessionID),
+              currentlyProcessingSessionID != sessionID,
+              !pendingProcessing.contains(where: { $0.sessionID == sessionID }),
+              let session = savedSessions.first(where: { $0.sessionID == sessionID }),
+              session.canReprocess,
+              let source = session.audioSource else {
+            return
+        }
+        selectSavedSession(sessionID: sessionID)
+        guard finalizationGate.claim(sessionID) else { return }
+        enqueueProcessing(.finalize(sessionID: sessionID, source: source))
+    }
+
+    func prepareASRModel() {
+        guard modelPreparationTask == nil, modelPreparation != .ready else { return }
+        modelPreparation = .preparing(0)
+        modelPreparationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await sessionProcessor.prepareASR { [weak self] progress, _ in
+                    Task { @MainActor in
+                        guard let self,
+                              case .preparing(let current) = self.modelPreparation else { return }
+                        self.modelPreparation = .preparing(max(current, min(1, progress)))
+                    }
+                }
+                modelPreparation = .ready
+            } catch {
+                modelPreparation = .failed(error.localizedDescription)
+            }
+            modelPreparationTask = nil
         }
     }
 
@@ -300,6 +461,7 @@ final class AppState: ObservableObject {
             recordingSessionID = sessionID
             recordingPhase = .recording
             setCaptureStatus("録音中", tone: .recording)
+            prepareASRModel()
 
             do {
                 try await startLiveVAD(sessionID: sessionID)
@@ -324,7 +486,6 @@ final class AppState: ObservableObject {
 
         recordingPhase = .stopping
         setCaptureStatus("録音を保存しています", tone: .neutral)
-
         do {
             await stopLiveVADPolling()
 
@@ -452,7 +613,9 @@ final class AppState: ObservableObject {
               recordingSessionID == sessionID,
               recordingPhase == .recording {
             do {
-                try await Task.sleep(for: .seconds(1))
+                try await Task.sleep(
+                    for: .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)
+                )
             } catch {
                 return
             }
@@ -469,15 +632,16 @@ final class AppState: ObservableObject {
                     checkpoint: checkpoint
                 )
                 liveVADSegmentCount = progress.totalSegmentCount
-
                 if !progress.emittedSegments.isEmpty {
                     await enqueueLiveASR(
                         sessionID: sessionID,
                         segments: progress.emittedSegments,
                         checkpoint: checkpoint
                     )
-                    processingStatusText =
-                        "録音中に発話を検出しています（\(progress.totalSegmentCount)区間）"
+                    if processingState != .backlogged {
+                        processingStatusText =
+                            "録音中に発話を検出しています（\(progress.totalSegmentCount)区間）"
+                    }
                 }
             } catch {
                 liveVADFailureText = error.localizedDescription
@@ -520,7 +684,8 @@ final class AppState: ObservableObject {
         liveASRQueues[sessionID, default: []].append(
             LiveASRBatch(
                 segments: segments,
-                checkpoint: checkpoint
+                checkpoint: checkpoint,
+                enqueuedAt: Date()
             )
         )
 
@@ -532,8 +697,31 @@ final class AppState: ObservableObject {
 
     private func drainLiveASRQueue(sessionID: UUID) async {
         while liveASRFailures[sessionID] == nil,
-              var queue = liveASRQueues[sessionID],
-              !queue.isEmpty {
+              let pending = liveASRQueues[sessionID],
+              let oldest = pending.first {
+            if recordingSessionID == sessionID,
+               recordingPhase == .recording {
+                let pressure = Self.thermalPressure(
+                    from: ProcessInfo.processInfo.thermalState
+                )
+                let pendingCount = pending.reduce(0) { $0 + $1.segments.count }
+                let decision = LiveASRThermalPolicy.decision(
+                    pressure: pressure,
+                    pendingCount: pendingCount,
+                    oldestPendingAge: Date().timeIntervalSince(oldest.enqueuedAt)
+                )
+                if case .wait(let delay) = decision {
+                    processingState = .backlogged
+                    let text = "発熱を抑えるため文字起こしを調整中（未処理 \(pendingCount)区間）"
+                    processingStatusText = text
+                    transcriptViewModel.setStatus(text)
+                    try? await Task.sleep(for: delay)
+                }
+            }
+
+            guard liveASRFailures[sessionID] == nil,
+                  var queue = liveASRQueues[sessionID],
+                  !queue.isEmpty else { break }
             let batch = queue.removeFirst()
             liveASRQueues[sessionID] = queue
 
@@ -581,6 +769,18 @@ final class AppState: ObservableObject {
         }
     }
 
+    private static func thermalPressure(
+        from state: ProcessInfo.ThermalState
+    ) -> ThermalPressure {
+        switch state {
+        case .nominal: .nominal
+        case .fair: .fair
+        case .serious: .serious
+        case .critical: .critical
+        @unknown default: .critical
+        }
+    }
+
     private func waitForLiveASRDrain(sessionID: UUID) async {
         while let task = liveASRTasks[sessionID] {
             _ = await task.value
@@ -594,6 +794,13 @@ final class AppState: ObservableObject {
     }
 
     private func enqueueProcessing(_ request: PendingProcessing) {
+        switch request {
+        case .imported, .timeline, .resumeASR, .finalize:
+            prepareASRModel()
+        case .finishLive, .retryContentPriority, .selectCompletedASR, .diarization:
+            break
+        }
+
         pendingProcessing.append(request)
 
         if processingTask != nil {
@@ -611,6 +818,7 @@ final class AppState: ObservableObject {
     private func drainProcessingQueue() async {
         while !pendingProcessing.isEmpty {
             let request = pendingProcessing.removeFirst()
+            currentlyProcessingSessionID = request.sessionID
             processingState = .running
 
             let statusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
@@ -630,6 +838,43 @@ final class AppState: ObservableObject {
             }
 
             switch request {
+            case .finalize(let sessionID, let source):
+                let selectedStatusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.processingStatusText = text
+                        if self.selectedSavedSessionID == sessionID {
+                            self.transcriptViewModel.setStatus(text)
+                        }
+                    }
+                }
+                let selectedUpdateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
+                    await MainActor.run {
+                        guard let self else { return }
+                        if self.selectedSavedSessionID == sessionID {
+                            self.processingState = state
+                            self.transcriptViewModel.update(segments: segments)
+                        }
+                    }
+                }
+                switch source {
+                case .processingTimeline(let checkpoint):
+                    _ = await sessionProcessor.processFinalTranscript(
+                        sessionID: sessionID,
+                        checkpoint: checkpoint,
+                        onStatus: selectedStatusHandler,
+                        onUpdate: selectedUpdateHandler
+                    )
+                case .importedOriginal(let originalURL):
+                    _ = await sessionProcessor.processImportedSession(
+                        sessionID: sessionID,
+                        originalURL: originalURL,
+                        onStatus: selectedStatusHandler,
+                        onUpdate: selectedUpdateHandler
+                    )
+                }
+                finalizationGate.release(sessionID)
+                refreshSavedSessions()
             case .imported(let sessionID, let originalURL):
                 await sessionProcessor.processImportedSession(
                     sessionID: sessionID,
@@ -694,6 +939,7 @@ final class AppState: ObservableObject {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
+                refreshSavedSessions()
             case .resumeASR(let sessionID, let checkpoint, let plan):
                 await sessionProcessor.resumePendingASRSession(
                     sessionID: sessionID,
@@ -725,6 +971,7 @@ final class AppState: ObservableObject {
                 processingStatusText = "次の文字起こし処理を開始します"
                 transcriptViewModel.setStatus("次の文字起こし処理を開始します")
             }
+            currentlyProcessingSessionID = nil
         }
 
         if processingState == .running || processingState == .backlogged {
@@ -790,6 +1037,14 @@ final class AppState: ObservableObject {
                     )
 
                 case (.reprocess, .processingTimeline(let checkpoint)):
+                    enqueueProcessing(
+                        .timeline(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint
+                        )
+                    )
+
+                case (.finalize, .processingTimeline(let checkpoint)):
                     enqueueProcessing(
                         .timeline(
                             sessionID: sessionID,

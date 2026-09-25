@@ -6,6 +6,7 @@ public enum RecoverableAudioSource: Sendable, Equatable {
 }
 
 public enum RecoverableProcessingAction: Sendable, Equatable {
+    case finalize
     case reprocess
     case resumeASR(ASRRecoveryPlan)
     case selectCompletedASR(ASRRecoveryPlan)
@@ -39,6 +40,12 @@ public struct SessionRecoveryScanner: Sendable {
         self.sessionsRoot = sessionsRoot
     }
 
+    public func inspect(sessionID: UUID) throws -> RecoverableSession? {
+        let url = sessionsRoot.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try candidates(at: [url], expectedID: sessionID, repairEventLog: false).first
+    }
+
     public func pendingSessions() throws -> [RecoverableSession] {
         guard FileManager.default.fileExists(atPath: sessionsRoot.path) else {
             return []
@@ -50,6 +57,14 @@ public struct SessionRecoveryScanner: Sendable {
             options: [.skipsHiddenFiles]
         )
 
+        return try candidates(at: sessionURLs, expectedID: nil, repairEventLog: true)
+    }
+
+    private func candidates(
+        at sessionURLs: [URL],
+        expectedID: UUID?,
+        repairEventLog: Bool
+    ) throws -> [RecoverableSession] {
         var candidates: [RecoverableSession] = []
 
         for sessionURL in sessionURLs {
@@ -64,7 +79,11 @@ public struct SessionRecoveryScanner: Sendable {
             }
 
             let manifest = try decodeManifest(at: manifestURL)
-            let recoveredLines = try recoverEventLog(sessionURL: sessionURL)
+            guard expectedID == nil || manifest.sessionID == expectedID else { continue }
+            let recoveredLines = try recoverEventLog(
+                sessionURL: sessionURL,
+                repair: repairEventLog
+            )
             let analyzer = EventLogRecoveryAnalyzer()
             let latestASRPlan = try analyzer.latestASRPlan(
                 lines: recoveredLines
@@ -83,7 +102,11 @@ public struct SessionRecoveryScanner: Sendable {
             }
 
             let action: RecoverableProcessingAction?
-            if let activePlan = activeASRPlan,
+            if metadata?.finalizationAttempt?.state == .running {
+                action = .finalize
+            } else if metadata?.finalizationAttempt?.state == .failed {
+                action = nil
+            } else if let activePlan = activeASRPlan,
                activePlan.pendingSegments.isEmpty,
                activePlan.runSucceeded,
                !activePlan.hasFailures {
@@ -98,20 +121,21 @@ public struct SessionRecoveryScanner: Sendable {
                         .contentPriorityState(
                             lines: recoveredLines
                         )
+                    let metadataPendingIDs = metadata?
+                        .pendingContentPrioritySegmentIDs ?? []
+                    let pendingPriorityIDs = metadataPendingIDs.isEmpty
+                        ? jevState.pendingSegmentIDs
+                        : metadataPendingIDs
 
-                    if jevState.hasAssignments {
+                    if !pendingPriorityIDs.isEmpty {
                         let activePriorityRunID =
                             metadata?.activeRuns?.contentPriority
 
-                        if jevState.latestRunID
-                            == activePriorityRunID {
-                            let pendingIDs =
-                                jevState.pendingSegmentIDs
-                            action = pendingIDs.isEmpty
-                                ? nil
-                                : .retryContentPriority(
-                                    segmentIDs: pendingIDs
-                                )
+                        if !jevState.hasAssignments
+                            || jevState.latestRunID == activePriorityRunID {
+                            action = .retryContentPriority(
+                                segmentIDs: pendingPriorityIDs
+                            )
                         } else {
                             // A newer priority run exists in the log but was
                             // never selected, which indicates an interrupted
@@ -152,6 +176,8 @@ public struct SessionRecoveryScanner: Sendable {
                     // active run or be retried indefinitely on every launch.
                     action = nil
                 }
+            } else if metadata?.activeRuns?.scope != nil {
+                action = nil
             } else if metadata?.activeRuns?.asr == nil {
                 action = .reprocess
             } else {
@@ -199,7 +225,7 @@ public struct SessionRecoveryScanner: Sendable {
         )
     }
 
-    private func recoverEventLog(sessionURL: URL) throws -> [Data] {
+    private func recoverEventLog(sessionURL: URL, repair: Bool) throws -> [Data] {
         let eventsURL = sessionURL.appending(path: "events.jsonl")
         guard FileManager.default.fileExists(atPath: eventsURL.path) else {
             return []
@@ -208,7 +234,7 @@ public struct SessionRecoveryScanner: Sendable {
         let recovered = try SessionRecovery.recoverJSONL(
             Data(contentsOf: eventsURL)
         )
-        if recovered.droppedIncompleteTail {
+        if repair && recovered.droppedIncompleteTail {
             try recovered.normalizedData.write(
                 to: eventsURL,
                 options: .atomic

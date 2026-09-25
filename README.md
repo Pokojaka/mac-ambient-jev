@@ -88,7 +88,6 @@ test-data/recordings/local/
 ```text
 test-data/recordings/local/lecture-ja-001/
 ├── audio.m4a
-├── manifest.json
 └── segments.json
 ```
 
@@ -101,6 +100,8 @@ swift tools/process-recording.swift \
 
 同じディレクトリに `segments.json` が生成されます。
 
+このコマンドは評価用 `manifest.json` を作成しません。後日、注釈付き評価を行う場合にのみ正解 annotation を別途用意してください。注釈のない指標は合格値として扱えません。
+
 評価:
 
 ```bash
@@ -109,7 +110,22 @@ swift tools/evaluate-session.swift \
   test-data/recordings/local/lecture-ja-001/segments.json
 ```
 
+第3引数を省略すると場面観測は未計測になります。転換なしを観測した場合は、内容が `[]` の scene-transitions JSON を指定してください。
+
 評価方法の詳細は `docs/evaluation.md`、長時間・障害時の受け入れ試験は `docs/v1-acceptance.md` を参照してください。
+
+## アプリでの動作確認
+
+```bash
+bash scripts/build_app.sh
+open .build/MacAmbientJev.app
+```
+
+Jev を確認する場合は、メイン画面の「設定」ボタンから設定画面を開き、API キーを Keychain に保存して「Jev 接続を確認」を押します。このボタンは固定のテスト文だけを送信し、応答またはエラーを設定画面に表示します。キーを保存していない場合は接続確認を開始できません。実際の録音での Jev 利用状況は設定画面の「診断」で確認できます。
+
+マイクを確認する場合は、設定画面の「マイク録音テスト」で権限を確認します。メイン画面で「録音を開始」を押し、声を入れてから「録音を停止」を押すと、保存状態と文字起こしを確認できます。アプリを開いただけではマイク録音は始まりません。
+
+音声認識モデルはアプリ内で管理します。初回は設定画面の「音声認識モデル」から先に準備できます。録音開始時、音声ファイルの読み込み時、未完了の文字起こしの再開時にも自動で準備を始めます。初回は約2.5 GBのダウンロードが必要で、準備の進捗はメイン画面と設定画面に表示されます。モデルを準備している間も録音保存と発話検出は続き、準備後に保留中の発話を文字起こしします。次回からはアプリ内のキャッシュを使います。
 
 ## V1 の境界
 

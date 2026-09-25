@@ -1,5 +1,7 @@
+import Foundation
 import Combine
 import MacAmbientJevCore
+import MacAmbientJevRuntime
 
 @MainActor
 final class LiveTranscriptViewModel: ObservableObject {
@@ -8,7 +10,6 @@ final class LiveTranscriptViewModel: ObservableObject {
     @Published private(set) var autoFollowEnabled = true
 
     private let projection = LiveTranscriptProjection()
-
     func update(segments: [MaterializedTranscriptSegment]) {
         rows = projection.rows(for: segments)
     }

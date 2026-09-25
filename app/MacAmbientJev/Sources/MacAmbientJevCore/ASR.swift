@@ -19,6 +19,8 @@ public struct ASRResult: Sendable, Equatable {
 }
 
 public struct ASRAudioInput: Sendable, Equatable {
+    public static let minimumDurationSeconds = 0.02
+
     public let samples: [Float]
     public let sampleRate: Int
 
@@ -26,12 +28,24 @@ public struct ASRAudioInput: Sendable, Equatable {
         self.samples = samples
         self.sampleRate = sampleRate
     }
+
+    public var isShorterThanMinimumASRDuration: Bool {
+        sampleRate > 0
+            && samples.count < Int((Self.minimumDurationSeconds * Double(sampleRate)).rounded())
+    }
 }
 
 public protocol ASREngine: Sendable {
     func prepare() async throws
+    func prepare(onProgress: @escaping @Sendable (Double, String) -> Void) async throws
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult
     func unload() async
+}
+
+public extension ASREngine {
+    func prepare(onProgress: @escaping @Sendable (Double, String) -> Void) async throws {
+        try await prepare()
+    }
 }
 
 public struct ModelStore: Sendable {

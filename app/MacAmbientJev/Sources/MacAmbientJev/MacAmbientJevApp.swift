@@ -21,6 +21,7 @@ struct MacAmbientJevApp: App {
                         }
                     }
                 )
+                    .environmentObject(appState)
                     .tabItem {
                         Label("Jev", systemImage: "sparkles")
                     }
@@ -37,6 +38,8 @@ struct MacAmbientJevApp: App {
 
 private struct ContentView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.openSettings) private var openSettings
+    @State private var showsSavedSessions = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,6 +65,13 @@ private struct ContentView: View {
                 .disabled(appState.isBusy || appState.isRecording)
 
                 Button {
+                    appState.refreshSavedSessions()
+                    showsSavedSessions = true
+                } label: {
+                    Label("保存済み録音", systemImage: "waveform.and.mic")
+                }
+
+                Button {
                     Task {
                         await appState.toggleRecording()
                     }
@@ -76,7 +86,26 @@ private struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(appState.isBusy)
+
+                Button {
+                    openSettings()
+                } label: {
+                    Label("設定", systemImage: "gearshape")
+                }
+                .help("Jev とマイクの設定を開く")
             }
+        }
+        .sheet(isPresented: $showsSavedSessions) {
+            SavedSessionsView(
+                sessions: appState.savedSessions,
+                selectedSessionID: appState.selectedSavedSessionID,
+                isUnavailableForReprocess: appState.recordingPhase != .idle,
+                isSelectionUnavailable: appState.recordingPhase != .idle,
+                queuedSessionIDs: appState.queuedFinalizationSessionIDs,
+                onRefresh: appState.refreshSavedSessions,
+                onSelect: appState.selectSavedSession(sessionID:),
+                onReprocess: appState.reprocess(sessionID:)
+            )
         }
     }
 
@@ -116,6 +145,22 @@ private struct ContentView: View {
                             .accessibilityLabel("文字起こし処理中")
                     }
                 }
+            }
+
+            if case .preparing = appState.modelPreparation {
+                HStack(spacing: AppSpacing.sm) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text(appState.modelPreparation.statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            } else if case .failed = appState.modelPreparation {
+                Text(appState.modelPreparation.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, AppSpacing.lg)

@@ -81,7 +81,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
             let evidence: ProximityEvidence
             if activeSpeakerIDs.count == 1,
                let speakerID = activeSpeakerIDs.first {
-                evidence = evidence(for: speakerID)
+                evidence = self.evidence(for: speakerID)
             } else {
                 evidence = .unknown
             }

@@ -3,11 +3,12 @@
 import Foundation
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-guard arguments.count == 1 || arguments.count == 2 else {
+let positional = arguments.filter { $0 != "--keep-session" && $0 != "--low-heat" }
+guard positional.count == 1 || positional.count == 2 else {
     print(
         """
         使い方:
-          swift tools/process-recording.swift <audio-file> [segments.json]
+          swift tools/process-recording.swift [--keep-session] [--low-heat] <audio-file> [segments.json]
         """
     )
     throw NSError(

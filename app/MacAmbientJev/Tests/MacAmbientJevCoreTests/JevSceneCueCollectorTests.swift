@@ -35,6 +35,25 @@ private struct SceneCueProvider: DecisionProvider {
     }
 }
 
+private actor RecordingSceneCueProvider: DecisionProvider {
+    private var currentTexts: [String] = []
+
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        ContentPriorityDecision(priority: .primary, confidence: 1)
+    }
+
+    func classifySceneCue(
+        currentText: String,
+        previousTexts: [String],
+        currentScene: SceneState
+    ) async throws -> SemanticSceneDecision {
+        currentTexts.append(currentText)
+        return SemanticSceneDecision(cue: .none, confidence: 1)
+    }
+
+    func recordedTexts() -> [String] { currentTexts }
+}
+
 @Test
 func jevSceneCueCollectorMapsTranscriptTimeToCanonicalFrame() async throws {
     let root = FileManager.default.temporaryDirectory
@@ -70,4 +89,41 @@ func jevSceneCueCollectorMapsTranscriptTimeToCanonicalFrame() async throws {
     #expect(result.cues.count == 1)
     #expect(result.cues[0].frame == 72_000)
     #expect(result.cues[0].cue == .discussionStart)
+}
+
+@Test
+func jevSceneCueCollectorSkipsBlankAndNoRecognitionSegments() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let provider = RecordingSceneCueProvider()
+    let collector = JevSceneCueCollector(
+        sessionID: UUID(),
+        runID: "jev-scene-empty-filter",
+        writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(provider: provider),
+        sampleRate: 48_000
+    )
+    let segments = [
+        "blank": " \n",
+        "placeholder": "聞き取れませんでした。",
+        "recognized-placeholder": "『認識できませんでした。』"
+    ].map { id, text in
+        MaterializedTranscriptSegment(
+            segmentID: id,
+            startMilliseconds: 0,
+            endMilliseconds: 500,
+            text: text,
+            scene: .lecture,
+            speakers: [],
+            scopeSpans: [],
+            contentPriority: nil
+        )
+    }
+
+    let result = try await collector.collect(segments: segments)
+
+    #expect(await provider.recordedTexts().isEmpty)
+    #expect(result.retryPendingSegmentIDs.isEmpty)
+    #expect(result.cues.isEmpty)
 }

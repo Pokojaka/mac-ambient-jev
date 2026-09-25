@@ -80,21 +80,21 @@ public struct GoldenRuntimeMetrics: Codable, Sendable, Equatable {
 }
 
 public struct GoldenCorpusReport: Codable, Sendable, Equatable {
-    public let technicalTermRetention: Double
-    public let falseLowPriorityCount: Int
-    public let falseBackgroundCount: Int
-    public let sceneTransitionErrorMilliseconds: Int64
-    public let sceneOscillationCount: Int
+    public let technicalTermRetention: Double?
+    public let falseLowPriorityCount: Int?
+    public let falseBackgroundCount: Int?
+    public let sceneTransitionErrorMilliseconds: Int64?
+    public let sceneOscillationCount: Int?
     public let asrRTF: Double?
     public let peakMemoryMB: Double?
     public let oldestPendingAgeMilliseconds: Int64?
 
     public init(
-        technicalTermRetention: Double,
-        falseLowPriorityCount: Int,
-        falseBackgroundCount: Int,
-        sceneTransitionErrorMilliseconds: Int64,
-        sceneOscillationCount: Int,
+        technicalTermRetention: Double?,
+        falseLowPriorityCount: Int?,
+        falseBackgroundCount: Int?,
+        sceneTransitionErrorMilliseconds: Int64?,
+        sceneOscillationCount: Int?,
         asrRTF: Double?,
         peakMemoryMB: Double?,
         oldestPendingAgeMilliseconds: Int64?
@@ -109,6 +109,24 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
         self.oldestPendingAgeMilliseconds = oldestPendingAgeMilliseconds
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(technicalTermRetention, forKey: .technicalTermRetention)
+        try container.encode(falseLowPriorityCount, forKey: .falseLowPriorityCount)
+        try container.encode(falseBackgroundCount, forKey: .falseBackgroundCount)
+        try container.encode(
+            sceneTransitionErrorMilliseconds,
+            forKey: .sceneTransitionErrorMilliseconds
+        )
+        try container.encode(sceneOscillationCount, forKey: .sceneOscillationCount)
+        try container.encodeIfPresent(asrRTF, forKey: .asrRTF)
+        try container.encodeIfPresent(peakMemoryMB, forKey: .peakMemoryMB)
+        try container.encodeIfPresent(
+            oldestPendingAgeMilliseconds,
+            forKey: .oldestPendingAgeMilliseconds
+        )
+    }
+
     enum CodingKeys: String, CodingKey {
         case technicalTermRetention = "technical_term_retention"
         case falseLowPriorityCount = "false_low_priority_count"
@@ -121,36 +139,73 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
     }
 }
 
+public enum GoldenCorpusEvaluationError: LocalizedError, Sendable, Equatable {
+    case segmentAnnotationIndexOutOfBounds(
+        annotation: String,
+        index: Int,
+        segmentCount: Int
+    )
+    case emptyRequiredTerm(index: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .segmentAnnotationIndexOutOfBounds(annotation, index, segmentCount):
+            return "\(annotation)[\(index)] は segments の範囲外です（segments.count: \(segmentCount) 件）。"
+        case let .emptyRequiredTerm(index):
+            return "must_keep_terms[\(index)] は空文字または空白のみです。"
+        }
+    }
+}
+
 public enum GoldenCorpusEvaluator {
     public static func evaluate(
         segments: [MaterializedTranscriptSegment],
         manifest: GoldenCorpusManifest,
-        observedSceneTransitions: [GoldenSceneTransition] = [],
+        observedSceneTransitions: [GoldenSceneTransition]? = nil,
         runtimeMetrics: GoldenRuntimeMetrics = GoldenRuntimeMetrics()
-    ) -> GoldenCorpusReport {
-        let transcript = segments.map(\.text).joined(separator: "\n")
-        let requiredTerms = manifest.annotations.mustKeepTerms
-        let retainedTerms = requiredTerms.filter { transcript.contains($0) }
-
-        let technicalTermRetention: Double
-        if requiredTerms.isEmpty {
-            technicalTermRetention = 1
-        } else {
-            technicalTermRetention =
-                Double(retainedTerms.count) / Double(requiredTerms.count)
+    ) throws -> GoldenCorpusReport {
+        let annotations = manifest.annotations
+        try validateSegmentAnnotationIndices(
+            annotations.mustNotBeLowPriority,
+            annotation: "must_not_be_low_priority",
+            segmentCount: segments.count
+        )
+        try validateSegmentAnnotationIndices(
+            annotations.mustNotBeBackground,
+            annotation: "must_not_be_background",
+            segmentCount: segments.count
+        )
+        if let index = annotations.mustKeepTerms.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) {
+            throw GoldenCorpusEvaluationError.emptyRequiredTerm(index: index)
         }
 
-        let falseLowPriorityCount = manifest.annotations.mustNotBeLowPriority
+        let transcript = segments.map(\.text).joined(separator: "\n")
+        let requiredTerms = annotations.mustKeepTerms
+        let retainedTerms = requiredTerms.filter { transcript.contains($0) }
+
+        let technicalTermRetention: Double? = requiredTerms.isEmpty
+            ? nil
+            : (
+                Double(retainedTerms.count) / Double(requiredTerms.count)
+            )
+
+        let lowPriorityAnnotations = annotations.mustNotBeLowPriority
+        let falseLowPriorityCount: Int? = lowPriorityAnnotations.isEmpty
+            ? nil
+            : lowPriorityAnnotations
             .reduce(into: 0) { count, index in
-                guard segments.indices.contains(index) else { return }
                 if segments[index].contentPriority == .lowPriority {
                     count += 1
                 }
             }
 
-        let falseBackgroundCount = manifest.annotations.mustNotBeBackground
+        let backgroundAnnotations = annotations.mustNotBeBackground
+        let falseBackgroundCount: Int? = backgroundAnnotations.isEmpty
+            ? nil
+            : backgroundAnnotations
             .reduce(into: 0) { count, index in
-                guard segments.indices.contains(index) else { return }
                 let segment = segments[index]
                 let wouldBeHiddenAsBackground =
                     segment.scene == .discussion
@@ -164,19 +219,25 @@ public enum GoldenCorpusEvaluator {
                 }
             }
 
-        let sceneTransitionErrorMilliseconds = transitionError(
-            expected: manifest.annotations.sceneTransitions,
-            observed: observedSceneTransitions
-        )
+        let sceneTransitionErrorMilliseconds: Int64?
+        let sceneOscillationCount: Int?
+        if let observedSceneTransitions {
+            sceneTransitionErrorMilliseconds = transitionError(
+                expected: annotations.sceneTransitions,
+                observed: observedSceneTransitions
+            )
+            sceneOscillationCount = oscillationCount(observedSceneTransitions)
+        } else {
+            sceneTransitionErrorMilliseconds = nil
+            sceneOscillationCount = nil
+        }
 
         return GoldenCorpusReport(
             technicalTermRetention: technicalTermRetention,
             falseLowPriorityCount: falseLowPriorityCount,
             falseBackgroundCount: falseBackgroundCount,
             sceneTransitionErrorMilliseconds: sceneTransitionErrorMilliseconds,
-            sceneOscillationCount: oscillationCount(
-                observedSceneTransitions
-            ),
+            sceneOscillationCount: sceneOscillationCount,
             asrRTF: runtimeMetrics.asrRTF,
             peakMemoryMB: runtimeMetrics.peakMemoryMB,
             oldestPendingAgeMilliseconds:
@@ -184,11 +245,26 @@ public enum GoldenCorpusEvaluator {
         )
     }
 
+    private static func validateSegmentAnnotationIndices(
+        _ indices: [Int],
+        annotation: String,
+        segmentCount: Int
+    ) throws {
+        guard let index = indices.first(where: { !(0..<segmentCount).contains($0) }) else {
+            return
+        }
+        throw GoldenCorpusEvaluationError.segmentAnnotationIndexOutOfBounds(
+            annotation: annotation,
+            index: index,
+            segmentCount: segmentCount
+        )
+    }
+
     private static func transitionError(
         expected: [GoldenSceneTransition],
         observed: [GoldenSceneTransition]
-    ) -> Int64 {
-        guard !expected.isEmpty else { return 0 }
+    ) -> Int64? {
+        guard !expected.isEmpty else { return nil }
 
         let errors = expected.compactMap { target -> Int64? in
             observed

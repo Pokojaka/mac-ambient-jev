@@ -46,10 +46,10 @@ struct LiveTranscriptView: View {
     private var transcriptList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: AppSpacing.lg) {
-                    ForEach(viewModel.rows) { row in
-                        transcriptRow(row)
-                            .id(row.id)
+                LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
+                    ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { entry in
+                        transcriptRow(entry.element, speakerHeading: speakerHeading(for: entry.offset))
+                            .id(entry.element.id)
                     }
                 }
                 .padding(AppSpacing.lg)
@@ -74,74 +74,107 @@ struct LiveTranscriptView: View {
         }
     }
 
-    private func transcriptRow(_ row: LiveTranscriptRow) -> some View {
-        VStack(alignment: .leading, spacing: AppSpacing.sm) {
-            Text(row.text)
-                .font(.body)
-                .foregroundStyle(row.isLowPriority ? .secondary : .primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func speakerHeading(for index: Int) -> String? {
+        guard let label = viewModel.rows[index].displaySpeakerLabels.first else { return nil }
+        guard index == 0 || viewModel.rows[index - 1].displaySpeakerLabels.first != label else { return nil }
+        return label
+    }
 
-            HStack(spacing: AppSpacing.sm) {
-                Text(formatTime(row.startMilliseconds))
-                    .monospacedDigit()
+    private func transcriptRow(_ row: LiveTranscriptRow, speakerHeading: String?) -> some View {
+        HStack(alignment: .top, spacing: AppSpacing.md) {
+            Text(formatTime(row.startMilliseconds))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 42, alignment: .leading)
+                .accessibilityLabel("時刻 \(formatTime(row.startMilliseconds))")
 
-                if let speaker = row.speakers.first?.id {
-                    Text(speaker)
+            VStack(alignment: .leading, spacing: AppSpacing.xs) {
+                if let speakerHeading {
+                    Text(speakerHeading)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
 
-                sceneLabel(row.scene)
-
-                if let scope = scopeLabel(row.scopeSpans) {
-                    Text(scope)
+                DisclosureGroup {
+                    transcriptDetails(row)
+                } label: {
+                    transcriptText(row)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .accessibilityHint("詳細を表示または閉じます。場面、音響範囲、優先度、話者区間を確認できます")
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
 
-                if row.isLowPriority {
-                    Label("低優先度", systemImage: "arrow.down.circle")
-                        .help("意味分類により優先度が低いと判定された発話です")
+    private func transcriptText(_ row: LiveTranscriptRow) -> Text {
+        row.textFragments.reduce(Text("")) { result, fragment in
+            let piece = Text(fragment.text)
+            if row.isLowPriority || fragment.isFiller {
+                return result + piece.foregroundColor(.secondary)
+            }
+            return result + piece.foregroundColor(.primary)
+        }
+    }
+
+    private func transcriptDetails(_ row: LiveTranscriptRow) -> some View {
+        VStack(alignment: .leading, spacing: AppSpacing.xs) {
+            sceneDescription(row.scene)
+            scopeDescriptions(row.scopeSpans)
+
+            if row.isLowPriority {
+                Label("低優先度", systemImage: "arrow.down.circle")
+                    .help("意味分類により優先度が低いと判定された発話です")
+            }
+
+            if !row.speakers.isEmpty {
+                Text("話者区間")
+                    .font(.caption.weight(.semibold))
+                ForEach(Array(row.speakers.enumerated()), id: \.offset) { entry in
+                    let span = entry.element
+                    Text("\(span.displayLabel ?? span.id) · \(formatTime(span.startMilliseconds))–\(formatTime(span.endMilliseconds))")
+                        .font(.caption.monospacedDigit())
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.top, AppSpacing.xs)
     }
 
     @ViewBuilder
-    private func sceneLabel(_ scene: SceneState) -> some View {
+    private func sceneDescription(_ scene: SceneState) -> some View {
         switch scene {
         case .lecture:
-            Label("講義", systemImage: "person.fill")
+            Label("場面: 講義", systemImage: "person.fill")
         case .discussion:
-            Label("討論", systemImage: "person.2.fill")
+            Label("場面: 討論", systemImage: "person.2.fill")
         case .discussionCandidate:
-            Label("討論候補", systemImage: "person.2")
+            Label("場面: 討論候補", systemImage: "person.2")
         case .lectureCandidate:
-            Label("講義候補", systemImage: "person")
+            Label("場面: 講義候補", systemImage: "person")
         case .unknown:
-            EmptyView()
+            Text("場面: 未判定")
         }
     }
 
-    private func scopeLabel(
-        _ spans: [MaterializedScopeSpan]
-    ) -> String? {
-        guard !spans.isEmpty else { return nil }
-
-        guard let firstScope = spans.first?.scope else {
-            return nil
-        }
-        if spans.contains(where: { $0.scope != firstScope }) {
-            return "音響範囲: 混在"
-        }
-
-        switch firstScope {
-        case .near:
-            return "音響範囲: 近傍"
-        case .background:
-            return "音響範囲: 背景"
-        case .unknown:
-            return "音響範囲: 未判定"
+    @ViewBuilder
+    private func scopeDescriptions(_ spans: [MaterializedScopeSpan]) -> some View {
+        if spans.isEmpty {
+            Text("音響範囲: 未判定")
+        } else {
+            ForEach(Array(spans.enumerated()), id: \.offset) { entry in
+                let span = entry.element
+                let label: String = switch span.scope {
+                case .near: "近傍"
+                case .background: "背景"
+                case .unknown: "未判定"
+                }
+                Text("音響範囲: \(label) · \(formatTime(span.startMilliseconds))–\(formatTime(span.endMilliseconds))")
+                    .font(.caption.monospacedDigit())
+            }
         }
     }
 

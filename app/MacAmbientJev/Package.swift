@@ -15,6 +15,10 @@ let package = Package(
         .executable(
             name: "MacAmbientJevProcessRecording",
             targets: ["MacAmbientJevProcessRecording"]
+        ),
+        .executable(
+            name: "MacAmbientJevMeasureLiveLatency",
+            targets: ["MacAmbientJevMeasureLiveLatency"]
         )
     ],
     dependencies: [
@@ -25,6 +29,10 @@ let package = Package(
         .package(
             url: "https://github.com/soniqo/speech-swift.git",
             revision: "c4c2fabbe825a9290c19e2f45d54ca3eae96b003"
+        ),
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift.git",
+            exact: "0.31.6"
         )
     ],
     targets: [
@@ -52,8 +60,13 @@ let package = Package(
             name: "MacAmbientJevProcessRecording",
             dependencies: [
                 "MacAmbientJevCore",
-                "MacAmbientJevRuntime"
+                "MacAmbientJevRuntime",
+                .product(name: "MLX", package: "mlx-swift")
             ]
+        ),
+        .executableTarget(
+            name: "MacAmbientJevMeasureLiveLatency",
+            dependencies: ["MacAmbientJevCore", "MacAmbientJevRuntime"]
         ),
         .testTarget(
             name: "MacAmbientJevCoreTests",

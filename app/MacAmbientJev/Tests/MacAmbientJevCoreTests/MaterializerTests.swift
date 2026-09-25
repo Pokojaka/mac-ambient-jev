@@ -26,6 +26,98 @@ func materializerUsesOnlySelectedASRRun() {
 }
 
 @Test
+func materializerKeepsEmptyFinalTurnAndShortRecognizedSpeech() {
+    let events: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "full",
+                        startFrame: 0, endFrame: 672_000),
+        .segmentCreated(seq: 2, segmentationRunID: "seg", segmentID: "tail",
+                        startFrame: 672_000, endFrame: 672_192),
+        .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "short",
+                        startFrame: 800_000, endFrame: 800_192),
+        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg",
+                      segmentID: "full", text: "前の発話"),
+        .asrCompleted(seq: 5, runID: "asr", segmentationRunID: "seg",
+                      segmentID: "tail", text: ""),
+        .asrCompleted(seq: 6, runID: "asr", segmentationRunID: "seg",
+                      segmentID: "short", text: "短い発話")
+    ]
+    let segments = TranscriptMaterializer(sampleRate: 48_000).materialize(
+        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+    #expect(segments.map(\.segmentID) == ["full", "tail", "short"])
+    #expect(segments.first(where: { $0.segmentID == "tail" })?.text == "")
+    let rows = LiveTranscriptProjection().rows(for: segments)
+    #expect(rows.map(\.segmentID) == ["full", "short"])
+    #expect(rows.last?.text == "短い発話")
+}
+
+@Test
+func liveProjectionHidesWhitespaceOnlyButKeepsShortAcknowledgements() {
+    let segments = ["", " \n\t", "聞き取れませんでした", "うん"].enumerated().map { index, text in
+        MaterializedTranscriptSegment(
+            segmentID: "s\(index)", startMilliseconds: Int64(index * 1000),
+            endMilliseconds: Int64((index + 1) * 1000), text: text,
+            scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil
+        )
+    }
+
+    #expect(LiveTranscriptProjection().rows(for: segments).map(\.text) == ["うん"])
+}
+
+@Test
+func liveProjectionSuppressesPunctuatedNonSpeechPlaceholder() {
+    let texts = [
+        "聞き取れませんでした",
+        "「聞き取れませんでした。」",
+        "(聞き取れませんでした!)",
+        "『聞き取れませんでした』",
+        "えー",
+        "うん"
+    ]
+    let segments = texts.enumerated().map { index, text in
+        MaterializedTranscriptSegment(
+            segmentID: "placeholder-\(index)", startMilliseconds: Int64(index * 1000),
+            endMilliseconds: Int64((index + 1) * 1000), text: text,
+            scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil
+        )
+    }
+
+    #expect(LiveTranscriptProjection().rows(for: segments).map(\.text) == ["えー", "うん"])
+}
+
+@Test
+func liveProjectionUsesDominantSpeakerWhenItCoversAtLeastEightyPercent() throws {
+    let segment = MaterializedTranscriptSegment(
+        segmentID: "dominant", startMilliseconds: 1_000, endMilliseconds: 2_000,
+        text: "発話", scene: .unknown,
+        speakers: [
+            MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_800, confidence: nil),
+            MaterializedSpeakerSpan(id: "B", startMilliseconds: 1_800, endMilliseconds: 2_100, confidence: nil)
+        ], scopeSpans: [], contentPriority: nil
+    )
+
+    let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
+    #expect(row.displaySpeakerLabels == ["話者1"])
+    #expect(row.speakers.map(\.id) == ["A", "B"])
+}
+
+@Test
+func liveProjectionUsesMultipleSpeakerWhenNoSpeakerReachesEightyPercent() throws {
+    let segment = MaterializedTranscriptSegment(
+        segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
+        text: "会話", scene: .unknown,
+        speakers: [
+            MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 600, confidence: nil),
+            MaterializedSpeakerSpan(id: "B", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil)
+        ], scopeSpans: [], contentPriority: nil
+    )
+
+    let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
+    #expect(row.displaySpeakerLabels == ["複数話者"])
+    #expect(row.speakers.map(\.id) == ["A", "B"])
+}
+
+@Test
 func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(
@@ -65,6 +157,42 @@ func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
 
     #expect(segment.speakers.count == 2)
     #expect(segment.scopeSpans.count == 2)
+}
+
+@Test
+func liveProjectionRanksSpeakersUsingRawSpansOutsideVADTurns() throws {
+    let events: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "turn", startFrame: 1_000, endFrame: 2_000),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "turn", text: "発話"),
+        .speakerSpan(seq: 3, runID: "diar", speakerID: "in-turn", startFrame: 1_000, endFrame: 2_000, confidence: 0.9),
+        .speakerSpan(seq: 4, runID: "diar", speakerID: "outside-turn", startFrame: 5_000, endFrame: 15_000, confidence: 0.8)
+    ]
+    let activeRuns = ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
+    let materialized = TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: events,
+        activeRuns: activeRuns
+    )
+
+    let row = try #require(LiveTranscriptProjection().rows(for: materialized).first)
+
+    #expect(row.speakers.map(\.id) == ["in-turn"])
+    #expect(row.displaySpeakerLabels == ["話者2"])
+}
+
+@Test
+func materializedSpeakerDisplayLabelDoesNotChangeSerializedShape() throws {
+    let span = MaterializedSpeakerSpan(
+        id: "S1", startMilliseconds: 10, endMilliseconds: 20,
+        confidence: 0.5, displayLabel: "話者1"
+    )
+    let encoded = try JSONEncoder().encode(span)
+    let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+
+    #expect(Set(object.keys) == ["id", "start_ms", "end_ms", "confidence"])
+
+    let oldData = Data(#"{"id":"S2","start_ms":30,"end_ms":40,"confidence":null}"#.utf8)
+    let decoded = try JSONDecoder().decode(MaterializedSpeakerSpan.self, from: oldData)
+    #expect(decoded.displayLabel == nil)
 }
 
 @Test

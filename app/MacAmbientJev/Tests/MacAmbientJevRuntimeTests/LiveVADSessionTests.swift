@@ -33,6 +33,15 @@ private actor EmittingLiveVAD: VADChunkSegmenting {
     ) async -> [SegmentReference] {
         []
     }
+
+    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
+        guard durableFrame > 0 else { return nil }
+        return OpenSpeechRange(
+            utteranceID: "u1",
+            startFrame: 0,
+            endFrame: durableFrame
+        )
+    }
 }
 
 @Test
@@ -73,6 +82,7 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
     )
     #expect(first.emittedSegments.count == 3)
     #expect(first.totalSegmentCount == 3)
+    #expect(first.openSpeech?.endFrame == firstCheckpoint.committedFrames)
 
     let repeated = try await session.processAvailable(
         checkpoint: firstCheckpoint
@@ -95,6 +105,7 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
     )
     #expect(final.emittedSegments.count == 1)
     #expect(final.totalSegmentCount == 8)
+    #expect(final.openSpeech == nil)
     #expect(await session.allSegments().count == 8)
 }
 
@@ -135,4 +146,5 @@ func liveVADSessionFinishIsIdempotent() async throws {
     #expect(first.totalSegmentCount == 4)
     #expect(second.emittedSegments.isEmpty)
     #expect(second.totalSegmentCount == first.totalSegmentCount)
+    #expect(first.openSpeech == nil)
 }

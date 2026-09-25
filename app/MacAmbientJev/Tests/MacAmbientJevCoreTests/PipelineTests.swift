@@ -50,6 +50,198 @@ private actor FailingPipelineASR: ASREngine {
     func unload() async {}
 }
 
+private actor SequencedPipelineASR: ASREngine {
+    private var count = 0
+
+    func prepare() async throws {}
+
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        count += 1
+        return ASRResult(text: "result-\(count)", detectedLanguage: "en")
+    }
+
+    func unload() async {}
+}
+
+private actor StalledPipelineASR: ASREngine {
+    private var entered = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var transcriptionWaiter: CheckedContinuation<ASRResult, Never>?
+
+    func prepare() async throws {}
+
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        await withCheckedContinuation { continuation in
+            transcriptionWaiter = continuation
+            entered = true
+            startWaiter?.resume()
+            startWaiter = nil
+        }
+    }
+
+    func waitUntilTranscribing() async {
+        if entered { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func finish() {
+        transcriptionWaiter?.resume(returning: ASRResult(text: "処理済み"))
+        transcriptionWaiter = nil
+    }
+
+    func unload() async {}
+}
+
+@Test
+func durableAudioCommitsWhileASRIsStalled() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let processing = root.appending(path: "audio/processing")
+    let processingWriter = try DurableAudioWriter(
+        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await processingWriter.append(samples: Array(repeating: 0.25, count: 10))
+    let checkpoint = try await processingWriter.finish()
+    let captureWriter = try DurableAudioWriter(
+        directory: root.appending(path: "audio/capture"),
+        sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    let asr = StalledPipelineASR()
+    let coordinator = PipelineCoordinator(
+        sessionID: UUID(), segmentationRunID: "seg", asrRunID: "asr",
+        writer: try SessionWriter(sessionURL: root), asr: asr,
+        loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+            directory: processing, checkpoint: checkpoint
+        )),
+        materializer: TranscriptMaterializer(sampleRate: 10),
+        state: SessionProcessingState(captureState: .recording)
+    )
+    let task = Task {
+        await coordinator.process(segments: [SegmentReference(
+            segmentationRunID: "seg", segmentID: "s1", startFrame: 0, endFrame: 10
+        )])
+    }
+    await asr.waitUntilTranscribing()
+    try await captureWriter.append(samples: Array(repeating: 0.5, count: 20))
+    #expect(await captureWriter.committedSnapshot().committedFrames == 20)
+    await asr.finish()
+    #expect(await task.value.materializedSegments.first?.text == "処理済み")
+}
+
+private actor PacingProbe {
+    private var observations: [(Duration, Int)] = []
+
+    func record(duration: Duration, log: String) {
+        let completedCount = log.components(
+            separatedBy: #""event_type":"asr.completed""#
+        ).count - 1
+        observations.append((duration, completedCount))
+    }
+
+    func snapshot() -> [(Duration, Int)] { observations }
+}
+
+@Test
+func lowHeatRestsAfterPersistedCompletionOnlyBetweenSegments() async throws {
+    for mode: ASRPacingMode in [.normal, .lowHeat] {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let audioDirectory = root.appending(path: "audio/processing", directoryHint: .isDirectory)
+        let audioWriter = try DurableAudioWriter(
+            directory: audioDirectory,
+            sampleRate: 10,
+            channelCount: 1,
+            chunkDurationSeconds: 1
+        )
+        try await audioWriter.append(samples: Array(repeating: 0.25, count: 30))
+        let checkpoint = try await audioWriter.finish()
+        let probe = PacingProbe()
+        let eventsURL = root.appending(path: "events.jsonl")
+        let coordinator = PipelineCoordinator(
+            sessionID: UUID(),
+            segmentationRunID: "seg_paced",
+            asrRunID: "asr_paced",
+            writer: try SessionWriter(sessionURL: root),
+            asr: SequencedPipelineASR(),
+            loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+                directory: audioDirectory,
+                checkpoint: checkpoint
+            )),
+            materializer: TranscriptMaterializer(sampleRate: 10),
+            state: SessionProcessingState(captureState: .stopped),
+            pacingMode: mode,
+            sleep: { duration in
+                let log = try String(contentsOf: eventsURL, encoding: .utf8)
+                await probe.record(duration: duration, log: log)
+            }
+        )
+
+        let result = await coordinator.process(segments: (0..<3).map { index in
+            SegmentReference(
+                segmentationRunID: "seg_paced",
+                segmentID: "seg_\(index)",
+                startFrame: Int64(index * 10),
+                endFrame: Int64((index + 1) * 10)
+            )
+        })
+
+        #expect(result.completedCount == 3)
+        #expect(result.failedCount == 0)
+        #expect(result.materializedSegments.map(\.text) == ["result-1", "result-2", "result-3"])
+        let observations = await probe.snapshot()
+        if mode == .lowHeat {
+            #expect(observations.map(\.0) == [.seconds(2), .seconds(2)])
+            #expect(observations.map(\.1) == [1, 2])
+            #expect(result.metrics.pacingWaitCount == 2)
+        } else {
+            #expect(observations.isEmpty)
+            #expect(result.metrics.pacingWaitCount == 0)
+        }
+        #expect(result.metrics.processedAudioSeconds == 3)
+        #expect(result.metrics.asrRTF != nil)
+    }
+}
+
+@Test
+func criticalThermalPauseLeavesRemainingASRPending() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let audioDirectory = root.appending(path: "audio/processing")
+    let writer = try DurableAudioWriter(
+        directory: audioDirectory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await writer.append(samples: Array(repeating: 0.25, count: 20))
+    let checkpoint = try await writer.finish()
+    let eventsURL = root.appending(path: "events.jsonl")
+    let coordinator = PipelineCoordinator(
+        sessionID: UUID(), segmentationRunID: "seg", asrRunID: "asr",
+        writer: try SessionWriter(sessionURL: root), asr: SequencedPipelineASR(),
+        loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+            directory: audioDirectory, checkpoint: checkpoint
+        )),
+        materializer: TranscriptMaterializer(sampleRate: 10),
+        state: SessionProcessingState(captureState: .stopped),
+        shouldPause: {
+            let log = try? String(contentsOf: eventsURL, encoding: .utf8)
+            return log?.contains(#""event_type":"asr.completed""#) == true
+        }
+    )
+    let result = await coordinator.process(segments: [
+        SegmentReference(segmentationRunID: "seg", segmentID: "first", startFrame: 0, endFrame: 10),
+        SegmentReference(segmentationRunID: "seg", segmentID: "second", startFrame: 10, endFrame: 20)
+    ])
+    #expect(result.disposition == .paused)
+    #expect(result.completedCount == 1)
+    let log = try String(contentsOf: eventsURL, encoding: .utf8)
+    #expect(log.components(separatedBy: #""event_type":"asr.completed""#).count - 1 == 1)
+    #expect(!log.contains(#""event_type":"processing.run.completed""#))
+    let recovered = try SessionRecovery.recoverJSONL(Data(log.utf8))
+    let plan = try EventLogRecoveryAnalyzer().latestASRPlan(lines: recovered.lines)
+    let pending = try #require(plan)
+    #expect(pending.pendingSegments.map(\.segmentID) == ["second"])
+}
+
 @Test
 func pipelinePersistsPendingBeforeCompletedResultAndMaterializesText() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

@@ -9,16 +9,18 @@ V1 の評価では、文字起こし精度だけでなく「保持すべき発�
 
 JSON レポートには次を出力する。
 
-- `technical_term_retention`: annotation の `must_keep_terms` が文字起こし本文に残った割合
-- `false_low_priority_count`: 保持必須 segment が `LOW_PRIORITY` になった件数
-- `false_background_count`: 保持必須 segment が discussion 中に background-only となった件数
-- `scene_transition_error_ms`: annotation と観測場面転換の平均絶対誤差。必要な転換が欠落した場合は `-1`
-- `scene_oscillation_count`: 30 秒以内に A→B→A と戻る短周期振動の件数
-- `asr_rtf`: ASR real-time factor
-- `peak_memory_mb`: 最大メモリ使用量
-- `oldest_pending_age_ms`: 最古の未処理作業の滞留時間
+- `technical_term_retention`: annotation の `must_keep_terms` が文字起こし本文に残った割合。用語 annotation が空なら `null`
+- `false_low_priority_count`: `must_not_be_low_priority` に指定した segment が `LOW_PRIORITY` になった件数。annotation が空なら `null`
+- `false_background_count`: `must_not_be_background` に指定した segment が discussion 中に background-only となった件数。annotation が空なら `null`
+- `scene_transition_error_ms`: annotation と観測場面転換の平均絶対誤差。転換 annotation が空、または観測データが未提供なら `null`。観測済みで必要な転換が欠落した場合は `-1`
+- `scene_oscillation_count`: 観測された転換列において30秒以内に A→B→A と戻る短周期振動の件数。観測データが未提供なら `null`、明示的な空配列なら `0`
+- `asr_rtf`: ASR real-time factor。未計測なら項目を出力しない
+- `peak_memory_mb`: 最大メモリ使用量。未計測なら項目を出力しない
+- `oldest_pending_age_ms`: 最古の未処理作業の滞留時間。未計測なら項目を出力しない
 
-RTF・メモリ・pending age は長時間試験で計測値を与える。合成 unit test では未設定でもよい。
+注釈のない評価項目は JSON に `null` として出力し、CLI は標準エラーにも項目名を表示する。`null` は 0 件や合格を意味せず、その項目では corpus の合否を判定できない。探索用に annotation が空の manifest を使うことはできるが、受け入れ評価の前に各判定項目を annotation する。RTF・メモリ・pending age は長時間試験で計測値を与える。合成 unit test では未設定でもよい。
+
+`must_not_be_low_priority` と `must_not_be_background` の index は `segments.json` の範囲内を指定する。範囲外の index と空文字・空白だけの `must_keep_terms` は明示エラーになり、評価レポートを生成しない。
 
 ## ローカル corpus の配置
 
@@ -45,7 +47,7 @@ swift tools/evaluate-session.swift \
   ~/mac-ambient-jev-corpus/lecture-ja-001.scene-transitions.json
 ```
 
-場面転換 annotation がない場合は第3引数を省略できる。
+第3引数の scene-transitions JSON を省略すると観測データなしとなり、`scene_transition_error_ms` と `scene_oscillation_count` は `null` になる。場面転換が一度もなかったという観測結果を記録するときは、ファイルに `[]` を指定する。この場合、必要な転換 annotation があるのに観測が空なら誤差は `-1`、oscillation は `0` となる。
 
 `segments.json` は `[MaterializedTranscriptSegment]` の JSON 配列とする。V1 では materialized schema を評価境界として固定し、内部 event の細部を評価ツールへ漏らさない。
 
@@ -71,5 +73,7 @@ false_low_priority_count == 0
 false_background_count == 0
 technical_term_retention == 1.0
 ```
+
+回帰判定の前に、対象 corpus の3項目がいずれも `null` でないことを確認する。必要な annotation が不足した report は合格として扱わない。scene threshold の変更を評価する場合も `scene_transition_error_ms` を annotation し、`null` でないことを確認する。
 
 scene threshold の変更では、上記を維持したうえで `scene_transition_error_ms` と `scene_oscillation_count` を比較する。

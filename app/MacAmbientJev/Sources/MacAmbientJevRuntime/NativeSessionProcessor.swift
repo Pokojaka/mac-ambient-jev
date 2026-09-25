@@ -21,7 +21,27 @@ private struct SceneEnrichmentContext: Sendable {
     let materializedSegments: [MaterializedTranscriptSegment]
 }
 
+private struct JevEnrichmentOutcome: Sendable {
+    let materializedSegments: [MaterializedTranscriptSegment]
+    let pendingSegmentIDs: [String]
+    let persistenceFailure: String?
+}
+
+public struct SessionProcessingResult: Sendable {
+    public let disposition: BatchDisposition
+    public let metrics: ASRBatchMetrics?
+    public let message: String?
+
+    public init(disposition: BatchDisposition, metrics: ASRBatchMetrics?, message: String? = nil) {
+        self.disposition = disposition
+        self.metrics = metrics
+        self.message = message
+    }
+}
+
 public actor NativeSessionProcessor {
+    public typealias JevDecisionCoordinatorFactory = @Sendable () throws
+        -> JevDecisionCoordinator?
     public typealias StatusHandler = @Sendable (_ text: String) async -> Void
     public typealias UpdateHandler = @Sendable (
         _ segments: [MaterializedTranscriptSegment],
@@ -31,9 +51,12 @@ public actor NativeSessionProcessor {
     private static let jevAPIKeyAccount = "jev-api-key"
 
     private let paths: AppPaths
+    private let sessionsRoot: URL
     private let asr: any ASREngine
-    private let diarization: FluidOfflineDiarizationEngine
+    private let diarization: any DiarizationEngine
+    private let finalTranscriptVAD: any FinalTranscriptVADSegmenter
     private let allowExternalJev: Bool
+    private let jevDecisionCoordinatorFactory: JevDecisionCoordinatorFactory?
     public let jevUsageCounter: JevUsageCounter
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
 
@@ -41,15 +64,28 @@ public actor NativeSessionProcessor {
         paths: AppPaths,
         allowExternalJev: Bool = false,
         jevUsageCounter: JevUsageCounter = JevUsageCounter(),
-        asr: (any ASREngine)? = nil
+        asr: (any ASREngine)? = nil,
+        sessionsRoot: URL? = nil,
+        diarizationEngine: (any DiarizationEngine)? = nil,
+        finalTranscriptVAD: (any FinalTranscriptVADSegmenter)? = nil,
+        jevDecisionCoordinatorFactory: JevDecisionCoordinatorFactory? = nil
     ) {
         self.paths = paths
+        self.sessionsRoot = sessionsRoot ?? paths.sessionsRoot
         self.asr = asr ?? NativeQwen3ASREngine(
             modelStore: ModelStore(paths: paths)
         )
-        self.diarization = FluidOfflineDiarizationEngine(paths: paths)
+        self.diarization = diarizationEngine ?? FluidOfflineDiarizationEngine(paths: paths)
+        self.finalTranscriptVAD = finalTranscriptVAD ?? FluidFinalTranscriptVADSegmenter()
         self.allowExternalJev = allowExternalJev
+        self.jevDecisionCoordinatorFactory = jevDecisionCoordinatorFactory
         self.jevUsageCounter = jevUsageCounter
+    }
+
+    public func prepareASR(
+        onProgress: @escaping @Sendable (Double, String) -> Void
+    ) async throws {
+        try await asr.prepare(onProgress: onProgress)
     }
 
     @discardableResult
@@ -124,8 +160,8 @@ public actor NativeSessionProcessor {
             )
         }
 
-        do {
-            if !finalSegments.isEmpty {
+        if !finalSegments.isEmpty {
+            do {
                 _ = try await processLiveSegments(
                     sessionID: sessionID,
                     segments: finalSegments,
@@ -133,72 +169,202 @@ public actor NativeSessionProcessor {
                     onStatus: onStatus,
                     onUpdate: onUpdate
                 )
+            } catch {
+                // The saved timeline is the source of truth for final processing.
             }
+        }
 
-            let completion = try await liveSession.finish()
-            liveASRSessions[sessionID] = nil
+        let completion: LiveASRCompletion?
+        do {
+            completion = try await liveSession.finish()
+        } catch {
+            completion = nil
+        }
+        liveASRSessions[sessionID] = nil
 
-            guard completion.succeeded else {
-                if let onUpdate {
-                    await onUpdate(
-                        completion.materializedSegments,
-                        .partialFailure("一部の発話を録音中に文字起こしできませんでした")
-                    )
-                }
-                return .fallbackRequired(
-                    "録音中の文字起こしを完了できませんでした（失敗 \(completion.failedCount)区間、未処理 \(completion.pendingCount)区間）"
-                )
+        if let completion, let onUpdate {
+            await onUpdate(completion.materializedSegments, .running)
+        }
+        let result = await processFinalTranscript(
+            sessionID: sessionID,
+            checkpoint: checkpoint,
+            failureFallbackSegments: completion?.materializedSegments ?? [],
+            onStatus: onStatus,
+            onUpdate: onUpdate
+        )
+        switch result.disposition {
+        case .completed:
+            if let message = result.message, message == "noSpeech" { return .noSpeech }
+            return .completed
+        case .paused:
+            return .postProcessingFailed(result.message ?? "確定処理を一時停止しました")
+        case .failed:
+            return .postProcessingFailed(result.message ?? "確定処理に失敗しました")
+        }
+    }
+
+    /// Rebuilds every mandatory offline run from the saved processing timeline and
+    /// exposes the resulting active-run set only after all stages have completed.
+    @discardableResult
+    public func processFinalTranscript(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in },
+        failureFallbackSegments: [MaterializedTranscriptSegment] = [],
+        onStatus: StatusHandler? = nil,
+        onUpdate: UpdateHandler? = nil
+    ) async -> SessionProcessingResult {
+        let metadataStore = ProcessingMetadataStore(sessionURL: sessionURL(for: sessionID))
+        let previousMetadata: ProcessingMetadata?
+        do {
+            previousMetadata = try metadataStore.load()
+        } catch {
+            let message = error.localizedDescription
+            if let onStatus { await onStatus("確定処理を開始できませんでした: \(message)") }
+            await onPhase(.complete)
+            if let onUpdate {
+                await onUpdate(failureFallbackSegments, .partialFailure(message))
             }
+            return SessionProcessingResult(disposition: .failed, metrics: nil, message: message)
+        }
 
-            try selectSuccessfulRuns(
+        let attemptID = "finalize_\(UUID().uuidString.lowercased())"
+        do {
+            try metadataStore.beginFinalization(
+                attemptID: attemptID,
+                defaultMetadata: previousMetadata ?? makeProcessingMetadata(activeRuns: nil)
+            )
+            await onPhase(.preparing)
+            let pipeline = FinalTranscriptPipeline(
                 sessionID: sessionID,
-                segmentationRunID: liveSession.segmentationRunID,
-                asrRunID: liveSession.asrRunID
+                sessionURL: sessionURL(for: sessionID),
+                processingDirectory: processingDirectory(for: sessionID),
+                checkpoint: checkpoint,
+                asr: asr,
+                diarization: diarization,
+                vadSegmenter: finalTranscriptVAD,
+                proximityEvidenceProvider: TimelineProximityEvidenceProvider(
+                    reader: ProcessingTimelineReader(
+                        directory: processingDirectory(for: sessionID),
+                        checkpoint: checkpoint
+                    )
+                )
+            )
+            let final = try await pipeline.process(onStatus: onStatus, onPhase: onPhase)
+            try metadataStore.completeFinalization(
+                attemptID: attemptID,
+                activeRuns: final.activeRuns
             )
 
-            if completion.completedCount == 0 {
-                if let onStatus {
-                    await onStatus("発話区間は検出されませんでした")
-                }
-                if let onUpdate {
-                    await onUpdate([], .complete)
-                }
-                return .noSpeech
+            if let onUpdate {
+                await onUpdate(final.materializedSegments, .running)
             }
 
-            do {
-                try await runOfflineDiarization(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    existingEvents: completion.events,
-                    segmentationRunID: liveSession.segmentationRunID,
-                    asrRunID: liveSession.asrRunID,
-                    onStatus: onStatus,
-                    onUpdate: onUpdate
-                )
-                return .completed
-            } catch {
-                if let onStatus {
-                    await onStatus(
-                        "文字起こしは保存しましたが、後処理に失敗しました: \(error.localizedDescription)"
-                    )
+            var finalSegments = final.materializedSegments
+            var deferredContentPriorityIDs: [String] = []
+            var retryStatePersistenceFailure: String?
+            if allowExternalJev {
+                if final.materializedSegments.isEmpty {
+                    do {
+                        try persistPendingContentPriority(
+                            sessionID: sessionID,
+                            segmentIDs: []
+                        )
+                    } catch {
+                        retryStatePersistenceFailure = error.localizedDescription
+                    }
+                } else {
+                    do {
+                        let events = try loadTranscriptEvents(
+                            sessionID: sessionID,
+                            activeRuns: final.activeRuns
+                        )
+                        let outcome = await runJevEnrichmentIfAvailable(
+                            sessionID: sessionID,
+                            checkpoint: checkpoint,
+                            existingEvents: events,
+                            activeRuns: final.activeRuns,
+                            fallbackSegments: final.materializedSegments,
+                            onStatus: onStatus
+                        )
+                        finalSegments = outcome.materializedSegments
+                        deferredContentPriorityIDs = outcome.pendingSegmentIDs
+                        retryStatePersistenceFailure = outcome.persistenceFailure
+                    } catch {
+                        deferredContentPriorityIDs = final.materializedSegments
+                            .map(\.segmentID)
+                        do {
+                            try persistPendingContentPriority(
+                                sessionID: sessionID,
+                                segmentIDs: deferredContentPriorityIDs
+                            )
+                        } catch {
+                            retryStatePersistenceFailure = error.localizedDescription
+                        }
+                        if let onStatus { await onStatus(UserFacingStatus.jevDeferred.text) }
+                    }
                 }
-                if let onUpdate {
-                    await onUpdate(
-                        completion.materializedSegments,
-                        .partialFailure(error.localizedDescription)
-                    )
-                }
-                return .postProcessingFailed(error.localizedDescription)
             }
-        } catch {
-            liveASRSessions[sessionID] = nil
-            if let onStatus {
+
+            if let onUpdate {
+                await onUpdate(finalSegments, .complete)
+            }
+            await onPhase(.complete)
+            let noSpeech = final.completedCount == 0
+            if noSpeech, let retryStatePersistenceFailure, let onStatus {
                 await onStatus(
-                    "録音中の文字起こしを完了できませんでした: \(error.localizedDescription)"
+                    "意味分類の再試行状態を消去できませんでした: \(retryStatePersistenceFailure)"
                 )
+                await onStatus("発話区間は検出されませんでした")
+            } else if noSpeech, let onStatus {
+                await onStatus("発話区間は検出されませんでした")
+            } else if let retryStatePersistenceFailure, let onStatus {
+                await onStatus(
+                    "意味分類の再試行状態を保存できませんでした: \(retryStatePersistenceFailure)"
+                )
+            } else if !deferredContentPriorityIDs.isEmpty, let onStatus {
+                await onStatus(UserFacingStatus.jevDeferred.text)
+            } else if let onStatus {
+                await onStatus(noSpeech
+                    ? "発話区間は検出されませんでした"
+                    : "文字起こし、話者分離、場面判定、音響範囲整理が完了しました（\(final.completedCount)区間）")
             }
-            return .fallbackRequired(error.localizedDescription)
+            return SessionProcessingResult(
+                disposition: .completed,
+                metrics: final.metrics,
+                message: noSpeech ? "noSpeech" : nil
+            )
+        } catch {
+            var message = error.localizedDescription
+            do {
+                try metadataStore.failFinalization(
+                    attemptID: attemptID,
+                    reason: message
+                )
+            } catch {
+                message += "（処理状態も保存できませんでした: \(error.localizedDescription)）"
+            }
+            await onPhase(.complete)
+            if let onStatus { await onStatus("確定処理に失敗しました: \(message)") }
+            if let onUpdate {
+                let preservedSegments: [MaterializedTranscriptSegment]
+                if let activeRuns = previousMetadata?.activeRuns,
+                   let previousSegments = try? loadMaterializedSegments(
+                       sessionID: sessionID,
+                       checkpoint: checkpoint,
+                       activeRuns: activeRuns
+                   ) {
+                    preservedSegments = previousSegments
+                } else {
+                    preservedSegments = failureFallbackSegments
+                }
+                await onUpdate(preservedSegments, .partialFailure(message))
+            }
+            return SessionProcessingResult(
+                disposition: .failed,
+                metrics: nil,
+                message: message
+            )
         }
     }
 
@@ -262,7 +428,7 @@ public actor NativeSessionProcessor {
             let fallback = materializer.materialize(
                 events: events,
                 activeRuns: activeRuns
-            )
+            ).filter { JevTranscriptEligibility.isEligible($0.text) }
 
             if let onStatus {
                 await onStatus(
@@ -292,7 +458,8 @@ public actor NativeSessionProcessor {
 
             try selectContentPriorityRun(
                 sessionID: sessionID,
-                runID: runID
+                runID: runID,
+                pendingSegmentIDs: result.retryPendingSegmentIDs
             )
 
             if let onUpdate {
@@ -306,9 +473,7 @@ public actor NativeSessionProcessor {
                 if result.retryPendingSegmentIDs.isEmpty {
                     await onStatus("保留中の意味分類を更新しました")
                 } else {
-                    await onStatus(
-                        "意味分類を後で再試行します（残り\(result.retryPendingSegmentIDs.count)区間）"
-                    )
+                    await onStatus(UserFacingStatus.jevDeferred.text)
                 }
             }
         } catch {
@@ -339,14 +504,17 @@ public actor NativeSessionProcessor {
         )
     }
 
+    @discardableResult
     public func processImportedSession(
         sessionID: UUID,
         originalURL: URL,
+        pacingMode: ASRPacingMode = .normal,
+        shouldPause: @escaping @Sendable () async -> Bool = { false },
+        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in },
         onStatus: StatusHandler? = nil,
         onUpdate: UpdateHandler? = nil
-    ) async {
+    ) async -> SessionProcessingResult {
         let processingDirectory = processingDirectory(for: sessionID)
-
         do {
             if let onStatus {
                 await onStatus(UserFacingStatus.convertingTimeline.text)
@@ -355,10 +523,10 @@ public actor NativeSessionProcessor {
             let checkpoint = try await AudioFileTimelineBuilder()
                 .build(from: originalURL, into: processingDirectory)
 
-            try await processTimeline(
+            return await processFinalTranscript(
                 sessionID: sessionID,
                 checkpoint: checkpoint,
-                processingDirectory: processingDirectory,
+                onPhase: onPhase,
                 onStatus: onStatus,
                 onUpdate: onUpdate
             )
@@ -369,6 +537,7 @@ public actor NativeSessionProcessor {
                 onStatus: onStatus,
                 onUpdate: onUpdate
             )
+            return SessionProcessingResult(disposition: .failed, metrics: nil, message: error.localizedDescription)
         }
     }
 
@@ -378,31 +547,26 @@ public actor NativeSessionProcessor {
         onStatus: StatusHandler? = nil,
         onUpdate: UpdateHandler? = nil
     ) async {
-        do {
-            try await processTimeline(
-                sessionID: sessionID,
-                checkpoint: checkpoint,
-                processingDirectory: processingDirectory(for: sessionID),
-                onStatus: onStatus,
-                onUpdate: onUpdate
-            )
-        } catch {
-            await reportFailure(
-                prefix: "録音を処理できませんでした",
-                error: error,
-                onStatus: onStatus,
-                onUpdate: onUpdate
-            )
-        }
+        _ = await processFinalTranscript(
+            sessionID: sessionID,
+            checkpoint: checkpoint,
+            onStatus: onStatus,
+            onUpdate: onUpdate
+        )
     }
 
+    @discardableResult
     public func resumePendingASRSession(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
         plan: ASRRecoveryPlan,
+        pacingMode: ASRPacingMode = .normal,
+        shouldPause: @escaping @Sendable () async -> Bool = { false },
+        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in },
         onStatus: StatusHandler? = nil,
         onUpdate: UpdateHandler? = nil
-    ) async {
+    ) async -> SessionProcessingResult {
+        var metrics: ASRBatchMetrics?
         do {
             try persistProcessingMetadata(sessionID: sessionID)
 
@@ -429,7 +593,11 @@ public actor NativeSessionProcessor {
                 materializer: TranscriptMaterializer(
                     sampleRate: checkpoint.sampleRate
                 ),
-                state: state
+                state: state,
+                pacingMode: pacingMode,
+                shouldPause: shouldPause,
+                pendingSince: try pendingDates(sessionID: sessionID, plan: plan),
+                onPhase: onPhase
             )
 
             let result = await coordinator.resumePendingASR(
@@ -440,8 +608,10 @@ public actor NativeSessionProcessor {
                     await onUpdate(materialized, processingState)
                 }
             }
+            metrics = result.metrics
 
-            if result.failedCount == 0 {
+            if result.disposition == .completed {
+                await onPhase(.postprocessing)
                 try selectSuccessfulRuns(
                     sessionID: sessionID,
                     segmentationRunID: plan.segmentationRunID,
@@ -456,19 +626,23 @@ public actor NativeSessionProcessor {
                     onStatus: onStatus,
                     onUpdate: onUpdate
                 )
+                await onPhase(.complete)
             }
 
             if let onStatus {
-                if result.failedCount == 0 {
+                if result.disposition == .completed {
                     await onStatus(
                         "文字起こし、話者分離、場面判定、音響範囲整理を復旧しました（\(result.completedCount)区間）"
                     )
+                } else if result.disposition == .paused {
+                    await onStatus("熱状態のため文字起こしを一時停止しました")
                 } else {
                     await onStatus(
                         "文字起こしの復旧中に\(result.failedCount)区間失敗しました"
                     )
                 }
             }
+            return SessionProcessingResult(disposition: result.disposition, metrics: metrics)
         } catch {
             await reportFailure(
                 prefix: "文字起こしを復旧できませんでした",
@@ -476,6 +650,7 @@ public actor NativeSessionProcessor {
                 onStatus: onStatus,
                 onUpdate: onUpdate
             )
+            return SessionProcessingResult(disposition: .failed, metrics: metrics, message: error.localizedDescription)
         }
     }
 
@@ -543,17 +718,23 @@ public actor NativeSessionProcessor {
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
         processingDirectory: URL,
+        pacingMode: ASRPacingMode = .normal,
+        shouldPause: @escaping @Sendable () async -> Bool = { false },
+        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in },
         onStatus: StatusHandler?,
         onUpdate: UpdateHandler?
-    ) async throws {
+    ) async throws -> PipelineBatchResult {
         guard checkpoint.committedFrames > 0 else {
+            try persistProcessingMetadata(sessionID: sessionID)
+            try await finishWithoutSpeech(sessionID: sessionID)
             if let onStatus {
                 await onStatus("処理できる音声がありません")
             }
             if let onUpdate {
                 await onUpdate([], .complete)
             }
-            return
+            await onPhase(.complete)
+            return PipelineBatchResult(events: [], materializedSegments: [], completedCount: 0, failedCount: 0)
         }
 
         try persistProcessingMetadata(sessionID: sessionID)
@@ -580,6 +761,7 @@ public actor NativeSessionProcessor {
         ).segmentAll()
 
         guard !segments.isEmpty else {
+            try await finishWithoutSpeech(sessionID: sessionID)
             await state.setProcessing(.complete)
             if let onStatus {
                 await onStatus("発話区間は検出されませんでした")
@@ -587,7 +769,8 @@ public actor NativeSessionProcessor {
             if let onUpdate {
                 await onUpdate([], .complete)
             }
-            return
+            await onPhase(.complete)
+            return PipelineBatchResult(events: [], materializedSegments: [], completedCount: 0, failedCount: 0)
         }
 
         if let onStatus {
@@ -604,7 +787,10 @@ public actor NativeSessionProcessor {
             materializer: TranscriptMaterializer(
                 sampleRate: checkpoint.sampleRate
             ),
-            state: state
+            state: state,
+            pacingMode: pacingMode,
+            shouldPause: shouldPause,
+            onPhase: onPhase
         )
 
         let result = await coordinator.process(
@@ -615,7 +801,8 @@ public actor NativeSessionProcessor {
             }
         }
 
-        if result.failedCount == 0 {
+        if result.disposition == .completed {
+            await onPhase(.postprocessing)
             try selectSuccessfulRuns(
                 sessionID: sessionID,
                 segmentationRunID: segmentationRunID,
@@ -631,19 +818,39 @@ public actor NativeSessionProcessor {
                 onStatus: onStatus,
                 onUpdate: onUpdate
             )
+            await onPhase(.complete)
         }
 
         if let onStatus {
-            if result.failedCount == 0 {
+            if result.disposition == .completed {
                 await onStatus(
                     "文字起こし、話者分離、場面判定、音響範囲整理が完了しました（\(result.completedCount)区間）"
                 )
+            } else if result.disposition == .paused {
+                await onStatus("熱状態のため文字起こしを一時停止しました")
             } else {
                 await onStatus(
                     "文字起こしが完了しました（成功 \(result.completedCount)区間、失敗 \(result.failedCount)区間）"
                 )
             }
         }
+        return result
+    }
+
+    private func finishWithoutSpeech(sessionID: UUID) async throws {
+        let scopeRunID = "scope_empty_\(UUID().uuidString.lowercased())"
+        _ = try await SessionWriter(sessionURL: sessionURL(for: sessionID)).append(EventDraft(
+            eventType: "processing.run.completed",
+            sessionID: sessionID,
+            processingRunID: scopeRunID,
+            payload: ProcessingRunCompletedPayload(
+                stage: .scope,
+                succeeded: true,
+                completedCount: 0,
+                failedCount: 0
+            )
+        ))
+        try selectScopeRun(sessionID: sessionID, scopeRunID: scopeRunID)
     }
 
     public func runRecoveredDiarizationSession(
@@ -825,7 +1032,7 @@ public actor NativeSessionProcessor {
             scopeRunID: scopeRunID
         )
 
-        let finalSegments = try await runJevEnrichmentIfAvailable(
+        let jevOutcome = await runJevEnrichmentIfAvailable(
             sessionID: sessionID,
             checkpoint: checkpoint,
             existingEvents: scopeResult.events,
@@ -841,7 +1048,15 @@ public actor NativeSessionProcessor {
         )
 
         if let onUpdate {
-            await onUpdate(finalSegments, .complete)
+            await onUpdate(jevOutcome.materializedSegments, .complete)
+        }
+        if let persistenceFailure = jevOutcome.persistenceFailure,
+           let onStatus {
+            await onStatus(
+                "意味分類の再試行状態を保存できませんでした: \(persistenceFailure)"
+            )
+        } else if !jevOutcome.pendingSegmentIDs.isEmpty, let onStatus {
+            await onStatus(UserFacingStatus.jevDeferred.text)
         }
     }
 
@@ -940,6 +1155,10 @@ public actor NativeSessionProcessor {
             return nil
         }
 
+        if let jevDecisionCoordinatorFactory {
+            return try jevDecisionCoordinatorFactory()
+        }
+
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: "jev.isPaused") else {
             return nil
@@ -965,9 +1184,56 @@ public actor NativeSessionProcessor {
         activeRuns: ActiveRuns,
         fallbackSegments: [MaterializedTranscriptSegment],
         onStatus: StatusHandler?
-    ) async throws -> [MaterializedTranscriptSegment] {
-        guard let decisions = try makeJevDecisionCoordinatorIfAvailable() else {
-            return fallbackSegments
+    ) async -> JevEnrichmentOutcome {
+        let visibleSegments = fallbackSegments.filter {
+            JevTranscriptEligibility.isEligible($0.text)
+        }
+        guard allowExternalJev else {
+            return JevEnrichmentOutcome(
+                materializedSegments: visibleSegments,
+                pendingSegmentIDs: [],
+                persistenceFailure: nil
+            )
+        }
+        let allSegmentIDs = visibleSegments.map(\.segmentID)
+        let visibleSegmentIDs = Set(allSegmentIDs)
+        guard !allSegmentIDs.isEmpty else {
+            let persistenceFailure = persistPendingContentPriorityIfPossible(
+                sessionID: sessionID,
+                segmentIDs: []
+            )
+            return JevEnrichmentOutcome(
+                materializedSegments: [],
+                pendingSegmentIDs: [],
+                persistenceFailure: persistenceFailure
+            )
+        }
+        let initialPersistenceFailure = persistPendingContentPriorityIfPossible(
+            sessionID: sessionID,
+            segmentIDs: allSegmentIDs
+        )
+        let decisions: JevDecisionCoordinator?
+        do {
+            decisions = try makeJevDecisionCoordinatorIfAvailable()
+        } catch {
+            if !allSegmentIDs.isEmpty, let onStatus {
+                await onStatus(UserFacingStatus.jevDeferred.text)
+            }
+            return JevEnrichmentOutcome(
+                materializedSegments: visibleSegments,
+                pendingSegmentIDs: allSegmentIDs,
+                persistenceFailure: initialPersistenceFailure
+            )
+        }
+        guard let decisions else {
+            if !allSegmentIDs.isEmpty, let onStatus {
+                await onStatus(UserFacingStatus.jevDeferred.text)
+            }
+            return JevEnrichmentOutcome(
+                materializedSegments: visibleSegments,
+                pendingSegmentIDs: allSegmentIDs,
+                persistenceFailure: initialPersistenceFailure
+            )
         }
 
         if let onStatus {
@@ -975,33 +1241,65 @@ public actor NativeSessionProcessor {
         }
 
         let runID = "priority_\(UUID().uuidString.lowercased())"
-        let coordinator = JevEnrichmentCoordinator(
-            sessionID: sessionID,
-            runID: runID,
-            writer: try SessionWriter(
-                sessionURL: sessionURL(for: sessionID)
-            ),
-            decisions: decisions,
-            materializer: TranscriptMaterializer(
-                sampleRate: checkpoint.sampleRate
+        let result: JevEnrichmentBatchResult
+        do {
+            let coordinator = JevEnrichmentCoordinator(
+                sessionID: sessionID,
+                runID: runID,
+                writer: try SessionWriter(
+                    sessionURL: sessionURL(for: sessionID)
+                ),
+                decisions: decisions,
+                materializer: TranscriptMaterializer(
+                    sampleRate: checkpoint.sampleRate
+                )
             )
-        )
-        let result = try await coordinator.process(
-            existingEvents: existingEvents,
-            activeRuns: activeRuns
-        )
+            result = try await coordinator.process(
+                existingEvents: existingEvents.filter { event in
+                    guard let segmentID = event.segmentID else { return true }
+                    return visibleSegmentIDs.contains(segmentID)
+                },
+                activeRuns: activeRuns
+            )
+        } catch {
+            let failure = persistPendingContentPriorityIfPossible(
+                sessionID: sessionID,
+                segmentIDs: allSegmentIDs
+            )
+            if !allSegmentIDs.isEmpty, let onStatus {
+                await onStatus(UserFacingStatus.jevDeferred.text)
+            }
+            return JevEnrichmentOutcome(
+                materializedSegments: visibleSegments,
+                pendingSegmentIDs: allSegmentIDs,
+                persistenceFailure: failure ?? initialPersistenceFailure
+            )
+        }
 
-        try selectContentPriorityRun(
-            sessionID: sessionID,
-            runID: runID
-        )
+        let selectionFailure: String?
+        do {
+            try selectContentPriorityRun(
+                sessionID: sessionID,
+                runID: runID,
+                pendingSegmentIDs: result.retryPendingSegmentIDs
+            )
+            selectionFailure = nil
+        } catch {
+            selectionFailure = error.localizedDescription
+        }
 
         if !result.retryPendingSegmentIDs.isEmpty,
            let onStatus {
             await onStatus(UserFacingStatus.jevDeferred.text)
         }
 
-        return result.materializedSegments
+        return JevEnrichmentOutcome(
+            materializedSegments: result.materializedSegments,
+            pendingSegmentIDs: selectionFailure == nil
+                ? result.retryPendingSegmentIDs
+                : allSegmentIDs,
+            persistenceFailure: selectionFailure
+        )
     }
 
     private func reportFailure(
@@ -1104,7 +1402,8 @@ public actor NativeSessionProcessor {
 
     private func selectContentPriorityRun(
         sessionID: UUID,
-        runID: String
+        runID: String,
+        pendingSegmentIDs: [String]? = nil
     ) throws {
         let store = ProcessingMetadataStore(
             sessionURL: sessionURL(for: sessionID)
@@ -1119,7 +1418,40 @@ public actor NativeSessionProcessor {
             scope: metadata.activeRuns?.scope,
             contentPriority: runID
         )
-        try store.save(metadata.withActiveRuns(activeRuns))
+        let selectedMetadata = metadata.withActiveRuns(activeRuns)
+        try store.save(
+            pendingSegmentIDs.map {
+                selectedMetadata.withPendingContentPrioritySegmentIDs($0)
+            } ?? selectedMetadata
+        )
+    }
+
+    private func persistPendingContentPriority(
+        sessionID: UUID,
+        segmentIDs: [String]
+    ) throws {
+        let store = ProcessingMetadataStore(
+            sessionURL: sessionURL(for: sessionID)
+        )
+        guard let metadata = try store.load() else {
+            throw ProcessingMetadataStoreError.metadataMissing
+        }
+        try store.save(metadata.withPendingContentPrioritySegmentIDs(segmentIDs))
+    }
+
+    private func persistPendingContentPriorityIfPossible(
+        sessionID: UUID,
+        segmentIDs: [String]
+    ) -> String? {
+        do {
+            try persistPendingContentPriority(
+                sessionID: sessionID,
+                segmentIDs: segmentIDs
+            )
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     private func persistProcessingMetadata(sessionID: UUID) throws {
@@ -1127,8 +1459,11 @@ public actor NativeSessionProcessor {
             sessionURL: sessionURL(for: sessionID)
         )
         let existingActiveRuns = try store.load()?.activeRuns
+        try store.save(makeProcessingMetadata(activeRuns: existingActiveRuns))
+    }
 
-        let metadata = ProcessingMetadata(
+    private func makeProcessingMetadata(activeRuns: ActiveRuns?) -> ProcessingMetadata {
+        ProcessingMetadata(
             timelineVersion: 1,
             vadVersion: "fluidaudio-0.15.8",
             vadConfigHash: "default-v1",
@@ -1140,17 +1475,60 @@ public actor NativeSessionProcessor {
             jevSchemaVersion: 1,
             policyVersion: 1,
             materializerSchemaVersion: 1,
-            activeRuns: existingActiveRuns
+            activeRuns: activeRuns
         )
+    }
 
-        try store.save(metadata)
+    private func loadTranscriptEvents(
+        sessionID: UUID,
+        activeRuns: ActiveRuns
+    ) throws -> [TranscriptEvent] {
+        let eventsURL = sessionURL(for: sessionID).appending(path: "events.jsonl")
+        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL))
+        if recovered.droppedIncompleteTail {
+            try recovered.normalizedData.write(to: eventsURL, options: .atomic)
+        }
+        return try EventLogTranscriptReader().events(
+            lines: recovered.lines,
+            activeRuns: activeRuns
+        )
+    }
+
+    private func loadMaterializedSegments(
+        sessionID: UUID,
+        checkpoint: AudioCheckpoint,
+        activeRuns: ActiveRuns
+    ) throws -> [MaterializedTranscriptSegment] {
+        TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
+            events: try loadTranscriptEvents(sessionID: sessionID, activeRuns: activeRuns),
+            activeRuns: activeRuns
+        )
     }
 
     private func sessionURL(for sessionID: UUID) -> URL {
-        paths.sessionsRoot.appending(
+        sessionsRoot.appending(
             path: sessionID.uuidString,
             directoryHint: .isDirectory
         )
+    }
+
+    private func pendingDates(sessionID: UUID, plan: ASRRecoveryPlan) throws -> [String: Date] {
+        let data = try Data(contentsOf: sessionURL(for: sessionID).appending(path: "events.jsonl"))
+        let recovered = try SessionRecovery.recoverJSONL(data)
+        let pendingIDs = Set(plan.pendingSegments.map(\.segmentID))
+        let formatter = ISO8601DateFormatter()
+        var dates: [String: Date] = [:]
+        for line in recovered.lines {
+            guard let event = try JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  event["event_type"] as? String == "asr.pending",
+                  event["processing_run_id"] as? String == plan.asrRunID,
+                  let segmentID = event["segment_id"] as? String,
+                  pendingIDs.contains(segmentID),
+                  let timestamp = event["created_at"] as? String,
+                  let date = formatter.date(from: timestamp) else { continue }
+            dates[segmentID] = date
+        }
+        return dates
     }
 
     private func processingDirectory(for sessionID: UUID) -> URL {

@@ -9,6 +9,46 @@ func asrEngineFailureIsRepresentedInsideASRState() {
 }
 
 @Test
+func asrInputFlagsPersistedFourMillisecondSegmentButNotTwentyMilliseconds() {
+    let fourMilliseconds = ASRAudioInput(
+        samples: Array(repeating: 0, count: 192),
+        sampleRate: 48_000
+    )
+    let justShort = ASRAudioInput(
+        samples: Array(repeating: 0, count: 959),
+        sampleRate: 48_000
+    )
+    let twentyMilliseconds = ASRAudioInput(
+        samples: Array(repeating: 0, count: 960),
+        sampleRate: 48_000
+    )
+
+    #expect(fourMilliseconds.isShorterThanMinimumASRDuration)
+    #expect(justShort.isShorterThanMinimumASRDuration)
+    #expect(!twentyMilliseconds.isShorterThanMinimumASRDuration)
+}
+
+@Test
+func asrMinimumDurationUsesInputSampleRate() {
+    let justShort = ASRAudioInput(
+        samples: Array(repeating: 0, count: 881),
+        sampleRate: 44_100
+    )
+    let twentyMilliseconds = ASRAudioInput(
+        samples: Array(repeating: 0, count: 882),
+        sampleRate: 44_100
+    )
+    let sixteenKilohertzTwentyMilliseconds = ASRAudioInput(
+        samples: Array(repeating: 0, count: 320),
+        sampleRate: 16_000
+    )
+
+    #expect(justShort.isShorterThanMinimumASRDuration)
+    #expect(!twentyMilliseconds.isShorterThanMinimumASRDuration)
+    #expect(!sixteenKilohertzTwentyMilliseconds.isShorterThanMinimumASRDuration)
+}
+
+@Test
 func modelStoreUsesManagedModelsDirectory() {
     let paths = AppPaths(
         applicationSupportURL: URL(fileURLWithPath: "/tmp/support"),
