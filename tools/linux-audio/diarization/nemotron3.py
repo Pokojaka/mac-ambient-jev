@@ -16,6 +16,7 @@ from diarization.speaker_embedding import (
 )
 from diarization.speaker_overflow import (
     SpeakerOverflowResolver,
+    is_clean_speech_span,
     resolve_spans_with_embeddings,
 )
 
@@ -124,6 +125,7 @@ def run_diarization(
     embedding_model: str,
     match_threshold: float,
     ambiguity_margin: float,
+    min_clean_speech_ms: int = 1,
     diarize_raw: Callable[
         [pathlib.Path, str],
         list[dict],
@@ -155,6 +157,12 @@ def run_diarization(
         raw_spans,
         embedding_for_span=embedding_for_span,
         resolver=resolver,
+        eligible_for_resolution=lambda span:
+            is_clean_speech_span(
+                span,
+                raw_spans,
+                min_duration_ms=min_clean_speech_ms,
+            ),
     )
     inference_seconds = clock() - started
     if inference_seconds < 0:
@@ -175,6 +183,7 @@ def run_diarization(
             "embedding_model": embedding_model,
             "match_threshold": match_threshold,
             "ambiguity_margin": ambiguity_margin,
+            "min_clean_speech_ms": min_clean_speech_ms,
         },
     )
     write_json_atomic(
@@ -241,6 +250,15 @@ def main(argv: list[str] | None = None) -> int:
             "Margin below match threshold mapped to UNKNOWN."
         ),
     )
+    parser.add_argument(
+        "--min-clean-speech-ms",
+        type=int,
+        required=True,
+        help=(
+            "Minimum non-overlapping span length used "
+            "for speaker resolution."
+        ),
+    )
     args = parser.parse_args(argv)
 
     args.output.unlink(missing_ok=True)
@@ -259,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         embedding_model=args.embedding_model,
         match_threshold=args.match_threshold,
         ambiguity_margin=args.ambiguity_margin,
+        min_clean_speech_ms=args.min_clean_speech_ms,
         diarize_raw=lambda audio, profile: diarize(
             audio,
             profile,
