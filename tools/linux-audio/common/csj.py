@@ -68,3 +68,58 @@ def parse_csj_transcript(text: str) -> list[CSJUtterance]:
 
     flush()
     return result
+
+
+ANGLE_TAG_RE = re.compile(r"<[^>]*>")
+LAUGH_RE = re.compile(r"\(笑[^)]*\)")
+FILLER_RE = re.compile(r"\(F\s*([^()]*)\)")
+UNCERTAIN_RE = re.compile(r"\(\?\s*([^()]*)\)")
+DISFLUENCY_RE = re.compile(r"\(D\s*([^()]*)\)")
+GENERIC_PAREN_RE = re.compile(r"\([^()]*\)")
+
+
+def _clean_surface(
+    text: str,
+    *,
+    keep_fillers: bool,
+) -> str:
+    value = ANGLE_TAG_RE.sub("", text)
+    value = LAUGH_RE.sub("", value)
+    previous = None
+    while value != previous:
+        previous = value
+        value = UNCERTAIN_RE.sub(
+            lambda match: match.group(1),
+            value,
+        )
+        value = DISFLUENCY_RE.sub(
+            lambda match: match.group(1),
+            value,
+        )
+        value = FILLER_RE.sub(
+            (
+                lambda match: match.group(1)
+            )
+            if keep_fillers
+            else (lambda match: ""),
+            value,
+        )
+    value = GENERIC_PAREN_RE.sub("", value)
+    return "".join(value.split())
+
+
+def csj_reference_text(
+    utterances: list[CSJUtterance],
+    *,
+    keep_fillers: bool,
+) -> str:
+    parts: list[str] = []
+    for utterance in utterances:
+        for line in utterance.surface_lines:
+            cleaned = _clean_surface(
+                line,
+                keep_fillers=keep_fillers,
+            )
+            if cleaned:
+                parts.append(cleaned)
+    return "".join(parts)
