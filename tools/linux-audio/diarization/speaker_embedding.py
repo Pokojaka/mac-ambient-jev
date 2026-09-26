@@ -11,6 +11,12 @@ from typing import Any
 DEFAULT_TITANET_MODEL = (
     "nvidia/speakerverification_en_titanet_large"
 )
+DEFAULT_TITANET_FILENAME = (
+    "speakerverification_en_titanet_large.nemo"
+)
+DEFAULT_TITANET_REVISION = (
+    "fa8ee5ddf24f3d3fffc1212d791e0922e5bfb53d"
+)
 
 
 def crop_wav_segment(
@@ -144,14 +150,34 @@ class TitaNetSpeakerEmbeddingAdapter:
 def load_titanet_adapter(
     *,
     model_name: str = DEFAULT_TITANET_MODEL,
+    revision: str = DEFAULT_TITANET_REVISION,
     device: str = "cuda:0",
+    download_checkpoint=None,
+    model_class=None,
 ) -> TitaNetSpeakerEmbeddingAdapter:
-    import nemo.collections.asr as nemo_asr
+    if not revision:
+        raise ValueError(
+            "TitaNet revision must be pinned"
+        )
 
-    model = (
-        nemo_asr.models.EncDecSpeakerLabelModel
-        .from_pretrained(model_name)
+    if download_checkpoint is None:
+        from huggingface_hub import hf_hub_download
+        download_checkpoint = hf_hub_download
+
+    if model_class is None:
+        from nemo.collections.asr.models import (
+            EncDecSpeakerLabelModel,
+        )
+        model_class = EncDecSpeakerLabelModel
+
+    checkpoint = download_checkpoint(
+        repo_id=model_name,
+        filename=DEFAULT_TITANET_FILENAME,
+        revision=revision,
     )
-    model = model.to(device)
+    model = model_class.restore_from(
+        restore_path=str(checkpoint),
+        map_location=device,
+    )
     model.eval()
     return TitaNetSpeakerEmbeddingAdapter(model)
