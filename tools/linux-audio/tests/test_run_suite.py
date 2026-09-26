@@ -76,9 +76,12 @@ def test_full_model_checks_keep_qwen_and_nemotron_separate(
         fake_optional,
     )
 
+    reference = tmp_path / "speaker-reference.json"
+    reference.write_text("[]")
     checks = run_suite.full_model_checks(
         here=tmp_path,
         audio_path=audio,
+        speaker_reference=reference,
         work_root=tmp_path / "work",
         device="cuda:0",
         match_threshold=0.82,
@@ -89,11 +92,17 @@ def test_full_model_checks_keep_qwen_and_nemotron_separate(
     assert [item.name for item in checks] == [
         "qwen3-asr-runner",
         "nemotron3-runner",
+        "diarization-evaluator",
     ]
     assert "-m asr.qwen3_asr" in " ".join(seen[0][1])
     assert "-m diarization.nemotron3" in " ".join(seen[1][1])
     assert "--match-threshold" in seen[1][1]
     assert "0.82" in seen[1][1]
+    assert "MacAmbientJevEvaluateDiarization" in seen[2][1]
+    assert str(reference) in seen[2][1]
+    assert str(
+        tmp_path / "work" / "nemotron3.json"
+    ) in seen[2][1]
 
 
 def test_full_model_checks_skip_nemotron_without_calibrated_thresholds(
@@ -109,9 +118,12 @@ def test_full_model_checks_skip_nemotron_without_calibrated_thresholds(
             CheckResult(name, Status.PASS),
     )
 
+    reference = tmp_path / "speaker-reference.json"
+    reference.write_text("[]")
     checks = run_suite.full_model_checks(
         here=tmp_path,
         audio_path=audio,
+        speaker_reference=reference,
         work_root=tmp_path / "work",
         device="cuda:0",
         match_threshold=None,
@@ -171,6 +183,8 @@ def test_main_full_appends_real_model_runner_checks(
         "--full",
         "--full-audio",
         str(audio),
+        "--full-speaker-reference",
+        str(tmp_path / "speaker-reference.json"),
         "--work-root",
         str(tmp_path / "work"),
         "--device",
@@ -185,6 +199,9 @@ def test_main_full_appends_real_model_runner_checks(
 
     assert result == 0
     assert captured[0]["audio_path"] == audio
+    assert captured[0]["speaker_reference"] == (
+        tmp_path / "speaker-reference.json"
+    )
     assert captured[0]["device"] == "cuda:1"
     assert captured[0]["match_threshold"] == 0.82
     assert captured[0]["ambiguity_margin"] == 0.04
@@ -243,5 +260,53 @@ def test_executable_check_marks_missing_tool_as_skip(
     )
     assert (
         result.status
+        is Status.SKIPPED_MISSING_DEPENDENCY
+    )
+
+
+def test_full_model_checks_remove_stale_nemotron_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    audio = tmp_path / "fixture.wav"
+    audio.write_bytes(b"RIFF")
+    reference = tmp_path / "speaker-reference.json"
+    reference.write_text("[]")
+    work = tmp_path / "work"
+    work.mkdir()
+    stale = work / "nemotron3.json"
+    stale.write_text('{"stale":true}')
+
+    def fake_optional(name, command, cwd, **kwargs):
+        if name == "diarization-evaluator":
+            assert not stale.exists()
+            return CheckResult(
+                name,
+                Status.SKIPPED_MISSING_DEPENDENCY,
+                "artifact missing",
+            )
+        return CheckResult(name, Status.PASS)
+
+    monkeypatch.setattr(
+        run_suite,
+        "optional_command_check",
+        fake_optional,
+    )
+
+    checks = run_suite.full_model_checks(
+        here=tmp_path,
+        audio_path=audio,
+        speaker_reference=reference,
+        work_root=work,
+        device="cuda:0",
+        match_threshold=None,
+        ambiguity_margin=None,
+        min_clean_speech_ms=None,
+    )
+
+    assert not stale.exists()
+    assert checks[-1].name == "diarization-evaluator"
+    assert (
+        checks[-1].status
         is Status.SKIPPED_MISSING_DEPENDENCY
     )
