@@ -30,7 +30,7 @@ jobs:
       - name: Install system audio tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg espeak-ng sox libsox-fmt-all
+          sudo apt-get install -y ffmpeg sox libsox-fmt-all open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
 
       - name: Install Qwen3-ASR runtime
         run: |
