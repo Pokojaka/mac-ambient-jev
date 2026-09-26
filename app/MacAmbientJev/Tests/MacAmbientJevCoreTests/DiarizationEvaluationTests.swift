@@ -223,3 +223,145 @@ func collapsedMetricsReportOverlapRecall() throws {
     #expect(result.detectedOverlapMilliseconds == 500)
     #expect(result.overlapRecall == 0.5)
 }
+
+@Test
+func standardDiarizationIsPermutationInvariant() {
+    let reference = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "A"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 1_000,
+            endMilliseconds: 2_000,
+            speakerLabel: "B"
+        ),
+    ]
+    let hypothesis = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "X"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 1_000,
+            endMilliseconds: 2_000,
+            speakerLabel: "Y"
+        ),
+    ]
+
+    let result = StandardDiarizationEvaluator.evaluate(
+        reference: reference,
+        hypothesis: hypothesis
+    )
+
+    #expect(result.confusionMilliseconds == 0)
+    #expect(result.der == 0)
+}
+
+@Test
+func standardDiarizationCountsGlobalSpeakerConfusion() {
+    let reference = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "A"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 1_000,
+            endMilliseconds: 2_000,
+            speakerLabel: "B"
+        ),
+    ]
+    let hypothesis = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 2_000,
+            speakerLabel: "X"
+        ),
+    ]
+
+    let result = StandardDiarizationEvaluator.evaluate(
+        reference: reference,
+        hypothesis: hypothesis
+    )
+
+    #expect(result.confusionMilliseconds == 1_000)
+    #expect(result.der == 0.5)
+}
+
+@Test
+func standardDiarizationReportsOverlapRecall() {
+    let reference = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "A"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "B"
+        ),
+    ]
+    let hypothesis = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "X"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 500,
+            speakerLabel: "Y"
+        ),
+    ]
+
+    let result = StandardDiarizationEvaluator.evaluate(
+        reference: reference,
+        hypothesis: hypothesis
+    )
+
+    #expect(result.referenceOverlapMilliseconds == 1_000)
+    #expect(result.detectedOverlapMilliseconds == 500)
+    #expect(result.overlapRecall == 0.5)
+}
+
+@Test
+func standardDiarizationReportsSpeakerSwitchBoundaryError() {
+    let reference = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_000,
+            speakerLabel: "A"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 1_000,
+            endMilliseconds: 2_000,
+            speakerLabel: "B"
+        ),
+    ]
+    let hypothesis = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_100,
+            speakerLabel: "X"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 1_100,
+            endMilliseconds: 2_000,
+            speakerLabel: "Y"
+        ),
+    ]
+
+    let result = StandardDiarizationEvaluator.evaluate(
+        reference: reference,
+        hypothesis: hypothesis
+    )
+
+    #expect(
+        result.speakerSwitchBoundaryMAEMilliseconds == 100
+    )
+}
+
