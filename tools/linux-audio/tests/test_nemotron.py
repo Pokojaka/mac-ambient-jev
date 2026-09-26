@@ -10,6 +10,7 @@ from diarization.nemotron3 import (
 )
 from diarization.speaker_overflow import (
     SpeakerOverflowResolver,
+    is_clean_speech_span,
     resolve_spans_with_embeddings,
 )
 
@@ -229,3 +230,78 @@ def test_run_diarization_removes_stale_output_on_failure(
         )
 
     assert not output.exists()
+
+
+
+def test_clean_speech_rejects_short_and_overlapping_spans():
+    spans = [
+        {
+            "start_ms": 0,
+            "end_ms": 400,
+            "speaker_label": "short",
+        },
+        {
+            "start_ms": 1000,
+            "end_ms": 2200,
+            "speaker_label": "a",
+        },
+        {
+            "start_ms": 1800,
+            "end_ms": 2600,
+            "speaker_label": "b",
+        },
+        {
+            "start_ms": 3000,
+            "end_ms": 4200,
+            "speaker_label": "clean",
+        },
+    ]
+
+    assert not is_clean_speech_span(
+        spans[0],
+        spans,
+        min_duration_ms=500,
+    )
+    assert not is_clean_speech_span(
+        spans[1],
+        spans,
+        min_duration_ms=500,
+    )
+    assert not is_clean_speech_span(
+        spans[2],
+        spans,
+        min_duration_ms=500,
+    )
+    assert is_clean_speech_span(
+        spans[3],
+        spans,
+        min_duration_ms=500,
+    )
+
+
+def test_ineligible_span_becomes_unknown_without_embedding():
+    resolver = SpeakerOverflowResolver(
+        match_threshold=0.8,
+        ambiguity_margin=0.05,
+    )
+    calls = []
+
+    resolved = resolve_spans_with_embeddings(
+        [{
+            "start_ms": 0,
+            "end_ms": 200,
+            "speaker_label": "short",
+        }],
+        embedding_for_span=lambda span: calls.append(span)
+            or one_hot(0),
+        resolver=resolver,
+        eligible_for_resolution=lambda _span: False,
+    )
+
+    assert calls == []
+    assert resolved == [{
+        "start_ms": 0,
+        "end_ms": 200,
+        "speaker": {"kind": "unknown"},
+    }]
+    assert resolver.references == []
