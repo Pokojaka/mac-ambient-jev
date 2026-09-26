@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from common.baseline import (
+    build_asr_baseline_record,
     build_diarization_baseline_record,
 )
 
@@ -171,6 +172,48 @@ def optional_command_check(
     return result
 
 
+
+def asr_baseline_check(
+    *,
+    audio_path: pathlib.Path,
+    reference_path: pathlib.Path,
+    artifact_path: pathlib.Path,
+    evaluation_path: pathlib.Path,
+    output_path: pathlib.Path,
+) -> CheckResult:
+    output_path.unlink(missing_ok=True)
+    for path in (
+        audio_path,
+        reference_path,
+        artifact_path,
+        evaluation_path,
+    ):
+        if not path.is_file():
+            return CheckResult(
+                "asr-baseline-record",
+                Status.SKIPPED_MISSING_DEPENDENCY,
+                f"Required artifact {str(path)!r} is missing",
+            )
+    try:
+        record = build_asr_baseline_record(
+            artifact_path=artifact_path,
+            evaluation_path=evaluation_path,
+            audio_path=audio_path,
+            reference_path=reference_path,
+        )
+        record.write(output_path)
+    except Exception as exc:
+        return CheckResult(
+            "asr-baseline-record",
+            Status.FAIL,
+            f"{type(exc).__name__}: {exc}",
+        )
+    return CheckResult(
+        "asr-baseline-record",
+        Status.PASS,
+        str(output_path),
+    )
+
 def diarization_baseline_check(
     *,
     audio_path: pathlib.Path,
@@ -223,6 +266,7 @@ def full_model_checks(
     match_threshold: float | None,
     ambiguity_margin: float | None,
     min_clean_speech_ms: int | None,
+    asr_reference: pathlib.Path | None = None,
 ) -> list[CheckResult]:
     work_root.mkdir(
         parents=True,
@@ -230,6 +274,8 @@ def full_model_checks(
     )
 
     qwen_output = work_root / "qwen3-asr.json"
+    asr_evaluation_output = work_root / "asr-evaluation.json"
+    asr_baseline_output = work_root / "qwen3-asr-current.json"
     nemotron_output = work_root / "nemotron3.json"
     diarization_evaluation_output = (
         work_root / "diarization-evaluation.json"
@@ -238,6 +284,8 @@ def full_model_checks(
         work_root / "nemotron3-current.json"
     )
     qwen_output.unlink(missing_ok=True)
+    asr_evaluation_output.unlink(missing_ok=True)
+    asr_baseline_output.unlink(missing_ok=True)
     nemotron_output.unlink(missing_ok=True)
     diarization_evaluation_output.unlink(missing_ok=True)
     diarization_baseline_output.unlink(missing_ok=True)
@@ -258,6 +306,42 @@ def full_model_checks(
         here,
         modules=("qwen_asr", "torch"),
         paths=(audio_path,),
+    )
+
+
+    resolved_asr_reference = (
+        asr_reference
+        if asr_reference is not None
+        else audio_path.with_name("reference-content.txt")
+    )
+    root = here.parents[1]
+    asr_evaluator = optional_command_check(
+        "asr-evaluator",
+        [
+            "swift",
+            "run",
+            "--package-path",
+            str(root / "app" / "MacAmbientJev"),
+            "MacAmbientJevEvaluateASR",
+            str(resolved_asr_reference),
+            str(qwen_output),
+            "--output",
+            str(asr_evaluation_output),
+        ],
+        root,
+        executables=("swift",),
+        paths=(
+            resolved_asr_reference,
+            qwen_output,
+        ),
+        outputs=(asr_evaluation_output,),
+    )
+    asr_baseline = asr_baseline_check(
+        audio_path=audio_path,
+        reference_path=resolved_asr_reference,
+        artifact_path=qwen_output,
+        evaluation_path=asr_evaluation_output,
+        output_path=asr_baseline_output,
     )
 
     if (
@@ -301,7 +385,6 @@ def full_model_checks(
             paths=(audio_path,),
         )
 
-    root = here.parents[1]
     diarization_evaluator = optional_command_check(
         "diarization-evaluator",
         [
@@ -334,6 +417,8 @@ def full_model_checks(
 
     return [
         qwen,
+        asr_evaluator,
+        asr_baseline,
         nemotron,
         diarization_evaluator,
         diarization_baseline,
@@ -370,6 +455,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--full-speaker-reference",
+        type=pathlib.Path,
+    )
+    parser.add_argument(
+        "--full-asr-reference",
         type=pathlib.Path,
     )
     parser.add_argument(
@@ -442,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
                 match_threshold=args.speaker_match_threshold,
                 ambiguity_margin=args.speaker_ambiguity_margin,
                 min_clean_speech_ms=args.min_clean_speech_ms,
+                asr_reference=args.full_asr_reference,
             )
         )
 
