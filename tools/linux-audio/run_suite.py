@@ -10,6 +10,10 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 
+from common.baseline import (
+    build_diarization_baseline_record,
+)
+
 
 class Status(str, Enum):
     PASS = "PASS"
@@ -167,6 +171,48 @@ def optional_command_check(
     return result
 
 
+def diarization_baseline_check(
+    *,
+    audio_path: pathlib.Path,
+    speaker_reference: pathlib.Path,
+    artifact_path: pathlib.Path,
+    evaluation_path: pathlib.Path,
+    output_path: pathlib.Path,
+) -> CheckResult:
+    output_path.unlink(missing_ok=True)
+    for path in (
+        audio_path,
+        speaker_reference,
+        artifact_path,
+        evaluation_path,
+    ):
+        if not path.is_file():
+            return CheckResult(
+                "diarization-baseline-record",
+                Status.SKIPPED_MISSING_DEPENDENCY,
+                f"Required artifact {str(path)!r} is missing",
+            )
+    try:
+        record = build_diarization_baseline_record(
+            artifact_path=artifact_path,
+            evaluation_path=evaluation_path,
+            audio_path=audio_path,
+            speaker_reference_path=speaker_reference,
+        )
+        record.write(output_path)
+    except Exception as exc:
+        return CheckResult(
+            "diarization-baseline-record",
+            Status.FAIL,
+            f"{type(exc).__name__}: {exc}",
+        )
+    return CheckResult(
+        "diarization-baseline-record",
+        Status.PASS,
+        str(output_path),
+    )
+
+
 def full_model_checks(
     *,
     here: pathlib.Path,
@@ -188,9 +234,13 @@ def full_model_checks(
     diarization_evaluation_output = (
         work_root / "diarization-evaluation.json"
     )
+    diarization_baseline_output = (
+        work_root / "nemotron3-current.json"
+    )
     qwen_output.unlink(missing_ok=True)
     nemotron_output.unlink(missing_ok=True)
     diarization_evaluation_output.unlink(missing_ok=True)
+    diarization_baseline_output.unlink(missing_ok=True)
     qwen = optional_command_check(
         "qwen3-asr-runner",
         [
@@ -274,10 +324,19 @@ def full_model_checks(
         outputs=(diarization_evaluation_output,),
     )
 
+    diarization_baseline = diarization_baseline_check(
+        audio_path=audio_path,
+        speaker_reference=speaker_reference,
+        artifact_path=nemotron_output,
+        evaluation_path=diarization_evaluation_output,
+        output_path=diarization_baseline_output,
+    )
+
     return [
         qwen,
         nemotron,
         diarization_evaluator,
+        diarization_baseline,
     ]
 
 
