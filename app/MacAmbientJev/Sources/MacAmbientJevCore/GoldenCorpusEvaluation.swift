@@ -74,7 +74,6 @@ public struct GoldenRuntimeMetrics: Codable, Sendable, Equatable {
     public let asrRTF: Double?
     public let peakMemoryMB: Double?
     public let oldestPendingAgeMilliseconds: Int64?
-    public let asrEvaluation: ASREvaluationResult?
 
     public init(
         asrRTF: Double? = nil,
@@ -84,14 +83,12 @@ public struct GoldenRuntimeMetrics: Codable, Sendable, Equatable {
         self.asrRTF = asrRTF
         self.peakMemoryMB = peakMemoryMB
         self.oldestPendingAgeMilliseconds = oldestPendingAgeMilliseconds
-        self.asrEvaluation = asrEvaluation
     }
 
     enum CodingKeys: String, CodingKey {
         case asrRTF = "asr_rtf"
         case peakMemoryMB = "peak_memory_mb"
         case oldestPendingAgeMilliseconds = "oldest_pending_age_ms"
-        case asrEvaluation = "asr_evaluation"
     }
 }
 
@@ -104,6 +101,7 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
     public let asrRTF: Double?
     public let peakMemoryMB: Double?
     public let oldestPendingAgeMilliseconds: Int64?
+    public let asrEvaluation: ASREvaluationResult?
 
     public init(
         technicalTermRetention: Double?,
@@ -124,6 +122,7 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
         self.asrRTF = asrRTF
         self.peakMemoryMB = peakMemoryMB
         self.oldestPendingAgeMilliseconds = oldestPendingAgeMilliseconds
+        self.asrEvaluation = asrEvaluation
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -157,6 +156,7 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
         case asrRTF = "asr_rtf"
         case peakMemoryMB = "peak_memory_mb"
         case oldestPendingAgeMilliseconds = "oldest_pending_age_ms"
+        case asrEvaluation = "asr_evaluation"
     }
 }
 
