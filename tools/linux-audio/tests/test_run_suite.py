@@ -189,6 +189,8 @@ def test_main_full_appends_real_model_runner_checks(
         str(audio),
         "--full-speaker-reference",
         str(tmp_path / "speaker-reference.json"),
+        "--full-asr-reference",
+        str(tmp_path / "reference-content.txt"),
         "--work-root",
         str(tmp_path / "work"),
         "--device",
@@ -205,6 +207,9 @@ def test_main_full_appends_real_model_runner_checks(
     assert captured[0]["audio_path"] == audio
     assert captured[0]["speaker_reference"] == (
         tmp_path / "speaker-reference.json"
+    )
+    assert captured[0]["asr_reference"] == (
+        tmp_path / "reference-content.txt"
     )
     assert captured[0]["device"] == "cuda:1"
     assert captured[0]["match_threshold"] == 0.82
