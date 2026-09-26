@@ -12,7 +12,12 @@ from common.artifact import (
     validate_asr_artifact,
     write_json_atomic,
 )
-from asr.qwen3_asr import run_transcription
+from asr.qwen3_asr import (
+    DEFAULT_MODEL,
+    DEFAULT_MODEL_REVISION,
+    resolve_model_revision,
+    run_transcription,
+)
 
 
 def make_wav(
@@ -119,3 +124,43 @@ def test_run_transcription_removes_stale_output_when_backend_fails(
         )
 
     assert not output.exists()
+
+
+def test_default_qwen_model_revision_is_pinned():
+    expected = (
+        "7278e1e70fe206f11671096ffdd38061171dd6e5"
+    )
+    assert DEFAULT_MODEL_REVISION == expected
+    assert resolve_model_revision(
+        DEFAULT_MODEL,
+        None,
+    ) == expected
+
+
+def test_custom_qwen_model_requires_explicit_revision():
+    with pytest.raises(ValueError, match="revision"):
+        resolve_model_revision(
+            "example/custom-asr",
+            None,
+        )
+    assert resolve_model_revision(
+        "example/custom-asr",
+        "abc123",
+    ) == "abc123"
+
+
+def test_asr_environment_pins_qwen_asr_release():
+    import tomllib
+
+    pyproject = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "asr"
+        / "pyproject.toml"
+    )
+    data = tomllib.loads(
+        pyproject.read_text(encoding="utf-8")
+    )
+    assert (
+        "qwen-asr==0.0.6"
+        in data["project"]["dependencies"]
+    )
