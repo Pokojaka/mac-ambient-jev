@@ -174,6 +174,7 @@ def test_run_diarization_writes_resolved_artifact(tmp_path):
         embedding_model="test-embedding",
         match_threshold=0.8,
         ambiguity_margin=0.05,
+        min_clean_speech_ms=50,
         diarize_raw=lambda _audio, _profile: raw,
         embedding_for_span=lambda span: one_hot(
             int(span["speaker_label"].split("-")[1])
@@ -189,6 +190,7 @@ def test_run_diarization_writes_resolved_artifact(tmp_path):
         "embedding_model": "test-embedding",
         "match_threshold": 0.8,
         "ambiguity_margin": 0.05,
+        "min_clean_speech_ms": 50,
     }
     assert [
         span["speaker"]["kind"]
