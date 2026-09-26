@@ -310,3 +310,99 @@ def test_full_model_checks_remove_stale_nemotron_artifact(
         checks[-1].status
         is Status.SKIPPED_MISSING_DEPENDENCY
     )
+
+
+def test_optional_command_check_fails_when_expected_output_missing(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        run_suite,
+        "run_command",
+        lambda name, command, cwd:
+            CheckResult(name, Status.PASS),
+    )
+
+    expected = tmp_path / "missing.json"
+    result = run_suite.optional_command_check(
+        "evaluator",
+        ["tool"],
+        tmp_path,
+        outputs=(expected,),
+    )
+
+    assert result.status is Status.FAIL
+    assert "Expected output" in (result.detail or "")
+
+
+def test_optional_command_check_accepts_expected_output(
+    monkeypatch,
+    tmp_path,
+):
+    expected = tmp_path / "result.json"
+
+    def fake_run(name, command, cwd):
+        expected.write_text("{}")
+        return CheckResult(name, Status.PASS)
+
+    monkeypatch.setattr(
+        run_suite,
+        "run_command",
+        fake_run,
+    )
+
+    result = run_suite.optional_command_check(
+        "evaluator",
+        ["tool"],
+        tmp_path,
+        outputs=(expected,),
+    )
+
+    assert result.status is Status.PASS
+
+
+def test_full_model_checks_writes_diarization_evaluation_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    audio = tmp_path / "fixture.wav"
+    audio.write_bytes(b"RIFF")
+    reference = tmp_path / "speaker-reference.json"
+    reference.write_text("[]")
+    work = tmp_path / "work"
+    work.mkdir()
+    stale_evaluation = work / "diarization-evaluation.json"
+    stale_evaluation.write_text('{"stale":true}')
+    seen = []
+
+    def fake_optional(name, command, cwd, **kwargs):
+        seen.append((name, command, kwargs))
+        if name == "nemotron3-runner":
+            (work / "nemotron3.json").write_text("{}")
+        if name == "diarization-evaluator":
+            assert not stale_evaluation.exists()
+            stale_evaluation.write_text("{}")
+        return CheckResult(name, Status.PASS)
+
+    monkeypatch.setattr(
+        run_suite,
+        "optional_command_check",
+        fake_optional,
+    )
+
+    checks = run_suite.full_model_checks(
+        here=tmp_path,
+        audio_path=audio,
+        speaker_reference=reference,
+        work_root=work,
+        device="cuda:0",
+        match_threshold=0.82,
+        ambiguity_margin=0.04,
+        min_clean_speech_ms=750,
+    )
+
+    evaluator = seen[2]
+    assert "--output" in evaluator[1]
+    assert str(stale_evaluation) in evaluator[1]
+    assert evaluator[2]["outputs"] == (stale_evaluation,)
+    assert checks[-1].status is Status.PASS
