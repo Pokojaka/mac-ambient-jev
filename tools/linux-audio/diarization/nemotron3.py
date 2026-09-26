@@ -10,6 +10,10 @@ from common.artifact import (
     build_diarization_artifact,
     write_json_atomic,
 )
+from common.runtime_metrics import (
+    begin_cuda_measurement,
+    end_cuda_measurement,
+)
 from diarization.speaker_embedding import (
     DEFAULT_TITANET_MODEL,
     DEFAULT_TITANET_REVISION,
@@ -194,6 +198,7 @@ def run_diarization(
         ambiguity_margin=ambiguity_margin,
     )
 
+    measurement = begin_cuda_measurement(device)
     started = clock()
     raw_spans = diarize_raw(
         audio_path,
@@ -209,6 +214,10 @@ def run_diarization(
                 raw_spans,
                 min_duration_ms=min_clean_speech_ms,
             ),
+    )
+    peak_vram_mb = end_cuda_measurement(
+        device,
+        measurement,
     )
     inference_seconds = clock() - started
     if inference_seconds < 0:
@@ -226,6 +235,7 @@ def run_diarization(
         raw_spans=raw_spans,
         audio_seconds=audio_seconds,
         inference_seconds=inference_seconds,
+        peak_vram_mb=peak_vram_mb,
         overflow_resolver={
             "embedding_model": embedding_model,
             "embedding_revision": embedding_revision,
