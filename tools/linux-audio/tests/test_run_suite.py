@@ -301,12 +301,6 @@ def test_full_model_checks_remove_stale_nemotron_artifact(
         "optional_command_check",
         fake_optional,
     )
-    monkeypatch.setattr(
-        run_suite,
-        "diarization_baseline_check",
-        lambda **kwargs:
-            CheckResult("diarization-baseline-record", Status.PASS),
-    )
 
     checks = run_suite.full_model_checks(
         here=tmp_path,
@@ -408,6 +402,12 @@ def test_full_model_checks_writes_diarization_evaluation_artifact(
         run_suite,
         "optional_command_check",
         fake_optional,
+    )
+    monkeypatch.setattr(
+        run_suite,
+        "diarization_baseline_check",
+        lambda **kwargs:
+            CheckResult("diarization-baseline-record", Status.PASS),
     )
 
     checks = run_suite.full_model_checks(
