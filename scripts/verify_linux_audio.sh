@@ -7,7 +7,7 @@ MODE="${1:---smoke}"
 case "$MODE" in
     --smoke|--full) ;;
     *)
-        echo "usage: $0 [--smoke|--full] [--json PATH]" >&2
+        echo "usage: $0 [--smoke|--full] [run_suite.py options...]" >&2
         exit 64
         ;;
 esac
