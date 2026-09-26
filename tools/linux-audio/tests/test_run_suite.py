@@ -37,3 +37,23 @@ def test_missing_dependency_is_not_reported_as_pass():
         == Status.SKIPPED_MISSING_DEPENDENCY
     )
     assert summary.exit_code == 2
+
+
+def test_executable_check_marks_missing_tool_as_skip(
+    monkeypatch,
+):
+    import run_suite
+
+    monkeypatch.setattr(
+        run_suite.shutil,
+        "which",
+        lambda _: None,
+    )
+    result = run_suite.optional_executable_check(
+        "ffmpeg",
+        "ffmpeg",
+    )
+    assert (
+        result.status
+        is run_suite.Status.SKIPPED_MISSING_DEPENDENCY
+    )
