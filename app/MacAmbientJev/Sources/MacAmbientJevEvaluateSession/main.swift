@@ -46,6 +46,10 @@ struct EvaluateSessionCommand {
             from: Data(contentsOf: segmentsURL)
         )
 
+        let referenceText = try manifest.reference?.resolvedText(
+            relativeTo: manifestURL
+        )
+
         let observedTransitions: [GoldenSceneTransition]?
         if arguments.count == 3 {
             observedTransitions = try decoder.decode(
@@ -88,7 +92,8 @@ struct EvaluateSessionCommand {
         let report = try GoldenCorpusEvaluator.evaluate(
             segments: segments,
             manifest: manifest,
-            observedSceneTransitions: observedTransitions
+            observedSceneTransitions: observedTransitions,
+            referenceText: referenceText
         )
 
         let encoder = JSONEncoder()
