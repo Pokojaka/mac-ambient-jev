@@ -406,3 +406,60 @@ def test_full_model_checks_writes_diarization_evaluation_artifact(
     assert str(stale_evaluation) in evaluator[1]
     assert evaluator[2]["outputs"] == (stale_evaluation,)
     assert checks[-1].status is Status.PASS
+
+
+def test_diarization_baseline_check_writes_current_record(
+    monkeypatch,
+    tmp_path,
+):
+    audio = tmp_path / "audio.wav"
+    reference = tmp_path / "speaker-reference.json"
+    artifact = tmp_path / "nemotron3.json"
+    evaluation = tmp_path / "diarization-evaluation.json"
+    for path in (audio, reference, artifact, evaluation):
+        path.write_text("x")
+    output = tmp_path / "nemotron3-current.json"
+
+    class Record:
+        def write(self, path):
+            path.write_text('{"ok":true}')
+
+    captured = {}
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return Record()
+
+    monkeypatch.setattr(
+        run_suite,
+        "build_diarization_baseline_record",
+        fake_build,
+    )
+
+    result = run_suite.diarization_baseline_check(
+        audio_path=audio,
+        speaker_reference=reference,
+        artifact_path=artifact,
+        evaluation_path=evaluation,
+        output_path=output,
+    )
+
+    assert result.status is Status.PASS
+    assert output.is_file()
+    assert captured["artifact_path"] == artifact
+    assert captured["evaluation_path"] == evaluation
+
+
+def test_diarization_baseline_check_skips_missing_inputs(tmp_path):
+    result = run_suite.diarization_baseline_check(
+        audio_path=tmp_path / "audio.wav",
+        speaker_reference=tmp_path / "reference.json",
+        artifact_path=tmp_path / "artifact.json",
+        evaluation_path=tmp_path / "evaluation.json",
+        output_path=tmp_path / "current.json",
+    )
+
+    assert (
+        result.status
+        is Status.SKIPPED_MISSING_DEPENDENCY
+    )
