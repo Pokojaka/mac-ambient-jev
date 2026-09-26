@@ -57,3 +57,30 @@ class SpeakerOverflowResolver:
         if score >= self.match_threshold - self.ambiguity_margin:
             return {"kind": "unknown"}
         return {"kind": "other"}
+
+
+
+def resolve_spans_with_embeddings(
+    spans: list[dict],
+    *,
+    embedding_for_span,
+    resolver: SpeakerOverflowResolver,
+) -> list[dict]:
+    ordered = sorted(
+        enumerate(spans),
+        key=lambda item: (
+            item[1]["start_ms"],
+            item[0],
+        ),
+    )
+
+    result: list[dict] = []
+    for _, span in ordered:
+        result.append({
+            "start_ms": span["start_ms"],
+            "end_ms": span["end_ms"],
+            "speaker": resolver.resolve(
+                embedding_for_span(span)
+            ),
+        })
+    return result
