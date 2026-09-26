@@ -99,6 +99,11 @@ public enum DiarizationArtifactEvaluationError:
     Error, Sendable, Equatable
 {
     case unsupportedSchemaVersion(Int)
+    case invalidReferenceSpan(index: Int)
+    case emptyReferenceSpeakerLabel(index: Int)
+    case invalidPublicSpan(index: Int)
+    case invalidRawSpan(index: Int)
+    case emptyRawSpeakerLabel(index: Int)
 }
 
 public enum DiarizationArtifactEvaluator {
@@ -109,6 +114,49 @@ public enum DiarizationArtifactEvaluator {
         guard artifact.schemaVersion == 1 else {
             throw DiarizationArtifactEvaluationError
                 .unsupportedSchemaVersion(artifact.schemaVersion)
+        }
+
+        for (index, span) in reference.enumerated() {
+            guard
+                span.startMilliseconds >= 0,
+                span.endMilliseconds > span.startMilliseconds
+            else {
+                throw DiarizationArtifactEvaluationError
+                    .invalidReferenceSpan(index: index)
+            }
+            guard !span.speakerLabel.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty else {
+                throw DiarizationArtifactEvaluationError
+                    .emptyReferenceSpeakerLabel(index: index)
+            }
+        }
+        for (index, span) in artifact.spans.enumerated() {
+            guard
+                span.startMilliseconds >= 0,
+                span.endMilliseconds > span.startMilliseconds
+            else {
+                throw DiarizationArtifactEvaluationError
+                    .invalidPublicSpan(index: index)
+            }
+        }
+        if let rawSpans = artifact.rawSpans {
+            for (index, span) in rawSpans.enumerated() {
+                guard
+                    span.startMilliseconds >= 0,
+                    span.endMilliseconds
+                        > span.startMilliseconds
+                else {
+                    throw DiarizationArtifactEvaluationError
+                        .invalidRawSpan(index: index)
+                }
+                guard !span.speakerLabel.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty else {
+                    throw DiarizationArtifactEvaluationError
+                        .emptyRawSpeakerLabel(index: index)
+                }
+            }
         }
 
         let collapsedReference = try SpeakerArrivalCollapser
