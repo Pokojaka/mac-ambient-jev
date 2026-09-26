@@ -223,6 +223,7 @@ def run_diarization(
         backend="nemo",
         device=device,
         spans=resolved_spans,
+        raw_spans=raw_spans,
         audio_seconds=audio_seconds,
         inference_seconds=inference_seconds,
         overflow_resolver={
