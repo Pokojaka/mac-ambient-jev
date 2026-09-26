@@ -92,6 +92,27 @@ def _validate_public_speaker(speaker: object) -> None:
         )
 
 
+def _validate_raw_speaker_span(span: object) -> None:
+    if not isinstance(span, dict):
+        raise ValueError("raw span must be an object")
+    start = span.get("start_ms")
+    end = span.get("end_ms")
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 0
+        or end <= start
+    ):
+        raise ValueError("invalid raw span time range")
+    label = span.get("speaker_label")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError(
+            "raw span speaker_label is required"
+        )
+
+
 def validate_diarization_artifact(
     artifact: dict[str, Any],
 ) -> None:
@@ -139,6 +160,13 @@ def validate_diarization_artifact(
             raise ValueError(
                 "span confidence must be finite and in 0...1"
             )
+
+    raw_spans = artifact.get("raw_spans")
+    if raw_spans is not None:
+        if not isinstance(raw_spans, list):
+            raise ValueError("raw_spans must be a list")
+        for raw_span in raw_spans:
+            _validate_raw_speaker_span(raw_span)
 
     resolver = artifact.get("overflow_resolver")
     if resolver is not None:
@@ -218,6 +246,7 @@ def build_diarization_artifact(
     audio_seconds: float,
     inference_seconds: float,
     overflow_resolver: dict[str, Any] | None = None,
+    raw_spans: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if audio_seconds < 0 or inference_seconds < 0:
         raise ValueError(
@@ -251,6 +280,8 @@ def build_diarization_artifact(
     }
     if overflow_resolver is not None:
         artifact["overflow_resolver"] = overflow_resolver
+    if raw_spans is not None:
+        artifact["raw_spans"] = raw_spans
     validate_diarization_artifact(artifact)
     return artifact
 
