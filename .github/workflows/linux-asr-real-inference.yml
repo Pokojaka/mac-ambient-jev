@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      PYTHONPATH: \${{ github.workspace }}/tools/linux-audio
+      PYTHONPATH: tools/linux-audio
       HF_HUB_DISABLE_TELEMETRY: "1"
       TOKENIZERS_PARALLELISM: "false"
 
@@ -171,7 +171,11 @@ jobs:
         run: |
           mkdir -p real-inference
           {
-            echo "qwen17_outcome=\${{ steps.qwen17.outcome }}"
+            if [ -f real-inference/qwen3-asr-1.7b.json ]; then
+              echo "qwen17_outcome=success"
+            else
+              echo "qwen17_outcome=fallback-or-failure"
+            fi
             echo "runner=$(uname -a)"
             free -h
           } | tee real-inference/run-summary.txt
