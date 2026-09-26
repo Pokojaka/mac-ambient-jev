@@ -92,3 +92,27 @@ def test_diarization_artifact_rejects_invalid_span_range():
             audio_seconds=1.0,
             inference_seconds=1.0,
         )
+
+
+
+def test_diarization_artifact_rejects_invalid_resolver_threshold():
+    with pytest.raises(ValueError, match="match_threshold"):
+        build_diarization_artifact(
+            model="nvidia/Nemotron-3-Diarization",
+            revision=None,
+            profile="offline-30.4s",
+            backend="nemo",
+            device="cuda:0",
+            spans=[{
+                "start_ms": 0,
+                "end_ms": 1000,
+                "speaker": {"kind": "other"},
+            }],
+            audio_seconds=1.0,
+            inference_seconds=1.0,
+            overflow_resolver={
+                "embedding_model": "titanet",
+                "match_threshold": 1.1,
+                "ambiguity_margin": 0.05,
+            },
+        )
