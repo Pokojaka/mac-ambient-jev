@@ -1,6 +1,9 @@
 import pytest
 
-from common.csj import parse_csj_transcript
+from common.csj import (
+    csj_reference_text,
+    parse_csj_transcript,
+)
 
 
 SAMPLE = """%講演ID:D04M0041
@@ -48,3 +51,15 @@ def test_csj_parser_rejects_invalid_time_range():
         parse_csj_transcript(
             "0001 00002.000-00001.000 L:\n"
         )
+
+
+def test_csj_reference_can_keep_or_drop_fillers():
+    items = parse_csj_transcript(SAMPLE)
+    assert csj_reference_text(
+        items[:2],
+        keep_fillers=True,
+    ) == "質問させていただきますあのうん"
+    assert csj_reference_text(
+        items[:2],
+        keep_fillers=False,
+    ) == "質問させていただきます"
