@@ -5,6 +5,7 @@ import pytest
 from common.baseline import (
     BaselineRecord,
     compare_baseline,
+    build_asr_baseline_record,
     build_diarization_baseline_record,
     load_baseline,
 )
@@ -175,3 +176,71 @@ def test_baseline_compare_rejects_configuration_mismatch():
 
     with pytest.raises(ValueError, match="configuration"):
         compare_baseline(baseline, current)
+
+
+def test_asr_baseline_collects_cer_runtime_and_provenance(tmp_path):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    reference = tmp_path / "reference.txt"
+    reference.write_text("今日は音声認識です。\n", encoding="utf-8")
+    artifact = tmp_path / "qwen3-asr.json"
+    artifact.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "engine": {
+                "name": "qwen3-asr",
+                "model": "Qwen/Qwen3-ASR-1.7B",
+                "revision": "model-rev",
+                "backend": "transformers",
+                "device": "cuda:0",
+            },
+            "segments": [{
+                "start_ms": 0,
+                "end_ms": 1000,
+                "text": "今日は音声認識です",
+                "language": "Japanese",
+            }],
+            "runtime": {
+                "rtf": 0.2,
+                "peak_vram_mb": 1024.0,
+            },
+        }),
+        encoding="utf-8",
+    )
+    evaluation = tmp_path / "asr-evaluation.json"
+    evaluation.write_text(
+        json.dumps({
+            "raw": {
+                "rate": 0.1,
+                "substitutions": 1,
+                "deletions": 0,
+                "insertions": 0,
+                "reference_length": 10,
+            },
+            "normalized": {
+                "rate": 0.0,
+                "substitutions": 0,
+                "deletions": 0,
+                "insertions": 0,
+                "reference_length": 9,
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    record = build_asr_baseline_record(
+        artifact_path=artifact,
+        evaluation_path=evaluation,
+        audio_path=audio,
+        reference_path=reference,
+    )
+
+    assert record.kind == "asr"
+    assert record.engine == "qwen3-asr"
+    assert record.revision == "model-rev"
+    assert record.metrics["raw_cer"] == 0.1
+    assert record.metrics["normalized_cer"] == 0.0
+    assert record.metrics["rtf"] == 0.2
+    assert record.metrics["peak_vram_mb"] == 1024.0
+    assert len(record.corpus["audio"]) == 64
+    assert len(record.corpus["reference"]) == 64
