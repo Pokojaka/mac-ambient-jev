@@ -166,6 +166,18 @@ jobs:
 
           cat real-inference/asr-evaluation.json
 
+          python - <<'PY'
+          import json
+
+          with open("real-inference/asr-evaluation.json", encoding="utf-8") as handle:
+              evaluation = json.load(handle)
+          normalized_cer = evaluation["normalized"]["rate"]
+          print(f"normalized CER: {normalized_cer:.4f}")
+          assert normalized_cer <= 0.10, (
+              f"Japanese fixture CER exceeds 10%: {normalized_cer:.4f}"
+          )
+          PY
+
       - name: Record runner result
         if: always()
         run: |
