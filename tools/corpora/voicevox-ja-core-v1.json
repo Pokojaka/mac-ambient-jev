@@ -57,6 +57,11 @@
       "overlap_ratio": 0.0
     },
     {
+      "id": "speakers-4",
+      "speaker_count": 4,
+      "overlap_ratio": 0.1
+    },
+    {
       "id": "speakers-7",
       "speaker_count": 7,
       "overlap_ratio": 0.1
