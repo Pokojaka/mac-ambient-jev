@@ -10,6 +10,10 @@ var products: [Product] = [
     .executable(
         name: "MacAmbientJevEvaluateDiarization",
         targets: ["MacAmbientJevEvaluateDiarization"]
+    ),
+    .executable(
+        name: "MacAmbientJevEvaluateASR",
+        targets: ["MacAmbientJevEvaluateASR"]
     )
 ]
 
@@ -23,6 +27,10 @@ var targets: [Target] = [
     ),
     .executableTarget(
         name: "MacAmbientJevEvaluateDiarization",
+        dependencies: ["MacAmbientJevCore"]
+    ),
+    .executableTarget(
+        name: "MacAmbientJevEvaluateASR",
         dependencies: ["MacAmbientJevCore"]
     ),
     .testTarget(
