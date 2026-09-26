@@ -9,6 +9,7 @@ from diarization.nemotron3 import (
 )
 from diarization.speaker_overflow import (
     SpeakerOverflowResolver,
+    resolve_spans_with_embeddings,
 )
 
 
@@ -95,3 +96,44 @@ def test_overflow_resolver_keeps_borderline_as_unknown():
     assert resolver.resolve(candidate) == {
         "kind": "unknown"
     }
+
+
+
+def test_resolve_spans_with_embeddings_emits_public_schema():
+    resolver = SpeakerOverflowResolver(
+        match_threshold=0.8,
+        ambiguity_margin=0.05,
+    )
+    raw = [
+        {
+            "start_ms": index * 1000,
+            "end_ms": (index + 1) * 1000,
+            "speaker_label": f"raw-{index}",
+        }
+        for index in range(10)
+    ]
+
+    resolved = resolve_spans_with_embeddings(
+        list(reversed(raw)),
+        embedding_for_span=lambda span: one_hot(
+            int(span["speaker_label"].split("-")[1])
+        ),
+        resolver=resolver,
+    )
+
+    assert [span["start_ms"] for span in resolved] == [
+        index * 1000
+        for index in range(10)
+    ]
+    assert [
+        span["speaker"]["index"]
+        for span in resolved[:7]
+    ] == list(range(1, 8))
+    assert [
+        span["speaker"]["kind"]
+        for span in resolved[7:]
+    ] == ["other", "other", "other"]
+    assert all(
+        "speaker_label" not in span
+        for span in resolved
+    )
