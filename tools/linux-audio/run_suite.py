@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -105,6 +106,19 @@ def optional_import_check(
     return CheckResult(name, Status.PASS)
 
 
+def optional_executable_check(
+    name: str,
+    executable: str,
+) -> CheckResult:
+    if shutil.which(executable) is None:
+        return CheckResult(
+            name,
+            Status.SKIPPED_MISSING_DEPENDENCY,
+            f"Executable {executable!r} is not installed",
+        )
+    return CheckResult(name, Status.PASS)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(
@@ -136,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
                 "tests",
             ],
             here,
+        ),
+        optional_executable_check(
+            "ffmpeg",
+            "ffmpeg",
         ),
         optional_import_check(
             "qwen3-asr-model",
