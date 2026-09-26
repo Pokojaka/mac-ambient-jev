@@ -160,6 +160,7 @@ def full_model_checks(
     *,
     here: pathlib.Path,
     audio_path: pathlib.Path,
+    speaker_reference: pathlib.Path,
     work_root: pathlib.Path,
     device: str,
     match_threshold: float | None,
@@ -172,6 +173,9 @@ def full_model_checks(
     )
 
     qwen_output = work_root / "qwen3-asr.json"
+    nemotron_output = work_root / "nemotron3.json"
+    qwen_output.unlink(missing_ok=True)
+    nemotron_output.unlink(missing_ok=True)
     qwen = optional_command_check(
         "qwen3-asr-runner",
         [
@@ -205,7 +209,6 @@ def full_model_checks(
             ),
         )
     else:
-        nemotron_output = work_root / "nemotron3.json"
         nemotron = optional_command_check(
             "nemotron3-runner",
             [
@@ -233,9 +236,30 @@ def full_model_checks(
             paths=(audio_path,),
         )
 
+    root = here.parents[1]
+    diarization_evaluator = optional_command_check(
+        "diarization-evaluator",
+        [
+            "swift",
+            "run",
+            "--package-path",
+            str(root / "app" / "MacAmbientJev"),
+            "MacAmbientJevEvaluateDiarization",
+            str(speaker_reference),
+            str(nemotron_output),
+        ],
+        root,
+        executables=("swift",),
+        paths=(
+            speaker_reference,
+            nemotron_output,
+        ),
+    )
+
     return [
         qwen,
         nemotron,
+        diarization_evaluator,
     ]
 
 
@@ -266,6 +290,10 @@ def main(argv: list[str] | None = None) -> int:
             / "speakers-10"
             / "audio.wav"
         ),
+    )
+    parser.add_argument(
+        "--full-speaker-reference",
+        type=pathlib.Path,
     )
     parser.add_argument(
         "--work-root",
@@ -320,10 +348,18 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     if args.full:
+        speaker_reference = (
+            args.full_speaker_reference
+            if args.full_speaker_reference is not None
+            else args.full_audio.with_name(
+                "speaker-reference.json"
+            )
+        )
         checks.extend(
             full_model_checks(
                 here=here,
                 audio_path=args.full_audio,
+                speaker_reference=speaker_reference,
                 work_root=args.work_root,
                 device=args.device,
                 match_threshold=args.speaker_match_threshold,
