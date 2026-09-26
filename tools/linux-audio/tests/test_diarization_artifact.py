@@ -160,3 +160,67 @@ def test_diarization_artifact_requires_positive_clean_speech_ms():
                 "min_clean_speech_ms": 0,
             },
         )
+
+def test_diarization_artifact_preserves_raw_spans_for_standard_der():
+    raw_spans = [{
+        "start_ms": 0,
+        "end_ms": 1000,
+        "speaker_label": "speaker_0",
+    }]
+    artifact = build_diarization_artifact(
+        model="nvidia/Nemotron-3-Diarization",
+        revision="test-revision",
+        profile="offline-30.4s",
+        backend="nemo",
+        device="cuda:0",
+        spans=[{
+            "start_ms": 0,
+            "end_ms": 1000,
+            "speaker": {"kind": "tracked", "index": 1},
+        }],
+        raw_spans=raw_spans,
+        audio_seconds=1.0,
+        inference_seconds=0.2,
+    )
+
+    assert artifact["raw_spans"] == raw_spans
+    validate_diarization_artifact(artifact)
+
+
+def test_diarization_artifact_rejects_invalid_raw_span_range():
+    with pytest.raises(ValueError, match="raw span"):
+        build_diarization_artifact(
+            model="nvidia/Nemotron-3-Diarization",
+            revision="test-revision",
+            profile="offline-30.4s",
+            backend="nemo",
+            device="cuda:0",
+            spans=[],
+            raw_spans=[{
+                "start_ms": 1000,
+                "end_ms": 1000,
+                "speaker_label": "speaker_0",
+            }],
+            audio_seconds=1.0,
+            inference_seconds=0.2,
+        )
+
+
+def test_diarization_artifact_rejects_empty_raw_speaker_label():
+    with pytest.raises(ValueError, match="speaker_label"):
+        build_diarization_artifact(
+            model="nvidia/Nemotron-3-Diarization",
+            revision="test-revision",
+            profile="offline-30.4s",
+            backend="nemo",
+            device="cuda:0",
+            spans=[],
+            raw_spans=[{
+                "start_ms": 0,
+                "end_ms": 1000,
+                "speaker_label": "  ",
+            }],
+            audio_seconds=1.0,
+            inference_seconds=0.2,
+        )
+
