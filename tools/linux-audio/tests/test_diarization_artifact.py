@@ -224,3 +224,33 @@ def test_diarization_artifact_rejects_empty_raw_speaker_label():
             inference_seconds=0.2,
         )
 
+
+
+def test_diarization_artifact_records_peak_vram():
+    artifact = build_diarization_artifact(
+        model="nvidia/Nemotron-3-Diarization",
+        revision="test-revision",
+        profile="offline-30.4s",
+        backend="nemo",
+        device="cuda:0",
+        spans=[],
+        audio_seconds=1.0,
+        inference_seconds=0.2,
+        peak_vram_mb=512.5,
+    )
+    assert artifact["runtime"]["peak_vram_mb"] == 512.5
+
+
+def test_diarization_artifact_rejects_nonfinite_peak_vram():
+    with pytest.raises(ValueError, match="peak_vram_mb"):
+        build_diarization_artifact(
+            model="nvidia/Nemotron-3-Diarization",
+            revision="test-revision",
+            profile="offline-30.4s",
+            backend="nemo",
+            device="cuda:0",
+            spans=[],
+            audio_seconds=1.0,
+            inference_seconds=0.2,
+            peak_vram_mb=float("inf"),
+        )
