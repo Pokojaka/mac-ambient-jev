@@ -233,6 +233,7 @@ def test_run_diarization_removes_stale_output_on_failure(
             revision=None,
             device="cuda:0",
             embedding_model="test-embedding",
+            embedding_revision="test-embedding-revision",
             match_threshold=0.8,
             ambiguity_margin=0.05,
             diarize_raw=fail,
