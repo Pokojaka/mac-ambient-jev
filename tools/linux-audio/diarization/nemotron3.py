@@ -12,6 +12,7 @@ from common.artifact import (
 )
 from diarization.speaker_embedding import (
     DEFAULT_TITANET_MODEL,
+    DEFAULT_TITANET_REVISION,
     load_titanet_adapter,
 )
 from diarization.speaker_overflow import (
@@ -22,6 +23,10 @@ from diarization.speaker_overflow import (
 
 
 DEFAULT_MODEL = "nvidia/Nemotron-3-Diarization"
+DEFAULT_MODEL_FILENAME = "Nemotron-3-Diarization.nemo"
+DEFAULT_MODEL_REVISION = (
+    "0e224186f30112a1b555f2ee402e2be781146535"
+)
 
 PROFILES = {
     "offline-30.4s": (264, 40, 340, 40, 300),
@@ -84,23 +89,59 @@ def wav_duration_seconds(path: pathlib.Path) -> float:
         ) from exc
 
 
+def load_nemotron_model(
+    *,
+    model_name: str = DEFAULT_MODEL,
+    revision: str = DEFAULT_MODEL_REVISION,
+    device: str = "cuda:0",
+    profile: str = "offline-30.4s",
+    download_checkpoint=None,
+    model_class=None,
+):
+    if not revision:
+        raise ValueError(
+            "Nemotron revision must be pinned"
+        )
+
+    if download_checkpoint is None:
+        from huggingface_hub import hf_hub_download
+        download_checkpoint = hf_hub_download
+
+    if model_class is None:
+        from nemo.collections.asr.models import (
+            SortformerEncLabelModel,
+        )
+        model_class = SortformerEncLabelModel
+
+    checkpoint = download_checkpoint(
+        repo_id=model_name,
+        filename=DEFAULT_MODEL_FILENAME,
+        revision=revision,
+    )
+    model = model_class.restore_from(
+        restore_path=str(checkpoint),
+        map_location=device,
+        strict=False,
+    )
+    model.eval()
+    apply_nemo_profile(model, profile)
+    return model
+
+
 def diarize(
     audio_path: pathlib.Path | str,
     profile: str = "offline-30.4s",
     *,
     model_name: str = DEFAULT_MODEL,
+    revision: str = DEFAULT_MODEL_REVISION,
     device: str = "cuda:0",
 ) -> list[dict]:
-    from nemo.collections.asr.models import (
-        SortformerEncLabelModel,
+    model = load_nemotron_model(
+        model_name=model_name,
+        revision=revision,
+        device=device,
+        profile=profile,
     )
-
-    model = SortformerEncLabelModel.from_pretrained(
-        model_name
-    )
-    model = model.to(device)
-    model.eval()
-    apply_nemo_profile(model, profile)
     prediction = model.diarize(
         audio=[str(audio_path)],
         batch_size=1,
@@ -123,6 +164,7 @@ def run_diarization(
     revision: str | None,
     device: str,
     embedding_model: str,
+    embedding_revision: str,
     match_threshold: float,
     ambiguity_margin: float,
     min_clean_speech_ms: int = 1,
@@ -138,6 +180,10 @@ def run_diarization(
 ) -> dict:
     if not audio_path.is_file():
         raise FileNotFoundError(audio_path)
+    if min_clean_speech_ms <= 0:
+        raise ValueError(
+            "min_clean_speech_ms must be positive"
+        )
     output_path.unlink(missing_ok=True)
 
     audio_seconds = wav_duration_seconds(
@@ -181,6 +227,7 @@ def run_diarization(
         inference_seconds=inference_seconds,
         overflow_resolver={
             "embedding_model": embedding_model,
+            "embedding_revision": embedding_revision,
             "match_threshold": match_threshold,
             "ambiguity_margin": ambiguity_margin,
             "min_clean_speech_ms": min_clean_speech_ms,
@@ -220,9 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--revision",
+        default=DEFAULT_MODEL_REVISION,
         help=(
-            "Provenance label recorded in the artifact. "
-            "Pin the downloaded model separately."
+            "Pinned Hugging Face revision for the "
+            "Nemotron .nemo checkpoint."
         ),
     )
     parser.add_argument(
@@ -232,6 +280,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--embedding-model",
         default=DEFAULT_TITANET_MODEL,
+    )
+    parser.add_argument(
+        "--embedding-revision",
+        default=DEFAULT_TITANET_REVISION,
+        help=(
+            "Pinned Hugging Face revision for the "
+            "speaker embedding checkpoint."
+        ),
     )
     parser.add_argument(
         "--match-threshold",
@@ -264,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     args.output.unlink(missing_ok=True)
     adapter = load_titanet_adapter(
         model_name=args.embedding_model,
+        revision=args.embedding_revision,
         device=args.device,
     )
 
@@ -275,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         revision=args.revision,
         device=args.device,
         embedding_model=args.embedding_model,
+        embedding_revision=args.embedding_revision,
         match_threshold=args.match_threshold,
         ambiguity_margin=args.ambiguity_margin,
         min_clean_speech_ms=args.min_clean_speech_ms,
@@ -282,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             audio,
             profile,
             model_name=args.model,
+            revision=args.revision,
             device=args.device,
         ),
         embedding_for_span=lambda span:
