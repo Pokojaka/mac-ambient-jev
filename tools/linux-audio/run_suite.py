@@ -119,6 +119,126 @@ def optional_executable_check(
     return CheckResult(name, Status.PASS)
 
 
+def optional_command_check(
+    name: str,
+    command: list[str],
+    cwd: pathlib.Path,
+    *,
+    modules: tuple[str, ...] = (),
+    executables: tuple[str, ...] = (),
+    paths: tuple[pathlib.Path, ...] = (),
+) -> CheckResult:
+    for module in modules:
+        if importlib.util.find_spec(module) is None:
+            return CheckResult(
+                name,
+                Status.SKIPPED_MISSING_DEPENDENCY,
+                f"Python module {module!r} is not installed",
+            )
+    for executable in executables:
+        if shutil.which(executable) is None:
+            return CheckResult(
+                name,
+                Status.SKIPPED_MISSING_DEPENDENCY,
+                f"Executable {executable!r} is not installed",
+            )
+    for path in paths:
+        if not path.is_file():
+            return CheckResult(
+                name,
+                Status.SKIPPED_MISSING_DEPENDENCY,
+                f"Required fixture {str(path)!r} is missing",
+            )
+    return run_command(
+        name,
+        command,
+        cwd,
+    )
+
+
+def full_model_checks(
+    *,
+    here: pathlib.Path,
+    audio_path: pathlib.Path,
+    work_root: pathlib.Path,
+    device: str,
+    match_threshold: float | None,
+    ambiguity_margin: float | None,
+    min_clean_speech_ms: int | None,
+) -> list[CheckResult]:
+    work_root.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    qwen_output = work_root / "qwen3-asr.json"
+    qwen = optional_command_check(
+        "qwen3-asr-runner",
+        [
+            sys.executable,
+            "-m",
+            "asr.qwen3_asr",
+            str(audio_path),
+            "--output",
+            str(qwen_output),
+            "--device",
+            device,
+            "--language",
+            "Japanese",
+        ],
+        here,
+        modules=("qwen_asr", "torch"),
+        paths=(audio_path,),
+    )
+
+    if (
+        match_threshold is None
+        or ambiguity_margin is None
+        or min_clean_speech_ms is None
+    ):
+        nemotron = CheckResult(
+            "nemotron3-runner",
+            Status.SKIPPED_MISSING_DEPENDENCY,
+            (
+                "calibrated speaker match threshold, ambiguity "
+                "margin, and minimum clean speech duration are required"
+            ),
+        )
+    else:
+        nemotron_output = work_root / "nemotron3.json"
+        nemotron = optional_command_check(
+            "nemotron3-runner",
+            [
+                sys.executable,
+                "-m",
+                "diarization.nemotron3",
+                str(audio_path),
+                "--output",
+                str(nemotron_output),
+                "--device",
+                device,
+                "--match-threshold",
+                str(match_threshold),
+                "--ambiguity-margin",
+                str(ambiguity_margin),
+                "--min-clean-speech-ms",
+                str(min_clean_speech_ms),
+            ],
+            here,
+            modules=(
+                "nemo",
+                "huggingface_hub",
+                "torch",
+            ),
+            paths=(audio_path,),
+        )
+
+    return [
+        qwen,
+        nemotron,
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(
@@ -129,6 +249,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--json",
         type=pathlib.Path,
+    )
+
+    default_cache = (
+        pathlib.Path.home()
+        / ".cache"
+        / "mac-ambient-jev"
+        / "linux-audio"
+    )
+    parser.add_argument(
+        "--full-audio",
+        type=pathlib.Path,
+        default=(
+            default_cache
+            / "voicevox"
+            / "speakers-10"
+            / "audio.wav"
+        ),
+    )
+    parser.add_argument(
+        "--work-root",
+        type=pathlib.Path,
+        default=default_cache / "results",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda:0",
+    )
+    parser.add_argument(
+        "--speaker-match-threshold",
+        type=float,
+    )
+    parser.add_argument(
+        "--speaker-ambiguity-margin",
+        type=float,
+    )
+    parser.add_argument(
+        "--min-clean-speech-ms",
+        type=int,
     )
     args = parser.parse_args(argv)
 
@@ -160,11 +318,17 @@ def main(argv: list[str] | None = None) -> int:
             "qwen_asr",
         ),
     ]
+
     if args.full:
-        checks.append(
-            optional_import_check(
-                "nemotron3-model",
-                "nemo",
+        checks.extend(
+            full_model_checks(
+                here=here,
+                audio_path=args.full_audio,
+                work_root=args.work_root,
+                device=args.device,
+                match_threshold=args.speaker_match_threshold,
+                ambiguity_margin=args.speaker_ambiguity_margin,
+                min_clean_speech_ms=args.min_clean_speech_ms,
             )
         )
 
