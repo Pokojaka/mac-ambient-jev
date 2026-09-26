@@ -9,6 +9,22 @@ from collections.abc import Callable
 from common.artifact import build_asr_artifact, write_json_atomic
 
 DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B"
+DEFAULT_MODEL_REVISION = (
+    "7278e1e70fe206f11671096ffdd38061171dd6e5"
+)
+
+
+def resolve_model_revision(
+    model: str,
+    revision: str | None,
+) -> str:
+    if revision:
+        return revision
+    if model == DEFAULT_MODEL:
+        return DEFAULT_MODEL_REVISION
+    raise ValueError(
+        "revision is required for custom ASR models"
+    )
 
 
 def wav_duration_seconds(path: pathlib.Path) -> float:
@@ -34,14 +50,17 @@ def make_qwen_transcriber(
     import torch
     from qwen_asr import Qwen3ASRModel
 
+    resolved_revision = resolve_model_revision(
+        model,
+        revision,
+    )
     kwargs = {
         "dtype": torch.bfloat16,
         "device_map": device,
         "max_inference_batch_size": 1,
         "max_new_tokens": 4096,
+        "revision": resolved_revision,
     }
-    if revision is not None:
-        kwargs["revision"] = revision
 
     loaded = Qwen3ASRModel.from_pretrained(model, **kwargs)
 
@@ -97,14 +116,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("audio", type=pathlib.Path)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--revision")
+    parser.add_argument(
+        "--revision",
+        help=(
+            "Pinned Hugging Face revision. The default "
+            "Qwen model uses the repository-pinned revision."
+        ),
+    )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--language", default="Japanese")
     args = parser.parse_args(argv)
 
+    revision = resolve_model_revision(
+        args.model,
+        args.revision,
+    )
     transcribe = make_qwen_transcriber(
         model=args.model,
-        revision=args.revision,
+        revision=revision,
         device=args.device,
         language=args.language,
     )
@@ -112,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         audio_path=args.audio,
         output_path=args.output,
         model=args.model,
-        revision=args.revision,
+        revision=revision,
         device=args.device,
         transcribe=transcribe,
     )
