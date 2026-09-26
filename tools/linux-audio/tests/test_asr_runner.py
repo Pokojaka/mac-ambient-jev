@@ -164,3 +164,33 @@ def test_asr_environment_pins_qwen_asr_release():
         "qwen-asr==0.0.6"
         in data["project"]["dependencies"]
     )
+
+
+def test_asr_artifact_records_peak_vram():
+    artifact = build_asr_artifact(
+        model=DEFAULT_MODEL,
+        revision=DEFAULT_MODEL_REVISION,
+        backend="transformers",
+        device="cuda:0",
+        text="テスト",
+        language="Japanese",
+        audio_seconds=1.0,
+        inference_seconds=0.2,
+        peak_vram_mb=256.25,
+    )
+    assert artifact["runtime"]["peak_vram_mb"] == 256.25
+
+
+def test_asr_artifact_rejects_nonfinite_peak_vram():
+    with pytest.raises(ValueError, match="peak_vram_mb"):
+        build_asr_artifact(
+            model=DEFAULT_MODEL,
+            revision=DEFAULT_MODEL_REVISION,
+            backend="transformers",
+            device="cuda:0",
+            text="テスト",
+            language="Japanese",
+            audio_seconds=1.0,
+            inference_seconds=0.2,
+            peak_vram_mb=float("inf"),
+        )
