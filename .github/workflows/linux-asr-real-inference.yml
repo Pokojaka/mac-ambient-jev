@@ -30,10 +30,7 @@ jobs:
           sudo apt-get install -y \
             ffmpeg \
             sox \
-            libsox-fmt-all \
-            open-jtalk \
-            open-jtalk-mecab-naist-jdic \
-            hts-voice-nitech-jp-atr503-m001
+            libsox-fmt-all
 
       - name: Install Qwen3-ASR runtime
         run: |
@@ -62,31 +59,60 @@ jobs:
             tools/linux-audio/tests/test_csj.py \
             tools/linux-audio/tests/test_prepare_fixture.py \
             tools/linux-audio/tests/test_baseline.py \
-            tools/linux-audio/tests/test_run_suite.py
+            tools/linux-audio/tests/test_run_suite.py \
+            tools/linux-audio/tests/test_voicevox_cli.py
 
-      - name: Generate Japanese speech fixture with Open JTalk
+      - name: Generate Japanese speech fixture with VOICEVOX
         run: |
           mkdir -p real-inference
           printf '%s\n' \
             '今日は音声認識のテストです。公開鍵暗号を勉強します。' \
             > real-inference/reference.txt
 
-          DIC="$(dpkg -L open-jtalk-mecab-naist-jdic | grep '/naist-jdic$' | head -n1)"
-          VOICE="$(dpkg -L hts-voice-nitech-jp-atr503-m001 | grep '\.htsvoice$' | head -n1)"
-          test -n "$DIC"
-          test -n "$VOICE"
+          IMAGE=voicevox/voicevox_engine:cpu-latest
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" \
+            --format 'image_id={{.Id}} repo_digests={{json .RepoDigests}}' \
+            > real-inference/voicevox-image.txt
+          docker run -d --name mac-ambient-voicevox \
+            -p 127.0.0.1:50021:50021 "$IMAGE"
+          trap 'docker logs mac-ambient-voicevox; docker rm -f mac-ambient-voicevox' EXIT
 
-          echo "Open JTalk dictionary: $DIC"
-          echo "Open JTalk voice: $VOICE"
+          for attempt in {1..120}; do
+            if curl --fail --silent http://127.0.0.1:50021/version \
+              > real-inference/voicevox-version.txt; then
+              break
+            fi
+            sleep 2
+          done
+          test -s real-inference/voicevox-version.txt
+          curl --fail --silent --show-error \
+            http://127.0.0.1:50021/speakers \
+            > real-inference/voicevox-speakers.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
 
-          open_jtalk \
-            -x "$DIC" \
-            -m "$VOICE" \
-            -ow real-inference/japanese.wav \
-            real-inference/reference.txt
+          speakers = json.loads(Path("real-inference/voicevox-speakers.json").read_text())
+          name = next(
+              speaker["name"]
+              for speaker in speakers
+              if any(style["id"] == 3 for style in speaker["styles"])
+          )
+          Path("real-inference/CREDIT.txt").write_text(
+              f"VOICEVOX: {name}\n", encoding="utf-8"
+          )
+          print(f"VOICEVOX speaker style 3: {name}")
+          PY
+
+          python -m common.voicevox_cli \
+            --base-url http://127.0.0.1:50021 \
+            --text "$(cat real-inference/reference.txt)" \
+            --speaker 3 \
+            --output real-inference/voicevox.wav
 
           ffmpeg -hide_banner -loglevel error -y \
-            -i real-inference/japanese.wav \
+            -i real-inference/voicevox.wav \
             -ac 1 \
             -ar 16000 \
             -c:a pcm_s16le \
