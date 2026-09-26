@@ -7,6 +7,8 @@ import wave
 
 import pytest
 
+import asr.qwen3_asr as qwen3_asr
+
 from common.artifact import (
     build_asr_artifact,
     validate_asr_artifact,
@@ -194,3 +196,34 @@ def test_asr_artifact_rejects_nonfinite_peak_vram():
             inference_seconds=0.2,
             peak_vram_mb=float("inf"),
         )
+
+
+def test_run_transcription_records_peak_vram(
+    monkeypatch,
+    tmp_path,
+):
+    audio = tmp_path / "sample.wav"
+    output = tmp_path / "result.json"
+    make_wav(audio)
+
+    monkeypatch.setattr(
+        qwen3_asr,
+        "begin_cuda_measurement",
+        lambda device: "probe-token",
+    )
+    monkeypatch.setattr(
+        qwen3_asr,
+        "end_cuda_measurement",
+        lambda device, token: 321.5,
+    )
+
+    result = qwen3_asr.run_transcription(
+        audio_path=audio,
+        output_path=output,
+        model=DEFAULT_MODEL,
+        revision=DEFAULT_MODEL_REVISION,
+        device="cuda:0",
+        transcribe=lambda _: ("テストです", "Japanese"),
+    )
+
+    assert result["runtime"]["peak_vram_mb"] == 321.5
