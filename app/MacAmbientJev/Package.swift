@@ -6,6 +6,10 @@ var products: [Product] = [
     .executable(
         name: "MacAmbientJevEvaluateSession",
         targets: ["MacAmbientJevEvaluateSession"]
+    ),
+    .executable(
+        name: "MacAmbientJevEvaluateDiarization",
+        targets: ["MacAmbientJevEvaluateDiarization"]
     )
 ]
 
@@ -15,6 +19,10 @@ var targets: [Target] = [
     .target(name: "MacAmbientJevCore"),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
+        dependencies: ["MacAmbientJevCore"]
+    ),
+    .executableTarget(
+        name: "MacAmbientJevEvaluateDiarization",
         dependencies: ["MacAmbientJevCore"]
     ),
     .testTarget(
