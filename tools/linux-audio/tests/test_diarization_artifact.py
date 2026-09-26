@@ -112,7 +112,51 @@ def test_diarization_artifact_rejects_invalid_resolver_threshold():
             inference_seconds=1.0,
             overflow_resolver={
                 "embedding_model": "titanet",
+                "embedding_revision": "test-revision",
                 "match_threshold": 1.1,
                 "ambiguity_margin": 0.05,
+                "min_clean_speech_ms": 500,
+            },
+        )
+
+
+
+def test_diarization_artifact_requires_embedding_revision():
+    with pytest.raises(ValueError, match="embedding_revision"):
+        build_diarization_artifact(
+            model="nvidia/Nemotron-3-Diarization",
+            revision="test-revision",
+            profile="offline-30.4s",
+            backend="nemo",
+            device="cuda:0",
+            spans=[],
+            audio_seconds=0.0,
+            inference_seconds=0.0,
+            overflow_resolver={
+                "embedding_model": "titanet",
+                "match_threshold": 0.8,
+                "ambiguity_margin": 0.05,
+                "min_clean_speech_ms": 500,
+            },
+        )
+
+
+def test_diarization_artifact_requires_positive_clean_speech_ms():
+    with pytest.raises(ValueError, match="min_clean_speech_ms"):
+        build_diarization_artifact(
+            model="nvidia/Nemotron-3-Diarization",
+            revision="test-revision",
+            profile="offline-30.4s",
+            backend="nemo",
+            device="cuda:0",
+            spans=[],
+            audio_seconds=0.0,
+            inference_seconds=0.0,
+            overflow_resolver={
+                "embedding_model": "titanet",
+                "embedding_revision": "test-revision",
+                "match_threshold": 0.8,
+                "ambiguity_margin": 0.05,
+                "min_clean_speech_ms": 0,
             },
         )
