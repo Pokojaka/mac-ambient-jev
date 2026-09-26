@@ -119,7 +119,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     here = pathlib.Path(__file__).resolve().parent
+    root = here.parents[1]
     checks = [
+        run_command(
+            "portable-core",
+            ["bash", "scripts/verify_portable.sh"],
+            root,
+        ),
         run_command(
             "python-unit-tests",
             [
