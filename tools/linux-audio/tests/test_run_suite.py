@@ -91,19 +91,22 @@ def test_full_model_checks_keep_qwen_and_nemotron_separate(
 
     assert [item.name for item in checks] == [
         "qwen3-asr-runner",
+        "asr-evaluator",
+        "asr-baseline-record",
         "nemotron3-runner",
         "diarization-evaluator",
         "diarization-baseline-record",
     ]
     assert "-m asr.qwen3_asr" in " ".join(seen[0][1])
-    assert "-m diarization.nemotron3" in " ".join(seen[1][1])
-    assert "--match-threshold" in seen[1][1]
-    assert "0.82" in seen[1][1]
-    assert "MacAmbientJevEvaluateDiarization" in seen[2][1]
-    assert str(reference) in seen[2][1]
+    assert "MacAmbientJevEvaluateASR" in seen[1][1]
+    assert "-m diarization.nemotron3" in " ".join(seen[2][1])
+    assert "--match-threshold" in seen[2][1]
+    assert "0.82" in seen[2][1]
+    assert "MacAmbientJevEvaluateDiarization" in seen[3][1]
+    assert str(reference) in seen[3][1]
     assert str(
         tmp_path / "work" / "nemotron3.json"
-    ) in seen[2][1]
+    ) in seen[3][1]
 
 
 def test_full_model_checks_skip_nemotron_without_calibrated_thresholds(
@@ -134,10 +137,10 @@ def test_full_model_checks_skip_nemotron_without_calibrated_thresholds(
 
     assert checks[0].status is Status.PASS
     assert (
-        checks[1].status
+        checks[3].status
         is Status.SKIPPED_MISSING_DEPENDENCY
     )
-    assert "calibrated" in (checks[1].detail or "")
+    assert "calibrated" in (checks[3].detail or "")
 
 
 def test_main_full_appends_real_model_runner_checks(
@@ -407,7 +410,10 @@ def test_full_model_checks_writes_diarization_evaluation_artifact(
         min_clean_speech_ms=750,
     )
 
-    evaluator = seen[2]
+    evaluator = next(
+        item for item in seen
+        if item[0] == "diarization-evaluator"
+    )
     assert "--output" in evaluator[1]
     assert str(stale_evaluation) in evaluator[1]
     assert evaluator[2]["outputs"] == (stale_evaluation,)
@@ -468,4 +474,112 @@ def test_diarization_baseline_check_skips_missing_inputs(tmp_path):
     assert (
         result.status
         is Status.SKIPPED_MISSING_DEPENDENCY
+    )
+
+
+def test_asr_baseline_check_writes_current_record(
+    monkeypatch,
+    tmp_path,
+):
+    audio = tmp_path / "audio.wav"
+    reference = tmp_path / "reference.txt"
+    artifact = tmp_path / "qwen3-asr.json"
+    evaluation = tmp_path / "asr-evaluation.json"
+    for path in (audio, reference, artifact, evaluation):
+        path.write_text("x")
+    output = tmp_path / "qwen3-asr-current.json"
+
+    class Record:
+        def write(self, path):
+            path.write_text('{"ok":true}')
+
+    captured = {}
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return Record()
+
+    monkeypatch.setattr(
+        run_suite,
+        "build_asr_baseline_record",
+        fake_build,
+    )
+
+    result = run_suite.asr_baseline_check(
+        audio_path=audio,
+        reference_path=reference,
+        artifact_path=artifact,
+        evaluation_path=evaluation,
+        output_path=output,
+    )
+
+    assert result.status is Status.PASS
+    assert output.is_file()
+    assert captured["artifact_path"] == artifact
+    assert captured["evaluation_path"] == evaluation
+    assert captured["reference_path"] == reference
+
+
+def test_full_model_checks_runs_asr_evaluator_with_explicit_reference(
+    monkeypatch,
+    tmp_path,
+):
+    audio = tmp_path / "fixture.wav"
+    audio.write_bytes(b"RIFF")
+    speaker_reference = tmp_path / "speaker-reference.json"
+    speaker_reference.write_text("[]")
+    asr_reference = tmp_path / "reference-content.txt"
+    asr_reference.write_text("参照文")
+    seen = []
+
+    def fake_optional(name, command, cwd, **kwargs):
+        seen.append((name, command, kwargs))
+        work = tmp_path / "work"
+        if name == "qwen3-asr-runner":
+            work.mkdir(exist_ok=True)
+            (work / "qwen3-asr.json").write_text("{}")
+        if name == "asr-evaluator":
+            (work / "asr-evaluation.json").write_text("{}")
+        return CheckResult(name, Status.PASS)
+
+    monkeypatch.setattr(
+        run_suite,
+        "optional_command_check",
+        fake_optional,
+    )
+    monkeypatch.setattr(
+        run_suite,
+        "asr_baseline_check",
+        lambda **kwargs:
+            CheckResult("asr-baseline-record", Status.PASS),
+    )
+    monkeypatch.setattr(
+        run_suite,
+        "diarization_baseline_check",
+        lambda **kwargs:
+            CheckResult(
+                "diarization-baseline-record",
+                Status.SKIPPED_MISSING_DEPENDENCY,
+            ),
+    )
+
+    checks = run_suite.full_model_checks(
+        here=tmp_path,
+        audio_path=audio,
+        speaker_reference=speaker_reference,
+        work_root=tmp_path / "work",
+        device="cuda:0",
+        match_threshold=None,
+        ambiguity_margin=None,
+        min_clean_speech_ms=None,
+        asr_reference=asr_reference,
+    )
+
+    asr = next(item for item in seen if item[0] == "asr-evaluator")
+    assert "MacAmbientJevEvaluateASR" in asr[1]
+    assert str(asr_reference) in asr[1]
+    assert any(
+        item.name == "asr-baseline-record"
+        and item.status is Status.PASS
+        for item in checks
     )
