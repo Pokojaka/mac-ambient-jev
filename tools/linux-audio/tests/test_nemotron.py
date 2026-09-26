@@ -193,6 +193,7 @@ def test_run_diarization_writes_resolved_artifact(tmp_path):
     assert json.loads(output.read_text()) == artifact
     assert artifact["runtime"]["audio_seconds"] == 1.0
     assert artifact["runtime"]["inference_seconds"] == 0.25
+    assert artifact["raw_spans"] == raw
     assert artifact["overflow_resolver"] == {
         "embedding_model": "test-embedding",
         "embedding_revision": "test-embedding-revision",
