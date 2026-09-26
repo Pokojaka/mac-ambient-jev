@@ -127,6 +127,7 @@ def optional_command_check(
     modules: tuple[str, ...] = (),
     executables: tuple[str, ...] = (),
     paths: tuple[pathlib.Path, ...] = (),
+    outputs: tuple[pathlib.Path, ...] = (),
 ) -> CheckResult:
     for module in modules:
         if importlib.util.find_spec(module) is None:
@@ -149,11 +150,21 @@ def optional_command_check(
                 Status.SKIPPED_MISSING_DEPENDENCY,
                 f"Required fixture {str(path)!r} is missing",
             )
-    return run_command(
+    result = run_command(
         name,
         command,
         cwd,
     )
+    if result.status is not Status.PASS:
+        return result
+    for output in outputs:
+        if not output.is_file():
+            return CheckResult(
+                name,
+                Status.FAIL,
+                f"Expected output {str(output)!r} was not produced",
+            )
+    return result
 
 
 def full_model_checks(
@@ -174,8 +185,12 @@ def full_model_checks(
 
     qwen_output = work_root / "qwen3-asr.json"
     nemotron_output = work_root / "nemotron3.json"
+    diarization_evaluation_output = (
+        work_root / "diarization-evaluation.json"
+    )
     qwen_output.unlink(missing_ok=True)
     nemotron_output.unlink(missing_ok=True)
+    diarization_evaluation_output.unlink(missing_ok=True)
     qwen = optional_command_check(
         "qwen3-asr-runner",
         [
@@ -247,6 +262,8 @@ def full_model_checks(
             "MacAmbientJevEvaluateDiarization",
             str(speaker_reference),
             str(nemotron_output),
+            "--output",
+            str(diarization_evaluation_output),
         ],
         root,
         executables=("swift",),
@@ -254,6 +271,7 @@ def full_model_checks(
             speaker_reference,
             nemotron_output,
         ),
+        outputs=(diarization_evaluation_output,),
     )
 
     return [
