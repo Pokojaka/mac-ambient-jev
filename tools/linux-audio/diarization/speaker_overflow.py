@@ -60,11 +60,50 @@ class SpeakerOverflowResolver:
 
 
 
+def is_clean_speech_span(
+    span: dict,
+    all_spans: list[dict],
+    *,
+    min_duration_ms: int,
+) -> bool:
+    if min_duration_ms <= 0:
+        raise ValueError(
+            "min_duration_ms must be positive"
+        )
+    start = span.get("start_ms")
+    end = span.get("end_ms")
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 0
+        or end <= start
+        or end - start < min_duration_ms
+    ):
+        return False
+
+    for other in all_spans:
+        if other is span:
+            continue
+        other_start = other.get("start_ms")
+        other_end = other.get("end_ms")
+        if (
+            not isinstance(other_start, int)
+            or not isinstance(other_end, int)
+        ):
+            continue
+        if start < other_end and end > other_start:
+            return False
+    return True
+
+
 def resolve_spans_with_embeddings(
     spans: list[dict],
     *,
     embedding_for_span,
     resolver: SpeakerOverflowResolver,
+    eligible_for_resolution=None,
 ) -> list[dict]:
     ordered = sorted(
         enumerate(spans),
@@ -76,11 +115,18 @@ def resolve_spans_with_embeddings(
 
     result: list[dict] = []
     for _, span in ordered:
+        if (
+            eligible_for_resolution is not None
+            and not eligible_for_resolution(span)
+        ):
+            speaker = {"kind": "unknown"}
+        else:
+            speaker = resolver.resolve(
+                embedding_for_span(span)
+            )
         result.append({
             "start_ms": span["start_ms"],
             "end_ms": span["end_ms"],
-            "speaker": resolver.resolve(
-                embedding_for_span(span)
-            ),
+            "speaker": speaker,
         })
     return result
