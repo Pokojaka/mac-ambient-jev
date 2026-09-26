@@ -128,3 +128,122 @@ func diarizationArtifactEvaluationRejectsUnknownSchema() {
         )
     }
 }
+
+
+@Test
+func speakerIdentityDecodingRejectsIndexOnOther() {
+    let data = Data(
+        #"{\"kind\":\"other\",\"index\":1}"#.utf8
+    )
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(
+            SpeakerIdentity.self,
+            from: data
+        )
+    }
+}
+
+@Test
+func diarizationArtifactEvaluationRejectsInvalidPublicSpan()
+    throws
+{
+    let artifact = DiarizationEvaluationArtifact(
+        schemaVersion: 1,
+        spans: [
+            DiarizationArtifactSpan(
+                startMilliseconds: 1_000,
+                endMilliseconds: 1_000,
+                speaker: try .tracked(1)
+            )
+        ]
+    )
+
+    #expect(
+        throws:
+            DiarizationArtifactEvaluationError
+            .invalidPublicSpan(index: 0)
+    ) {
+        _ = try DiarizationArtifactEvaluator.evaluate(
+            reference: [],
+            artifact: artifact
+        )
+    }
+}
+
+@Test
+func diarizationArtifactEvaluationRejectsEmptyRawSpeakerLabel() {
+    let artifact = DiarizationEvaluationArtifact(
+        schemaVersion: 1,
+        spans: [],
+        rawSpans: [
+            DiarizationRawSpan(
+                startMilliseconds: 0,
+                endMilliseconds: 1_000,
+                speakerLabel: "  "
+            )
+        ]
+    )
+
+    #expect(
+        throws:
+            DiarizationArtifactEvaluationError
+            .emptyRawSpeakerLabel(index: 0)
+    ) {
+        _ = try DiarizationArtifactEvaluator.evaluate(
+            reference: [],
+            artifact: artifact
+        )
+    }
+}
+
+@Test
+func diarizationArtifactEvaluationRejectsInvalidReferenceSpan() {
+    let artifact = DiarizationEvaluationArtifact(
+        schemaVersion: 1,
+        spans: []
+    )
+    let reference = [
+        SourceSpeakerSpan(
+            startMilliseconds: -1,
+            endMilliseconds: 1_000,
+            speakerLabel: "person-1"
+        )
+    ]
+
+    #expect(
+        throws:
+            DiarizationArtifactEvaluationError
+            .invalidReferenceSpan(index: 0)
+    ) {
+        _ = try DiarizationArtifactEvaluator.evaluate(
+            reference: reference,
+            artifact: artifact
+        )
+    }
+}
+
+@Test
+func diarizationArtifactEvaluationRejectsInvalidRawSpan() {
+    let artifact = DiarizationEvaluationArtifact(
+        schemaVersion: 1,
+        spans: [],
+        rawSpans: [
+            DiarizationRawSpan(
+                startMilliseconds: 1_000,
+                endMilliseconds: 999,
+                speakerLabel: "stream-1"
+            )
+        ]
+    )
+
+    #expect(
+        throws:
+            DiarizationArtifactEvaluationError
+            .invalidRawSpan(index: 0)
+    ) {
+        _ = try DiarizationArtifactEvaluator.evaluate(
+            reference: [],
+            artifact: artifact
+        )
+    }
+}
