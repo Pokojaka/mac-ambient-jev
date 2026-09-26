@@ -16,12 +16,18 @@ private enum EvaluateDiarizationError: LocalizedError {
 struct EvaluateDiarizationCommand {
     static func main() throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        guard arguments.count == 2 else {
+        let outputURL: URL?
+        switch arguments.count {
+        case 2:
+            outputURL = nil
+        case 4 where arguments[2] == "--output":
+            outputURL = URL(fileURLWithPath: arguments[3])
+        default:
             FileHandle.standardError.write(
                 Data(
                     """
                     使い方:
-                      MacAmbientJevEvaluateDiarization <speaker-reference.json> <diarization.json>
+                      MacAmbientJevEvaluateDiarization <speaker-reference.json> <diarization.json> [--output report.json]
 
                     """.utf8
                 )
@@ -53,9 +59,22 @@ struct EvaluateDiarizationCommand {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        FileHandle.standardOutput.write(
-            try encoder.encode(report)
-        )
-        FileHandle.standardOutput.write(Data("\n".utf8))
+        let data = try encoder.encode(report)
+
+        if let outputURL {
+            try FileManager.default.createDirectory(
+                at: outputURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: outputURL, options: .atomic)
+            try FileHandle.standardOutput.write(
+                contentsOf: Data(
+                    "\(outputURL.path)\n".utf8
+                )
+            )
+        } else {
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        }
     }
 }
