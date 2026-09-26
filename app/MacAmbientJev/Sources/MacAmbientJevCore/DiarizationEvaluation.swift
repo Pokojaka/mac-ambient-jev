@@ -341,3 +341,279 @@ public enum CollapsedDiarizationEvaluator {
         )
     }
 }
+
+public struct StandardDiarizationMetrics:
+    Codable, Sendable, Equatable
+{
+    public let totalReferenceSpeakerMilliseconds: Int64
+    public let missMilliseconds: Int64
+    public let falseAlarmMilliseconds: Int64
+    public let confusionMilliseconds: Int64
+    public let referenceOverlapMilliseconds: Int64
+    public let detectedOverlapMilliseconds: Int64
+    public let overlapRecall: Double?
+    public let speakerSwitchBoundaryMAEMilliseconds: Double?
+    public let der: Double
+
+    enum CodingKeys: String, CodingKey {
+        case totalReferenceSpeakerMilliseconds =
+            "total_reference_speaker_ms"
+        case missMilliseconds = "miss_ms"
+        case falseAlarmMilliseconds = "false_alarm_ms"
+        case confusionMilliseconds = "confusion_ms"
+        case referenceOverlapMilliseconds =
+            "reference_overlap_ms"
+        case detectedOverlapMilliseconds =
+            "detected_overlap_ms"
+        case overlapRecall = "overlap_recall"
+        case speakerSwitchBoundaryMAEMilliseconds =
+            "speaker_switch_boundary_mae_ms"
+        case der
+    }
+}
+
+public enum StandardDiarizationEvaluator {
+    public static func evaluate(
+        reference: [SourceSpeakerSpan],
+        hypothesis: [SourceSpeakerSpan]
+    ) -> StandardDiarizationMetrics {
+        let all = reference + hypothesis
+        let boundaries = Array(
+            Set(
+                all.flatMap {
+                    [$0.startMilliseconds, $0.endMilliseconds]
+                }
+            )
+        ).sorted()
+
+        var totalReference: Int64 = 0
+        var miss: Int64 = 0
+        var falseAlarm: Int64 = 0
+        var paired: Int64 = 0
+        var referenceOverlap: Int64 = 0
+        var detectedOverlap: Int64 = 0
+        var overlapByPair: [SpeakerPair: Int64] = [:]
+        var referenceLabels = Set<String>()
+        var hypothesisLabels = Set<String>()
+
+        for index in 0..<max(boundaries.count - 1, 0) {
+            let start = boundaries[index]
+            let end = boundaries[index + 1]
+            let duration = end - start
+            guard duration > 0 else { continue }
+
+            let ref = activeLabels(
+                in: start..<end,
+                spans: reference
+            )
+            let hyp = activeLabels(
+                in: start..<end,
+                spans: hypothesis
+            )
+
+            referenceLabels.formUnion(ref)
+            hypothesisLabels.formUnion(hyp)
+            totalReference += Int64(ref.count) * duration
+            miss +=
+                Int64(max(ref.count - hyp.count, 0)) * duration
+            falseAlarm +=
+                Int64(max(hyp.count - ref.count, 0)) * duration
+            paired +=
+                Int64(min(ref.count, hyp.count)) * duration
+
+            if ref.count >= 2 {
+                referenceOverlap += duration
+                if hyp.count >= 2 {
+                    detectedOverlap += duration
+                }
+            }
+
+            for referenceLabel in ref {
+                for hypothesisLabel in hyp {
+                    overlapByPair[
+                        SpeakerPair(
+                            reference: referenceLabel,
+                            hypothesis: hypothesisLabel
+                        ),
+                        default: 0
+                    ] += duration
+                }
+            }
+        }
+
+        let mappedOverlap = maximumMappedOverlap(
+            referenceLabels: Array(referenceLabels),
+            hypothesisLabels: Array(hypothesisLabels),
+            overlapByPair: overlapByPair
+        )
+        let confusion = max(paired - mappedOverlap, 0)
+        let error = miss + falseAlarm + confusion
+        let der = totalReference == 0
+            ? (error == 0 ? 0 : 1)
+            : Double(error) / Double(totalReference)
+        let overlapRecall = referenceOverlap == 0
+            ? nil
+            : Double(detectedOverlap) / Double(referenceOverlap)
+        let switchBoundaryMAE = switchBoundaryMAE(
+            reference: reference,
+            hypothesis: hypothesis
+        )
+
+        return StandardDiarizationMetrics(
+            totalReferenceSpeakerMilliseconds: totalReference,
+            missMilliseconds: miss,
+            falseAlarmMilliseconds: falseAlarm,
+            confusionMilliseconds: confusion,
+            referenceOverlapMilliseconds: referenceOverlap,
+            detectedOverlapMilliseconds: detectedOverlap,
+            overlapRecall: overlapRecall,
+            speakerSwitchBoundaryMAEMilliseconds:
+                switchBoundaryMAE,
+            der: der
+        )
+    }
+
+    private struct SpeakerPair: Hashable {
+        let reference: String
+        let hypothesis: String
+    }
+
+    private static func normalizedLabel(_ label: String) -> String? {
+        let normalized = label.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func activeLabels(
+        in range: Range<Int64>,
+        spans: [SourceSpeakerSpan]
+    ) -> Set<String> {
+        Set(
+            spans.lazy.compactMap { span in
+                guard
+                    span.startMilliseconds < range.upperBound,
+                    span.endMilliseconds > range.lowerBound
+                else {
+                    return nil
+                }
+                return normalizedLabel(span.speakerLabel)
+            }
+        )
+    }
+
+    private static func maximumMappedOverlap(
+        referenceLabels: [String],
+        hypothesisLabels: [String],
+        overlapByPair: [SpeakerPair: Int64]
+    ) -> Int64 {
+        guard
+            !referenceLabels.isEmpty,
+            !hypothesisLabels.isEmpty
+        else {
+            return 0
+        }
+
+        let referenceIsSmaller =
+            referenceLabels.count <= hypothesisLabels.count
+        let smaller = referenceIsSmaller
+            ? referenceLabels
+            : hypothesisLabels
+        let larger = referenceIsSmaller
+            ? hypothesisLabels
+            : referenceLabels
+
+        var scores: [Int: Int64] = [0: 0]
+        for largerLabel in larger {
+            var next = scores
+            for (mask, current) in scores {
+                for (
+                    smallIndex,
+                    smallerLabel
+                ) in smaller.enumerated() {
+                    let bit = 1 << smallIndex
+                    guard mask & bit == 0 else { continue }
+
+                    let pair = referenceIsSmaller
+                        ? SpeakerPair(
+                            reference: smallerLabel,
+                            hypothesis: largerLabel
+                        )
+                        : SpeakerPair(
+                            reference: largerLabel,
+                            hypothesis: smallerLabel
+                        )
+                    let candidate = current
+                        + overlapByPair[pair, default: 0]
+                    let newMask = mask | bit
+                    next[newMask] = max(
+                        next[newMask, default: 0],
+                        candidate
+                    )
+                }
+            }
+            scores = next
+        }
+        return scores.values.max() ?? 0
+    }
+
+    private static func switchBoundaries(
+        in spans: [SourceSpeakerSpan]
+    ) -> [Int64] {
+        let boundaries = Array(
+            Set(
+                spans.flatMap {
+                    [$0.startMilliseconds, $0.endMilliseconds]
+                }
+            )
+        ).sorted()
+        guard boundaries.count >= 3 else { return [] }
+
+        var result: [Int64] = []
+        for index in 1..<(boundaries.count - 1) {
+            let boundary = boundaries[index]
+            let before = activeLabels(
+                in: boundaries[index - 1]..<boundary,
+                spans: spans
+            )
+            let after = activeLabels(
+                in: boundary..<boundaries[index + 1],
+                spans: spans
+            )
+            if !before.isEmpty,
+               !after.isEmpty,
+               before != after {
+                result.append(boundary)
+            }
+        }
+        return result
+    }
+
+    private static func switchBoundaryMAE(
+        reference: [SourceSpeakerSpan],
+        hypothesis: [SourceSpeakerSpan]
+    ) -> Double? {
+        let referenceBoundaries =
+            switchBoundaries(in: reference)
+        guard !referenceBoundaries.isEmpty else {
+            return nil
+        }
+
+        let hypothesisBoundaries =
+            switchBoundaries(in: hypothesis)
+        guard !hypothesisBoundaries.isEmpty else {
+            return nil
+        }
+
+        let totalError = referenceBoundaries.reduce(Int64(0)) {
+            partial, boundary in
+            let nearest = hypothesisBoundaries
+                .map { abs($0 - boundary) }
+                .min() ?? 0
+            return partial + nearest
+        }
+        return Double(totalError)
+            / Double(referenceBoundaries.count)
+    }
+}
+
