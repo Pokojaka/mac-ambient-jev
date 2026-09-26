@@ -56,6 +56,37 @@ def validate_asr_artifact(artifact: dict[str, Any]) -> None:
     segments = artifact.get("segments")
     if not isinstance(segments, list) or not segments:
         raise ValueError("segments must be a non-empty list")
+    resolver = artifact.get("overflow_resolver")
+    if resolver is not None:
+        if not isinstance(resolver, dict):
+            raise ValueError(
+                "overflow_resolver must be an object"
+            )
+        if not resolver.get("embedding_model"):
+            raise ValueError(
+                "overflow_resolver.embedding_model is required"
+            )
+        match_threshold = resolver.get("match_threshold")
+        ambiguity_margin = resolver.get("ambiguity_margin")
+        if (
+            not isinstance(match_threshold, (int, float))
+            or isinstance(match_threshold, bool)
+            or not math.isfinite(match_threshold)
+            or not 0 <= match_threshold <= 1
+        ):
+            raise ValueError(
+                "overflow_resolver.match_threshold must be in 0...1"
+            )
+        if (
+            not isinstance(ambiguity_margin, (int, float))
+            or isinstance(ambiguity_margin, bool)
+            or not math.isfinite(ambiguity_margin)
+            or not 0 <= ambiguity_margin <= match_threshold
+        ):
+            raise ValueError(
+                "overflow_resolver.ambiguity_margin is invalid"
+            )
+
     runtime = artifact.get("runtime")
     if not isinstance(runtime, dict):
         raise ValueError("runtime is required")
@@ -170,6 +201,7 @@ def build_diarization_artifact(
     spans: list[dict[str, Any]],
     audio_seconds: float,
     inference_seconds: float,
+    overflow_resolver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if audio_seconds < 0 or inference_seconds < 0:
         raise ValueError(
@@ -201,6 +233,8 @@ def build_diarization_artifact(
             "rtf": rtf,
         },
     }
+    if overflow_resolver is not None:
+        artifact["overflow_resolver"] = overflow_resolver
     validate_diarization_artifact(artifact)
     return artifact
 
