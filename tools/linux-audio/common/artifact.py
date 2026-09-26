@@ -150,6 +150,22 @@ def validate_diarization_artifact(
             raise ValueError(
                 "overflow_resolver.embedding_model is required"
             )
+        if not resolver.get("embedding_revision"):
+            raise ValueError(
+                "overflow_resolver.embedding_revision is required"
+            )
+        min_clean_speech_ms = resolver.get(
+            "min_clean_speech_ms"
+        )
+        if (
+            not isinstance(min_clean_speech_ms, int)
+            or isinstance(min_clean_speech_ms, bool)
+            or min_clean_speech_ms <= 0
+        ):
+            raise ValueError(
+                "overflow_resolver.min_clean_speech_ms "
+                "must be a positive integer"
+            )
         match_threshold = resolver.get("match_threshold")
         ambiguity_margin = resolver.get("ambiguity_margin")
         if (
