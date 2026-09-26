@@ -18,6 +18,7 @@ def build_asr_artifact(
     language: str | None,
     audio_seconds: float,
     inference_seconds: float,
+    peak_vram_mb: float | None = None,
 ) -> dict[str, Any]:
     if audio_seconds < 0 or inference_seconds < 0:
         raise ValueError("runtime durations must be non-negative")
@@ -43,6 +44,8 @@ def build_asr_artifact(
             "rtf": rtf,
         },
     }
+    if peak_vram_mb is not None:
+        artifact["runtime"]["peak_vram_mb"] = peak_vram_mb
     validate_asr_artifact(artifact)
     return artifact
 
@@ -65,6 +68,16 @@ def validate_asr_artifact(artifact: dict[str, Any]) -> None:
             raise ValueError(f"runtime.{key} must be finite")
         if value < 0:
             raise ValueError(f"runtime.{key} must be non-negative")
+    peak_vram_mb = runtime.get("peak_vram_mb")
+    if peak_vram_mb is not None and (
+        not isinstance(peak_vram_mb, (int, float))
+        or isinstance(peak_vram_mb, bool)
+        or not math.isfinite(peak_vram_mb)
+        or peak_vram_mb < 0
+    ):
+        raise ValueError(
+            "runtime.peak_vram_mb must be finite and non-negative"
+        )
 
 
 def _validate_public_speaker(speaker: object) -> None:
@@ -233,6 +246,16 @@ def validate_diarization_artifact(
             raise ValueError(
                 f"runtime.{key} must be finite and non-negative"
             )
+    peak_vram_mb = runtime.get("peak_vram_mb")
+    if peak_vram_mb is not None and (
+        not isinstance(peak_vram_mb, (int, float))
+        or isinstance(peak_vram_mb, bool)
+        or not math.isfinite(peak_vram_mb)
+        or peak_vram_mb < 0
+    ):
+        raise ValueError(
+            "runtime.peak_vram_mb must be finite and non-negative"
+        )
 
 
 def build_diarization_artifact(
@@ -247,6 +270,7 @@ def build_diarization_artifact(
     inference_seconds: float,
     overflow_resolver: dict[str, Any] | None = None,
     raw_spans: list[dict[str, Any]] | None = None,
+    peak_vram_mb: float | None = None,
 ) -> dict[str, Any]:
     if audio_seconds < 0 or inference_seconds < 0:
         raise ValueError(
@@ -282,6 +306,8 @@ def build_diarization_artifact(
         artifact["overflow_resolver"] = overflow_resolver
     if raw_spans is not None:
         artifact["raw_spans"] = raw_spans
+    if peak_vram_mb is not None:
+        artifact["runtime"]["peak_vram_mb"] = peak_vram_mb
     validate_diarization_artifact(artifact)
     return artifact
 
