@@ -4,6 +4,8 @@ import math
 
 import pytest
 
+import diarization.nemotron3 as nemotron3_module
+
 from diarization.nemotron3 import (
     DEFAULT_MODEL,
     DEFAULT_MODEL_FILENAME,
@@ -403,3 +405,46 @@ def test_run_diarization_rejects_nonpositive_clean_speech_gate(
             diarize_raw=lambda _audio, _profile: [],
             embedding_for_span=lambda _span: one_hot(0),
         )
+
+
+def test_run_diarization_records_peak_vram(
+    monkeypatch,
+    tmp_path,
+):
+    import wave
+
+    audio = tmp_path / "audio.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * 16_000)
+
+    monkeypatch.setattr(
+        nemotron3_module,
+        "begin_cuda_measurement",
+        lambda device: "probe-token",
+    )
+    monkeypatch.setattr(
+        nemotron3_module,
+        "end_cuda_measurement",
+        lambda device, token: 654.25,
+    )
+
+    artifact = run_diarization(
+        audio_path=audio,
+        output_path=tmp_path / "out.json",
+        profile="offline-30.4s",
+        model=DEFAULT_MODEL,
+        revision=DEFAULT_MODEL_REVISION,
+        device="cuda:0",
+        embedding_model="test-embedding",
+        embedding_revision="test-embedding-revision",
+        match_threshold=0.8,
+        ambiguity_margin=0.05,
+        min_clean_speech_ms=50,
+        diarize_raw=lambda _audio, _profile: [],
+        embedding_for_span=lambda _span: one_hot(0),
+    )
+
+    assert artifact["runtime"]["peak_vram_mb"] == 654.25
