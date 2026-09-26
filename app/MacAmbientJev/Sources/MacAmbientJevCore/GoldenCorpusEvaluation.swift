@@ -1,18 +1,31 @@
 import Foundation
 
+public struct GoldenCorpusReference: Codable, Sendable, Equatable {
+    public let text: String?
+    public let path: String?
+
+    public init(text: String? = nil, path: String? = nil) {
+        self.text = text
+        self.path = path
+    }
+}
+
 public struct GoldenCorpusManifest: Codable, Sendable, Equatable {
     public let id: String
     public let audio: String
     public let annotations: GoldenCorpusAnnotations
+    public let reference: GoldenCorpusReference?
 
     public init(
         id: String,
         audio: String,
-        annotations: GoldenCorpusAnnotations
+        annotations: GoldenCorpusAnnotations,
+        reference: GoldenCorpusReference? = nil
     ) {
         self.id = id
         self.audio = audio
         self.annotations = annotations
+        self.reference = reference
     }
 }
 
@@ -61,6 +74,7 @@ public struct GoldenRuntimeMetrics: Codable, Sendable, Equatable {
     public let asrRTF: Double?
     public let peakMemoryMB: Double?
     public let oldestPendingAgeMilliseconds: Int64?
+    public let asrEvaluation: ASREvaluationResult?
 
     public init(
         asrRTF: Double? = nil,
@@ -70,12 +84,14 @@ public struct GoldenRuntimeMetrics: Codable, Sendable, Equatable {
         self.asrRTF = asrRTF
         self.peakMemoryMB = peakMemoryMB
         self.oldestPendingAgeMilliseconds = oldestPendingAgeMilliseconds
+        self.asrEvaluation = asrEvaluation
     }
 
     enum CodingKeys: String, CodingKey {
         case asrRTF = "asr_rtf"
         case peakMemoryMB = "peak_memory_mb"
         case oldestPendingAgeMilliseconds = "oldest_pending_age_ms"
+        case asrEvaluation = "asr_evaluation"
     }
 }
 
@@ -97,7 +113,8 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
         sceneOscillationCount: Int?,
         asrRTF: Double?,
         peakMemoryMB: Double?,
-        oldestPendingAgeMilliseconds: Int64?
+        oldestPendingAgeMilliseconds: Int64?,
+        asrEvaluation: ASREvaluationResult? = nil
     ) {
         self.technicalTermRetention = technicalTermRetention
         self.falseLowPriorityCount = falseLowPriorityCount
@@ -124,6 +141,10 @@ public struct GoldenCorpusReport: Codable, Sendable, Equatable {
         try container.encodeIfPresent(
             oldestPendingAgeMilliseconds,
             forKey: .oldestPendingAgeMilliseconds
+        )
+        try container.encodeIfPresent(
+            asrEvaluation,
+            forKey: .asrEvaluation
         )
     }
 
@@ -162,7 +183,8 @@ public enum GoldenCorpusEvaluator {
         segments: [MaterializedTranscriptSegment],
         manifest: GoldenCorpusManifest,
         observedSceneTransitions: [GoldenSceneTransition]? = nil,
-        runtimeMetrics: GoldenRuntimeMetrics = GoldenRuntimeMetrics()
+        runtimeMetrics: GoldenRuntimeMetrics = GoldenRuntimeMetrics(),
+        referenceText: String? = nil
     ) throws -> GoldenCorpusReport {
         let annotations = manifest.annotations
         try validateSegmentAnnotationIndices(
@@ -232,6 +254,14 @@ public enum GoldenCorpusEvaluator {
             sceneOscillationCount = nil
         }
 
+        let resolvedReferenceText = referenceText ?? manifest.reference?.text
+        let asrEvaluation = resolvedReferenceText.map {
+            ASREvaluation.evaluate(
+                reference: $0,
+                hypothesis: transcript
+            )
+        }
+
         return GoldenCorpusReport(
             technicalTermRetention: technicalTermRetention,
             falseLowPriorityCount: falseLowPriorityCount,
@@ -241,7 +271,8 @@ public enum GoldenCorpusEvaluator {
             asrRTF: runtimeMetrics.asrRTF,
             peakMemoryMB: runtimeMetrics.peakMemoryMB,
             oldestPendingAgeMilliseconds:
-                runtimeMetrics.oldestPendingAgeMilliseconds
+                runtimeMetrics.oldestPendingAgeMilliseconds,
+            asrEvaluation: asrEvaluation
         )
     }
 
