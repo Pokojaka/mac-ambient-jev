@@ -6,6 +6,7 @@ from diarization.nemotron3 import (
     PROFILES,
     apply_nemo_profile,
     parse_nemo_segments,
+    run_diarization,
 )
 from diarization.speaker_overflow import (
     SpeakerOverflowResolver,
@@ -137,3 +138,94 @@ def test_resolve_spans_with_embeddings_emits_public_schema():
         "speaker_label" not in span
         for span in resolved
     )
+
+
+
+def test_run_diarization_writes_resolved_artifact(tmp_path):
+    import json
+    import wave
+
+    audio = tmp_path / "audio.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * 16_000)
+
+    output = tmp_path / "diarization.json"
+    raw = [
+        {
+            "start_ms": index * 100,
+            "end_ms": (index + 1) * 100,
+            "speaker_label": f"raw-{index}",
+        }
+        for index in range(10)
+    ]
+    times = iter([10.0, 10.25])
+
+    artifact = run_diarization(
+        audio_path=audio,
+        output_path=output,
+        profile="offline-30.4s",
+        model="nvidia/Nemotron-3-Diarization",
+        revision="test-revision",
+        device="cuda:0",
+        embedding_model="test-embedding",
+        match_threshold=0.8,
+        ambiguity_margin=0.05,
+        diarize_raw=lambda _audio, _profile: raw,
+        embedding_for_span=lambda span: one_hot(
+            int(span["speaker_label"].split("-")[1])
+        ),
+        clock=lambda: next(times),
+    )
+
+    assert output.is_file()
+    assert json.loads(output.read_text()) == artifact
+    assert artifact["runtime"]["audio_seconds"] == 1.0
+    assert artifact["runtime"]["inference_seconds"] == 0.25
+    assert artifact["overflow_resolver"] == {
+        "embedding_model": "test-embedding",
+        "match_threshold": 0.8,
+        "ambiguity_margin": 0.05,
+    }
+    assert [
+        span["speaker"]["kind"]
+        for span in artifact["spans"][7:]
+    ] == ["other", "other", "other"]
+
+
+def test_run_diarization_removes_stale_output_on_failure(
+    tmp_path,
+):
+    import wave
+
+    audio = tmp_path / "audio.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * 1600)
+
+    output = tmp_path / "diarization.json"
+    output.write_text('{"stale": true}')
+
+    def fail(_audio, _profile):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_diarization(
+            audio_path=audio,
+            output_path=output,
+            profile="offline-30.4s",
+            model="nvidia/Nemotron-3-Diarization",
+            revision=None,
+            device="cuda:0",
+            embedding_model="test-embedding",
+            match_threshold=0.8,
+            ambiguity_margin=0.05,
+            diarize_raw=fail,
+            embedding_for_span=lambda span: one_hot(0),
+        )
+
+    assert not output.exists()
