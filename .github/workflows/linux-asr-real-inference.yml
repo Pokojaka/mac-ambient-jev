@@ -6,6 +6,10 @@ on:
       - work/linux-asr-evaluation
     paths:
       - .github/workflows/linux-asr-real-inference.yml
+      - tools/linux-audio/**
+      - app/MacAmbientJev/Sources/MacAmbientJevCore/**
+      - app/MacAmbientJev/Sources/MacAmbientJevEvaluateASR/**
+      - app/MacAmbientJev/Package.swift
   workflow_dispatch:
 
 jobs:
@@ -93,6 +97,7 @@ jobs:
       - name: Record runner result
         if: always()
         run: |
+          mkdir -p real-inference
           {
             echo "qwen17_outcome=${{ steps.qwen17.outcome }}"
             echo "runner=$(uname -a)"
