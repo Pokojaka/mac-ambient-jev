@@ -10,6 +10,7 @@ import tempfile
 from typing import Any
 
 
+ASR_EVALUATOR_VERSION = "asr-eval-v1"
 DIARIZATION_EVALUATOR_VERSION = "diarization-eval-v1"
 
 
@@ -203,6 +204,104 @@ def _append_numeric_metric(
         )
     metrics[name] = float(value)
 
+
+
+def build_asr_baseline_record(
+    *,
+    artifact_path: pathlib.Path,
+    evaluation_path: pathlib.Path,
+    audio_path: pathlib.Path,
+    reference_path: pathlib.Path,
+) -> BaselineRecord:
+    artifact = _load_object(
+        artifact_path,
+        "ASR artifact",
+    )
+    evaluation = _load_object(
+        evaluation_path,
+        "ASR evaluation",
+    )
+    if artifact.get("schema_version") != 1:
+        raise ValueError(
+            "unsupported ASR artifact schema_version"
+        )
+
+    engine = artifact.get("engine")
+    runtime = artifact.get("runtime")
+    if not isinstance(engine, dict):
+        raise ValueError("artifact engine is required")
+    if not isinstance(runtime, dict):
+        raise ValueError("artifact runtime is required")
+
+    raw = evaluation.get("raw")
+    normalized = evaluation.get("normalized")
+    if not isinstance(raw, dict):
+        raise ValueError("raw ASR evaluation is required")
+    if not isinstance(normalized, dict):
+        raise ValueError(
+            "normalized ASR evaluation is required"
+        )
+
+    metrics: dict[str, float] = {}
+    _append_numeric_metric(
+        metrics,
+        "raw_cer",
+        raw,
+        "rate",
+    )
+    _append_numeric_metric(
+        metrics,
+        "normalized_cer",
+        normalized,
+        "rate",
+    )
+    _append_numeric_metric(
+        metrics,
+        "rtf",
+        runtime,
+        "rtf",
+    )
+    _append_numeric_metric(
+        metrics,
+        "peak_vram_mb",
+        runtime,
+        "peak_vram_mb",
+    )
+    if "normalized_cer" not in metrics:
+        raise ValueError("normalized CER is required")
+
+    engine_name = engine.get("name")
+    model = engine.get("model")
+    revision = engine.get("revision")
+    backend = engine.get("backend")
+    device = engine.get("device")
+    for name, value in (
+        ("engine.name", engine_name),
+        ("engine.model", model),
+        ("engine.revision", revision),
+        ("engine.backend", backend),
+        ("engine.device", device),
+    ):
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} is required")
+
+    record = BaselineRecord(
+        schema_version=1,
+        kind="asr",
+        engine=engine_name,
+        model=model,
+        revision=revision,
+        backend=backend,
+        device=device,
+        evaluator_version=ASR_EVALUATOR_VERSION,
+        corpus={
+            "audio": _sha256_file(audio_path),
+            "reference": _sha256_file(reference_path),
+        },
+        metrics=metrics,
+    )
+    record.validate()
+    return record
 
 def build_diarization_baseline_record(
     *,
