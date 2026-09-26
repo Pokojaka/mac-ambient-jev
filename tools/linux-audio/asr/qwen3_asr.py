@@ -7,6 +7,10 @@ import wave
 from collections.abc import Callable
 
 from common.artifact import build_asr_artifact, write_json_atomic
+from common.runtime_metrics import (
+    begin_cuda_measurement,
+    end_cuda_measurement,
+)
 
 DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B"
 DEFAULT_MODEL_REVISION = (
@@ -91,8 +95,13 @@ def run_transcription(
 
     output_path.unlink(missing_ok=True)
     audio_seconds = wav_duration_seconds(audio_path)
+    measurement = begin_cuda_measurement(device)
     started = time.perf_counter()
     text, language = transcribe(audio_path)
+    peak_vram_mb = end_cuda_measurement(
+        device,
+        measurement,
+    )
     inference_seconds = time.perf_counter() - started
 
     artifact = build_asr_artifact(
@@ -104,6 +113,7 @@ def run_transcription(
         language=language,
         audio_seconds=audio_seconds,
         inference_seconds=inference_seconds,
+        peak_vram_mb=peak_vram_mb,
     )
     write_json_atomic(output_path, artifact)
     return artifact
