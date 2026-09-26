@@ -25,7 +25,18 @@ private struct ASRArtifact: Decodable {
 
 @main
 struct EvaluateASRCommand {
-    static func main() throws {
+    static func main() {
+        do {
+            try run()
+        } catch {
+            FileHandle.standardError.write(
+                Data("\(error.localizedDescription)\n".utf8)
+            )
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         let outputURL: URL?
         switch arguments.count {
