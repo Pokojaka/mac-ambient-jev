@@ -148,7 +148,14 @@ public struct CollapsedDiarizationMetrics:
     public let unknownMilliseconds: Int64
     public let otherToTrackedLeakageMilliseconds: Int64
     public let trackedToOtherLeakageMilliseconds: Int64
+    public let trackedSpeakerConfusionMilliseconds: Int64
+    public let referenceOverlapMilliseconds: Int64
+    public let detectedOverlapMilliseconds: Int64
+    public let otherPrecision: Double?
     public let otherRecall: Double?
+    public let unknownRate: Double
+    public let overflowDetectionRecall: Double?
+    public let overlapRecall: Double?
     public let der: Double
 
     enum CodingKeys: String, CodingKey {
@@ -162,7 +169,18 @@ public struct CollapsedDiarizationMetrics:
             "other_to_tracked_leakage_ms"
         case trackedToOtherLeakageMilliseconds =
             "tracked_to_other_leakage_ms"
+        case trackedSpeakerConfusionMilliseconds =
+            "tracked_speaker_confusion_ms"
+        case referenceOverlapMilliseconds =
+            "reference_overlap_ms"
+        case detectedOverlapMilliseconds =
+            "detected_overlap_ms"
+        case otherPrecision = "other_precision"
         case otherRecall = "other_recall"
+        case unknownRate = "unknown_rate"
+        case overflowDetectionRecall =
+            "overflow_detection_recall"
+        case overlapRecall = "overlap_recall"
         case der
     }
 }
@@ -188,8 +206,13 @@ public enum CollapsedDiarizationEvaluator {
         var unknown: Int64 = 0
         var otherToTracked: Int64 = 0
         var trackedToOther: Int64 = 0
+        var trackedSpeakerConfusion: Int64 = 0
+        var referenceOverlap: Int64 = 0
+        var detectedOverlap: Int64 = 0
         var otherReference: Int64 = 0
         var otherCorrect: Int64 = 0
+        var otherHypothesis: Int64 = 0
+        var overflowDetected: Int64 = 0
 
         for index in 0..<max(boundaries.count - 1, 0) {
             let start = boundaries[index]
@@ -206,6 +229,15 @@ public enum CollapsedDiarizationEvaluator {
                 spans: hypothesis
             )
             let common = ref.intersection(hyp)
+            let refTracked = Set(
+                ref.filter { $0.kind == .tracked }
+            )
+            let hypTracked = Set(
+                hyp.filter { $0.kind == .tracked }
+            )
+            let commonTracked = refTracked.intersection(
+                hypTracked
+            )
 
             totalReference += Int64(ref.count) * duration
             miss += Int64(max(ref.count - hyp.count, 0)) * duration
@@ -214,14 +246,33 @@ public enum CollapsedDiarizationEvaluator {
             confusion += Int64(
                 max(min(ref.count, hyp.count) - common.count, 0)
             ) * duration
+            trackedSpeakerConfusion += Int64(
+                max(
+                    min(refTracked.count, hypTracked.count)
+                        - commonTracked.count,
+                    0
+                )
+            ) * duration
 
+            if ref.count >= 2 {
+                referenceOverlap += duration
+                if hyp.count >= 2 {
+                    detectedOverlap += duration
+                }
+            }
             if hyp.contains(.unknown) {
                 unknown += duration
+            }
+            if hyp.contains(.other) {
+                otherHypothesis += duration
             }
             if ref.contains(.other) {
                 otherReference += duration
                 if hyp.contains(.other) {
                     otherCorrect += duration
+                    overflowDetected += duration
+                } else if hyp.contains(.unknown) {
+                    overflowDetected += duration
                 } else if hyp.contains(where: {
                     $0.kind == .tracked
                 }) {
@@ -239,9 +290,21 @@ public enum CollapsedDiarizationEvaluator {
         let der = totalReference == 0
             ? (error == 0 ? 0 : 1)
             : Double(error) / Double(totalReference)
+        let otherPrecision = otherHypothesis == 0
+            ? nil
+            : Double(otherCorrect) / Double(otherHypothesis)
         let otherRecall = otherReference == 0
             ? nil
             : Double(otherCorrect) / Double(otherReference)
+        let unknownRate = totalReference == 0
+            ? (unknown == 0 ? 0 : 1)
+            : Double(unknown) / Double(totalReference)
+        let overflowDetectionRecall = otherReference == 0
+            ? nil
+            : Double(overflowDetected) / Double(otherReference)
+        let overlapRecall = referenceOverlap == 0
+            ? nil
+            : Double(detectedOverlap) / Double(referenceOverlap)
 
         return CollapsedDiarizationMetrics(
             totalReferenceSpeakerMilliseconds: totalReference,
@@ -251,7 +314,15 @@ public enum CollapsedDiarizationEvaluator {
             unknownMilliseconds: unknown,
             otherToTrackedLeakageMilliseconds: otherToTracked,
             trackedToOtherLeakageMilliseconds: trackedToOther,
+            trackedSpeakerConfusionMilliseconds:
+                trackedSpeakerConfusion,
+            referenceOverlapMilliseconds: referenceOverlap,
+            detectedOverlapMilliseconds: detectedOverlap,
+            otherPrecision: otherPrecision,
             otherRecall: otherRecall,
+            unknownRate: unknownRate,
+            overflowDetectionRecall: overflowDetectionRecall,
+            overlapRecall: overlapRecall,
             der: der
         )
     }
