@@ -93,6 +93,7 @@ def test_full_model_checks_keep_qwen_and_nemotron_separate(
         "qwen3-asr-runner",
         "nemotron3-runner",
         "diarization-evaluator",
+        "diarization-baseline-record",
     ]
     assert "-m asr.qwen3_asr" in " ".join(seen[0][1])
     assert "-m diarization.nemotron3" in " ".join(seen[1][1])
@@ -305,7 +306,12 @@ def test_full_model_checks_remove_stale_nemotron_artifact(
     )
 
     assert not stale.exists()
-    assert checks[-1].name == "diarization-evaluator"
+    assert checks[-2].name == "diarization-evaluator"
+    assert (
+        checks[-2].status
+        is Status.SKIPPED_MISSING_DEPENDENCY
+    )
+    assert checks[-1].name == "diarization-baseline-record"
     assert (
         checks[-1].status
         is Status.SKIPPED_MISSING_DEPENDENCY
