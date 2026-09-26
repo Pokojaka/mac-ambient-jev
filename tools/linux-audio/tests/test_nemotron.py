@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from diarization.nemotron3 import (
+    DEFAULT_MODEL,
+    DEFAULT_MODEL_FILENAME,
+    DEFAULT_MODEL_REVISION,
     PROFILES,
     apply_nemo_profile,
+    load_nemotron_model,
     parse_nemo_segments,
     run_diarization,
 )
@@ -172,6 +178,7 @@ def test_run_diarization_writes_resolved_artifact(tmp_path):
         revision="test-revision",
         device="cuda:0",
         embedding_model="test-embedding",
+        embedding_revision="test-embedding-revision",
         match_threshold=0.8,
         ambiguity_margin=0.05,
         min_clean_speech_ms=50,
@@ -188,6 +195,7 @@ def test_run_diarization_writes_resolved_artifact(tmp_path):
     assert artifact["runtime"]["inference_seconds"] == 0.25
     assert artifact["overflow_resolver"] == {
         "embedding_model": "test-embedding",
+        "embedding_revision": "test-embedding-revision",
         "match_threshold": 0.8,
         "ambiguity_margin": 0.05,
         "min_clean_speech_ms": 50,
@@ -307,3 +315,89 @@ def test_ineligible_span_becomes_unknown_without_embedding():
         "speaker": {"kind": "unknown"},
     }]
     assert resolver.references == []
+
+
+
+def test_load_nemotron_model_pins_checkpoint_revision(tmp_path):
+    checkpoint = tmp_path / "nemotron.nemo"
+    checkpoint.write_bytes(b"checkpoint")
+    downloads = []
+    restores = []
+
+    def download_checkpoint(**kwargs):
+        downloads.append(kwargs)
+        return str(checkpoint)
+
+    class ModelClass:
+        @classmethod
+        def restore_from(cls, **kwargs):
+            restores.append(kwargs)
+            return Model()
+
+    class Modules:
+        pass
+
+    class Model:
+        def __init__(self):
+            self.sortformer_modules = Modules()
+            self.evaluated = False
+            self.checked = False
+
+        def eval(self):
+            self.evaluated = True
+            return self
+
+        def _check_streaming_parameters(self):
+            self.checked = True
+
+    model = load_nemotron_model(
+        model_name=DEFAULT_MODEL,
+        revision=DEFAULT_MODEL_REVISION,
+        device="cpu",
+        profile="offline-30.4s",
+        download_checkpoint=download_checkpoint,
+        model_class=ModelClass,
+    )
+
+    assert downloads == [{
+        "repo_id": DEFAULT_MODEL,
+        "filename": DEFAULT_MODEL_FILENAME,
+        "revision": DEFAULT_MODEL_REVISION,
+    }]
+    assert restores == [{
+        "restore_path": str(checkpoint),
+        "map_location": "cpu",
+        "strict": False,
+    }]
+    assert model.evaluated
+    assert model.checked
+
+
+def test_run_diarization_rejects_nonpositive_clean_speech_gate(
+    tmp_path,
+):
+    import wave
+
+    audio = tmp_path / "audio.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * 1600)
+
+    with pytest.raises(ValueError, match="min_clean_speech_ms"):
+        run_diarization(
+            audio_path=audio,
+            output_path=tmp_path / "out.json",
+            profile="offline-30.4s",
+            model=DEFAULT_MODEL,
+            revision=DEFAULT_MODEL_REVISION,
+            device="cpu",
+            embedding_model="test-embedding",
+            embedding_revision="test-embedding-revision",
+            match_threshold=0.8,
+            ambiguity_margin=0.05,
+            min_clean_speech_ms=0,
+            diarize_raw=lambda _audio, _profile: [],
+            embedding_for_span=lambda _span: one_hot(0),
+        )
