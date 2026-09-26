@@ -1,0 +1,12 @@
+[project]
+name = "mac-ambient-jev-linux-diarization"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "nemo_toolkit[asr] @ git+https://github.com/NVIDIA-NeMo/Speech.git@cf724ac337d1ebc7d0dda1e23fb80916f52927a5",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+]
