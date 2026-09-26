@@ -43,8 +43,30 @@ public struct SpeakerIdentity: Codable, Sendable, Hashable, Equatable {
                 container.decode(Int.self, forKey: .index)
             )
         case .other:
+            if try container.decodeIfPresent(
+                Int.self,
+                forKey: .index
+            ) != nil {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .index,
+                    in: container,
+                    debugDescription:
+                        "other speaker must not have an index"
+                )
+            }
             self = .other
         case .unknown:
+            if try container.decodeIfPresent(
+                Int.self,
+                forKey: .index
+            ) != nil {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .index,
+                    in: container,
+                    debugDescription:
+                        "unknown speaker must not have an index"
+                )
+            }
             self = .unknown
         }
     }
