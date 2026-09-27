@@ -194,56 +194,27 @@ final class AppState: ObservableObject {
         transcriptViewModel.update(segments: [])
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
+        guard let audioSource = savedSessions
+            .first(where: { $0.sessionID == sessionID })?.audioSource else {
+            transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
+            return
+        }
         do {
-            let sessionURL = paths.sessionsRoot.appending(
-                path: sessionID.uuidString,
-                directoryHint: .isDirectory
-            )
-            guard let metadata = try ProcessingMetadataStore(
-                sessionURL: sessionURL
-            ).load(), let activeRuns = metadata.activeRuns,
-                  activeRuns.asr != nil else {
+            switch try SavedTranscriptLoader.load(
+                sessionURL: paths.sessionsRoot.appending(
+                    path: sessionID.uuidString,
+                    directoryHint: .isDirectory
+                ),
+                audioSource: audioSource
+            ) {
+            case .unavailable:
                 transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
-                return
+            case .segments(let segments):
+                transcriptViewModel.update(segments: segments)
+                transcriptViewModel.setStatus(
+                    segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
+                )
             }
-            guard let audioSource = savedSessions
-                .first(where: { $0.sessionID == sessionID })?.audioSource else {
-                transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
-                return
-            }
-            let sampleRate: Double
-            switch audioSource {
-            case .processingTimeline(let checkpoint):
-                sampleRate = checkpoint.sampleRate
-            case .importedOriginal(let originalURL):
-                let original = try AVAudioFile(forReading: originalURL)
-                sampleRate = original.processingFormat.sampleRate
-                guard sampleRate.isFinite, sampleRate > 0 else {
-                    transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
-                    return
-                }
-            }
-
-            let eventsURL = sessionURL.appending(path: "events.jsonl")
-            let lines: [Data]
-            if FileManager.default.fileExists(atPath: eventsURL.path) {
-                lines = try SessionRecovery.recoverJSONL(
-                    Data(contentsOf: eventsURL)
-                ).lines
-            } else {
-                lines = []
-            }
-            let events = try EventLogTranscriptReader().events(
-                lines: lines,
-                activeRuns: activeRuns
-            )
-            let segments = TranscriptMaterializer(
-                sampleRate: sampleRate
-            ).materialize(events: events, activeRuns: activeRuns)
-            transcriptViewModel.update(segments: segments)
-            transcriptViewModel.setStatus(
-                segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
-            )
         } catch {
             transcriptViewModel.setStatus(
                 "保存済み文字起こしを読み込めませんでした: \(error.localizedDescription)"
