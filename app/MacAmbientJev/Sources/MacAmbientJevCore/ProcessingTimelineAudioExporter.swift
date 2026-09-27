@@ -16,6 +16,11 @@ public enum ProcessingTimelineAudioExporterError: LocalizedError {
 }
 
 public struct ProcessingTimelineAudioExporter: Sendable {
+    public enum Encoding: Sendable {
+        case float32
+        case flac24
+    }
+
     public let framesPerBuffer: Int64
 
     public init(framesPerBuffer: Int64 = 48_000) {
@@ -25,7 +30,8 @@ public struct ProcessingTimelineAudioExporter: Sendable {
 
     public func export(
         reader: ProcessingTimelineReader,
-        to destinationURL: URL
+        to destinationURL: URL,
+        encoding: Encoding = .float32
     ) throws {
         let checkpoint = reader.checkpoint
         guard let format = AVAudioFormat(
@@ -47,7 +53,7 @@ public struct ProcessingTimelineAudioExporter: Sendable {
 
         let file = try AVAudioFile(
             forWriting: destinationURL,
-            settings: format.settings,
+            settings: fileSettings(for: format, encoding: encoding),
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
@@ -84,6 +90,24 @@ public struct ProcessingTimelineAudioExporter: Sendable {
 
             try file.write(from: buffer)
             startFrame = endFrame
+        }
+        file.close()
+    }
+
+    private func fileSettings(
+        for format: AVAudioFormat,
+        encoding: Encoding
+    ) -> [String: Any] {
+        switch encoding {
+        case .float32:
+            format.settings
+        case .flac24:
+            [
+                AVFormatIDKey: kAudioFormatFLAC,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: format.channelCount,
+                AVLinearPCMBitDepthKey: 24,
+            ]
         }
     }
 }
