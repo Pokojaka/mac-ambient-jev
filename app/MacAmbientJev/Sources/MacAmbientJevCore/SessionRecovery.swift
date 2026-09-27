@@ -2,6 +2,7 @@ import Foundation
 
 public enum SessionRecoveryError: Error, Equatable {
     case corruptIntermediateLine(index: Int)
+    case invalidEventSequence(index: Int)
 }
 
 public struct RecoveredJSONL: Sendable {
@@ -28,29 +29,31 @@ public enum SessionRecovery {
 
         let split = data.split(separator: 0x0A, omittingEmptySubsequences: false)
         let nonEmptyIndices = split.indices.filter { !split[$0].isEmpty }
-        let lastNonEmptyIndex = nonEmptyIndices.last
+        let unterminatedIndex = data.last == 0x0A ? nil : split.indices.last
         var validLines: [Data] = []
         var lastSequence: UInt64?
         var droppedTail = false
 
         for index in nonEmptyIndices {
             let line = Data(split[index])
-            do {
-                let object = try JSONSerialization.jsonObject(with: line)
-                guard let dictionary = object as? [String: Any] else {
-                    throw SessionRecoveryError.corruptIntermediateLine(index: index)
-                }
-                if let number = dictionary["event_seq"] as? NSNumber {
-                    lastSequence = number.uint64Value
-                }
-                validLines.append(line)
-            } catch {
-                if index == lastNonEmptyIndex {
+            guard let dictionary = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else {
+                if index == unterminatedIndex {
                     droppedTail = true
                     continue
                 }
                 throw SessionRecoveryError.corruptIntermediateLine(index: index)
             }
+            if let value = dictionary["event_seq"] {
+                guard let number = value as? NSNumber,
+                      CFGetTypeID(number) == CFNumberGetTypeID(),
+                      !CFNumberIsFloatType(number),
+                      number.int64Value > 0,
+                      number == NSNumber(value: number.int64Value) else {
+                    throw SessionRecoveryError.invalidEventSequence(index: index)
+                }
+                lastSequence = UInt64(number.int64Value)
+            }
+            validLines.append(line)
         }
 
         return RecoveredJSONL(
