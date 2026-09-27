@@ -100,19 +100,9 @@ swift tools/process-recording.swift \
 
 同じディレクトリに `segments.json` が生成されます。
 
-このコマンドは評価用 `manifest.json` を作成しません。後日、注釈付き評価を行う場合にのみ正解 annotation を別途用意してください。注釈のない指標は合格値として扱えません。
+注釈付きの評価（保持必須語・誤除外・場面転換時刻）は設計から外しました。保持すべき発話が残っているかは、マイクを使った実機試験で確認します。
 
-評価:
-
-```bash
-swift tools/evaluate-session.swift \
-  test-data/recordings/local/lecture-ja-001/manifest.json \
-  test-data/recordings/local/lecture-ja-001/segments.json
-```
-
-第3引数を省略すると場面観測は未計測になります。転換なしを観測した場合は、内容が `[]` の scene-transitions JSON を指定してください。
-
-評価方法の詳細は `docs/evaluation.md`、長時間・障害時の受け入れ試験は `docs/v1-acceptance.md` を参照してください。
+評価の方針は `docs/evaluation.md`、長時間・障害時の受け入れ試験は `docs/v1-acceptance.md` を参照してください。
 
 ## アプリでの動作確認
 

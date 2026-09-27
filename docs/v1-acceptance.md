@@ -1,5 +1,12 @@
 # V1 受け入れ試験
 
+## V1 完了の条件（2026-09-28 決定）
+
+- 以下の「基本検証」「60〜90分長時間試験」「process kill 復旧」「オフライン試験」のマイク実機項目がすべて通ったときに V1 完了とする。
+- マイクを使う試験はユーザーが実施して確認する。エージェントはマイクを使わず、これらの項目を自分で合格にしない。
+- 話者ラベルを初登場順 Speaker 1〜7 + OTHER + UNKNOWN に変更する作業は V1 に含め、マイク試験の前に入れる。マイク試験で表示も確認する。
+- 誤除外回帰と golden corpus は設計から外した。ユーザーは annotation を整備せず、保持すべき発話の確認はマイク実機試験で行う（`docs/evaluation.md`）。
+
 ## 基本検証
 
 - [x] `bash scripts/verify_v1.sh` が成功する（2026-09-25、モデル実行テストは通常設定どおり除外）
@@ -87,20 +94,6 @@ Jev API へ接続できない状態で10分以上録音する。
 - [ ] Jev failure が録音 failure として扱われない
 - [ ] 接続復旧後に再分類対象として保持される
 
-## 誤除外回帰（今回の検証対象外）
-
-元の設計では15〜30分のローカル golden corpus で確認する。2026-09-24 の検証ではユーザーの指定により作成・評価を行わない。以下のチェックは未完了のままとし、長時間ファイルの処理成功で代用しない。
-
-回帰判定には、用語保持・誤低優先度・誤背景の各 annotation を含める。レポートの対象項目が `null` の場合は未検証とし、V1 の合格根拠にしない。
-
-評価を始める前に、誤除外 index が `segments.json` の範囲内であり、保持必須語が空文字や空白だけでないことを確認する。違反があれば評価器はエラーで停止する。
-
-- [ ] `false_low_priority_count == 0`
-- [ ] `false_background_count == 0`
-- [ ] `technical_term_retention == 1.0`
-- [ ] mixed scope segment が丸ごと background 扱いされない
-- [ ] 「えー、RSAでは…」のような mixed-content 発話が LOW_PRIORITY にならない
-
 ## テスト録音データ
 
 `test-data/recordings/local/<corpus-id>/audio.m4a` のように配置し、次を実行する。
@@ -110,12 +103,6 @@ swift tools/process-recording.swift \
   test-data/recordings/local/<corpus-id>/audio.m4a
 ```
 
-生成された `segments.json` を評価する。
+生成された `segments.json` は、処理完了・復旧・処理時間・メモリの確認に使う。注釈付きの評価は行わない。
 
-```bash
-swift tools/evaluate-session.swift \
-  test-data/recordings/local/<corpus-id>/manifest.json \
-  test-data/recordings/local/<corpus-id>/segments.json
-```
-
-実録音データと annotation は `.gitignore` 対象とし、GitHubへ commit しない。
+実録音データは `.gitignore` 対象とし、GitHubへ commit しない。
