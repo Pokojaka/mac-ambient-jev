@@ -4,6 +4,7 @@ public enum ProcessingTimelineReaderError: Error, Equatable {
     case invalidFrameRange
     case corruptChunk(String)
     case invalidChunkIndex
+    case invalidFormat
 }
 
 public struct ProcessingTimelineReader: Sendable {
@@ -25,19 +26,12 @@ public struct ProcessingTimelineReader: Sendable {
         }
 
         guard !frameRange.isEmpty else { return [] }
+        try validateIndex()
 
         let bytesPerFrame =
             MemoryLayout<Float>.size * checkpoint.channelCount
 
         if let frameCounts = checkpoint.chunkFrameCounts {
-            guard frameCounts.count == checkpoint.chunkFiles.count,
-                  frameCounts.allSatisfy({ $0 > 0 }),
-                  frameCounts.reduce(Int64.zero, {
-                      $0 + Int64($1)
-                  }) == checkpoint.committedFrames else {
-                throw ProcessingTimelineReaderError.invalidChunkIndex
-            }
-
             return try readIndexed(
                 frameRange: frameRange,
                 bytesPerFrame: bytesPerFrame,
@@ -49,6 +43,45 @@ public struct ProcessingTimelineReader: Sendable {
             frameRange: frameRange,
             bytesPerFrame: bytesPerFrame
         )
+    }
+
+    public func validateChunkFiles() throws {
+        try validateIndex()
+        let bytesPerFrame =
+            MemoryLayout<Float>.size * checkpoint.channelCount
+        var frames: Int64 = 0
+        for (index, filename) in checkpoint.chunkFiles.enumerated() {
+            let fileSize = try? directory.appending(path: filename)
+                .resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard let fileSize, fileSize > 0, fileSize % bytesPerFrame == 0,
+                  checkpoint.chunkFrameCounts.map({ $0[index] * bytesPerFrame == fileSize }) ?? true else {
+                throw ProcessingTimelineReaderError.corruptChunk(filename)
+            }
+            frames += Int64(fileSize / bytesPerFrame)
+        }
+        guard frames == checkpoint.committedFrames else {
+            throw ProcessingTimelineReaderError.invalidChunkIndex
+        }
+    }
+
+    private func validateIndex() throws {
+        guard (1...Int(Int16.max)).contains(checkpoint.channelCount),
+              checkpoint.sampleRate.isFinite,
+              checkpoint.sampleRate > 0 else {
+            throw ProcessingTimelineReaderError.invalidFormat
+        }
+        guard checkpoint.hasPlainUniqueChunkFiles else {
+            throw ProcessingTimelineReaderError.invalidChunkIndex
+        }
+        if let frameCounts = checkpoint.chunkFrameCounts {
+            guard frameCounts.count == checkpoint.chunkFiles.count,
+                  frameCounts.allSatisfy({ (1...Int(Int32.max)).contains($0) }),
+                  frameCounts.reduce(Int64.zero, {
+                      $0 + Int64($1)
+                  }) == checkpoint.committedFrames else {
+                throw ProcessingTimelineReaderError.invalidChunkIndex
+            }
+        }
     }
 
     private func readIndexed(

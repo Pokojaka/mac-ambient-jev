@@ -84,8 +84,8 @@ import Testing
     #expect(ring.push(samples: [5, 6, 7, 8]))
     #expect(!ring.push(samples: [9, 10, 11, 12]))
     #expect(ring.overflowCount == 1)
-    #expect(ring.pop() == [1, 2, 3, 4])
-    #expect(ring.pop() == [5, 6, 7, 8])
+    #expect(ring.pop()?.samples == [1, 2, 3, 4])
+    #expect(ring.pop()?.samples == [5, 6, 7, 8])
     #expect(ring.pop() == nil)
 }
 
@@ -129,7 +129,7 @@ import Testing
     }
 
     #expect(accepted)
-    #expect(ring.pop() == [1, 10, 2, 20])
+    #expect(ring.pop()?.samples == [1, 10, 2, 20])
 }
 
 

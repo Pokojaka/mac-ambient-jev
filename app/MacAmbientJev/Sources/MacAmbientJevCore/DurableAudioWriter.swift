@@ -29,6 +29,15 @@ public struct AudioCheckpoint: Codable, Sendable, Equatable {
     }
 }
 
+extension AudioCheckpoint {
+    public var hasPlainUniqueChunkFiles: Bool {
+        Set(chunkFiles).count == chunkFiles.count
+            && chunkFiles.allSatisfy {
+                !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/")
+            }
+    }
+}
+
 public actor DurableAudioWriter {
     public static let checkpointFilename = "checkpoint.json"
 
@@ -81,7 +90,8 @@ public actor DurableAudioWriter {
             )
 
             guard checkpoint.sampleRate == sampleRate,
-                  checkpoint.channelCount == channelCount else {
+                  checkpoint.channelCount == channelCount,
+                  checkpoint.hasPlainUniqueChunkFiles else {
                 throw DurableAudioWriterError.incompatibleCheckpoint
             }
 
@@ -91,12 +101,19 @@ public actor DurableAudioWriter {
 
             if let persistedCounts = checkpoint.chunkFrameCounts,
                persistedCounts.count == checkpoint.chunkFiles.count,
-               persistedCounts.allSatisfy({ $0 > 0 }) {
+               persistedCounts.allSatisfy({ (1...Int(Int32.max)).contains($0) }) {
                 let countedFrames = persistedCounts.reduce(Int64.zero) {
                     $0 + Int64($1)
                 }
                 guard countedFrames == checkpoint.committedFrames else {
                     throw DurableAudioWriterError.checkpointFrameCountMismatch
+                }
+                for (filename, frames) in zip(checkpoint.chunkFiles, persistedCounts) {
+                    let values = try directory.appending(path: filename)
+                        .resourceValues(forKeys: [.fileSizeKey])
+                    guard values.fileSize == frames * bytesPerFrame else {
+                        throw DurableAudioWriterError.corruptChunk(filename)
+                    }
                 }
                 self.chunkFrameCounts = persistedCounts
             } else {
@@ -206,32 +223,26 @@ public actor DurableAudioWriter {
         let samplesPerChunk = framesPerChunk * channelCount
 
         while pendingSamples.count >= samplesPerChunk {
-            let samples = Array(
-                pendingSamples.prefix(samplesPerChunk)
-            )
-            try writeChunk(samples)
-            pendingSamples.removeFirst(samplesPerChunk)
+            try writeChunk(sampleCount: samplesPerChunk)
         }
     }
 
     private func flushPendingChunk() throws {
         guard !pendingSamples.isEmpty else { return }
-
-        let samples = pendingSamples
-        pendingSamples.removeAll(keepingCapacity: true)
-        try writeChunk(samples)
+        try writeChunk(sampleCount: pendingSamples.count)
     }
 
-    private func writeChunk(_ samples: [Float]) throws {
+    private func writeChunk(sampleCount: Int) throws {
         let filename = String(
             format: "chunk-%06d.f32le",
             nextChunkIndex
         )
         let url = directory.appending(path: filename)
-        let data = samples.withUnsafeBytes { Data($0) }
+        let data = pendingSamples[..<sampleCount].withUnsafeBytes { Data($0) }
         try data.write(to: url, options: .atomic)
+        pendingSamples.removeFirst(sampleCount)
 
-        let frames = samples.count / channelCount
+        let frames = sampleCount / channelCount
         committedFrames += Int64(frames)
         chunkFiles.append(filename)
         chunkFrameCounts.append(frames)

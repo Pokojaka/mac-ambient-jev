@@ -13,8 +13,15 @@ public actor AudioCaptureDrain {
     public func drainAvailable() async throws -> Int {
         var drainedBlockCount = 0
 
-        while let samples = ring.pop() {
-            try await writer.append(samples: samples)
+        let silence = [Float](repeating: 0, count: writer.channelCount * 4_096)
+        while let block = ring.pop() {
+            var remaining = block.droppedSamplesBefore
+            while remaining > 0 {
+                let count = min(remaining, silence.count)
+                try await writer.append(samples: Array(silence[..<count]))
+                remaining -= count
+            }
+            try await writer.append(samples: block.samples)
             drainedBlockCount += 1
         }
 

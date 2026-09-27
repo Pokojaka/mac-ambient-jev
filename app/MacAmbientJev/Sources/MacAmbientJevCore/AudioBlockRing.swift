@@ -1,11 +1,18 @@
 import Foundation
 import Synchronization
 
+public struct AudioBlock: Sendable, Equatable {
+    public let droppedSamplesBefore: Int
+    public let samples: [Float]
+}
+
 public final class AudioBlockRing: @unchecked Sendable {
     private let capacity: Int
     private let blockSampleCapacity: Int
     private let storage: UnsafeMutablePointer<Float>
     private let lengths: UnsafeMutablePointer<Int>
+    private let droppedBefore: UnsafeMutablePointer<Int>
+    private var pendingDroppedSamples = 0
 
     private let writeSequence = Atomic<UInt64>(0)
     private let readSequence = Atomic<UInt64>(0)
@@ -27,6 +34,8 @@ public final class AudioBlockRing: @unchecked Sendable {
 
         self.lengths = .allocate(capacity: capacity)
         self.lengths.initialize(repeating: 0, count: capacity)
+        self.droppedBefore = .allocate(capacity: capacity)
+        self.droppedBefore.initialize(repeating: 0, count: capacity)
     }
 
     deinit {
@@ -34,16 +43,15 @@ public final class AudioBlockRing: @unchecked Sendable {
         storage.deallocate()
         lengths.deinitialize(count: capacity)
         lengths.deallocate()
+        droppedBefore.deinitialize(count: capacity)
+        droppedBefore.deallocate()
     }
 
     @discardableResult
     public func push(samples: [Float]) -> Bool {
-        guard samples.count <= blockSampleCapacity else {
-            recordOverflow()
-            return false
-        }
-
-        guard let slot = reserveProducerSlot() else {
+        guard samples.count <= blockSampleCapacity,
+              let slot = reserveProducerSlot() else {
+            recordOverflow(droppedSamples: samples.count)
             return false
         }
 
@@ -54,7 +62,7 @@ public final class AudioBlockRing: @unchecked Sendable {
             destination[index] = samples[index]
         }
         lengths[slot] = samples.count
-        publishProducedSlot()
+        publishProducedSlot(slot)
         return true
     }
 
@@ -69,13 +77,15 @@ public final class AudioBlockRing: @unchecked Sendable {
             return false
         }
 
-        let sampleCount = channelCount * frameCount
-        guard sampleCount <= blockSampleCapacity else {
+        let (sampleCount, overflow) =
+            channelCount.multipliedReportingOverflow(by: frameCount)
+        guard !overflow else {
             recordOverflow()
             return false
         }
-
-        guard let slot = reserveProducerSlot() else {
+        guard sampleCount <= blockSampleCapacity,
+              let slot = reserveProducerSlot() else {
+            recordOverflow(droppedSamples: sampleCount)
             return false
         }
 
@@ -91,11 +101,11 @@ public final class AudioBlockRing: @unchecked Sendable {
         }
 
         lengths[slot] = sampleCount
-        publishProducedSlot()
+        publishProducedSlot(slot)
         return true
     }
 
-    public func pop() -> [Float]? {
+    public func pop() -> AudioBlock? {
         let read = readSequence.load(ordering: .relaxed)
         let write = writeSequence.load(ordering: .acquiring)
 
@@ -111,7 +121,10 @@ public final class AudioBlockRing: @unchecked Sendable {
             ),
             count: length
         )
-        let result = Array(source)
+        let result = AudioBlock(
+            droppedSamplesBefore: droppedBefore[slot],
+            samples: Array(source)
+        )
 
         readSequence.store(
             read &+ 1,
@@ -129,14 +142,15 @@ public final class AudioBlockRing: @unchecked Sendable {
         let read = readSequence.load(ordering: .acquiring)
 
         guard write &- read < UInt64(capacity) else {
-            recordOverflow()
             return nil
         }
 
         return Int(write % UInt64(capacity))
     }
 
-    private func publishProducedSlot() {
+    private func publishProducedSlot(_ slot: Int) {
+        droppedBefore[slot] = pendingDroppedSamples
+        pendingDroppedSamples = 0
         let write = writeSequence.load(ordering: .relaxed)
         writeSequence.store(
             write &+ 1,
@@ -144,7 +158,10 @@ public final class AudioBlockRing: @unchecked Sendable {
         )
     }
 
-    private func recordOverflow() {
+    private func recordOverflow(droppedSamples: Int = 0) {
+        let (total, overflow) =
+            pendingDroppedSamples.addingReportingOverflow(droppedSamples)
+        pendingDroppedSamples = overflow ? Int.max : total
         _ = recordedOverflowCount.add(
             1,
             ordering: .relaxed

@@ -27,6 +27,7 @@ public struct ProcessingTimelineAudioExporter: Sendable {
         reader: ProcessingTimelineReader,
         to destinationURL: URL
     ) throws {
+        try reader.validateChunkFiles()
         let checkpoint = reader.checkpoint
         guard let format = AVAudioFormat(
             standardFormatWithSampleRate: checkpoint.sampleRate,
@@ -41,12 +42,30 @@ public struct ProcessingTimelineAudioExporter: Sendable {
             withIntermediateDirectories: true
         )
 
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            try FileManager.default.removeItem(at: destinationURL)
+        let temporaryURL = parent.appending(
+            path: ".\(UUID().uuidString)-\(destinationURL.lastPathComponent)"
+        )
+        do {
+            try write(reader: reader, format: format, to: temporaryURL)
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            } else {
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
         }
+    }
 
+    private func write(
+        reader: ProcessingTimelineReader,
+        format: AVAudioFormat,
+        to url: URL
+    ) throws {
+        let checkpoint = reader.checkpoint
         let file = try AVAudioFile(
-            forWriting: destinationURL,
+            forWriting: url,
             settings: format.settings,
             commonFormat: .pcmFormatFloat32,
             interleaved: false
