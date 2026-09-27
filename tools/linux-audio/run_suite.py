@@ -256,16 +256,12 @@ def diarization_baseline_check(
     )
 
 
-def full_model_checks(
+def asr_model_checks(
     *,
     here: pathlib.Path,
     audio_path: pathlib.Path,
-    speaker_reference: pathlib.Path,
     work_root: pathlib.Path,
     device: str,
-    match_threshold: float | None,
-    ambiguity_margin: float | None,
-    min_clean_speech_ms: int | None,
     asr_reference: pathlib.Path | None = None,
 ) -> list[CheckResult]:
     work_root.mkdir(
@@ -276,19 +272,9 @@ def full_model_checks(
     qwen_output = work_root / "qwen3-asr.json"
     asr_evaluation_output = work_root / "asr-evaluation.json"
     asr_baseline_output = work_root / "qwen3-asr-current.json"
-    nemotron_output = work_root / "nemotron3.json"
-    diarization_evaluation_output = (
-        work_root / "diarization-evaluation.json"
-    )
-    diarization_baseline_output = (
-        work_root / "nemotron3-current.json"
-    )
     qwen_output.unlink(missing_ok=True)
     asr_evaluation_output.unlink(missing_ok=True)
     asr_baseline_output.unlink(missing_ok=True)
-    nemotron_output.unlink(missing_ok=True)
-    diarization_evaluation_output.unlink(missing_ok=True)
-    diarization_baseline_output.unlink(missing_ok=True)
     qwen = optional_command_check(
         "qwen3-asr-runner",
         [
@@ -307,7 +293,6 @@ def full_model_checks(
         modules=("qwen_asr", "torch"),
         paths=(audio_path,),
     )
-
 
     resolved_asr_reference = (
         asr_reference
@@ -343,6 +328,40 @@ def full_model_checks(
         evaluation_path=asr_evaluation_output,
         output_path=asr_baseline_output,
     )
+    return [
+        qwen,
+        asr_evaluator,
+        asr_baseline,
+    ]
+
+
+def diarization_model_checks(
+    *,
+    here: pathlib.Path,
+    audio_path: pathlib.Path,
+    speaker_reference: pathlib.Path,
+    work_root: pathlib.Path,
+    device: str,
+    match_threshold: float | None,
+    ambiguity_margin: float | None,
+    min_clean_speech_ms: int | None,
+) -> list[CheckResult]:
+    work_root.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    nemotron_output = work_root / "nemotron3.json"
+    diarization_evaluation_output = (
+        work_root / "diarization-evaluation.json"
+    )
+    diarization_baseline_output = (
+        work_root / "nemotron3-current.json"
+    )
+    nemotron_output.unlink(missing_ok=True)
+    diarization_evaluation_output.unlink(missing_ok=True)
+    diarization_baseline_output.unlink(missing_ok=True)
+    root = here.parents[1]
 
     if (
         match_threshold is None
@@ -416,9 +435,6 @@ def full_model_checks(
     )
 
     return [
-        qwen,
-        asr_evaluator,
-        asr_baseline,
         nemotron,
         diarization_evaluator,
         diarization_baseline,
@@ -468,7 +484,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--device",
-        default="cuda:0",
+        default="cpu",
+    )
+    parser.add_argument(
+        "--with-diarization",
+        action="store_true",
+        help="add the post-V1 Nemotron diarization checks to --full",
     )
     parser.add_argument(
         "--speaker-match-threshold",
@@ -483,6 +504,22 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
     )
     args = parser.parse_args(argv)
+    diarization_options = [
+        option
+        for option, value in (
+            ("--full-speaker-reference", args.full_speaker_reference),
+            ("--speaker-match-threshold", args.speaker_match_threshold),
+            ("--speaker-ambiguity-margin", args.speaker_ambiguity_margin),
+            ("--min-clean-speech-ms", args.min_clean_speech_ms),
+        )
+        if value is not None
+    ]
+    if args.with_diarization and not args.full:
+        parser.error("--with-diarization requires --full")
+    if diarization_options and not args.with_diarization:
+        parser.error(
+            f"{', '.join(diarization_options)} requires --with-diarization"
+        )
 
     here = pathlib.Path(__file__).resolve().parent
     root = here.parents[1]
@@ -514,6 +551,16 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     if args.full:
+        checks.extend(
+            asr_model_checks(
+                here=here,
+                audio_path=args.full_audio,
+                work_root=args.work_root,
+                device=args.device,
+                asr_reference=args.full_asr_reference,
+            )
+        )
+    if args.with_diarization:
         speaker_reference = (
             args.full_speaker_reference
             if args.full_speaker_reference is not None
@@ -522,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         checks.extend(
-            full_model_checks(
+            diarization_model_checks(
                 here=here,
                 audio_path=args.full_audio,
                 speaker_reference=speaker_reference,
@@ -531,7 +578,6 @@ def main(argv: list[str] | None = None) -> int:
                 match_threshold=args.speaker_match_threshold,
                 ambiguity_margin=args.speaker_ambiguity_margin,
                 min_clean_speech_ms=args.min_clean_speech_ms,
-                asr_reference=args.full_asr_reference,
             )
         )
 
