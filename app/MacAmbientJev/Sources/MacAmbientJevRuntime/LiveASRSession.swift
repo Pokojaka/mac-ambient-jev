@@ -71,11 +71,14 @@ public actor LiveASRSession {
 
     private var transcriptEvents: [TranscriptEvent] = []
     private var registeredSegmentIDs: Set<String> = []
+    private var registeringSegmentIDs: Set<String> = []
     private var finishedSegmentIDs: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
     private var prepared = false
     private var finalized = false
+    private var activeWorkCount = 0
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         sessionID: UUID,
@@ -103,9 +106,14 @@ public actor LiveASRSession {
         guard !finalized else {
             return currentProgress()
         }
+        beginWork()
+        defer { endWork() }
 
         for segment in segments
-        where !registeredSegmentIDs.contains(segment.segmentID) {
+        where !registeredSegmentIDs.contains(segment.segmentID)
+            && !registeringSegmentIDs.contains(segment.segmentID) {
+            registeringSegmentIDs.insert(segment.segmentID)
+            defer { registeringSegmentIDs.remove(segment.segmentID) }
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,
@@ -147,6 +155,8 @@ public actor LiveASRSession {
         guard !finalized else {
             return currentProgress()
         }
+        beginWork()
+        defer { endWork() }
 
         _ = try await register(segments: segments)
 
@@ -225,6 +235,12 @@ public actor LiveASRSession {
         guard !finalized else {
             return currentCompletion()
         }
+        finalized = true
+        if activeWorkCount > 0 {
+            await withCheckedContinuation { continuation in
+                idleWaiters.append(continuation)
+            }
+        }
 
         let pendingCount =
             registeredSegmentIDs.subtracting(finishedSegmentIDs).count
@@ -239,9 +255,20 @@ public actor LiveASRSession {
                 failedCount: failedCount
             )
         ))
-        finalized = true
 
         return currentCompletion()
+    }
+
+    private func beginWork() {
+        activeWorkCount += 1
+    }
+
+    private func endWork() {
+        activeWorkCount -= 1
+        guard activeWorkCount == 0 else { return }
+        let waiters = idleWaiters
+        idleWaiters = []
+        waiters.forEach { $0.resume() }
     }
 
     private func currentProgress() -> LiveASRProgress {
