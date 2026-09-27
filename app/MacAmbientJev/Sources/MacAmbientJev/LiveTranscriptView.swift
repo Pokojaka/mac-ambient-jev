@@ -75,9 +75,10 @@ struct LiveTranscriptView: View {
     }
 
     private func speakerHeading(for index: Int) -> String? {
-        guard let label = viewModel.rows[index].displaySpeakerLabels.first else { return nil }
-        guard index == 0 || viewModel.rows[index - 1].displaySpeakerLabels.first != label else { return nil }
-        return label
+        let labels = viewModel.rows[index].displaySpeakerLabels
+        guard !labels.isEmpty else { return nil }
+        guard index == 0 || viewModel.rows[index - 1].displaySpeakerLabels != labels else { return nil }
+        return labels.joined(separator: " / ")
     }
 
     private func transcriptRow(_ row: LiveTranscriptRow, speakerHeading: String?) -> some View {

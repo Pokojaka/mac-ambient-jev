@@ -405,27 +405,6 @@ public struct LiveTranscriptProjection: Sendable {
             guard !isBackgroundOnly,
                   JevTranscriptEligibility.isEligible(segment.text) else { return nil }
 
-            let overlapBySpeaker = Dictionary(grouping: segment.speakers.compactMap { span -> (String, Int64)? in
-                let duration = max(0, min(segment.endMilliseconds, span.endMilliseconds)
-                    - max(segment.startMilliseconds, span.startMilliseconds))
-                return duration > 0 ? (span.id, duration) : nil
-            }, by: { $0.0 }).mapValues { overlaps in
-                overlaps.reduce(Int64.zero) { $0 + $1.1 }
-            }
-            let labeledDuration = overlapBySpeaker.values.reduce(Int64.zero, +)
-            let displaySpeakerLabels: [String]
-            if labeledDuration == 0 {
-                displaySpeakerLabels = [SpeakerDisplayMapper.label(for: nil, labels: labels)]
-            } else if let dominant = overlapBySpeaker.max(by: { $0.value < $1.value }),
-                      Double(dominant.value) / Double(labeledDuration) >= 0.8 {
-                let span = segment.speakers.first(where: { $0.id == dominant.key })
-                displaySpeakerLabels = [span?.displayLabel ?? SpeakerDisplayMapper.label(for: dominant.key, labels: labels)]
-            } else if overlapBySpeaker.count > 1 {
-                displaySpeakerLabels = ["複数話者"]
-            } else {
-                displaySpeakerLabels = [SpeakerDisplayMapper.label(for: nil, labels: labels)]
-            }
-
             return LiveTranscriptRow(
                 segmentID: segment.segmentID,
                 startMilliseconds: segment.startMilliseconds,
@@ -434,7 +413,7 @@ public struct LiveTranscriptProjection: Sendable {
                 textFragments: FillerTextSpanDetector().fragments(in: segment.text),
                 scene: segment.scene,
                 speakers: segment.speakers,
-                displaySpeakerLabels: displaySpeakerLabels,
+                displaySpeakerLabels: SpeakerDisplayMapper.turnLabels(for: segment, labels: labels),
                 scopeSpans: segment.scopeSpans,
                 isLowPriority: segment.contentPriority == .lowPriority
             )

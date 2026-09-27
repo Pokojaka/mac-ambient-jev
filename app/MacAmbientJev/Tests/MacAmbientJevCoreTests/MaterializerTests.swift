@@ -97,12 +97,12 @@ func liveProjectionUsesDominantSpeakerWhenItCoversAtLeastEightyPercent() throws 
     )
 
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
-    #expect(row.displaySpeakerLabels == ["話者1"])
+    #expect(row.displaySpeakerLabels == ["Speaker 1"])
     #expect(row.speakers.map(\.id) == ["A", "B"])
 }
 
 @Test
-func liveProjectionUsesMultipleSpeakerWhenNoSpeakerReachesEightyPercent() throws {
+func liveProjectionShowsBothSpeakersWhenNoSpeakerReachesEightyPercent() throws {
     let segment = MaterializedTranscriptSegment(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
         text: "会話", scene: .unknown,
@@ -113,7 +113,7 @@ func liveProjectionUsesMultipleSpeakerWhenNoSpeakerReachesEightyPercent() throws
     )
 
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
-    #expect(row.displaySpeakerLabels == ["複数話者"])
+    #expect(row.displaySpeakerLabels == ["Speaker 1", "Speaker 2"])
     #expect(row.speakers.map(\.id) == ["A", "B"])
 }
 
@@ -160,12 +160,12 @@ func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
 }
 
 @Test
-func liveProjectionRanksSpeakersUsingRawSpansOutsideVADTurns() throws {
+func liveProjectionUsesFirstAppearanceOfRawSpansOutsideVADTurns() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "turn", startFrame: 1_000, endFrame: 2_000),
         .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "turn", text: "発話"),
         .speakerSpan(seq: 3, runID: "diar", speakerID: "in-turn", startFrame: 1_000, endFrame: 2_000, confidence: 0.9),
-        .speakerSpan(seq: 4, runID: "diar", speakerID: "outside-turn", startFrame: 5_000, endFrame: 15_000, confidence: 0.8)
+        .speakerSpan(seq: 4, runID: "diar", speakerID: "outside-turn", startFrame: 0, endFrame: 900, confidence: 0.8)
     ]
     let activeRuns = ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
     let materialized = TranscriptMaterializer(sampleRate: 1_000).materialize(
@@ -176,14 +176,14 @@ func liveProjectionRanksSpeakersUsingRawSpansOutsideVADTurns() throws {
     let row = try #require(LiveTranscriptProjection().rows(for: materialized).first)
 
     #expect(row.speakers.map(\.id) == ["in-turn"])
-    #expect(row.displaySpeakerLabels == ["話者2"])
+    #expect(row.displaySpeakerLabels == ["Speaker 2"])
 }
 
 @Test
 func materializedSpeakerDisplayLabelDoesNotChangeSerializedShape() throws {
     let span = MaterializedSpeakerSpan(
         id: "S1", startMilliseconds: 10, endMilliseconds: 20,
-        confidence: 0.5, displayLabel: "話者1"
+        confidence: 0.5, displayLabel: "Speaker 1"
     )
     let encoded = try JSONEncoder().encode(span)
     let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])

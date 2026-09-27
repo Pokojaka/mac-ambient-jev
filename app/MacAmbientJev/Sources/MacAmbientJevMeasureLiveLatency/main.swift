@@ -317,7 +317,7 @@ struct MeasureLiveLatencyCommand {
                 "end_ms": segment.endMilliseconds,
                 "text": segment.text,
                 "speaker_spans": speakers,
-                "display_speaker_label": speakerLabel(for: segment, labels: finalSpeakerLabels)
+                "display_speaker_labels": SpeakerDisplayMapper.turnLabels(for: segment, labels: finalSpeakerLabels)
             ]
         }
         let latencySamples: [[String: Any]] = collected.records.map { record in
@@ -349,7 +349,7 @@ struct MeasureLiveLatencyCommand {
                 "final_end_ms": finalSegment?.endMilliseconds as Any? ?? NSNull(),
                 "final_text": finalSegment?.text as Any? ?? NSNull(),
                 "speaker_spans": speakers,
-                "display_speaker_label": finalSegment.map { speakerLabel(for: $0, labels: finalSpeakerLabels) } as Any? ?? NSNull()
+                "display_speaker_labels": finalSegment.map { SpeakerDisplayMapper.turnLabels(for: $0, labels: finalSpeakerLabels) } as Any? ?? NSNull()
             ]
         }
         let output: [String: Any] = [
@@ -430,31 +430,6 @@ struct MeasureLiveLatencyCommand {
                 confidence: span.confidence
             )
         })
-    }
-
-    private static func speakerLabel(
-        for segment: MaterializedTranscriptSegment,
-        labels: [String: String]
-    ) -> String {
-        var overlapBySpeaker: [String: Int64] = [:]
-        for span in segment.speakers {
-            let overlap = max(
-                0,
-                min(segment.endMilliseconds, span.endMilliseconds)
-                    - max(segment.startMilliseconds, span.startMilliseconds)
-            )
-            if overlap > 0 { overlapBySpeaker[span.id, default: 0] += overlap }
-        }
-        let total = overlapBySpeaker.values.reduce(Int64.zero, +)
-        guard total > 0 else { return "話者不明" }
-        guard let dominant = overlapBySpeaker.max(by: { $0.value < $1.value }) else {
-            return "話者不明"
-        }
-        if Double(dominant.value) / Double(total) >= 0.8 {
-            return segment.speakers.first(where: { $0.id == dominant.key })?.displayLabel
-                ?? SpeakerDisplayMapper.label(for: dominant.key, labels: labels)
-        }
-        return overlapBySpeaker.count > 1 ? "複数話者" : "話者不明"
     }
 
     private static func feedAudio(

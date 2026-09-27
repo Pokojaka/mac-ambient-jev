@@ -1,60 +1,66 @@
 import Foundation
 
 public enum SpeakerDisplayMapper {
-    public static func makeLabels(
-        spans: [SpeakerSpan],
-        limit: Int = 4
-    ) -> [String: String] {
-        var spansBySpeaker: [String: [SpeakerSpan]] = [:]
+    public static let individualSpeakerLimit = 7
+    public static let other = "OTHER"
+    public static let unknown = "UNKNOWN"
+
+    public static func makeLabels(spans: [SpeakerSpan]) -> [String: String] {
+        var firstStartBySpeaker: [String: Int64] = [:]
         for span in spans where span.startFrame < span.endFrame {
-            spansBySpeaker[span.speakerID, default: []].append(span)
-        }
-
-        let ranked = spansBySpeaker.map { speakerID, speakerSpans in
-            let ordered = speakerSpans.sorted {
-                if $0.startFrame != $1.startFrame {
-                    return $0.startFrame < $1.startFrame
-                }
-                return $0.endFrame < $1.endFrame
-            }
-
-            var unioned: [(start: Int64, end: Int64)] = []
-            for span in ordered {
-                if let last = unioned.last, span.startFrame <= last.end {
-                    unioned[unioned.count - 1].end = max(last.end, span.endFrame)
-                } else {
-                    unioned.append((span.startFrame, span.endFrame))
-                }
-            }
-
-            let duration = unioned.reduce(Int64(0)) { total, interval in
-                total + interval.end - interval.start
-            }
-            return (
-                speakerID: speakerID,
-                duration: duration,
-                firstStart: unioned.first?.start ?? .max
+            firstStartBySpeaker[span.speakerID] = min(
+                firstStartBySpeaker[span.speakerID] ?? .max,
+                span.startFrame
             )
         }
-        .sorted { lhs, rhs in
-            if lhs.duration != rhs.duration {
-                return lhs.duration > rhs.duration
+
+        let ordered = firstStartBySpeaker.sorted { lhs, rhs in
+            if lhs.value != rhs.value {
+                return lhs.value < rhs.value
             }
-            if lhs.firstStart != rhs.firstStart {
-                return lhs.firstStart < rhs.firstStart
-            }
-            return lhs.speakerID < rhs.speakerID
+            return lhs.key < rhs.key
         }
 
-        let individualLimit = max(0, limit)
-        return Dictionary(uniqueKeysWithValues: ranked.enumerated().map { index, speaker in
-            let label = index < individualLimit ? "話者\(index + 1)" : "その他"
-            return (speaker.speakerID, label)
+        return Dictionary(uniqueKeysWithValues: ordered.enumerated().map { index, speaker in
+            let label = index < individualSpeakerLimit ? "Speaker \(index + 1)" : other
+            return (speaker.key, label)
         })
     }
 
     public static func label(for rawID: String?, labels: [String: String]) -> String {
-        guard let rawID else { return "話者不明" }
-        return labels[rawID] ?? "その他"
+        guard let rawID else { return unknown }
+        return labels[rawID] ?? unknown
+    }
+
+    public static func turnLabels(
+        for segment: MaterializedTranscriptSegment,
+        labels: [String: String]
+    ) -> [String] {
+        var overlapBySpeaker: [String: Int64] = [:]
+        for span in segment.speakers {
+            let overlap = min(segment.endMilliseconds, span.endMilliseconds)
+                - max(segment.startMilliseconds, span.startMilliseconds)
+            if overlap > 0 { overlapBySpeaker[span.id, default: 0] += overlap }
+        }
+        let total = overlapBySpeaker.values.reduce(Int64.zero, +)
+        guard total > 0 else { return [unknown] }
+
+        func displayLabel(_ rawID: String) -> String {
+            segment.speakers.first(where: { $0.id == rawID })?.displayLabel
+                ?? label(for: rawID, labels: labels)
+        }
+
+        if let dominant = overlapBySpeaker.max(by: { $0.value < $1.value }),
+           Double(dominant.value) / Double(total) >= 0.8 {
+            return [displayLabel(dominant.key)]
+        }
+
+        var result: [String] = []
+        for span in segment.speakers.sorted(by: { $0.startMilliseconds < $1.startMilliseconds })
+        where overlapBySpeaker[span.id] != nil {
+            let spanLabel = displayLabel(span.id)
+            if !result.contains(spanLabel) { result.append(spanLabel) }
+        }
+        return result
     }
 }

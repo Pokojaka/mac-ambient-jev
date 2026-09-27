@@ -2,65 +2,83 @@ import Testing
 @testable import MacAmbientJevCore
 
 @Test
-func speakerDisplayMapperRanksFourSpeakersAndMapsOverflow() {
-    let spans = [
-        SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 100, confidence: nil),
-        SpeakerSpan(speakerID: "S2", startFrame: 100, endFrame: 250, confidence: nil),
-        SpeakerSpan(speakerID: "S3", startFrame: 250, endFrame: 450, confidence: nil),
-        SpeakerSpan(speakerID: "S4", startFrame: 450, endFrame: 700, confidence: nil),
-        SpeakerSpan(speakerID: "S5", startFrame: 700, endFrame: 1_000, confidence: nil)
-    ]
+func speakerDisplayMapperUsesFirstAppearanceAndGroupsEighthAndLaterSpeakers() {
+    let spans: [SpeakerSpan] = (1...9).map { index in
+        let start = Int64(index * 100)
+        let end = index == 1 ? start + 1 : start + 1_000
+        return SpeakerSpan(speakerID: "S\(index)", startFrame: start, endFrame: end, confidence: nil)
+    }
 
     let labels = SpeakerDisplayMapper.makeLabels(spans: spans)
 
-    #expect(labels["S5"] == "話者1")
-    #expect(labels["S4"] == "話者2")
-    #expect(labels["S3"] == "話者3")
-    #expect(labels["S2"] == "話者4")
-    #expect(labels["S1"] == "その他")
+    for index in 1...7 {
+        #expect(labels["S\(index)"] == "Speaker \(index)")
+    }
+    #expect(labels["S8"] == "OTHER")
+    #expect(labels["S9"] == "OTHER")
 }
 
 @Test
-func speakerDisplayMapperBreaksDurationTiesByFirstStartThenRawID() {
+func speakerDisplayMapperBreaksFirstStartTiesByRawID() {
     let spans = [
         SpeakerSpan(speakerID: "Z", startFrame: 20, endFrame: 40, confidence: nil),
         SpeakerSpan(speakerID: "B", startFrame: 10, endFrame: 30, confidence: nil),
         SpeakerSpan(speakerID: "A", startFrame: 10, endFrame: 30, confidence: nil)
     ]
 
-    let labels = SpeakerDisplayMapper.makeLabels(spans: spans, limit: 3)
+    let labels = SpeakerDisplayMapper.makeLabels(spans: spans)
 
-    #expect(labels["A"] == "話者1")
-    #expect(labels["B"] == "話者2")
-    #expect(labels["Z"] == "話者3")
+    #expect(labels["A"] == "Speaker 1")
+    #expect(labels["B"] == "Speaker 2")
+    #expect(labels["Z"] == "Speaker 3")
 }
 
 @Test
-func speakerDisplayMapperUnionsOverlappingSpansForSameSpeaker() {
+func speakerDisplayMapperIgnoresZeroLengthSpansAndKeepsEarliestValidStart() {
     let spans = [
-        SpeakerSpan(speakerID: "A", startFrame: 0, endFrame: 100, confidence: nil),
-        SpeakerSpan(speakerID: "A", startFrame: 50, endFrame: 150, confidence: nil),
-        SpeakerSpan(speakerID: "B", startFrame: 0, endFrame: 120, confidence: nil)
+        SpeakerSpan(speakerID: "ignored", startFrame: 0, endFrame: 0, confidence: nil),
+        SpeakerSpan(speakerID: "A", startFrame: 30, endFrame: 40, confidence: nil),
+        SpeakerSpan(speakerID: "B", startFrame: 20, endFrame: 25, confidence: nil),
+        SpeakerSpan(speakerID: "A", startFrame: 10, endFrame: 15, confidence: nil)
     ]
 
-    let labels = SpeakerDisplayMapper.makeLabels(spans: spans, limit: 2)
+    let labels = SpeakerDisplayMapper.makeLabels(spans: spans)
 
-    #expect(labels["A"] == "話者1")
-    #expect(labels["B"] == "話者2")
+    #expect(labels["ignored"] == nil)
+    #expect(labels["A"] == "Speaker 1")
+    #expect(labels["B"] == "Speaker 2")
 }
 
 @Test
-func speakerDisplayMapperLabelsMissingAndOverflowSpeakers() {
+func speakerDisplayMapperKeepsMissingAndUnmappedSpeakersUnknown() {
     let labels = SpeakerDisplayMapper.makeLabels(
-        spans: [
-            SpeakerSpan(speakerID: "A", startFrame: 0, endFrame: 10, confidence: nil),
-            SpeakerSpan(speakerID: "B", startFrame: 20, endFrame: 30, confidence: nil)
-        ],
-        limit: 1
+        spans: [SpeakerSpan(speakerID: "A", startFrame: 0, endFrame: 10, confidence: nil)]
     )
 
-    #expect(SpeakerDisplayMapper.label(for: nil, labels: labels) == "話者不明")
-    #expect(SpeakerDisplayMapper.label(for: "B", labels: labels) == "その他")
+    #expect(SpeakerDisplayMapper.label(for: nil, labels: labels) == "UNKNOWN")
+    #expect(SpeakerDisplayMapper.label(for: "missing", labels: labels) == "UNKNOWN")
+    #expect(SpeakerDisplayMapper.label(for: "A", labels: labels) == "Speaker 1")
+}
+
+@Test
+func speakerDisplayMapperDeduplicatesOtherInMixedTurns() {
+    let spans = (1...9).map { index in
+        SpeakerSpan(speakerID: "S\(index)", startFrame: Int64(index),
+                    endFrame: Int64(index + 1), confidence: nil)
+    }
+    let segment = MaterializedTranscriptSegment(
+        segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
+        text: "会話", scene: .unknown,
+        speakers: [
+            MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 600, confidence: nil),
+            MaterializedSpeakerSpan(id: "S8", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil),
+            MaterializedSpeakerSpan(id: "S9", startMilliseconds: 700, endMilliseconds: 1_000, confidence: nil)
+        ], scopeSpans: [], contentPriority: nil
+    )
+
+    #expect(SpeakerDisplayMapper.turnLabels(
+        for: segment, labels: SpeakerDisplayMapper.makeLabels(spans: spans)
+    ) == ["Speaker 1", "OTHER"])
 }
 
 @Test
@@ -85,8 +103,8 @@ func liveProjectionSummarizesMultipleSpeakersAndKeepsUnknownLabel() throws {
     let projection = LiveTranscriptProjection()
     let finalRows = projection.rows(for: segments)
     #expect(finalRows[0].speakers.map(\.id) == ["S1", "S2"])
-    #expect(finalRows[0].displaySpeakerLabels == ["複数話者"])
-    #expect(finalRows[1].displaySpeakerLabels == ["話者不明"])
+    #expect(finalRows[0].displaySpeakerLabels == ["Speaker 1", "Speaker 2"])
+    #expect(finalRows[1].displaySpeakerLabels == ["UNKNOWN"])
 }
 
 @Test
