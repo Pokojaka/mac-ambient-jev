@@ -57,6 +57,8 @@ private func writeFinalizationSession(
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
+    try Data(count: 100 * MemoryLayout<Float>.size)
+        .write(to: processingURL.appending(path: "chunk-000000.f32le"))
     return sessionURL
 }
 

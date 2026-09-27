@@ -125,6 +125,8 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
+    try Data(count: 48_000 * MemoryLayout<Float>.size)
+        .write(to: processingURL.appending(path: "chunk-000000.f32le"))
 
     let candidates = try SessionRecoveryScanner(
         sessionsRoot: root
@@ -185,6 +187,12 @@ private func writeRecoveryCheckpoint(
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
+    let frameCounts = checkpoint.chunkFrameCounts
+        ?? checkpoint.chunkFiles.map { _ in Int(checkpoint.committedFrames) / checkpoint.chunkFiles.count }
+    for (filename, frames) in zip(checkpoint.chunkFiles, frameCounts) {
+        try Data(count: frames * checkpoint.channelCount * MemoryLayout<Float>.size)
+            .write(to: processingURL.appending(path: filename))
+    }
 }
 
 @Test
@@ -285,6 +293,128 @@ func recoveryScannerChoosesPendingOnlyASRResume() async throws {
         return
     }
     #expect(plan.pendingSegments.map(\.segmentID) == ["seg_000002"])
+}
+
+@Test
+func brokenSessionDoesNotBlockOtherPendingSessions() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let validID = UUID()
+    let valid = root.appending(path: validID.uuidString, directoryHint: .isDirectory)
+    try writeRecoveryManifest(sessionID: validID, sourceKind: .live, to: valid)
+    try writeRecoveryCheckpoint(AudioCheckpoint(
+        committedFrames: 100, sampleRate: 100, channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    ), to: valid)
+    let brokenID = UUID()
+    let broken = root.appending(path: brokenID.uuidString, directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+    try Data("{broken".utf8).write(to: broken.appending(path: "session.json"))
+
+    let candidates = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
+    #expect(candidates.map(\.manifest.sessionID) == [validID])
+}
+
+@Test
+func crashAfterLastASRCompletionFinishesTheRunWithoutRerunningASR() async throws {
+    for (asrRunID, resumes) in [("asr", true), ("asr_live_run", false)] {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionID = UUID()
+        let sessionURL = root.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+        try writeRecoveryManifest(sessionID: sessionID, sourceKind: .live, to: sessionURL)
+        try writeRecoveryCheckpoint(AudioCheckpoint(
+            committedFrames: 100, sampleRate: 100, channelCount: 1,
+            chunkFiles: ["chunk-000000.f32le"]
+        ), to: sessionURL)
+        let writer = try SessionWriter(sessionURL: sessionURL)
+        _ = try await writer.append(EventDraft(
+            eventType: "segment.created", sessionID: sessionID,
+            segmentationRunID: "seg", segmentID: "seg_000001",
+            sourceStartFrame: 0, sourceEndFrame: 100, payload: EmptyPayload()
+        ))
+        _ = try await writer.append(EventDraft(
+            eventType: "asr.pending", sessionID: sessionID, processingRunID: asrRunID,
+            segmentationRunID: "seg", segmentID: "seg_000001",
+            sourceStartFrame: 0, sourceEndFrame: 100, payload: EmptyPayload()
+        ))
+        _ = try await writer.append(EventDraft(
+            eventType: "asr.completed", sessionID: sessionID, processingRunID: asrRunID,
+            segmentationRunID: "seg", segmentID: "seg_000001",
+            sourceStartFrame: 0, sourceEndFrame: 100,
+            payload: ASRCompletedEventPayload(
+                text: "already completed", detectedLanguage: "en",
+                engine: "qwen3-asr", model: "test"
+            )
+        ))
+
+        let action = try SessionRecoveryScanner(sessionsRoot: root)
+            .pendingSessions().first?.action
+        if resumes {
+            guard case .resumeASR(let plan) = action else {
+                Issue.record("completed ASR must be resumed without pending work: \(String(describing: action))")
+                continue
+            }
+            #expect(plan.pendingSegments.isEmpty)
+            #expect(plan.transcriptEvents.count == 2)
+        } else {
+            #expect(action == .reprocess)
+        }
+    }
+}
+
+@Test
+func bulkDiscoverySkipsFolderWhoseManifestNamesAnotherSession() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let folder = root.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    try writeRecoveryManifest(sessionID: UUID(), sourceKind: .live, to: folder)
+    try writeRecoveryCheckpoint(AudioCheckpoint(
+        committedFrames: 100, sampleRate: 100, channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"]
+    ), to: folder)
+
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).pendingSessions().isEmpty)
+}
+
+@Test
+func inspectReportsPendingSessionWithoutAudioAsMissingAudio() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    try writeRecoveryManifest(sessionID: id, sourceKind: .importedFile, to: root.appending(path: id.uuidString))
+
+    #expect(throws: SessionRecoveryScannerError.missingAudio) {
+        _ = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
+    }
+}
+
+@Test
+func recoveryUsesIntactOriginalWhenCheckpointIsUnusable() throws {
+    let checkpoints = [
+        AudioCheckpoint(committedFrames: 100, sampleRate: 100, channelCount: 1, chunkFiles: ["missing.f32le"], chunkFrameCounts: [100]),
+        AudioCheckpoint(committedFrames: 1, sampleRate: 100, channelCount: 1, chunkFiles: ["../../../secret"], chunkFrameCounts: [1]),
+    ]
+    for checkpoint in checkpoints {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let url = root.appending(path: id.uuidString, directoryHint: .isDirectory)
+        try writeRecoveryManifest(sessionID: id, sourceKind: .importedFile, to: url)
+        let processing = url.appending(path: "audio/processing", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: processing, withIntermediateDirectories: true)
+        try JSONEncoder().encode(checkpoint).write(to: processing.appending(path: DurableAudioWriter.checkpointFilename))
+        try Data(count: 4).write(to: root.appending(path: "secret"))
+        let original = url.appending(path: "audio/original.wav")
+        try Data([1, 2, 3]).write(to: original)
+
+        let source = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)?.source
+        guard case .importedOriginal(let url) = source else {
+            Issue.record("intact original must be chosen: \(String(describing: source))")
+            continue
+        }
+        #expect(url.resolvingSymlinksInPath() == original.resolvingSymlinksInPath())
+    }
 }
 
 @Test

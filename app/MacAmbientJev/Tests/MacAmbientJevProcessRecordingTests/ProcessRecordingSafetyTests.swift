@@ -64,3 +64,31 @@ func measurementOutputsCannotAliasThroughSymlinkedDirectory() throws {
         #expect((error as NSError).domain == "RunMonitor")
     }
 }
+
+@Test
+func resumeOutputCannotResolveInsideTheRecoveredSession() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let session = root.appending(path: id.uuidString, directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+    let alias = root.appending(path: "alias")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: session)
+
+    for output in [
+        session.appending(path: "events.jsonl").path,
+        alias.appending(path: "session.json").path,
+        root.appending(path: id.uuidString.lowercased()).appending(path: "processing_metadata.json").path,
+    ] {
+        #expect(throws: ProcessRecordingError.self) {
+            _ = try ProcessRecordingCommand.parseInput(
+                ["--resume-session", id.uuidString, "--sessions-root", root.path, output],
+                measured: false
+            )
+        }
+    }
+    _ = try ProcessRecordingCommand.parseInput(
+        ["--resume-session", id.uuidString, "--sessions-root", root.path, root.appending(path: "segments.json").path],
+        measured: false
+    )
+}

@@ -143,7 +143,7 @@ public struct SavedSessionCatalog {
             if case .processingTimeline(let value) = source {
                 checkpoint = value
             } else {
-                checkpoint = try loadCheckpoint(sessionURL: sessionURL)
+                checkpoint = try? loadCheckpoint(sessionURL: sessionURL)
             }
             let duration = checkpoint.flatMap { checkpoint -> Double? in
                 guard checkpoint.sampleRate > 0 else { return nil }
@@ -195,7 +195,9 @@ public struct SavedSessionCatalog {
         case .failed:
             .failed(metadata?.finalizationAttempt?.failureReason)
         case nil:
-            metadata?.activeRuns?.asr == nil ? .notProcessed : .complete
+            metadata?.activeRuns?.asr == nil && metadata?.activeRuns?.scope == nil
+                ? .notProcessed
+                : .complete
         }
     }
 
@@ -238,14 +240,9 @@ public struct SavedSessionCatalog {
             AudioCheckpoint.self,
             from: Data(contentsOf: checkpointURL)
         )
-        guard checkpoint.committedFrames >= 0,
-              checkpoint.sampleRate.isFinite,
-              (1_000...768_000).contains(checkpoint.sampleRate),
-              checkpoint.channelCount > 0,
-              checkpoint.chunkFiles.allSatisfy({
-                  !$0.isEmpty && URL(fileURLWithPath: $0).lastPathComponent == $0
-                      && fileManager.fileExists(atPath: processingURL.appending(path: $0).path)
-              }) else {
+        guard (1_000...768_000).contains(checkpoint.sampleRate),
+              (try? ProcessingTimelineReader(directory: processingURL, checkpoint: checkpoint)
+                .validateChunkFiles()) != nil else {
             throw SavedSessionCatalogError.invalidAudioCheckpoint
         }
         return checkpoint

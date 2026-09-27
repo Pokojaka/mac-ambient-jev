@@ -128,11 +128,15 @@ struct ProcessRecordingCommand {
                 return .inspect(sessionID: id, root: root)
             } else {
                 guard arguments.count == 1 else { throw ProcessRecordingError.invalidArguments }
-                return .resume(
-                    sessionID: id, root: root,
-                    output: URL(fileURLWithPath: arguments[0]).standardizedFileURL,
-                    pacing: pacingMode
-                )
+                let output = URL(fileURLWithPath: arguments[0]).standardizedFileURL
+                let sessionPath = root.appending(path: id.uuidString)
+                    .resolvingSymlinksInPath().pathComponents.map { $0.lowercased() }
+                let outputPath = output.deletingLastPathComponent().resolvingSymlinksInPath()
+                    .appending(path: output.lastPathComponent).pathComponents.map { $0.lowercased() }
+                guard !outputPath.starts(with: sessionPath) else {
+                    throw ProcessRecordingError.invalidArguments
+                }
+                return .resume(sessionID: id, root: root, output: output, pacing: pacingMode)
             }
         }
         guard rootPath == nil else { throw ProcessRecordingError.invalidArguments }
@@ -274,17 +278,20 @@ struct ProcessRecordingCommand {
         ) else {
             throw ProcessRecordingError.invalidSession("指定されたセッションが見つかりません")
         }
-        let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
         let action: String
         let pending: Int
-        switch candidate?.action {
-        case .finalize: action = "finalize"; pending = 0
-        case .resumeASR(let plan): action = "resumeASR"; pending = plan.pendingSegments.count
-        case .selectCompletedASR: action = "selectCompletedASR"; pending = 0
-        case .runDiarization: action = "runDiarization"; pending = 0
-        case .retryContentPriority: action = "retryContentPriority"; pending = 0
-        case .reprocess: action = "reprocess"; pending = 0
-        case nil: action = "none"; pending = 0
+        do {
+            switch try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)?.action {
+            case .finalize: action = "finalize"; pending = 0
+            case .resumeASR(let plan): action = "resumeASR"; pending = plan.pendingSegments.count
+            case .selectCompletedASR: action = "selectCompletedASR"; pending = 0
+            case .runDiarization: action = "runDiarization"; pending = 0
+            case .retryContentPriority: action = "retryContentPriority"; pending = 0
+            case .reprocess: action = "reprocess"; pending = 0
+            case nil: action = "none"; pending = 0
+            }
+        } catch SessionRecoveryScannerError.missingAudio {
+            action = "unrecoverable"; pending = 0
         }
         let data = try JSONSerialization.data(
             withJSONObject: ["session_id": sessionID.uuidString, "action": action, "pending_count": pending],

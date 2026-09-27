@@ -139,6 +139,29 @@ func catalogUsesTheSavedImportedOriginalWhenTimelineIsAbsent() throws {
 }
 
 @Test
+func importedOriginalStaysReprocessableWhenCheckpointIsCorrupt() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let session = try writeCatalogSession(
+        id: id, createdAt: 1_700_000_000, source: .importedFile,
+        root: root, includeAudio: false
+    )
+    let audio = session.appending(path: "audio", directoryHint: .isDirectory)
+    let processing = audio.appending(path: "processing", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: processing, withIntermediateDirectories: true)
+    try Data([1, 2, 3]).write(to: audio.appending(path: "original.wav"))
+    try Data("{broken".utf8).write(
+        to: processing.appending(path: DurableAudioWriter.checkpointFilename)
+    )
+
+    let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    #expect(row.audioAvailable)
+    #expect(row.canReprocess)
+    #expect(row.errorMessage == nil)
+}
+
+@Test
 func catalogReportsCorruptProcessingMetadataWithoutDroppingOtherRows() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -250,4 +273,24 @@ func catalogReportsPendingClassificationAfterLocalFinalization() throws {
 
     #expect(row.hasActiveTranscript)
     #expect(row.processingStatus == .classificationPending)
+}
+
+@Test
+func catalogReportsZeroAudioScopeOnlySessionAsComplete() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let session = try writeCatalogSession(
+        id: UUID(), createdAt: 1_700_000_000, source: .importedFile, root: root, includeAudio: true
+    )
+    try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
+        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
+        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
+        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
+        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
+        activeRuns: ActiveRuns(scope: "scope_empty")
+    ))
+
+    let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    #expect(row.processingStatus == .complete)
+    #expect(!row.hasActiveTranscript)
 }
