@@ -209,6 +209,8 @@ public actor NativeSessionProcessor {
     public func processFinalTranscript(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
+        pacingMode: ASRPacingMode = .normal,
+        shouldPause: @escaping @Sendable () async -> Bool = { false },
         onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in },
         failureFallbackSegments: [MaterializedTranscriptSegment] = [],
         onStatus: StatusHandler? = nil,
@@ -250,7 +252,12 @@ public actor NativeSessionProcessor {
                     )
                 )
             )
-            let final = try await pipeline.process(onStatus: onStatus, onPhase: onPhase)
+            let final = try await pipeline.process(
+                onStatus: onStatus,
+                pacingMode: pacingMode,
+                shouldPause: shouldPause,
+                onPhase: onPhase
+            )
             try metadataStore.completeFinalization(
                 attemptID: attemptID,
                 activeRuns: final.activeRuns
@@ -526,6 +533,8 @@ public actor NativeSessionProcessor {
             return await processFinalTranscript(
                 sessionID: sessionID,
                 checkpoint: checkpoint,
+                pacingMode: pacingMode,
+                shouldPause: shouldPause,
                 onPhase: onPhase,
                 onStatus: onStatus,
                 onUpdate: onUpdate

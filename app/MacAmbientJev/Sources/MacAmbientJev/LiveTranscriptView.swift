@@ -45,10 +45,11 @@ struct LiveTranscriptView: View {
 
     private var transcriptList: some View {
         ScrollViewReader { proxy in
+            let rows = viewModel.rows
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
-                    ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { entry in
-                        transcriptRow(entry.element, speakerHeading: speakerHeading(for: entry.offset))
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { entry in
+                        transcriptRow(entry.element, speakerHeading: Self.speakerHeading(for: entry.offset, in: rows))
                             .id(entry.element.id)
                     }
                 }
@@ -74,10 +75,10 @@ struct LiveTranscriptView: View {
         }
     }
 
-    private func speakerHeading(for index: Int) -> String? {
-        let labels = viewModel.rows[index].displaySpeakerLabels
+    static func speakerHeading(for index: Int, in rows: [LiveTranscriptRow]) -> String? {
+        let labels = rows[index].displaySpeakerLabels
         guard !labels.isEmpty else { return nil }
-        guard index == 0 || viewModel.rows[index - 1].displaySpeakerLabels != labels else { return nil }
+        guard index == 0 || rows[index - 1].displaySpeakerLabels != labels else { return nil }
         return labels.joined(separator: " / ")
     }
 

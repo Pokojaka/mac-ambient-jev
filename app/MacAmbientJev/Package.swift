@@ -69,6 +69,18 @@ let package = Package(
             dependencies: ["MacAmbientJevCore", "MacAmbientJevRuntime"]
         ),
         .testTarget(
+            name: "MacAmbientJevProcessRecordingTests",
+            dependencies: ["MacAmbientJevProcessRecording"]
+        ),
+        .testTarget(
+            name: "MacAmbientJevMeasureLiveLatencyTests",
+            dependencies: ["MacAmbientJevMeasureLiveLatency"]
+        ),
+        .testTarget(
+            name: "MacAmbientJevAppTests",
+            dependencies: ["MacAmbientJev", "MacAmbientJevCore"]
+        ),
+        .testTarget(
             name: "MacAmbientJevCoreTests",
             dependencies: ["MacAmbientJevCore"]
         ),

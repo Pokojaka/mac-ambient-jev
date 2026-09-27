@@ -64,6 +64,8 @@ struct FinalTranscriptPipeline: Sendable {
 
     func process(
         onStatus: NativeSessionProcessor.StatusHandler?,
+        pacingMode: ASRPacingMode = .normal,
+        shouldPause: @escaping @Sendable () async -> Bool = { false },
         onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in }
     ) async throws -> FinalTranscriptPipelineResult {
         let reader = ProcessingTimelineReader(
@@ -166,8 +168,11 @@ struct FinalTranscriptPipeline: Sendable {
             asr: asr,
             loader: ASRAudioLoader(reader: reader),
             materializer: materializer,
-            state: state
+            state: state,
+            pacingMode: pacingMode,
+            shouldPause: shouldPause
         )
+        await onPhase(.asr)
         let asrResult = await asrCoordinator.resumePendingASR(
             segments: asrSegments,
             existingEvents: transcriptEvents

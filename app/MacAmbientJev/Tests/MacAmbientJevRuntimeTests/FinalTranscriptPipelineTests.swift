@@ -564,3 +564,84 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     #expect(metadata.activeRuns?.scope != nil)
     #expect(metadata.pendingContentPrioritySegmentIDs == ["seg_000001"])
 }
+
+@Test
+func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
+    let sourceSessionID = UUID()
+    let (paths, sourceSessionURL, checkpoint) = try await finalizationFixture(sessionID: sourceSessionID)
+    defer { try? FileManager.default.removeItem(at: sourceSessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let originalURL = sourceSessionURL.appending(path: "original.caf")
+    try ProcessingTimelineAudioExporter().export(
+        reader: ProcessingTimelineReader(
+            directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
+            checkpoint: checkpoint
+        ),
+        to: originalURL
+    )
+    let sessionID = UUID()
+    _ = try SessionBootstrapper().createSession(paths: paths, sessionID: sessionID, sourceKind: .importedFile)
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [
+                SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 8_000, confidence: 0.9),
+                SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: 16_000, confidence: 0.9)
+            ],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+
+    let result = await processor.processImportedSession(
+        sessionID: sessionID,
+        originalURL: originalURL,
+        pacingMode: .lowHeat,
+        shouldPause: {
+            await log.append("pause")
+            return false
+        }
+    )
+
+    #expect(result.disposition == .completed)
+    #expect(result.metrics?.pacingWaitCount == 1)
+    #expect(await log.snapshot() == ["vad", "diarize", "pause", "asr:0", "pause", "asr:1"])
+}
+
+@Test
+func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["本文"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+
+    let result = await processor.processFinalTranscript(
+        sessionID: sessionID,
+        checkpoint: checkpoint,
+        onPhase: { await log.append("phase:\($0.rawValue)") }
+    )
+
+    #expect(result.disposition == .completed)
+    #expect(await log.snapshot() == [
+        "phase:preparing", "vad", "diarize", "phase:asr", "asr:0",
+        "phase:postprocessing", "phase:complete"
+    ])
+}

@@ -19,6 +19,16 @@ actor RunMonitor {
     private var phase: RunPhase = .preparing
 
     init(runID: String, metricsURL: URL, thermalURL: URL, memoryURL: URL) throws {
+        let destinations = [metricsURL, thermalURL, memoryURL].map { url in
+            let normalized = url.standardizedFileURL
+            return normalized.deletingLastPathComponent().resolvingSymlinksInPath()
+                .appendingPathComponent(normalized.lastPathComponent).standardizedFileURL
+        }
+        guard Set(destinations).count == destinations.count else {
+            throw NSError(domain: "RunMonitor", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "計測ファイルの出力先が重複しています"
+            ])
+        }
         for url in [metricsURL, thermalURL, memoryURL] {
             guard !FileManager.default.fileExists(atPath: url.path) else {
                 throw NSError(domain: "RunMonitor", code: 1, userInfo: [

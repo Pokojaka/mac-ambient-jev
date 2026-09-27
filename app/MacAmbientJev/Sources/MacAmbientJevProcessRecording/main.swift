@@ -3,7 +3,7 @@ import MacAmbientJevCore
 import MacAmbientJevRuntime
 import MLX
 
-private enum ProcessRecordingError: LocalizedError {
+enum ProcessRecordingError: LocalizedError {
     case invalidArguments
     case audioFileNotFound(String)
     case processingFailed(String)
@@ -43,7 +43,7 @@ private actor ProcessingResultCollector {
     }
 }
 
-private enum RecordingInput {
+enum RecordingInput {
     case importFile(audio: URL, output: URL, keepSession: Bool, pacing: ASRPacingMode)
     case inspect(sessionID: UUID, root: URL)
     case resume(sessionID: UUID, root: URL, output: URL, pacing: ASRPacingMode)
@@ -102,7 +102,7 @@ struct ProcessRecordingCommand {
         }
     }
 
-    private static func parseInput(_ originalArguments: [String], measured: Bool) throws -> RecordingInput {
+    static func parseInput(_ originalArguments: [String], measured: Bool) throws -> RecordingInput {
         var arguments = originalArguments
         let keepSession = try removeFlag("--keep-session", from: &arguments)
         let pacingMode: ASRPacingMode = try removeFlag("--low-heat", from: &arguments)
@@ -143,6 +143,11 @@ struct ProcessRecordingCommand {
         let outputURL = arguments.count == 2
             ? URL(fileURLWithPath: arguments[1]).standardizedFileURL
             : audioURL.deletingLastPathComponent().appending(path: "segments.json")
+        if arguments.count == 2,
+           audioURL.resolvingSymlinksInPath().standardizedFileURL
+            == outputURL.resolvingSymlinksInPath().standardizedFileURL {
+            throw ProcessRecordingError.invalidArguments
+        }
         return .importFile(audio: audioURL, output: outputURL, keepSession: keepSession, pacing: pacingMode)
     }
 
@@ -318,12 +323,18 @@ struct ProcessRecordingCommand {
             result = await processor.processFinalTranscript(
                 sessionID: sessionID,
                 checkpoint: checkpoint,
+                pacingMode: pacingMode,
+                shouldPause: { await monitor?.shouldPause() ?? (ProcessInfo.processInfo.thermalState == .critical) },
+                onPhase: { phase in await monitor?.setPhase(phase) },
                 onUpdate: onUpdate
             )
         case (.finalize, .importedOriginal(let originalURL)):
             result = await processor.processImportedSession(
                 sessionID: sessionID,
                 originalURL: originalURL,
+                pacingMode: pacingMode,
+                shouldPause: { await monitor?.shouldPause() ?? (ProcessInfo.processInfo.thermalState == .critical) },
+                onPhase: { phase in await monitor?.setPhase(phase) },
                 onUpdate: onUpdate
             )
         case (.resumeASR(let plan), .processingTimeline(let checkpoint)):

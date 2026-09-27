@@ -5,7 +5,7 @@ import Foundation
 import MacAmbientJevCore
 import MacAmbientJevRuntime
 
-private enum ReplayError: LocalizedError {
+enum ReplayError: LocalizedError {
     case usage
     case invalidOption(String)
     case invalidFormat
@@ -26,7 +26,7 @@ private enum ReplayError: LocalizedError {
     }
 }
 
-private struct Options {
+struct Options {
     let sourceURL: URL
     var sampleRate: Double?
     var channelCount: Int?
@@ -41,7 +41,8 @@ private struct Options {
             switch argument {
             case "--sample-rate":
                 index += 1
-                guard index < arguments.count, let value = Double(arguments[index]), value > 0 else {
+                guard index < arguments.count, let value = Double(arguments[index]),
+                      value.isFinite, (1_000...768_000).contains(value) else {
                     throw ReplayError.invalidOption(argument)
                 }
                 result.sampleRate = value

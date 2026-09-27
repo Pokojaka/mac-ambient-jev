@@ -11,6 +11,16 @@ public enum SavedSessionSelectionPolicy {
     }
 }
 
+public enum SavedSessionDisplayText {
+    public static func duration(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "不明" }
+        let rounded = max(0, seconds.rounded())
+        guard rounded < Double(Int.max) else { return "不明" }
+        let total = Int(rounded)
+        return "\(total / 60):\(String(format: "%02d", total % 60))"
+    }
+}
+
 public enum SavedSessionProcessingStatus: Sendable, Equatable {
     case notProcessed
     case running
@@ -159,7 +169,9 @@ public struct SavedSessionCatalog {
                 audioSource: nil,
                 hasActiveTranscript: false,
                 processingStatus: .notProcessed,
-                errorMessage: error.localizedDescription
+                errorMessage: error is DecodingError
+                    ? "セッション情報が壊れています"
+                    : error.localizedDescription
             )
         }
     }
@@ -227,7 +239,8 @@ public struct SavedSessionCatalog {
             from: Data(contentsOf: checkpointURL)
         )
         guard checkpoint.committedFrames >= 0,
-              checkpoint.sampleRate > 0,
+              checkpoint.sampleRate.isFinite,
+              (1_000...768_000).contains(checkpoint.sampleRate),
               checkpoint.channelCount > 0,
               checkpoint.chunkFiles.allSatisfy({
                   !$0.isEmpty && URL(fileURLWithPath: $0).lastPathComponent == $0

@@ -96,7 +96,7 @@ struct SavedSessionsView: View {
             LabeledContent("種類", value: sourceName(session.sourceKind))
             LabeledContent("処理状態", value: statusText(session))
             if let duration = session.durationSeconds {
-                LabeledContent("長さ", value: Self.durationText(duration))
+                LabeledContent("長さ", value: SavedSessionDisplayText.duration(duration))
             }
             if session.hasActiveTranscript {
                 Label("保存済みの文字起こしを表示中", systemImage: "text.alignleft")
@@ -151,8 +151,4 @@ struct SavedSessionsView: View {
         date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private static func durationText(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
 }
