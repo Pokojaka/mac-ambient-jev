@@ -4,7 +4,7 @@ import Foundation
 import IOKit.audio
 import Synchronization
 import Testing
-@testable import MacAmbientJev
+@testable import MacAmbientJevCapture
 
 @MainActor
 private final class FakePower: RecordingPowerProviding {

@@ -17,6 +17,8 @@ public actor AudioCaptureDrain {
     private let writer: any AudioCaptureWriting
     private var cursorFrame: Int64 = 0
     private var writerStartFrame: Int64?
+    private var gapCount = 0
+    private var totalGapFrames: Int64 = 0
 
     // An actor does not stay exclusive while awaiting another actor. Keep all
     // drain/checkpoint/finish operations in one FIFO lane across writer awaits.
@@ -56,6 +58,11 @@ public actor AudioCaptureDrain {
             try await fill(to: tail, reason: .stopTail)
         }
         return try await writer.finish()
+    }
+
+    /// Includes timestamp discontinuities and invalid/overflow ranges filled with silence.
+    public func gapStatistics() -> (count: Int, frames: Int64) {
+        (gapCount, totalGapFrames)
     }
 
     private func acquire() async {
@@ -117,6 +124,8 @@ public actor AudioCaptureDrain {
         let (absoluteStart, overflow) = writerStartFrame!.addingReportingOverflow(start)
         guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
         try await writer.recordGap(startFrame: absoluteStart, frameCount: frameCount, reason: reason)
+        gapCount += 1
+        totalGapFrames += frameCount
         let channels = await writer.channelCount
         let silenceFrames = max(1, 4_096 / channels)
         let silence = [Float](repeating: 0, count: silenceFrames * channels)

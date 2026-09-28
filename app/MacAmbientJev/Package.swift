@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
         .library(name: "MacAmbientJevRuntime", targets: ["MacAmbientJevRuntime"]),
+        .library(name: "MacAmbientJevCapture", targets: ["MacAmbientJevCapture"]),
         .executable(name: "MacAmbientJev", targets: ["MacAmbientJev"]),
         .executable(
             name: "MacAmbientJevEvaluateSession",
@@ -15,6 +16,10 @@ let package = Package(
         .executable(
             name: "MacAmbientJevProcessRecording",
             targets: ["MacAmbientJevProcessRecording"]
+        ),
+        .executable(
+            name: "MacAmbientJevCaptureSystemAudio",
+            targets: ["MacAmbientJevCaptureSystemAudio"]
         ),
         .executable(
             name: "MacAmbientJevMeasureLiveLatency",
@@ -37,6 +42,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "MacAmbientJevCore"),
+        .target(name: "MacAmbientJevCapture", dependencies: ["MacAmbientJevCore"]),
         .target(
             name: "MacAmbientJevRuntime",
             dependencies: [
@@ -49,7 +55,17 @@ let package = Package(
             name: "MacAmbientJev",
             dependencies: [
                 "MacAmbientJevCore",
+                "MacAmbientJevCapture",
                 "MacAmbientJevRuntime"
+            ]
+        ),
+        .executableTarget(
+            name: "MacAmbientJevCaptureSystemAudio",
+            dependencies: [
+                "MacAmbientJevCore",
+                "MacAmbientJevCapture",
+                "MacAmbientJevRuntime",
+                .product(name: "MLX", package: "mlx-swift")
             ]
         ),
         .executableTarget(
@@ -78,7 +94,15 @@ let package = Package(
         ),
         .testTarget(
             name: "MacAmbientJevAppTests",
-            dependencies: ["MacAmbientJev", "MacAmbientJevCore"]
+            dependencies: ["MacAmbientJev", "MacAmbientJevCore", "MacAmbientJevCapture"]
+        ),
+        .testTarget(
+            name: "MacAmbientJevCaptureTests",
+            dependencies: ["MacAmbientJevCapture", "MacAmbientJevCore"]
+        ),
+        .testTarget(
+            name: "MacAmbientJevCaptureSystemAudioTests",
+            dependencies: ["MacAmbientJevCaptureSystemAudio", "MacAmbientJevCore"]
         ),
         .testTarget(
             name: "MacAmbientJevCoreTests",

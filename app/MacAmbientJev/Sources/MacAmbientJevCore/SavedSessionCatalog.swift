@@ -50,6 +50,7 @@ public struct SavedSessionSummary: Sendable, Equatable, Identifiable {
     public let sessionID: UUID
     public let createdAt: Date?
     public let sourceKind: SessionSourceKind?
+    public let captureSource: CaptureSource?
     public let originalFilename: String?
     public let durationSeconds: Double?
     public let audioSource: SavedSessionAudioSource?
@@ -67,6 +68,7 @@ public struct SavedSessionSummary: Sendable, Equatable, Identifiable {
         sessionID: UUID,
         createdAt: Date?,
         sourceKind: SessionSourceKind?,
+        captureSource: CaptureSource? = .microphone,
         originalFilename: String? = nil,
         durationSeconds: Double? = nil,
         audioSource: SavedSessionAudioSource?,
@@ -77,6 +79,7 @@ public struct SavedSessionSummary: Sendable, Equatable, Identifiable {
         self.sessionID = sessionID
         self.createdAt = createdAt
         self.sourceKind = sourceKind
+        self.captureSource = captureSource
         self.originalFilename = originalFilename
         self.durationSeconds = durationSeconds
         self.audioSource = audioSource
@@ -154,6 +157,7 @@ public struct SavedSessionCatalog {
                 sessionID: manifest.sessionID,
                 createdAt: manifest.createdAt,
                 sourceKind: manifest.sourceKind,
+                captureSource: manifest.captureSource,
                 originalFilename: manifest.originalFilename,
                 durationSeconds: duration,
                 audioSource: source,
@@ -166,6 +170,7 @@ public struct SavedSessionCatalog {
                 sessionID: folderID,
                 createdAt: nil,
                 sourceKind: nil,
+                captureSource: nil,
                 audioSource: nil,
                 hasActiveTranscript: false,
                 processingStatus: .notProcessed,

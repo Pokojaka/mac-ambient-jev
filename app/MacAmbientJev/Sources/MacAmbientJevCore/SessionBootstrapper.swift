@@ -13,6 +13,7 @@ public struct SessionBootstrapper {
         sessionID: UUID,
         sourceKind: SessionSourceKind,
         originalFilename: String? = nil,
+        captureSource: CaptureSource = .microphone,
         createdAt: Date = Date()
     ) throws -> URL {
         let sessionURL = paths.sessionsRoot.appending(
@@ -23,7 +24,8 @@ public struct SessionBootstrapper {
             sessionID: sessionID,
             createdAt: createdAt,
             sourceKind: sourceKind,
-            originalFilename: originalFilename
+            originalFilename: originalFilename,
+            captureSource: captureSource
         )
 
         let encoder = JSONEncoder()

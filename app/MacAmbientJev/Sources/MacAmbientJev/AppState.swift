@@ -4,6 +4,7 @@ import Combine
 import Dispatch
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevCapture
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
@@ -108,6 +109,7 @@ final class AppState: ObservableObject {
     @Published private(set) var statusText = UserFacingStatus.idle.text
     @Published private(set) var statusTone: StatusTone = .neutral
     @Published private(set) var recordingPhase: RecordingPhase = .idle
+    @Published var captureSource: CaptureSource = .microphone
     @Published private(set) var captureWarningText: String?
     @Published private(set) var isMicrophoneSilent = false
     @Published private(set) var dropoutCount: UInt64 = 0
@@ -433,16 +435,17 @@ final class AppState: ObservableObject {
         isMicrophoneSilent = false
         dropoutCount = 0
 
-        recordingPhase = .requestingPermission
-        setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
-
-        guard await requestMicrophoneAccessIfNeeded() else {
-            recordingPhase = .idle
-            setCaptureStatus(
-                "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
-                tone: .error
-            )
-            return
+        if captureSource == .microphone {
+            recordingPhase = .requestingPermission
+            setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
+            guard await requestMicrophoneAccessIfNeeded() else {
+                recordingPhase = .idle
+                setCaptureStatus(
+                    "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
+                    tone: .error
+                )
+                return
+            }
         }
 
         do {
@@ -471,10 +474,12 @@ final class AppState: ObservableObject {
                 sessionID: sessionID,
                 sessionURL: sessionURL,
                 sourceKind: .live,
-                originalFilename: nil
+                originalFilename: nil,
+                captureSource: captureSource
             )
             try await captureEngine.start(
                 sessionID: sessionID,
+                source: captureSource,
                 onFailure: { [weak self] message in
                     guard let self else { return }
                     if self.recordingPhase == .starting,
@@ -510,7 +515,7 @@ final class AppState: ObservableObject {
                 return
             }
             showNewSession(sessionID)
-            setCaptureStatus("録音中", tone: .recording)
+            setCaptureStatus(captureSource == .systemAudio ? "システム音声を録音中" : "マイクを録音中", tone: .recording)
             prepareASRModel()
 
             do {
@@ -1198,13 +1203,15 @@ final class AppState: ObservableObject {
         sessionID: UUID,
         sessionURL: URL,
         sourceKind: SessionSourceKind,
-        originalFilename: String?
+        originalFilename: String?,
+        captureSource: CaptureSource = .microphone
     ) throws {
         let createdURL = try SessionBootstrapper().createSession(
             paths: paths,
             sessionID: sessionID,
             sourceKind: sourceKind,
-            originalFilename: originalFilename
+            originalFilename: originalFilename,
+            captureSource: captureSource
         )
         precondition(
             createdURL.standardizedFileURL == sessionURL.standardizedFileURL

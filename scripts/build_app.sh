@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ "${1:-}" == "--print-info-plist" && $# -eq 1 ]]; then
+  exec bash "$ROOT/scripts/app_info_plist.sh"
+fi
+
 PACKAGE="$ROOT/app/MacAmbientJev"
 APP="$ROOT/.build/MacAmbientJev.app"
 CONTENTS="$APP/Contents"
@@ -34,38 +38,7 @@ for bundle in "${RESOURCE_BUNDLES[@]}"; do
   cp -R "$bundle" "$RESOURCES/"
 done
 
-cat > "$CONTENTS/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>ja</string>
-    <key>CFBundleDisplayName</key>
-    <string>Mac Ambient Jev</string>
-    <key>CFBundleExecutable</key>
-    <string>MacAmbientJev</string>
-    <key>CFBundleIdentifier</key>
-    <string>app.mac-ambient-jev</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>Mac Ambient Jev</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>講義や会話を文字起こしするためにマイクを使用します</string>
-</dict>
-</plist>
-PLIST
+bash "$ROOT/scripts/app_info_plist.sh" > "$CONTENTS/Info.plist"
 
 if command -v codesign >/dev/null 2>&1; then
   codesign     --force     --sign -     --entitlements "$PACKAGE/Entitlements/MacAmbientJev.entitlements"     "$APP"

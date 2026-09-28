@@ -71,6 +71,13 @@ private struct ContentView: View {
                     Label("保存済み録音", systemImage: "waveform.and.mic")
                 }
 
+                Picker("録音元", selection: $appState.captureSource) {
+                    Text("マイク").tag(CaptureSource.microphone)
+                    Text("システム音声").tag(CaptureSource.systemAudio)
+                }
+                .fixedSize()
+                .disabled(appState.recordingPhase != .idle)
+
                 Button {
                     Task {
                         await appState.toggleRecording()
@@ -136,7 +143,9 @@ private struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if appState.isRecording, appState.isMicrophoneSilent {
-                Text("マイク入力が30秒以上無音です。ミュート設定を確認してください")
+                Text(appState.captureSource == .systemAudio
+                     ? "システム音声が30秒以上無音です"
+                     : "マイク入力が30秒以上無音です。ミュート設定を確認してください")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)

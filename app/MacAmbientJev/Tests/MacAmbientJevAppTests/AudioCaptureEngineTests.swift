@@ -2,7 +2,7 @@ import AudioToolbox
 import CoreMedia
 import Synchronization
 import Testing
-@testable import MacAmbientJev
+@testable import MacAmbientJevCapture
 import MacAmbientJevCore
 
 @Test
@@ -16,17 +16,17 @@ func formatChangeAfterInvalidAudioBufferNotifiesExactlyOnce() throws {
     )
 
     receiver.process(try makeAudioSampleBuffer(sampleRate: 48_000))
-    #expect(receiver.invalidBufferCount.load(ordering: .relaxed) == 1)
-    #expect(receiver.lastBufferMillis.load(ordering: .relaxed) == 0)
+    #expect(receiver.invalidBufferCount == 1)
+    #expect(receiver.lastBufferMillis == 0)
     #expect(notificationCount.load(ordering: .relaxed) == 0)
 
     receiver.process(try makeAudioSampleBuffer(sampleRate: 44_100))
     #expect(notificationCount.load(ordering: .relaxed) == 1)
-    #expect(receiver.invalidBufferCount.load(ordering: .relaxed) == 2)
+    #expect(receiver.invalidBufferCount == 2)
 
     receiver.process(try makeAudioSampleBuffer(sampleRate: 44_100))
     #expect(notificationCount.load(ordering: .relaxed) == 1)
-    #expect(receiver.invalidBufferCount.load(ordering: .relaxed) == 3)
+    #expect(receiver.invalidBufferCount == 3)
 }
 
 @Test
@@ -38,8 +38,8 @@ func receiverTracksInvalidBuffersAtTheirPresentationTimestamp() throws {
     receiver.process(try makeAudioSampleBuffer(sampleRate: 1_000, pts: 0))
     receiver.process(try makeAudioSampleBuffer(sampleRate: 1_000, pts: 5))
     #expect(receiver.lastEndFrame == 5_001)
-    #expect(receiver.invalidBufferCount.load(ordering: .relaxed) == 2)
-    #expect(receiver.lastBufferMillis.load(ordering: .relaxed) == 0)
+    #expect(receiver.invalidBufferCount == 2)
+    #expect(receiver.lastBufferMillis == 0)
     ring.finish(tailFrame: receiver.lastEndFrame)
     let first = try #require(ring.pop())
     let second = try #require(ring.pop())

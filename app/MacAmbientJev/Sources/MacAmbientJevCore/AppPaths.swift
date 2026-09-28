@@ -3,10 +3,16 @@ import Foundation
 public struct AppPaths: Sendable {
     public let applicationSupportURL: URL
     public let cacheURL: URL
+    private let sessionsRootOverride: URL?
 
-    public init(applicationSupportURL: URL, cacheURL: URL) {
+    public init(
+        applicationSupportURL: URL,
+        cacheURL: URL,
+        sessionsRootOverride: URL? = nil
+    ) {
         self.applicationSupportURL = applicationSupportURL
         self.cacheURL = cacheURL
+        self.sessionsRootOverride = sessionsRootOverride
     }
 
     public static func systemDefault(
@@ -36,7 +42,7 @@ public struct AppPaths: Sendable {
     }
 
     public var sessionsRoot: URL {
-        root.appending(path: "sessions", directoryHint: .isDirectory)
+        sessionsRootOverride ?? root.appending(path: "sessions", directoryHint: .isDirectory)
     }
 
     public var modelsRoot: URL {
