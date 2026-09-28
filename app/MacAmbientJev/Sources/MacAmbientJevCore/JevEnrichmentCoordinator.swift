@@ -82,11 +82,15 @@ public actor JevEnrichmentCoordinator {
                 let result: ProvisionalPriorityDecision
                 if providerUnavailable {
                     result = await decisions.deferClassification(
-                        text: segment.text
+                        text: segment.text,
+                        segmentID: segment.segmentID,
+                        sessionID: sessionID
                     )
                 } else {
                     result = await decisions.classify(
-                        text: segment.text
+                        text: segment.text,
+                        segmentID: segment.segmentID,
+                        sessionID: sessionID
                     )
                     providerUnavailable = result.providerUnavailable
                 }

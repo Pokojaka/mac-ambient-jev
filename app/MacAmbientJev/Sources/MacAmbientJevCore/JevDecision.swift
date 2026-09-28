@@ -77,15 +77,18 @@ public struct ProvisionalSceneDecision: Sendable, Equatable {
     public let cue: SemanticSceneCue
     public let needsRetry: Bool
     public let decision: SemanticSceneDecision?
+    public let providerUnavailable: Bool
 
     public init(
         cue: SemanticSceneCue,
         needsRetry: Bool,
-        decision: SemanticSceneDecision?
+        decision: SemanticSceneDecision?,
+        providerUnavailable: Bool = false
     ) {
         self.cue = cue
         self.needsRetry = needsRetry
         self.decision = decision
+        self.providerUnavailable = providerUnavailable
     }
 }
 
@@ -136,7 +139,8 @@ public struct ContentPriorityPolicy: Sendable {
 
 public actor JevDecisionCoordinator {
     private enum PendingRequest: Hashable {
-        case priority(String)
+        case priorityText(String)
+        case prioritySegment(UUID?, String)
         case sceneCue(String)
     }
 
@@ -155,14 +159,20 @@ public actor JevDecisionCoordinator {
         self.usageCounter = usageCounter
     }
 
-    public func classify(text: String) async -> ProvisionalPriorityDecision {
+    public func classify(
+        text: String,
+        segmentID: String? = nil,
+        sessionID: UUID? = nil
+    ) async -> ProvisionalPriorityDecision {
+        let request: PendingRequest = segmentID.map { .prioritySegment(sessionID, $0) }
+            ?? .priorityText(text)
         if let usageCounter {
             await usageCounter.recordAttempt()
         }
 
         do {
             let decision = try await provider.classifyPriority(text: text)
-            await recordSuccess(.priority(text), inputTokens: decision.inputTokens)
+            await recordSuccess(request, inputTokens: decision.inputTokens)
 
             return ProvisionalPriorityDecision(
                 visiblePriority: policy.apply(
@@ -173,7 +183,7 @@ public actor JevDecisionCoordinator {
                 decision: decision
             )
         } catch {
-            await recordFailure(.priority(text))
+            await recordFailure(request)
 
             return ProvisionalPriorityDecision(
                 visiblePriority: .primary,
@@ -184,9 +194,22 @@ public actor JevDecisionCoordinator {
         }
     }
 
-    public func deferClassification(text: String) async -> ProvisionalPriorityDecision {
-        if pendingRetries.insert(.priority(text)).inserted {
-            await usageCounter?.recordRetryPending()
+    public func deferClassification(
+        text: String,
+        segmentID: String? = nil,
+        sessionID: UUID? = nil
+    ) async -> ProvisionalPriorityDecision {
+        if let segmentID, let usageCounter {
+            await usageCounter.recordPriorityRetryPending(
+                sessionID: sessionID,
+                segmentID: segmentID
+            )
+        } else {
+            let request: PendingRequest = segmentID.map { .prioritySegment(sessionID, $0) }
+                ?? .priorityText(text)
+            if pendingRetries.insert(request).inserted {
+                await usageCounter?.recordRetryPending()
+            }
         }
 
         return ProvisionalPriorityDecision(
@@ -198,6 +221,7 @@ public actor JevDecisionCoordinator {
     }
 
     public func classifySceneCue(
+        segmentID: String,
         currentText: String,
         previousTexts: [String],
         currentScene: SceneState
@@ -212,7 +236,7 @@ public actor JevDecisionCoordinator {
                 previousTexts: previousTexts,
                 currentScene: currentScene
             )
-            await recordSuccess(.sceneCue(currentText), inputTokens: decision.inputTokens)
+            await recordSuccess(.sceneCue(segmentID), inputTokens: decision.inputTokens)
 
             return ProvisionalSceneDecision(
                 cue: decision.cue,
@@ -220,17 +244,42 @@ public actor JevDecisionCoordinator {
                 decision: decision
             )
         } catch {
-            await recordFailure(.sceneCue(currentText))
+            await recordFailure(.sceneCue(segmentID))
 
             return ProvisionalSceneDecision(
                 cue: .none,
                 needsRetry: true,
-                decision: nil
+                decision: nil,
+                providerUnavailable: Self.isProviderUnavailable(error)
             )
         }
     }
 
+    public func deferSceneCueClassification(
+        segmentID: String
+    ) async -> ProvisionalSceneDecision {
+        if pendingRetries.insert(.sceneCue(segmentID)).inserted {
+            await usageCounter?.recordRetryPending()
+        }
+
+        return ProvisionalSceneDecision(
+            cue: .none,
+            needsRetry: true,
+            decision: nil,
+            providerUnavailable: true
+        )
+    }
+
     private func recordSuccess(_ request: PendingRequest, inputTokens: Int?) async {
+        if case .prioritySegment(let sessionID, let segmentID) = request,
+           let usageCounter {
+            await usageCounter.recordPrioritySuccess(
+                sessionID: sessionID,
+                segmentID: segmentID,
+                inputTokens: inputTokens
+            )
+            return
+        }
         let wasPending = pendingRetries.remove(request) != nil
         guard let usageCounter else { return }
         await usageCounter.recordSuccess(inputTokens: inputTokens)
@@ -240,6 +289,14 @@ public actor JevDecisionCoordinator {
     }
 
     private func recordFailure(_ request: PendingRequest) async {
+        if case .prioritySegment(let sessionID, let segmentID) = request,
+           let usageCounter {
+            await usageCounter.recordPriorityFailure(
+                sessionID: sessionID,
+                segmentID: segmentID
+            )
+            return
+        }
         let isNewPending = pendingRetries.insert(request).inserted
         await usageCounter?.recordFailure(retryPending: isNewPending)
     }

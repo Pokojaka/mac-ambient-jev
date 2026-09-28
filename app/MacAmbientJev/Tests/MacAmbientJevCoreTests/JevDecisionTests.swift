@@ -263,15 +263,192 @@ private actor RecoveringDecisionProvider: DecisionProvider {
 }
 
 @Test
-func successfulRetryMustClearPendingUsageCount() async {
+func directClassificationStillResolvesItsRetry() async {
     let provider = RecoveringDecisionProvider()
     let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(
-        provider: provider, usageCounter: counter
-    )
-    #expect(await coordinator.classify(text: "重要な発話").needsRetry)
-    await provider.reconnect()
-    #expect(!(await coordinator.classify(text: "重要な発話")).needsRetry)
+    let coordinator = JevDecisionCoordinator(provider: provider, usageCounter: counter)
 
+    let failed = await coordinator.classify(text: "重要な発話")
+    #expect(failed.needsRetry)
+    #expect(await counter.snapshot().retryPendingCount == 1)
+
+    await provider.reconnect()
+    let recovered = await coordinator.classify(text: "重要な発話")
+    #expect(!recovered.needsRetry)
     #expect(await counter.snapshot().retryPendingCount == 0)
+}
+
+@Test
+func identicalTextFailuresStayPendingBySegmentAcrossCoordinators() async {
+    let counter = JevUsageCounter()
+    let failing = JevDecisionCoordinator(
+        provider: FailingDecisionProvider(),
+        usageCounter: counter
+    )
+    let text = "同じ重要な発話"
+
+    #expect(await failing.classify(text: text, segmentID: "seg-1").needsRetry)
+    #expect(await failing.classify(text: text, segmentID: "seg-2").needsRetry)
+    #expect(await failing.classify(text: text, segmentID: "seg-1").needsRetry)
+    #expect(await counter.snapshot().retryPendingCount == 2)
+
+    let recovered = JevDecisionCoordinator(
+        provider: LowPriorityDecisionProvider(confidence: 0.99, inputTokens: 23),
+        usageCounter: counter
+    )
+    #expect(!(await recovered.classify(text: text, segmentID: "seg-1")).needsRetry)
+    #expect(await counter.snapshot().retryPendingCount == 1)
+    #expect(!(await recovered.classify(text: text, segmentID: "seg-2")).needsRetry)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.retryPendingCount == 0)
+    #expect(snapshot.failureCount == 3)
+    #expect(snapshot.successCount == 2)
+}
+
+private func retryEvents(segmentIDs: [String]) -> [TranscriptEvent] {
+    segmentIDs.enumerated().flatMap { index, segmentID -> [TranscriptEvent] in
+        [
+            .segmentCreated(
+                seq: UInt64(index * 2 + 1),
+                segmentationRunID: "seg",
+                segmentID: segmentID,
+                startFrame: Int64(index) * 1_000,
+                endFrame: Int64(index + 1) * 1_000
+            ),
+            .asrCompleted(
+                seq: UInt64(index * 2 + 2),
+                runID: "asr",
+                segmentationRunID: "seg",
+                segmentID: segmentID,
+                text: "同じ重要な発話"
+            )
+        ]
+    }
+}
+
+@Test
+func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let provider = RecoveringDecisionProvider()
+    let counter = JevUsageCounter()
+    let writer = try SessionWriter(sessionURL: root)
+    let sessionID = UUID()
+    let events = retryEvents(segmentIDs: ["seg-1"])
+    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
+
+    let initial = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-initial",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(existingEvents: events, activeRuns: runs)
+    #expect(initial.retryPendingSegmentIDs == ["seg-1"])
+    #expect(await counter.snapshot().retryPendingCount == 1)
+
+    let stillOffline = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-still-offline",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(
+        existingEvents: events,
+        activeRuns: runs,
+        retryOnlySegmentIDs: ["seg-1"]
+    )
+    #expect(stillOffline.retryPendingSegmentIDs == ["seg-1"])
+    #expect(await counter.snapshot().retryPendingCount == 1)
+
+    await provider.reconnect()
+    let retry = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-retry",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(
+        existingEvents: events,
+        activeRuns: runs,
+        retryOnlySegmentIDs: ["seg-1"]
+    )
+    #expect(retry.retryPendingSegmentIDs.isEmpty)
+    #expect(await counter.snapshot().retryPendingCount == 0)
+
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 3)
+    #expect(snapshot.failureCount == 2)
+    #expect(snapshot.successCount == 1)
+}
+
+@Test
+func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let provider = RecoveringDecisionProvider()
+    let counter = JevUsageCounter()
+    let writer = try SessionWriter(sessionURL: root)
+    let sessionID = UUID()
+    let events = retryEvents(segmentIDs: ["seg-1", "seg-2"])
+    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
+
+    let initial = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-initial",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(existingEvents: events, activeRuns: runs)
+    #expect(Set(initial.retryPendingSegmentIDs) == ["seg-1", "seg-2"])
+    #expect(await counter.snapshot().retryPendingCount == 2)
+
+    let stillOffline = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-still-offline",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(
+        existingEvents: events,
+        activeRuns: runs,
+        retryOnlySegmentIDs: ["seg-1"]
+    )
+    #expect(stillOffline.retryPendingSegmentIDs == ["seg-1"])
+    #expect(await counter.snapshot().retryPendingCount == 2)
+
+    await provider.reconnect()
+    let retry = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-retry",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(
+        existingEvents: events,
+        activeRuns: runs,
+        retryOnlySegmentIDs: ["seg-1"]
+    )
+    #expect(retry.retryPendingSegmentIDs.isEmpty)
+    #expect(await counter.snapshot().retryPendingCount == 1)
+
+    let final = try await JevEnrichmentCoordinator(
+        sessionID: sessionID,
+        runID: "priority-final",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    ).process(
+        existingEvents: events,
+        activeRuns: runs,
+        retryOnlySegmentIDs: ["seg-2"]
+    )
+    #expect(final.retryPendingSegmentIDs.isEmpty)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.retryPendingCount == 0)
+    #expect(snapshot.sendCount == 4)
+    #expect(snapshot.failureCount == 2)
+    #expect(snapshot.successCount == 2)
 }

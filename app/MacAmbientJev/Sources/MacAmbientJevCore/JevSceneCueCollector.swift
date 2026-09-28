@@ -63,15 +63,25 @@ public actor JevSceneCueCollector {
         var previousTexts: [String] = []
         var cues: [TimedSemanticSceneCue] = []
         var retryPendingSegmentIDs: [String] = []
+        var providerUnavailable = false
 
         for segment in segments.sorted(by: {
             $0.startMilliseconds < $1.startMilliseconds
         }) where JevTranscriptEligibility.isEligible(segment.text) {
-            let result = await decisions.classifySceneCue(
-                currentText: segment.text,
-                previousTexts: previousTexts,
-                currentScene: segment.scene
-            )
+            let result: ProvisionalSceneDecision
+            if providerUnavailable {
+                result = await decisions.deferSceneCueClassification(
+                    segmentID: segment.segmentID
+                )
+            } else {
+                result = await decisions.classifySceneCue(
+                    segmentID: segment.segmentID,
+                    currentText: segment.text,
+                    previousTexts: previousTexts,
+                    currentScene: segment.scene
+                )
+                providerUnavailable = result.providerUnavailable
+            }
 
             let payload = SemanticSceneCueEventPayload(
                 cue: result.cue,
