@@ -112,6 +112,7 @@ final class AppState: ObservableObject {
     )
 
     private var recordingSessionID: UUID?
+    private var displayedSessionID: UUID?
     private var pendingProcessing: [PendingProcessing] = []
     private var currentlyProcessingSessionID: UUID?
     private var finalizationGate = SavedSessionReprocessGate()
@@ -191,6 +192,7 @@ final class AppState: ObservableObject {
             return
         }
         selectedSavedSessionID = sessionID
+        displayedSessionID = sessionID
         transcriptViewModel.update(segments: [])
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
@@ -377,6 +379,7 @@ final class AppState: ObservableObject {
             )
 
             recordingPhase = .idle
+            showNewSession(sessionID)
             setCaptureStatus(
                 "「\(sourceURL.lastPathComponent)」を読み込みました",
                 tone: .neutral
@@ -450,6 +453,7 @@ final class AppState: ObservableObject {
         let sessionURL = paths.sessionsRoot
             .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
 
+        recordingSessionID = sessionID
         do {
             try prepareSession(
                 sessionID: sessionID,
@@ -458,19 +462,18 @@ final class AppState: ObservableObject {
                 originalFilename: nil
             )
             try await captureEngine.start(sessionID: sessionID) { [weak self] message in
-                guard let self,
-                      self.recordingSessionID == sessionID,
-                      self.recordingPhase == .recording else { return }
+                guard let self, self.isCurrentRecording(sessionID) else { return }
                 self.setCaptureStatus(message, tone: .error)
             }
-            recordingSessionID = sessionID
             recordingPhase = .recording
+            showNewSession(sessionID)
             setCaptureStatus("録音中", tone: .recording)
             prepareASRModel()
 
             do {
                 try await startLiveVAD(sessionID: sessionID)
             } catch {
+                guard isCurrentRecording(sessionID) else { return }
                 liveVADFailureText = error.localizedDescription
                 processingStatusText =
                     "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
@@ -580,6 +583,7 @@ final class AppState: ObservableObject {
 
     private func startLiveVAD(sessionID: UUID) async throws {
         let checkpoint = try await captureEngine.committedCheckpoint()
+        guard isCurrentRecording(sessionID) else { return }
         let directory = paths.sessionsRoot
             .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
             .appending(path: "audio", directoryHint: .isDirectory)
@@ -591,6 +595,7 @@ final class AppState: ObservableObject {
             processingDirectory: directory,
             initialCheckpoint: checkpoint
         )
+        guard isCurrentRecording(sessionID) else { return }
         liveVADSession = vadSession
 
         liveASRQueues[sessionID] = []
@@ -603,8 +608,14 @@ final class AppState: ObservableObject {
             )
         } catch {
             liveASRFailures[sessionID] = error.localizedDescription
-            processingStatusText =
-                "録音は継続しています。ライブ文字起こしを開始できませんでした: \(error.localizedDescription)"
+            if isCurrentRecording(sessionID) {
+                processingStatusText =
+                    "録音は継続しています。ライブ文字起こしを開始できませんでした: \(error.localizedDescription)"
+            }
+        }
+        guard isCurrentRecording(sessionID) else {
+            await sessionProcessor.cancelLiveTranscription(sessionID: sessionID)
+            return
         }
 
         liveVADTask?.cancel()
@@ -735,13 +746,15 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     guard let self else { return }
                     self.processingStatusText = text
-                    self.transcriptViewModel.setStatus(text)
+                    if self.displayedSessionID == sessionID {
+                        self.transcriptViewModel.setStatus(text)
+                    }
                 }
             }
             let updateHandler: NativeSessionProcessor.UpdateHandler = {
                 [weak self] segments, state in
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self, self.displayedSessionID == sessionID else { return }
                     self.processingState = state
                     self.transcriptViewModel.update(segments: segments)
                 }
@@ -823,20 +836,23 @@ final class AppState: ObservableObject {
     private func drainProcessingQueue() async {
         while !pendingProcessing.isEmpty {
             let request = pendingProcessing.removeFirst()
-            currentlyProcessingSessionID = request.sessionID
+            let requestSessionID = request.sessionID
+            currentlyProcessingSessionID = requestSessionID
             processingState = .running
 
             let statusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
                 await MainActor.run {
                     guard let self else { return }
                     self.processingStatusText = text
-                    self.transcriptViewModel.setStatus(text)
+                    if self.displayedSessionID == requestSessionID {
+                        self.transcriptViewModel.setStatus(text)
+                    }
                 }
             }
 
             let updateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self, self.displayedSessionID == requestSessionID else { return }
                     self.processingState = state
                     self.transcriptViewModel.update(segments: segments)
                 }
@@ -844,38 +860,20 @@ final class AppState: ObservableObject {
 
             switch request {
             case .finalize(let sessionID, let source):
-                let selectedStatusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
-                    await MainActor.run {
-                        guard let self else { return }
-                        self.processingStatusText = text
-                        if self.selectedSavedSessionID == sessionID {
-                            self.transcriptViewModel.setStatus(text)
-                        }
-                    }
-                }
-                let selectedUpdateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
-                    await MainActor.run {
-                        guard let self else { return }
-                        if self.selectedSavedSessionID == sessionID {
-                            self.processingState = state
-                            self.transcriptViewModel.update(segments: segments)
-                        }
-                    }
-                }
                 switch source {
                 case .processingTimeline(let checkpoint):
                     _ = await sessionProcessor.processFinalTranscript(
                         sessionID: sessionID,
                         checkpoint: checkpoint,
-                        onStatus: selectedStatusHandler,
-                        onUpdate: selectedUpdateHandler
+                        onStatus: statusHandler,
+                        onUpdate: updateHandler
                     )
                 case .importedOriginal(let originalURL):
                     _ = await sessionProcessor.processImportedSession(
                         sessionID: sessionID,
                         originalURL: originalURL,
-                        onStatus: selectedStatusHandler,
-                        onUpdate: selectedUpdateHandler
+                        onStatus: statusHandler,
+                        onUpdate: updateHandler
                     )
                 }
                 finalizationGate.release(sessionID)
@@ -990,6 +988,7 @@ final class AppState: ObservableObject {
             let candidates = try SessionRecoveryScanner(
                 sessionsRoot: paths.sessionsRoot
             ).pendingSessions()
+                .filter { $0.manifest.sessionID != recordingSessionID }
 
             guard !candidates.isEmpty else { return }
 
@@ -1119,6 +1118,16 @@ final class AppState: ObservableObject {
         precondition(
             createdURL.standardizedFileURL == sessionURL.standardizedFileURL
         )
+    }
+
+    private func isCurrentRecording(_ sessionID: UUID) -> Bool {
+        recordingSessionID == sessionID && recordingPhase == .recording
+    }
+
+    private func showNewSession(_ sessionID: UUID) {
+        selectedSavedSessionID = nil
+        displayedSessionID = sessionID
+        transcriptViewModel.update(segments: [])
     }
 
     private func setCaptureStatus(_ text: String, tone: StatusTone) {
