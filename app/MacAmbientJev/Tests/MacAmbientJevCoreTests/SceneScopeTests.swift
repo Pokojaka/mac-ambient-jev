@@ -154,3 +154,102 @@ func semanticDiscussionEndOnlyEntersLectureCandidateUntilAcousticConfirmation() 
 
     #expect(machine.state == .lecture)
 }
+
+@Test
+func oppositeUnconfirmedSemanticCuesDoNotFabricateDiscussion() {
+    var machine = SceneStateMachine(config: .test)
+    _ = machine.observeSemanticCue(.discussionStart)
+    _ = machine.observeSemanticCue(.discussionEnd)
+    _ = machine.observe(AcousticSceneFeatures(
+        activeSpeakerCount: 0,
+        turnRate: 0,
+        overlapRatio: 0,
+        dominantSpeakerRatio: 0,
+        voicedDurationRatio: 0
+    ))
+
+    #expect(machine.state == .lecture)
+}
+
+@Test
+func confirmedDiscussionSurvivesReturnOfSupportingEvidence() {
+    var machine = SceneStateMachine(config: .test)
+    let discussion = AcousticSceneFeatures(
+        activeSpeakerCount: 4,
+        turnRate: 0.8,
+        overlapRatio: 0,
+        dominantSpeakerRatio: 0.25,
+        voicedDurationRatio: 0.75
+    )
+    let lecture = AcousticSceneFeatures(
+        activeSpeakerCount: 1,
+        turnRate: 0.05,
+        overlapRatio: 0,
+        dominantSpeakerRatio: 0.9,
+        voicedDurationRatio: 0.8
+    )
+
+    for _ in 0..<6 { _ = machine.observe(discussion) }
+    #expect(machine.state == .discussion)
+    _ = machine.observe(lecture)
+    for _ in 0..<3 { _ = machine.observe(discussion) }
+
+    #expect(machine.state == .discussion)
+}
+
+private let steadyLectureWindow = AcousticSceneFeatures(
+    activeSpeakerCount: 1,
+    turnRate: 0,
+    overlapRatio: 0,
+    dominantSpeakerRatio: 1,
+    voicedDurationRatio: 0.9
+)
+private let ambiguousWindow = AcousticSceneFeatures(
+    activeSpeakerCount: 2,
+    turnRate: 0.1,
+    overlapRatio: 0,
+    dominantSpeakerRatio: 0.7,
+    voicedDurationRatio: 0.9
+)
+private let activeDiscussionWindow = AcousticSceneFeatures(
+    activeSpeakerCount: 4,
+    turnRate: 0.8,
+    overlapRatio: 0,
+    dominantSpeakerRatio: 0.25,
+    voicedDurationRatio: 0.75
+)
+
+@Test
+func lectureEvidenceFollowedByAmbiguousWindowStaysLecture() {
+    var machine = SceneStateMachine(config: .test)
+    for _ in 0..<3 { machine.observe(steadyLectureWindow) }
+    let afterLectureEvidence = machine.state
+    machine.observe(ambiguousWindow)
+
+    #expect(afterLectureEvidence == .lecture)
+    #expect(machine.state == .lecture)
+}
+
+@Test
+func confirmedDiscussionSurvivesOneLectureWindowAndOneAmbiguousWindow() {
+    var machine = SceneStateMachine(config: .test)
+    for _ in 0..<6 { machine.observe(activeDiscussionWindow) }
+    machine.observe(steadyLectureWindow)
+    for _ in 0..<3 { machine.observe(activeDiscussionWindow) }
+    machine.observe(ambiguousWindow)
+
+    #expect(machine.state == .discussion)
+}
+
+@Test
+func contradictedDiscussionCueReturnsToLectureAndStaysThere() {
+    var machine = SceneStateMachine(config: .test)
+    machine.observeSemanticCue(.discussionStart)
+    machine.observe(steadyLectureWindow)
+    let afterContradiction = machine.state
+    for _ in 0..<2 { machine.observe(steadyLectureWindow) }
+    machine.observe(ambiguousWindow)
+
+    #expect(afterContradiction == .lecture)
+    #expect(machine.state == .lecture)
+}
