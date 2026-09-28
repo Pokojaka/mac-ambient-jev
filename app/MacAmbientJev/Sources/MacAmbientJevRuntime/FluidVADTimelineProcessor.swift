@@ -37,6 +37,7 @@ actor FluidVADTimelineProcessor {
     private var sourceStartFrame: Int64 = 0
     private var pending16k: [Float] = []
     private var pendingOffset = 0
+    private var undelivered: [SegmentReference] = []
     private var finished = false
 
     init(
@@ -85,15 +86,12 @@ actor FluidVADTimelineProcessor {
         guard let sourceFormat else {
             throw FluidVADTimelineProcessorError.invalidSourceFormat
         }
-        guard sourceStartFrame < checkpoint.committedFrames else {
-            return []
-        }
+        try await drainFullVADChunks()
 
         let reader = ProcessingTimelineReader(
             directory: directory,
             checkpoint: checkpoint
         )
-        var emitted: [SegmentReference] = []
 
         while sourceStartFrame < checkpoint.committedFrames {
             let sourceEndFrame = min(
@@ -128,11 +126,11 @@ actor FluidVADTimelineProcessor {
             pending16k.append(
                 contentsOf: try converter.resampleBuffer(buffer)
             )
-            emitted.append(contentsOf: try await drainFullVADChunks())
             sourceStartFrame = sourceEndFrame
+            try await drainFullVADChunks()
         }
 
-        return emitted
+        return takeUndelivered()
     }
 
     /// Consumes the final durable tail and closes any open VAD segment.
@@ -141,24 +139,24 @@ actor FluidVADTimelineProcessor {
     ) async throws -> [SegmentReference] {
         guard !finished else { return [] }
 
-        var emitted = try await processAvailable(checkpoint: checkpoint)
+        undelivered = try await processAvailable(checkpoint: checkpoint)
 
         if pendingOffset < pending16k.count {
             let finalChunk = Array(pending16k[pendingOffset...])
-            emitted.append(
+            undelivered.append(
                 contentsOf: try await engine.process16kChunk(finalChunk)
             )
         }
 
         pending16k.removeAll(keepingCapacity: false)
         pendingOffset = 0
-        emitted.append(
+        undelivered.append(
             contentsOf: await engine.finish(
                 totalCanonicalFrames: checkpoint.committedFrames
             )
         )
         finished = true
-        return emitted
+        return takeUndelivered()
     }
 
     func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
@@ -166,13 +164,11 @@ actor FluidVADTimelineProcessor {
         return await engine.openSpeechRange(upToFrame: durableFrame)
     }
 
-    private func drainFullVADChunks() async throws -> [SegmentReference] {
-        var emitted: [SegmentReference] = []
-
+    private func drainFullVADChunks() async throws {
         while pending16k.count - pendingOffset >= VadManager.chunkSize {
             let end = pendingOffset + VadManager.chunkSize
             let chunk = Array(pending16k[pendingOffset..<end])
-            emitted.append(
+            undelivered.append(
                 contentsOf: try await engine.process16kChunk(chunk)
             )
             pendingOffset = end
@@ -183,7 +179,10 @@ actor FluidVADTimelineProcessor {
             pending16k.removeFirst(pendingOffset)
             pendingOffset = 0
         }
+    }
 
-        return emitted
+    private func takeUndelivered() -> [SegmentReference] {
+        defer { undelivered.removeAll() }
+        return undelivered
     }
 }
