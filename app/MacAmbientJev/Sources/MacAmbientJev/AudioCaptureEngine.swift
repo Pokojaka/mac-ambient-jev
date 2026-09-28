@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import MacAmbientJevCore
+import IOKit.audio
 import Synchronization
 
 enum AudioCaptureEngineError: LocalizedError {
@@ -11,6 +12,9 @@ enum AudioCaptureEngineError: LocalizedError {
     case inputUnavailable
     case noAudioCaptured
     case writerFailure(String)
+    case insufficientDiskSpace(Int64)
+    case cancelled
+    case captureFailure(String)
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +30,12 @@ enum AudioCaptureEngineError: LocalizedError {
             "マイクから音声が届きませんでした。入力デバイスとマイク権限を確認してください"
         case .writerFailure(let message):
             "録音データの保存中にエラーが発生しました: \(message)"
+        case .insufficientDiskSpace(let bytes):
+            "90分の録音に必要な空き容量がありません（必要: \(bytes / 1_000_000) MB）"
+        case .cancelled:
+            "録音の開始を中止しました"
+        case .captureFailure(let message):
+            message
         }
     }
 }
@@ -38,23 +48,30 @@ struct AudioCaptureStopResult: Sendable, Equatable {
 final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     let invalidBufferCount = Atomic<UInt64>(0)
     private let formatChangeNotified = Atomic(false)
+    let lastBufferMillis = Atomic<Int64>(0)
+    let silentSinceMillis = Atomic<Int64>(0)
+    private(set) var lastEndFrame: Int64 = 0
+    private var originPTS: CMTime?
 
     private let ring: AudioBlockRing
     private let sampleRate: Double
     private let channelCount: Int
     private let buffers: UnsafeMutableAudioBufferListPointer
     private let onFormatChange: @Sendable () -> Void
+    private let clock: any CaptureClock
 
     init(
         ring: AudioBlockRing,
         sampleRate: Double,
         channelCount: Int,
-        onFormatChange: @escaping @Sendable () -> Void
+        onFormatChange: @escaping @Sendable () -> Void,
+        clock: any CaptureClock = SystemCaptureClock()
     ) {
         self.ring = ring
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.onFormatChange = onFormatChange
+        self.clock = clock
         self.buffers = AudioBufferList.allocate(maximumBuffers: channelCount)
     }
 
@@ -70,7 +87,23 @@ final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBuffer
         process(sampleBuffer)
     }
 
+    // Capture callbacks are serialized by AVCaptureAudioDataOutput's delegate queue.
     func process(_ sampleBuffer: CMSampleBuffer) {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        if originPTS == nil, pts.isValid { originPTS = pts }
+        let startFrame: Int64
+        if let originPTS, pts.isValid {
+            let frames = CMTimeGetSeconds(CMTimeSubtract(pts, originPTS)) * sampleRate
+            startFrame = frames.isFinite && abs(frames) < 1_000_000_000_000
+                ? Int64(frames.rounded()) : lastEndFrame
+        } else {
+            startFrame = lastEndFrame
+        }
+        if frameCount > 0 {
+            let (end, overflow) = startFrame.addingReportingOverflow(Int64(frameCount))
+            if !overflow { lastEndFrame = max(lastEndFrame, end) }
+        }
         guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
               let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
               format.mSampleRate == sampleRate,
@@ -80,6 +113,9 @@ final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBuffer
               format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0,
               format.mBitsPerChannel == 32 else {
             _ = invalidBufferCount.add(1, ordering: .relaxed)
+            if frameCount > 0 {
+                ring.noteMissing(startFrame: startFrame, frameCount: frameCount)
+            }
             if !formatChangeNotified.exchange(true, ordering: .relaxed) {
                 onFormatChange()
             }
@@ -97,27 +133,48 @@ final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBuffer
             flags: 0,
             blockBufferOut: &block
         )
-        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
         guard status == noErr, buffers.count == channelCount, frameCount > 0 else {
             _ = invalidBufferCount.add(1, ordering: .relaxed)
+            if frameCount > 0 {
+                ring.noteMissing(startFrame: startFrame, frameCount: frameCount)
+            }
             return
         }
 
-        withUnsafeTemporaryAllocation(of: UnsafeMutablePointer<Float>.self, capacity: channelCount) { channels in
+        var peak: Float = 0
+        let valid = withUnsafeTemporaryAllocation(
+            of: UnsafeMutablePointer<Float>.self, capacity: channelCount
+        ) { channels -> Bool in
             for index in 0..<channelCount {
                 let buffer = buffers[index]
-                guard Int(buffer.mDataByteSize) >= frameCount * MemoryLayout<Float>.size,
+                guard frameCount <= Int(buffer.mDataByteSize) / MemoryLayout<Float>.size,
                       let data = buffer.mData else {
+                    ring.noteMissing(startFrame: startFrame, frameCount: frameCount)
                     _ = invalidBufferCount.add(1, ordering: .relaxed)
-                    return
+                    return false
                 }
                 channels[index] = data.assumingMemoryBound(to: Float.self)
+                for frame in 0..<frameCount {
+                    peak = max(peak, abs(channels[index][frame]))
+                }
             }
             _ = ring.pushPlanarFloat32(
                 channelData: channels.baseAddress!,
                 channelCount: channelCount,
-                frameCount: frameCount
+                frameCount: frameCount,
+                startFrame: startFrame
             )
+            return true
+        }
+        guard valid else { return }
+        let millis = Int64(clock.now() * 1_000)
+        lastBufferMillis.store(millis, ordering: .relaxed)
+        if peak < 0.00031622776 {
+            if silentSinceMillis.load(ordering: .relaxed) == 0 {
+                silentSinceMillis.store(millis, ordering: .relaxed)
+            }
+        } else {
+            silentSinceMillis.store(0, ordering: .relaxed)
         }
     }
 }
@@ -128,6 +185,10 @@ final class AudioCaptureEngine {
     private let bufferFrameCount: Int
     private let ringCapacity: Int
     private let chunkDurationSeconds: Double
+    private let power: RecordingPowerLifetime
+    private let clock: any CaptureClock
+    private let diskSpace: any CaptureDiskSpaceProviding
+    private let failureObservers: CaptureFailureObservers
 
     private var session: AVCaptureSession?
     private var output: AVCaptureAudioDataOutput?
@@ -137,6 +198,10 @@ final class AudioCaptureEngine {
     private var drain: AudioCaptureDrain?
     private var drainTask: Task<String?, Never>?
     private var overflowAtStart: UInt64 = 0
+    private var healthTask: Task<Void, Never>?
+    private var startingCancelled = false
+    private var startingFailure: String?
+    private var awaitingFirstBuffer = false
 
     private(set) var activeSessionID: UUID?
     private(set) var timeline: ProcessingTimeline?
@@ -149,7 +214,11 @@ final class AudioCaptureEngine {
         paths: AppPaths,
         bufferFrameCount: Int = 16_384,
         ringCapacity: Int = 64,
-        chunkDurationSeconds: Double = LiveTranscriptionCadence.durableChunkDurationSeconds
+        chunkDurationSeconds: Double = LiveTranscriptionCadence.durableChunkDurationSeconds,
+        power: any RecordingPowerProviding = SystemRecordingPower(),
+        clock: any CaptureClock = SystemCaptureClock(),
+        diskSpace: any CaptureDiskSpaceProviding = VolumeCaptureDiskSpace(),
+        notifications: any CaptureNotificationProviding = SystemCaptureNotifications()
     ) {
         precondition(bufferFrameCount > 0)
         precondition(ringCapacity > 0)
@@ -158,11 +227,18 @@ final class AudioCaptureEngine {
         self.bufferFrameCount = bufferFrameCount
         self.ringCapacity = ringCapacity
         self.chunkDurationSeconds = chunkDurationSeconds
+        self.power = RecordingPowerLifetime(provider: power)
+        self.clock = clock
+        self.diskSpace = diskSpace
+        self.failureObservers = CaptureFailureObservers(provider: notifications)
     }
 
     func start(
         sessionID: UUID,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void
+        onFailure: @escaping @MainActor @Sendable (String) -> Void,
+        onWarning: @escaping @MainActor @Sendable (String) -> Void = { _ in },
+        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void = { _ in },
+        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void = { _ in }
     ) async throws {
         guard session == nil else {
             throw AudioCaptureEngineError.alreadyRecording
@@ -182,6 +258,15 @@ final class AudioCaptureEngine {
         guard format.mSampleRate > 0, channelCount > 0 else {
             throw AudioCaptureEngineError.invalidInputFormat
         }
+        let required = CaptureDiskPolicy.requiredStartBytes(
+            sampleRate: format.mSampleRate, channelCount: channelCount
+        )
+        if let available = try diskSpace.availableBytes(at: paths.root),
+           !CaptureDiskPolicy.mayStart(
+            availableBytes: available, sampleRate: format.mSampleRate, channelCount: channelCount
+           ) {
+            throw AudioCaptureEngineError.insufficientDiskSpace(required)
+        }
 
         let processingDirectory = paths.sessionsRoot
             .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
@@ -195,8 +280,13 @@ final class AudioCaptureEngine {
             chunkDurationSeconds: chunkDurationSeconds
         )
         let ring = AudioBlockRing(
-            capacity: ringCapacity,
-            blockFrameCapacity: bufferFrameCount * channelCount
+            capacity: max(ringCapacity, AudioBlockRing.capacityForDuration(
+                sampleRate: format.mSampleRate,
+                blockFrameCapacity: bufferFrameCount * channelCount,
+                channelCount: channelCount
+            )),
+            blockFrameCapacity: bufferFrameCount * channelCount,
+            sampleRate: format.mSampleRate
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
 
@@ -213,21 +303,35 @@ final class AudioCaptureEngine {
         }
         captureSession.addInput(input)
         captureSession.addOutput(audioOutput)
+        awaitingFirstBuffer = true
+        startingFailure = nil
+        let reportFailure: @MainActor @Sendable (String) -> Void = { [weak self] message in
+            if self?.awaitingFirstBuffer == true { self?.startingFailure = message }
+            onFailure(message)
+        }
         let receiver = AudioCaptureReceiver(
             ring: ring,
             sampleRate: format.mSampleRate,
             channelCount: channelCount,
             onFormatChange: {
                 Task { @MainActor in
-                    onFailure("入力デバイスの音声形式が変わったため、録音を保存できていません。録音を停止してください")
+                    reportFailure("入力デバイスの音声形式が変わったため、録音を停止しました")
                 }
-            }
+            },
+            clock: clock
         )
         let callbackQueue = DispatchQueue(label: "app.mac-ambient-jev.capture")
+        startingCancelled = false
+        let powerAcquired = power.begin()
+        if !powerAcquired {
+            onWarning("スリープ防止を設定できませんでした。録音中はスリープを避けてください")
+        }
         audioOutput.setSampleBufferDelegate(receiver, queue: callbackQueue)
+        let startedAt = clock.now()
         captureSession.startRunning()
         guard captureSession.isRunning else {
             audioOutput.setSampleBufferDelegate(nil, queue: nil)
+            power.end()
             throw AudioCaptureEngineError.inputUnavailable
         }
 
@@ -237,7 +341,7 @@ final class AudioCaptureEngine {
                     _ = try await drain.drainAvailable()
                 } catch {
                     let message = error.localizedDescription
-                    await onFailure("録音の保存に失敗しました: \(message)")
+                    await reportFailure("録音の保存に失敗しました: \(message)")
                     return message
                 }
 
@@ -265,6 +369,67 @@ final class AudioCaptureEngine {
             channelCount: channelCount,
             sampleFormat: .float32LE
         )
+        failureObservers.start(session: captureSession, device: device, onFailure: reportFailure)
+        if CaptureInputWarnings.isLowRateBluetooth(
+            transportType: device.transportType, sampleRate: format.mSampleRate
+        ) {
+            onWarning("Bluetoothマイクは音質が低下します")
+        }
+        while true {
+            let state = CaptureStartStatus.evaluate(
+                startedAt: startedAt, now: clock.now(),
+                lastBufferMillis: receiver.lastBufferMillis.load(ordering: .relaxed),
+                cancelled: startingCancelled || Task.isCancelled,
+                failure: startingFailure
+            )
+            switch state {
+            case .ready:
+                awaitingFirstBuffer = false
+                let monitor = CaptureHealthMonitor(
+                    clock: clock, diskSpace: diskSpace, directory: paths.root,
+                    startedAt: startedAt, onFailure: reportFailure,
+                    onWarning: onWarning, onDropouts: onDropouts,
+                    onSilenceChanged: onSilenceChanged
+                )
+                healthTask = Task {
+                    while !Task.isCancelled, self.activeSessionID == sessionID {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
+                        guard monitor.poll(
+                            lastBufferMillis: receiver.lastBufferMillis.load(ordering: .relaxed),
+                            silentSinceMillis: receiver.silentSinceMillis.load(ordering: .relaxed),
+                            dropouts: ring.dropoutCount
+                        ) else { break }
+                    }
+                }
+                return
+            case .waiting:
+                try? await Task.sleep(for: .milliseconds(50))
+            case .cancelled, .failed, .timedOut:
+                awaitingFirstBuffer = false
+                _ = try? await stop()
+                switch state {
+                case .cancelled: throw AudioCaptureEngineError.cancelled
+                case .failed(let message): throw AudioCaptureEngineError.captureFailure(message)
+                case .timedOut: throw AudioCaptureEngineError.noAudioCaptured
+                default: preconditionFailure("Unexpected startup state")
+                }
+            }
+        }
+    }
+
+    func cancelStarting() {
+        startingCancelled = true
+    }
+
+    /// Termination cannot await a final partial chunk; previously committed chunks stay recoverable.
+    func terminate() {
+        healthTask?.cancel()
+        drainTask?.cancel()
+        output?.setSampleBufferDelegate(nil, queue: nil)
+        session?.stopRunning()
+        failureObservers.stop()
+        power.end()
     }
 
     /// Returns the portion of the recording that is already durable on disk.
@@ -291,6 +456,10 @@ final class AudioCaptureEngine {
         output.setSampleBufferDelegate(nil, queue: nil)
         session.stopRunning()
         callbackQueue.sync {}
+        ring.finish(tailFrame: receiver.lastEndFrame)
+        healthTask?.cancel()
+        healthTask = nil
+        failureObservers.stop()
 
         defer {
             self.session = nil
@@ -301,6 +470,7 @@ final class AudioCaptureEngine {
             self.drain = nil
             self.drainTask = nil
             self.activeSessionID = nil
+            self.power.end()
         }
 
         let backgroundFailure: String?

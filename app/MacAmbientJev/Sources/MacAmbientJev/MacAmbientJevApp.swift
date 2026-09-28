@@ -77,15 +77,16 @@ private struct ContentView: View {
                     }
                 } label: {
                     Label(
-                        appState.isRecording ? "録音を停止" : "録音を開始",
-                        systemImage: appState.isRecording
+                        appState.isRecording || appState.recordingPhase == .starting
+                            ? "録音を停止" : "録音を開始",
+                        systemImage: appState.isRecording || appState.recordingPhase == .starting
                             ? "stop.circle.fill"
                             : "record.circle"
                     )
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
-                .disabled(appState.isBusy)
+                .disabled(appState.isBusy && appState.recordingPhase != .starting)
 
                 Button {
                     openSettings()
@@ -128,6 +129,24 @@ private struct ContentView: View {
                 }
             }
 
+            if let warning = appState.captureWarningText {
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if appState.isRecording, appState.isMicrophoneSilent {
+                Text("マイク入力が30秒以上無音です。ミュート設定を確認してください")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if appState.isRecording, appState.dropoutCount > 0 {
+                Text("音声の欠落: \(appState.dropoutCount) 回")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if let processingStatusText = appState.processingStatusText {
                 HStack(spacing: AppSpacing.sm) {
                     processingStatusIcon

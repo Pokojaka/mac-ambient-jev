@@ -7,6 +7,20 @@ import MacAmbientJevCore
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
+final class TerminationObservation {
+    private let token: NSObjectProtocol
+
+    init(onTermination: @escaping @Sendable () -> Void) {
+        token = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in onTermination() }
+    }
+
+    deinit { NotificationCenter.default.removeObserver(token) }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     enum RecordingPhase: Equatable {
@@ -94,6 +108,9 @@ final class AppState: ObservableObject {
     @Published private(set) var statusText = UserFacingStatus.idle.text
     @Published private(set) var statusTone: StatusTone = .neutral
     @Published private(set) var recordingPhase: RecordingPhase = .idle
+    @Published private(set) var captureWarningText: String?
+    @Published private(set) var isMicrophoneSilent = false
+    @Published private(set) var dropoutCount: UInt64 = 0
     @Published private(set) var modelPreparation: ModelPreparation = .idle
     @Published private(set) var processingState: ProcessingState = .idle
     @Published private(set) var processingStatusText: String?
@@ -106,10 +123,7 @@ final class AppState: ObservableObject {
     private let paths: AppPaths
     private let captureEngine: AudioCaptureEngine
     private let sessionProcessor: NativeSessionProcessor
-    private let diskMonitor = DiskSpaceMonitor(
-        warningThresholdBytes: 2_000_000_000,
-        criticalThresholdBytes: 1_000_000_000
-    )
+    // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
 
     private var recordingSessionID: UUID?
     private var displayedSessionID: UUID?
@@ -119,6 +133,7 @@ final class AppState: ObservableObject {
     private var finalizationGate = SavedSessionReprocessGate()
     private var processingTask: Task<Void, Never>?
     private var modelPreparationTask: Task<Void, Never>?
+    private var terminationObserver: TerminationObservation?
 
     private var liveVADSession: LiveVADSession?
     private var liveVADTask: Task<Void, Never>?
@@ -143,10 +158,15 @@ final class AppState: ObservableObject {
             jevUsageCounter: jevUsageCounter
         )
 
+        terminationObserver = TerminationObservation { [weak self] in
+            MainActor.assumeIsolated { self?.terminateCapture() }
+        }
+
         Task { [weak self] in
             await self?.recoverPendingSessions()
         }
     }
+
 
     var isRecording: Bool {
         recordingPhase == .recording
@@ -332,10 +352,16 @@ final class AppState: ObservableObject {
     }
 
     func toggleRecording() async {
-        if isRecording {
+        switch recordingPhase {
+        case .starting:
+            captureEngine.cancelStarting()
+            setCaptureStatus("録音の開始を中止しています", tone: .neutral)
+        case .recording:
             await stopRecording()
-        } else {
+        case .idle:
             await startRecording()
+        case .requestingPermission, .stopping, .importing:
+            break
         }
     }
 
@@ -403,6 +429,9 @@ final class AppState: ObservableObject {
 
     func startRecording() async {
         guard recordingPhase == .idle else { return }
+        captureWarningText = nil
+        isMicrophoneSilent = false
+        dropoutCount = 0
 
         recordingPhase = .requestingPermission
         setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
@@ -421,28 +450,10 @@ final class AppState: ObservableObject {
                 at: paths.root,
                 withIntermediateDirectories: true
             )
-
-            switch try currentDiskSpaceLevel() {
-            case .critical:
-                recordingPhase = .idle
-                setCaptureStatus(
-                    "空き容量が1 GB未満のため、新しい録音を開始できません。",
-                    tone: .error
-                )
-                return
-            case .warning:
-                setCaptureStatus(
-                    "空き容量が2 GB未満です。長時間録音では容量不足に注意してください。",
-                    tone: .warning
-                )
-            case .normal:
-                break
-            }
         } catch {
-            setCaptureStatus(
-                "空き容量を確認できませんでした。録音を開始します。",
-                tone: .warning
-            )
+            recordingPhase = .idle
+            setCaptureStatus("録音先を作成できませんでした: \(error.localizedDescription)", tone: .error)
+            return
         }
 
         recordingPhase = .starting
@@ -462,15 +473,36 @@ final class AppState: ObservableObject {
                 sourceKind: .live,
                 originalFilename: nil
             )
-            try await captureEngine.start(sessionID: sessionID) { [weak self] message in
-                guard let self else { return }
-                if self.recordingPhase == .starting,
-                   self.recordingSessionID == sessionID {
-                    self.pendingCaptureFailure = (sessionID, message)
-                } else {
-                    self.captureDidFail(sessionID: sessionID, message: message)
+            try await captureEngine.start(
+                sessionID: sessionID,
+                onFailure: { [weak self] message in
+                    guard let self else { return }
+                    if self.recordingPhase == .starting,
+                       self.recordingSessionID == sessionID {
+                        self.pendingCaptureFailure = (sessionID, message)
+                    } else {
+                        self.captureDidFail(sessionID: sessionID, message: message)
+                    }
+                },
+                onWarning: { [weak self] message in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    if let previous = self.captureWarningText {
+                        if !previous.contains(message) {
+                            self.captureWarningText = previous + " / " + message
+                        }
+                    } else {
+                        self.captureWarningText = message
+                    }
+                },
+                onDropouts: { [weak self] count in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    self.dropoutCount = count
+                },
+                onSilenceChanged: { [weak self] silent in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    self.isMicrophoneSilent = silent
                 }
-            }
+            )
             markRecordingStarted(sessionID: sessionID)
             if let failure = pendingCaptureFailure, failure.sessionID == sessionID {
                 pendingCaptureFailure = nil
@@ -491,10 +523,29 @@ final class AppState: ObservableObject {
             }
         } catch {
             pendingCaptureFailure = nil
-            try? FileManager.default.removeItem(at: sessionURL)
+            captureWarningText = nil
+            isMicrophoneSilent = false
+            let processing = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
+            let keepSession: Bool
+            do {
+                let checkpoint = try AudioCheckpoint.loadRecovered(from: processing)
+                keepSession = (checkpoint?.committedFrames ?? 0) > 0
+            } catch {
+                // Damaged durable data must remain available for recovery/diagnosis.
+                keepSession = true
+            }
+            if keepSession {
+                refreshSavedSessions()
+            } else {
+                try? FileManager.default.removeItem(at: sessionURL)
+            }
             recordingSessionID = nil
             recordingPhase = .idle
-            setCaptureStatus(error.localizedDescription, tone: .error)
+            if case AudioCaptureEngineError.cancelled = error {
+                setCaptureStatus("録音の開始を中止しました", tone: .neutral)
+            } else {
+                setCaptureStatus(error.localizedDescription, tone: .error)
+            }
         }
     }
 
@@ -519,6 +570,8 @@ final class AppState: ObservableObject {
             liveVADFailureText = nil
             liveVADSegmentCount = 0
             recordingSessionID = nil
+            captureWarningText = nil
+            isMicrophoneSilent = false
             recordingPhase = .idle
             refreshSavedSessions()
         }
@@ -560,6 +613,8 @@ final class AppState: ObservableObject {
                 : 0
 
             recordingSessionID = nil
+            captureWarningText = nil
+            isMicrophoneSilent = false
             recordingPhase = .idle
 
             if result.didOverflow {
@@ -614,6 +669,8 @@ final class AppState: ObservableObject {
                 sessionID: sessionID
             )
             recordingSessionID = nil
+            captureWarningText = nil
+            isMicrophoneSilent = false
             recordingPhase = .idle
             setCaptureStatus(error.localizedDescription, tone: .error)
         }
@@ -1136,17 +1193,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func currentDiskSpaceLevel() throws -> DiskSpaceLevel {
-        let values = try paths.applicationSupportURL.resourceValues(
-            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
-        )
-
-        guard let bytes = values.volumeAvailableCapacityForImportantUsage else {
-            return .normal
-        }
-
-        return diskMonitor.level(forAvailableBytes: bytes)
-    }
 
     private func prepareSession(
         sessionID: UUID,
@@ -1173,6 +1219,10 @@ final class AppState: ObservableObject {
         selectedSavedSessionID = nil
         displayedSessionID = sessionID
         transcriptViewModel.update(segments: [])
+    }
+
+    func terminateCapture() {
+        captureEngine.terminate()
     }
 
     private func setCaptureStatus(_ text: String, tone: StatusTone) {
