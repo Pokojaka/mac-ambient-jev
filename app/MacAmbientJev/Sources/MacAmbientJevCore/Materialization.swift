@@ -243,12 +243,34 @@ public struct TranscriptMaterializer: Sendable {
         activeRuns: ActiveRuns
     ) -> [MaterializedTranscriptSegment] {
         let ordered = events.sorted { $0.eventSeq < $1.eventSeq }
-        let allActiveSpeakerSpans = ordered.compactMap { event -> SpeakerSpan? in
-            guard event.processingRunID == activeRuns.diarization,
-                  case .speakerSpan(let span) = event.kind else { return nil }
-            return span
+        var asrResults: [String?: [String: ASRResult]] = [:]
+        var speakerSpans: [SpeakerSpan] = []
+        var activeScopeSpans: [ScopeSpan] = []
+        var sceneTransitions: [(frame: Int64, scene: SceneState)] = []
+        var priorities: [String: ContentPriority] = [:]
+        for event in ordered {
+            switch event.kind {
+            case .asrCompleted(let result) where event.processingRunID == activeRuns.asr:
+                if let segmentID = event.segmentID {
+                    asrResults[event.segmentationRunID, default: [:]][segmentID] = result
+                }
+            case .speakerSpan(let span) where event.processingRunID == activeRuns.diarization:
+                speakerSpans.append(span)
+            case .scopeSpan(let span) where event.processingRunID == activeRuns.scope:
+                activeScopeSpans.append(span)
+            case .sceneChanged(let scene) where event.processingRunID == activeRuns.scene:
+                if let frame = event.sourceStartFrame {
+                    sceneTransitions.append((frame, scene))
+                }
+            case .contentPriority(let priority) where event.processingRunID == activeRuns.contentPriority:
+                if let segmentID = event.segmentID {
+                    priorities[segmentID] = priority
+                }
+            default:
+                break
+            }
         }
-        let speakerLabels = SpeakerDisplayMapper.makeLabels(spans: allActiveSpeakerSpans)
+        let speakerLabels = SpeakerDisplayMapper.makeLabels(spans: speakerSpans)
         let segmentEvents = ordered.filter { event in
             guard case .segmentCreated = event.kind else { return false }
             return activeRuns.segmentation == nil
@@ -258,25 +280,12 @@ public struct TranscriptMaterializer: Sendable {
         return segmentEvents.compactMap { segmentEvent in
             guard let segmentID = segmentEvent.segmentID,
                   let startFrame = segmentEvent.sourceStartFrame,
-                  let endFrame = segmentEvent.sourceEndFrame else {
+                  let endFrame = segmentEvent.sourceEndFrame,
+                  let asrResult = asrResults[segmentEvent.segmentationRunID]?[segmentID] else {
                 return nil
             }
 
-            guard let asr = ordered.last(where: { event in
-                guard event.segmentID == segmentID,
-                      event.segmentationRunID == segmentEvent.segmentationRunID,
-                      event.processingRunID == activeRuns.asr else {
-                    return false
-                }
-                if case .asrCompleted = event.kind { return true }
-                return false
-            }), case .asrCompleted(let asrResult) = asr.kind else {
-                return nil
-            }
-
-            let speakers = ordered.compactMap { event -> MaterializedSpeakerSpan? in
-                guard event.processingRunID == activeRuns.diarization,
-                      case .speakerSpan(let span) = event.kind else { return nil }
+            let speakers = speakerSpans.compactMap { span -> MaterializedSpeakerSpan? in
                 let clippedStart = max(startFrame, span.startFrame)
                 let clippedEnd = min(endFrame, span.endFrame)
                 guard clippedStart < clippedEnd else { return nil }
@@ -289,9 +298,7 @@ public struct TranscriptMaterializer: Sendable {
                 )
             }
 
-            let scopeSpans = ordered.compactMap { event -> MaterializedScopeSpan? in
-                guard event.processingRunID == activeRuns.scope,
-                      case .scopeSpan(let span) = event.kind else { return nil }
+            let scopeSpans = activeScopeSpans.compactMap { span -> MaterializedScopeSpan? in
                 let clippedStart = max(startFrame, span.startFrame)
                 let clippedEnd = min(endFrame, span.endFrame)
                 guard clippedStart < clippedEnd else { return nil }
@@ -303,25 +310,12 @@ public struct TranscriptMaterializer: Sendable {
                 )
             }
 
-            let scene = ordered.last(where: { event in
-                guard event.processingRunID == activeRuns.scene,
-                      let transitionFrame = event.sourceStartFrame,
-                      transitionFrame <= startFrame else { return false }
-                if case .sceneChanged = event.kind { return true }
-                return false
-            }).flatMap { event -> SceneState? in
-                if case .sceneChanged(let value) = event.kind { return value }
-                return nil
-            } ?? .unknown
-
-            let priority = ordered.last(where: { event in
-                guard event.processingRunID == activeRuns.contentPriority,
-                      event.segmentID == segmentID else { return false }
-                if case .contentPriority = event.kind { return true }
-                return false
-            }).flatMap { event -> ContentPriority? in
-                if case .contentPriority(let value) = event.kind { return value }
-                return nil
+            var scene = SceneState.unknown
+            var sceneFrame = Int64.min
+            for transition in sceneTransitions
+            where transition.frame <= startFrame && transition.frame >= sceneFrame {
+                scene = transition.scene
+                sceneFrame = transition.frame
             }
 
             return MaterializedTranscriptSegment(
@@ -332,7 +326,7 @@ public struct TranscriptMaterializer: Sendable {
                 scene: scene,
                 speakers: speakers,
                 scopeSpans: scopeSpans,
-                contentPriority: priority
+                contentPriority: priorities[segmentID]
             )
         }
         .sorted { $0.startMilliseconds < $1.startMilliseconds }
