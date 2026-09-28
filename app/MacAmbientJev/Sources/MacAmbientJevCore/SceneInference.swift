@@ -179,7 +179,22 @@ public struct SceneStateMachine: Sendable {
         state: SceneState = .lecture,
         config: SceneStateMachineConfig = .production
     ) {
-        self.phase = .settled(state)
+        switch state {
+        case .discussionCandidate:
+            self.phase = .building(
+                target: .discussion,
+                origin: .lecture,
+                streak: config.discussionCandidateObservations
+            )
+        case .lectureCandidate:
+            self.phase = .building(
+                target: .lecture,
+                origin: .discussion,
+                streak: config.lectureCandidateObservations
+            )
+        default:
+            self.phase = .settled(state)
+        }
         self.config = config
     }
 

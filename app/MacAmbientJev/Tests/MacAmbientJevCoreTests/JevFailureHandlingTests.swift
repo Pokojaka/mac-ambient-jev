@@ -5,10 +5,10 @@ import Testing
 private actor CountingStatusTransport: JevHTTPTransport {
     private(set) var calls = 0
     private(set) var lastRequest: URLRequest?
-    private let status: Int
+    private let status: Int?
     private let body: Data
 
-    init(status: Int, body: String) {
+    init(status: Int?, body: String) {
         self.status = status
         self.body = Data(body.utf8)
     }
@@ -16,13 +16,14 @@ private actor CountingStatusTransport: JevHTTPTransport {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         calls += 1
         lastRequest = request
+        guard let status else { throw URLError(.networkConnectionLost) }
         return (body, HTTPURLResponse(
             url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil
         )!)
     }
 }
 
-private func fiveSegmentEvents() -> [TranscriptEvent] {
+private func fiveSegmentEvents(repeatText: Bool = false) -> [TranscriptEvent] {
     var events: [TranscriptEvent] = []
     var seq: UInt64 = 1
     for index in 0..<5 {
@@ -33,7 +34,8 @@ private func fiveSegmentEvents() -> [TranscriptEvent] {
         seq += 1
         events.append(.asrCompleted(
             seq: seq, runID: "asr", segmentationRunID: "seg",
-            segmentID: "s\(index)", text: "公開鍵の説明その\(index)"
+            segmentID: "s\(index)",
+            text: repeatText ? "公開鍵の説明" : "公開鍵の説明その\(index)"
         ))
         seq += 1
     }
@@ -67,6 +69,50 @@ func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws
     #expect(result.materializedSegments.allSatisfy { $0.contentPriority != .lowPriority })
     #expect(calls == 1)
     #expect(timeout == 15)
+}
+
+@Test(arguments: [429, 503, nil] as [Int?])
+func sceneCueBatchStopsAfterProviderFailureAndKeepsAllSegmentsPending(
+    status: Int?
+) async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unavailable\"}")
+    let counter = JevUsageCounter()
+    let collector = JevSceneCueCollector(
+        sessionID: UUID(),
+        runID: "scene-failure",
+        writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(
+            provider: JevClient(apiKey: "sk-secret-123", transport: transport),
+            usageCounter: counter
+        ),
+        sampleRate: 1_000
+    )
+    let segments = TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: fiveSegmentEvents(repeatText: true),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+
+    let result = try await collector.collect(segments: segments)
+    let persisted = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    let pendingIDs = try persisted.lines.compactMap { line -> String? in
+        let event = try JSONSerialization.jsonObject(with: line) as? [String: Any]
+        guard event?["event_type"] as? String == "scene_cue.pending_retry" else {
+            return nil
+        }
+        return event?["segment_id"] as? String
+    }
+
+    #expect(await transport.calls == 1)
+    #expect(Set(result.retryPendingSegmentIDs) == Set((0..<5).map { "s\($0)" }))
+    #expect(result.cues.isEmpty)
+    #expect(await counter.snapshot().retryPendingCount == 5)
+    #expect(pendingIDs.count == 5)
+    #expect(Set(pendingIDs) == Set((0..<5).map { "s\($0)" }))
 }
 
 @Test

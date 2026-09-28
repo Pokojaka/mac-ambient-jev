@@ -23,11 +23,17 @@ public struct JevUsageSnapshot: Sendable, Equatable {
 }
 
 public actor JevUsageCounter {
+    private struct PriorityRetryKey: Hashable {
+        let sessionID: UUID?
+        let segmentID: String
+    }
+
     private var sendCount = 0
     private var estimatedInputTokens = 0
     private var successCount = 0
     private var failureCount = 0
     private var retryPendingCount = 0
+    private var pendingPriorityRetries: Set<PriorityRetryKey> = []
 
     public init() {}
 
@@ -49,6 +55,28 @@ public actor JevUsageCounter {
 
     public func recordRetryPending() {
         retryPendingCount += 1
+    }
+
+    func recordPriorityRetryPending(sessionID: UUID?, segmentID: String) {
+        if pendingPriorityRetries.insert(
+            PriorityRetryKey(sessionID: sessionID, segmentID: segmentID)
+        ).inserted {
+            retryPendingCount += 1
+        }
+    }
+
+    func recordPriorityFailure(sessionID: UUID?, segmentID: String) {
+        failureCount += 1
+        recordPriorityRetryPending(sessionID: sessionID, segmentID: segmentID)
+    }
+
+    func recordPrioritySuccess(sessionID: UUID?, segmentID: String, inputTokens: Int?) {
+        recordSuccess(inputTokens: inputTokens)
+        if pendingPriorityRetries.remove(
+            PriorityRetryKey(sessionID: sessionID, segmentID: segmentID)
+        ) != nil {
+            retryPendingCount -= 1
+        }
     }
 
     public func resolveRetry() {
