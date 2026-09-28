@@ -17,6 +17,10 @@ public struct FillerTextSpanDetector: Sendable {
     private static let attachableLeadingFillers: Set<String> = ["えー", "あー", "えっと"]
     private static let separators = CharacterSet.whitespacesAndNewlines
         .union(.punctuationCharacters)
+    private static let openingPunctuationCategories: Set<Unicode.GeneralCategory> = [
+        .openPunctuation, .initialPunctuation
+    ]
+    private static let ambiguousQuotes: Set<Unicode.Scalar> = ["\"", "'"]
 
     public init() {}
 
@@ -40,7 +44,7 @@ public struct FillerTextSpanDetector: Sendable {
 
             var fillerEnd = fillerRange.upperBound
             while fillerEnd < text.endIndex,
-                  isPunctuation(text[fillerEnd]) {
+                  isTrailingPunctuation(text[fillerEnd]) {
                 fillerEnd = text.index(after: fillerEnd)
             }
 
@@ -122,7 +126,11 @@ public struct FillerTextSpanDetector: Sendable {
         character.unicodeScalars.allSatisfy(Self.separators.contains)
     }
 
-    private func isPunctuation(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy(CharacterSet.punctuationCharacters.contains)
+    private func isTrailingPunctuation(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.punctuationCharacters.contains(scalar)
+                && !Self.openingPunctuationCategories.contains(scalar.properties.generalCategory)
+                && !Self.ambiguousQuotes.contains(scalar)
+        }
     }
 }
