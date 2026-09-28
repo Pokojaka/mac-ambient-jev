@@ -123,3 +123,18 @@ func materializerKeepsEmptyASRResultForShortFinalTurn() throws {
 
     #expect(segment.text.isEmpty)
 }
+
+@Test
+func projectionShowsNoSpeakerHeadingBeforeDiarization() {
+    let segments = [
+        MaterializedTranscriptSegment(
+            segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
+            text: "ライブ", scene: .unknown, speakers: [],
+            scopeSpans: [], contentPriority: nil
+        )
+    ]
+
+    let rows = LiveTranscriptProjection().rows(for: segments)
+
+    #expect(rows.map(\.displaySpeakerLabels) == [[]])
+}
