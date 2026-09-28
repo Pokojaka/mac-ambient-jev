@@ -126,6 +126,54 @@ public struct TranscriptEvent: Sendable, Equatable {
     }
 }
 
+struct SceneTransitionTimeline {
+    private let transitions: [(frame: Int64, sequence: UInt64, scene: SceneState)]
+
+    init(events: [TranscriptEvent], activeSceneRunID: String?) {
+        transitions = events.compactMap { event in
+            guard event.processingRunID == activeSceneRunID,
+                  let frame = event.sourceStartFrame,
+                  case .sceneChanged(let scene) = event.kind else {
+                return nil
+            }
+            return (frame: frame, sequence: event.eventSeq, scene: scene)
+        }
+        .sorted {
+            if $0.frame != $1.frame { return $0.frame < $1.frame }
+            return $0.sequence < $1.sequence
+        }
+    }
+
+    func scene(at frame: Int64) -> SceneState {
+        let index = firstIndex(after: frame)
+        return index == 0 ? .unknown : transitions[index - 1].scene
+    }
+
+    func frames(after startFrame: Int64, before endFrame: Int64) -> [Int64] {
+        var frames: [Int64] = []
+        var index = firstIndex(after: startFrame)
+        while index < transitions.count && transitions[index].frame < endFrame {
+            frames.append(transitions[index].frame)
+            index += 1
+        }
+        return frames
+    }
+
+    private func firstIndex(after frame: Int64) -> Int {
+        var lower = 0
+        var upper = transitions.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if transitions[middle].frame <= frame {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower
+    }
+}
+
 public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
     public let id: String
     public let startMilliseconds: Int64
@@ -246,7 +294,7 @@ public struct TranscriptMaterializer: Sendable {
         var asrResults: [String?: [String: ASRResult]] = [:]
         var speakerSpans: [SpeakerSpan] = []
         var activeScopeSpans: [ScopeSpan] = []
-        var sceneTransitions: [(frame: Int64, scene: SceneState)] = []
+        let scenes = SceneTransitionTimeline(events: ordered, activeSceneRunID: activeRuns.scene)
         var priorities: [String: ContentPriority] = [:]
         for event in ordered {
             switch event.kind {
@@ -258,10 +306,6 @@ public struct TranscriptMaterializer: Sendable {
                 speakerSpans.append(span)
             case .scopeSpan(let span) where event.processingRunID == activeRuns.scope:
                 activeScopeSpans.append(span)
-            case .sceneChanged(let scene) where event.processingRunID == activeRuns.scene:
-                if let frame = event.sourceStartFrame {
-                    sceneTransitions.append((frame, scene))
-                }
             case .contentPriority(let priority) where event.processingRunID == activeRuns.contentPriority:
                 if let segmentID = event.segmentID {
                     priorities[segmentID] = priority
@@ -310,13 +354,7 @@ public struct TranscriptMaterializer: Sendable {
                 )
             }
 
-            var scene = SceneState.unknown
-            var sceneFrame = Int64.min
-            for transition in sceneTransitions
-            where transition.frame <= startFrame && transition.frame >= sceneFrame {
-                scene = transition.scene
-                sceneFrame = transition.frame
-            }
+            let scene = scenes.scene(at: startFrame)
 
             return MaterializedTranscriptSegment(
                 segmentID: segmentID,

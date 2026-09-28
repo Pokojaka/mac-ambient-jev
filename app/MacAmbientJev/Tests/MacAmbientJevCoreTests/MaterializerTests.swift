@@ -302,21 +302,32 @@ func materializerSelectsSceneByLatestTransitionFrameNotAppendOrder() throws {
 func materializerHandlesTenThousandSegmentLog() {
     let count = 10_000
     var events: [TranscriptEvent] = []
-    events.reserveCapacity(count * 2)
+    events.reserveCapacity(count * 3)
     for index in 0..<count {
         let segmentID = "segment-\(index)"
         events.append(.segmentCreated(
-            seq: UInt64(index * 2 + 1), segmentationRunID: "seg", segmentID: segmentID,
+            seq: UInt64(index * 3 + 1), segmentationRunID: "seg", segmentID: segmentID,
             startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000)
         ))
         events.append(.asrCompleted(
-            seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
+            seq: UInt64(index * 3 + 2), runID: "asr", segmentationRunID: "seg",
             segmentID: segmentID, text: "utterance \(index)"
         ))
+        events.append(.sceneChanged(
+            seq: UInt64(index * 3 + 3), runID: "scene",
+            atFrame: Int64(index * 1_000),
+            scene: index.isMultiple(of: 2) ? .discussion : .lecture
+        ))
     }
+    let clock = ContinuousClock()
+    let start = clock.now
     let materialized = TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scene: "scene")
     )
+    let elapsed = start.duration(to: clock.now)
     #expect(materialized.count == count)
+    #expect(materialized.first?.scene == .discussion)
+    #expect(materialized.last?.scene == .lecture)
     #expect(materialized.last?.text == "utterance 9999")
+    #expect(elapsed < .seconds(8))
 }

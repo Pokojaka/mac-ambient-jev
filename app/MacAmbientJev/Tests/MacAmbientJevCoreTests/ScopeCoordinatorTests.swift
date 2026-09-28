@@ -215,3 +215,35 @@ func scopeClassificationSplitsAtSceneTransitionInsideSegment() async throws {
     #expect(result.scopeSpans[1].endFrame == 1_000)
     #expect(result.scopeSpans[1].scope == .unknown)
 }
+
+@Test
+func scopeAndDisplayAgreeOnOutOfOrderSceneTransitions() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let coordinator = ScopeCoordinator(
+        sessionID: UUID(),
+        runID: "scope-test",
+        writer: try SessionWriter(sessionURL: root),
+        provider: DistantEvidenceProvider(),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let events: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "utterance", startFrame: 800, endFrame: 1_000),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "遠くの会話"),
+        .sceneChanged(seq: 3, runID: "scene", atFrame: 700, scene: .discussion),
+        .sceneChanged(seq: 4, runID: "scene", atFrame: 0, scene: .lecture)
+    ]
+
+    let result = try await coordinator.process(
+        existingEvents: events,
+        speakerSpans: [],
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scene: "scene")
+    )
+    let segment = try #require(result.materializedSegments.first)
+    #expect(segment.scene == .discussion)
+    #expect(result.scopeSpans.map(\.scope) == [.background])
+    #expect(segment.scopeSpans.map(\.scope) == [.background])
+    #expect(LiveTranscriptProjection().rows(for: result.materializedSegments).isEmpty)
+}

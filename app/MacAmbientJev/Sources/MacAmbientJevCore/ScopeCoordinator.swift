@@ -90,6 +90,7 @@ public actor ScopeCoordinator {
         activeRuns: ActiveRuns
     ) async throws -> ScopeBatchResult {
         let ordered = existingEvents.sorted { $0.eventSeq < $1.eventSeq }
+        let scenes = SceneTransitionTimeline(events: ordered, activeSceneRunID: activeRuns.scene)
         let segments = ordered.filter { event in
             guard case .segmentCreated = event.kind else {
                 return false
@@ -123,12 +124,7 @@ public actor ScopeCoordinator {
                     clippedStart,
                     clippedEnd
                 ])
-                for transitionFrame in sceneTransitionFrames(
-                    startFrame: clippedStart,
-                    endFrame: clippedEnd,
-                    events: ordered,
-                    activeSceneRunID: activeRuns.scene
-                ) {
+                for transitionFrame in scenes.frames(after: clippedStart, before: clippedEnd) {
                     boundaries.insert(transitionFrame)
                 }
                 let points = boundaries.sorted()
@@ -139,11 +135,7 @@ public actor ScopeCoordinator {
                     let spanEnd = points[index + 1]
                     guard spanEnd > spanStart else { continue }
 
-                    let spanScene = sceneAt(
-                        frame: spanStart,
-                        events: ordered,
-                        activeSceneRunID: activeRuns.scene
-                    )
+                    let spanScene = scenes.scene(at: spanStart)
                     let classification = classifier.classify(
                         evidence: evidenceSpan.evidence,
                         scene: spanScene
@@ -205,49 +197,5 @@ public actor ScopeCoordinator {
                 activeRuns: selectedRuns
             )
         )
-    }
-
-    private func sceneTransitionFrames(
-        startFrame: Int64,
-        endFrame: Int64,
-        events: [TranscriptEvent],
-        activeSceneRunID: String?
-    ) -> [Int64] {
-        events.compactMap { event -> Int64? in
-            guard event.processingRunID == activeSceneRunID,
-                  let frame = event.sourceStartFrame,
-                  frame > startFrame,
-                  frame < endFrame else {
-                return nil
-            }
-            if case .sceneChanged = event.kind {
-                return frame
-            }
-            return nil
-        }
-        .sorted()
-    }
-
-    private func sceneAt(
-        frame: Int64,
-        events: [TranscriptEvent],
-        activeSceneRunID: String?
-    ) -> SceneState {
-        events.last(where: { event in
-            guard event.processingRunID == activeSceneRunID,
-                  let eventFrame = event.sourceStartFrame,
-                  eventFrame <= frame else {
-                return false
-            }
-            if case .sceneChanged = event.kind {
-                return true
-            }
-            return false
-        }).flatMap { event in
-            if case .sceneChanged(let scene) = event.kind {
-                return scene
-            }
-            return nil
-        } ?? .unknown
     }
 }
