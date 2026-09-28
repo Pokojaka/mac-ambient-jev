@@ -61,7 +61,9 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async {
         await blockedHandler([segment], .running)
     }
     await barrier.waitUntilBlocked()
-    let stopping = state.captureDidFail(sessionID: sessionID)
+    let stopping = state.captureDidFail(
+        sessionID: sessionID, message: "録音の保存に失敗しました: disk full"
+    )
     await stopping?.value
     await barrier.release()
     await pending.value

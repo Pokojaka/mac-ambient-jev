@@ -26,9 +26,11 @@ func durableWriteFailureStopsCaptureWithoutDeletingAudio() async throws {
     try await writer.append(samples: Array(repeating: 0.25, count: 16_000))
     let checkpoint = await writer.committedSnapshot()
 
-    let stopping = state.captureDidFail(sessionID: sessionID)
+    let stopping = state.captureDidFail(
+        sessionID: sessionID, message: "録音の保存に失敗しました: disk full"
+    )
     #expect(state.recordingPhase == .stopping)
-    #expect(state.statusText == "録音の保存に失敗しました")
+    #expect(state.statusText == "録音の保存に失敗しました: disk full")
     await stopping?.value
 
     #expect(state.recordingPhase == .idle)

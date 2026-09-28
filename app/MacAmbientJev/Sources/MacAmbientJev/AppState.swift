@@ -113,7 +113,7 @@ final class AppState: ObservableObject {
 
     private var recordingSessionID: UUID?
     private var displayedSessionID: UUID?
-    private var pendingCaptureFailureSessionID: UUID?
+    private var pendingCaptureFailure: (sessionID: UUID, message: String)?
     private var pendingProcessing: [PendingProcessing] = []
     private var currentlyProcessingSessionID: UUID?
     private var finalizationGate = SavedSessionReprocessGate()
@@ -462,19 +462,19 @@ final class AppState: ObservableObject {
                 sourceKind: .live,
                 originalFilename: nil
             )
-            try await captureEngine.start(sessionID: sessionID) { [weak self] _ in
+            try await captureEngine.start(sessionID: sessionID) { [weak self] message in
                 guard let self else { return }
                 if self.recordingPhase == .starting,
                    self.recordingSessionID == sessionID {
-                    self.pendingCaptureFailureSessionID = sessionID
+                    self.pendingCaptureFailure = (sessionID, message)
                 } else {
-                    self.captureDidFail(sessionID: sessionID)
+                    self.captureDidFail(sessionID: sessionID, message: message)
                 }
             }
             markRecordingStarted(sessionID: sessionID)
-            if pendingCaptureFailureSessionID == sessionID {
-                pendingCaptureFailureSessionID = nil
-                captureDidFail(sessionID: sessionID)
+            if let failure = pendingCaptureFailure, failure.sessionID == sessionID {
+                pendingCaptureFailure = nil
+                captureDidFail(sessionID: sessionID, message: failure.message)
                 return
             }
             showNewSession(sessionID)
@@ -490,7 +490,7 @@ final class AppState: ObservableObject {
                     "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
             }
         } catch {
-            pendingCaptureFailureSessionID = nil
+            pendingCaptureFailure = nil
             try? FileManager.default.removeItem(at: sessionURL)
             recordingSessionID = nil
             recordingPhase = .idle
@@ -506,10 +506,10 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func captureDidFail(sessionID: UUID) -> Task<Void, Never>? {
+    func captureDidFail(sessionID: UUID, message: String) -> Task<Void, Never>? {
         guard isCurrentRecording(sessionID) else { return nil }
         recordingPhase = .stopping
-        setCaptureStatus("録音の保存に失敗しました", tone: .error)
+        setCaptureStatus(message, tone: .error)
         cleanupLiveASRState(sessionID: sessionID)
         return Task {
             _ = try? await captureEngine.stop()
