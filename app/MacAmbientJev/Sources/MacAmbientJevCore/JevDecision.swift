@@ -58,15 +58,18 @@ public struct ProvisionalPriorityDecision: Sendable, Equatable {
     public let visiblePriority: ContentPriority
     public let needsRetry: Bool
     public let decision: ContentPriorityDecision?
+    public let providerUnavailable: Bool
 
     public init(
         visiblePriority: ContentPriority,
         needsRetry: Bool,
-        decision: ContentPriorityDecision?
+        decision: ContentPriorityDecision?,
+        providerUnavailable: Bool = false
     ) {
         self.visiblePriority = visiblePriority
         self.needsRetry = needsRetry
         self.decision = decision
+        self.providerUnavailable = providerUnavailable
     }
 }
 
@@ -132,9 +135,15 @@ public struct ContentPriorityPolicy: Sendable {
 }
 
 public actor JevDecisionCoordinator {
+    private enum PendingRequest: Hashable {
+        case priority(String)
+        case sceneCue(String)
+    }
+
     private let provider: any DecisionProvider
     private let policy: ContentPriorityPolicy
     private let usageCounter: JevUsageCounter?
+    private var pendingRetries: Set<PendingRequest> = []
 
     public init(
         provider: any DecisionProvider,
@@ -153,9 +162,7 @@ public actor JevDecisionCoordinator {
 
         do {
             let decision = try await provider.classifyPriority(text: text)
-            if let usageCounter {
-                await usageCounter.recordSuccess(inputTokens: decision.inputTokens)
-            }
+            await recordSuccess(.priority(text), inputTokens: decision.inputTokens)
 
             return ProvisionalPriorityDecision(
                 visiblePriority: policy.apply(
@@ -166,16 +173,28 @@ public actor JevDecisionCoordinator {
                 decision: decision
             )
         } catch {
-            if let usageCounter {
-                await usageCounter.recordFailure(retryPending: true)
-            }
+            await recordFailure(.priority(text))
 
             return ProvisionalPriorityDecision(
                 visiblePriority: .primary,
                 needsRetry: true,
-                decision: nil
+                decision: nil,
+                providerUnavailable: Self.isProviderUnavailable(error)
             )
         }
+    }
+
+    public func deferClassification(text: String) async -> ProvisionalPriorityDecision {
+        if pendingRetries.insert(.priority(text)).inserted {
+            await usageCounter?.recordRetryPending()
+        }
+
+        return ProvisionalPriorityDecision(
+            visiblePriority: .primary,
+            needsRetry: true,
+            decision: nil,
+            providerUnavailable: true
+        )
     }
 
     public func classifySceneCue(
@@ -193,10 +212,7 @@ public actor JevDecisionCoordinator {
                 previousTexts: previousTexts,
                 currentScene: currentScene
             )
-
-            if let usageCounter {
-                await usageCounter.recordSuccess(inputTokens: decision.inputTokens)
-            }
+            await recordSuccess(.sceneCue(currentText), inputTokens: decision.inputTokens)
 
             return ProvisionalSceneDecision(
                 cue: decision.cue,
@@ -204,15 +220,38 @@ public actor JevDecisionCoordinator {
                 decision: decision
             )
         } catch {
-            if let usageCounter {
-                await usageCounter.recordFailure(retryPending: true)
-            }
+            await recordFailure(.sceneCue(currentText))
 
             return ProvisionalSceneDecision(
                 cue: .none,
                 needsRetry: true,
                 decision: nil
             )
+        }
+    }
+
+    private func recordSuccess(_ request: PendingRequest, inputTokens: Int?) async {
+        let wasPending = pendingRetries.remove(request) != nil
+        guard let usageCounter else { return }
+        await usageCounter.recordSuccess(inputTokens: inputTokens)
+        if wasPending {
+            await usageCounter.resolveRetry()
+        }
+    }
+
+    private func recordFailure(_ request: PendingRequest) async {
+        let isNewPending = pendingRetries.insert(request).inserted
+        await usageCounter?.recordFailure(retryPending: isNewPending)
+    }
+
+    private static func isProviderUnavailable(_ error: any Error) -> Bool {
+        switch error {
+        case JevClientError.httpStatus(let status):
+            return status == 429 || status >= 500
+        case JevClientError.invalidResponse, is URLError:
+            return true
+        default:
+            return false
         }
     }
 }

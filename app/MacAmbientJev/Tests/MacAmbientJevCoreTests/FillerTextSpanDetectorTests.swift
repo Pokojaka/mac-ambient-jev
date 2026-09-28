@@ -85,3 +85,13 @@ func projectionBuildsFillerFragmentsForTranscriptRows() throws {
     #expect(finalRow.textFragments.map(\.text).joined() == text)
     #expect(!finalRow.isLowPriority)
 }
+
+@Test
+func punctuationOpeningContentMustNotBeStyledAsFiller() {
+    let text = "えー、(RSAを説明します)"
+    let fragments = FillerTextSpanDetector().fragments(in: text)
+
+    #expect(fragments.filter(\.isFiller).map(\.text) == ["えー、"])
+    #expect(fragments.filter { !$0.isFiller }.map(\.text) == ["(RSAを説明します)"])
+    #expect(fragments.map(\.text).joined() == text)
+}

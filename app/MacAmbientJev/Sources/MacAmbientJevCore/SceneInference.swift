@@ -167,18 +167,31 @@ public struct SceneStateMachineConfig: Sendable, Equatable {
 }
 
 public struct SceneStateMachine: Sendable {
-    public private(set) var state: SceneState
-    public let config: SceneStateMachineConfig
+    private enum Phase: Sendable {
+        case settled(SceneState)
+        case building(target: SceneState, origin: SceneState, streak: Int)
+    }
 
-    private var discussionEvidenceCount = 0
-    private var lectureEvidenceCount = 0
+    public let config: SceneStateMachineConfig
+    private var phase: Phase
 
     public init(
         state: SceneState = .lecture,
         config: SceneStateMachineConfig = .production
     ) {
-        self.state = state
+        self.phase = .settled(state)
         self.config = config
+    }
+
+    public var state: SceneState {
+        switch phase {
+        case .settled(let state):
+            return state
+        case .building(let target, let origin, let streak):
+            return streak >= candidateObservations(for: target)
+                ? candidateState(for: target)
+                : origin
+        }
     }
 
     @discardableResult
@@ -186,69 +199,80 @@ public struct SceneStateMachine: Sendable {
         _ features: AcousticSceneFeatures
     ) -> SceneTransition? {
         let previous = state
+        let origin = settledState
 
-        if isDiscussionEvidence(features) {
-            discussionEvidenceCount += 1
-            lectureEvidenceCount = 0
-
-            if discussionEvidenceCount >= config.discussionConfirmObservations {
-                state = .discussion
-            } else if discussionEvidenceCount >= config.discussionCandidateObservations {
-                state = .discussionCandidate
-            }
-        } else if isLectureEvidence(features) {
-            lectureEvidenceCount += 1
-            discussionEvidenceCount = 0
-
-            if lectureEvidenceCount >= config.lectureConfirmObservations {
-                state = .lecture
-            } else if lectureEvidenceCount >= config.lectureCandidateObservations {
-                state = .lectureCandidate
-            }
+        if let target = target(for: features), target != origin {
+            let streak = streak(toward: target) + 1
+            phase = streak >= confirmObservations(for: target)
+                ? .settled(target)
+                : .building(target: target, origin: origin, streak: streak)
         } else {
-            discussionEvidenceCount = 0
-            lectureEvidenceCount = 0
-
-            if state == .discussionCandidate || state == .lectureCandidate {
-                state = previousStableState(for: state)
-            }
+            phase = .settled(origin)
         }
 
-        guard state != previous else { return nil }
-        return SceneTransition(from: previous, to: state)
+        return transition(from: previous)
     }
 
     @discardableResult
     public mutating func observeSemanticCue(
         _ cue: SemanticSceneCue
     ) -> SceneTransition? {
-        let previous = state
-
+        let target: SceneState
         switch cue {
         case .discussionStart:
-            guard state != .discussion else { return nil }
-            discussionEvidenceCount = max(
-                discussionEvidenceCount,
-                config.discussionCandidateObservations
-            )
-            lectureEvidenceCount = 0
-            state = .discussionCandidate
-
+            target = .discussion
         case .discussionEnd:
-            guard state != .lecture else { return nil }
-            lectureEvidenceCount = max(
-                lectureEvidenceCount,
-                config.lectureCandidateObservations
-            )
-            discussionEvidenceCount = 0
-            state = .lectureCandidate
-
+            target = .lecture
         case .none:
             return nil
         }
 
+        let previous = state
+        let origin = settledState
+
+        if target == origin {
+            phase = .settled(origin)
+        } else {
+            phase = .building(
+                target: target,
+                origin: origin,
+                streak: max(
+                    streak(toward: target),
+                    candidateObservations(for: target)
+                )
+            )
+        }
+
+        return transition(from: previous)
+    }
+
+    private var settledState: SceneState {
+        switch phase {
+        case .settled(let state):
+            return state
+        case .building(_, let origin, _):
+            return origin
+        }
+    }
+
+    private func streak(toward target: SceneState) -> Int {
+        guard case .building(target, _, let streak) = phase else { return 0 }
+        return streak
+    }
+
+    private func transition(from previous: SceneState) -> SceneTransition? {
         guard state != previous else { return nil }
         return SceneTransition(from: previous, to: state)
+    }
+
+    private func target(for features: AcousticSceneFeatures) -> SceneState? {
+        if isDiscussionEvidence(features) {
+            return .discussion
+        }
+        if isLectureEvidence(features) {
+            return .lecture
+        }
+        return nil
     }
 
     private func isDiscussionEvidence(_ features: AcousticSceneFeatures) -> Bool {
@@ -263,14 +287,19 @@ public struct SceneStateMachine: Sendable {
             && features.dominantSpeakerRatio >= 0.75
     }
 
-    private func previousStableState(for candidate: SceneState) -> SceneState {
-        switch candidate {
-        case .discussionCandidate:
-            return .lecture
-        case .lectureCandidate:
-            return .discussion
-        default:
-            return candidate
-        }
+    private func candidateState(for target: SceneState) -> SceneState {
+        target == .discussion ? .discussionCandidate : .lectureCandidate
+    }
+
+    private func candidateObservations(for target: SceneState) -> Int {
+        target == .discussion
+            ? config.discussionCandidateObservations
+            : config.lectureCandidateObservations
+    }
+
+    private func confirmObservations(for target: SceneState) -> Int {
+        target == .discussion
+            ? config.discussionConfirmObservations
+            : config.lectureConfirmObservations
     }
 }

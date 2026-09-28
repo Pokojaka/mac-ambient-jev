@@ -71,6 +71,7 @@ public actor JevEnrichmentCoordinator {
 
         var events = existingEvents
         var retryPendingSegmentIDs: [String] = []
+        var providerUnavailable = false
 
         for segment in baseSegments {
             let shouldCallProvider = retryOnlySegmentIDs == nil
@@ -78,9 +79,17 @@ public actor JevEnrichmentCoordinator {
 
             let payload: ContentPriorityEventPayload
             if shouldCallProvider {
-                let result = await decisions.classify(
-                    text: segment.text
-                )
+                let result: ProvisionalPriorityDecision
+                if providerUnavailable {
+                    result = await decisions.deferClassification(
+                        text: segment.text
+                    )
+                } else {
+                    result = await decisions.classify(
+                        text: segment.text
+                    )
+                    providerUnavailable = result.providerUnavailable
+                }
                 payload = ContentPriorityEventPayload(
                     priority: result.visiblePriority,
                     confidence: result.decision?.confidence,

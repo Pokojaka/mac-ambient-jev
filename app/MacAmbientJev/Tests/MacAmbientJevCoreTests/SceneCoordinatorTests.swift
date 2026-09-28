@@ -106,3 +106,35 @@ func semanticCueOnlySeedsCandidateUntilAcousticsConfirm() async throws {
     #expect(states.contains(.discussionCandidate))
     #expect(!states.contains(.discussion))
 }
+
+@Test
+func shortQuestionDuringLectureStaysLectureWithProductionConfig() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sampleRate = 10.0
+    let coordinator = SceneCoordinator(
+        sessionID: UUID(),
+        runID: "scene-short-question",
+        writer: try SessionWriter(sessionURL: root),
+        materializer: TranscriptMaterializer(sampleRate: sampleRate)
+    )
+    let result = try await coordinator.process(
+        speakerSpans: [
+            SpeakerSpan(speakerID: "lecturer", startFrame: 0, endFrame: 250, confidence: 1),
+            SpeakerSpan(speakerID: "student", startFrame: 250, endFrame: 350, confidence: 1),
+            SpeakerSpan(speakerID: "lecturer", startFrame: 350, endFrame: 600, confidence: 1)
+        ],
+        totalFrames: 600,
+        sampleRate: sampleRate,
+        existingEvents: [],
+        activeRuns: ActiveRuns()
+    )
+    let scenes = result.events.compactMap { event -> SceneState? in
+        guard case .sceneChanged(let scene) = event.kind else { return nil }
+        return scene
+    }
+
+    #expect(result.transitions.isEmpty)
+    #expect(scenes == [.lecture])
+}

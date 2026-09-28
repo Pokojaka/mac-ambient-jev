@@ -19,7 +19,7 @@ private func sineWave(
     }
 }
 
-private func makeProximityFixture() async throws -> (
+private func makeProximityFixture(thirdSpeakerSilent: Bool = false) async throws -> (
     root: URL,
     reader: ProcessingTimelineReader,
     spans: [SpeakerSpan]
@@ -52,12 +52,14 @@ private func makeProximityFixture() async throws -> (
         sampleRate: sampleRate,
         frames: frames
     ))
-    try await writer.append(samples: sineWave(
-        frequency: 300,
-        amplitude: 0.03,
-        sampleRate: sampleRate,
-        frames: frames
-    ))
+    try await writer.append(samples: thirdSpeakerSilent
+        ? [Float](repeating: 0, count: frames)
+        : sineWave(
+            frequency: 300,
+            amplitude: 0.03,
+            sampleRate: sampleRate,
+            frames: frames
+        ))
 
     let checkpoint = await writer.committedSnapshot()
     let spans = [
@@ -148,6 +150,25 @@ func timelineProximityEvidenceStaysUnknownWithOnlyTwoSpeakers() async throws {
 
     #expect(evidence.count == 1)
     #expect(evidence[0].evidence.distanceHint == .unknown)
+}
+
+@Test
+func silentSpeakerMustNotBeConfidentlyHiddenAsBackground() async throws {
+    let fixture = try await makeProximityFixture(thirdSpeakerSilent: true)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let provider = TimelineProximityEvidenceProvider(reader: fixture.reader)
+    let spans = try await provider.evidenceSpans(
+        startFrame: 32_000,
+        endFrame: 48_000,
+        speakerSpans: fixture.spans
+    )
+    let evidence = try #require(spans.first?.evidence)
+    #expect(evidence.distanceHint == .unknown)
+    #expect(ScopeClassifier().classify(
+        evidence: evidence,
+        scene: .discussion
+    ).scope != .background)
 }
 
 @Test
