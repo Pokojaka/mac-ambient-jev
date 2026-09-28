@@ -457,7 +457,12 @@ final class AppState: ObservableObject {
                 sourceKind: .live,
                 originalFilename: nil
             )
-            try await captureEngine.start(sessionID: sessionID)
+            try await captureEngine.start(sessionID: sessionID) { [weak self] message in
+                guard let self,
+                      self.recordingSessionID == sessionID,
+                      self.recordingPhase == .recording else { return }
+                self.setCaptureStatus(message, tone: .error)
+            }
             recordingSessionID = sessionID
             recordingPhase = .recording
             setCaptureStatus("録音中", tone: .recording)
