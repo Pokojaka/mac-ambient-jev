@@ -78,9 +78,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
             case .speechStart:
                 assembler.speechStarted(atFrame: frame)
             case .speechEnd:
-                if let segment = assembler.speechEnded(atFrame: frame) {
-                    emitted.append(segment)
-                }
+                emitted.append(contentsOf: assembler.speechEnded(atFrame: frame))
             }
         }
 
@@ -93,10 +91,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     }
 
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] {
-        guard let segment = assembler.finish(atFrame: totalCanonicalFrames) else {
-            return []
-        }
-        return [segment]
+        assembler.finish(atFrame: totalCanonicalFrames)
     }
 
     func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
