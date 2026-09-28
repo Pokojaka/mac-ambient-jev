@@ -35,6 +35,7 @@ enum FinalTranscriptPipelineError: LocalizedError {
     case asrFailed(failedCount: Int, disposition: BatchDisposition, reason: String?)
     case missingSuccessfulStage(ProcessingStage, String)
     case invalidVADRange(String)
+    case persistedSegmentsMismatch(String)
 
     var errorDescription: String? {
         switch self {
@@ -48,6 +49,8 @@ enum FinalTranscriptPipelineError: LocalizedError {
             return "\(stage.rawValue) run \(runID) の成功イベントを確認できません"
         case let .invalidVADRange(segmentID):
             return "VAD 区間 \(segmentID) の範囲が不正です"
+        case let .persistedSegmentsMismatch(runID):
+            return "segmentation run \(runID) の保存済み区間が一致しません"
         }
     }
 }
@@ -228,8 +231,9 @@ struct FinalTranscriptPipeline: Sendable {
             activeRuns: activeRuns
         )
 
-        try validateSuccessfulStages(
-            sessionURL: sessionURL,
+        try validatePersistedRuns(
+            segmentationRunID: segmentationRunID,
+            segments: asrSegments,
             expected: [
                 (.segmentation, segmentationRunID),
                 (.diarization, diarizationRunID),
@@ -267,22 +271,25 @@ struct FinalTranscriptPipeline: Sendable {
         }
     }
 
-    private func validateSuccessfulStages(
-        sessionURL: URL,
+    private func validatePersistedRuns(
+        segmentationRunID: String,
+        segments: [SegmentReference],
         expected: [(ProcessingStage, String)]
     ) throws {
         let eventData = try Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
         let recovered = try SessionRecovery.recoverJSONL(eventData)
-        let stages = try recovered.lines.compactMap { line -> (String, String, Bool)? in
-            guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  object["event_type"] as? String == "processing.run.completed",
+        let objects = try recovered.lines.compactMap { line in
+            try JSONSerialization.jsonObject(with: line) as? [String: Any]
+        }
+        let stages = objects.compactMap { object -> (String, String, Bool, Int?)? in
+            guard object["event_type"] as? String == "processing.run.completed",
                   let runID = object["processing_run_id"] as? String,
                   let payload = object["payload"] as? [String: Any],
                   let stage = payload["stage"] as? String,
                   let succeeded = payload["succeeded"] as? Bool else {
                 return nil
             }
-            return (runID, stage, succeeded)
+            return (runID, stage, succeeded, payload["completed_count"] as? Int)
         }
         for (stage, runID) in expected {
             guard stages.contains(where: {
@@ -290,6 +297,27 @@ struct FinalTranscriptPipeline: Sendable {
             }) else {
                 throw FinalTranscriptPipelineError.missingSuccessfulStage(stage, runID)
             }
+        }
+        let persisted = objects.compactMap { object -> SegmentReference? in
+            guard object["event_type"] as? String == "segment.created",
+                  object["segmentation_run_id"] as? String == segmentationRunID,
+                  let segmentID = object["segment_id"] as? String,
+                  let startFrame = (object["source_start_frame"] as? NSNumber)?.int64Value,
+                  let endFrame = (object["source_end_frame"] as? NSNumber)?.int64Value else {
+                return nil
+            }
+            return SegmentReference(
+                segmentationRunID: segmentationRunID,
+                segmentID: segmentID,
+                startFrame: startFrame,
+                endFrame: endFrame
+            )
+        }
+        let completedCounts = stages.filter {
+            $0.0 == segmentationRunID && $0.1 == ProcessingStage.segmentation.rawValue && $0.2
+        }.map(\.3)
+        guard persisted == segments, completedCounts == [segments.count] else {
+            throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
         }
     }
 

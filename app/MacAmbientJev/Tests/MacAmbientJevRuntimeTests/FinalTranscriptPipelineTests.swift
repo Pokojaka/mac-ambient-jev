@@ -645,3 +645,64 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
         "phase:postprocessing", "phase:complete"
     ])
 }
+
+private struct SegmentLineDroppingEvidenceProvider: ProximityEvidenceProvider {
+    let eventsURL: URL
+
+    func evidenceSpans(
+        startFrame: Int64,
+        endFrame: Int64,
+        speakerSpans: [SpeakerSpan]
+    ) async throws -> [ProximityEvidenceSpan] {
+        let lines = try String(contentsOf: eventsURL, encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+        let createdIndices = try lines.indices.filter { index in
+            let object = try JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as? [String: Any]
+            return object?["event_type"] as? String == "segment.created"
+        }
+        if createdIndices.count == 2 {
+            var kept = lines
+            kept.remove(at: createdIndices[0])
+            try (kept.joined(separator: "\n") + "\n").write(to: eventsURL, atomically: true, encoding: .utf8)
+        }
+        return []
+    }
+}
+
+@Test
+func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throws {
+    let sessionID = UUID()
+    let (_, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let pipeline = FinalTranscriptPipeline(
+        sessionID: sessionID,
+        sessionURL: sessionURL,
+        processingDirectory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
+        checkpoint: checkpoint,
+        asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
+        diarization: FakeFinalDiarizer(
+            spans: [
+                SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 8_000, confidence: 0.9),
+                SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: 16_000, confidence: 0.9)
+            ],
+            log: log,
+            shouldFail: false
+        ),
+        vadSegmenter: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        ),
+        proximityEvidenceProvider: SegmentLineDroppingEvidenceProvider(
+            eventsURL: sessionURL.appending(path: "events.jsonl")
+        )
+    )
+
+    await #expect {
+        _ = try await pipeline.process(onStatus: nil)
+    } throws: { error in
+        guard case .persistedSegmentsMismatch = error as? FinalTranscriptPipelineError else { return false }
+        return true
+    }
+    #expect(await log.snapshot() == ["vad", "diarize", "asr:0", "asr:1"])
+}
