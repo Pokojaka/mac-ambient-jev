@@ -282,3 +282,41 @@ func liveProjectionHidesOnlyBackgroundOnlyDiscussionSegments() {
     let rows = LiveTranscriptProjection().rows(for: [backgroundOnly, mixed])
     #expect(rows.map(\.segmentID) == ["mixed"])
 }
+
+@Test
+func materializerSelectsSceneByLatestTransitionFrameNotAppendOrder() throws {
+    let events: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "utterance", startFrame: 800, endFrame: 1_000),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "speech"),
+        .sceneChanged(seq: 3, runID: "scene", atFrame: 700, scene: .discussion),
+        .sceneChanged(seq: 4, runID: "scene", atFrame: 0, scene: .lecture),
+        .sceneChanged(seq: 5, runID: "scene", atFrame: 900, scene: .lecture)
+    ]
+    let result = try #require(TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scene: "scene")
+    ).first)
+    #expect(result.scene == .discussion)
+}
+
+@Test
+func materializerHandlesTenThousandSegmentLog() {
+    let count = 10_000
+    var events: [TranscriptEvent] = []
+    events.reserveCapacity(count * 2)
+    for index in 0..<count {
+        let segmentID = "segment-\(index)"
+        events.append(.segmentCreated(
+            seq: UInt64(index * 2 + 1), segmentationRunID: "seg", segmentID: segmentID,
+            startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000)
+        ))
+        events.append(.asrCompleted(
+            seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
+            segmentID: segmentID, text: "utterance \(index)"
+        ))
+    }
+    let materialized = TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+    #expect(materialized.count == count)
+    #expect(materialized.last?.text == "utterance 9999")
+}

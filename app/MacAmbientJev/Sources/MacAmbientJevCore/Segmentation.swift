@@ -63,6 +63,7 @@ public struct SegmentationAssembler: Sendable {
     private var activeStartFrame: Int64?
     private var activeUtteranceStartFrame: Int64?
     private var activeUtteranceID: String?
+    private var activeIsContinuation = false
     private var nextSegmentIndex: UInt64 = 1
     private var nextUtteranceIndex: UInt64 = 1
 
@@ -83,6 +84,7 @@ public struct SegmentationAssembler: Sendable {
         let startFrame = max(0, frame - preRollFrames)
         activeStartFrame = startFrame
         activeUtteranceStartFrame = startFrame
+        activeIsContinuation = false
         activeUtteranceID = String(
             format: "%@_utt_%06llu",
             segmentationRunID,
@@ -100,18 +102,26 @@ public struct SegmentationAssembler: Sendable {
         return OpenSpeechRange(
             utteranceID: utteranceID,
             startFrame: start,
-            endFrame: durableFrame
+            endFrame: min(durableFrame, start + maxSegmentFrames)
         )
     }
 
-    public mutating func speechEnded(atFrame frame: Int64) -> SegmentReference? {
+    public mutating func speechEnded(atFrame frame: Int64) -> [SegmentReference] {
+        var segments: [SegmentReference] = []
+        while let split = splitIfNeeded(atFrame: frame) {
+            segments.append(split)
+        }
         let start = activeStartFrame
+        let isContinuation = activeIsContinuation
         activeStartFrame = nil
         activeUtteranceStartFrame = nil
         activeUtteranceID = nil
-        guard let start, frame > start else { return nil }
-        guard frame - start >= minimumSegmentFrames else { return nil }
-        return makeSegment(startFrame: start, endFrame: frame)
+        guard let start, frame > start,
+              isContinuation || frame - start >= minimumSegmentFrames else {
+            return segments
+        }
+        segments.append(makeSegment(startFrame: start, endFrame: frame))
+        return segments
     }
 
     public mutating func splitIfNeeded(atFrame frame: Int64) -> SegmentReference? {
@@ -119,6 +129,7 @@ public struct SegmentationAssembler: Sendable {
         let end = start + maxSegmentFrames
         activeStartFrame = end
         activeUtteranceStartFrame = end
+        activeIsContinuation = true
         activeUtteranceID = String(
             format: "%@_utt_%06llu",
             segmentationRunID,
@@ -128,7 +139,7 @@ public struct SegmentationAssembler: Sendable {
         return makeSegment(startFrame: start, endFrame: end)
     }
 
-    public mutating func finish(atFrame frame: Int64) -> SegmentReference? {
+    public mutating func finish(atFrame frame: Int64) -> [SegmentReference] {
         speechEnded(atFrame: frame)
     }
 

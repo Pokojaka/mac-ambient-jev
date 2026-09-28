@@ -78,6 +78,9 @@ public struct ASRAudioLoader: Sendable {
     }
 
     public func load(segment: SegmentReference) throws -> ASRAudioInput {
+        guard segment.startFrame <= segment.endFrame else {
+            throw ProcessingTimelineReaderError.invalidFrameRange
+        }
         let interleaved = try reader.readSamples(
             frameRange: segment.startFrame..<segment.endFrame
         )

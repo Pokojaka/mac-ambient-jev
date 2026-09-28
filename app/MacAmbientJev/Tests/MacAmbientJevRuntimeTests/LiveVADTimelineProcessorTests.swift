@@ -95,3 +95,43 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
     #expect(sizes.last == 3_328)
     #expect(sizes.reduce(0, +) == 32_000)
 }
+
+private enum InjectedVADFailure: Error { case secondChunk }
+
+private actor FailingOnceVADChunkSegmenter: VADChunkSegmenting {
+    private var calls = 0
+    private var acceptedFrames = 0
+
+    func process16kChunk(_ samples: [Float]) async throws -> [SegmentReference] {
+        calls += 1
+        if calls == 2 { throw InjectedVADFailure.secondChunk }
+        acceptedFrames += samples.count
+        guard calls == 1 else { return [] }
+        return [SegmentReference(segmentationRunID: "seg", segmentID: "before-failure", startFrame: 0, endFrame: 100)]
+    }
+
+    func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] { [] }
+    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? { nil }
+    func acceptedFrameCount() -> Int { acceptedFrames }
+}
+
+@Test
+func vadProcessorRetryAfterChunkErrorNeitherReplaysAudioNorDropsSegments() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1)
+    try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
+    let checkpoint = await writer.committedSnapshot()
+    let vad = FailingOnceVADChunkSegmenter()
+    let processor = FluidVADTimelineProcessor(
+        reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
+        engine: vad, sourceReadSeconds: 1
+    )
+    await #expect(throws: InjectedVADFailure.secondChunk) {
+        try await processor.processAvailable(checkpoint: checkpoint)
+    }
+    var emitted = try await processor.processAvailable(checkpoint: checkpoint)
+    emitted += try await processor.finish(checkpoint: checkpoint)
+    #expect(await vad.acceptedFrameCount() == 16_000)
+    #expect(emitted.map(\.segmentID) == ["before-failure"])
+}
