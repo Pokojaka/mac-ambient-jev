@@ -44,8 +44,8 @@ struct LiveLatencyTraceTests {
         #expect(summary.p95Seconds == 5)
     }
 
-    @Test("uses the first visible update for each utterance, not later refreshes")
-    func measuresFirstUpdatePerUtterance() {
+    @Test("counts each successful attempt in percentiles but only one updated utterance")
+    func measuresUpdatesPerAttempt() {
         let events: [LiveLatencyTraceEvent] = [
             .init(utteranceID: "u1", snapshotID: nil, kind: .speechStart, timestampNanoseconds: 0),
             .init(utteranceID: "u1", snapshotID: nil, kind: .checkpointCommitted, timestampNanoseconds: 500_000_000),
@@ -66,6 +66,7 @@ struct LiveLatencyTraceTests {
         #expect(summary.utteranceCount == 1)
         #expect(summary.updatedCount == 1)
         #expect(summary.p50Seconds == 3)
+        #expect(summary.p95Seconds == 5)
         #expect(summary.stageSummaries[.speechStartToCheckpoint]?.p50Seconds == 0.5)
         #expect(summary.stageSummaries[.checkpointToSnapshot]?.p50Seconds == 0.1)
         #expect(summary.stageSummaries[.snapshotToASRStart]?.p50Seconds == 0.1)
@@ -90,7 +91,7 @@ struct LiveLatencyTraceTests {
         #expect(summary.p95Seconds == nil)
     }
 
-    @Test("reports P95 from successes when failures stay above the rank")
+    @Test("reports P95 from successes when an empty attempt falls above the rank")
     func emptyAttemptAboveP95Rank() {
         let empty: [LiveLatencyTraceEvent] = [
             .init(utteranceID: "e", snapshotID: nil, kind: .speechStart, timestampNanoseconds: 0),
@@ -103,7 +104,45 @@ struct LiveLatencyTraceTests {
         )
 
         #expect(summary.p50Seconds == 10)
+        #expect(summary.attemptCount == 20)
+        #expect(summary.emptyCount == 1)
         #expect(summary.p95Seconds == 19)
+
+        let secondEmpty: [LiveLatencyTraceEvent] = [
+            .init(utteranceID: "e", snapshotID: "s2", kind: .snapshotRequested, timestampNanoseconds: 3),
+            .init(utteranceID: "e", snapshotID: "s2", kind: .asrReturned, timestampNanoseconds: 4, result: .empty)
+        ]
+        let unanswered = LiveLatencyTrace.summarize(
+            events: eventsFor(delays: Array(1...19)) + empty + secondEmpty
+        )
+        #expect(unanswered.attemptCount == 21)
+        #expect(unanswered.emptyCount == 2)
+        #expect(unanswered.p95Seconds == nil)
+    }
+
+    @Test("failed and successful retries on one utterance each occupy an attempt rank")
+    func retryAttemptPercentileDenominator() {
+        let retry: [LiveLatencyTraceEvent] = [
+            .init(utteranceID: "retry", snapshotID: nil, kind: .speechStart, timestampNanoseconds: 0),
+            .init(utteranceID: "retry", snapshotID: "failed", kind: .snapshotRequested, timestampNanoseconds: 1),
+            .init(utteranceID: "retry", snapshotID: "failed", kind: .asrReturned, timestampNanoseconds: 2, result: .failed),
+            .init(utteranceID: "retry", snapshotID: "success1", kind: .snapshotRequested, timestampNanoseconds: 3),
+            .init(utteranceID: "retry", snapshotID: "success1", kind: .asrReturned, timestampNanoseconds: 4_000_000_000, result: .nonEmpty),
+            .init(utteranceID: "retry", snapshotID: "success1", kind: .viewModelUpdated, timestampNanoseconds: 4_000_000_000),
+            .init(utteranceID: "retry", snapshotID: "success2", kind: .snapshotRequested, timestampNanoseconds: 4_000_000_001),
+            .init(utteranceID: "retry", snapshotID: "success2", kind: .asrReturned, timestampNanoseconds: 5_000_000_000, result: .nonEmpty),
+            .init(utteranceID: "retry", snapshotID: "success2", kind: .viewModelUpdated, timestampNanoseconds: 5_000_000_000)
+        ]
+        let summary = LiveLatencyTrace.summarize(events: eventsFor(delays: [1, 2, 3]) + retry)
+
+        #expect(summary.attemptCount == 6)
+        #expect(summary.utteranceCount == 4)
+        #expect(summary.updatedCount == 4)
+        #expect(summary.failureCount == 1)
+        #expect(summary.noViewModelUpdateCount == 1)
+        #expect(summary.p50Seconds == 3)
+        #expect(summary.p95Seconds == nil)
+        #expect(summary.maximumSeconds == 5)
     }
 
     private func eventsFor(delays: [UInt64]) -> [LiveLatencyTraceEvent] {

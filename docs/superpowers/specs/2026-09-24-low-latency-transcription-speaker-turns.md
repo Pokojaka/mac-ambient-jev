@@ -76,7 +76,7 @@
 
 ### 6. 計測と受け入れ条件
 
-- ライブ: `speechStart`, `checkpointCommitted`, `snapshotRequested`, `asrStarted`, `asrReturned`, `viewModelUpdated` の monotonic timestamp を同じ utterance ID で記録する。既存の `test-data/recordings/local/_smoke/audio.wav` と発話入り会話音声を原速で replay し、モデル準備済みの実機で durable timeline 上の発話開始から表示データ更新までの P95 が 3.0 秒以下か測る。中央値・最大値・件数も併記し、失敗・空文字も分母に含める。これはマイク入力と画面描画を含む測定値とは称さない。
+- ライブ: `speechStart`, `checkpointCommitted`, `snapshotRequested`, `asrStarted`, `asrReturned`, `viewModelUpdated` の monotonic timestamp を同じ utterance ID で記録する。既存の `test-data/recordings/local/_smoke/audio.wav` と発話入り会話音声を原速で replay し、モデル準備済みの実機で durable timeline 上の発話開始から表示データ更新までの P95 が 3.0 秒以下か測る。中央値・最大値・件数も併記し、失敗・空文字も分母に含める。分母は snapshotRequested の試行数とし、同一発話の再試行でも各成功試行の表示遅延を個別のサンプルとして数える。これはマイク入力と画面描画を含む測定値とは称さない。
 - オフライン: 2 人が VAD の一発話区間内で交替する音声で、別々の確定行と話者ラベルになる。重なり区間は複数ラベル、話者推定なしは `UNKNOWN`、8 人目以降は `OTHER` と表示され、いずれも音声フレームが欠けない。
 - 話者交替の評価音声は無音長 0、0.1、0.2、0.5 秒と同時発話を含める。各条件で diarization が返した raw span の境界誤差と、最終行の話者取り違えを別々に計測する。境界誤差の合否値は評価音声の人手境界と実機結果を見て決め、0.2 秒の無音を検出条件とはしない。
 - 再処理: 保存済みの録音を選んで実行し、成功時に全 run が一括切替、失敗時に旧表示を保持する。再起動後に同じ結果を materialize できる。
