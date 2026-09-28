@@ -230,16 +230,9 @@ public struct SavedSessionCatalog {
         let processingURL = sessionURL
             .appending(path: "audio", directoryHint: .isDirectory)
             .appending(path: "processing", directoryHint: .isDirectory)
-        let checkpointURL = processingURL.appending(
-            path: DurableAudioWriter.checkpointFilename
-        )
-        guard fileManager.fileExists(atPath: checkpointURL.path) else {
+        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingURL) else {
             return nil
         }
-        let checkpoint = try JSONDecoder().decode(
-            AudioCheckpoint.self,
-            from: Data(contentsOf: checkpointURL)
-        )
         guard (1_000...768_000).contains(checkpoint.sampleRate),
               (try? ProcessingTimelineReader(directory: processingURL, checkpoint: checkpoint)
                 .validateChunkFiles()) != nil else {

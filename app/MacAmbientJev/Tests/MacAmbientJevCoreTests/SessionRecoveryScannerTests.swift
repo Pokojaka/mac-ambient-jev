@@ -127,12 +127,19 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
     )
     try Data(count: 48_000 * MemoryLayout<Float>.size)
         .write(to: processingURL.appending(path: "chunk-000000.f32le"))
+    // Crash before finish(): the new chunk is durable despite stale JSON.
+    try Data(count: 48_000 * MemoryLayout<Float>.size)
+        .write(to: processingURL.appending(path: "chunk-000001.f32le"))
 
     let candidates = try SessionRecoveryScanner(
         sessionsRoot: root
     ).pendingSessions()
 
-    #expect(candidates.first?.source == .processingTimeline(checkpoint))
+    #expect(candidates.first?.source == .processingTimeline(AudioCheckpoint(
+        committedFrames: 96_000, sampleRate: 48_000, channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le", "chunk-000001.f32le"],
+        chunkFrameCounts: [48_000, 48_000]
+    )))
 }
 
 @Test
@@ -219,7 +226,10 @@ func inspectSessionReadsOnlyRequestedSessionAndDoesNotRepairItsTail() throws {
 
     let result = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
     #expect(result?.manifest.sessionID == sessionID)
-    #expect(result?.source == .processingTimeline(checkpoint))
+    #expect(result?.source == .processingTimeline(AudioCheckpoint(
+        committedFrames: 100, sampleRate: 100, channelCount: 1,
+        chunkFiles: ["chunk-000000.f32le"], chunkFrameCounts: [100]
+    )))
     #expect(try Data(contentsOf: eventsURL) == original)
 }
 

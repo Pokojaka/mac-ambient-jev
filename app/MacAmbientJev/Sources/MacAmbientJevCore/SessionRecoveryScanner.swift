@@ -245,16 +245,9 @@ public struct SessionRecoveryScanner: Sendable {
         let directory = sessionURL
             .appending(path: "audio", directoryHint: .isDirectory)
             .appending(path: "processing", directoryHint: .isDirectory)
-        let url = directory.appending(path: DurableAudioWriter.checkpointFilename)
-
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: directory) else {
             return nil
         }
-
-        let checkpoint = try JSONDecoder().decode(
-            AudioCheckpoint.self,
-            from: Data(contentsOf: url)
-        )
         try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
             .validateChunkFiles()
         return checkpoint

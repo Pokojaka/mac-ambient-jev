@@ -382,10 +382,10 @@ struct ProcessRecordingCommand {
         guard let runs = metadata?.activeRuns, runs.scope != nil else {
             throw ProcessRecordingError.processingFailed("音響範囲整理の run が完了していません")
         }
-        let checkpoint = try JSONDecoder().decode(
-            AudioCheckpoint.self,
-            from: Data(contentsOf: sessionURL.appending(path: "audio/processing/checkpoint.json"))
-        )
+        let processingDirectory = sessionURL.appending(path: "audio/processing")
+        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory) else {
+            throw ProcessRecordingError.processingFailed("録音チェックポイントがありません")
+        }
         let recovered = try SessionRecovery.recoverJSONL(
             Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
         )

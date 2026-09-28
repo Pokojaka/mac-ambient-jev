@@ -129,7 +129,8 @@ func scannerQueuesInterruptedFinalizationAndDoesNotLoopFailedAttempt() throws {
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100]
     )))
 
     try ProcessingMetadataStore(sessionURL: sessionURL).failFinalization(
