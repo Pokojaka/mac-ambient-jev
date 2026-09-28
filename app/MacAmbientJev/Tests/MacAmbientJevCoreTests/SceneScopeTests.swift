@@ -220,6 +220,16 @@ private let activeDiscussionWindow = AcousticSceneFeatures(
 )
 
 @Test
+func initiallyUnconfirmedDiscussionCandidateReturnsToLectureOnAmbiguousEvidence() {
+    var machine = SceneStateMachine(state: .discussionCandidate, config: .test)
+
+    let transition = machine.observe(ambiguousWindow)
+
+    #expect(transition == SceneTransition(from: .discussionCandidate, to: .lecture))
+    #expect(machine.state == .lecture)
+}
+
+@Test
 func lectureEvidenceFollowedByAmbiguousWindowStaysLecture() {
     var machine = SceneStateMachine(config: .test)
     for _ in 0..<3 { machine.observe(steadyLectureWindow) }

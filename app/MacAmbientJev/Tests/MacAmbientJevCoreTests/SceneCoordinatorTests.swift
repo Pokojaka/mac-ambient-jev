@@ -108,6 +108,53 @@ func semanticCueOnlySeedsCandidateUntilAcousticsConfirm() async throws {
 }
 
 @Test
+func cueAtHopEndUsesPostCueAcousticsForConfirmation() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sampleRate = 10.0
+    let speakers = ["a", "b", "c"]
+    let discussionSpans = stride(from: 200, to: 230, by: 3).enumerated().map { index, start in
+        SpeakerSpan(
+            speakerID: speakers[index % speakers.count],
+            startFrame: Int64(start),
+            endFrame: Int64(min(start + 3, 230)),
+            confidence: 1
+        )
+    }
+    let coordinator = SceneCoordinator(
+        sessionID: UUID(),
+        runID: "scene-cue-boundary",
+        writer: try SessionWriter(sessionURL: root),
+        materializer: TranscriptMaterializer(sampleRate: sampleRate),
+        config: .test
+    )
+
+    let result = try await coordinator.process(
+        speakerSpans: [
+            SpeakerSpan(speakerID: "lecturer", startFrame: 0, endFrame: 200, confidence: 1)
+        ] + discussionSpans,
+        totalFrames: 230,
+        sampleRate: sampleRate,
+        existingEvents: [],
+        activeRuns: ActiveRuns(),
+        semanticCues: [TimedSemanticSceneCue(frame: 200, cue: .discussionStart)]
+    )
+    let scenes = result.events.compactMap { event -> (Int64, SceneState)? in
+        guard case .sceneChanged(let scene) = event.kind,
+              let frame = event.sourceStartFrame else { return nil }
+        return (frame, scene)
+    }
+
+    #expect(result.transitions == [
+        SceneTransition(from: .lecture, to: .discussionCandidate),
+        SceneTransition(from: .discussionCandidate, to: .discussion)
+    ])
+    #expect(scenes.map { $0.0 } == [0, 200, 230])
+    #expect(scenes.map { $0.1 } == [.lecture, .discussionCandidate, .discussion])
+}
+
+@Test
 func shortQuestionDuringLectureStaysLectureWithProductionConfig() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -121,20 +168,29 @@ func shortQuestionDuringLectureStaysLectureWithProductionConfig() async throws {
     )
     let result = try await coordinator.process(
         speakerSpans: [
-            SpeakerSpan(speakerID: "lecturer", startFrame: 0, endFrame: 250, confidence: 1),
-            SpeakerSpan(speakerID: "student", startFrame: 250, endFrame: 350, confidence: 1),
-            SpeakerSpan(speakerID: "lecturer", startFrame: 350, endFrame: 600, confidence: 1)
+            SpeakerSpan(speakerID: "lecturer", startFrame: 0, endFrame: 300, confidence: 1),
+            SpeakerSpan(speakerID: "student", startFrame: 300, endFrame: 310, confidence: 1),
+            SpeakerSpan(speakerID: "guest", startFrame: 310, endFrame: 320, confidence: 1),
+            SpeakerSpan(speakerID: "student", startFrame: 320, endFrame: 330, confidence: 1),
+            SpeakerSpan(speakerID: "lecturer", startFrame: 330, endFrame: 340, confidence: 1),
+            SpeakerSpan(speakerID: "student", startFrame: 340, endFrame: 350, confidence: 1),
+            SpeakerSpan(speakerID: "guest", startFrame: 350, endFrame: 360, confidence: 1),
+            SpeakerSpan(speakerID: "lecturer", startFrame: 360, endFrame: 380, confidence: 1),
+            SpeakerSpan(speakerID: "guest", startFrame: 380, endFrame: 390, confidence: 1),
+            SpeakerSpan(speakerID: "student", startFrame: 390, endFrame: 400, confidence: 1),
+            SpeakerSpan(speakerID: "lecturer", startFrame: 400, endFrame: 680, confidence: 1)
         ],
-        totalFrames: 600,
+        totalFrames: 680,
         sampleRate: sampleRate,
         existingEvents: [],
         activeRuns: ActiveRuns()
     )
-    let scenes = result.events.compactMap { event -> SceneState? in
-        guard case .sceneChanged(let scene) = event.kind else { return nil }
-        return scene
+    let scenes = result.events.compactMap { event -> (Int64, SceneState)? in
+        guard case .sceneChanged(let scene) = event.kind,
+              let frame = event.sourceStartFrame else { return nil }
+        return (frame, scene)
     }
 
-    #expect(result.transitions.isEmpty)
-    #expect(scenes == [.lecture])
+    #expect(scenes.map { $0.0 } == [0, 470, 510])
+    #expect(scenes.map { $0.1 } == [.lecture, .discussionCandidate, .lecture])
 }

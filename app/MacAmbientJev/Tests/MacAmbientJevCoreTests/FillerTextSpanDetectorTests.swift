@@ -95,3 +95,14 @@ func punctuationOpeningContentMustNotBeStyledAsFiller() {
     #expect(fragments.filter { !$0.isFiller }.map(\.text) == ["(RSAを説明します)"])
     #expect(fragments.map(\.text).joined() == text)
 }
+
+@Test(arguments: ["＂", "＇"])
+func fullwidthOpeningQuoteStaysWithFollowingContent(quote: String) {
+    let content = "\(quote)RSA\(quote)を説明します"
+    let text = "えー、\(content)"
+    let fragments = FillerTextSpanDetector().fragments(in: text)
+
+    #expect(fragments.filter(\.isFiller).map(\.text) == ["えー、"])
+    #expect(fragments.filter { !$0.isFiller }.map(\.text) == [content])
+    #expect(fragments.map(\.text).joined() == text)
+}

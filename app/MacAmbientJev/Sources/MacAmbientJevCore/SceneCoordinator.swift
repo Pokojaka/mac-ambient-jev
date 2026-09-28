@@ -102,35 +102,12 @@ public actor SceneCoordinator {
             .filter { $0.frame >= 0 && $0.frame <= totalFrames }
             .sorted { $0.frame < $1.frame }
         var semanticCueIndex = 0
+        var latestCueFrame: Int64 = 0
 
         var endFrame = min(windowFrames, totalFrames)
         if totalFrames > 0 {
             while endFrame <= totalFrames {
-                while semanticCueIndex < orderedSemanticCues.count,
-                      orderedSemanticCues[semanticCueIndex].frame <= endFrame {
-                    let timedCue = orderedSemanticCues[semanticCueIndex]
-                    if let transition = machine.observeSemanticCue(
-                        timedCue.cue
-                    ) {
-                        transitions.append(transition)
-                        let envelope = try await writer.append(EventDraft(
-                            eventType: "scene.changed",
-                            sessionID: sessionID,
-                            processingRunID: runID,
-                            sourceStartFrame: timedCue.frame,
-                            payload: transition.to
-                        ))
-                        events.append(.sceneChanged(
-                            seq: envelope.eventSeq,
-                            runID: runID,
-                            atFrame: timedCue.frame,
-                            scene: transition.to
-                        ))
-                    }
-                    semanticCueIndex += 1
-                }
-
-                let startFrame = max(0, endFrame - windowFrames)
+                let startFrame = max(latestCueFrame, max(0, endFrame - windowFrames))
                 let features = extractor.extract(
                     speakerSpans: speakerSpans,
                     window: startFrame..<endFrame,
@@ -153,6 +130,29 @@ public actor SceneCoordinator {
                         atFrame: endFrame,
                         scene: transition.to
                     ))
+                }
+
+                while semanticCueIndex < orderedSemanticCues.count,
+                      orderedSemanticCues[semanticCueIndex].frame <= endFrame {
+                    let timedCue = orderedSemanticCues[semanticCueIndex]
+                    if let transition = machine.observeSemanticCue(timedCue.cue) {
+                        transitions.append(transition)
+                        let envelope = try await writer.append(EventDraft(
+                            eventType: "scene.changed",
+                            sessionID: sessionID,
+                            processingRunID: runID,
+                            sourceStartFrame: timedCue.frame,
+                            payload: transition.to
+                        ))
+                        events.append(.sceneChanged(
+                            seq: envelope.eventSeq,
+                            runID: runID,
+                            atFrame: timedCue.frame,
+                            scene: transition.to
+                        ))
+                    }
+                    latestCueFrame = timedCue.frame
+                    semanticCueIndex += 1
                 }
 
                 if endFrame == totalFrames {

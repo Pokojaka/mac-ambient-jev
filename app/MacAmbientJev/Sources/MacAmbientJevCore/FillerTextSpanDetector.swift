@@ -20,7 +20,7 @@ public struct FillerTextSpanDetector: Sendable {
     private static let openingPunctuationCategories: Set<Unicode.GeneralCategory> = [
         .openPunctuation, .initialPunctuation
     ]
-    private static let ambiguousQuotes: Set<Unicode.Scalar> = ["\"", "'"]
+    private static let ambiguousQuotes: Set<Unicode.Scalar> = ["\"", "'", "＂", "＇"]
 
     public init() {}
 
