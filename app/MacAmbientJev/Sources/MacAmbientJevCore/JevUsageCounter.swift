@@ -47,6 +47,10 @@ public actor JevUsageCounter {
         }
     }
 
+    public func recordRetryPending() {
+        retryPendingCount += 1
+    }
+
     public func resolveRetry() {
         retryPendingCount = max(0, retryPendingCount - 1)
     }

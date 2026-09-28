@@ -95,6 +95,7 @@ private struct JevChoiceResponse: Decodable {
 
 public struct JevClient: DecisionProvider, Sendable {
     public static let endpoint = URL(string: "https://api.typesafe.ai/v1/systemone")!
+    public static let requestTimeout: TimeInterval = 15
 
     private let apiKey: String
     private let model: String
@@ -195,7 +196,7 @@ public struct JevClient: DecisionProvider, Sendable {
     private func perform<Body: Encodable & Sendable>(
         _ body: Body
     ) async throws -> JevChoiceResponse {
-        var request = URLRequest(url: Self.endpoint)
+        var request = URLRequest(url: Self.endpoint, timeoutInterval: Self.requestTimeout)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

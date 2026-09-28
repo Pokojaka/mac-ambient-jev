@@ -58,15 +58,18 @@ public struct ProvisionalPriorityDecision: Sendable, Equatable {
     public let visiblePriority: ContentPriority
     public let needsRetry: Bool
     public let decision: ContentPriorityDecision?
+    public let providerUnavailable: Bool
 
     public init(
         visiblePriority: ContentPriority,
         needsRetry: Bool,
-        decision: ContentPriorityDecision?
+        decision: ContentPriorityDecision?,
+        providerUnavailable: Bool = false
     ) {
         self.visiblePriority = visiblePriority
         self.needsRetry = needsRetry
         self.decision = decision
+        self.providerUnavailable = providerUnavailable
     }
 }
 
@@ -175,9 +178,23 @@ public actor JevDecisionCoordinator {
             return ProvisionalPriorityDecision(
                 visiblePriority: .primary,
                 needsRetry: true,
-                decision: nil
+                decision: nil,
+                providerUnavailable: Self.isProviderUnavailable(error)
             )
         }
+    }
+
+    public func deferClassification(text: String) async -> ProvisionalPriorityDecision {
+        if pendingRetries.insert(.priority(text)).inserted {
+            await usageCounter?.recordRetryPending()
+        }
+
+        return ProvisionalPriorityDecision(
+            visiblePriority: .primary,
+            needsRetry: true,
+            decision: nil,
+            providerUnavailable: true
+        )
     }
 
     public func classifySceneCue(
@@ -225,5 +242,16 @@ public actor JevDecisionCoordinator {
     private func recordFailure(_ request: PendingRequest) async {
         let isNewPending = pendingRetries.insert(request).inserted
         await usageCounter?.recordFailure(retryPending: isNewPending)
+    }
+
+    private static func isProviderUnavailable(_ error: any Error) -> Bool {
+        switch error {
+        case JevClientError.httpStatus(let status):
+            return status == 429 || status >= 500
+        case JevClientError.invalidResponse, is URLError:
+            return true
+        default:
+            return false
+        }
     }
 }

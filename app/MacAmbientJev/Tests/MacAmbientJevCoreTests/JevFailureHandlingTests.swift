@@ -22,6 +22,53 @@ private actor CountingStatusTransport: JevHTTPTransport {
     }
 }
 
+private func fiveSegmentEvents() -> [TranscriptEvent] {
+    var events: [TranscriptEvent] = []
+    var seq: UInt64 = 1
+    for index in 0..<5 {
+        events.append(.segmentCreated(
+            seq: seq, segmentationRunID: "seg", segmentID: "s\(index)",
+            startFrame: Int64(index) * 1_000, endFrame: Int64(index) * 1_000 + 900
+        ))
+        seq += 1
+        events.append(.asrCompleted(
+            seq: seq, runID: "asr", segmentationRunID: "seg",
+            segmentID: "s\(index)", text: "公開鍵の説明その\(index)"
+        ))
+        seq += 1
+    }
+    return events
+}
+
+@Test
+func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transport = CountingStatusTransport(status: 429, body: "{\"error\":\"rate\"}")
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(),
+        runID: "priority-429",
+        writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(
+            provider: JevClient(apiKey: "sk-secret-123", transport: transport)
+        ),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let result = try await coordinator.process(
+        existingEvents: fiveSegmentEvents(),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+    let calls = await transport.calls
+    let timeout = await transport.lastRequest?.timeoutInterval
+
+    #expect(result.retryPendingSegmentIDs.count == 5)
+    #expect(result.materializedSegments.count == 5)
+    #expect(result.materializedSegments.allSatisfy { $0.contentPriority != .lowPriority })
+    #expect(calls == 1)
+    #expect(timeout == 15)
+}
+
 @Test
 func jevErrorsDoNotExposeAPIKeyOrProviderText() async throws {
     let key = "sk-secret-LEAKCHECK"
