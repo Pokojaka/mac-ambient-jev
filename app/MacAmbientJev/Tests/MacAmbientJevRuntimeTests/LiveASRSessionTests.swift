@@ -38,12 +38,17 @@ private actor CountingASREngine: ASREngine {
 }
 
 private actor SuspendedASREngine: ASREngine {
+    private var transcribeCalls = 0
     private var release: CheckedContinuation<Void, Never>?
     private var waitingForStart: CheckedContinuation<Void, Never>?
 
     func prepare() async throws {}
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        transcribeCalls += 1
+        guard transcribeCalls == 1 else {
+            return ASRResult(text: "unexpected second result")
+        }
         waitingForStart?.resume()
         waitingForStart = nil
         await withCheckedContinuation { continuation in
@@ -63,6 +68,7 @@ private actor SuspendedASREngine: ASREngine {
         release?.resume()
         release = nil
     }
+    func count() -> Int { transcribeCalls }
 
     func unload() async {}
 }
@@ -188,6 +194,113 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
 }
 
 @Test
+func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let audio = try DurableAudioWriter(
+        directory: root, sampleRate: 16_000, channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
+    let checkpoint = await audio.committedSnapshot()
+    let engine = SuspendedASREngine()
+    let session = LiveASRSession(
+        sessionID: UUID(), segmentationRunID: "seg_live_test",
+        asrRunID: "asr_live_test", processingDirectory: root,
+        writer: try SessionWriter(sessionURL: root), asr: engine,
+        sampleRate: checkpoint.sampleRate
+    )
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+
+    let processing = Task {
+        try await session.process(segments: [segment], checkpoint: checkpoint)
+    }
+    await engine.waitUntilTranscribing()
+    let firstFinish = Task { try await session.finish() }
+    let secondFinish = Task { try await session.finish() }
+    try await Task.sleep(for: .milliseconds(200))
+    await engine.resume()
+
+    let progress = try await processing.value
+    let first = try await firstFinish.value
+    let second = try await secondFinish.value
+    let subsequent = try await session.finish()
+    #expect(progress.completedCount == 1)
+    #expect(first == second)
+    #expect(subsequent == first)
+    #expect(first.succeeded)
+    #expect(first.completedCount == 1)
+    #expect(first.materializedSegments.map(\.text) == ["late result"])
+
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter {
+        $0 == "asr.completed" || $0 == "processing.run.completed"
+    } == ["asr.completed", "processing.run.completed"])
+}
+
+@Test
+func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+    _ = try await fixture.session.process(
+        segments: [segment], checkpoint: fixture.checkpoint
+    )
+
+    let eventsURL = fixture.root.appending(path: "events.jsonl")
+    let backupURL = fixture.root.appending(path: "events.backup")
+    try FileManager.default.moveItem(at: eventsURL, to: backupURL)
+    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    await #expect(throws: (any Error).self) {
+        try await fixture.session.finish()
+    }
+    let lateSegment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        startFrame: 4_000, endFrame: 8_000
+    )
+    let lateProgress = try await fixture.session.register(segments: [lateSegment])
+    #expect(lateProgress.completedCount == 1)
+    #expect(lateProgress.pendingCount == 0)
+    try FileManager.default.removeItem(at: eventsURL)
+    try FileManager.default.moveItem(at: backupURL, to: eventsURL)
+
+    let completion = try await fixture.session.finish()
+    let repeated = try await fixture.session.finish()
+    #expect(repeated == completion)
+    #expect(completion.succeeded)
+    #expect(completion.completedCount == 1)
+    #expect(completion.materializedSegments.map(\.text) == ["segment-1"])
+
+    let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL))
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter {
+        $0 == "asr.completed" || $0 == "processing.run.completed"
+    } == ["asr.completed", "processing.run.completed"])
+    #expect(eventTypes.filter { $0 == "segment.created" }.count == 1)
+}
+
+@Test
 func liveASRFailureKeepsRunUnsuccessfulForFallback() async throws {
     let fixture = try await makeLiveASRFixture(failOnCall: 2)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -303,9 +416,16 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
         startFrame: 0, endFrame: 4_000
     )
+    let nextSegment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        startFrame: 4_000, endFrame: 8_000
+    )
+    _ = try await session.register(segments: [segment, nextSegment])
 
     let processing = Task {
-        try await session.process(segments: [segment], checkpoint: checkpoint)
+        try await session.process(
+            segments: [segment, nextSegment], checkpoint: checkpoint
+        )
     }
     await engine.waitUntilTranscribing()
     let finishing = Task { try await session.finish() }
@@ -316,7 +436,23 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
 
     #expect(lateProgress.completedCount == 1)
     #expect(completion.completedCount == lateProgress.completedCount)
-    #expect(completion.pendingCount == 0)
+    #expect(lateProgress.pendingCount == 1)
+    #expect(completion.pendingCount == 1)
+    #expect(!completion.succeeded)
+    #expect(await engine.count() == 1)
+
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter {
+        $0 == "asr.completed" || $0 == "processing.run.completed"
+    } == ["asr.completed", "processing.run.completed"])
 }
 
 @Test

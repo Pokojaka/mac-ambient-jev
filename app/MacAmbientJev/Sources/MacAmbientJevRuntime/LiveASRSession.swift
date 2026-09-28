@@ -77,6 +77,9 @@ public actor LiveASRSession {
     private var failedCount = 0
     private var prepared = false
     private var finalized = false
+    private var completedFinish: LiveASRCompletion?
+    private var finishing = false
+    private var finishWaiters: [CheckedContinuation<LiveASRCompletion, any Error>] = []
     private var activeWorkCount = 0
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -112,6 +115,7 @@ public actor LiveASRSession {
         for segment in segments
         where !registeredSegmentIDs.contains(segment.segmentID)
             && !registeringSegmentIDs.contains(segment.segmentID) {
+            guard !finalized else { break }
             registeringSegmentIDs.insert(segment.segmentID)
             defer { registeringSegmentIDs.remove(segment.segmentID) }
             let created = try await writer.append(EventDraft(
@@ -159,6 +163,9 @@ public actor LiveASRSession {
         defer { endWork() }
 
         _ = try await register(segments: segments)
+        guard !finalized else {
+            return currentProgress()
+        }
 
         let pendingSegments = segments.filter { segment in
             registeredSegmentIDs.contains(segment.segmentID)
@@ -181,6 +188,7 @@ public actor LiveASRSession {
         )
 
         for segment in pendingSegments {
+            guard !finalized else { break }
             do {
                 let result = try await asr.transcribe(
                     loader.load(segment: segment)
@@ -232,31 +240,52 @@ public actor LiveASRSession {
     }
 
     public func finish() async throws -> LiveASRCompletion {
-        guard !finalized else {
-            return currentCompletion()
+        if let completedFinish {
+            return completedFinish
         }
-        finalized = true
-        if activeWorkCount > 0 {
-            await withCheckedContinuation { continuation in
-                idleWaiters.append(continuation)
+        if finishing {
+            return try await withCheckedThrowingContinuation { continuation in
+                finishWaiters.append(continuation)
             }
         }
+        finishing = true
+        finalized = true
 
-        let pendingCount =
-            registeredSegmentIDs.subtracting(finishedSegmentIDs).count
-        _ = try await writer.append(EventDraft(
-            eventType: "processing.run.completed",
-            sessionID: sessionID,
-            processingRunID: asrRunID,
-            payload: ProcessingRunCompletedPayload(
-                stage: .asr,
-                succeeded: failedCount == 0 && pendingCount == 0,
-                completedCount: completedCount,
-                failedCount: failedCount
-            )
-        ))
+        do {
+            if activeWorkCount > 0 {
+                await withCheckedContinuation { continuation in
+                    idleWaiters.append(continuation)
+                }
+            }
 
-        return currentCompletion()
+            let pendingCount =
+                registeredSegmentIDs.subtracting(finishedSegmentIDs).count
+            _ = try await writer.append(EventDraft(
+                eventType: "processing.run.completed",
+                sessionID: sessionID,
+                processingRunID: asrRunID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: .asr,
+                    succeeded: failedCount == 0 && pendingCount == 0,
+                    completedCount: completedCount,
+                    failedCount: failedCount
+                )
+            ))
+
+            let completion = currentCompletion()
+            completedFinish = completion
+            finishing = false
+            let waiters = finishWaiters
+            finishWaiters = []
+            waiters.forEach { $0.resume(returning: completion) }
+            return completion
+        } catch {
+            finishing = false
+            let waiters = finishWaiters
+            finishWaiters = []
+            waiters.forEach { $0.resume(throwing: error) }
+            throw error
+        }
     }
 
     private func beginWork() {
