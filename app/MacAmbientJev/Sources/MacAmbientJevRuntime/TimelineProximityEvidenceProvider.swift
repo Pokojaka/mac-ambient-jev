@@ -11,6 +11,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
     private let maxSamplesPerSpeaker: Int
     private let maxSecondsPerSample: Double
     private let minimumSampleSeconds: Double
+    private let minimumSignalRMS = 1e-5
 
     private var profiles: [String: SpeakerAcousticProfile]?
     private var sessionLevelMedian: Double?
@@ -230,25 +231,19 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
 
     private func acousticFeatures(
         frameRange: Range<Int64>
-    ) throws -> SpeakerAcousticProfile {
+    ) throws -> SpeakerAcousticProfile? {
         let interleaved = try reader.readSamples(
             frameRange: frameRange
         )
         let channelCount = reader.checkpoint.channelCount
         guard channelCount > 0,
               !interleaved.isEmpty else {
-            return SpeakerAcousticProfile(
-                levelDBFS: -120,
-                spectralSharpness: 0
-            )
+            return nil
         }
 
         let frameCount = interleaved.count / channelCount
         guard frameCount > 1 else {
-            return SpeakerAcousticProfile(
-                levelDBFS: -120,
-                spectralSharpness: 0
-            )
+            return nil
         }
 
         var sumSquares = 0.0
@@ -272,13 +267,16 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
         }
 
         let rms = sqrt(sumSquares / Double(frameCount))
+        guard rms >= minimumSignalRMS else {
+            return nil
+        }
         let diffRMS = sqrt(
             diffSquares / Double(max(1, frameCount - 1))
         )
 
         return SpeakerAcousticProfile(
-            levelDBFS: 20 * log10(max(rms, 1e-9)),
-            spectralSharpness: diffRMS / max(rms, 1e-9)
+            levelDBFS: 20 * log10(rms),
+            spectralSharpness: diffRMS / rms
         )
     }
 
