@@ -242,3 +242,36 @@ func usageCounterTracksSuccessFailureAndRetryBacklog() async {
     #expect(snapshot.failureCount == 1)
     #expect(snapshot.retryPendingCount == 1)
 }
+
+private actor RecoveringDecisionProvider: DecisionProvider {
+    private var offline = true
+
+    func reconnect() { offline = false }
+
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        if offline { throw URLError(.notConnectedToInternet) }
+        return ContentPriorityDecision(priority: .primary, confidence: 1)
+    }
+
+    func classifySceneCue(
+        currentText: String,
+        previousTexts: [String],
+        currentScene: SceneState
+    ) async throws -> SemanticSceneDecision {
+        SemanticSceneDecision(cue: .none, confidence: 1)
+    }
+}
+
+@Test
+func successfulRetryMustClearPendingUsageCount() async {
+    let provider = RecoveringDecisionProvider()
+    let counter = JevUsageCounter()
+    let coordinator = JevDecisionCoordinator(
+        provider: provider, usageCounter: counter
+    )
+    #expect(await coordinator.classify(text: "重要な発話").needsRetry)
+    await provider.reconnect()
+    #expect(!(await coordinator.classify(text: "重要な発話")).needsRetry)
+
+    #expect(await counter.snapshot().retryPendingCount == 0)
+}

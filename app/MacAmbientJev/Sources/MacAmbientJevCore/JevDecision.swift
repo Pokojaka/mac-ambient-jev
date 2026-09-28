@@ -132,9 +132,15 @@ public struct ContentPriorityPolicy: Sendable {
 }
 
 public actor JevDecisionCoordinator {
+    private enum PendingRequest: Hashable {
+        case priority(String)
+        case sceneCue(String)
+    }
+
     private let provider: any DecisionProvider
     private let policy: ContentPriorityPolicy
     private let usageCounter: JevUsageCounter?
+    private var pendingRetries: Set<PendingRequest> = []
 
     public init(
         provider: any DecisionProvider,
@@ -153,9 +159,7 @@ public actor JevDecisionCoordinator {
 
         do {
             let decision = try await provider.classifyPriority(text: text)
-            if let usageCounter {
-                await usageCounter.recordSuccess(inputTokens: decision.inputTokens)
-            }
+            await recordSuccess(.priority(text), inputTokens: decision.inputTokens)
 
             return ProvisionalPriorityDecision(
                 visiblePriority: policy.apply(
@@ -166,9 +170,7 @@ public actor JevDecisionCoordinator {
                 decision: decision
             )
         } catch {
-            if let usageCounter {
-                await usageCounter.recordFailure(retryPending: true)
-            }
+            await recordFailure(.priority(text))
 
             return ProvisionalPriorityDecision(
                 visiblePriority: .primary,
@@ -193,10 +195,7 @@ public actor JevDecisionCoordinator {
                 previousTexts: previousTexts,
                 currentScene: currentScene
             )
-
-            if let usageCounter {
-                await usageCounter.recordSuccess(inputTokens: decision.inputTokens)
-            }
+            await recordSuccess(.sceneCue(currentText), inputTokens: decision.inputTokens)
 
             return ProvisionalSceneDecision(
                 cue: decision.cue,
@@ -204,9 +203,7 @@ public actor JevDecisionCoordinator {
                 decision: decision
             )
         } catch {
-            if let usageCounter {
-                await usageCounter.recordFailure(retryPending: true)
-            }
+            await recordFailure(.sceneCue(currentText))
 
             return ProvisionalSceneDecision(
                 cue: .none,
@@ -214,5 +211,19 @@ public actor JevDecisionCoordinator {
                 decision: nil
             )
         }
+    }
+
+    private func recordSuccess(_ request: PendingRequest, inputTokens: Int?) async {
+        let wasPending = pendingRetries.remove(request) != nil
+        guard let usageCounter else { return }
+        await usageCounter.recordSuccess(inputTokens: inputTokens)
+        if wasPending {
+            await usageCounter.resolveRetry()
+        }
+    }
+
+    private func recordFailure(_ request: PendingRequest) async {
+        let isNewPending = pendingRetries.insert(request).inserted
+        await usageCounter?.recordFailure(retryPending: isNewPending)
     }
 }
