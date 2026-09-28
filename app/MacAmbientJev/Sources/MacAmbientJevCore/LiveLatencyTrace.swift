@@ -266,6 +266,7 @@ public actor LiveLatencyTrace {
         }
 
         let sorted = delaysByUtterance.values.sorted()
+        let unansweredCount = emptyCount + failureCount
         let stageSummaries = Dictionary(
             uniqueKeysWithValues: stageSamples.map { stage, values in
                 (stage, summarizeStage(values))
@@ -282,8 +283,16 @@ public actor LiveLatencyTrace {
                 0,
                 speechStarts.count - delaysByUtterance.count
             ),
-            p50Seconds: percentile(sorted, probability: 0.50),
-            p95Seconds: percentile(sorted, probability: 0.95),
+            p50Seconds: percentile(
+                sorted,
+                probability: 0.50,
+                unansweredCount: unansweredCount
+            ),
+            p95Seconds: percentile(
+                sorted,
+                probability: 0.95,
+                unansweredCount: unansweredCount
+            ),
             maximumSeconds: sorted.last,
             stageSummaries: stageSummaries
         )
@@ -315,10 +324,12 @@ public actor LiveLatencyTrace {
 
     private static func percentile(
         _ sorted: [TimeInterval],
-        probability: Double
+        probability: Double,
+        unansweredCount: Int = 0
     ) -> TimeInterval? {
-        guard !sorted.isEmpty else { return nil }
-        let rank = max(1, Int(ceil(probability * Double(sorted.count))))
-        return sorted[min(rank - 1, sorted.count - 1)]
+        let total = sorted.count + unansweredCount
+        guard total > 0 else { return nil }
+        let rank = max(1, Int(ceil(probability * Double(total))))
+        return rank <= sorted.count ? sorted[rank - 1] : nil
     }
 }

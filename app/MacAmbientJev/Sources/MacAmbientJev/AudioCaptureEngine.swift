@@ -42,11 +42,18 @@ private final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSamp
     private let sampleRate: Double
     private let channelCount: Int
     private let buffers: UnsafeMutableAudioBufferListPointer
+    private let onFormatChange: @Sendable () -> Void
 
-    init(ring: AudioBlockRing, sampleRate: Double, channelCount: Int) {
+    init(
+        ring: AudioBlockRing,
+        sampleRate: Double,
+        channelCount: Int,
+        onFormatChange: @escaping @Sendable () -> Void
+    ) {
         self.ring = ring
         self.sampleRate = sampleRate
         self.channelCount = channelCount
+        self.onFormatChange = onFormatChange
         self.buffers = AudioBufferList.allocate(maximumBuffers: channelCount)
     }
 
@@ -67,7 +74,9 @@ private final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSamp
               format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
               format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0,
               format.mBitsPerChannel == 32 else {
-            _ = invalidBufferCount.add(1, ordering: .relaxed)
+            if invalidBufferCount.add(1, ordering: .relaxed).oldValue == 0 {
+                onFormatChange()
+            }
             return
         }
 
@@ -145,7 +154,10 @@ final class AudioCaptureEngine {
         self.chunkDurationSeconds = chunkDurationSeconds
     }
 
-    func start(sessionID: UUID) async throws {
+    func start(
+        sessionID: UUID,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws {
         guard session == nil else {
             throw AudioCaptureEngineError.alreadyRecording
         }
@@ -198,7 +210,12 @@ final class AudioCaptureEngine {
         let receiver = AudioCaptureReceiver(
             ring: ring,
             sampleRate: format.mSampleRate,
-            channelCount: channelCount
+            channelCount: channelCount,
+            onFormatChange: {
+                Task { @MainActor in
+                    onFailure("入力デバイスの音声形式が変わったため、録音を保存できていません。録音を停止してください")
+                }
+            }
         )
         let callbackQueue = DispatchQueue(label: "app.mac-ambient-jev.capture")
         audioOutput.setSampleBufferDelegate(receiver, queue: callbackQueue)
@@ -213,7 +230,9 @@ final class AudioCaptureEngine {
                 do {
                     _ = try await drain.drainAvailable()
                 } catch {
-                    return error.localizedDescription
+                    let message = error.localizedDescription
+                    await onFailure("録音の保存に失敗しました: \(message)")
+                    return message
                 }
 
                 do {

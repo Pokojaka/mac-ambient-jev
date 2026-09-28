@@ -141,6 +141,9 @@ public actor NativeSessionProcessor {
             checkpoint: checkpoint
         )
 
+        guard liveASRSessions[sessionID] === liveSession else {
+            return progress
+        }
         if let onUpdate {
             await onUpdate(progress.materializedSegments, .running)
         }

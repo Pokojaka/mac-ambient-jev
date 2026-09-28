@@ -37,6 +37,36 @@ private actor CountingASREngine: ASREngine {
     }
 }
 
+private actor SuspendedASREngine: ASREngine {
+    private var release: CheckedContinuation<Void, Never>?
+    private var waitingForStart: CheckedContinuation<Void, Never>?
+
+    func prepare() async throws {}
+
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        waitingForStart?.resume()
+        waitingForStart = nil
+        await withCheckedContinuation { continuation in
+            release = continuation
+        }
+        return ASRResult(text: "late result")
+    }
+
+    func waitUntilTranscribing() async {
+        if release != nil { return }
+        await withCheckedContinuation { continuation in
+            waitingForStart = continuation
+        }
+    }
+
+    func resume() {
+        release?.resume()
+        release = nil
+    }
+
+    func unload() async {}
+}
+
 private func makeLiveASRFixture(
     failOnCall: Int? = nil
 ) async throws -> (
@@ -248,4 +278,68 @@ func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     #expect(!completion.succeeded)
     #expect(completion.pendingCount == 1)
     #expect(completion.failedCount == 0)
+}
+
+@Test
+func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let audio = try DurableAudioWriter(
+        directory: root, sampleRate: 16_000, channelCount: 1,
+        chunkDurationSeconds: 1
+    )
+    try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
+    let checkpoint = await audio.committedSnapshot()
+    let engine = SuspendedASREngine()
+    let session = LiveASRSession(
+        sessionID: UUID(), segmentationRunID: "seg_live_test",
+        asrRunID: "asr_live_test", processingDirectory: root,
+        writer: try SessionWriter(sessionURL: root), asr: engine,
+        sampleRate: checkpoint.sampleRate
+    )
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+
+    let processing = Task {
+        try await session.process(segments: [segment], checkpoint: checkpoint)
+    }
+    await engine.waitUntilTranscribing()
+    let finishing = Task { try await session.finish() }
+    try await Task.sleep(for: .milliseconds(200))
+    await engine.resume()
+    let lateProgress = try await processing.value
+    let completion = try await finishing.value
+
+    #expect(lateProgress.completedCount == 1)
+    #expect(completion.completedCount == lateProgress.completedCount)
+    #expect(completion.pendingCount == 0)
+}
+
+@Test
+func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+
+    async let first = fixture.session.register(segments: [segment])
+    async let second = fixture.session.register(segments: [segment])
+    _ = try await (first, second)
+
+    let log = try String(
+        contentsOf: fixture.root.appending(path: "events.jsonl"),
+        encoding: .utf8
+    )
+    let createdCount = log.split(separator: "\n")
+        .filter { $0.contains("\"segment.created\"") }.count
+    let pendingCount = log.split(separator: "\n")
+        .filter { $0.contains("\"asr.pending\"") }.count
+    #expect(createdCount == 1)
+    #expect(pendingCount == 1)
 }

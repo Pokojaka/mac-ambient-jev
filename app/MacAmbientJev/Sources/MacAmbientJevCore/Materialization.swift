@@ -390,6 +390,7 @@ public struct LiveTranscriptProjection: Sendable {
             )
         }
         let labels = SpeakerDisplayMapper.makeLabels(spans: allSpeakerSpans)
+        let hasSpeakerSpans = !allSpeakerSpans.isEmpty
 
         return segments.compactMap { segment in
             let isBackgroundOnly = segment.scene == .discussion
@@ -407,7 +408,9 @@ public struct LiveTranscriptProjection: Sendable {
                 textFragments: FillerTextSpanDetector().fragments(in: segment.text),
                 scene: segment.scene,
                 speakers: segment.speakers,
-                displaySpeakerLabels: SpeakerDisplayMapper.turnLabels(for: segment, labels: labels),
+                displaySpeakerLabels: hasSpeakerSpans
+                    ? SpeakerDisplayMapper.turnLabels(for: segment, labels: labels)
+                    : [],
                 scopeSpans: segment.scopeSpans,
                 isLowPriority: segment.contentPriority == .lowPriority
             )

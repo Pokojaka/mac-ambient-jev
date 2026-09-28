@@ -73,6 +73,39 @@ struct LiveLatencyTraceTests {
         #expect(summary.stageSummaries[.returnToViewModel]?.p50Seconds == 0.5)
     }
 
+    @Test("counts failed attempts in the percentile denominator")
+    func failedAttemptsStayInPercentileDenominator() {
+        let failures = (0..<99).flatMap { index -> [LiveLatencyTraceEvent] in
+            [
+                .init(utteranceID: "f\(index)", snapshotID: nil, kind: .speechStart, timestampNanoseconds: 0),
+                .init(utteranceID: "f\(index)", snapshotID: "s", kind: .snapshotRequested, timestampNanoseconds: 1),
+                .init(utteranceID: "f\(index)", snapshotID: "s", kind: .asrReturned, timestampNanoseconds: 2, result: .failed)
+            ]
+        }
+
+        let summary = LiveLatencyTrace.summarize(events: eventsFor(delays: [1]) + failures)
+
+        #expect(summary.attemptCount == 100)
+        #expect(summary.p50Seconds == nil)
+        #expect(summary.p95Seconds == nil)
+    }
+
+    @Test("reports P95 from successes when failures stay above the rank")
+    func emptyAttemptAboveP95Rank() {
+        let empty: [LiveLatencyTraceEvent] = [
+            .init(utteranceID: "e", snapshotID: nil, kind: .speechStart, timestampNanoseconds: 0),
+            .init(utteranceID: "e", snapshotID: "s", kind: .snapshotRequested, timestampNanoseconds: 1),
+            .init(utteranceID: "e", snapshotID: "s", kind: .asrReturned, timestampNanoseconds: 2, result: .empty)
+        ]
+
+        let summary = LiveLatencyTrace.summarize(
+            events: eventsFor(delays: Array(1...19)) + empty
+        )
+
+        #expect(summary.p50Seconds == 10)
+        #expect(summary.p95Seconds == 19)
+    }
+
     private func eventsFor(delays: [UInt64]) -> [LiveLatencyTraceEvent] {
         var events: [LiveLatencyTraceEvent] = []
         for (index, delay) in delays.enumerated() {
