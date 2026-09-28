@@ -189,7 +189,8 @@ public actor LiveLatencyTrace {
         }
 
         let requested = attempts.filter { $0.value.requested }
-        var delaysByUtterance: [String: TimeInterval] = [:]
+        var updatedUtterances: Set<String> = []
+        var attemptDelays: [TimeInterval] = []
         var emptyCount = 0
         var failureCount = 0
         var noViewModelUpdateCount = 0
@@ -210,11 +211,8 @@ public actor LiveLatencyTrace {
                    let speechStart = speechStarts[key.utteranceID],
                    updatedAt >= speechStart {
                     let delay = TimeInterval(updatedAt - speechStart) / 1_000_000_000
-                    if let current = delaysByUtterance[key.utteranceID] {
-                        delaysByUtterance[key.utteranceID] = min(current, delay)
-                    } else {
-                        delaysByUtterance[key.utteranceID] = delay
-                    }
+                    attemptDelays.append(delay)
+                    updatedUtterances.insert(key.utteranceID)
                 }
             }
 
@@ -265,8 +263,8 @@ public actor LiveLatencyTrace {
             }
         }
 
-        let sorted = delaysByUtterance.values.sorted()
-        let unansweredCount = emptyCount + failureCount
+        let sorted = attemptDelays.sorted()
+        let unansweredCount = requested.count - sorted.count
         let stageSummaries = Dictionary(
             uniqueKeysWithValues: stageSamples.map { stage, values in
                 (stage, summarizeStage(values))
@@ -275,13 +273,13 @@ public actor LiveLatencyTrace {
         return LiveLatencyTraceSummary(
             attemptCount: requested.count,
             utteranceCount: speechStarts.count,
-            updatedCount: delaysByUtterance.count,
+            updatedCount: updatedUtterances.count,
             emptyCount: emptyCount,
             failureCount: failureCount,
             noViewModelUpdateCount: noViewModelUpdateCount,
             utterancesWithoutFirstUpdate: max(
                 0,
-                speechStarts.count - delaysByUtterance.count
+                speechStarts.count - updatedUtterances.count
             ),
             p50Seconds: percentile(
                 sorted,

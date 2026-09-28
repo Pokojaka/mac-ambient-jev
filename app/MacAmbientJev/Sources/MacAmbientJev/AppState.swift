@@ -113,6 +113,7 @@ final class AppState: ObservableObject {
 
     private var recordingSessionID: UUID?
     private var displayedSessionID: UUID?
+    private var pendingCaptureFailure: (sessionID: UUID, message: String)?
     private var pendingProcessing: [PendingProcessing] = []
     private var currentlyProcessingSessionID: UUID?
     private var finalizationGate = SavedSessionReprocessGate()
@@ -128,8 +129,8 @@ final class AppState: ObservableObject {
     private var liveASRTasks: [UUID: Task<Void, Never>] = [:]
     private var liveASRFailures: [UUID: String] = [:]
 
-    init(fileManager: FileManager = .default) {
-        let paths = AppPaths.systemDefault(fileManager: fileManager)
+    init(fileManager: FileManager = .default, paths: AppPaths? = nil) {
+        let paths = paths ?? AppPaths.systemDefault(fileManager: fileManager)
 
         let jevUsageCounter = JevUsageCounter()
 
@@ -462,10 +463,20 @@ final class AppState: ObservableObject {
                 originalFilename: nil
             )
             try await captureEngine.start(sessionID: sessionID) { [weak self] message in
-                guard let self, self.isCurrentRecording(sessionID) else { return }
-                self.setCaptureStatus(message, tone: .error)
+                guard let self else { return }
+                if self.recordingPhase == .starting,
+                   self.recordingSessionID == sessionID {
+                    self.pendingCaptureFailure = (sessionID, message)
+                } else {
+                    self.captureDidFail(sessionID: sessionID, message: message)
+                }
             }
-            recordingPhase = .recording
+            markRecordingStarted(sessionID: sessionID)
+            if let failure = pendingCaptureFailure, failure.sessionID == sessionID {
+                pendingCaptureFailure = nil
+                captureDidFail(sessionID: sessionID, message: failure.message)
+                return
+            }
             showNewSession(sessionID)
             setCaptureStatus("録音中", tone: .recording)
             prepareASRModel()
@@ -479,10 +490,37 @@ final class AppState: ObservableObject {
                     "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
             }
         } catch {
+            pendingCaptureFailure = nil
             try? FileManager.default.removeItem(at: sessionURL)
             recordingSessionID = nil
             recordingPhase = .idle
             setCaptureStatus(error.localizedDescription, tone: .error)
+        }
+    }
+
+    func markRecordingStarted(sessionID: UUID) {
+        recordingSessionID = sessionID
+        recordingPhase = .recording
+        liveASRQueues[sessionID] = []
+        liveASRFailures[sessionID] = nil
+    }
+
+    @discardableResult
+    func captureDidFail(sessionID: UUID, message: String) -> Task<Void, Never>? {
+        guard isCurrentRecording(sessionID) else { return nil }
+        recordingPhase = .stopping
+        setCaptureStatus(message, tone: .error)
+        cleanupLiveASRState(sessionID: sessionID)
+        return Task {
+            _ = try? await captureEngine.stop()
+            await stopLiveVADPolling()
+            await sessionProcessor.cancelLiveTranscription(sessionID: sessionID)
+            liveVADSession = nil
+            liveVADFailureText = nil
+            liveVADSegmentCount = 0
+            recordingSessionID = nil
+            recordingPhase = .idle
+            refreshSavedSessions()
         }
     }
 
@@ -552,10 +590,10 @@ final class AppState: ObservableObject {
                     )
                 )
             } else {
+                cleanupLiveASRState(sessionID: sessionID)
                 await sessionProcessor.cancelLiveTranscription(
                     sessionID: sessionID
                 )
-                cleanupLiveASRState(sessionID: sessionID)
                 enqueueProcessing(
                     .timeline(
                         sessionID: sessionID,
@@ -571,10 +609,10 @@ final class AppState: ObservableObject {
             liveVADSession = nil
             liveVADFailureText = nil
             liveVADSegmentCount = 0
+            cleanupLiveASRState(sessionID: sessionID)
             await sessionProcessor.cancelLiveTranscription(
                 sessionID: sessionID
             )
-            cleanupLiveASRState(sessionID: sessionID)
             recordingSessionID = nil
             recordingPhase = .idle
             setCaptureStatus(error.localizedDescription, tone: .error)
@@ -598,8 +636,6 @@ final class AppState: ObservableObject {
         guard isCurrentRecording(sessionID) else { return }
         liveVADSession = vadSession
 
-        liveASRQueues[sessionID] = []
-        liveASRFailures[sessionID] = nil
         do {
             _ = try await sessionProcessor.startLiveTranscription(
                 sessionID: sessionID,
@@ -614,6 +650,7 @@ final class AppState: ObservableObject {
             }
         }
         guard isCurrentRecording(sessionID) else {
+            cleanupLiveASRState(sessionID: sessionID)
             await sessionProcessor.cancelLiveTranscription(sessionID: sessionID)
             return
         }
@@ -711,6 +748,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
+        { [weak self] segments, state in
+            await MainActor.run {
+                guard let self,
+                      self.displayedSessionID == sessionID,
+                      self.recordingSessionID == sessionID,
+                      self.recordingPhase == .recording else { return }
+                self.processingState = state
+                self.transcriptViewModel.update(segments: segments)
+            }
+        }
+    }
+
     private func drainLiveASRQueue(sessionID: UUID) async {
         while liveASRFailures[sessionID] == nil,
               let pending = liveASRQueues[sessionID],
@@ -744,22 +794,17 @@ final class AppState: ObservableObject {
             let statusHandler: NativeSessionProcessor.StatusHandler = {
                 [weak self] text in
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self,
+                          self.recordingSessionID == sessionID,
+                          self.recordingPhase == .recording else { return }
                     self.processingStatusText = text
                     if self.displayedSessionID == sessionID {
                         self.transcriptViewModel.setStatus(text)
                     }
                 }
             }
-            let updateHandler: NativeSessionProcessor.UpdateHandler = {
-                [weak self] segments, state in
-                await MainActor.run {
-                    guard let self, self.displayedSessionID == sessionID else { return }
-                    self.processingState = state
-                    self.transcriptViewModel.update(segments: segments)
-                }
-            }
 
+            let updateHandler = liveUpdateHandler(sessionID: sessionID)
             do {
                 _ = try await sessionProcessor.processLiveSegments(
                     sessionID: sessionID,
