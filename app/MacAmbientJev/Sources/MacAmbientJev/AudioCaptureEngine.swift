@@ -35,8 +35,9 @@ struct AudioCaptureStopResult: Sendable, Equatable {
     let didOverflow: Bool
 }
 
-private final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
+final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     let invalidBufferCount = Atomic<UInt64>(0)
+    private let formatChangeNotified = Atomic(false)
 
     private let ring: AudioBlockRing
     private let sampleRate: Double
@@ -66,6 +67,10 @@ private final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSamp
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        process(sampleBuffer)
+    }
+
+    func process(_ sampleBuffer: CMSampleBuffer) {
         guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
               let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
               format.mSampleRate == sampleRate,
@@ -74,7 +79,8 @@ private final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSamp
               format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
               format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0,
               format.mBitsPerChannel == 32 else {
-            if invalidBufferCount.add(1, ordering: .relaxed).oldValue == 0 {
+            _ = invalidBufferCount.add(1, ordering: .relaxed)
+            if !formatChangeNotified.exchange(true, ordering: .relaxed) {
                 onFormatChange()
             }
             return
