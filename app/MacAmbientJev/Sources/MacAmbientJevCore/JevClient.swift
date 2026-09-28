@@ -14,8 +14,8 @@ public enum JevClientError: LocalizedError, Sendable {
             "Jev API が HTTP \(status) を返しました"
         case .missingAnswer(let key):
             "Jev の応答に \(key) の判定結果がありません"
-        case .invalidChoice(let choice):
-            "Jev が未対応の選択肢 \(choice) を返しました"
+        case .invalidChoice(let key):
+            "Jev の応答に含まれる \(key) の選択肢が未対応です"
         }
     }
 }
@@ -141,7 +141,7 @@ public struct JevClient: DecisionProvider, Sendable {
         case "LOW_PRIORITY":
             priority = .lowPriority
         default:
-            throw JevClientError.invalidChoice(answer.choice)
+            throw JevClientError.invalidChoice("content_priority")
         }
 
         return ContentPriorityDecision(
@@ -181,7 +181,7 @@ public struct JevClient: DecisionProvider, Sendable {
             throw JevClientError.missingAnswer("scene_cue")
         }
         guard let cue = SemanticSceneCue(rawValue: answer.choice) else {
-            throw JevClientError.invalidChoice(answer.choice)
+            throw JevClientError.invalidChoice("scene_cue")
         }
 
         return SemanticSceneDecision(
