@@ -65,15 +65,36 @@ struct CaptureSystemAudioOptions {
 
         // Reject aliases as well as lexical paths. Both nesting inside app data and
         // an ancestor of app data would allow this tool to modify production files.
-        let selected = root.resolvingSymlinksInPath().standardizedFileURL
-        let appData = appPaths.root.resolvingSymlinksInPath().standardizedFileURL
-        let cacheData = appPaths.cachesRoot.resolvingSymlinksInPath().standardizedFileURL
+        let selected = resolvedRoot(root)
+        let appData = resolvedRoot(appPaths.root)
+        let cacheData = resolvedRoot(appPaths.cachesRoot)
         guard !overlaps(selected, appData), !overlaps(selected, cacheData) else {
+            throw CaptureSystemAudioError.unsafeSessionsRoot
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: selected.path, isDirectory: &isDirectory),
+           !isDirectory.boolValue {
             throw CaptureSystemAudioError.unsafeSessionsRoot
         }
         return CaptureSystemAudioOptions(
             duration: duration, sessionsRoot: selected, transcribe: transcribe
         )
+    }
+
+    /// Foundation cannot resolve a symlink when a new session subdirectory
+    /// after it does not exist yet; resolve the closest existing ancestor.
+    private static func resolvedRoot(_ root: URL) -> URL {
+        var ancestor = root
+        var missing: [String] = []
+        while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+            missing.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+        var resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL
+        for component in missing.reversed() {
+            resolved.appendPathComponent(component)
+        }
+        return resolved.standardizedFileURL
     }
 
     private static func overlaps(_ first: URL, _ second: URL) -> Bool {
@@ -133,8 +154,7 @@ struct CaptureSystemAudioCommand {
         do {
             let options = try CaptureSystemAudioOptions.parse(Array(CommandLine.arguments.dropFirst()))
             let summary = try await run(options)
-            emit(summary)
-            if !summary.errors.isEmpty { exit(1) }
+            if !emit(summary) || !summary.errors.isEmpty { exit(1) }
         } catch {
             emit(.empty(error: error))
             if case CaptureSystemAudioError.usage = error { exit(2) }
@@ -190,6 +210,9 @@ struct CaptureSystemAudioCommand {
         for failure in failures.messages where !errors.contains(failure) {
             errors.append(failure)
         }
+        if result?.didOverflow == true {
+            errors.append("Audio input was lost during capture")
+        }
         var transcriptText: String?
         if options.transcribe, let result, errors.isEmpty {
             let processor = NativeSessionProcessor(paths: paths, allowExternalJev: false)
@@ -244,11 +267,18 @@ struct CaptureSystemAudioCommand {
             .joined(separator: "\n")
     }
 
-    private static func emit(_ summary: CaptureSummary) {
+    @discardableResult
+    private static func emit(_ summary: CaptureSummary) -> Bool {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        if let data = try? encoder.encode(summary) {
-            FileHandle.standardOutput.write(data + Data([0x0A]))
+        do {
+            FileHandle.standardOutput.write(try encoder.encode(summary) + Data([0x0A]))
+            return true
+        } catch {
+            FileHandle.standardOutput.write(
+                Data(#"{"errors":["Failed to encode capture summary"]}"#.utf8) + Data([0x0A])
+            )
+            return false
         }
     }
 }

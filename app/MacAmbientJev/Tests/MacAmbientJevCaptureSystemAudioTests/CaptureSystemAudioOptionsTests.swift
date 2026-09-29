@@ -21,7 +21,7 @@ func captureRequiresExplicitDurationAndSessionsRoot() throws {
     let parsed = try CaptureSystemAudioOptions.parse(
         ["--sessions-root", safe.path, "--transcribe", "--duration", "1.25"]
     )
-    #expect(parsed.sessionsRoot == safe)
+    #expect(parsed.sessionsRoot.path == safe.path)
     #expect(parsed.duration == 1.25)
     #expect(parsed.transcribe)
 }
@@ -95,5 +95,39 @@ func captureRejectsSymlinkAliasToAppDataRoot() throws {
     let parsed = try CaptureSystemAudioOptions.parse(
         ["--duration", "1", "--sessions-root", selected.path], appPaths: paths
     )
-    #expect(parsed.sessionsRoot == selected)
+    #expect(parsed.sessionsRoot.path == selected.path)
+}
+
+@Test
+func captureRequiresDirectoryAndProtectsBothAppStorageTrees() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "system-audio-root-\(UUID().uuidString)")
+    let paths = AppPaths(
+        applicationSupportURL: directory.appending(path: "Library/Application Support"),
+        cacheURL: directory.appending(path: "Library/Caches")
+    )
+    try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: paths.cachesRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let file = directory.appending(path: "recording-is-a-file")
+    try Data().write(to: file)
+    for root in [
+        file,
+        paths.cachesRoot.appending(path: "sessions"),
+        paths.cacheURL,
+        directory.appending(path: "Library"),
+    ] {
+        #expect(throws: CaptureSystemAudioError.unsafeSessionsRoot) {
+            _ = try CaptureSystemAudioOptions.parse(
+                ["--duration", "1", "--sessions-root", root.path], appPaths: paths
+            )
+        }
+    }
+
+    let safe = directory.appending(path: "independent-sessions")
+    let parsed = try CaptureSystemAudioOptions.parse(
+        ["--duration", "1", "--sessions-root", safe.path], appPaths: paths
+    )
+    #expect(parsed.sessionsRoot.path == safe.path)
 }
