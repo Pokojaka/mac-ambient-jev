@@ -125,6 +125,11 @@ final class CaptureFrameTimestampMapper: @unchecked Sendable {
         if let sampleTime, sampleTime.isFinite, abs(sampleTime) < 1_000_000_000_000 {
             let frame = Int64(sampleTime.rounded())
             if sampleOrigin == nil { sampleOrigin = frame }
+            // A device clock can restart (e.g. the tap follows a new output device);
+            // continue after the last written frame rather than overwrite earlier audio.
+            if frame - sampleOrigin! < fallbackEndFrame - 1 {
+                sampleOrigin = frame - fallbackEndFrame
+            }
             if hostOriginNanos == nil, let hostTimeNanos {
                 hostOriginNanos = hostTimeNanos
                 hostBaseFrame = frame - sampleOrigin!

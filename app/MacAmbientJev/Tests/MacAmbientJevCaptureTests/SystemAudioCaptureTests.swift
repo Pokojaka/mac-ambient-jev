@@ -214,6 +214,21 @@ func timestampMapperContinuityAndClockFallback() {
                                 sampleRate: 1_000, fallbackEndFrame: 11) == 15)
 }
 
+@Test("A device sample clock that restarts continues the timeline instead of rewinding it")
+func timestampMapperReanchorsWhenSampleTimeRestarts() {
+    let mapper = CaptureFrameTimestampMapper()
+    #expect(mapper.startFrame(sampleTime: 48_000, hostTimeNanos: nil,
+                              sampleRate: 48_000, fallbackEndFrame: 0) == 0)
+    #expect(mapper.startFrame(sampleTime: 48_480, hostTimeNanos: nil,
+                              sampleRate: 48_000, fallbackEndFrame: 480) == 480)
+    #expect(mapper.startFrame(sampleTime: 100, hostTimeNanos: nil,
+                              sampleRate: 48_000, fallbackEndFrame: 960) == 960)
+    #expect(mapper.startFrame(sampleTime: 580, hostTimeNanos: nil,
+                              sampleRate: 48_000, fallbackEndFrame: 1_440) == 1_440)
+    #expect(mapper.startFrame(sampleTime: 1_540, hostTimeNanos: nil,
+                              sampleRate: 48_000, fallbackEndFrame: 1_920) == 2_400)
+}
+
 @Test("Stereo packed and planar callbacks downmix without changing frame timestamps")
 func timestampedMonoConversionAndGapAccounting() throws {
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 8, sampleRate: 1_000)
