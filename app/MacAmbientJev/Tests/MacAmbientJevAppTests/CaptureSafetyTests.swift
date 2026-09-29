@@ -264,14 +264,16 @@ func activeCaptureNotificationRouting() async {
 @Test("termination observer releases even when no recording window is open")
 func terminationObservationIsWindowIndependent() {
     let calls = Atomic(0)
-    var observation: TerminationObservation? = TerminationObservation {
+    // A private center keeps this post from terminating AppStates in parallel tests.
+    let center = NotificationCenter()
+    var observation: TerminationObservation? = TerminationObservation(center: center) {
         _ = calls.add(1, ordering: .relaxed)
     }
     withExtendedLifetime(observation) {
-        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
+        center.post(name: NSApplication.willTerminateNotification, object: nil)
     }
     #expect(calls.load(ordering: .relaxed) == 1)
     observation = nil
-    NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
+    center.post(name: NSApplication.willTerminateNotification, object: nil)
     #expect(calls.load(ordering: .relaxed) == 1)
 }
