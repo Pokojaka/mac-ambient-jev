@@ -50,10 +50,40 @@ public struct AudioCaptureStopResult: Sendable, Equatable {
     public let gapCount: Int
     public let totalGapFrames: Int64
     public let sleepAssertionHeld: Bool
+
+    public init(
+        checkpoint: AudioCheckpoint, didOverflow: Bool,
+        dropoutCount: UInt64 = 0, gapCount: Int = 0,
+        totalGapFrames: Int64 = 0, sleepAssertionHeld: Bool = false
+    ) {
+        self.checkpoint = checkpoint
+        self.didOverflow = didOverflow || !checkpoint.gapEvents.isEmpty
+        self.dropoutCount = dropoutCount
+        self.gapCount = gapCount
+        self.totalGapFrames = totalGapFrames
+        self.sleepAssertionHeld = sleepAssertionHeld
+    }
+}
+
+private extension AudioCheckpoint {
+    /// Replacement silence fills the timeline but is not captured input.
+    var hasCapturedInput: Bool {
+        guard committedFrames > 0 else { return false }
+        var coveredThrough: Int64 = 0
+        for gap in gapEvents {
+            if gap.startFrame > coveredThrough { return true }
+            guard gap.startFrame >= 0, gap.startFrame < committedFrames,
+                  gap.frameCount > 0 else { continue }
+            let end = gap.startFrame + min(gap.frameCount, committedFrames - gap.startFrame)
+            coveredThrough = max(coveredThrough, end)
+            if coveredThrough >= committedFrames { return false }
+        }
+        return coveredThrough < committedFrames
+    }
 }
 
 final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
-    private let sink: TimestampedMonoSink
+    let sink: TimestampedMonoSink
     private let sampleRate: Double
     private let channelCount: Int
     private let buffers: UnsafeMutableAudioBufferListPointer
@@ -164,7 +194,7 @@ public final class AudioCaptureEngine {
     private let bufferFrameCount: Int
     private let ringCapacity: Int
     private let chunkDurationSeconds: Double
-    private let power: RecordingPowerLifetime
+    let power: RecordingPowerLifetime
     private let clock: any CaptureClock
     private let diskSpace: any CaptureDiskSpaceProviding
     private let failureObservers: CaptureFailureObservers
@@ -261,11 +291,11 @@ public final class AudioCaptureEngine {
         guard sampleRate > 0, inputChannels > 0 else {
             throw AudioCaptureEngineError.invalidInputFormat
         }
-        let required = CaptureDiskPolicy.requiredStartBytes(sampleRate: sampleRate, channelCount: 1)
-        if let available = try diskSpace.availableBytes(at: paths.sessionsRoot),
-           !CaptureDiskPolicy.mayStart(availableBytes: available, sampleRate: sampleRate, channelCount: 1) {
-            throw AudioCaptureEngineError.insufficientDiskSpace(required)
-        }
+        try CaptureDiskPolicy.checkStart(
+            diskSpace: diskSpace, directory: paths.sessionsRoot,
+            sampleRate: sampleRate, channelCount: 1,
+            onWarning: onWarning
+        )
         let processingDirectory = paths.sessionsRoot
             .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
             .appending(path: "audio", directoryHint: .isDirectory)
@@ -274,11 +304,12 @@ public final class AudioCaptureEngine {
             directory: processingDirectory, sampleRate: sampleRate,
             channelCount: 1, chunkDurationSeconds: chunkDurationSeconds
         )
+        let slotSamples = min(bufferFrameCount, 512)
         let ring = AudioBlockRing(
             capacity: max(ringCapacity, AudioBlockRing.capacityForDuration(
-                sampleRate: sampleRate, blockFrameCapacity: bufferFrameCount, channelCount: 1
+                sampleRate: sampleRate, blockFrameCapacity: slotSamples, channelCount: 1
             )),
-            blockFrameCapacity: bufferFrameCount, sampleRate: sampleRate
+            blockFrameCapacity: slotSamples, sampleRate: sampleRate
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: bufferFrameCount, clock: clock)
@@ -354,18 +385,14 @@ public final class AudioCaptureEngine {
             }
             return nil
         }
-        self.tap = tapBackend
-        self.session = captureSession
-        self.output = audioOutput
-        self.receiver = receiver
-        self.callbackQueue = callbackQueue
-        self.sink = sink
-        self.ring = ring
-        self.drain = drain
-        self.drainTask = task
-        self.overflowAtStart = ring.overflowCount
-        self.activeSessionID = sessionID
-        self.timeline = ProcessingTimeline(sampleRate: sampleRate, channelCount: 1, sampleFormat: .float32LE)
+        installCapture(
+            session: captureSession, output: audioOutput, receiver: receiver,
+            callbackQueue: callbackQueue, tap: tapBackend, sink: sink,
+            ring: ring, drain: drain, drainTask: task, sessionID: sessionID,
+            timeline: ProcessingTimeline(
+                sampleRate: sampleRate, channelCount: 1, sampleFormat: .float32LE
+            )
+        )
         handedOff = true
         if let captureSession, let device {
             failureObservers.start(session: captureSession, device: device, onFailure: reportFailure)
@@ -416,6 +443,31 @@ public final class AudioCaptureEngine {
                 }
             }
         }
+    }
+
+    /// Installs an already prepared run; the session is started by start().
+    /// Tests can supply an unstarted, input-free session to exercise teardown
+    /// and durable checkpoint paths without accessing a microphone.
+    func installCapture(
+        session: AVCaptureSession?, output: AVCaptureAudioDataOutput?,
+        receiver: AudioCaptureReceiver?, callbackQueue: DispatchQueue?,
+        tap: (any SystemAudioTapProviding)? = nil, sink: TimestampedMonoSink? = nil,
+        ring: AudioBlockRing, drain: AudioCaptureDrain,
+        drainTask: Task<String?, Never>?, sessionID: UUID,
+        timeline: ProcessingTimeline
+    ) {
+        self.session = session
+        self.output = output
+        self.receiver = receiver
+        self.callbackQueue = callbackQueue
+        self.tap = tap
+        self.sink = sink ?? receiver?.sink
+        self.ring = ring
+        self.drain = drain
+        self.drainTask = drainTask
+        overflowAtStart = ring.overflowCount
+        activeSessionID = sessionID
+        self.timeline = timeline
     }
 
     public func cancelStarting() {
@@ -481,7 +533,7 @@ public final class AudioCaptureEngine {
         if let backgroundFailure {
             throw AudioCaptureEngineError.writerFailure(backgroundFailure)
         }
-        guard checkpoint.committedFrames > 0 else {
+        guard checkpoint.hasCapturedInput else {
             throw sink.invalidBufferCount.load(ordering: .relaxed) > 0
                 ? AudioCaptureEngineError.invalidInputFormat
                 : AudioCaptureEngineError.noAudioCaptured
@@ -489,6 +541,7 @@ public final class AudioCaptureEngine {
         return AudioCaptureStopResult(
             checkpoint: checkpoint,
             didOverflow: ring.overflowCount > overflowAtStart
+                || ring.dropoutCount > 0
                 || sink.invalidBufferCount.load(ordering: .relaxed) > 0,
             dropoutCount: ring.dropoutCount,
             gapCount: gaps.count,
