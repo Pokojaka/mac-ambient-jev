@@ -43,6 +43,11 @@ enum AudioCaptureEngineError: LocalizedError {
 struct AudioCaptureStopResult: Sendable, Equatable {
     let checkpoint: AudioCheckpoint
     let didOverflow: Bool
+
+    init(checkpoint: AudioCheckpoint, didOverflow: Bool) {
+        self.checkpoint = checkpoint
+        self.didOverflow = didOverflow || !checkpoint.gapEvents.isEmpty
+    }
 }
 
 final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -258,15 +263,11 @@ final class AudioCaptureEngine {
         guard format.mSampleRate > 0, channelCount > 0 else {
             throw AudioCaptureEngineError.invalidInputFormat
         }
-        let required = CaptureDiskPolicy.requiredStartBytes(
-            sampleRate: format.mSampleRate, channelCount: channelCount
+        try CaptureDiskPolicy.checkStart(
+            diskSpace: diskSpace, directory: paths.root,
+            sampleRate: format.mSampleRate, channelCount: channelCount,
+            onWarning: onWarning
         )
-        if let available = try diskSpace.availableBytes(at: paths.root),
-           !CaptureDiskPolicy.mayStart(
-            availableBytes: available, sampleRate: format.mSampleRate, channelCount: channelCount
-           ) {
-            throw AudioCaptureEngineError.insufficientDiskSpace(required)
-        }
 
         let processingDirectory = paths.sessionsRoot
             .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
@@ -514,6 +515,7 @@ final class AudioCaptureEngine {
         return AudioCaptureStopResult(
             checkpoint: checkpoint,
             didOverflow: ring.overflowCount > overflowAtStart
+                || ring.dropoutCount > 0
                 || receiver.invalidBufferCount.load(ordering: .relaxed) > 0
         )
     }
