@@ -39,12 +39,29 @@ trap cleanup EXIT
 # Build first; never overlap SwiftPM commands or the live capture.
 swift build --package-path "$PACKAGE" --product MacAmbientJevCaptureSystemAudio --disable-automatic-resolution
 BIN_DIR="$(swift build --package-path "$PACKAGE" --show-bin-path --disable-automatic-resolution)"
-"$BIN_DIR/MacAmbientJevCaptureSystemAudio" --duration "$DURATION" --sessions-root "$SESSIONS_ROOT" > "$SUMMARY" 2> "$ERR" &
+# TCC attributes a shell-launched tool to its terminal, which has no
+# NSAudioCaptureUsageDescription, so macOS never prompts and the tap delivers
+# zeros. Launching a bundle through LaunchServices makes it the responsible process.
+APP="$PACKAGE/.build/MacAmbientJevCaptureSystemAudio.app"
+mkdir -p "$APP/Contents/MacOS"
+cp "$BIN_DIR/MacAmbientJevCaptureSystemAudio" "$APP/Contents/MacOS/"
+DESCRIPTION="$(bash "$ROOT/scripts/app_info_plist.sh" | plutil -extract NSAudioCaptureUsageDescription raw -)"
+plutil -create xml1 "$APP/Contents/Info.plist"
+plutil -insert CFBundleIdentifier -string app.mac-ambient-jev.capture-system-audio "$APP/Contents/Info.plist"
+plutil -insert CFBundleExecutable -string MacAmbientJevCaptureSystemAudio "$APP/Contents/Info.plist"
+plutil -insert CFBundlePackageType -string APPL "$APP/Contents/Info.plist"
+plutil -insert LSUIElement -bool true "$APP/Contents/Info.plist"
+plutil -insert NSAudioCaptureUsageDescription -string "$DESCRIPTION" "$APP/Contents/Info.plist"
+codesign --force --sign - "$APP" >/dev/null
+SESSIONS_ROOT_ABS="$(mkdir -p "$SESSIONS_ROOT" && cd "$SESSIONS_ROOT" && pwd -P)"
+open -W -n --stdout "$SUMMARY" --stderr "$ERR" "$APP" \
+  --args --duration "$DURATION" --sessions-root "$SESSIONS_ROOT_ABS" &
 CAPTURE_PID=$!
 sleep 1.5
 afplay "$WAV"
 wait "$CAPTURE_PID" || { cat "$ERR" >&2; cat "$SUMMARY" >&2; exit 1; }
 CAPTURE_PID=""
+[[ -s "$SUMMARY" ]] || { cat "$ERR" >&2; echo "capture produced no summary" >&2; exit 1; }
 
 python3 -I - "$SUMMARY" "$WAV" "$DURATION" "$SESSIONS_ROOT" <<'PY'
 import array
