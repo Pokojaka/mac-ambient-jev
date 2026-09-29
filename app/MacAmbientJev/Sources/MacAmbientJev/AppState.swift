@@ -54,16 +54,18 @@ extension AudioCaptureEngine: AppCaptureEngine {}
 
 final class TerminationObservation {
     private let token: NSObjectProtocol
+    private let center: NotificationCenter
 
-    init(onTermination: @escaping @Sendable () -> Void) {
-        token = NotificationCenter.default.addObserver(
+    init(center: NotificationCenter = .default, onTermination: @escaping @Sendable () -> Void) {
+        self.center = center
+        token = center.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { _ in onTermination() }
     }
 
-    deinit { NotificationCenter.default.removeObserver(token) }
+    deinit { center.removeObserver(token) }
 }
 
 @MainActor
