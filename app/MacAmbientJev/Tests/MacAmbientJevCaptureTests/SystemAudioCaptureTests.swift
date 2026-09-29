@@ -303,6 +303,7 @@ private final class FakeTap: SystemAudioTapProviding {
     var shouldFail = false
     var emitsBuffer = true
     var emitsSilence = false
+    var emitsGap = false
     var onStarted: (@MainActor () -> Void)?
     func start(sink: TimestampedMonoSink, onFailure: @escaping @MainActor @Sendable (String) -> Void) throws {
         starts += 1
@@ -321,6 +322,10 @@ private final class FakeTap: SystemAudioTapProviding {
                 withUnsafePointer(to: &stride) { strides in
                     sink.receive(channels: channels, strides: strides, channelCount: 1,
                                  frameCount: 4, startFrame: 0)
+                    if emitsGap {
+                        sink.receive(channels: channels, strides: strides, channelCount: 1,
+                                     frameCount: 4, startFrame: 6)
+                    }
                 }
             }
         }
@@ -382,6 +387,30 @@ func fakeTapSilentStartupAndStop() async throws {
     #expect(result.dropoutCount == 0 && result.gapCount == 0)
     #expect(tap.starts == 1 && tap.stops == 1)
     #expect(power.acquisitions == 1 && power.releases == 1)
+}
+
+@MainActor
+@Test("A system tap PTS jump uses shared durable gap filling and stop diagnostics")
+func fakeTapGapUsesSharedDrain() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let tap = FakeTap()
+    tap.emitsGap = true
+    let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8,
+                                    power: FakeCapturePower(), diskSpace: AvailableDisk(),
+                                    tapFactory: { tap })
+    let sessionID = UUID()
+    try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in })
+    let result = try await engine.stop()
+    #expect(result.checkpoint.committedFrames == 10)
+    #expect(result.didOverflow && result.dropoutCount == 1)
+    #expect(result.gapCount == 1 && result.totalGapFrames == 2)
+    let directory = root.appending(path: sessionID.uuidString)
+        .appending(path: "audio/processing")
+    let samples = try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint)
+        .readSamples(frameRange: 0..<10)
+    #expect(samples == [0.25, -0.25, 0.5, -0.5, 0, 0, 0.25, -0.25, 0.5, -0.5])
 }
 
 @MainActor
