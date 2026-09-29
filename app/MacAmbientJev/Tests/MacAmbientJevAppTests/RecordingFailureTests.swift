@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import MacAmbientJev
+import MacAmbientJevCapture
 import MacAmbientJevCore
 import MacAmbientJevRuntime
 

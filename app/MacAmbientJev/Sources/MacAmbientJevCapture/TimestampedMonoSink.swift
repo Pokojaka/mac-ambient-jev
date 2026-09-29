@@ -73,26 +73,33 @@ final class TimestampedMonoSink: @unchecked Sendable {
         channels: UnsafePointer<UnsafePointer<Float>>, strides: UnsafePointer<Int>,
         channelCount: Int, frameCount: Int, startFrame: Int64
     ) {
-        guard frameCount > 0, channelCount > 0, frameCount <= capacity else {
+        guard frameCount > 0, channelCount > 0,
+              !startFrame.addingReportingOverflow(Int64(frameCount)).overflow else {
             missing(startFrame: startFrame, frameCount: frameCount)
             return
         }
-        advance(startFrame: startFrame, count: frameCount)
         var peak: Float = 0
         let divisor = Float(channelCount)
-        for frame in 0..<frameCount {
-            var sum: Float = 0
-            for channel in 0..<channelCount {
-                sum += channels[channel][frame * strides[channel]]
-            }
-            let sample = sum / divisor
-            scratch[frame] = sample
-            peak = max(peak, abs(sample))
-        }
+        var offset = 0
         var pointer = scratch
-        _ = withUnsafePointer(to: &pointer) { ring.pushPlanarFloat32(
-            channelData: $0, channelCount: 1, frameCount: frameCount, startFrame: startFrame
-        ) }
+        while offset < frameCount {
+            let count = min(capacity, frameCount - offset)
+            for frame in 0..<count {
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    sum += channels[channel][(offset + frame) * strides[channel]]
+                }
+                let sample = sum / divisor
+                scratch[frame] = sample
+                peak = max(peak, abs(sample))
+            }
+            _ = withUnsafePointer(to: &pointer) { ring.pushPlanarFloat32(
+                channelData: $0, channelCount: 1, frameCount: count,
+                startFrame: startFrame + Int64(offset)
+            ) }
+            offset += count
+        }
+        advance(startFrame: startFrame, count: frameCount)
         let millis = Int64(clock.now() * 1_000)
         lastBufferMillis.store(millis, ordering: .relaxed)
         if peak < 0.00031622776 {

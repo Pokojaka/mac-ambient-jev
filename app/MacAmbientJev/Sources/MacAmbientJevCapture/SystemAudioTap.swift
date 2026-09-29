@@ -24,9 +24,74 @@ enum SystemAudioTapError: LocalizedError {
     }
 }
 
+/// Only the Core Audio operations that acquire/release resources are replaceable in tests.
+@MainActor
+protocol SystemAudioTapHardware {
+    func ownProcessObject() throws -> AudioObjectID
+    func createTap(_ description: CATapDescription, _ tap: inout AudioObjectID) -> OSStatus
+    func tapFormat(_ tap: AudioObjectID, _ format: inout AudioStreamBasicDescription) -> OSStatus
+    func createAggregate(_ description: CFDictionary, _ device: inout AudioObjectID) -> OSStatus
+    func addFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
+                           _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus
+    func removeFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
+                              _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus
+    func createIOProc(_ proc: inout AudioDeviceIOProcID?, _ device: AudioObjectID,
+                      _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus
+    func start(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
+    func stop(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
+    func destroyIOProc(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
+    func destroyAggregate(_ device: AudioObjectID) -> OSStatus
+    func destroyTap(_ tap: AudioObjectID) -> OSStatus
+}
+
+struct CoreAudioTapHardware: SystemAudioTapHardware {
+    func ownProcessObject() throws -> AudioObjectID { try SystemAudioTap.ownProcessObject() }
+    func createTap(_ description: CATapDescription, _ tap: inout AudioObjectID) -> OSStatus {
+        AudioHardwareCreateProcessTap(description, &tap)
+    }
+    func tapFormat(_ tap: AudioObjectID, _ format: inout AudioStreamBasicDescription) -> OSStatus {
+        var address = SystemAudioTap.address(kAudioTapPropertyFormat)
+        var bytes = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        return AudioObjectGetPropertyData(tap, &address, 0, nil, &bytes, &format)
+    }
+    func createAggregate(_ description: CFDictionary, _ device: inout AudioObjectID) -> OSStatus {
+        AudioHardwareCreateAggregateDevice(description, &device)
+    }
+    func addFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
+                           _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus {
+        var address = SystemAudioTap.address(kAudioTapPropertyFormat)
+        return AudioObjectAddPropertyListenerBlock(tap, &address, queue, listener)
+    }
+    func removeFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
+                              _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus {
+        var address = SystemAudioTap.address(kAudioTapPropertyFormat)
+        return AudioObjectRemovePropertyListenerBlock(tap, &address, queue, listener)
+    }
+    func createIOProc(_ proc: inout AudioDeviceIOProcID?, _ device: AudioObjectID,
+                      _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
+        AudioDeviceCreateIOProcIDWithBlock(&proc, device, queue, callback)
+    }
+    func start(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
+        AudioDeviceStart(device, proc)
+    }
+    func stop(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
+        AudioDeviceStop(device, proc)
+    }
+    func destroyIOProc(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
+        AudioDeviceDestroyIOProcID(device, proc)
+    }
+    func destroyAggregate(_ device: AudioObjectID) -> OSStatus {
+        AudioHardwareDestroyAggregateDevice(device)
+    }
+    func destroyTap(_ tap: AudioObjectID) -> OSStatus {
+        AudioHardwareDestroyProcessTap(tap)
+    }
+}
+
 /// Owns the tap, private aggregate, IOProc and listeners; every partial start is reversible.
 @MainActor
 final class SystemAudioTap: SystemAudioTapProviding {
+    private let hardware: any SystemAudioTapHardware
     private var tapID: AudioObjectID = 0
     private var deviceID: AudioObjectID = 0
     private var ioProc: AudioDeviceIOProcID?
@@ -42,23 +107,24 @@ final class SystemAudioTap: SystemAudioTapProviding {
     private let timestamps = CaptureFrameTimestampMapper()
     private var onFailure: (@MainActor @Sendable (String) -> Void)?
     private var formatListener: AudioObjectPropertyListenerBlock?
-    private var deviceListener: AudioObjectPropertyListenerBlock?
-
     var sampleRate: Double { format.mSampleRate }
 
-    init() throws {
+    init(hardware: any SystemAudioTapHardware = CoreAudioTapHardware()) throws {
+        self.hardware = hardware
         format = AudioStreamBasicDescription()
         do {
-            let ownProcess = try Self.ownProcessObject()
+            let ownProcess = try hardware.ownProcessObject()
             let description = CATapDescription(monoGlobalTapButExcludeProcesses: [ownProcess])
             description.uuid = UUID(uuidString: tapUUID)!
             description.isPrivate = true
-            guard AudioHardwareCreateProcessTap(description, &tapID) == noErr else {
+            description.muteBehavior = .unmuted
+            let tapStatus = hardware.createTap(description, &tapID)
+            guard tapStatus == noErr else {
+                // The tap is the permission boundary; Core Audio does not promise
+                // a stable denial status across supported macOS releases.
                 throw SystemAudioTapError.permissionDenied
             }
-            var tapAddress = Self.address(kAudioTapPropertyFormat)
-            var bytes = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-            try Self.check(AudioObjectGetPropertyData(tapID, &tapAddress, 0, nil, &bytes, &format), "タップ形式の取得")
+            try Self.check(hardware.tapFormat(tapID, &format), "タップ形式の取得")
             guard format.mSampleRate > 0, format.mFormatID == kAudioFormatLinearPCM,
                   format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
                   format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0,
@@ -71,14 +137,14 @@ final class SystemAudioTap: SystemAudioTapProviding {
                 "private": true, "stacked": false,
                 "taps": [["uid": tapUUID, "drift": true]]
             ]
-            try Self.check(AudioHardwareCreateAggregateDevice(composition as CFDictionary, &deviceID), "仮想デバイスの作成")
+            try Self.check(hardware.createAggregate(composition as CFDictionary, &deviceID), "仮想デバイスの作成")
         } catch {
             stop()
             throw error
         }
     }
 
-    private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+    fileprivate static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
                                    mElement: kAudioObjectPropertyElementMain)
     }
@@ -92,7 +158,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
         }
     }
 
-    private static func ownProcessObject() throws -> AudioObjectID {
+    fileprivate static func ownProcessObject() throws -> AudioObjectID {
         var address = Self.address(kAudioHardwarePropertyTranslatePIDToProcessObject)
         var pid = getpid()
         var object = AudioObjectID(kAudioObjectUnknown)
@@ -118,26 +184,22 @@ final class SystemAudioTap: SystemAudioTapProviding {
     func start(sink: TimestampedMonoSink, onFailure: @escaping @MainActor @Sendable (String) -> Void) throws {
         self.onFailure = onFailure
         do {
-            var tapAddress = Self.address(kAudioTapPropertyFormat)
-            var outputAddress = Self.address(kAudioHardwarePropertyDefaultOutputDevice)
+            // A global tap follows the system mix when the output device changes.
+            // Only changes to the tap's audio format require stopping.
             let formatListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
                 self?.notifyChange("システム音声の形式が変わったため、録音を停止しました")
             }
-            let deviceListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-                self?.notifyChange("出力デバイスが切り替わったため、録音を停止しました")
-            }
             self.formatListener = formatListener
-            self.deviceListener = deviceListener
-            try Self.check(AudioObjectAddPropertyListenerBlock(tapID, &tapAddress, callbackQueue, formatListener), "タップ監視")
+            try Self.check(hardware.addFormatListener(tapID, callbackQueue, formatListener), "タップ監視")
             listening = true
-            try Self.check(AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &outputAddress, callbackQueue, deviceListener), "出力デバイス監視")
             var proc: AudioDeviceIOProcID?
-            try Self.check(AudioDeviceCreateIOProcIDWithBlock(&proc, deviceID, callbackQueue) { [weak self] _, input, timestamp, _, _ in
+            let procStatus = hardware.createIOProc(&proc, deviceID, callbackQueue) { [weak self] _, input, timestamp, _, _ in
                 self?.receive(input: input, timestamp: timestamp, sink: sink)
-            }, "音声コールバックの作成")
+            }
             ioProc = proc
+            try Self.check(procStatus, "音声コールバックの作成")
             guard let proc else { throw SystemAudioTapError.unavailable("音声コールバックがありません") }
-            try Self.check(AudioDeviceStart(deviceID, proc), "録音の開始")
+            try Self.check(hardware.start(deviceID, proc), "録音の開始")
             running = true
         } catch {
             stop()
@@ -195,22 +257,16 @@ final class SystemAudioTap: SystemAudioTapProviding {
 
 
     func stop() {
-        if running { _ = AudioDeviceStop(deviceID, ioProc); running = false }
-        if let ioProc { _ = AudioDeviceDestroyIOProcID(deviceID, ioProc); self.ioProc = nil }
+        if running, let ioProc { _ = hardware.stop(deviceID, ioProc); running = false }
+        if let ioProc { _ = hardware.destroyIOProc(deviceID, ioProc); self.ioProc = nil }
         if listening, let formatListener {
-            var address = Self.address(kAudioTapPropertyFormat)
-            _ = AudioObjectRemovePropertyListenerBlock(tapID, &address, callbackQueue, formatListener)
-        }
-        if let deviceListener {
-            var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice)
-            _ = AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, callbackQueue, deviceListener)
+            _ = hardware.removeFormatListener(tapID, callbackQueue, formatListener)
         }
         listening = false
         formatListener = nil
-        deviceListener = nil
         onFailure = nil
-        if deviceID != 0 { _ = AudioHardwareDestroyAggregateDevice(deviceID); deviceID = 0 }
-        if tapID != 0 { _ = AudioHardwareDestroyProcessTap(tapID); tapID = 0 }
+        if deviceID != 0 { _ = hardware.destroyAggregate(deviceID); deviceID = 0 }
+        if tapID != 0 { _ = hardware.destroyTap(tapID); tapID = 0 }
     }
 
     deinit { pointers.deallocate(); strides.deallocate() }

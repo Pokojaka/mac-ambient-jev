@@ -216,6 +216,7 @@ public final class AudioCaptureEngine {
     private(set) public var activeSessionID: UUID?
     private(set) public var timeline: ProcessingTimeline?
     private var tap: (any SystemAudioTapProviding)?
+    private var captureSource: CaptureSource = .microphone
     private var sink: TimestampedMonoSink?
     private let tapFactory: @MainActor () throws -> any SystemAudioTapProviding
 
@@ -465,6 +466,7 @@ public final class AudioCaptureEngine {
         self.ring = ring
         self.drain = drain
         self.drainTask = drainTask
+        captureSource = tap == nil ? .microphone : .systemAudio
         overflowAtStart = ring.overflowCount
         activeSessionID = sessionID
         self.timeline = timeline
@@ -513,6 +515,7 @@ public final class AudioCaptureEngine {
             self.receiver = nil
             self.callbackQueue = nil
             self.tap = nil
+            self.captureSource = .microphone
             self.sink = nil
             self.ring = nil
             self.drain = nil
@@ -534,8 +537,11 @@ public final class AudioCaptureEngine {
             throw AudioCaptureEngineError.writerFailure(backgroundFailure)
         }
         guard checkpoint.hasCapturedInput else {
-            throw sink.invalidBufferCount.load(ordering: .relaxed) > 0
-                ? AudioCaptureEngineError.invalidInputFormat
+            if sink.invalidBufferCount.load(ordering: .relaxed) > 0 {
+                throw AudioCaptureEngineError.invalidInputFormat
+            }
+            throw captureSource == .systemAudio
+                ? AudioCaptureEngineError.noSystemAudioCaptured
                 : AudioCaptureEngineError.noAudioCaptured
         }
         return AudioCaptureStopResult(

@@ -40,6 +40,7 @@ func appBundleRecipeEmitsJapaneseSystemAudioPermission() throws {
     let repository = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
     let recipe = repository.appending(path: "scripts/build_app.sh")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/bash")

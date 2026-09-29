@@ -5,6 +5,7 @@ import IOKit.audio
 import Synchronization
 import Testing
 @testable import MacAmbientJevCapture
+@testable import MacAmbientJev
 import MacAmbientJevCore
 
 @MainActor
@@ -274,4 +275,26 @@ func terminationObservationIsWindowIndependent() {
     observation = nil
     NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
     #expect(calls.load(ordering: .relaxed) == 1)
+}
+
+@Test("Large packed tap buffers split at scratch capacity without losing their timestamps")
+func oversizedTimestampedMonoBufferKeepsSamples() throws {
+    let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 4)
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 2, clock: SystemCaptureClock())
+    var packed: [Float] = [1, 3, 2, 4, 3, 5, 4, 6, 5, 7]
+    packed.withUnsafeMutableBufferPointer { buffer in
+        let channels = [UnsafePointer(buffer.baseAddress!), UnsafePointer(buffer.baseAddress!.advanced(by: 1))]
+        let strides = [2, 2]
+        channels.withUnsafeBufferPointer { pointers in
+            strides.withUnsafeBufferPointer { steps in
+                sink.receive(channels: pointers.baseAddress!, strides: steps.baseAddress!,
+                             channelCount: 2, frameCount: 5, startFrame: 10)
+            }
+        }
+    }
+    ring.finish(tailFrame: sink.lastEndFrame)
+    let blocks = [try #require(ring.pop()), try #require(ring.pop()), try #require(ring.pop())]
+    #expect(blocks.map(\.startFrame) == [10, 12, 14])
+    #expect(blocks.flatMap(\.samples) == [2, 3, 4, 5, 6])
+    #expect(sink.lastEndFrame == 15)
 }

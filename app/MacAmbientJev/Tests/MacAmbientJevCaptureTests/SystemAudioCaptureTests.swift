@@ -1,8 +1,195 @@
+import AudioToolbox
+import CoreAudio
 import Foundation
 import MacAmbientJevCore
 import Synchronization
 import Testing
 @testable import MacAmbientJevCapture
+
+/// No Core Audio call escapes this fake; it exercises SystemAudioTap's real ownership code.
+@MainActor
+private final class FakeTapHardware: SystemAudioTapHardware {
+    enum Stage: CaseIterable {
+        case process, tap, format, invalidFormat, aggregate, listener, ioProc, start
+    }
+
+    var failure: Stage?
+    var returnIDOnFailure = false
+    var returnNilIOProc = false
+    var events: [String] = []
+    private let proc = unsafeBitCast(UInt(0x1234), to: AudioDeviceIOProcID.self)
+    private let tap: AudioObjectID = 41
+    private let device: AudioObjectID = 42
+
+    func ownProcessObject() throws -> AudioObjectID {
+        events.append("process")
+        if failure == .process { throw SystemAudioTapError.unavailable("process lookup") }
+        return 43
+    }
+
+    func createTap(_ description: CATapDescription, _ result: inout AudioObjectID) -> OSStatus {
+        events.append("tap")
+        #expect(description.isExclusive)
+        #expect(description.isMono)
+        #expect(description.deviceUID == nil)
+        #expect(description.muteBehavior == .unmuted)
+        #expect((description.value(forKey: "processes") as? [NSNumber]) == [NSNumber(value: 43)])
+        if failure != .tap || returnIDOnFailure { result = tap }
+        return failure == .tap ? -50 : noErr
+    }
+
+    func tapFormat(_ tap: AudioObjectID, _ format: inout AudioStreamBasicDescription) -> OSStatus {
+        events.append("format")
+        #expect(tap == self.tap)
+        if failure == .format { return -50 }
+        format.mSampleRate = 48_000
+        format.mFormatID = kAudioFormatLinearPCM
+        format.mFormatFlags = kAudioFormatFlagIsFloat
+        format.mBitsPerChannel = failure == .invalidFormat ? 16 : 32
+        format.mChannelsPerFrame = 1
+        return noErr
+    }
+
+    func createAggregate(_ description: CFDictionary, _ result: inout AudioObjectID) -> OSStatus {
+        events.append("aggregate")
+        let dictionary = description as NSDictionary
+        #expect(dictionary["private"] as? Bool == true)
+        #expect((dictionary["taps"] as? [[String: Any]])?.count == 1)
+        if failure != .aggregate || returnIDOnFailure { result = device }
+        return failure == .aggregate ? -50 : noErr
+    }
+
+    func addFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
+                           _ listener: AudioObjectPropertyListenerBlock) -> OSStatus {
+        events.append("listener")
+        #expect(tap == self.tap)
+        return failure == .listener ? -50 : noErr
+    }
+
+    func removeFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
+                              _ listener: AudioObjectPropertyListenerBlock) -> OSStatus {
+        events.append("removeListener")
+        #expect(tap == self.tap)
+        return noErr
+    }
+
+    func createIOProc(_ result: inout AudioDeviceIOProcID?, _ device: AudioObjectID,
+                      _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
+        events.append("ioProc")
+        #expect(device == self.device)
+        if !returnNilIOProc && (failure != .ioProc || returnIDOnFailure) { result = proc }
+        return failure == .ioProc ? -50 : noErr
+    }
+
+    func start(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
+        events.append("start")
+        #expect(device == self.device)
+        return failure == .start ? -50 : noErr
+    }
+
+    func stop(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
+        events.append("stop")
+        #expect(device == self.device)
+        return noErr
+    }
+
+    func destroyIOProc(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
+        events.append("destroyIOProc")
+        #expect(device == self.device)
+        return noErr
+    }
+
+    func destroyAggregate(_ device: AudioObjectID) -> OSStatus {
+        events.append("destroyAggregate")
+        #expect(device == self.device)
+        return noErr
+    }
+
+    func destroyTap(_ tap: AudioObjectID) -> OSStatus {
+        events.append("destroyTap")
+        #expect(tap == self.tap)
+        return noErr
+    }
+}
+
+@MainActor
+@Test("A failed tap preparation releases every resource already returned by Core Audio")
+func tapPreparationFailureBoundaries() {
+    let cases: [(FakeTapHardware.Stage, [String])] = [
+        (.process, ["process"]),
+        (.tap, ["process", "tap", "destroyTap"]),
+        (.format, ["process", "tap", "format", "destroyTap"]),
+        (.invalidFormat, ["process", "tap", "format", "destroyTap"]),
+        (.aggregate, ["process", "tap", "format", "aggregate", "destroyAggregate", "destroyTap"])
+    ]
+    for (stage, expected) in cases {
+        let hardware = FakeTapHardware()
+        hardware.failure = stage
+        hardware.returnIDOnFailure = true
+        do {
+            let tap = try SystemAudioTap(hardware: hardware)
+            tap.stop()
+            Issue.record("Expected \(stage) to fail")
+        } catch {
+            #expect(hardware.events == expected, "Failure at \(stage): \(hardware.events)")
+        }
+    }
+}
+
+@MainActor
+@Test("Listener, IOProc, and device start failures unwind in reverse acquisition order")
+func tapStartFailureBoundaries() throws {
+    let cases: [(FakeTapHardware.Stage, [String])] = [
+        (.listener, ["listener", "destroyAggregate", "destroyTap"]),
+        (.ioProc, ["listener", "ioProc", "destroyIOProc", "removeListener", "destroyAggregate", "destroyTap"]),
+        (.start, ["listener", "ioProc", "start", "destroyIOProc", "removeListener", "destroyAggregate", "destroyTap"])
+    ]
+    for (stage, expected) in cases {
+        let hardware = FakeTapHardware()
+        hardware.failure = stage
+        hardware.returnIDOnFailure = true
+        let tap = try SystemAudioTap(hardware: hardware)
+        let initial = hardware.events.count
+        let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 8),
+                                       frameCapacity: 8, clock: FixedClock())
+        do {
+            try tap.start(sink: sink, onFailure: { _ in })
+            Issue.record("Expected \(stage) to fail")
+        } catch {
+            #expect(Array(hardware.events.dropFirst(initial)) == expected,
+                    "Failure at \(stage): \(hardware.events)")
+        }
+        tap.stop()
+        #expect(hardware.events.count == initial + expected.count)
+    }
+}
+
+@MainActor
+@Test("A missing IOProc ID and a normal stop both release their exact acquired resources")
+func tapIOProcMissingAndNormalStop() throws {
+    let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 8),
+                                   frameCapacity: 8, clock: FixedClock())
+    let missing = FakeTapHardware()
+    missing.returnNilIOProc = true
+    let missingTap = try SystemAudioTap(hardware: missing)
+    do {
+        try missingTap.start(sink: sink, onFailure: { _ in })
+        Issue.record("Expected a missing IOProc ID")
+    } catch {
+        #expect(Array(missing.events.dropFirst(4)) ==
+                ["listener", "ioProc", "removeListener", "destroyAggregate", "destroyTap"])
+    }
+    let normal = FakeTapHardware()
+    let tap = try SystemAudioTap(hardware: normal)
+    try tap.start(sink: sink, onFailure: { _ in })
+    tap.stop()
+    let afterStop = normal.events
+    #expect(Array(afterStop.dropFirst(4)) ==
+            ["listener", "ioProc", "start", "stop", "destroyIOProc",
+             "removeListener", "destroyAggregate", "destroyTap"])
+    tap.stop()
+    #expect(normal.events == afterStop)
+}
 
 private final class FixedClock: CaptureClock {
     let millis = Atomic<Int64>(10_000)
@@ -115,12 +302,17 @@ private final class FakeTap: SystemAudioTapProviding {
     var stops = 0
     var shouldFail = false
     var emitsBuffer = true
+    var emitsSilence = false
     var onStarted: (@MainActor () -> Void)?
     func start(sink: TimestampedMonoSink, onFailure: @escaping @MainActor @Sendable (String) -> Void) throws {
         starts += 1
         onStarted?()
         guard emitsBuffer else { return }
         if shouldFail { throw SystemAudioTapError.permissionDenied }
+        if emitsSilence {
+            sink.silence(startFrame: 0, frameCount: 4)
+            return
+        }
         var samples: [Float] = [0.25, -0.25, 0.5, -0.5]
         samples.withUnsafeMutableBufferPointer { buffer in
             var pointer = UnsafePointer(buffer.baseAddress!)
@@ -171,6 +363,25 @@ func fakeTapEngineLifecycle() async throws {
     #expect(tap.starts == 1 && tap.stops == 1)
     #expect(power.acquisitions == 1 && power.releases == 1)
     #expect(!engine.isRecording)
+}
+
+@MainActor
+@Test("Silent system buffers satisfy startup and remain valid captured audio on stop")
+func fakeTapSilentStartupAndStop() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let tap = FakeTap()
+    tap.emitsSilence = true
+    let power = FakeCapturePower()
+    let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8, power: power,
+                                    diskSpace: AvailableDisk(), tapFactory: { tap })
+    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+    let result = try await engine.stop()
+    #expect(result.checkpoint.committedFrames == 4)
+    #expect(result.dropoutCount == 0 && result.gapCount == 0)
+    #expect(tap.starts == 1 && tap.stops == 1)
+    #expect(power.acquisitions == 1 && power.releases == 1)
 }
 
 @MainActor

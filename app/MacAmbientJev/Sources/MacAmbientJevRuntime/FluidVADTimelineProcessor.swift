@@ -1,6 +1,7 @@
-import AVFoundation
+import Foundation
 import FluidAudio
 import MacAmbientJevCore
+import MacAmbientJevPlatformAudio
 
 enum FluidVADTimelineProcessorError: LocalizedError {
     case invalidSourceFormat
@@ -31,8 +32,7 @@ actor FluidVADTimelineProcessor {
     private let initialCheckpoint: AudioCheckpoint
     private let engine: any VADChunkSegmenting
     private let sourceFramesPerRead: Int64
-    private let sourceFormat: AVAudioFormat?
-    private let converter = AudioConverter()
+    private let resampler: VADResampler?
 
     private var sourceStartFrame: Int64 = 0
     private var pending16k: [Float] = []
@@ -55,9 +55,9 @@ actor FluidVADTimelineProcessor {
             1,
             Int64((checkpoint.sampleRate * sourceReadSeconds).rounded())
         )
-        self.sourceFormat = AVAudioFormat(
-            standardFormatWithSampleRate: checkpoint.sampleRate,
-            channels: AVAudioChannelCount(checkpoint.channelCount)
+        self.resampler = VADResampler(
+            sampleRate: checkpoint.sampleRate,
+            channelCount: checkpoint.channelCount
         )
     }
 
@@ -83,7 +83,7 @@ actor FluidVADTimelineProcessor {
         guard checkpoint.committedFrames >= sourceStartFrame else {
             throw FluidVADTimelineProcessorError.checkpointMovedBackward
         }
-        guard let sourceFormat else {
+        guard let resampler else {
             throw FluidVADTimelineProcessorError.invalidSourceFormat
         }
         try await drainFullVADChunks()
@@ -101,31 +101,18 @@ actor FluidVADTimelineProcessor {
             let interleaved = try reader.readSamples(
                 frameRange: sourceStartFrame..<sourceEndFrame
             )
-            let frameCount = Int(sourceEndFrame - sourceStartFrame)
-
-            guard let buffer = AVAudioPCMBuffer(
-                pcmFormat: sourceFormat,
-                frameCapacity: AVAudioFrameCount(frameCount)
-            ) else {
+            do {
+                pending16k.append(
+                    contentsOf: try resampler.resample(
+                        interleaved: interleaved,
+                        frameCount: Int(sourceEndFrame - sourceStartFrame)
+                    )
+                )
+            } catch VADResamplerError.invalidSourceFormat {
                 throw FluidVADTimelineProcessorError.invalidSourceFormat
-            }
-            buffer.frameLength = AVAudioFrameCount(frameCount)
-
-            guard let channels = buffer.floatChannelData else {
+            } catch VADResamplerError.missingChannelData {
                 throw FluidVADTimelineProcessorError.missingChannelData
             }
-
-            let channelCount = checkpoint.channelCount
-            for frame in 0..<frameCount {
-                let base = frame * channelCount
-                for channel in 0..<channelCount {
-                    channels[channel][frame] = interleaved[base + channel]
-                }
-            }
-
-            pending16k.append(
-                contentsOf: try converter.resampleBuffer(buffer)
-            )
             sourceStartFrame = sourceEndFrame
             try await drainFullVADChunks()
         }

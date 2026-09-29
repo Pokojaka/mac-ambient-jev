@@ -44,10 +44,15 @@ let package = Package(
         .target(name: "MacAmbientJevCore"),
         .target(name: "MacAmbientJevCapture", dependencies: ["MacAmbientJevCore"]),
         .target(
+            name: "MacAmbientJevPlatformAudio",
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+        ),
+        .target(
             name: "MacAmbientJevRuntime",
             dependencies: [
                 "MacAmbientJevCore",
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                "MacAmbientJevPlatformAudio",
                 .product(name: "Qwen3ASR", package: "speech-swift")
             ]
         ),
