@@ -487,7 +487,7 @@ final class AudioCaptureEngine {
         if let backgroundFailure {
             throw AudioCaptureEngineError.writerFailure(backgroundFailure)
         }
-        guard checkpoint.committedFrames > 0 else {
+        guard checkpoint.hasCapturedAudio else {
             throw receiver.invalidBufferCount.load(ordering: .relaxed) > 0
                 ? AudioCaptureEngineError.invalidInputFormat
                 : AudioCaptureEngineError.noAudioCaptured
