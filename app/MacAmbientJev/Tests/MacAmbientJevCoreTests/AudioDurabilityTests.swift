@@ -23,6 +23,42 @@ import Testing
     }
 }
 
+@Test func recoveredCheckpointRejectsOverflowingChannelCount() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 0, sampleRate: 10, channelCount: Int.max, chunkFiles: []
+    )
+    try JSONEncoder().encode(checkpoint).write(
+        to: root.appending(path: DurableAudioWriter.checkpointFilename)
+    )
+
+    #expect(throws: DurableAudioWriterError.incompatibleCheckpoint) {
+        _ = try AudioCheckpoint.loadRecovered(from: root)
+    }
+}
+
+@Test func indexedChunkByteCountOverflowThrowsInsteadOfTrapping() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let filename = "chunk-000000.f32le"
+    try Data(repeating: 0, count: MemoryLayout<Float>.size)
+        .write(to: root.appending(path: filename))
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 1, sampleRate: 10, channelCount: 1,
+        chunkFiles: [filename], chunkFrameCounts: [Int.max]
+    )
+    try JSONEncoder().encode(checkpoint).write(
+        to: root.appending(path: DurableAudioWriter.checkpointFilename)
+    )
+
+    #expect(throws: DurableAudioWriterError.corruptChunk(filename)) {
+        _ = try AudioCheckpoint.loadRecovered(from: root)
+    }
+}
+
 @Test func reopeningRejectsTruncatedIndexedChunkBeforeAppending() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -192,6 +228,74 @@ import Testing
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
         _ = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint).readSamples(frameRange: 0..<1)
     }
+}
+
+@Test func failedSecondChunkRetainsCaptureBlockWithoutGapOrDuplicateOnRetry() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 20)
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let samples = (1...20).map(Float.init)
+    #expect(pushMono(samples, at: 0, into: ring))
+
+    // The first ten frames commit; the next chunk's occupied path rejects its write.
+    let blockedChunk = root.appending(path: "chunk-000001.f32le")
+    try FileManager.default.createDirectory(at: blockedChunk, withIntermediateDirectories: false)
+    do {
+        _ = try await drain.drainAvailable()
+        Issue.record("The occupied second chunk path should reject the drain")
+    } catch {}
+    let first = await writer.committedSnapshot()
+    #expect(first.committedFrames == 10)
+    #expect(first.chunkFrameCounts == [10])
+    #expect(first.gapEvents.isEmpty)
+    #expect(try ProcessingTimelineReader(directory: root, checkpoint: first)
+        .readSamples(frameRange: 0..<10) == Array(samples[..<10]))
+
+    try FileManager.default.removeItem(at: blockedChunk)
+    #expect(try await drain.drainAvailable() == 1)
+    let final = try await drain.finish()
+    #expect(final.committedFrames == 20)
+    #expect(final.chunkFrameCounts == [10, 10])
+    #expect(final.gapEvents.isEmpty)
+    #expect(try ProcessingTimelineReader(directory: root, checkpoint: final)
+        .readSamples(frameRange: 0..<20) == samples)
+}
+
+@Test func failedSilenceChunkRetainsGapAndOriginalCallbackPTSOnRetry() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    #expect(pushMono([1, 2], at: 0, into: ring))
+    #expect(try await drain.drainAvailable() == 1)
+    #expect(pushMono([9, 10], at: 9, into: ring))
+
+    // The first chunk accepts two silence frames; the second accepts four
+    // more before its write fails. The queued callback still belongs at PTS 9.
+    let blockedChunk = root.appending(path: "chunk-000001.f32le")
+    try FileManager.default.createDirectory(at: blockedChunk, withIntermediateDirectories: false)
+    do {
+        _ = try await drain.drainAvailable()
+        Issue.record("The occupied silence chunk path should reject the drain")
+    } catch {}
+    let committed = await writer.committedSnapshot()
+    #expect(committed.committedFrames == 4)
+    #expect(try ProcessingTimelineReader(directory: root, checkpoint: committed)
+        .readSamples(frameRange: 0..<4) == [1, 2, 0, 0])
+    #expect(pushMono([11, 12], at: 11, into: ring))
+
+    try FileManager.default.removeItem(at: blockedChunk)
+    #expect(try await drain.drainAvailable() == 2)
+    let checkpoint = try await drain.finish()
+    #expect(checkpoint.committedFrames == 13)
+    #expect(checkpoint.gapEvents == [
+        AudioGapEvent(startFrame: 2, frameCount: 7, reason: .missingCallback)
+    ])
+    #expect(try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+        .readSamples(frameRange: 0..<13) == [1, 2] + Array(repeating: Float(0), count: 7) + [9, 10, 11, 12])
 }
 
 @Test func ringOverflowKeepsLaterBlocksAtTheirCapturedFramePositions() async throws {
@@ -629,6 +733,8 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
                         sampleRate: 10, channelCount: channelCount,
                         chunkFiles: [], gapEvents: gaps)
     }
+
+    func checkpoint() -> AudioCheckpoint { committedSnapshot() }
 
     func finish() -> AudioCheckpoint {
         finished = true

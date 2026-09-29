@@ -83,6 +83,7 @@ extension AudioCheckpoint {
         )
         guard snapshot.hasPlainUniqueChunkFiles,
               snapshot.channelCount > 0,
+              snapshot.channelCount <= Int.max / MemoryLayout<Float>.size,
               snapshot.sampleRate.isFinite,
               snapshot.sampleRate > 0 else {
             throw DurableAudioWriterError.incompatibleCheckpoint
@@ -96,25 +97,36 @@ extension AudioCheckpoint {
         if let indexedCounts,
            indexedCounts.count == files.count,
            indexedCounts.allSatisfy({ (1...Int(Int32.max)).contains($0) }) {
-            guard indexedCounts.reduce(Int64.zero, { $0 + Int64($1) })
-                    == snapshot.committedFrames else {
+            var indexedFrames: Int64 = 0
+            for count in indexedCounts {
+                let (sum, overflow) = indexedFrames.addingReportingOverflow(Int64(count))
+                guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
+                indexedFrames = sum
+            }
+            guard indexedFrames == snapshot.committedFrames else {
                 throw DurableAudioWriterError.checkpointFrameCountMismatch
             }
         }
         for (index, filename) in files.enumerated() {
             let size = try directory.appending(path: filename)
                 .resourceValues(forKeys: [.fileSizeKey]).fileSize
-            guard let size, size > 0, size % bytesPerFrame == 0,
-                  indexedCounts.flatMap({ $0.count == files.count ? $0[index] : nil })
-                    .map({ $0 * bytesPerFrame == size }) ?? true else {
+            guard let size, size > 0, size % bytesPerFrame == 0 else {
                 throw DurableAudioWriterError.corruptChunk(filename)
+            }
+            if let indexedCounts, indexedCounts.count == files.count {
+                let (expectedBytes, overflow) = indexedCounts[index].multipliedReportingOverflow(by: bytesPerFrame)
+                guard !overflow, expectedBytes == size else {
+                    throw DurableAudioWriterError.corruptChunk(filename)
+                }
             }
             if let committed = chunkIndex[index], committed != size / bytesPerFrame {
                 throw DurableAudioWriterError.corruptChunk(filename)
             }
             let count = size / bytesPerFrame
             counts.append(count)
-            frames += Int64(count)
+            let (total, overflow) = frames.addingReportingOverflow(Int64(count))
+            guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
+            frames = total
         }
         guard frames == snapshot.committedFrames else {
             throw DurableAudioWriterError.checkpointFrameCountMismatch
@@ -135,7 +147,9 @@ extension AudioCheckpoint {
             let count = size / bytesPerFrame
             files.append(filename)
             counts.append(count)
-            frames += Int64(count)
+            let (total, overflow) = frames.addingReportingOverflow(Int64(count))
+            guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
+            frames = total
             next += 1
         }
         if let unexpected = chunkIndex.keys.first(where: { $0 >= next }) {
