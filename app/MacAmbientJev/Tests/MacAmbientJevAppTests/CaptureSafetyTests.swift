@@ -5,6 +5,7 @@ import IOKit.audio
 import Synchronization
 import Testing
 @testable import MacAmbientJev
+import MacAmbientJevCore
 
 @MainActor
 private final class FakePower: RecordingPowerProviding {
@@ -19,17 +20,63 @@ private final class FakePower: RecordingPowerProviding {
 }
 
 @MainActor
-@Test("recording power lifetime releases on success, start failure, write failure, cancellation and termination")
-func recordingPowerLifetimePairsEveryExit() {
-    for exit in ["normal", "start failure", "write failure", "cancel", "terminate"] {
+@Test("engine stop, failed write, missing first buffer, cancellation and termination release capture power")
+func recordingPowerLifetimePairsEveryExit() async throws {
+    for exit in ["normal", "write failure", "no buffer", "cancel", "terminate"] {
+        let (root, paths) = temporaryRecordingPaths()
+        defer { try? FileManager.default.removeItem(at: root) }
         let provider = FakePower()
-        if exit == "start failure" { provider.assertionAvailable = false }
-        let lifetime = RecordingPowerLifetime(provider: provider)
-        #expect(lifetime.begin() == provider.assertionAvailable)
-        #expect(lifetime.active)
-        lifetime.end()
-        lifetime.end() // Termination during an in-flight stop must not release twice.
-        #expect(!lifetime.active)
+        let engine = AudioCaptureEngine(paths: paths, power: provider)
+        let directory = root.appending(path: "capture", directoryHint: .isDirectory)
+        let writer = try DurableAudioWriter(
+            directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+        )
+        let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 10)
+        let receiver = AudioCaptureReceiver(
+            ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}
+        )
+        let drain = AudioCaptureDrain(ring: ring, writer: writer)
+        #expect(engine.power.begin())
+        engine.installCapture(
+            session: AVCaptureSession(), output: AVCaptureAudioDataOutput(),
+            receiver: receiver, callbackQueue: DispatchQueue(label: "test.capture.teardown"),
+            ring: ring, drain: drain, drainTask: nil, sessionID: UUID(),
+            timeline: ProcessingTimeline(sampleRate: 10, channelCount: 1, sampleFormat: .float32LE)
+        )
+        if exit == "terminate" {
+            try await writer.append(samples: Array(repeating: 0.25, count: 10))
+            #expect(try await engine.committedCheckpoint().committedFrames == 10)
+            engine.terminate()
+            #expect(try AudioCheckpoint.loadRecovered(from: directory)?.committedFrames == 10)
+        } else {
+            if exit == "normal" || exit == "write failure" {
+                #expect(ring.push(samples: Array(repeating: 0.25, count: 10)))
+            }
+            if exit == "write failure" {
+                let blockedChunk = directory.appending(path: "chunk-000000.f32le")
+                try FileManager.default.createDirectory(
+                    at: blockedChunk, withIntermediateDirectories: false
+                )
+                var rejected = false
+                do { _ = try await engine.stop() } catch { rejected = true }
+                #expect(rejected)
+                try FileManager.default.removeItem(at: blockedChunk)
+                #expect(try AudioCheckpoint.loadRecovered(from: directory)?.committedFrames == 0)
+            } else if exit == "normal" {
+                let result = try await engine.stop()
+                #expect(result.checkpoint.committedFrames == 10)
+                #expect(try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint)
+                    .readSamples(frameRange: 0..<10) == Array(repeating: Float(0.25), count: 10))
+            } else {
+                if exit == "cancel" { engine.cancelStarting() }
+                do {
+                    _ = try await engine.stop()
+                    Issue.record("No captured frames should fail startup")
+                } catch AudioCaptureEngineError.noAudioCaptured {}
+                #expect(try AudioCheckpoint.loadRecovered(from: directory)?.committedFrames == 0)
+            }
+        }
+        #expect(!engine.power.active)
         #expect(provider.acquisitions == 1)
         #expect(provider.releases == 1)
     }

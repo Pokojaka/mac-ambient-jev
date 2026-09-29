@@ -185,7 +185,7 @@ final class AudioCaptureEngine {
     private let bufferFrameCount: Int
     private let ringCapacity: Int
     private let chunkDurationSeconds: Double
-    private let power: RecordingPowerLifetime
+    let power: RecordingPowerLifetime
     private let clock: any CaptureClock
     private let diskSpace: any CaptureDiskSpaceProviding
     private let failureObservers: CaptureFailureObservers
@@ -356,19 +356,15 @@ final class AudioCaptureEngine {
             return nil
         }
 
-        self.session = captureSession
-        self.output = audioOutput
-        self.receiver = receiver
-        self.callbackQueue = callbackQueue
-        self.ring = ring
-        self.drain = drain
-        self.drainTask = task
-        self.overflowAtStart = ring.overflowCount
-        self.activeSessionID = sessionID
-        self.timeline = ProcessingTimeline(
-            sampleRate: format.mSampleRate,
-            channelCount: channelCount,
-            sampleFormat: .float32LE
+        installCapture(
+            session: captureSession, output: audioOutput, receiver: receiver,
+            callbackQueue: callbackQueue, ring: ring, drain: drain,
+            drainTask: task, sessionID: sessionID,
+            timeline: ProcessingTimeline(
+                sampleRate: format.mSampleRate,
+                channelCount: channelCount,
+                sampleFormat: .float32LE
+            )
         )
         failureObservers.start(session: captureSession, device: device, onFailure: reportFailure)
         if CaptureInputWarnings.isLowRateBluetooth(
@@ -417,6 +413,28 @@ final class AudioCaptureEngine {
                 }
             }
         }
+    }
+
+    /// Installs an already prepared run; the session is started by start().
+    /// Tests can supply an unstarted, input-free session to exercise teardown
+    /// and durable checkpoint paths without accessing a microphone.
+    func installCapture(
+        session: AVCaptureSession, output: AVCaptureAudioDataOutput,
+        receiver: AudioCaptureReceiver, callbackQueue: DispatchQueue,
+        ring: AudioBlockRing, drain: AudioCaptureDrain,
+        drainTask: Task<String?, Never>?, sessionID: UUID,
+        timeline: ProcessingTimeline
+    ) {
+        self.session = session
+        self.output = output
+        self.receiver = receiver
+        self.callbackQueue = callbackQueue
+        self.ring = ring
+        self.drain = drain
+        self.drainTask = drainTask
+        overflowAtStart = ring.overflowCount
+        activeSessionID = sessionID
+        self.timeline = timeline
     }
 
     func cancelStarting() {
