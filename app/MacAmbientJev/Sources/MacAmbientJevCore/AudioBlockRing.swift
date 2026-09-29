@@ -47,6 +47,8 @@ public final class AudioBlockRing: @unchecked Sendable {
 
     private var producerEndFrame: Int64 = 0
     private var producerRawEndFrame: Int64 = 0
+    private var suppressedSmallGapFrames: Int64 = 0
+    private var repeatedSmallGapLoss = false
     private var pendingGap: AudioGap?
     private let finishedTail = Atomic<Int64>(-1)
     private let writeSequence = Atomic<UInt64>(0)
@@ -54,8 +56,10 @@ public final class AudioBlockRing: @unchecked Sendable {
     private let recordedOverflowCount = Atomic<UInt64>(0)
     private let recordedDropoutCount = Atomic<UInt64>(0)
 
-    /// Minimum number of slots required to buffer at least the requested wall-clock duration.
-    /// A slot stores interleaved samples; its usable frame count depends on channel count.
+    /// Minimum slot count for the duration when callbacks can be as small as
+    /// 512 device frames. A slot stores interleaved samples, so dividing its
+    /// sample capacity by channel count gives its usable frame capacity.
+    /// Callers should use similarly small slots to avoid excessive allocation.
     public static func capacityForDuration(
         sampleRate: Double,
         blockFrameCapacity: Int,
@@ -65,12 +69,12 @@ public final class AudioBlockRing: @unchecked Sendable {
         precondition(sampleRate > 0 && sampleRate.isFinite)
         precondition(minimumDurationSeconds > 0 && minimumDurationSeconds.isFinite)
         precondition(channelCount > 0 && blockFrameCapacity >= channelCount)
-        let framesPerBlock = blockFrameCapacity / channelCount
-        precondition(framesPerBlock > 0)
+        let framesPerCallback = min(blockFrameCapacity / channelCount, 512)
+        precondition(framesPerCallback > 0)
         let requiredFrames = (sampleRate * minimumDurationSeconds).rounded(.up)
         precondition(requiredFrames < Double(Int.max))
-        return max(1, Int(requiredFrames) / framesPerBlock
-            + (Int(requiredFrames) % framesPerBlock == 0 ? 0 : 1))
+        return max(1, Int(requiredFrames) / framesPerCallback
+            + (Int(requiredFrames) % framesPerCallback == 0 ? 0 : 1))
     }
 
     public init(capacity: Int, blockFrameCapacity: Int, sampleRate: Double? = nil) {
@@ -82,7 +86,9 @@ public final class AudioBlockRing: @unchecked Sendable {
         precondition(!overflow)
         self.capacity = capacity
         self.blockSampleCapacity = blockFrameCapacity
-        self.timestampToleranceFrames = sampleRate.map { Int64(($0 / 1_000).rounded(.down)) } ?? 0
+        // Frame rounding can account for one frame; a millisecond at 48 kHz
+        // spans 48 real frames and must not move audio off its captured PTS.
+        self.timestampToleranceFrames = sampleRate == nil ? 0 : 1
         storage = .allocate(capacity: total)
         lengths = .allocate(capacity: capacity)
         starts = .allocate(capacity: capacity)
@@ -244,16 +250,33 @@ public final class AudioBlockRing: @unchecked Sendable {
     public var dropoutCount: UInt64 { recordedDropoutCount.load(ordering: .relaxed) }
 
     private func normalized(_ startFrame: Int64) -> Int64? {
-        // Compare each PTS to the last *raw* end: after suppressing a small
-        // rounding gap, a subsequent real gap must retain its actual length.
-        // Only forward jitter is suppressed; backward timestamps trim overlaps.
+        // One small forward difference can be PTS rounding. A second is
+        // evidence of missing frames: restore the first difference before
+        // placing this callback, so repeated short losses cannot vanish.
         let (delta, overflow) = startFrame.subtractingReportingOverflow(producerRawEndFrame)
         guard !overflow else { return nil }
         if delta >= 0 && delta <= timestampToleranceFrames {
+            guard delta > 0 else { return producerEndFrame }
+            if repeatedSmallGapLoss {
+                let (mapped, mappedOverflow) = producerEndFrame.addingReportingOverflow(delta)
+                return mappedOverflow ? nil : mapped
+            }
+            if suppressedSmallGapFrames > 0 {
+                let (mapped, mappedOverflow) = producerEndFrame.addingReportingOverflow(
+                    suppressedSmallGapFrames + delta)
+                guard !mappedOverflow else { return nil }
+                suppressedSmallGapFrames = 0
+                repeatedSmallGapLoss = true
+                return mapped
+            }
+            suppressedSmallGapFrames = delta
             return producerEndFrame
         }
         let (mapped, mappedOverflow) = producerEndFrame.addingReportingOverflow(delta)
-        return mappedOverflow ? nil : mapped
+        guard !mappedOverflow else { return nil }
+        suppressedSmallGapFrames = 0
+        repeatedSmallGapLoss = false
+        return mapped
     }
 
     private func reserveProducerSlot() -> Int? {

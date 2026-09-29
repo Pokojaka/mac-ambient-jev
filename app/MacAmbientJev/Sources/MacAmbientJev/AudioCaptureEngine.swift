@@ -279,13 +279,14 @@ final class AudioCaptureEngine {
             channelCount: channelCount,
             chunkDurationSeconds: chunkDurationSeconds
         )
+        let slotSamples = min(bufferFrameCount, 512) * channelCount
         let ring = AudioBlockRing(
             capacity: max(ringCapacity, AudioBlockRing.capacityForDuration(
                 sampleRate: format.mSampleRate,
-                blockFrameCapacity: bufferFrameCount * channelCount,
+                blockFrameCapacity: slotSamples,
                 channelCount: channelCount
             )),
-            blockFrameCapacity: bufferFrameCount * channelCount,
+            blockFrameCapacity: slotSamples,
             sampleRate: format.mSampleRate
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
