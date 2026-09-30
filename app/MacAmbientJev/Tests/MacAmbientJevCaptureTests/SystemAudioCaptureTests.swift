@@ -274,6 +274,34 @@ func timestampMapperReanchorsWhenSampleTimeRestarts() {
                               sampleRate: 48_000, fallbackEndFrame: 1_920) == 2_400)
 }
 
+@Test("A restarted sample clock preserves the host-time gap and later timestamp mappings")
+func timestampMapperRestartPreservesHostTimeGap() throws {
+    let mapper = CaptureFrameTimestampMapper()
+    let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 512, sampleRate: 48_000)
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: FixedClock())
+    let timestamps: [(Double?, UInt64?, Int64)] = [
+        (48_000, 10_000_000_000, 0),
+        (48_480, 10_010_000_000, 480),
+        (100, 11_020_000_000, 48_960),
+        (580, 11_030_000_000, 49_440),
+        (nil, 11_040_000_000, 49_920)
+    ]
+    for (sampleTime, hostTime, expectedFrame) in timestamps {
+        let start = mapper.startFrame(sampleTime: sampleTime, hostTimeNanos: hostTime,
+                                      sampleRate: 48_000, fallbackEndFrame: sink.lastEndFrame)
+        #expect(start == expectedFrame)
+        sink.silence(startFrame: start, frameCount: 480)
+    }
+    ring.finish(tailFrame: sink.lastEndFrame)
+    #expect(sink.lastEndFrame == 50_400)
+    #expect(ring.dropoutCount == 1)
+    #expect(try #require(ring.pop()).startFrame == 0)
+    #expect(try #require(ring.pop()).startFrame == 480)
+    #expect(try #require(ring.pop()).startFrame == 48_960)
+    #expect(try #require(ring.pop()).startFrame == 49_440)
+    #expect(try #require(ring.pop()).startFrame == 49_920)
+}
+
 @Test("Stereo packed and planar callbacks downmix without changing frame timestamps")
 func timestampedMonoConversionAndGapAccounting() throws {
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 8, sampleRate: 1_000)
