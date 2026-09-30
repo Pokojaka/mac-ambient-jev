@@ -280,9 +280,7 @@ public final class AudioCaptureEngine {
             checkingSystemPermission = true
             defer { checkingSystemPermission = false }
             switch await systemAudioPermission.preflight() {
-            case .denied:
-                throw SystemAudioTapError.permissionDenied
-            case .notDetermined:
+            case .denied, .notDetermined:
                 if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
                 onPermissionWaiting()
                 permissionAnswer = nil

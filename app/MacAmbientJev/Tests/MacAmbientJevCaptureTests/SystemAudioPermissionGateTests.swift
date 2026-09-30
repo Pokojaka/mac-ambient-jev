@@ -56,10 +56,10 @@ private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @
 }
 
 @MainActor
-@Test("Denied system audio permission prevents tap creation")
+@Test("Denied preflight followed by a denied request prevents tap creation")
 func deniedSystemAudioGate() async throws {
     let tap = GateTap()
-    let permission = GatePermission(.denied)
+    let permission = GatePermission(.denied, answer: false)
     var creations = 0
     let engine = gateEngine(permission, tap: tap) { creations += 1 }
     do {
@@ -67,8 +67,22 @@ func deniedSystemAudioGate() async throws {
         Issue.record("Denied permission started capture")
     } catch SystemAudioTapError.permissionDenied {
         #expect(creations == 0 && tap.starts == 0 && !engine.isRecording)
-        #expect(await permission.requests == 0)
+        #expect(await permission.requests == 1)
     }
+}
+
+@MainActor
+@Test("A grant after a cached denied preflight starts system audio capture")
+func grantedAfterDeniedPreflightSystemAudioGate() async throws {
+    let tap = GateTap()
+    let permission = GatePermission(.denied, answer: true)
+    var creations = 0
+    let engine = gateEngine(permission, tap: tap) { creations += 1 }
+    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+    #expect(await permission.requests == 1)
+    #expect(creations == 1 && tap.starts == 1 && engine.isRecording)
+    #expect(engine.systemAudioPermissionResult == .grantedNow)
+    _ = try await engine.stop()
 }
 
 @MainActor
@@ -128,10 +142,11 @@ func unavailableSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Cancellation while permission dialog is pending returns without waiting for its answer")
-func cancelledPendingSystemAudioGate() async throws {
+@Test("Cancellation while permission dialog is pending returns without waiting for its answer",
+      arguments: [SystemAudioPermissionStatus.notDetermined, .denied])
+func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async throws {
     let tap = GateTap()
-    let permission = GatePermission(.notDetermined)
+    let permission = GatePermission(status)
     var creations = 0
     let engine = gateEngine(permission, tap: tap) { creations += 1 }
     let task = Task { try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }) }

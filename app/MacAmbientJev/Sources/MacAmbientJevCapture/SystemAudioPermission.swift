@@ -17,8 +17,8 @@ public protocol SystemAudioPermissionProviding: Sendable {
     func request() async -> Bool
 }
 
-/// TCC's preflight caches its first result in-process. Never preflight again after a grant;
-/// the request callback, rather than a cached preflight, is the authoritative answer.
+/// TCC's preflight caches its first result in-process, including denials.
+/// A denied preflight must still request; use its callback answer without preflighting again.
 public final class TCCSystemAudioPermission: SystemAudioPermissionProviding, @unchecked Sendable {
     private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
     private typealias Completion = @convention(block) (Bool) -> Void

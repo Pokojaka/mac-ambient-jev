@@ -17,7 +17,7 @@ enum SystemAudioTapError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            "システム音声の録音が許可されていません。システム設定の「プライバシーとセキュリティ」→「画面収録とシステムオーディオ録音」で許可してください"
+            "システム音声の録音が許可されていません。システム設定の「プライバシーとセキュリティ」→「画面収録とシステムオーディオ録音」で許可してください。許可しても録音を開始できない場合は、アプリを終了して開き直してください。"
         case .unavailable(let detail):
             "システム音声を取得できませんでした: \(detail)"
         }
