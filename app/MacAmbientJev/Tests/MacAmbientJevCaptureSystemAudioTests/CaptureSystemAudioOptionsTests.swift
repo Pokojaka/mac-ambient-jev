@@ -27,6 +27,44 @@ func captureRequiresExplicitDurationAndSessionsRoot() throws {
 }
 
 @Test
+func captureReadyFileIsOptionalAndAcceptsEitherOptionOrder() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "system-audio-ready-\(UUID().uuidString)")
+    let sessions = directory.appending(path: "sessions")
+    let ready = directory.appending(path: "started")
+    let withoutReady = try CaptureSystemAudioOptions.parse(
+        ["--duration", "1", "--sessions-root", sessions.path]
+    )
+    #expect(withoutReady.readyFile == nil)
+    for arguments in [
+        ["--ready-file", ready.path, "--sessions-root", sessions.path, "--duration", "1"],
+        ["--sessions-root", sessions.path, "--duration", "1", "--ready-file", ready.path],
+    ] {
+        let parsed = try CaptureSystemAudioOptions.parse(arguments)
+        #expect(parsed.readyFile == ready)
+    }
+}
+
+@Test
+func captureReadyFileRejectsMissingAndDuplicatePaths() {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "system-audio-ready-\(UUID().uuidString)")
+    let base = ["--duration", "1", "--sessions-root", directory.path]
+    for arguments in [
+        base + ["--ready-file"],
+        base + ["--ready-file", ""],
+        base + ["--ready-file", "--transcribe"],
+        ["--ready-file", "--duration"] + base,
+        base + ["--ready-file", directory.appending(path: "ready").path,
+                "--ready-file", directory.appending(path: "other").path],
+    ] {
+        #expect(throws: CaptureSystemAudioError.usage) {
+            _ = try CaptureSystemAudioOptions.parse(arguments)
+        }
+    }
+}
+
+@Test
 func captureRejectsInvalidDurationAndAmbiguousOptions() throws {
     let safe = FileManager.default.temporaryDirectory
         .appending(path: "system-audio-test-\(UUID().uuidString)")

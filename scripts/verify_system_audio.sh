@@ -27,13 +27,16 @@ PY
 
 SUMMARY="$(mktemp)"
 ERR="$(mktemp)"
+READY_DIR="$(mktemp -d)"
+READY="$READY_DIR/ready"
 CAPTURE_PID=""
 cleanup() {
   if [[ -n "$CAPTURE_PID" ]] && kill -0 "$CAPTURE_PID" 2>/dev/null; then
     kill "$CAPTURE_PID"
     wait "$CAPTURE_PID" || :
   fi
-  rm -f "$SUMMARY" "$ERR"
+  rm -f "$SUMMARY" "$ERR" "$READY"
+  rmdir "$READY_DIR"
 }
 trap cleanup EXIT
 # Build first; never overlap SwiftPM commands or the live capture.
@@ -55,9 +58,29 @@ plutil -insert NSAudioCaptureUsageDescription -string "$DESCRIPTION" "$APP/Conte
 codesign --force --sign - "$APP" >/dev/null
 SESSIONS_ROOT_ABS="$(mkdir -p "$SESSIONS_ROOT" && cd "$SESSIONS_ROOT" && pwd -P)"
 open -W -n --stdout "$SUMMARY" --stderr "$ERR" "$APP" \
-  --args --duration "$DURATION" --sessions-root "$SESSIONS_ROOT_ABS" &
+  --args --duration "$DURATION" --sessions-root "$SESSIONS_ROOT_ABS" --ready-file "$READY" &
 CAPTURE_PID=$!
+# The permission dialog has no deadline: the person answering may not be at the Mac.
+while [[ ! -f "$READY" ]]; do
+  if ! kill -0 "$CAPTURE_PID" 2>/dev/null; then
+    wait "$CAPTURE_PID" || :
+    CAPTURE_PID=""
+    cat "$ERR" >&2
+    cat "$SUMMARY" >&2
+    echo "capture exited before it became ready" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
 sleep 1.5
+if ! kill -0 "$CAPTURE_PID" 2>/dev/null; then
+  wait "$CAPTURE_PID" || :
+  CAPTURE_PID=""
+  cat "$ERR" >&2
+  cat "$SUMMARY" >&2
+  echo "capture exited before playback" >&2
+  exit 1
+fi
 afplay "$WAV"
 wait "$CAPTURE_PID" || { cat "$ERR" >&2; cat "$SUMMARY" >&2; exit 1; }
 CAPTURE_PID=""
@@ -75,6 +98,7 @@ import wave
 summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert isinstance(summary, dict), 'capture summary must be a JSON object'
 assert summary.get('errors') == [], summary
+assert summary.get('permission') in ('authorized', 'granted-now'), summary
 session_id = summary['session_id']
 assert isinstance(session_id, str) and str(uuid.UUID(session_id)) == session_id.lower(), summary
 session = pathlib.Path(summary['path']).resolve()

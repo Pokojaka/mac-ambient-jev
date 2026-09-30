@@ -7,6 +7,7 @@ final class TimestampedMonoSink: @unchecked Sendable {
     let lastBufferMillis = Atomic<Int64>(0)
     let silentSinceMillis = Atomic<Int64>(0)
     let invalidBufferCount = Atomic<UInt64>(0)
+    let everNonZero = Atomic(false)
     private let ring: AudioBlockRing
     private let clock: any CaptureClock
     private let scratch: UnsafeMutablePointer<Float>
@@ -87,7 +88,9 @@ final class TimestampedMonoSink: @unchecked Sendable {
             for frame in 0..<count {
                 var sum: Float = 0
                 for channel in 0..<channelCount {
-                    sum += channels[channel][(offset + frame) * strides[channel]]
+                    let input = channels[channel][(offset + frame) * strides[channel]]
+                    if input != 0 { everNonZero.store(true, ordering: .releasing) }
+                    sum += input
                 }
                 let sample = sum / divisor
                 scratch[frame] = sample

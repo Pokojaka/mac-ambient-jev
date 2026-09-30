@@ -209,16 +209,24 @@ public final class AudioCaptureEngine {
     private var overflowAtStart: UInt64 = 0
     private var sleepAssertionHeld = false
     private var healthTask: Task<Void, Never>?
+    private var outputMonitorTask: Task<Void, Never>?
     private var startingCancelled = false
     private var startingFailure: String?
     private var awaitingFirstBuffer = false
 
+    private var checkingSystemPermission = false
+    private var permissionAnswer: Bool?
+    private var permissionRequestTask: Task<Void, Never>?
+    public private(set) var systemAudioPermissionResult: SystemAudioPermissionResult?
+    private var pendingPermissionID: UUID?
     private(set) public var activeSessionID: UUID?
     private(set) public var timeline: ProcessingTimeline?
     private var tap: (any SystemAudioTapProviding)?
     private var captureSource: CaptureSource = .microphone
     private var sink: TimestampedMonoSink?
     private let tapFactory: @MainActor () throws -> any SystemAudioTapProviding
+    private let systemAudioPermission: any SystemAudioPermissionProviding
+    private let outputProcesses: any SystemAudioOutputProcessProviding
 
     public var isRecording: Bool { session != nil || tap != nil }
 
@@ -235,7 +243,9 @@ public final class AudioCaptureEngine {
         clock: any CaptureClock = SystemCaptureClock(),
         diskSpace: any CaptureDiskSpaceProviding = VolumeCaptureDiskSpace(),
         notifications: any CaptureNotificationProviding = SystemCaptureNotifications(),
-        tapFactory: @escaping @MainActor () throws -> any SystemAudioTapProviding = { try SystemAudioTap() }
+        tapFactory: @escaping @MainActor () throws -> any SystemAudioTapProviding = { try SystemAudioTap() },
+        systemAudioPermission: any SystemAudioPermissionProviding = TCCSystemAudioPermission(),
+        outputProcesses: any SystemAudioOutputProcessProviding = CoreAudioOutputProcesses()
     ) {
         precondition(bufferFrameCount > 0)
         precondition(ringCapacity > 0)
@@ -249,6 +259,8 @@ public final class AudioCaptureEngine {
         self.diskSpace = diskSpace
         self.failureObservers = CaptureFailureObservers(provider: notifications)
         self.tapFactory = tapFactory
+        self.systemAudioPermission = systemAudioPermission
+        self.outputProcesses = outputProcesses
     }
 
 
@@ -257,10 +269,50 @@ public final class AudioCaptureEngine {
         source: CaptureSource = .microphone,
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
         onWarning: @escaping @MainActor @Sendable (String) -> Void = { _ in },
+        onPermissionWaiting: @escaping @MainActor @Sendable () -> Void = {},
         onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void = { _ in },
         onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void = { _ in }
     ) async throws {
-        guard !isRecording else { throw AudioCaptureEngineError.alreadyRecording }
+        guard !isRecording, !checkingSystemPermission else { throw AudioCaptureEngineError.alreadyRecording }
+        systemAudioPermissionResult = nil
+        startingCancelled = false
+        if source == .systemAudio {
+            checkingSystemPermission = true
+            defer { checkingSystemPermission = false }
+            switch await systemAudioPermission.preflight() {
+            case .denied:
+                throw SystemAudioTapError.permissionDenied
+            case .notDetermined:
+                if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
+                onPermissionWaiting()
+                permissionAnswer = nil
+                let requestID = UUID()
+                pendingPermissionID = requestID
+                permissionRequestTask = Task { [weak self, systemAudioPermission] in
+                    let granted = await systemAudioPermission.request()
+                    guard let self, self.pendingPermissionID == requestID else { return }
+                    self.permissionAnswer = granted
+                }
+                while permissionAnswer == nil {
+                    if startingCancelled || Task.isCancelled {
+                        pendingPermissionID = nil
+                        permissionRequestTask?.cancel()
+                        permissionRequestTask = nil
+                        throw AudioCaptureEngineError.cancelled
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                pendingPermissionID = nil
+                permissionRequestTask = nil
+                guard permissionAnswer == true else { throw SystemAudioTapError.permissionDenied }
+                systemAudioPermissionResult = .grantedNow
+            case .authorized:
+                systemAudioPermissionResult = .authorized
+            case nil:
+                systemAudioPermissionResult = .unavailable
+            }
+            if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
+        }
         let device: AVCaptureDevice?
         let input: AVCaptureDeviceInput?
         let tapBackend: (any SystemAudioTapProviding)?
@@ -345,9 +397,9 @@ public final class AudioCaptureEngine {
             receiver = configuredReceiver
             callbackQueue = queue
         }
+        if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
         awaitingFirstBuffer = true
         startingFailure = nil
-        startingCancelled = false
         let reportFailure: @MainActor @Sendable (String) -> Void = { [weak self] message in
             if self?.awaitingFirstBuffer == true { self?.startingFailure = message }
             onFailure(message)
@@ -427,6 +479,25 @@ public final class AudioCaptureEngine {
                         ) else { break }
                     }
                 }
+                if source == .systemAudio {
+                    let outputMonitor = SystemAudioOutputMonitor(
+                        provider: outputProcesses, captureStartMillis: Int64(startedAt * 1_000)
+                    )
+                    outputMonitorTask = Task {
+                        while !Task.isCancelled, self.activeSessionID == sessionID {
+                            try? await Task.sleep(for: .seconds(1))
+                            guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
+                            let warned = await outputMonitor.poll(
+                                nowMillis: Int64(clock.now() * 1_000),
+                                everNonZero: sink.everNonZero.load(ordering: .acquiring)
+                            )
+                            guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
+                            if warned && !sink.everNonZero.load(ordering: .acquiring) {
+                                onWarning("システム音声が届いていません。システム設定の「プライバシーとセキュリティ」で本アプリのシステムオーディオ録音が許可されているか確認してください")
+                            }
+                        }
+                    }
+                }
                 return
             case .waiting:
                 try? await Task.sleep(for: .milliseconds(50))
@@ -481,6 +552,8 @@ public final class AudioCaptureEngine {
         healthTask?.cancel()
         drainTask?.cancel()
         output?.setSampleBufferDelegate(nil, queue: nil)
+        outputMonitorTask?.cancel()
+        outputMonitorTask = nil
         session?.stopRunning()
         tap?.stop()
         tap = nil
@@ -508,6 +581,8 @@ public final class AudioCaptureEngine {
         ring.finish(tailFrame: sink.lastEndFrame)
         healthTask?.cancel()
         healthTask = nil
+        outputMonitorTask?.cancel()
+        outputMonitorTask = nil
         failureObservers.stop()
         defer {
             self.session = nil

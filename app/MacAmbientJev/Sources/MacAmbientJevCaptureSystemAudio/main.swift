@@ -11,7 +11,7 @@ enum CaptureSystemAudioError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .usage:
-            "usage: MacAmbientJevCaptureSystemAudio --duration SECONDS --sessions-root DIRECTORY [--transcribe]"
+            "usage: MacAmbientJevCaptureSystemAudio --duration SECONDS --sessions-root DIRECTORY [--transcribe] [--ready-file PATH]"
         case .unsafeSessionsRoot:
             "--sessions-root must be an explicit directory outside the real app data root"
         case .transcriptionFailed(let message):
@@ -24,6 +24,7 @@ struct CaptureSystemAudioOptions {
     let duration: Double
     let sessionsRoot: URL
     let transcribe: Bool
+    let readyFile: URL?
 
     static func parse(
         _ arguments: [String],
@@ -32,6 +33,7 @@ struct CaptureSystemAudioOptions {
         var duration: Double?
         var root: URL?
         var transcribe = false
+        var readyFile: URL?
         var index = 0
         while index < arguments.count {
             switch arguments[index] {
@@ -52,6 +54,14 @@ struct CaptureSystemAudioOptions {
                 }
                 root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
                     .standardizedFileURL
+                index += 2
+            case "--ready-file":
+                guard readyFile == nil, index + 1 < arguments.count,
+                      !arguments[index + 1].isEmpty,
+                      !arguments[index + 1].hasPrefix("-") else {
+                    throw CaptureSystemAudioError.usage
+                }
+                readyFile = URL(fileURLWithPath: arguments[index + 1]).standardizedFileURL
                 index += 2
             case "--transcribe":
                 guard !transcribe else { throw CaptureSystemAudioError.usage }
@@ -77,7 +87,8 @@ struct CaptureSystemAudioOptions {
             throw CaptureSystemAudioError.unsafeSessionsRoot
         }
         return CaptureSystemAudioOptions(
-            duration: duration, sessionsRoot: selected, transcribe: transcribe
+            duration: duration, sessionsRoot: selected, transcribe: transcribe,
+            readyFile: readyFile
         )
     }
 
@@ -113,6 +124,7 @@ private struct CaptureSummary: Encodable {
     let gapCount: Int?
     let totalGapFrames: Int64?
     let sleepAssertionHeld: Bool?
+    let permission: String?
     let errors: [String]
     let transcribed: Bool?
     let transcriptText: String?
@@ -126,6 +138,7 @@ private struct CaptureSummary: Encodable {
         case gapCount = "gap_count"
         case totalGapFrames = "total_gap_frames"
         case sleepAssertionHeld = "sleep_assertion_held"
+        case permission
         case errors
         case transcribed
         case transcriptText = "transcript_text"
@@ -135,8 +148,8 @@ private struct CaptureSummary: Encodable {
         CaptureSummary(
             sessionID: nil, sessionPath: nil, frames: nil, sampleRate: nil,
             dropoutCount: nil, gapCount: nil, totalGapFrames: nil,
-            sleepAssertionHeld: nil, errors: [error.localizedDescription],
-            transcribed: nil, transcriptText: nil
+            sleepAssertionHeld: nil, permission: nil,
+            errors: [error.localizedDescription], transcribed: nil, transcriptText: nil
         )
     }
 }
@@ -184,6 +197,9 @@ struct CaptureSystemAudioCommand {
                 sessionID: sessionID, source: .systemAudio,
                 onFailure: { failures.record($0) }
             )
+            if let readyFile = options.readyFile {
+                try Data().write(to: readyFile, options: .atomic)
+            }
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(options.duration))
             while clock.now < deadline {
@@ -233,6 +249,13 @@ struct CaptureSystemAudioCommand {
                 ).localizedDescription)
             }
         }
+        let permission: String?
+        switch engine.systemAudioPermissionResult {
+        case .authorized: permission = "authorized"
+        case .grantedNow: permission = "granted-now"
+        case .unavailable: permission = "unavailable"
+        case nil: permission = nil
+        }
         return CaptureSummary(
             sessionID: sessionID.uuidString, sessionPath: sessionURL.path,
             frames: result?.checkpoint.committedFrames,
@@ -241,7 +264,8 @@ struct CaptureSystemAudioCommand {
             gapCount: result?.gapCount,
             totalGapFrames: result?.totalGapFrames,
             sleepAssertionHeld: result?.sleepAssertionHeld,
-            errors: errors, transcribed: options.transcribe ? errors.isEmpty : nil,
+            permission: permission, errors: errors,
+            transcribed: options.transcribe ? errors.isEmpty : nil,
             transcriptText: transcriptText
         )
     }

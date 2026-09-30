@@ -41,6 +41,7 @@ protocol AppCaptureEngine {
         source: CaptureSource,
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
         onWarning: @escaping @MainActor @Sendable (String) -> Void,
+        onPermissionWaiting: @escaping @MainActor @Sendable () -> Void,
         onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
         onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
     ) async throws
@@ -558,6 +559,10 @@ final class AppState: ObservableObject {
                     } else {
                         self.captureWarningText = message
                     }
+                },
+                onPermissionWaiting: { [weak self] in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    self.setCaptureStatus("システム音声の録音許可を待っています", tone: .neutral)
                 },
                 onDropouts: { [weak self] count in
                     guard let self, self.recordingSessionID == sessionID else { return }

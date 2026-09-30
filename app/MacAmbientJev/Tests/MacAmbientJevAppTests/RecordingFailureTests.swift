@@ -26,6 +26,7 @@ final class FakeAppCaptureEngine: AppCaptureEngine {
         source: CaptureSource,
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
         onWarning: @escaping @MainActor @Sendable (String) -> Void,
+        onPermissionWaiting: @escaping @MainActor @Sendable () -> Void,
         onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
         onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
     ) async throws {

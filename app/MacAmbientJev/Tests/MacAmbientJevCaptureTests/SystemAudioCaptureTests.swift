@@ -360,6 +360,13 @@ private struct AvailableDisk: CaptureDiskSpaceProviding {
     var bytes: Int64 = 10_000_000_000
     func availableBytes(at url: URL) throws -> Int64? { bytes }
 }
+private struct AuthorizedSystemAudioPermission: SystemAudioPermissionProviding {
+    func preflight() async -> SystemAudioPermissionStatus? { .authorized }
+    func request() async -> Bool { true }
+}
+private struct NoExternalOutput: SystemAudioOutputProcessProviding {
+    func runningExternalOutputPIDs() async -> Set<Int32>? { [] }
+}
 
 @MainActor
 @Test("A fake process tap records through durable mono chunks and pairs cleanup with power")
@@ -371,7 +378,9 @@ func fakeTapEngineLifecycle() async throws {
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8, ringCapacity: 8,
                                     chunkDurationSeconds: 0.004, power: power,
-                                    diskSpace: AvailableDisk(), tapFactory: { tap })
+                                    diskSpace: AvailableDisk(), tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     let session = UUID()
     try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in })
     #expect(engine.isRecording && engine.activeSessionID == session)
@@ -395,7 +404,9 @@ func fakeTapSilentStartupAndStop() async throws {
     tap.emitsSilence = true
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8, power: power,
-                                    diskSpace: AvailableDisk(), tapFactory: { tap })
+                                    diskSpace: AvailableDisk(), tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
     let result = try await engine.stop()
     #expect(result.checkpoint.committedFrames == 4)
@@ -414,7 +425,9 @@ func fakeTapGapUsesSharedDrain() async throws {
     tap.emitsGap = true
     let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8,
                                     power: FakeCapturePower(), diskSpace: AvailableDisk(),
-                                    tapFactory: { tap })
+                                    tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     let sessionID = UUID()
     try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in })
     let result = try await engine.stop()
@@ -438,7 +451,9 @@ func fakeTapStartFailureReleasesResources() async throws {
     tap.shouldFail = true
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
-                                    tapFactory: { tap })
+                                    tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
         Issue.record("Expected denial")
@@ -458,7 +473,9 @@ func tapPreflightDiskRejection() async throws {
     let tap = FakeTap()
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(bytes: 0),
-                                    tapFactory: { tap })
+                                    tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
         Issue.record("Expected selected-volume disk rejection")
@@ -478,7 +495,9 @@ func tapWriterDirectoryFailure() async throws {
     let tap = FakeTap()
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
-                                    tapFactory: { tap })
+                                    tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
         Issue.record("Expected directory creation to fail")
@@ -498,7 +517,9 @@ func tapStartCancellation() async throws {
     tap.emitsBuffer = false
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
-                                    tapFactory: { tap })
+                                    tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     tap.onStarted = { engine.cancelStarting() }
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
@@ -519,7 +540,9 @@ func tapWriterFlushFailureReleasesResources() async throws {
     let tap = FakeTap()
     let power = FakeCapturePower()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
-                                    tapFactory: { tap })
+                                    tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput())
     let session = UUID()
     try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in })
     let processing = root.appending(path: session.uuidString)
