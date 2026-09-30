@@ -58,7 +58,7 @@ struct SavedSessionsView: View {
             VStack(alignment: .leading, spacing: AppSpacing.xs) {
                 Text(session.createdAt.map(Self.dateText) ?? "日時を読み取れません")
                     .font(.headline)
-                Text(session.originalFilename ?? sourceName(session.sourceKind))
+                Text(session.originalFilename ?? sourceName(session.sourceKind, captureSource: session.captureSource))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -93,7 +93,7 @@ struct SavedSessionsView: View {
         VStack(alignment: .leading, spacing: AppSpacing.md) {
             Text(session.createdAt.map(Self.dateText) ?? "日時を読み取れません")
                 .font(.title2.weight(.semibold))
-            LabeledContent("種類", value: sourceName(session.sourceKind))
+            LabeledContent("種類", value: sourceName(session.sourceKind, captureSource: session.captureSource))
             LabeledContent("処理状態", value: statusText(session))
             if let duration = session.durationSeconds {
                 LabeledContent("長さ", value: SavedSessionDisplayText.duration(duration))
@@ -119,11 +119,14 @@ struct SavedSessionsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func sourceName(_ kind: SessionSourceKind?) -> String {
+    private func sourceName(_ kind: SessionSourceKind?, captureSource: CaptureSource?) -> String {
         switch kind {
-        case .live: "録音"
-        case .importedFile: "読み込み音声"
-        case nil: "不明"
+        case .live:
+            return captureSource == .systemAudio ? "システム音声" : "マイク"
+        case .importedFile:
+            return "読み込み音声"
+        case nil:
+            return "不明"
         }
     }
 

@@ -122,7 +122,8 @@ import Testing
                 ring.pushPlanarFloat32(
                     channelData: channelBuffer.baseAddress!,
                     channelCount: 2,
-                    frameCount: 2
+                    frameCount: 2,
+                    startFrame: 0
                 )
             }
         }
@@ -170,15 +171,89 @@ func durableWriterPersistsCheckpointBesideChunks() async throws {
         chunkDurationSeconds: 1
     )
 
-    try await writer.append(samples: Array(repeating: 0.5, count: 10))
-
     let checkpointURL = root.appending(path: "checkpoint.json")
-    let data = try Data(contentsOf: checkpointURL)
-    let checkpoint = try JSONDecoder().decode(AudioCheckpoint.self, from: data)
+    let initialBytes = try Data(contentsOf: checkpointURL)
+    try await writer.append(samples: Array(repeating: 0.5, count: 30))
 
-    #expect(checkpoint.committedFrames == 10)
-    #expect(checkpoint.chunkFiles == ["chunk-000000.f32le"])
-    #expect(checkpoint.chunkFrameCounts == [10])
+    // Committed chunk files are durable without rewriting the growing JSON snapshot.
+    #expect(try Data(contentsOf: checkpointURL) == initialBytes)
+    let recovered = try #require(try AudioCheckpoint.loadRecovered(from: root))
+    #expect(recovered.committedFrames == 30)
+    #expect(recovered.chunkFrameCounts == [10, 10, 10])
+    #expect(try ProcessingTimelineReader(directory: root, checkpoint: recovered)
+        .readSamples(frameRange: 0..<30) == Array(repeating: Float(0.5), count: 30))
+    let reopened = try DurableAudioWriter(
+        directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await reopened.append(samples: Array(repeating: 0.75, count: 10))
+    let final = try await reopened.finish()
+    #expect(final.chunkFrameCounts == [10, 10, 10, 10])
+    #expect(try AudioCheckpoint.loadRecovered(from: root) == final)
+}
+
+@Test
+func durableGapDiagnosticsSurviveRecoveryAndLegacyCheckpointDecode() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try DurableAudioWriter(
+        directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await writer.append(samples: Array(repeating: 1, count: 5))
+    try await writer.recordGap(startFrame: 5, frameCount: 3, reason: .overflow)
+    try await writer.append(samples: [0, 0, 0, 1, 1])
+    try await writer.recordGap(startFrame: 10, frameCount: 2, reason: .missingCallback)
+    try await writer.append(samples: [0, 0] + Array(repeating: 1, count: 8))
+
+    let expected = [
+        AudioGapEvent(startFrame: 5, frameCount: 3, reason: .overflow),
+        AudioGapEvent(startFrame: 10, frameCount: 2, reason: .missingCallback)
+    ]
+    let recovered = try #require(try AudioCheckpoint.loadRecovered(from: root))
+    #expect(recovered.committedFrames == 20)
+    #expect(recovered.gapEvents == expected)
+    let reopened = try DurableAudioWriter(
+        directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    #expect(await reopened.committedSnapshot().gapEvents == expected)
+    let final = try await reopened.finish()
+    #expect(try AudioCheckpoint.loadRecovered(from: root) == final)
+    #expect(final.gapEvents == expected)
+
+    let legacyJSON = Data(
+        #"{"committedFrames":0,"sampleRate":10,"channelCount":1,"chunkFiles":[]}"#.utf8
+    )
+    #expect(try JSONDecoder().decode(AudioCheckpoint.self, from: legacyJSON).gapEvents == [])
+}
+
+@Test
+func durableGapLogRepairsInterruptedTailBeforeAppendingAgain() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try DurableAudioWriter(
+        directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await writer.recordGap(startFrame: 0, frameCount: 2, reason: .invalidBuffer)
+    try await writer.append(samples: Array(repeating: 0, count: 10))
+    let gapLog = root.appending(path: DurableAudioWriter.gapEventsFilename)
+    let handle = try FileHandle(forWritingTo: gapLog)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(#"{"startFrame":"#.utf8))
+    try handle.close()
+
+    #expect(try AudioCheckpoint.loadRecovered(from: root)?.gapEvents == [
+        AudioGapEvent(startFrame: 0, frameCount: 2, reason: .invalidBuffer)
+    ])
+    let resumed = try DurableAudioWriter(
+        directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await resumed.recordGap(startFrame: 10, frameCount: 1, reason: .stopTail)
+    try await resumed.append(samples: Array(repeating: 0, count: 10))
+    let final = try await resumed.finish()
+    #expect(final.gapEvents == [
+        AudioGapEvent(startFrame: 0, frameCount: 2, reason: .invalidBuffer),
+        AudioGapEvent(startFrame: 10, frameCount: 1, reason: .stopTail)
+    ])
+    #expect(try AudioCheckpoint.loadRecovered(from: root)?.gapEvents == final.gapEvents)
 }
 
 @Test

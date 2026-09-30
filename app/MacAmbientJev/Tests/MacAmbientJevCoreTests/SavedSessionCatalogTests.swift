@@ -108,6 +108,24 @@ func catalogAcceptsCheckpointSampleRateBoundaries(_ sampleRate: Double) throws {
     #expect(row.durationSeconds == 1 / sampleRate)
 }
 
+@Test
+func catalogIncludesChunksCommittedAfterLastJSONCheckpoint() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let id = UUID()
+    let session = try writeCatalogSession(
+        id: id, createdAt: 1_700_000_000, source: .live, root: root, includeAudio: true
+    )
+    let processing = session.appending(path: "audio/processing")
+    try Data(count: MemoryLayout<Float>.size)
+        .write(to: processing.appending(path: "chunk-000001.f32le"))
+
+    let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    #expect(row.errorMessage == nil)
+    #expect(row.durationSeconds == 2.0 / 48_000)
+}
+
 @Test(arguments: [
     (59.5, "1:00"), (-0.2, "0:00"), (Double.nan, "不明"),
     (Double.infinity, "不明"), (-Double.infinity, "不明"),

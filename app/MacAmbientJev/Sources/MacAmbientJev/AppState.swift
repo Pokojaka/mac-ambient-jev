@@ -4,8 +4,70 @@ import Combine
 import Dispatch
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevCapture
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
+
+extension AudioCheckpoint {
+    /// Replacement silence is durable, but is not captured microphone input.
+    var hasCapturedAudio: Bool {
+        guard committedFrames > 0 else { return false }
+        var coveredThrough: Int64 = 0
+        for gap in gapEvents {
+            if gap.startFrame > coveredThrough { return true }
+            guard gap.startFrame >= 0, gap.startFrame < committedFrames,
+                  gap.frameCount > 0 else { continue }
+            let end = gap.startFrame + min(gap.frameCount, committedFrames - gap.startFrame)
+            coveredThrough = max(coveredThrough, end)
+            if coveredThrough >= committedFrames { return false }
+        }
+        return coveredThrough < committedFrames
+    }
+}
+
+/// Incremental VAD is independent of capture and consumes only durable checkpoints.
+protocol LiveVADProcessing: Sendable {
+    var segmentationRunID: String { get }
+    func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress
+    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress
+}
+
+extension LiveVADSession: LiveVADProcessing {}
+
+@MainActor
+protocol AppCaptureEngine {
+    func start(
+        sessionID: UUID,
+        source: CaptureSource,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void,
+        onWarning: @escaping @MainActor @Sendable (String) -> Void,
+        onPermissionWaiting: @escaping @MainActor @Sendable () -> Void,
+        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
+        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
+    ) async throws
+    func cancelStarting()
+    func committedCheckpoint() async throws -> AudioCheckpoint
+    func stop() async throws -> AudioCaptureStopResult
+    func terminate()
+}
+
+extension AudioCaptureEngine: AppCaptureEngine {}
+
+final class TerminationObservation {
+    private let token: NSObjectProtocol
+    private let center: NotificationCenter
+
+    init(center: NotificationCenter = .default, onTermination: @escaping @Sendable () -> Void) {
+        self.center = center
+        token = center.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in onTermination() }
+    }
+
+    deinit { center.removeObserver(token) }
+}
 
 @MainActor
 final class AppState: ObservableObject {
@@ -44,7 +106,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private enum PendingProcessing {
+    enum PendingProcessing {
         case imported(sessionID: UUID, originalURL: URL)
         case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
         case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
@@ -94,6 +156,10 @@ final class AppState: ObservableObject {
     @Published private(set) var statusText = UserFacingStatus.idle.text
     @Published private(set) var statusTone: StatusTone = .neutral
     @Published private(set) var recordingPhase: RecordingPhase = .idle
+    @Published var captureSource: CaptureSource = .microphone
+    @Published private(set) var captureWarningText: String?
+    @Published private(set) var isMicrophoneSilent = false
+    @Published private(set) var dropoutCount: UInt64 = 0
     @Published private(set) var modelPreparation: ModelPreparation = .idle
     @Published private(set) var processingState: ProcessingState = .idle
     @Published private(set) var processingStatusText: String?
@@ -104,23 +170,23 @@ final class AppState: ObservableObject {
     let jevUsageCounter: JevUsageCounter
 
     private let paths: AppPaths
-    private let captureEngine: AudioCaptureEngine
+    private let captureEngine: any AppCaptureEngine
     private let sessionProcessor: NativeSessionProcessor
-    private let diskMonitor = DiskSpaceMonitor(
-        warningThresholdBytes: 2_000_000_000,
-        criticalThresholdBytes: 1_000_000_000
-    )
+    // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
+    private let microphoneAccess: (@MainActor () async -> Bool)?
+    private let pausesProcessing: Bool
 
     private var recordingSessionID: UUID?
     private var displayedSessionID: UUID?
     private var pendingCaptureFailure: (sessionID: UUID, message: String)?
-    private var pendingProcessing: [PendingProcessing] = []
+    private(set) var pendingProcessing: [PendingProcessing] = []
     private var currentlyProcessingSessionID: UUID?
     private var finalizationGate = SavedSessionReprocessGate()
     private var processingTask: Task<Void, Never>?
     private var modelPreparationTask: Task<Void, Never>?
+    private var terminationObserver: TerminationObservation?
 
-    private var liveVADSession: LiveVADSession?
+    private var liveVADSession: (any LiveVADProcessing)?
     private var liveVADTask: Task<Void, Never>?
     private var liveVADSegmentCount = 0
     private var liveVADFailureText: String?
@@ -129,24 +195,41 @@ final class AppState: ObservableObject {
     private var liveASRTasks: [UUID: Task<Void, Never>] = [:]
     private var liveASRFailures: [UUID: String] = [:]
 
-    init(fileManager: FileManager = .default, paths: AppPaths? = nil) {
+    init(
+        fileManager: FileManager = .default,
+        paths: AppPaths? = nil,
+        captureEngine: (any AppCaptureEngine)? = nil,
+        microphoneAccess: (@MainActor () async -> Bool)? = nil,
+        pausesProcessing: Bool = false,
+        liveVADSession: (any LiveVADProcessing)? = nil
+    ) {
         let paths = paths ?? AppPaths.systemDefault(fileManager: fileManager)
 
         let jevUsageCounter = JevUsageCounter()
 
         self.paths = paths
         self.jevUsageCounter = jevUsageCounter
-        self.captureEngine = AudioCaptureEngine(paths: paths)
+        self.captureEngine = captureEngine ?? AudioCaptureEngine(paths: paths)
+        self.microphoneAccess = microphoneAccess
+        self.pausesProcessing = pausesProcessing
+        self.liveVADSession = liveVADSession
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
             allowExternalJev: true,
             jevUsageCounter: jevUsageCounter
         )
 
-        Task { [weak self] in
-            await self?.recoverPendingSessions()
+        terminationObserver = TerminationObservation { [weak self] in
+            MainActor.assumeIsolated { self?.terminateCapture() }
+        }
+
+        if !pausesProcessing {
+            Task { [weak self] in
+                await self?.recoverPendingSessions()
+            }
         }
     }
+
 
     var isRecording: Bool {
         recordingPhase == .recording
@@ -332,10 +415,16 @@ final class AppState: ObservableObject {
     }
 
     func toggleRecording() async {
-        if isRecording {
+        switch recordingPhase {
+        case .starting:
+            captureEngine.cancelStarting()
+            setCaptureStatus("録音の開始を中止しています", tone: .neutral)
+        case .recording:
             await stopRecording()
-        } else {
+        case .idle:
             await startRecording()
+        case .requestingPermission, .stopping, .importing:
+            break
         }
     }
 
@@ -403,17 +492,21 @@ final class AppState: ObservableObject {
 
     func startRecording() async {
         guard recordingPhase == .idle else { return }
+        captureWarningText = nil
+        isMicrophoneSilent = false
+        dropoutCount = 0
 
-        recordingPhase = .requestingPermission
-        setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
-
-        guard await requestMicrophoneAccessIfNeeded() else {
-            recordingPhase = .idle
-            setCaptureStatus(
-                "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
-                tone: .error
-            )
-            return
+        if captureSource == .microphone {
+            recordingPhase = .requestingPermission
+            setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
+            guard await requestMicrophoneAccessIfNeeded() else {
+                recordingPhase = .idle
+                setCaptureStatus(
+                    "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
+                    tone: .error
+                )
+                return
+            }
         }
 
         do {
@@ -421,28 +514,10 @@ final class AppState: ObservableObject {
                 at: paths.root,
                 withIntermediateDirectories: true
             )
-
-            switch try currentDiskSpaceLevel() {
-            case .critical:
-                recordingPhase = .idle
-                setCaptureStatus(
-                    "空き容量が1 GB未満のため、新しい録音を開始できません。",
-                    tone: .error
-                )
-                return
-            case .warning:
-                setCaptureStatus(
-                    "空き容量が2 GB未満です。長時間録音では容量不足に注意してください。",
-                    tone: .warning
-                )
-            case .normal:
-                break
-            }
         } catch {
-            setCaptureStatus(
-                "空き容量を確認できませんでした。録音を開始します。",
-                tone: .warning
-            )
+            recordingPhase = .idle
+            setCaptureStatus("録音先を作成できませんでした: \(error.localizedDescription)", tone: .error)
+            return
         }
 
         recordingPhase = .starting
@@ -460,17 +535,44 @@ final class AppState: ObservableObject {
                 sessionID: sessionID,
                 sessionURL: sessionURL,
                 sourceKind: .live,
-                originalFilename: nil
+                originalFilename: nil,
+                captureSource: captureSource
             )
-            try await captureEngine.start(sessionID: sessionID) { [weak self] message in
-                guard let self else { return }
-                if self.recordingPhase == .starting,
-                   self.recordingSessionID == sessionID {
-                    self.pendingCaptureFailure = (sessionID, message)
-                } else {
-                    self.captureDidFail(sessionID: sessionID, message: message)
+            try await captureEngine.start(
+                sessionID: sessionID,
+                source: captureSource,
+                onFailure: { [weak self] message in
+                    guard let self else { return }
+                    if self.recordingPhase == .starting,
+                       self.recordingSessionID == sessionID {
+                        self.pendingCaptureFailure = (sessionID, message)
+                    } else {
+                        self.captureDidFail(sessionID: sessionID, message: message)
+                    }
+                },
+                onWarning: { [weak self] message in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    if let previous = self.captureWarningText {
+                        if !previous.contains(message) {
+                            self.captureWarningText = previous + " / " + message
+                        }
+                    } else {
+                        self.captureWarningText = message
+                    }
+                },
+                onPermissionWaiting: { [weak self] in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    self.setCaptureStatus("システム音声の録音許可を待っています", tone: .neutral)
+                },
+                onDropouts: { [weak self] count in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    self.dropoutCount = count
+                },
+                onSilenceChanged: { [weak self] silent in
+                    guard let self, self.recordingSessionID == sessionID else { return }
+                    self.isMicrophoneSilent = silent
                 }
-            }
+            )
             markRecordingStarted(sessionID: sessionID)
             if let failure = pendingCaptureFailure, failure.sessionID == sessionID {
                 pendingCaptureFailure = nil
@@ -478,23 +580,44 @@ final class AppState: ObservableObject {
                 return
             }
             showNewSession(sessionID)
-            setCaptureStatus("録音中", tone: .recording)
-            prepareASRModel()
+            setCaptureStatus(captureSource == .systemAudio ? "システム音声を録音中" : "マイクを録音中", tone: .recording)
+            if !pausesProcessing {
+                prepareASRModel()
 
-            do {
-                try await startLiveVAD(sessionID: sessionID)
-            } catch {
-                guard isCurrentRecording(sessionID) else { return }
-                liveVADFailureText = error.localizedDescription
-                processingStatusText =
-                    "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
+                do {
+                    try await startLiveVAD(sessionID: sessionID)
+                } catch {
+                    guard isCurrentRecording(sessionID) else { return }
+                    liveVADFailureText = error.localizedDescription
+                    processingStatusText =
+                        "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
+                }
             }
         } catch {
             pendingCaptureFailure = nil
-            try? FileManager.default.removeItem(at: sessionURL)
+            captureWarningText = nil
+            isMicrophoneSilent = false
+            let processing = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
+            let keepSession: Bool
+            do {
+                let checkpoint = try AudioCheckpoint.loadRecovered(from: processing)
+                keepSession = checkpoint?.hasCapturedAudio ?? false
+            } catch {
+                // Damaged durable data must remain available for recovery/diagnosis.
+                keepSession = true
+            }
+            if keepSession {
+                refreshSavedSessions()
+            } else {
+                try? FileManager.default.removeItem(at: sessionURL)
+            }
             recordingSessionID = nil
             recordingPhase = .idle
-            setCaptureStatus(error.localizedDescription, tone: .error)
+            if case AudioCaptureEngineError.cancelled = error {
+                setCaptureStatus("録音の開始を中止しました", tone: .neutral)
+            } else {
+                setCaptureStatus(error.localizedDescription, tone: .error)
+            }
         }
     }
 
@@ -510,17 +633,8 @@ final class AppState: ObservableObject {
         guard isCurrentRecording(sessionID) else { return nil }
         recordingPhase = .stopping
         setCaptureStatus(message, tone: .error)
-        cleanupLiveASRState(sessionID: sessionID)
         return Task {
-            _ = try? await captureEngine.stop()
-            await stopLiveVADPolling()
-            await sessionProcessor.cancelLiveTranscription(sessionID: sessionID)
-            liveVADSession = nil
-            liveVADFailureText = nil
-            liveVADSegmentCount = 0
-            recordingSessionID = nil
-            recordingPhase = .idle
-            refreshSavedSessions()
+            await finishRecording(sessionID: sessionID, failureMessage: message)
         }
     }
 
@@ -532,11 +646,15 @@ final class AppState: ObservableObject {
 
         recordingPhase = .stopping
         setCaptureStatus("録音を保存しています", tone: .neutral)
-        do {
-            await stopLiveVADPolling()
+        await finishRecording(sessionID: sessionID, failureMessage: nil)
+    }
 
+    private func finishRecording(sessionID: UUID, failureMessage: String?) async {
+        do {
             let result = try await captureEngine.stop()
+            await stopLiveVADPolling()
             let checkpoint = result.checkpoint
+            dropoutCount = result.dropoutCount
 
             if let liveVADSession {
                 do {
@@ -560,26 +678,30 @@ final class AppState: ObservableObject {
                 : 0
 
             recordingSessionID = nil
+            captureWarningText = nil
+            isMicrophoneSilent = false
             recordingPhase = .idle
 
-            if result.didOverflow {
-                setCaptureStatus(
-                    "録音は保存しましたが、一部の音声が欠落した可能性があります。",
-                    tone: .warning
-                )
-            } else if let liveVADFailureText {
-                setCaptureStatus(
-                    "録音を保存しました。発話検出を後で再実行します: \(liveVADFailureText)",
-                    tone: .warning
-                )
-            } else {
-                let segmentSuffix = liveVADSegmentCount > 0
-                    ? "・発話 \(liveVADSegmentCount)区間"
-                    : ""
-                setCaptureStatus(
-                    "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
-                    tone: .neutral
-                )
+            if failureMessage == nil {
+                if result.didOverflow {
+                    setCaptureStatus(
+                        "録音は保存しましたが、一部の音声が欠落した可能性があります。",
+                        tone: .warning
+                    )
+                } else if let liveVADFailureText {
+                    setCaptureStatus(
+                        "録音を保存しました。発話検出を後で再実行します: \(liveVADFailureText)",
+                        tone: .warning
+                    )
+                } else {
+                    let segmentSuffix = liveVADSegmentCount > 0
+                        ? "・発話 \(liveVADSegmentCount)区間"
+                        : ""
+                    setCaptureStatus(
+                        "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
+                        tone: .neutral
+                    )
+                }
             }
 
             if liveVADFailureText == nil {
@@ -603,6 +725,7 @@ final class AppState: ObservableObject {
             }
 
             liveVADFailureText = nil
+            if failureMessage != nil { refreshSavedSessions() }
             liveVADSegmentCount = 0
         } catch {
             await stopLiveVADPolling()
@@ -614,8 +737,13 @@ final class AppState: ObservableObject {
                 sessionID: sessionID
             )
             recordingSessionID = nil
+            captureWarningText = nil
+            isMicrophoneSilent = false
             recordingPhase = .idle
-            setCaptureStatus(error.localizedDescription, tone: .error)
+            if failureMessage == nil {
+                setCaptureStatus(error.localizedDescription, tone: .error)
+            }
+            if failureMessage != nil { refreshSavedSessions() }
         }
     }
 
@@ -857,14 +985,17 @@ final class AppState: ObservableObject {
     }
 
     private func enqueueProcessing(_ request: PendingProcessing) {
-        switch request {
-        case .imported, .timeline, .resumeASR, .finalize:
-            prepareASRModel()
-        case .finishLive, .retryContentPriority, .selectCompletedASR, .diarization:
-            break
+        if !pausesProcessing {
+            switch request {
+            case .imported, .timeline, .resumeASR, .finalize:
+                prepareASRModel()
+            case .finishLive, .retryContentPriority, .selectCompletedASR, .diarization:
+                break
+            }
         }
 
         pendingProcessing.append(request)
+        guard !pausesProcessing else { return }
 
         if processingTask != nil {
             processingState = .backlogged
@@ -1124,6 +1255,7 @@ final class AppState: ObservableObject {
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {
+        if let microphoneAccess { return await microphoneAccess() }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             return true
@@ -1136,29 +1268,20 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func currentDiskSpaceLevel() throws -> DiskSpaceLevel {
-        let values = try paths.applicationSupportURL.resourceValues(
-            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
-        )
-
-        guard let bytes = values.volumeAvailableCapacityForImportantUsage else {
-            return .normal
-        }
-
-        return diskMonitor.level(forAvailableBytes: bytes)
-    }
 
     private func prepareSession(
         sessionID: UUID,
         sessionURL: URL,
         sourceKind: SessionSourceKind,
-        originalFilename: String?
+        originalFilename: String?,
+        captureSource: CaptureSource = .microphone
     ) throws {
         let createdURL = try SessionBootstrapper().createSession(
             paths: paths,
             sessionID: sessionID,
             sourceKind: sourceKind,
-            originalFilename: originalFilename
+            originalFilename: originalFilename,
+            captureSource: captureSource
         )
         precondition(
             createdURL.standardizedFileURL == sessionURL.standardizedFileURL
@@ -1173,6 +1296,10 @@ final class AppState: ObservableObject {
         selectedSavedSessionID = nil
         displayedSessionID = sessionID
         transcriptViewModel.update(segments: [])
+    }
+
+    func terminateCapture() {
+        captureEngine.terminate()
     }
 
     private func setCaptureStatus(_ text: String, tone: StatusTone) {
