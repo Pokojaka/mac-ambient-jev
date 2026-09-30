@@ -27,14 +27,16 @@ func recordingPowerLifetimePairsEveryExit() async throws {
         let (root, paths) = temporaryRecordingPaths()
         defer { try? FileManager.default.removeItem(at: root) }
         let provider = FakePower()
-        let engine = AudioCaptureEngine(paths: paths, power: provider)
+        let engine = AudioCaptureEngine(paths: paths, power: provider, micInputVolumeFactory: {
+            preconditionFailure("Input-free teardown never binds a microphone volume control")
+        })
         let directory = root.appending(path: "capture", directoryHint: .isDirectory)
         let writer = try DurableAudioWriter(
             directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
         )
         let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 10)
         let receiver = AudioCaptureReceiver(
-            ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}
+            ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, meter: nil
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
         #expect(engine.power.begin())
@@ -282,7 +284,7 @@ func terminationObservationIsWindowIndependent() {
 @Test("Large packed tap buffers split at scratch capacity without losing their timestamps")
 func oversizedTimestampedMonoBufferKeepsSamples() throws {
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 4)
-    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 2, clock: SystemCaptureClock())
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 2, clock: SystemCaptureClock(), meter: nil)
     var packed: [Float] = [1, 3, 2, 4, 3, 5, 4, 6, 5, 7]
     packed.withUnsafeMutableBufferPointer { buffer in
         let channels = [UnsafePointer(buffer.baseAddress!), UnsafePointer(buffer.baseAddress!.advanced(by: 1))]
