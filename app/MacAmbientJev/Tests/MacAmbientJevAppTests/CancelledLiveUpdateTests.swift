@@ -27,7 +27,7 @@ private actor BlockedLiveUpdate {
 
 @MainActor
 @Test("cancelled session cannot apply a suspended live transcript update")
-func cancelledSessionCannotApplySuspendedLiveUpdate() async {
+func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -36,7 +36,11 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async {
         cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
     )
     let sessionID = UUID()
-    let state = AppState(paths: paths)
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let state = AppState(
+        paths: paths, userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
+    )
     state.selectSavedSession(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let handler = state.liveUpdateHandler(sessionID: sessionID)

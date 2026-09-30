@@ -223,7 +223,8 @@ struct MeasureLiveLatencyCommand {
         )
         let vadSession = try await LiveVADSession.make(
             processingDirectory: processingDirectory,
-            initialCheckpoint: checkpoint
+            initialCheckpoint: checkpoint,
+            measureMicInputLevels: false
         )
 
         let started = DispatchTime.now().uptimeNanoseconds

@@ -13,19 +13,22 @@ private actor EmittingLiveVAD: VADChunkSegmenting {
 
     func process16kChunk(
         _ samples: [Float]
-    ) async throws -> [SegmentReference] {
-        guard !samples.isEmpty else { return [] }
+    ) async throws -> VADChunkOutput {
+        guard !samples.isEmpty else { return VADChunkOutput(segments: [], micLevel: nil) }
 
         let index = nextIndex
         nextIndex += 1
-        return [
-            SegmentReference(
-                segmentationRunID: runID,
-                segmentID: String(format: "seg_%06d", index),
-                startFrame: Int64((index - 1) * 4_096),
-                endFrame: Int64((index - 1) * 4_096 + samples.count)
-            )
-        ]
+        return VADChunkOutput(
+            segments: [
+                SegmentReference(
+                    segmentationRunID: runID,
+                    segmentID: String(format: "seg_%06d", index),
+                    startFrame: Int64((index - 1) * 4_096),
+                    endFrame: Int64((index - 1) * 4_096 + samples.count)
+                )
+            ],
+            micLevel: nil
+        )
     }
 
     func finish(

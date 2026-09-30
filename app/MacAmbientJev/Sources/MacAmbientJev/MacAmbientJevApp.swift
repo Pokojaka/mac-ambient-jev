@@ -3,7 +3,15 @@ import MacAmbientJevCore
 
 @main
 struct MacAmbientJevApp: App {
-    @StateObject private var appState = AppState()
+    @StateObject private var appState: AppState
+
+    init() {
+        MicInputVolumePreference.register(in: .standard)
+        _appState = StateObject(wrappedValue: AppState(
+            userDefaults: .standard,
+            makeLiveVADSession: AppState.makeFluidLiveVADSession
+        ))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -142,6 +150,9 @@ private struct ContentView: View {
                     .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let micInputStatus = appState.micInputStatus {
+                micInputStatusRows(micInputStatus)
+            }
             if appState.isRecording, appState.isMicrophoneSilent {
                 Text(appState.captureSource == .systemAudio
                      ? "システム音声が30秒以上無音です"
@@ -193,6 +204,36 @@ private struct ContentView: View {
         }
         .padding(.horizontal, AppSpacing.lg)
         .padding(.vertical, AppSpacing.sm)
+    }
+
+    @ViewBuilder
+    private func micInputStatusRows(_ status: MicInputStatus) -> some View {
+        if appState.isRecording, let warning = status.warning {
+            Text(warning.text)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if appState.isRecording || status.adjustment.isFailure {
+            switch status.adjustment {
+            case .active, .disabledBySetting:
+                Text(status.adjustment.text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .unsupportedDevice, .pausedByExternalChange:
+                Text(status.adjustment.text)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .failed, .restoreFailed:
+                Label(status.adjustment.text, systemImage: "xmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("入力音量のエラー: \(status.adjustment.text)")
+            }
+        }
     }
 
     @ViewBuilder

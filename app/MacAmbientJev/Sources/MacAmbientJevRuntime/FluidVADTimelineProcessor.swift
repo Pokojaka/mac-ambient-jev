@@ -38,6 +38,8 @@ actor FluidVADTimelineProcessor {
     private var pending16k: [Float] = []
     private var pendingOffset = 0
     private var undelivered: [SegmentReference] = []
+    private var undeliveredMicSpeechLevels: [MicLevelWindow] = []
+    private var knownGaps: [AudioGapEvent] = []
     private var finished = false
 
     init(
@@ -86,6 +88,7 @@ actor FluidVADTimelineProcessor {
         guard let resampler else {
             throw FluidVADTimelineProcessorError.invalidSourceFormat
         }
+        knownGaps = checkpoint.gapEvents
         try await drainFullVADChunks()
 
         let reader = ProcessingTimelineReader(
@@ -130,9 +133,7 @@ actor FluidVADTimelineProcessor {
 
         if pendingOffset < pending16k.count {
             let finalChunk = Array(pending16k[pendingOffset...])
-            undelivered.append(
-                contentsOf: try await engine.process16kChunk(finalChunk)
-            )
+            accept(try await engine.process16kChunk(finalChunk))
         }
 
         pending16k.removeAll(keepingCapacity: false)
@@ -155,9 +156,7 @@ actor FluidVADTimelineProcessor {
         while pending16k.count - pendingOffset >= VadManager.chunkSize {
             let end = pendingOffset + VadManager.chunkSize
             let chunk = Array(pending16k[pendingOffset..<end])
-            undelivered.append(
-                contentsOf: try await engine.process16kChunk(chunk)
-            )
+            accept(try await engine.process16kChunk(chunk))
             pendingOffset = end
         }
 
@@ -165,6 +164,29 @@ actor FluidVADTimelineProcessor {
            pendingOffset >= pending16k.count / 2 {
             pending16k.removeFirst(pendingOffset)
             pendingOffset = 0
+        }
+    }
+
+    /// Speech level windows measured since the previous call, each returned once.
+    func takeMicSpeechLevels() -> [MicLevelWindow] {
+        defer { undeliveredMicSpeechLevels.removeAll() }
+        return undeliveredMicSpeechLevels
+    }
+
+    private func accept(_ output: VADChunkOutput) {
+        undelivered.append(contentsOf: output.segments)
+        guard let level = output.micLevel, level.speechSeconds > 0,
+              !intersectsKnownGap(level) else { return }
+        undeliveredMicSpeechLevels.append(level)
+    }
+
+    /// Replacement silence is not captured speech; a window touching it is dropped whole.
+    private func intersectsKnownGap(_ level: MicLevelWindow) -> Bool {
+        let sampleRate = initialCheckpoint.sampleRate
+        return knownGaps.contains { gap in
+            let gapStart = Double(gap.startFrame) / sampleRate
+            let gapEnd = Double(gap.startFrame + gap.frameCount) / sampleRate
+            return level.startSeconds < gapEnd && gapStart < level.endSeconds
         }
     }
 

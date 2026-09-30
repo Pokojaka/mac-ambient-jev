@@ -34,6 +34,34 @@ protocol LiveVADProcessing: Sendable {
 
 extension LiveVADSession: LiveVADProcessing {}
 
+typealias LiveVADFactory = @MainActor (
+    _ processingDirectory: URL, _ initialCheckpoint: AudioCheckpoint, _ measureMicInputLevels: Bool
+) async throws -> any LiveVADProcessing
+
+enum MicInputVolumePreference {
+    static let key = "capture.automaticMicInputVolume"
+    static let initialValue = true
+
+    static func register(in defaults: UserDefaults) {
+        defaults.register(defaults: [key: initialValue])
+    }
+
+    static func read(from defaults: UserDefaults) throws(MicInputVolumePreferenceError) -> Bool {
+        guard let value = defaults.object(forKey: key) as? Bool else {
+            throw .unreadable
+        }
+        return value
+    }
+}
+
+enum MicInputVolumePreferenceError: LocalizedError {
+    case unreadable
+
+    var errorDescription: String? {
+        "マイクの入力音量を自動調整する設定を読み込めません"
+    }
+}
+
 @MainActor
 protocol AppCaptureEngine {
     func start(
@@ -49,6 +77,12 @@ protocol AppCaptureEngine {
     func committedCheckpoint() async throws -> AudioCheckpoint
     func stop() async throws -> AudioCaptureStopResult
     func terminate()
+    func configureMicInputVolume(
+        automaticAdjustmentEnabled: Bool,
+        onStatus: @escaping @MainActor @Sendable (UUID, MicInputStatus) -> Void
+    )
+    func consumeMicSpeechLevels(_ windows: [MicLevelWindow], sessionID: UUID)
+    func micSpeechMonitoringUnavailable(sessionID: UUID)
 }
 
 extension AudioCaptureEngine: AppCaptureEngine {}
@@ -158,6 +192,8 @@ final class AppState: ObservableObject {
     @Published private(set) var recordingPhase: RecordingPhase = .idle
     @Published var captureSource: CaptureSource = .microphone
     @Published private(set) var captureWarningText: String?
+    /// Live input-level status of the current microphone recording. Only failures outlive the recording.
+    @Published private(set) var micInputStatus: MicInputStatus?
     @Published private(set) var isMicrophoneSilent = false
     @Published private(set) var dropoutCount: UInt64 = 0
     @Published private(set) var modelPreparation: ModelPreparation = .idle
@@ -175,8 +211,12 @@ final class AppState: ObservableObject {
     // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
     private let microphoneAccess: (@MainActor () async -> Bool)?
     private let pausesProcessing: Bool
+    private let userDefaults: UserDefaults
+    private let makeLiveVADSession: LiveVADFactory
 
     private var recordingSessionID: UUID?
+    /// Set only while the current recording captures the microphone.
+    private var micInputSessionID: UUID?
     private var displayedSessionID: UUID?
     private var pendingCaptureFailure: (sessionID: UUID, message: String)?
     private(set) var pendingProcessing: [PendingProcessing] = []
@@ -201,7 +241,8 @@ final class AppState: ObservableObject {
         captureEngine: (any AppCaptureEngine)? = nil,
         microphoneAccess: (@MainActor () async -> Bool)? = nil,
         pausesProcessing: Bool = false,
-        liveVADSession: (any LiveVADProcessing)? = nil
+        userDefaults: UserDefaults,
+        makeLiveVADSession: @escaping LiveVADFactory
     ) {
         let paths = paths ?? AppPaths.systemDefault(fileManager: fileManager)
 
@@ -212,7 +253,8 @@ final class AppState: ObservableObject {
         self.captureEngine = captureEngine ?? AudioCaptureEngine(paths: paths)
         self.microphoneAccess = microphoneAccess
         self.pausesProcessing = pausesProcessing
-        self.liveVADSession = liveVADSession
+        self.userDefaults = userDefaults
+        self.makeLiveVADSession = makeLiveVADSession
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
             allowExternalJev: true,
@@ -230,6 +272,16 @@ final class AppState: ObservableObject {
         }
     }
 
+
+    static func makeFluidLiveVADSession(
+        processingDirectory: URL, initialCheckpoint: AudioCheckpoint, measureMicInputLevels: Bool
+    ) async throws -> any LiveVADProcessing {
+        try await LiveVADSession.make(
+            processingDirectory: processingDirectory,
+            initialCheckpoint: initialCheckpoint,
+            measureMicInputLevels: measureMicInputLevels
+        )
+    }
 
     var isRecording: Bool {
         recordingPhase == .recording
@@ -493,8 +545,17 @@ final class AppState: ObservableObject {
     func startRecording() async {
         guard recordingPhase == .idle else { return }
         captureWarningText = nil
+        micInputStatus = nil
         isMicrophoneSilent = false
         dropoutCount = 0
+
+        let automaticMicInputVolume: Bool
+        do {
+            automaticMicInputVolume = try MicInputVolumePreference.read(from: userDefaults)
+        } catch {
+            setCaptureStatus(error.localizedDescription, tone: .error)
+            return
+        }
 
         if captureSource == .microphone {
             recordingPhase = .requestingPermission
@@ -538,6 +599,16 @@ final class AppState: ObservableObject {
                 originalFilename: nil,
                 captureSource: captureSource
             )
+            if captureSource == .microphone {
+                micInputSessionID = sessionID
+                captureEngine.configureMicInputVolume(
+                    automaticAdjustmentEnabled: automaticMicInputVolume,
+                    onStatus: { [weak self] id, status in
+                        guard let self, self.micInputSessionID == id else { return }
+                        self.micInputStatus = status
+                    }
+                )
+            }
             try await captureEngine.start(
                 sessionID: sessionID,
                 source: captureSource,
@@ -583,18 +654,19 @@ final class AppState: ObservableObject {
             setCaptureStatus(captureSource == .systemAudio ? "システム音声を録音中" : "マイクを録音中", tone: .recording)
             if !pausesProcessing {
                 prepareASRModel()
-
-                do {
-                    try await startLiveVAD(sessionID: sessionID)
-                } catch {
-                    guard isCurrentRecording(sessionID) else { return }
-                    liveVADFailureText = error.localizedDescription
-                    processingStatusText =
-                        "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
-                }
+            }
+            do {
+                try await startLiveVAD(sessionID: sessionID)
+            } catch {
+                guard isCurrentRecording(sessionID) else { return }
+                liveVADFailureText = error.localizedDescription
+                processingStatusText =
+                    "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
+                reportMicSpeechMonitoringUnavailable(sessionID: sessionID)
             }
         } catch {
             pendingCaptureFailure = nil
+            endMicInputSession()
             captureWarningText = nil
             isMicrophoneSilent = false
             let processing = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
@@ -658,6 +730,7 @@ final class AppState: ObservableObject {
 
             if let liveVADSession {
                 do {
+                    // Final speech windows arrive after capture stopped and never reach the volume control.
                     let progress = try await liveVADSession.finish(
                         checkpoint: checkpoint
                     )
@@ -678,6 +751,7 @@ final class AppState: ObservableObject {
                 : 0
 
             recordingSessionID = nil
+            endMicInputSession()
             captureWarningText = nil
             isMicrophoneSilent = false
             recordingPhase = .idle
@@ -737,6 +811,7 @@ final class AppState: ObservableObject {
                 sessionID: sessionID
             )
             recordingSessionID = nil
+            endMicInputSession()
             captureWarningText = nil
             isMicrophoneSilent = false
             recordingPhase = .idle
@@ -757,9 +832,8 @@ final class AppState: ObservableObject {
 
         liveVADFailureText = nil
         liveVADSegmentCount = 0
-        let vadSession = try await LiveVADSession.make(
-            processingDirectory: directory,
-            initialCheckpoint: checkpoint
+        let vadSession = try await makeLiveVADSession(
+            directory, checkpoint, micInputSessionID == sessionID
         )
         guard isCurrentRecording(sessionID) else { return }
         liveVADSession = vadSession
@@ -813,6 +887,11 @@ final class AppState: ObservableObject {
                     checkpoint: checkpoint
                 )
                 liveVADSegmentCount = progress.totalSegmentCount
+                // Delivered before ASR enqueueing so transcription latency cannot delay volume decisions.
+                if isCurrentRecording(sessionID), micInputSessionID == sessionID,
+                   !progress.micSpeechLevels.isEmpty {
+                    captureEngine.consumeMicSpeechLevels(progress.micSpeechLevels, sessionID: sessionID)
+                }
                 if !progress.emittedSegments.isEmpty {
                     await enqueueLiveASR(
                         sessionID: sessionID,
@@ -828,8 +907,24 @@ final class AppState: ObservableObject {
                 liveVADFailureText = error.localizedDescription
                 processingStatusText =
                     "録音は継続しています。発話検出を停止しました: \(error.localizedDescription)"
+                reportMicSpeechMonitoringUnavailable(sessionID: sessionID)
                 return
             }
+        }
+    }
+
+    private func reportMicSpeechMonitoringUnavailable(sessionID: UUID) {
+        guard isCurrentRecording(sessionID), micInputSessionID == sessionID else { return }
+        captureEngine.micSpeechMonitoringUnavailable(sessionID: sessionID)
+    }
+
+    /// Called after capture stop returns, so stop-time restore failures have already been reported.
+    private func endMicInputSession() {
+        micInputSessionID = nil
+        if let status = micInputStatus, status.adjustment.isFailure {
+            micInputStatus = MicInputStatus(warning: nil, adjustment: status.adjustment)
+        } else {
+            micInputStatus = nil
         }
     }
 

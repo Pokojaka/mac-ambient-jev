@@ -8,6 +8,8 @@ struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
 
     @AppStorage("jev.isPaused") private var isJevPaused = false
+    @AppStorage(MicInputVolumePreference.key)
+    private var automaticMicInputVolume = MicInputVolumePreference.initialValue
     @State private var apiKey = ""
     @State private var hasStoredKey = false
     @State private var statusMessage: String?
@@ -114,6 +116,13 @@ struct SettingsView: View {
             }
 
             Section("マイク録音テスト") {
+                Toggle("マイクの入力音量を自動調整する", isOn: $automaticMicInputVolume)
+                    .disabled(appState.recordingPhase != .idle)
+
+                Text("マイク録音中にシステムの入力音量を変更します。録音を停止すると元に戻します。手動で変更した場合は、その音量を保ちます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 LabeledContent("マイク権限", value: microphonePermissionText)
 
                 Button("マイク権限を確認") {
