@@ -22,7 +22,7 @@ public protocol SystemAudioPermissionProviding: Sendable {
 public final class TCCSystemAudioPermission: SystemAudioPermissionProviding, @unchecked Sendable {
     private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
     private typealias Completion = @convention(block) (Bool) -> Void
-    private typealias Request = @convention(c) (CFString, CFDictionary?, Completion) -> Void
+    private typealias Request = @convention(c) (CFString, CFDictionary?, @escaping Completion) -> Void
     private let service = CFStringCreateWithCString(
         kCFAllocatorDefault, "kTCCServiceAudioCapture", CFStringBuiltInEncodings.UTF8.rawValue
     )!
