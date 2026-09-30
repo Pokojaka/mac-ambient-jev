@@ -17,6 +17,8 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     var returnIDOnFailure = false
     var returnNilIOProc = false
     var events: [String] = []
+    var formatListener: AudioObjectPropertyListenerBlock?
+    var callback: AudioDeviceIOBlock?
     private let proc = unsafeBitCast(UInt(0x1234), to: AudioDeviceIOProcID.self)
     private let tap: AudioObjectID = 41
     private let device: AudioObjectID = 42
@@ -60,9 +62,10 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     }
 
     func addFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
-                           _ listener: AudioObjectPropertyListenerBlock) -> OSStatus {
+                           _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus {
         events.append("listener")
         #expect(tap == self.tap)
+        formatListener = listener
         return failure == .listener ? -50 : noErr
     }
 
@@ -77,6 +80,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
                       _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
         events.append("ioProc")
         #expect(device == self.device)
+        self.callback = callback
         if !returnNilIOProc && (failure != .ioProc || returnIDOnFailure) { result = proc }
         return failure == .ioProc ? -50 : noErr
     }
@@ -189,6 +193,47 @@ func tapIOProcMissingAndNormalStop() throws {
              "removeListener", "destroyAggregate", "destroyTap"])
     tap.stop()
     #expect(normal.events == afterStop)
+}
+
+@MainActor
+@Test("Tap callbacks stop accepting matching-layout audio after format invalidation")
+func tapRejectsAudioAfterFormatInvalidation() throws {
+    let hardware = FakeTapHardware()
+    let tap = try SystemAudioTap(hardware: hardware)
+    defer { tap.stop() }
+    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 8, sampleRate: 48_000)
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock())
+    try tap.start(sink: sink, onFailure: { _ in })
+    let callback = try #require(hardware.callback)
+    let listener = try #require(hardware.formatListener)
+    var samples: [Float] = [0.25, -0.5]
+    var timestamp = AudioTimeStamp()
+    timestamp.mFlags = .sampleTimeValid
+    samples.withUnsafeMutableBytes { bytes in
+        var input = AudioBufferList(
+            mNumberBuffers: 1,
+            mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count),
+                                 mData: bytes.baseAddress)
+        )
+        var output = AudioBufferList()
+        withUnsafePointer(to: &timestamp) { time in
+            callback(time, &input, time, &output, time)
+        }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        listener(1, &address)
+        timestamp.mSampleTime = 2
+        withUnsafePointer(to: &timestamp) { time in
+            callback(time, &input, time, &output, time)
+        }
+    }
+    ring.finish(tailFrame: sink.lastEndFrame)
+    #expect(sink.lastEndFrame == 2)
+    #expect(try #require(ring.pop()).samples == [0.25, -0.5])
+    #expect(ring.pop() == nil)
+    #expect(ring.dropoutCount == 0)
 }
 
 private final class FixedClock: CaptureClock {

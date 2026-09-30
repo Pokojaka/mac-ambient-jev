@@ -651,9 +651,8 @@ final class AppState: ObservableObject {
 
     private func finishRecording(sessionID: UUID, failureMessage: String?) async {
         do {
-            await stopLiveVADPolling()
-
             let result = try await captureEngine.stop()
+            await stopLiveVADPolling()
             let checkpoint = result.checkpoint
             dropoutCount = result.dropoutCount
 

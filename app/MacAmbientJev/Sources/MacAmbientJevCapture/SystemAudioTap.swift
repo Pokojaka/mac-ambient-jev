@@ -214,6 +214,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
     }
 
     private nonisolated func receive(input: UnsafePointer<AudioBufferList>, timestamp: UnsafePointer<AudioTimeStamp>, sink: TimestampedMonoSink) {
+        guard !formatInvalid.load(ordering: .relaxed) else { return }
         let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
         let channels = Int(format.mChannelsPerFrame)
         let planar = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
