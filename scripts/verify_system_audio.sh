@@ -10,6 +10,7 @@ DURATION="$2"
 SESSIONS_ROOT="$3"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PACKAGE="$ROOT/app/MacAmbientJev"
+APP="$PACKAGE/.build/MacAmbientJevCaptureSystemAudio.app"
 
 # Validate playback before building or starting capture.
 python3 -I - "$WAV" "$DURATION" <<'PY'
@@ -31,8 +32,10 @@ READY_DIR="$(mktemp -d)"
 READY="$READY_DIR/ready"
 CAPTURE_PID=""
 cleanup() {
+  # open -W is only the launcher; LaunchServices owns the recorder.
+  pkill -f "$APP/Contents/MacOS/MacAmbientJevCaptureSystemAudio" || :
   if [[ -n "$CAPTURE_PID" ]] && kill -0 "$CAPTURE_PID" 2>/dev/null; then
-    kill "$CAPTURE_PID"
+    kill "$CAPTURE_PID" 2>/dev/null || :
     wait "$CAPTURE_PID" || :
   fi
   rm -f "$SUMMARY" "$ERR" "$READY"
@@ -45,7 +48,6 @@ BIN_DIR="$(swift build --package-path "$PACKAGE" --show-bin-path --disable-autom
 # TCC attributes a shell-launched tool to its terminal, which has no
 # NSAudioCaptureUsageDescription, so macOS never prompts and the tap delivers
 # zeros. Launching a bundle through LaunchServices makes it the responsible process.
-APP="$PACKAGE/.build/MacAmbientJevCaptureSystemAudio.app"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN_DIR/MacAmbientJevCaptureSystemAudio" "$APP/Contents/MacOS/"
 DESCRIPTION="$(bash "$ROOT/scripts/app_info_plist.sh" | plutil -extract NSAudioCaptureUsageDescription raw -)"
