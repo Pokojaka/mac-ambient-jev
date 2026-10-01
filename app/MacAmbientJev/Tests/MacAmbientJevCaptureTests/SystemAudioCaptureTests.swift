@@ -19,6 +19,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     var events: [String] = []
     var formatListener: AudioObjectPropertyListenerBlock?
     var callback: AudioDeviceIOBlock?
+    var callbackQueue: DispatchQueue?
     private let proc = unsafeBitCast(UInt(0x1234), to: AudioDeviceIOProcID.self)
     private let tap: AudioObjectID = 41
     private let device: AudioObjectID = 42
@@ -81,6 +82,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
         events.append("ioProc")
         #expect(device == self.device)
         self.callback = callback
+        callbackQueue = queue
         if !returnNilIOProc && (failure != .ioProc || returnIDOnFailure) { result = proc }
         return failure == .ioProc ? -50 : noErr
     }
@@ -195,38 +197,53 @@ func tapIOProcMissingAndNormalStop() throws {
     #expect(normal.events == afterStop)
 }
 
+/// Core Audio's imported block aliases erase Sendable; immutable copies cross to the fake queue.
+private struct TapCallbackBlocks: @unchecked Sendable {
+    let receive: AudioDeviceIOBlock
+    let formatChanged: AudioObjectPropertyListenerBlock
+}
+
 @MainActor
-@Test("Tap callbacks stop accepting matching-layout audio after format invalidation")
-func tapRejectsAudioAfterFormatInvalidation() throws {
+@Test("Background tap callbacks stop accepting matching-layout audio after format invalidation")
+func tapRejectsAudioAfterFormatInvalidation() async throws {
     let hardware = FakeTapHardware()
     let tap = try SystemAudioTap(hardware: hardware)
     defer { tap.stop() }
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 8, sampleRate: 48_000)
     let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock(), meter: nil)
     try tap.start(sink: sink, onFailure: { _ in })
-    let callback = try #require(hardware.callback)
-    let listener = try #require(hardware.formatListener)
-    var samples: [Float] = [0.25, -0.5]
-    var timestamp = AudioTimeStamp()
-    timestamp.mFlags = .sampleTimeValid
-    samples.withUnsafeMutableBytes { bytes in
-        var input = AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count),
-                                 mData: bytes.baseAddress)
-        )
-        var output = AudioBufferList()
-        withUnsafePointer(to: &timestamp) { time in
-            callback(time, &input, time, &output, time)
-        }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        listener(1, &address)
-        timestamp.mSampleTime = 2
-        withUnsafePointer(to: &timestamp) { time in
-            callback(time, &input, time, &output, time)
+    let callbacks = TapCallbackBlocks(
+        receive: try #require(hardware.callback),
+        formatChanged: try #require(hardware.formatListener)
+    )
+    let callbackQueue = try #require(hardware.callbackQueue)
+    await withCheckedContinuation { continuation in
+        callbackQueue.async { @Sendable in
+            #expect(!Thread.isMainThread)
+            var samples: [Float] = [0.25, -0.5]
+            var timestamp = AudioTimeStamp()
+            timestamp.mFlags = .sampleTimeValid
+            samples.withUnsafeMutableBytes { bytes in
+                var input = AudioBufferList(
+                    mNumberBuffers: 1,
+                    mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count),
+                                         mData: bytes.baseAddress)
+                )
+                var output = AudioBufferList()
+                withUnsafePointer(to: &timestamp) { time in
+                    callbacks.receive(time, &input, time, &output, time)
+                }
+                var address = AudioObjectPropertyAddress(
+                    mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain
+                )
+                callbacks.formatChanged(1, &address)
+                timestamp.mSampleTime = 2
+                withUnsafePointer(to: &timestamp) { time in
+                    callbacks.receive(time, &input, time, &output, time)
+                }
+            }
+            continuation.resume()
         }
     }
     ring.finish(tailFrame: sink.lastEndFrame)

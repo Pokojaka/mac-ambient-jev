@@ -5,6 +5,21 @@ import Testing
 @testable import MacAmbientJevCapture
 
 // MARK: Fake HAL
+/// The C block type is not Sendable. This immutable delivery models HAL's cross-queue handoff.
+private struct ListenerDelivery: @unchecked Sendable {
+    let block: AudioObjectPropertyListenerBlock
+    let address: AudioObjectPropertyAddress
+
+    func enqueue(on queue: DispatchQueue) {
+        queue.async { @Sendable in
+            dispatchPrecondition(condition: .onQueue(queue))
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            var changed = address
+            withUnsafePointer(to: &changed) { block(1, $0) }
+        }
+    }
+}
+
 
 /// Property-level fake: no real AudioObject call, write or listener can escape it.
 @MainActor
@@ -20,7 +35,7 @@ private final class FakeHAL: MicInputVolumeHAL {
     var setFailures: Set<UInt32> = []
     var response: Response = .apply
     private(set) var writes: [(AudioObjectID, UInt32, Float)] = []
-    private(set) var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+    private(set) var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock, DispatchQueue)] = []
     private(set) var removed: [(AudioObjectID, AudioObjectPropertyAddress)] = []
 
     func defaultInputDevice() throws(MicInputVolumeFailure) -> AudioObjectID { defaultDevice }
@@ -56,7 +71,7 @@ private final class FakeHAL: MicInputVolumeHAL {
         case .silent: nil
         }
         guard let applied else { return }
-        // The HAL applies and notifies asynchronously on its own queue.
+        // Property storage stays main-actor isolated; notifications use the registered HAL queue.
         Task { @MainActor in
             self.volumes[device]![element] = applied
             self.notify(device, MicInputVolumeAddress.inputVolume(element))
@@ -64,7 +79,7 @@ private final class FakeHAL: MicInputVolumeHAL {
     }
     func addListener(_ object: AudioObjectID, _ address: AudioObjectPropertyAddress, _ queue: DispatchQueue,
                      _ block: @escaping AudioObjectPropertyListenerBlock) throws(MicInputVolumeFailure) {
-        listeners.append((object, address, block))
+        listeners.append((object, address, block, queue))
     }
     func removeListener(_ object: AudioObjectID, _ address: AudioObjectPropertyAddress, _ queue: DispatchQueue,
                         _ block: @escaping AudioObjectPropertyListenerBlock) throws(MicInputVolumeFailure) {
@@ -73,16 +88,24 @@ private final class FakeHAL: MicInputVolumeHAL {
     }
 
     func notify(_ object: AudioObjectID, _ address: AudioObjectPropertyAddress) {
-        for (registered, registeredAddress, block) in listeners
+        for (registered, registeredAddress, block, queue) in listeners
         where registered == object && registeredAddress == address {
-            var changed = address
-            withUnsafePointer(to: &changed) { block(1, $0) }
+            ListenerDelivery(block: block, address: address).enqueue(on: queue)
         }
     }
 
     func manualChange(_ element: UInt32, to value: Float) {
         volumes[7]![element] = value
         notify(7, MicInputVolumeAddress.inputVolume(element))
+    }
+
+    func drainNotifications() async {
+        for queue in listeners.map(\.3) {
+            await withCheckedContinuation { continuation in
+                queue.async { @Sendable in continuation.resume() }
+            }
+        }
+        await drainMainActor()
     }
 }
 
@@ -328,7 +351,7 @@ private final class Harness {
     }
 
     @MainActor
-    @Test("Quantized asynchronous acknowledgement stores the actual value and is not a manual change")
+    @Test("Background HAL callbacks acknowledge own writes and report external changes")
     func adapterQuantizedAcknowledgement() async throws {
         let hal = FakeHAL()
         hal.response = .quantize(1 / 16)
@@ -339,10 +362,10 @@ private final class Harness {
         #expect(effective.elements == elements([(0, 0.5625)]))
         #expect(hal.writes.map(\.0) == [7])
         hal.notify(7, MicInputVolumeAddress.inputVolume(0))
-        await drainMainActor()
+        await hal.drainNotifications()
         #expect(external.count == 0)
         hal.manualChange(0, to: 0.8)
-        await drainMainActor()
+        await hal.drainNotifications()
         #expect(external.count == 1)
     }
 
@@ -386,13 +409,18 @@ private final class Harness {
         let volume = adapter(hal, timeout: 1)
         _ = try volume.bind(captureDeviceUID: "mic") { external.count += 1 }
         let registered = hal.listeners.map { ($0.0, $0.1) }
-        let retained = hal.listeners.map(\.2)
+        let retained = hal.listeners.map { ($0.2, $0.3) }
         try volume.unbind()
         #expect(hal.removed.map(\.0) == registered.map(\.0))
         #expect(hal.removed.map(\.1) == registered.map(\.1))
         #expect(hal.listeners.isEmpty)
-        var address = MicInputVolumeAddress.global(kAudioHardwarePropertyDefaultInputDevice)
-        for block in retained { withUnsafePointer(to: &address) { block(1, $0) } }
+        let address = MicInputVolumeAddress.global(kAudioHardwarePropertyDefaultInputDevice)
+        for (block, queue) in retained {
+            ListenerDelivery(block: block, address: address).enqueue(on: queue)
+            await withCheckedContinuation { continuation in
+                queue.async { @Sendable in continuation.resume() }
+            }
+        }
         await drainMainActor()
         #expect(external.count == 0)
     }
@@ -407,7 +435,7 @@ private final class Harness {
         hal.defaultDevice = 9
         hal.notify(AudioObjectID(kAudioObjectSystemObject),
                    MicInputVolumeAddress.global(kAudioHardwarePropertyDefaultInputDevice))
-        await drainMainActor()
+        await hal.drainNotifications()
         #expect(external.count == 1)
         _ = try await volume.setVolumes(elements([(0, 0.5)]), expected: bound)
         #expect(hal.writes.map(\.0) == [7])

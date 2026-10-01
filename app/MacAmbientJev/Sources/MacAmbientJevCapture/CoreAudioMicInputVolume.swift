@@ -241,8 +241,9 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
                         MicInputVolumeAddress.global(kAudioHardwarePropertyDefaultInputDevice)))
         targets.append((device, MicInputVolumeAddress.global(kAudioDevicePropertyDeviceIsAlive)))
         for (object, address) in targets {
-            let block: AudioObjectPropertyListenerBlock = { [weak self] count, addresses in
-                let changed = (0..<Int(count)).map { addresses[$0] }
+            // HAL invokes this on its queue, not the actor that registered it.
+            let block: AudioObjectPropertyListenerBlock = { @Sendable [weak self] count, addresses in
+                let changed = Array(UnsafeBufferPointer(start: addresses, count: Int(count)))
                 Task { @MainActor in self?.received(changed, token: token) }
             }
             try hal.addListener(object, address, queue, block)
