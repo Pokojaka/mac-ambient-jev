@@ -65,7 +65,7 @@ func stopResultReportsTimelineLoss() async throws {
             directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
-        #expect(ring.push(samples: [1, 2]))
+        #expect(pushRingMono([1, 2], at: 0, into: ring))
         var sample: Float = 5
         withUnsafeMutablePointer(to: &sample) { pointer in
             var channel = pointer
@@ -77,12 +77,24 @@ func stopResultReportsTimelineLoss() async throws {
         }
         ring.finish(tailFrame: tailFrame)
         let checkpoint = try await drain.finish()
-        let result = AudioCaptureStopResult(checkpoint: checkpoint, didOverflow: false)
+        let result = cleanStopResult(checkpoint)
         #expect(ring.overflowCount == 0)
         #expect(checkpoint.gapEvents == expectedGap.map { [$0] } ?? [])
         #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
             .readSamples(frameRange: 0..<tailFrame) == expectedSamples)
         #expect(result.didOverflow == (expectedGap != nil))
+    }
+}
+
+func pushRingMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> Bool {
+    var values = values
+    let frameCount = values.count
+    return values.withUnsafeMutableBufferPointer { samples in
+        var channel = [samples.baseAddress!]
+        return channel.withUnsafeMutableBufferPointer {
+            ring.pushPlanarFloat32(channelData: $0.baseAddress!, channelCount: 1,
+                                   frameCount: frameCount, startFrame: frame)
+        }
     }
 }
 
@@ -237,7 +249,7 @@ private final class RecordingMicVolume: MicInputVolumeControlling {
     }
 
     func bind(captureDeviceUID: String,
-              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+              onChange: @escaping @MainActor @Sendable (MicInputVolumeChange) -> Void) throws(MicInputVolumeFailure)
         -> MicInputVolumeSnapshot { current }
     func snapshot() throws(MicInputVolumeFailure) -> MicInputVolumeSnapshot { current }
     func setVolumes(_ requested: [MicInputVolumeElement], expected: MicInputVolumeSnapshot)
@@ -387,9 +399,9 @@ private func drainMainActor() async {
         #expect(volume.writes.count == 1 && abs(volume.values[0]! - 0.4) < 1e-6)
 
         engine.micSpeechMonitoringUnavailable(sessionID: UUID())
-        #expect(log.statuses.allSatisfy { $0.warning != .monitoringUnavailable })
+        #expect(log.statuses.allSatisfy { !$0.speechMonitoringUnavailable })
         engine.micSpeechMonitoringUnavailable(sessionID: sessionID)
-        #expect(log.statuses.last?.warning == .monitoringUnavailable)
+        #expect(log.statuses.last?.speechMonitoringUnavailable == true)
 
         volume.failWrites = true
         let result = try await engine.stop()
@@ -427,7 +439,7 @@ private func drainMainActor() async {
         engine.beginMicInputVolume(captureDeviceUID: "mic", sessionID: sessionID,
                                    automaticAdjustmentEnabled: false) { _, status in log.statuses.append(status) }
         engine.pollMicMeter()
-        #expect(log.statuses.last == MicInputStatus(warning: .clipping, adjustment: .disabledBySetting))
+        #expect(log.statuses.last == MicInputStatus(warning: .clipping, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
         _ = try await engine.stop()
         #expect(factoryCalls == 0)
     }

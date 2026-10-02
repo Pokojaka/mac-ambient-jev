@@ -302,10 +302,10 @@ import Testing
     let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
     let drain = AudioCaptureDrain(ring: ring, writer: writer)
 
-    #expect(ring.push(samples: [1, 2]))
-    #expect(!ring.push(samples: [3, 4, 5]))
+    #expect(pushMono([1, 2], at: 0, into: ring))
+    #expect(!pushMono([3, 4, 5], at: 2, into: ring))
     _ = try await drain.drainAvailable()
-    #expect(ring.push(samples: [6]))
+    #expect(pushMono([6], at: 5, into: ring))
     let checkpoint = try await drain.finish()
 
     #expect(ring.overflowCount == 1)
@@ -710,7 +710,7 @@ import Testing
     #expect(ring.dropoutCount == 4)
 }
 
-private func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> Bool {
+func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> Bool {
     var values = values
     let frameCount = values.count
     return values.withUnsafeMutableBufferPointer { samples in
@@ -820,5 +820,67 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     func finish() -> AudioCheckpoint {
         finished = true
         return committedSnapshot()
+    }
+}
+
+@Test func partialReadsMatchTheSameRangeOfAFullRead() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 2, chunkDurationSeconds: 1)
+    let samples = (0..<26).map(Float.init)
+    try await writer.append(samples: samples)
+    let checkpoint = try await writer.finish()
+    #expect(checkpoint.chunkFrameCounts == [4, 4, 4, 1])
+    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let full = try reader.readSamples(frameRange: 0..<13)
+    #expect(full == samples)
+    for range: Range<Int64> in [0..<1, 3..<5, 1..<12, 4..<8, 11..<13, 12..<13, 6..<6] {
+        #expect(try reader.readSamples(frameRange: range)
+            == Array(full[Int(range.lowerBound) * 2..<Int(range.upperBound) * 2]))
+    }
+}
+
+@Test func partialReadStillRejectsAChunkWhoseSizeDiffersFromItsIndex() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
+    try await writer.append(samples: (0..<8).map(Float.init))
+    let checkpoint = try await writer.finish()
+    let handle = try FileHandle(forWritingTo: root.appending(path: "chunk-000001.f32le"))
+    try handle.truncate(atOffset: 12)
+    try handle.close()
+    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    #expect(try reader.readSamples(frameRange: 0..<4) == [0, 1, 2, 3])
+    #expect(throws: ProcessingTimelineReaderError.corruptChunk("chunk-000001.f32le")) {
+        _ = try reader.readSamples(frameRange: 4..<5)
+    }
+    #expect(throws: ProcessingTimelineReaderError.unreadableChunk("chunk-000002.f32le")) {
+        _ = try ProcessingTimelineReader(directory: root, checkpoint: AudioCheckpoint(
+            committedFrames: 1, sampleRate: 4, channelCount: 1, sampleFormat: .float32LE,
+            chunkFiles: ["chunk-000002.f32le"], chunkFrameCounts: [1], gapEvents: []
+        )).readSamples(frameRange: 0..<1)
+    }
+}
+
+@Test func storageErrorsDescribeTheirCauseAndKeepTheChunkName() async throws {
+    #expect(ProcessingTimelineReaderError.corruptChunk("chunk-000003.f32le").localizedDescription
+        == "保存済み音声の断片 chunk-000003.f32le が壊れています")
+    #expect(DurableAudioWriterError.corruptChunk("chunk-000003.f32le").localizedDescription
+        == "保存済み音声の断片 chunk-000003.f32le が壊れています")
+    #expect(DurableAudioWriterError.invalidChannelSampleCount.localizedDescription
+        == "入力された音声のチャンネル構成が録音開始時と一致しません")
+
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 2, channelCount: 1, chunkDurationSeconds: 1)
+    try FileManager.default.createDirectory(
+        at: root.appending(path: "chunk-000000.f32le"), withIntermediateDirectories: false
+    )
+    do {
+        try await writer.append(samples: [1, 2])
+        Issue.record("A chunk path occupied by a directory must not be written")
+    } catch {
+        #expect(error as? DurableAudioWriterError == .writeFailed("chunk-000000.f32le"))
+        #expect(error.localizedDescription == "chunk-000000.f32le を書き込めませんでした")
     }
 }

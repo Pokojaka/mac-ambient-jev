@@ -51,6 +51,14 @@ public actor AudioCaptureDrain {
         return await writer.committedSnapshot()
     }
 
+    /// The writer's committed chunks only, without draining or flushing. After a failed finish()
+    /// this is the healthy prefix: every chunk in it was published and indexed.
+    public func durableCheckpoint() async -> AudioCheckpoint {
+        await acquire()
+        defer { release() }
+        return await writer.committedSnapshot()
+    }
+
     public func finish() async throws -> AudioCheckpoint {
         await acquire()
         defer { release() }

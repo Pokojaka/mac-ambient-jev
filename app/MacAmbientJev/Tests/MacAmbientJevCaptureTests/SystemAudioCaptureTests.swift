@@ -16,6 +16,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     var failure: Stage?
     var returnIDOnFailure = false
     var returnNilIOProc = false
+    var refusedReleases: Set<String> = []
     var events: [String] = []
     var formatListener: AudioObjectPropertyListenerBlock?
     var callback: AudioDeviceIOBlock?
@@ -73,6 +74,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     func removeFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
                               _ listener: AudioObjectPropertyListenerBlock) -> OSStatus {
         events.append("removeListener")
+        if refusedReleases.contains("removeListener") { return -1 }
         #expect(tap == self.tap)
         return noErr
     }
@@ -95,24 +97,28 @@ private final class FakeTapHardware: SystemAudioTapHardware {
 
     func stop(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
         events.append("stop")
+        if refusedReleases.contains("stop") { return -1 }
         #expect(device == self.device)
         return noErr
     }
 
     func destroyIOProc(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
         events.append("destroyIOProc")
+        if refusedReleases.contains("destroyIOProc") { return -1 }
         #expect(device == self.device)
         return noErr
     }
 
     func destroyAggregate(_ device: AudioObjectID) -> OSStatus {
         events.append("destroyAggregate")
+        if refusedReleases.contains("destroyAggregate") { return -1 }
         #expect(device == self.device)
         return noErr
     }
 
     func destroyTap(_ tap: AudioObjectID) -> OSStatus {
         events.append("destroyTap")
+        if refusedReleases.contains("destroyTap") { return -1 }
         #expect(tap == self.tap)
         return noErr
     }
@@ -134,7 +140,7 @@ func tapPreparationFailureBoundaries() {
         hardware.returnIDOnFailure = true
         do {
             let tap = try SystemAudioTap(hardware: hardware)
-            tap.stop()
+            try tap.stop()
             Issue.record("Expected \(stage) to fail")
         } catch {
             #expect(hardware.events == expected, "Failure at \(stage): \(hardware.events)")
@@ -165,7 +171,7 @@ func tapStartFailureBoundaries() throws {
             #expect(Array(hardware.events.dropFirst(initial)) == expected,
                     "Failure at \(stage): \(hardware.events)")
         }
-        tap.stop()
+        try tap.stop()
         #expect(hardware.events.count == initial + expected.count)
     }
 }
@@ -188,13 +194,53 @@ func tapIOProcMissingAndNormalStop() throws {
     let normal = FakeTapHardware()
     let tap = try SystemAudioTap(hardware: normal)
     try tap.start(sink: sink, onFailure: { _ in })
-    tap.stop()
+    try tap.stop()
     let afterStop = normal.events
     #expect(Array(afterStop.dropFirst(4)) ==
             ["listener", "ioProc", "start", "stop", "destroyIOProc",
              "removeListener", "destroyAggregate", "destroyTap"])
-    tap.stop()
+    try tap.stop()
     #expect(normal.events == afterStop)
+}
+
+@MainActor
+@Test("A refused release still attempts every later release and is reported, once")
+func tapStopReportsRefusedRelease() throws {
+    let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 8),
+                                   frameCapacity: 8, clock: FixedClock(), meter: nil)
+    let hardware = FakeTapHardware()
+    hardware.refusedReleases = ["stop", "destroyAggregate"]
+    let tap = try SystemAudioTap(hardware: hardware)
+    try tap.start(sink: sink, onFailure: { _ in })
+    do {
+        try tap.stop()
+        Issue.record("Expected the refused releases to be reported")
+    } catch SystemAudioTapError.releaseFailed(let operations, let after) {
+        #expect(operations == ["録音の停止 OSStatus -1", "仮想デバイスの破棄 OSStatus -1"])
+        #expect(after == nil)
+    }
+    #expect(Array(hardware.events.dropFirst(4)) ==
+            ["listener", "ioProc", "start", "stop", "destroyIOProc",
+             "removeListener", "destroyAggregate", "destroyTap"])
+    try tap.stop()
+}
+
+@MainActor
+@Test("A refused release during a failed start keeps the start failure in the report")
+func tapStartFailureWithRefusedRelease() throws {
+    let hardware = FakeTapHardware()
+    hardware.failure = .start
+    hardware.refusedReleases = ["destroyTap"]
+    let tap = try SystemAudioTap(hardware: hardware)
+    let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 8),
+                                   frameCapacity: 8, clock: FixedClock(), meter: nil)
+    do {
+        try tap.start(sink: sink, onFailure: { _ in })
+        Issue.record("Expected start to fail")
+    } catch SystemAudioTapError.releaseFailed(let operations, let after) {
+        #expect(operations == ["タップの破棄 OSStatus -1"])
+        #expect(after?.contains("録音の開始") == true)
+    }
 }
 
 /// Core Audio's imported block aliases erase Sendable; immutable copies cross to the fake queue.
@@ -208,7 +254,7 @@ private struct TapCallbackBlocks: @unchecked Sendable {
 func tapRejectsAudioAfterFormatInvalidation() async throws {
     let hardware = FakeTapHardware()
     let tap = try SystemAudioTap(hardware: hardware)
-    defer { tap.stop() }
+    defer { #expect(throws: Never.self) { try tap.stop() } }
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 8, sampleRate: 48_000)
     let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock(), meter: nil)
     try tap.start(sink: sink, onFailure: { _ in })
@@ -435,7 +481,13 @@ private final class FakeTap: SystemAudioTapProviding {
             }
         }
     }
-    func stop() { stops += 1 }
+    var refusesRelease = false
+    func stop() throws {
+        stops += 1
+        if refusesRelease {
+            throw SystemAudioTapError.releaseFailed(operations: ["タップの破棄 OSStatus -1"], after: nil)
+        }
+    }
 }
 
 @MainActor
@@ -451,8 +503,8 @@ private struct AvailableDisk: CaptureDiskSpaceProviding {
     func availableBytes(at url: URL) throws -> Int64? { bytes }
 }
 private struct AuthorizedSystemAudioPermission: SystemAudioPermissionProviding {
-    func preflight() async -> SystemAudioPermissionStatus? { .authorized }
-    func request() async -> Bool { true }
+    func preflight() async throws(SystemAudioPermissionError) -> SystemAudioPermissionStatus { .authorized }
+    func request() async throws(SystemAudioPermissionError) -> Bool { true }
 }
 private struct NoExternalOutput: SystemAudioOutputProcessProviding {
     func runningExternalOutputPIDs() async -> Set<Int32>? { [] }
@@ -471,7 +523,7 @@ private final class MicVolumeFactoryProbe {
 @MainActor
 private final class TrapMicVolume: MicInputVolumeControlling {
     func bind(captureDeviceUID: String,
-              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+              onChange: @escaping @MainActor @Sendable (MicInputVolumeChange) -> Void) throws(MicInputVolumeFailure)
         -> MicInputVolumeSnapshot {
         Issue.record("System audio bound a microphone volume control")
         throw .notBound
@@ -520,6 +572,28 @@ func fakeTapEngineLifecycle() async throws {
     #expect(tap.starts == 1 && tap.stops == 1)
     #expect(power.acquisitions == 1 && power.releases == 1)
     #expect(!engine.isRecording)
+}
+
+@MainActor
+@Test("A refused tap release is returned with the saved recording instead of a clean stop")
+func fakeTapRefusedReleaseIsReported() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let tap = FakeTap()
+    tap.refusesRelease = true
+    let power = FakeCapturePower()
+    let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8, power: power,
+                                    diskSpace: AvailableDisk(), tapFactory: { tap },
+                                    systemAudioPermission: AuthorizedSystemAudioPermission(),
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: MicVolumeFactoryProbe().make)
+    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+    let result = try await engine.stop()
+    #expect(result.checkpoint.committedFrames == 4)
+    #expect(result.writerFailure == nil)
+    #expect(result.systemAudioReleaseFailure?.contains("タップの破棄 OSStatus -1") == true)
+    #expect(power.releases == 1 && !engine.isRecording)
 }
 
 @MainActor

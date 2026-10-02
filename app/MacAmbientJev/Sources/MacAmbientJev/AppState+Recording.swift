@@ -160,17 +160,26 @@ extension AppState {
                 // Damaged durable data must remain available for recovery/diagnosis.
                 keepSession = true
             }
+            var removalFailure: String?
             if keepSession {
                 refreshSavedSessions()
             } else {
-                try? FileManager.default.removeItem(at: sessionURL)
+                do {
+                    try FileManager.default.removeItem(at: sessionURL)
+                } catch {
+                    removalFailure = "空の録音フォルダを削除できませんでした: \(error.localizedDescription)"
+                    refreshSavedSessions()
+                }
             }
             recordingSessionID = nil
             recordingPhase = .idle
-            if case AudioCaptureEngineError.cancelled = error {
+            if case AudioCaptureEngineError.cancelled = error, removalFailure == nil {
                 setCaptureStatus("録音の開始を中止しました", tone: .neutral)
             } else {
-                setCaptureStatus(error.localizedDescription, tone: .error)
+                setCaptureStatus(
+                    [error.localizedDescription, removalFailure].compactMap { $0 }.joined(separator: "。"),
+                    tone: .error
+                )
             }
         }
     }
@@ -209,6 +218,12 @@ extension AppState {
             await stopLiveVADPolling()
             let checkpoint = result.checkpoint
             dropoutCount = result.dropoutCount
+            if let writerFailure = result.writerFailure {
+                await finishAfterWriterFailure(
+                    sessionID: sessionID, checkpoint: checkpoint, message: writerFailure
+                )
+                return
+            }
 
             if let liveVADSession {
                 do {
@@ -239,7 +254,9 @@ extension AppState {
             recordingPhase = .idle
 
             if failureMessage == nil {
-                if result.didOverflow {
+                if let releaseFailure = result.systemAudioReleaseFailure {
+                    setCaptureStatus("録音は保存しましたが、\(releaseFailure)", tone: .warning)
+                } else if result.didOverflow {
                     setCaptureStatus(
                         "録音は保存しましたが、一部の音声が欠落した可能性があります。",
                         tone: .warning
@@ -304,6 +321,31 @@ extension AppState {
         }
     }
 
+    /// The storage failure stays on screen; the healthy durable prefix is finalized from the
+    /// timeline because live results past that prefix were never saved.
+    private func finishAfterWriterFailure(
+        sessionID: UUID, checkpoint: AudioCheckpoint, message: String
+    ) async {
+        liveVADSession = nil
+        liveVADFailureText = nil
+        liveVADSegmentCount = 0
+        cleanupLiveASRState(sessionID: sessionID)
+        await sessionProcessor.cancelLiveTranscription(sessionID: sessionID)
+        recordingSessionID = nil
+        endMicInputSession()
+        captureWarningText = nil
+        isMicrophoneSilent = false
+        recordingPhase = .idle
+        setCaptureStatus(message, tone: .error)
+        enqueueProcessing(
+            .timeline(
+                sessionID: sessionID,
+                checkpoint: checkpoint
+            )
+        )
+        refreshSavedSessions()
+    }
+
     func reportMicSpeechMonitoringUnavailable(sessionID: UUID) {
         guard isCurrentRecording(sessionID), micInputSessionID == sessionID else { return }
         captureEngine.micSpeechMonitoringUnavailable(sessionID: sessionID)
@@ -313,7 +355,9 @@ extension AppState {
     func endMicInputSession() {
         micInputSessionID = nil
         if let status = micInputStatus, status.adjustment.isFailure {
-            micInputStatus = MicInputStatus(warning: nil, adjustment: status.adjustment)
+            micInputStatus = MicInputStatus(
+                warning: nil, speechMonitoringUnavailable: false, adjustment: status.adjustment
+            )
         } else {
             micInputStatus = nil
         }

@@ -59,10 +59,13 @@ extension MicInputWarning {
             "声が小さく録音されています。マイクに近づくか、入力音量を確認してください。"
         case .clipping:
             "音が大きすぎて、声がひずんでいます。マイクから少し離れるか、入力音量を下げてください。"
-        case .monitoringUnavailable:
-            "録音の音量を確認できません。マイクの位置と入力音量を確認してください。"
         }
     }
+}
+
+extension MicInputStatus {
+    public static let speechMonitoringUnavailableText =
+        "発話検出が止まったため、声の大きさを確認できません。マイクの位置と入力音量を確認してください。"
 }
 
 extension MicInputAdjustment {
@@ -76,6 +79,8 @@ extension MicInputAdjustment {
             "このマイクは入力音量を変更できないため、自動調整を使えません。"
         case .pausedByExternalChange:
             "入力設定が変更されたため、この録音では自動調整を止めています。"
+        case .pausedByDefaultDeviceChange:
+            "既定の入力デバイスが変わったため、この録音では自動調整を止めています。録音前の入力音量には戻しません。"
         case .failed(let failure):
             "入力音量を自動調整できませんでした（\(failure.text)）。この録音では自動調整を止めています。"
         case .restoreFailed(let failure):
@@ -88,7 +93,8 @@ extension MicInputAdjustment {
         switch self {
         case .failed, .restoreFailed:
             true
-        case .active, .disabledBySetting, .unsupportedDevice, .pausedByExternalChange:
+        case .active, .disabledBySetting, .unsupportedDevice, .pausedByExternalChange,
+             .pausedByDefaultDeviceChange:
             false
         }
     }

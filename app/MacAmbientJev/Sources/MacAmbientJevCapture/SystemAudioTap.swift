@@ -7,12 +7,15 @@ import Synchronization
 protocol SystemAudioTapProviding: AnyObject {
     var sampleRate: Double { get }
     func start(sink: TimestampedMonoSink, onFailure: @escaping @MainActor @Sendable (String) -> Void) throws
-    func stop()
+    /// Attempts every release, then throws `releaseFailed` naming each operation Core Audio refused.
+    func stop() throws
 }
 
 enum SystemAudioTapError: LocalizedError {
     case permissionDenied
     case unavailable(String)
+    /// `after` is the failure that triggered the release, when one did.
+    case releaseFailed(operations: [String], after: String?)
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +23,23 @@ enum SystemAudioTapError: LocalizedError {
             "システム音声の録音が許可されていません。システム設定の「プライバシーとセキュリティ」→「画面収録とシステムオーディオ録音」で許可してください。許可しても録音を開始できない場合は、アプリを終了して開き直してください。"
         case .unavailable(let detail):
             "システム音声を取得できませんでした: \(detail)"
+        case .releaseFailed(let operations, let after):
+            (after.map { "\($0)。" } ?? "")
+                + "システム音声の取得資源を解放できませんでした（\(operations.joined(separator: "、"))）。アプリを終了して開き直してください"
+        }
+    }
+
+    /// Releases `tap` after `error`; a refused release is reported together with that error.
+    @MainActor
+    static func releasing(_ tap: (any SystemAudioTapProviding)?, after error: any Error) -> any Error {
+        guard let tap else { return error }
+        do {
+            try tap.stop()
+            return error
+        } catch SystemAudioTapError.releaseFailed(let operations, _) {
+            return SystemAudioTapError.releaseFailed(operations: operations, after: error.localizedDescription)
+        } catch {
+            preconditionFailure("SystemAudioTapProviding.stop throws only releaseFailed")
         }
     }
 }
@@ -139,8 +159,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
             ]
             try Self.check(hardware.createAggregate(composition as CFDictionary, &deviceID), "仮想デバイスの作成")
         } catch {
-            stop()
-            throw error
+            throw SystemAudioTapError.releasing(self, after: error)
         }
     }
 
@@ -203,8 +222,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
             try Self.check(hardware.start(deviceID, proc), "録音の開始")
             running = true
         } catch {
-            stop()
-            throw error
+            throw SystemAudioTapError.releasing(self, after: error)
         }
     }
 
@@ -258,17 +276,24 @@ final class SystemAudioTap: SystemAudioTapProviding {
     }
 
 
-    func stop() {
-        if running, let ioProc { _ = hardware.stop(deviceID, ioProc); running = false }
-        if let ioProc { _ = hardware.destroyIOProc(deviceID, ioProc); self.ioProc = nil }
+    /// Each resource is forgotten after one release attempt, so a repeated stop never retries
+    /// a refused release on an ID Core Audio may have reused.
+    func stop() throws {
+        var failed: [String] = []
+        func attempt(_ status: OSStatus, _ operation: String) {
+            if status != noErr { failed.append("\(operation) OSStatus \(status)") }
+        }
+        if running, let ioProc { attempt(hardware.stop(deviceID, ioProc), "録音の停止"); running = false }
+        if let ioProc { attempt(hardware.destroyIOProc(deviceID, ioProc), "音声コールバックの破棄"); self.ioProc = nil }
         if listening, let formatListener {
-            _ = hardware.removeFormatListener(tapID, callbackQueue, formatListener)
+            attempt(hardware.removeFormatListener(tapID, callbackQueue, formatListener), "タップ監視の解除")
         }
         listening = false
         formatListener = nil
         onFailure = nil
-        if deviceID != 0 { _ = hardware.destroyAggregate(deviceID); deviceID = 0 }
-        if tapID != 0 { _ = hardware.destroyTap(tapID); tapID = 0 }
+        if deviceID != 0 { attempt(hardware.destroyAggregate(deviceID), "仮想デバイスの破棄"); deviceID = 0 }
+        if tapID != 0 { attempt(hardware.destroyTap(tapID), "タップの破棄"); tapID = 0 }
+        if !failed.isEmpty { throw SystemAudioTapError.releaseFailed(operations: failed, after: nil) }
     }
 
     deinit { pointers.deallocate(); strides.deallocate() }

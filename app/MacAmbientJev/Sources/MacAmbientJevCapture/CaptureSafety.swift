@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import IOKit.audio
 import IOKit.pwr_mgt
+import MacAmbientJevCore
 
 @MainActor
 protocol RecordingPowerProviding {
@@ -166,6 +167,7 @@ struct CaptureDiskPolicy: Sendable {
 /// Poll-driven so capture timing and disk failure paths are testable without a device.
 @MainActor
 final class CaptureHealthMonitor {
+    private let source: CaptureSource
     private let clock: any CaptureClock
     private let diskSpace: any CaptureDiskSpaceProviding
     private let directory: URL
@@ -178,6 +180,7 @@ final class CaptureHealthMonitor {
     private var warnedSilence = false
 
     init(
+        source: CaptureSource,
         clock: any CaptureClock, diskSpace: any CaptureDiskSpaceProviding, directory: URL,
         startedAt: TimeInterval,
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
@@ -185,6 +188,7 @@ final class CaptureHealthMonitor {
         onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
         onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
     ) {
+        self.source = source
         self.clock = clock
         self.diskSpace = diskSpace
         self.directory = directory
@@ -202,7 +206,10 @@ final class CaptureHealthMonitor {
         // Polling starts only once the first buffer has arrived.
         if lastBufferMillis != 0,
            CaptureHealth.hasStalled(startedAt: startedAt, lastBufferMillis: lastBufferMillis, now: now) {
-            onFailure("マイクから音声が届かなくなりました。録音を停止しました")
+            switch source {
+            case .microphone: onFailure("マイクから音声が届かなくなりました。録音を停止しました")
+            case .systemAudio: onFailure("システム音声が届かなくなりました。録音を停止しました")
+            }
             return false
         }
         if !warnedSilence, CaptureHealth.isSilent(silentSinceMillis: silentSinceMillis, now: now) {

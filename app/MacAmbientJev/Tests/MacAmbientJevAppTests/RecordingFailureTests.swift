@@ -129,6 +129,15 @@ func idleLiveVADFactory() -> LiveVADFactory {
     { _, _, _ in FakeLiveVAD() }
 }
 
+/// A stop with no loss, storage failure or release failure.
+func cleanStopResult(_ checkpoint: AudioCheckpoint) -> AudioCaptureStopResult {
+    AudioCaptureStopResult(
+        checkpoint: checkpoint, didOverflow: false, dropoutCount: 0, gapCount: 0,
+        totalGapFrames: 0, sleepAssertionHeld: true,
+        writerFailure: nil, systemAudioReleaseFailure: nil
+    )
+}
+
 func testCheckpoint() -> AudioCheckpoint {
     AudioCheckpoint(
         committedFrames: 16_000,
@@ -142,14 +151,13 @@ func testCheckpoint() -> AudioCheckpoint {
 }
 
 @MainActor
-@Test("durable write failure stops recording and preserves committed audio")
-func durableWriteFailureStopsCaptureWithoutDeletingAudio() async throws {
+@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix")
+func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
     var startedSessionID: UUID?
     let engine = FakeAppCaptureEngine()
     engine.onStart = { startedSessionID = $0 }
-    engine.stopError = AudioCaptureEngineError.writerFailure("disk full")
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
@@ -165,23 +173,35 @@ func durableWriteFailureStopsCaptureWithoutDeletingAudio() async throws {
     )
     try await writer.append(samples: Array(repeating: 0.25, count: 16_000))
     let checkpoint = await writer.committedSnapshot()
+    let message = AudioCaptureEngineError.writerFailure(
+        DurableAudioWriterError.outOfSpace("chunk-000001.f32le").localizedDescription
+    ).localizedDescription
+    engine.stopResult = AudioCaptureStopResult(
+        checkpoint: checkpoint, didOverflow: false, dropoutCount: 0, gapCount: 0,
+        totalGapFrames: 0, sleepAssertionHeld: true,
+        writerFailure: message, systemAudioReleaseFailure: nil
+    )
 
-    engine.signalFailure("録音の保存に失敗しました: disk full")
+    engine.signalFailure(message)
     #expect(state.recordingPhase == .stopping)
-    #expect(state.statusText == "録音の保存に失敗しました: disk full")
+    #expect(state.statusText == message)
     for _ in 0..<1_000
         where state.recordingPhase != .idle
             || !state.savedSessions.contains(where: { $0.sessionID == sessionID }) {
         try await Task.sleep(for: .milliseconds(10))
     }
     #expect(state.statusTone == .error)
-    #expect(state.statusText == "録音の保存に失敗しました: disk full")
+    #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
     #expect(engine.stopped == 1)
-    #expect(state.pendingProcessing.isEmpty)
+    #expect(state.pendingProcessing.count == 1)
+    guard case .timeline(let queuedSession, let queuedCheckpoint)? = state.pendingProcessing.first else {
+        Issue.record("Expected the healthy prefix to be queued for finalization")
+        return
+    }
+    #expect(queuedSession == sessionID && queuedCheckpoint == checkpoint)
 
     #expect(state.recordingPhase == .idle)
     #expect(!state.isRecording)
-    #expect(FileManager.default.fileExists(atPath: sessionURL.path))
     #expect(state.savedSessions.first(where: { $0.sessionID == sessionID })?.audioSource
         == .recordedTimeline(checkpoint))
     #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
@@ -203,7 +223,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             startedSessionID = sessionID
             if trigger == .startingFailure { engine.signalFailure("capture interrupted") }
         }
-        engine.stopResult = AudioCaptureStopResult(checkpoint: checkpoint, didOverflow: false)
+        engine.stopResult = cleanStopResult(checkpoint)
         let (defaults, suiteName) = try temporaryDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let state = AppState(

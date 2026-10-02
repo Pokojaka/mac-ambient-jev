@@ -8,13 +8,21 @@ public enum SystemAudioPermissionStatus: Sendable {
 }
 
 public enum SystemAudioPermissionResult: Sendable {
-    case authorized, grantedNow, unavailable
+    case authorized, grantedNow
+}
+
+public enum SystemAudioPermissionError: LocalizedError, Equatable {
+    /// The TCC SPI is absent or reported a status this app does not know.
+    case unverifiable
+
+    public var errorDescription: String? {
+        "システム音声の権限を確認できません。このmacOSではシステム音声を録音できません"
+    }
 }
 
 public protocol SystemAudioPermissionProviding: Sendable {
-    /// nil means the private SPI is absent or returned an unknown status.
-    func preflight() async -> SystemAudioPermissionStatus?
-    func request() async -> Bool
+    func preflight() async throws(SystemAudioPermissionError) -> SystemAudioPermissionStatus
+    func request() async throws(SystemAudioPermissionError) -> Bool
 }
 
 /// TCC's preflight caches its first result in-process, including denials.
@@ -48,31 +56,25 @@ public final class TCCSystemAudioPermission: SystemAudioPermissionProviding, @un
 
     deinit { if let handle { dlclose(handle) } }
 
-    public func preflight() async -> SystemAudioPermissionStatus? {
-        await withCheckedContinuation { continuation in
+    public func preflight() async throws(SystemAudioPermissionError) -> SystemAudioPermissionStatus {
+        guard let preflightSymbol, requestSymbol != nil else { throw .unverifiable }
+        let raw = await withCheckedContinuation { continuation in
             queue.async { [self] in
-                guard let preflightSymbol, requestSymbol != nil else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let status: SystemAudioPermissionStatus? = switch preflightSymbol(service, nil) {
-                case 0: .authorized
-                case 1: .denied
-                case 2: .notDetermined
-                default: nil
-                }
-                continuation.resume(returning: status)
+                continuation.resume(returning: preflightSymbol(service, nil))
             }
+        }
+        switch raw {
+        case 0: return .authorized
+        case 1: return .denied
+        case 2: return .notDetermined
+        default: throw .unverifiable
         }
     }
 
-    public func request() async -> Bool {
-        await withCheckedContinuation { continuation in
+    public func request() async throws(SystemAudioPermissionError) -> Bool {
+        guard let requestSymbol else { throw .unverifiable }
+        return await withCheckedContinuation { continuation in
             queue.async { [self] in
-                guard let requestSymbol else {
-                    continuation.resume(returning: false)
-                    return
-                }
                 requestSymbol(service, nil, { granted in
                     continuation.resume(returning: granted)
                 })

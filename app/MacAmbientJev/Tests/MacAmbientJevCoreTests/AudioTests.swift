@@ -79,9 +79,9 @@ import Testing
 
 @Test func audioBlockRingNeverBlocksAndReportsOverflow() {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 4)
-    #expect(ring.push(samples: [1, 2, 3, 4]))
-    #expect(ring.push(samples: [5, 6, 7, 8]))
-    #expect(!ring.push(samples: [9, 10, 11, 12]))
+    #expect(pushMono([1, 2, 3, 4], at: 0, into: ring))
+    #expect(pushMono([5, 6, 7, 8], at: 4, into: ring))
+    #expect(!pushMono([9, 10, 11, 12], at: 8, into: ring))
     #expect(ring.overflowCount == 1)
     #expect(ring.pop()?.samples == [1, 2, 3, 4])
     #expect(ring.pop()?.samples == [5, 6, 7, 8])
@@ -143,8 +143,8 @@ import Testing
     )
     let drain = AudioCaptureDrain(ring: ring, writer: writer)
 
-    #expect(ring.push(samples: [1, 2, 3, 4]))
-    #expect(ring.push(samples: [5, 6]))
+    #expect(pushMono([1, 2, 3, 4], at: 0, into: ring))
+    #expect(pushMono([5, 6], at: 4, into: ring))
 
     #expect(try await drain.drainAvailable() == 2)
     let checkpoint = try await drain.finish()

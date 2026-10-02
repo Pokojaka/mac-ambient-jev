@@ -32,8 +32,8 @@ public enum AudioCaptureEngineError: LocalizedError {
             "マイクから音声が届きませんでした。入力デバイスとマイク権限を確認してください"
         case .noSystemAudioCaptured:
             "システム音声が届きませんでした。再生中の音声とシステムオーディオ録音の権限を確認してください"
-        case .writerFailure(let message):
-            "録音データの保存中にエラーが発生しました: \(message)"
+        case .writerFailure(let cause):
+            "録音の保存に失敗しました: \(cause)"
         case .insufficientDiskSpace(let bytes):
             "90分の録音に必要な空き容量がありません（必要: \(bytes / 1_000_000) MB）"
         case .cancelled:
@@ -53,11 +53,16 @@ public struct AudioCaptureStopResult: Sendable, Equatable {
     public let gapCount: Int
     public let totalGapFrames: Int64
     public let sleepAssertionHeld: Bool
+    /// The storage failure that ended the recording; `checkpoint` is then the healthy durable prefix.
+    public let writerFailure: String?
+    /// Core Audio refused to release part of the system-audio tap.
+    public let systemAudioReleaseFailure: String?
 
     public init(
         checkpoint: AudioCheckpoint, didOverflow: Bool,
-        dropoutCount: UInt64 = 0, gapCount: Int = 0,
-        totalGapFrames: Int64 = 0, sleepAssertionHeld: Bool = false
+        dropoutCount: UInt64, gapCount: Int,
+        totalGapFrames: Int64, sleepAssertionHeld: Bool,
+        writerFailure: String?, systemAudioReleaseFailure: String?
     ) {
         self.checkpoint = checkpoint
         self.didOverflow = didOverflow || !checkpoint.gapEvents.isEmpty
@@ -65,23 +70,8 @@ public struct AudioCaptureStopResult: Sendable, Equatable {
         self.gapCount = gapCount
         self.totalGapFrames = totalGapFrames
         self.sleepAssertionHeld = sleepAssertionHeld
-    }
-}
-
-private extension AudioCheckpoint {
-    /// Replacement silence fills the timeline but is not captured input.
-    var hasCapturedInput: Bool {
-        guard committedFrames > 0 else { return false }
-        var coveredThrough: Int64 = 0
-        for gap in gapEvents {
-            if gap.startFrame > coveredThrough { return true }
-            guard gap.startFrame >= 0, gap.startFrame < committedFrames,
-                  gap.frameCount > 0 else { continue }
-            let end = gap.startFrame + min(gap.frameCount, committedFrames - gap.startFrame)
-            coveredThrough = max(coveredThrough, end)
-            if coveredThrough >= committedFrames { return false }
-        }
-        return coveredThrough < committedFrames
+        self.writerFailure = writerFailure
+        self.systemAudioReleaseFailure = systemAudioReleaseFailure
     }
 }
 
@@ -229,7 +219,7 @@ public final class AudioCaptureEngine {
     private var awaitingFirstBuffer = false
 
     private var checkingSystemPermission = false
-    private var permissionAnswer: Bool?
+    private var permissionAnswer: Result<Bool, SystemAudioPermissionError>?
     private var permissionRequestTask: Task<Void, Never>?
     public private(set) var systemAudioPermissionResult: SystemAudioPermissionResult?
     private var pendingPermissionID: UUID?
@@ -327,7 +317,7 @@ public final class AudioCaptureEngine {
         if source == .systemAudio {
             checkingSystemPermission = true
             defer { checkingSystemPermission = false }
-            switch await systemAudioPermission.preflight() {
+            switch try await systemAudioPermission.preflight() {
             case .denied, .notDetermined:
                 if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
                 onPermissionWaiting()
@@ -335,9 +325,14 @@ public final class AudioCaptureEngine {
                 let requestID = UUID()
                 pendingPermissionID = requestID
                 permissionRequestTask = Task { [weak self, systemAudioPermission] in
-                    let granted = await systemAudioPermission.request()
+                    let answer: Result<Bool, SystemAudioPermissionError>
+                    do throws(SystemAudioPermissionError) {
+                        answer = .success(try await systemAudioPermission.request())
+                    } catch {
+                        answer = .failure(error)
+                    }
                     guard let self, self.pendingPermissionID == requestID else { return }
-                    self.permissionAnswer = granted
+                    self.permissionAnswer = answer
                 }
                 while permissionAnswer == nil {
                     if startingCancelled || Task.isCancelled {
@@ -350,12 +345,10 @@ public final class AudioCaptureEngine {
                 }
                 pendingPermissionID = nil
                 permissionRequestTask = nil
-                guard permissionAnswer == true else { throw SystemAudioTapError.permissionDenied }
+                guard try permissionAnswer!.get() else { throw SystemAudioTapError.permissionDenied }
                 systemAudioPermissionResult = .grantedNow
             case .authorized:
                 systemAudioPermissionResult = .authorized
-            case nil:
-                systemAudioPermissionResult = .unavailable
             }
             if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
         }
@@ -391,8 +384,166 @@ public final class AudioCaptureEngine {
             sampleRate = format.mSampleRate
             inputChannels = Int(format.mChannelsPerFrame)
         }
-        var handedOff = false
-        defer { if !handedOff { tapBackend?.stop() } }
+        let run: PreparedRun
+        do {
+            run = try prepareRun(
+                sessionID: sessionID, sampleRate: sampleRate, inputChannels: inputChannels,
+                input: input, onFailure: onFailure, onWarning: onWarning
+            )
+            if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
+        } catch {
+            throw SystemAudioTapError.releasing(tapBackend, after: error)
+        }
+        let (ring, drain, sink) = (run.ring, run.drain, run.sink)
+        let (captureSession, audioOutput) = (run.captureSession, run.audioOutput)
+        awaitingFirstBuffer = true
+        startingFailure = nil
+        let reportFailure: @MainActor @Sendable (String) -> Void = { [weak self] message in
+            if self?.awaitingFirstBuffer == true { self?.startingFailure = message }
+            onFailure(message)
+        }
+        let powerAcquired = power.begin()
+        sleepAssertionHeld = powerAcquired
+        if !powerAcquired {
+            onWarning("スリープ防止を設定できませんでした。録音中はスリープを避けてください")
+        }
+        let startedAt = clock.now()
+        do {
+            if let tapBackend {
+                try tapBackend.start(sink: sink, onFailure: reportFailure)
+            } else if let captureSession {
+                captureSession.startRunning()
+                guard captureSession.isRunning else { throw AudioCaptureEngineError.inputUnavailable }
+            }
+        } catch {
+            audioOutput?.setSampleBufferDelegate(nil, queue: nil)
+            captureSession?.stopRunning()
+            power.end()
+            awaitingFirstBuffer = false
+            throw SystemAudioTapError.releasing(tapBackend, after: error)
+        }
+        let task = Task.detached(priority: .utility) { () -> String? in
+            while !Task.isCancelled {
+                do {
+                    _ = try await drain.drainAvailable()
+                } catch {
+                    let cause = error.localizedDescription
+                    await reportFailure(AudioCaptureEngineError.writerFailure(cause).localizedDescription)
+                    return cause
+                }
+                do { try await Task.sleep(for: .milliseconds(20)) }
+                catch { return nil }
+            }
+            return nil
+        }
+        installCapture(
+            session: captureSession, output: audioOutput, receiver: run.receiver,
+            callbackQueue: run.callbackQueue, tap: tapBackend, sink: sink,
+            ring: ring, drain: drain, drainTask: task, sessionID: sessionID,
+            timeline: ProcessingTimeline(
+                sampleRate: sampleRate, channelCount: 1, sampleFormat: .float32LE
+            )
+        )
+        if let captureSession, let device {
+            failureObservers.start(session: captureSession, device: device, onFailure: reportFailure)
+            if CaptureInputWarnings.isLowRateBluetooth(transportType: device.transportType, sampleRate: sampleRate) {
+                onWarning("Bluetoothマイクは音質が低下します")
+            }
+        }
+        while true {
+            let state = CaptureStartStatus.evaluate(
+                startedAt: startedAt, now: clock.now(),
+                lastBufferMillis: sink.lastBufferMillis.load(ordering: .relaxed),
+                cancelled: startingCancelled || Task.isCancelled, failure: startingFailure
+            )
+            switch state {
+            case .ready:
+                awaitingFirstBuffer = false
+                let monitor = CaptureHealthMonitor(
+                    source: source, clock: clock, diskSpace: diskSpace, directory: paths.sessionsRoot,
+                    startedAt: startedAt, onFailure: reportFailure,
+                    onWarning: onWarning, onDropouts: onDropouts,
+                    onSilenceChanged: onSilenceChanged
+                )
+                healthTask = Task {
+                    while !Task.isCancelled, self.activeSessionID == sessionID {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
+                        guard monitor.poll(
+                            lastBufferMillis: sink.lastBufferMillis.load(ordering: .relaxed),
+                            silentSinceMillis: sink.silentSinceMillis.load(ordering: .relaxed),
+                            dropouts: ring.dropoutCount
+                        ) else { break }
+                    }
+                }
+                if let device, let micConfiguration {
+                    beginMicInputVolume(
+                        captureDeviceUID: device.uniqueID, sessionID: sessionID,
+                        automaticAdjustmentEnabled: micConfiguration.automaticAdjustmentEnabled,
+                        onStatus: micConfiguration.onStatus
+                    )
+                }
+                if source == .systemAudio {
+                    let outputMonitor = SystemAudioOutputMonitor(
+                        provider: outputProcesses, captureStartMillis: Int64(startedAt * 1_000)
+                    )
+                    outputMonitorTask = Task {
+                        while !Task.isCancelled, self.activeSessionID == sessionID {
+                            try? await Task.sleep(for: .seconds(1))
+                            guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
+                            let warned = await outputMonitor.poll(
+                                nowMillis: Int64(clock.now() * 1_000),
+                                everNonZero: sink.everNonZero.load(ordering: .acquiring)
+                            )
+                            guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
+                            if warned && !sink.everNonZero.load(ordering: .acquiring) {
+                                onWarning("システム音声が届いていません。システム設定の「プライバシーとセキュリティ」で本アプリのシステムオーディオ録音が許可されているか確認してください")
+                            }
+                        }
+                    }
+                }
+                return
+            case .waiting:
+                try? await Task.sleep(for: .milliseconds(50))
+            case .cancelled, .failed, .timedOut:
+                awaitingFirstBuffer = false
+                let startupError: AudioCaptureEngineError = switch state {
+                case .cancelled: .cancelled
+                case .failed(let message): .captureFailure(message)
+                case .timedOut: source == .systemAudio ? .noSystemAudioCaptured : .noAudioCaptured
+                default: preconditionFailure("Unexpected startup state")
+                }
+                do {
+                    _ = try await stop()
+                } catch SystemAudioTapError.releaseFailed(let operations, _) {
+                    throw SystemAudioTapError.releaseFailed(
+                        operations: operations, after: startupError.localizedDescription
+                    )
+                } catch {
+                    // Startup ended before audio was confirmed; the startup outcome is the reported
+                    // error, and AppState decides from the durable files whether to keep the session.
+                }
+                throw startupError
+            }
+        }
+    }
+
+    private struct PreparedRun {
+        let ring: AudioBlockRing
+        let drain: AudioCaptureDrain
+        let sink: TimestampedMonoSink
+        let captureSession: AVCaptureSession?
+        let audioOutput: AVCaptureAudioDataOutput?
+        let receiver: AudioCaptureReceiver?
+        let callbackQueue: DispatchQueue?
+    }
+
+    /// Creates the durable writer, ring and (for a microphone) the unstarted capture session.
+    private func prepareRun(
+        sessionID: UUID, sampleRate: Double, inputChannels: Int, input: AVCaptureDeviceInput?,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void,
+        onWarning: @escaping @MainActor @Sendable (String) -> Void
+    ) throws -> PreparedRun {
         guard sampleRate > 0, inputChannels > 0 else {
             throw AudioCaptureEngineError.invalidInputFormat
         }
@@ -401,10 +552,8 @@ public final class AudioCaptureEngine {
             sampleRate: sampleRate, channelCount: 1,
             onWarning: onWarning
         )
-        let processingDirectory = paths.sessionsRoot
-            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-            .appending(path: "audio", directoryHint: .isDirectory)
-            .appending(path: "processing", directoryHint: .isDirectory)
+        let processingDirectory = SessionLayout(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+            .processingDirectory
         let writer = try DurableAudioWriter(
             directory: processingDirectory, sampleRate: sampleRate,
             channelCount: 1, chunkDurationSeconds: chunkDurationSeconds
@@ -452,131 +601,10 @@ public final class AudioCaptureEngine {
             receiver = configuredReceiver
             callbackQueue = queue
         }
-        if startingCancelled || Task.isCancelled { throw AudioCaptureEngineError.cancelled }
-        awaitingFirstBuffer = true
-        startingFailure = nil
-        let reportFailure: @MainActor @Sendable (String) -> Void = { [weak self] message in
-            if self?.awaitingFirstBuffer == true { self?.startingFailure = message }
-            onFailure(message)
-        }
-        let powerAcquired = power.begin()
-        sleepAssertionHeld = powerAcquired
-        if !powerAcquired {
-            onWarning("スリープ防止を設定できませんでした。録音中はスリープを避けてください")
-        }
-        let startedAt = clock.now()
-        do {
-            if let tapBackend {
-                try tapBackend.start(sink: sink, onFailure: reportFailure)
-            } else if let captureSession {
-                captureSession.startRunning()
-                guard captureSession.isRunning else { throw AudioCaptureEngineError.inputUnavailable }
-            }
-        } catch {
-            audioOutput?.setSampleBufferDelegate(nil, queue: nil)
-            captureSession?.stopRunning()
-            power.end()
-            awaitingFirstBuffer = false
-            throw error
-        }
-        let task = Task.detached(priority: .utility) { () -> String? in
-            while !Task.isCancelled {
-                do {
-                    _ = try await drain.drainAvailable()
-                } catch {
-                    let message = error.localizedDescription
-                    await reportFailure("録音の保存に失敗しました: \(message)")
-                    return message
-                }
-                do { try await Task.sleep(for: .milliseconds(20)) }
-                catch { return nil }
-            }
-            return nil
-        }
-        installCapture(
-            session: captureSession, output: audioOutput, receiver: receiver,
-            callbackQueue: callbackQueue, tap: tapBackend, sink: sink,
-            ring: ring, drain: drain, drainTask: task, sessionID: sessionID,
-            timeline: ProcessingTimeline(
-                sampleRate: sampleRate, channelCount: 1, sampleFormat: .float32LE
-            )
+        return PreparedRun(
+            ring: ring, drain: drain, sink: sink, captureSession: captureSession,
+            audioOutput: audioOutput, receiver: receiver, callbackQueue: callbackQueue
         )
-        handedOff = true
-        if let captureSession, let device {
-            failureObservers.start(session: captureSession, device: device, onFailure: reportFailure)
-            if CaptureInputWarnings.isLowRateBluetooth(transportType: device.transportType, sampleRate: sampleRate) {
-                onWarning("Bluetoothマイクは音質が低下します")
-            }
-        }
-        while true {
-            let state = CaptureStartStatus.evaluate(
-                startedAt: startedAt, now: clock.now(),
-                lastBufferMillis: sink.lastBufferMillis.load(ordering: .relaxed),
-                cancelled: startingCancelled || Task.isCancelled, failure: startingFailure
-            )
-            switch state {
-            case .ready:
-                awaitingFirstBuffer = false
-                let monitor = CaptureHealthMonitor(
-                    clock: clock, diskSpace: diskSpace, directory: paths.sessionsRoot,
-                    startedAt: startedAt, onFailure: reportFailure,
-                    onWarning: onWarning, onDropouts: onDropouts,
-                    onSilenceChanged: onSilenceChanged
-                )
-                healthTask = Task {
-                    while !Task.isCancelled, self.activeSessionID == sessionID {
-                        try? await Task.sleep(for: .milliseconds(250))
-                        guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
-                        guard monitor.poll(
-                            lastBufferMillis: sink.lastBufferMillis.load(ordering: .relaxed),
-                            silentSinceMillis: sink.silentSinceMillis.load(ordering: .relaxed),
-                            dropouts: ring.dropoutCount
-                        ) else { break }
-                    }
-                }
-                if let device, let micConfiguration {
-                    beginMicInputVolume(
-                        captureDeviceUID: device.uniqueID, sessionID: sessionID,
-                        automaticAdjustmentEnabled: micConfiguration.automaticAdjustmentEnabled,
-                        onStatus: micConfiguration.onStatus
-                    )
-                }
-                if source == .systemAudio {
-                    let outputMonitor = SystemAudioOutputMonitor(
-                        provider: outputProcesses, captureStartMillis: Int64(startedAt * 1_000)
-                    )
-                    outputMonitorTask = Task {
-                        while !Task.isCancelled, self.activeSessionID == sessionID {
-                            try? await Task.sleep(for: .seconds(1))
-                            guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
-                            let warned = await outputMonitor.poll(
-                                nowMillis: Int64(clock.now() * 1_000),
-                                everNonZero: sink.everNonZero.load(ordering: .acquiring)
-                            )
-                            guard !Task.isCancelled, self.activeSessionID == sessionID else { break }
-                            if warned && !sink.everNonZero.load(ordering: .acquiring) {
-                                onWarning("システム音声が届いていません。システム設定の「プライバシーとセキュリティ」で本アプリのシステムオーディオ録音が許可されているか確認してください")
-                            }
-                        }
-                    }
-                }
-                return
-            case .waiting:
-                try? await Task.sleep(for: .milliseconds(50))
-            case .cancelled, .failed, .timedOut:
-                awaitingFirstBuffer = false
-                _ = try? await stop()
-                switch state {
-                case .cancelled: throw AudioCaptureEngineError.cancelled
-                case .failed(let message): throw AudioCaptureEngineError.captureFailure(message)
-                case .timedOut:
-                    throw source == .systemAudio
-                        ? AudioCaptureEngineError.noSystemAudioCaptured
-                        : AudioCaptureEngineError.noAudioCaptured
-                default: preconditionFailure("Unexpected startup state")
-                }
-            }
-        }
     }
 
     /// Installs an already prepared run; the session is started by start().
@@ -668,10 +696,28 @@ public final class AudioCaptureEngine {
         outputMonitorTask?.cancel()
         outputMonitorTask = nil
         session?.stopRunning()
-        tap?.stop()
+        // The process is exiting and has no surface left to show a refused release on.
+        if let operations = releaseTap() {
+            FileHandle.standardError.write(Data((SystemAudioTapError.releaseFailed(
+                operations: operations, after: nil
+            ).localizedDescription + "\n").utf8))
+        }
         tap = nil
         failureObservers.stop()
         power.end()
+    }
+
+    /// Returns the operations Core Audio refused, if any.
+    private func releaseTap() -> [String]? {
+        guard let tap else { return nil }
+        do {
+            try tap.stop()
+            return nil
+        } catch SystemAudioTapError.releaseFailed(let operations, _) {
+            return operations
+        } catch {
+            preconditionFailure("SystemAudioTapProviding.stop throws only releaseFailed")
+        }
     }
 
     /// Returns the portion of the recording that is already durable on disk.
@@ -690,7 +736,7 @@ public final class AudioCaptureEngine {
         output?.setSampleBufferDelegate(nil, queue: nil)
         session?.stopRunning()
         callbackQueue?.sync {}
-        tap?.stop()
+        let releaseFailure = releaseTap()
         ring.finish(tailFrame: sink.lastEndFrame)
         healthTask?.cancel()
         healthTask = nil
@@ -718,19 +764,42 @@ public final class AudioCaptureEngine {
             self.power.end()
             self.sleepAssertionHeld = false
         }
-        let backgroundFailure: String?
+        do {
+            return try await finishRun(
+                ring: ring, drain: drain, sink: sink,
+                systemAudioReleaseFailure: releaseFailure.map {
+                    SystemAudioTapError.releaseFailed(operations: $0, after: nil).localizedDescription
+                }
+            )
+        } catch {
+            guard let releaseFailure else { throw error }
+            throw SystemAudioTapError.releaseFailed(operations: releaseFailure, after: error.localizedDescription)
+        }
+    }
+
+    /// A storage failure keeps the healthy durable prefix: the flushed checkpoint when the final
+    /// flush succeeds, otherwise the chunks the writer had already published.
+    private func finishRun(
+        ring: AudioBlockRing, drain: AudioCaptureDrain, sink: TimestampedMonoSink,
+        systemAudioReleaseFailure: String?
+    ) async throws -> AudioCaptureStopResult {
+        var writerFailureCause: String?
         if let drainTask {
             drainTask.cancel()
-            backgroundFailure = await drainTask.value
-        } else {
-            backgroundFailure = nil
+            writerFailureCause = await drainTask.value
         }
-        let checkpoint = try await drain.finish()
+        let checkpoint: AudioCheckpoint
+        do {
+            checkpoint = try await drain.finish()
+        } catch {
+            writerFailureCause = writerFailureCause ?? error.localizedDescription
+            checkpoint = await drain.durableCheckpoint()
+        }
         let gaps = await drain.gapStatistics()
-        if let backgroundFailure {
-            throw AudioCaptureEngineError.writerFailure(backgroundFailure)
-        }
-        guard checkpoint.hasCapturedInput else {
+        guard checkpoint.hasCapturedAudio else {
+            if let writerFailureCause {
+                throw AudioCaptureEngineError.writerFailure(writerFailureCause)
+            }
             if sink.invalidBufferCount.load(ordering: .relaxed) > 0 {
                 throw AudioCaptureEngineError.invalidInputFormat
             }
@@ -746,7 +815,11 @@ public final class AudioCaptureEngine {
             dropoutCount: ring.dropoutCount,
             gapCount: gaps.count,
             totalGapFrames: gaps.frames,
-            sleepAssertionHeld: sleepAssertionHeld
+            sleepAssertionHeld: sleepAssertionHeld,
+            writerFailure: writerFailureCause.map {
+                AudioCaptureEngineError.writerFailure($0).localizedDescription
+            },
+            systemAudioReleaseFailure: systemAudioReleaseFailure
         )
     }
 }

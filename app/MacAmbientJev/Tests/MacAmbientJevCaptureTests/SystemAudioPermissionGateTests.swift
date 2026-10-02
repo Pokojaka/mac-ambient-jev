@@ -4,17 +4,21 @@ import Testing
 import MacAmbientJevCore
 
 private actor GatePermission: SystemAudioPermissionProviding {
+    /// nil models an absent SPI or an unknown TCC status.
     let status: SystemAudioPermissionStatus?
     private var answer: Bool?
     private var continuation: CheckedContinuation<Bool, Never>?
     private(set) var requests = 0
 
-    init(_ status: SystemAudioPermissionStatus?, answer: Bool? = nil) {
+    init(_ status: SystemAudioPermissionStatus?, answer: Bool?) {
         self.status = status
         self.answer = answer
     }
-    func preflight() async -> SystemAudioPermissionStatus? { status }
-    func request() async -> Bool {
+    func preflight() async throws(SystemAudioPermissionError) -> SystemAudioPermissionStatus {
+        guard let status else { throw .unverifiable }
+        return status
+    }
+    func request() async throws(SystemAudioPermissionError) -> Bool {
         requests += 1
         if let answer { return answer }
         return await withCheckedContinuation { continuation = $0 }
@@ -34,7 +38,7 @@ private final class GateTap: SystemAudioTapProviding {
         starts += 1
         sink.silence(startFrame: 0, frameCount: 4)
     }
-    func stop() {}
+    func stop() throws {}
 }
 
 private struct GateDisk: CaptureDiskSpaceProviding {
@@ -90,7 +94,7 @@ func grantedAfterDeniedPreflightSystemAudioGate() async throws {
 @Test("Pending grant waits without creating tap or beginning first-buffer deadline")
 func grantedSystemAudioGate() async throws {
     let tap = GateTap()
-    let permission = GatePermission(.notDetermined)
+    let permission = GatePermission(.notDetermined, answer: nil)
     var creations = 0
     var waiting = false
     let engine = gateEngine(permission, tap: tap) { creations += 1 }
@@ -114,7 +118,7 @@ func grantedSystemAudioGate() async throws {
 @Test("Pending denial never creates a tap")
 func deniedAfterPromptSystemAudioGate() async throws {
     let tap = GateTap()
-    let permission = GatePermission(.notDetermined)
+    let permission = GatePermission(.notDetermined, answer: nil)
     var creations = 0
     let engine = gateEngine(permission, tap: tap) { creations += 1 }
     let task = Task { try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }) }
@@ -129,17 +133,18 @@ func deniedAfterPromptSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Unavailable permission SPI falls back to tap capture")
-func unavailableSystemAudioGate() async throws {
+@Test("An absent permission SPI or unknown status refuses to start without creating a tap")
+func unverifiableSystemAudioGate() async throws {
     let tap = GateTap()
-    let permission = GatePermission(nil)
+    let permission = GatePermission(nil, answer: nil)
     var creations = 0
     let engine = gateEngine(permission, tap: tap) { creations += 1 }
-    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
-    #expect(creations == 1 && tap.starts == 1)
-    #expect(engine.systemAudioPermissionResult == .unavailable)
+    await #expect(throws: SystemAudioPermissionError.unverifiable) {
+        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+    }
+    #expect(creations == 0 && tap.starts == 0 && !engine.isRecording)
+    #expect(engine.systemAudioPermissionResult == nil)
     #expect(await permission.requests == 0)
-    _ = try await engine.stop()
 }
 
 @MainActor
@@ -147,7 +152,7 @@ func unavailableSystemAudioGate() async throws {
       arguments: [SystemAudioPermissionStatus.notDetermined, .denied])
 func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async throws {
     let tap = GateTap()
-    let permission = GatePermission(status)
+    let permission = GatePermission(status, answer: nil)
     var creations = 0
     let engine = gateEngine(permission, tap: tap) { creations += 1 }
     let task = Task { try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }) }

@@ -156,7 +156,7 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
         let elements: [UInt32]
         let isSettable: Bool
         var known: [UInt32: Float]
-        let onExternalChange: @MainActor @Sendable () -> Void
+        let onChange: @MainActor @Sendable (MicInputVolumeChange) -> Void
     }
 
     private struct OwnWrite {
@@ -180,7 +180,7 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
     }
 
     func bind(captureDeviceUID: String,
-              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+              onChange: @escaping @MainActor @Sendable (MicInputVolumeChange) -> Void) throws(MicInputVolumeFailure)
         -> MicInputVolumeSnapshot {
         precondition(binding == nil, "unbind before binding again")
         let defaultDevice = try hal.defaultInputDevice()
@@ -192,7 +192,7 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
         for element in elements { known[element] = try read(device, element) }
         generation += 1
         binding = Binding(device: device, uid: captureDeviceUID, elements: elements,
-                          isSettable: isSettable, known: known, onExternalChange: onExternalChange)
+                          isSettable: isSettable, known: known, onChange: onChange)
         if isSettable {
             do throws(MicInputVolumeFailure) {
                 try listen(device: device, elements: elements)
@@ -268,6 +268,7 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
     private func received(_ addresses: [AudioObjectPropertyAddress], token: UInt64) {
         guard token == generation, let binding else { return }
         var external = false
+        var defaultInputChanged = false
         for address in addresses {
             switch address.mSelector {
             case kAudioDevicePropertyVolumeScalar:
@@ -285,11 +286,17 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
                 } catch {
                     external = true
                 }
+            case kAudioHardwarePropertyDefaultInputDevice:
+                defaultInputChanged = true
             default:
                 external = true
             }
         }
-        if external { binding.onExternalChange() }
+        if defaultInputChanged {
+            binding.onChange(.defaultInputDevice)
+        } else if external {
+            binding.onChange(.controls)
+        }
     }
 
     private func resolveOwnWrite(acknowledged: Bool) {

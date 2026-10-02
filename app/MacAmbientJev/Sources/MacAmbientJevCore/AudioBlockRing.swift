@@ -116,26 +116,6 @@ public final class AudioBlockRing: @unchecked Sendable {
         gapsBefore.deallocate()
     }
 
-    /// Legacy contiguous, mono-style push for non-realtime callers.
-    @discardableResult
-    public func push(samples: [Float]) -> Bool {
-        let start = producerEndFrame
-        let (end, overflow) = start.addingReportingOverflow(Int64(samples.count))
-        let (rawEnd, rawOverflow) = producerRawEndFrame.addingReportingOverflow(Int64(samples.count))
-        guard !overflow && !rawOverflow else { recordOverflow(); return false }
-        producerEndFrame = end
-        producerRawEndFrame = rawEnd
-        guard samples.count <= blockSampleCapacity,
-              let slot = reserveProducerSlot() else {
-            recordOverflow(startFrame: start, frameCount: Int64(samples.count))
-            return false
-        }
-        let destination = storage.advanced(by: slot * blockSampleCapacity)
-        for index in samples.indices { destination[index] = samples[index] }
-        publish(slot: slot, startFrame: start, frameCount: Int64(samples.count), sampleCount: samples.count)
-        return true
-    }
-
     /// PTS-relative input, in device-rate frames. A callback larger than one slot is split
     /// without allocating an intermediate interleaved buffer.
     @discardableResult

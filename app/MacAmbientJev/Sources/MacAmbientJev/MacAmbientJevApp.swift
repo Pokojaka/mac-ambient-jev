@@ -223,6 +223,12 @@ private struct ContentView: View {
 
     @ViewBuilder
     private func micInputStatusRows(_ status: MicInputStatus) -> some View {
+        if appState.isRecording, status.speechMonitoringUnavailable {
+            Text(MicInputStatus.speechMonitoringUnavailableText)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
         if appState.isRecording, let warning = status.warning {
             Text(warning.text)
                 .font(.caption)
@@ -236,7 +242,7 @@ private struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            case .unsupportedDevice, .pausedByExternalChange:
+            case .unsupportedDevice, .pausedByExternalChange, .pausedByDefaultDeviceChange:
                 Text(status.adjustment.text)
                     .font(.caption)
                     .foregroundStyle(.orange)

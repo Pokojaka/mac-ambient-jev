@@ -29,7 +29,6 @@ public struct MicLevelWindow: Sendable, Equatable {
 public enum MicInputWarning: Sendable, Equatable {
     case low
     case clipping
-    case monitoringUnavailable
 }
 
 public enum MicInputVolumeFailure: Error, Sendable, Equatable {
@@ -53,16 +52,20 @@ public enum MicInputAdjustment: Sendable, Equatable {
     case disabledBySetting
     case unsupportedDevice
     case pausedByExternalChange
+    case pausedByDefaultDeviceChange
     case failed(MicInputVolumeFailure)
     case restoreFailed(MicInputVolumeFailure)
 }
 
+/// The level warning, speech-monitoring availability and adjustment state are independent facts.
 public struct MicInputStatus: Sendable, Equatable {
     public let warning: MicInputWarning?
+    public let speechMonitoringUnavailable: Bool
     public let adjustment: MicInputAdjustment
 
-    public init(warning: MicInputWarning?, adjustment: MicInputAdjustment) {
+    public init(warning: MicInputWarning?, speechMonitoringUnavailable: Bool, adjustment: MicInputAdjustment) {
         self.warning = warning
+        self.speechMonitoringUnavailable = speechMonitoringUnavailable
         self.adjustment = adjustment
     }
 }

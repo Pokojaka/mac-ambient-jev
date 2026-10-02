@@ -228,6 +228,12 @@ struct CaptureSystemAudioCommand {
         for failure in failures.messages where !errors.contains(failure) {
             errors.append(failure)
         }
+        if let writerFailure = result?.writerFailure, !errors.contains(writerFailure) {
+            errors.append(writerFailure)
+        }
+        if let releaseFailure = result?.systemAudioReleaseFailure {
+            errors.append(releaseFailure)
+        }
         if result?.didOverflow == true {
             errors.append("Audio input was lost during capture")
         }
@@ -255,7 +261,6 @@ struct CaptureSystemAudioCommand {
         switch engine.systemAudioPermissionResult {
         case .authorized: permission = "authorized"
         case .grantedNow: permission = "granted-now"
-        case .unavailable: permission = "unavailable"
         case nil: permission = nil
         }
         return CaptureSummary(

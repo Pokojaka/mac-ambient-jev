@@ -110,8 +110,8 @@ private final class FakeHAL: MicInputVolumeHAL {
 }
 
 @MainActor
-private final class ExternalCounter {
-    var count = 0
+private final class ChangeLog {
+    var changes: [MicInputVolumeChange] = []
 }
 
 @MainActor
@@ -157,7 +157,7 @@ private final class FakeVolume: MicInputVolumeControlling {
     private(set) var binds = 0
     private(set) var unbinds = 0
     private(set) var writes: [[MicInputVolumeElement]] = []
-    private var onExternalChange: (@MainActor @Sendable () -> Void)?
+    private var onChange: (@MainActor @Sendable (MicInputVolumeChange) -> Void)?
     private var hung: CheckedContinuation<Void, Never>?
 
     init(values: [UInt32: Float]) { self.values = values }
@@ -171,11 +171,11 @@ private final class FakeVolume: MicInputVolumeControlling {
     }
 
     func bind(captureDeviceUID: String,
-              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+              onChange: @escaping @MainActor @Sendable (MicInputVolumeChange) -> Void) throws(MicInputVolumeFailure)
         -> MicInputVolumeSnapshot {
         binds += 1
         if let bindFailure { throw bindFailure }
-        self.onExternalChange = onExternalChange
+        self.onChange = onChange
         return current
     }
 
@@ -209,7 +209,11 @@ private final class FakeVolume: MicInputVolumeControlling {
 
     func manualChange(_ element: UInt32, to value: Float) {
         values[element] = value
-        onExternalChange?()
+        onChange?(.controls)
+    }
+
+    func changeDefaultInputDevice() {
+        onChange?(.defaultInputDevice)
     }
 
     func releaseHungWrite() {
@@ -271,7 +275,7 @@ private final class Harness {
         let hal = FakeHAL()
         hal.volumes[7] = [0: 0.53, 1: 0.4]
         hal.settable = [0, 1]
-        let snapshot = try adapter(hal, timeout: 1).bind(captureDeviceUID: "mic") {}
+        let snapshot = try adapter(hal, timeout: 1).bind(captureDeviceUID: "mic") { _ in }
         #expect(snapshot == MicInputVolumeSnapshot(deviceUID: "mic", elements: elements([(0, 0.53)]), isSettable: true))
         #expect(hal.writes.isEmpty)
         #expect(hal.listeners.map(\.1.mSelector) == [
@@ -287,30 +291,30 @@ private final class Harness {
         full.channels[7] = 2
         full.volumes[7] = [1: 0.5, 2: 0.4]
         full.settable = [1, 2]
-        #expect(try adapter(full, timeout: 1).bind(captureDeviceUID: "mic") {} ==
+        #expect(try adapter(full, timeout: 1).bind(captureDeviceUID: "mic") { _ in } ==
                 MicInputVolumeSnapshot(deviceUID: "mic", elements: elements([(1, 0.5), (2, 0.4)]), isSettable: true))
 
         let partial = FakeHAL()
         partial.channels[7] = 2
         partial.volumes[7] = [1: 0.5, 2: 0.4]
         partial.settable = [1]
-        #expect(try adapter(partial, timeout: 1).bind(captureDeviceUID: "mic") {}.isSettable == false)
+        #expect(try adapter(partial, timeout: 1).bind(captureDeviceUID: "mic") { _ in }.isSettable == false)
         #expect(partial.listeners.isEmpty)
 
         let missingChannel = FakeHAL()
         missingChannel.channels[7] = 2
         missingChannel.volumes[7] = [1: 0.5]
         missingChannel.settable = [1]
-        #expect(try adapter(missingChannel, timeout: 1).bind(captureDeviceUID: "mic") {}.isSettable == false)
+        #expect(try adapter(missingChannel, timeout: 1).bind(captureDeviceUID: "mic") { _ in }.isSettable == false)
 
         let readOnlyMain = FakeHAL()
         readOnlyMain.settable = []
-        #expect(try adapter(readOnlyMain, timeout: 1).bind(captureDeviceUID: "mic") {} ==
+        #expect(try adapter(readOnlyMain, timeout: 1).bind(captureDeviceUID: "mic") { _ in } ==
                 MicInputVolumeSnapshot(deviceUID: "mic", elements: [], isSettable: false))
 
         let absent = FakeHAL()
         absent.volumes[7] = [:]
-        #expect(try adapter(absent, timeout: 1).bind(captureDeviceUID: "mic") {} ==
+        #expect(try adapter(absent, timeout: 1).bind(captureDeviceUID: "mic") { _ in } ==
                 MicInputVolumeSnapshot(deviceUID: "mic", elements: [], isSettable: false))
         #expect(absent.listeners.isEmpty && absent.writes.isEmpty)
     }
@@ -320,17 +324,17 @@ private final class Harness {
     func adapterRejectsUncertainIdentity() {
         let unknown = FakeHAL()
         #expect(throws: MicInputVolumeFailure.deviceIdentityUnverified) {
-            try adapter(unknown, timeout: 1).bind(captureDeviceUID: "missing") {}
+            try adapter(unknown, timeout: 1).bind(captureDeviceUID: "missing") { _ in }
         }
         let mismatched = FakeHAL()
         mismatched.uids[7] = "renamed"
         #expect(throws: MicInputVolumeFailure.deviceIdentityUnverified) {
-            try adapter(mismatched, timeout: 1).bind(captureDeviceUID: "mic") {}
+            try adapter(mismatched, timeout: 1).bind(captureDeviceUID: "mic") { _ in }
         }
         let notDefault = FakeHAL()
         notDefault.defaultDevice = 9
         #expect(throws: MicInputVolumeFailure.deviceIdentityUnverified) {
-            try adapter(notDefault, timeout: 1).bind(captureDeviceUID: "mic") {}
+            try adapter(notDefault, timeout: 1).bind(captureDeviceUID: "mic") { _ in }
         }
         #expect(unknown.listeners.isEmpty && mismatched.listeners.isEmpty && notDefault.listeners.isEmpty)
     }
@@ -342,7 +346,7 @@ private final class Harness {
     func adapterRefusesStaleExpectation() async throws {
         let hal = FakeHAL()
         let volume = adapter(hal, timeout: 1)
-        let bound = try volume.bind(captureDeviceUID: "mic") {}
+        let bound = try volume.bind(captureDeviceUID: "mic") { _ in }
         hal.volumes[7]![0] = 0.6
         await #expect(throws: MicInputVolumeWriteFailure(reason: .staleExpectedValues, effective: [], unresolved: [])) {
             try await volume.setVolumes(elements([(0, 0.58)]), expected: bound)
@@ -355,18 +359,18 @@ private final class Harness {
     func adapterQuantizedAcknowledgement() async throws {
         let hal = FakeHAL()
         hal.response = .quantize(1 / 16)
-        let external = ExternalCounter()
+        let external = ChangeLog()
         let volume = adapter(hal, timeout: 1)
-        let bound = try volume.bind(captureDeviceUID: "mic") { external.count += 1 }
+        let bound = try volume.bind(captureDeviceUID: "mic") { external.changes.append($0) }
         let effective = try await volume.setVolumes(elements([(0, 0.58)]), expected: bound)
         #expect(effective.elements == elements([(0, 0.5625)]))
         #expect(hal.writes.map(\.0) == [7])
         hal.notify(7, MicInputVolumeAddress.inputVolume(0))
         await hal.drainNotifications()
-        #expect(external.count == 0)
+        #expect(external.changes.isEmpty)
         hal.manualChange(0, to: 0.8)
         await hal.drainNotifications()
-        #expect(external.count == 1)
+        #expect(external.changes == [.controls])
     }
 
     @MainActor
@@ -376,7 +380,7 @@ private final class Harness {
             let hal = FakeHAL()
             configure(hal)
             let volume = adapter(hal, timeout: 0.05)
-            let bound = try volume.bind(captureDeviceUID: "mic") {}
+            let bound = try volume.bind(captureDeviceUID: "mic") { _ in }
             do throws(MicInputVolumeWriteFailure) {
                 _ = try await volume.setVolumes(elements(targets), expected: bound)
                 return nil
@@ -405,9 +409,9 @@ private final class Harness {
     @Test("Unbind removes every registered listener and silences retained blocks")
     func adapterUnbindRemovesListeners() async throws {
         let hal = FakeHAL()
-        let external = ExternalCounter()
+        let external = ChangeLog()
         let volume = adapter(hal, timeout: 1)
-        _ = try volume.bind(captureDeviceUID: "mic") { external.count += 1 }
+        _ = try volume.bind(captureDeviceUID: "mic") { external.changes.append($0) }
         let registered = hal.listeners.map { ($0.0, $0.1) }
         let retained = hal.listeners.map { ($0.2, $0.3) }
         try volume.unbind()
@@ -422,24 +426,22 @@ private final class Harness {
             }
         }
         await drainMainActor()
-        #expect(external.count == 0)
+        #expect(external.changes.isEmpty)
     }
 
     @MainActor
-    @Test("A default-input change is external and never retargets writes to the new device")
-    func adapterDefaultChangeNeverRetargets() async throws {
+    @Test("A default-input change is reported as such, separately from control changes")
+    func adapterReportsDefaultInputChange() async throws {
         let hal = FakeHAL()
-        let external = ExternalCounter()
+        let external = ChangeLog()
         let volume = adapter(hal, timeout: 1)
-        let bound = try volume.bind(captureDeviceUID: "mic") { external.count += 1 }
+        _ = try volume.bind(captureDeviceUID: "mic") { external.changes.append($0) }
         hal.defaultDevice = 9
         hal.notify(AudioObjectID(kAudioObjectSystemObject),
                    MicInputVolumeAddress.global(kAudioHardwarePropertyDefaultInputDevice))
         await hal.drainNotifications()
-        #expect(external.count == 1)
-        _ = try await volume.setVolumes(elements([(0, 0.5)]), expected: bound)
-        #expect(hal.writes.map(\.0) == [7])
-        #expect(hal.volumes[9] == [0: 0.2])
+        #expect(external.changes == [.defaultInputDevice])
+        #expect(hal.writes.isEmpty)
     }
 
     // MARK: Controller
@@ -449,7 +451,7 @@ private final class Harness {
     func controllerQuietRiseAndSilence() async {
         let harness = Harness(volume: FakeVolume(values: [0: 0.5]), pendingWriteTimeout: 1)
         #expect(harness.volume!.writes.isEmpty)
-        #expect(harness.statuses == [MicInputStatus(warning: nil, adjustment: .active)])
+        #expect(harness.statuses == [MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .active)])
         await harness.raw(from: 0, windows: 50, clipped: 0)
         #expect(harness.volume!.writes.isEmpty)
         await harness.speak(from: 5, windows: 12, dBFS: -40)
@@ -470,7 +472,7 @@ private final class Harness {
     func controllerDisabledWarnsOnly() async {
         let harness = Harness(volume: nil, pendingWriteTimeout: 1)
         await harness.speak(from: 0, windows: 12, dBFS: -40)
-        #expect(harness.statuses.last == MicInputStatus(warning: .low, adjustment: .disabledBySetting))
+        #expect(harness.statuses.last == MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
         await harness.controller.stop()
     }
 
@@ -480,10 +482,10 @@ private final class Harness {
         let volume = FakeVolume(values: [0: 0.5])
         volume.isSettable = false
         let harness = Harness(volume: volume, pendingWriteTimeout: 1)
-        #expect(harness.statuses == [MicInputStatus(warning: nil, adjustment: .unsupportedDevice)])
+        #expect(harness.statuses == [MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .unsupportedDevice)])
         #expect(volume.unbinds == 1)
         await harness.speak(from: 0, windows: 12, dBFS: -40)
-        #expect(harness.statuses.last == MicInputStatus(warning: .low, adjustment: .unsupportedDevice))
+        #expect(harness.statuses.last == MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .unsupportedDevice))
         #expect(volume.writes.isEmpty)
     }
 
@@ -493,7 +495,7 @@ private final class Harness {
         let volume = FakeVolume(values: [0: 0.5])
         volume.bindFailure = .deviceIdentityUnverified
         let harness = Harness(volume: volume, pendingWriteTimeout: 1)
-        #expect(harness.statuses == [MicInputStatus(warning: nil, adjustment: .failed(.deviceIdentityUnverified))])
+        #expect(harness.statuses == [MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .failed(.deviceIdentityUnverified))])
     }
 
     @MainActor
@@ -507,7 +509,7 @@ private final class Harness {
         #expect(harness.statuses.last?.adjustment == .pausedByExternalChange)
         await harness.raw(from: 1, windows: 20, clipped: 0.01)
         #expect(volume.writes.count == 1)
-        #expect(harness.statuses.last == MicInputStatus(warning: .clipping, adjustment: .pausedByExternalChange))
+        #expect(harness.statuses.last == MicInputStatus(warning: .clipping, speechMonitoringUnavailable: false, adjustment: .pausedByExternalChange))
         await harness.controller.stop()
         #expect(volume.values == [0: 0.7])
         #expect(volume.writes.count == 1 && volume.unbinds == 1)
@@ -546,10 +548,10 @@ private final class Harness {
         volume.writeMode = .fail(.noMovement, applied: false, unresolved: [])
         let harness = Harness(volume: volume, pendingWriteTimeout: 1)
         await harness.raw(from: 0, windows: 1, clipped: 0.01)
-        #expect(harness.statuses.last == MicInputStatus(warning: nil, adjustment: .failed(.noMovement)))
+        #expect(harness.statuses.last == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .failed(.noMovement)))
         await harness.raw(from: 1, windows: 20, clipped: 0.01)
         #expect(volume.writes.count == 1)
-        #expect(harness.statuses.last == MicInputStatus(warning: .clipping, adjustment: .failed(.noMovement)))
+        #expect(harness.statuses.last == MicInputStatus(warning: .clipping, speechMonitoringUnavailable: false, adjustment: .failed(.noMovement)))
     }
 
     @MainActor
@@ -617,10 +619,32 @@ private final class Harness {
         let volume = FakeVolume(values: [0: 0.5])
         let harness = Harness(volume: volume, pendingWriteTimeout: 1)
         harness.controller.speechMonitoringUnavailable()
-        #expect(harness.statuses.last == MicInputStatus(warning: .monitoringUnavailable, adjustment: .active))
+        #expect(harness.statuses.last == MicInputStatus(warning: nil, speechMonitoringUnavailable: true, adjustment: .active))
         await harness.speak(from: 0, windows: 20, dBFS: -40)
         #expect(volume.writes.isEmpty)
         await harness.raw(from: 6, windows: 1, clipped: 0.01)
         #expect(volume.writes.count == 1 && close(volume.writes.first, [(0, 0.4)]))
+        await harness.raw(from: 7, windows: 20, clipped: 0.01)
+        #expect(harness.statuses.last?.warning == .clipping)
+        #expect(harness.statuses.last?.speechMonitoringUnavailable == true)
+    }
+
+    @MainActor
+    @Test("A default-input change ends ownership: no later write and no restore at stop")
+    func controllerDefaultInputChangeAbandonsOwnership() async {
+        let volume = FakeVolume(values: [0: 0.5])
+        let harness = Harness(volume: volume, pendingWriteTimeout: 1)
+        await harness.raw(from: 0, windows: 1, clipped: 0.01)
+        #expect(close(volume.values, [0: 0.4]))
+        volume.changeDefaultInputDevice()
+        #expect(harness.statuses.last?.adjustment == .pausedByDefaultDeviceChange)
+        volume.manualChange(0, to: 0.4)
+        #expect(harness.statuses.last?.adjustment == .pausedByDefaultDeviceChange)
+        await harness.raw(from: 1, windows: 20, clipped: 0.01)
+        await harness.controller.stop()
+        #expect(volume.writes.count == 1)
+        #expect(close(volume.values, [0: 0.4]))
+        #expect(harness.statuses.last?.adjustment == .pausedByDefaultDeviceChange)
+        #expect(volume.unbinds == 1)
     }
 }

@@ -73,7 +73,7 @@ private final class TestCaptureClock: CaptureClock {
 private final class FakeMicVolume: MicInputVolumeControlling {
     var values: [UInt32: Float] = [0: 0.5]
     private(set) var writes: [[MicInputVolumeElement]] = []
-    private var onExternalChange: (@MainActor @Sendable () -> Void)?
+    private var onChange: (@MainActor @Sendable (MicInputVolumeChange) -> Void)?
 
     private var current: MicInputVolumeSnapshot {
         MicInputVolumeSnapshot(deviceUID: "mic", elements: values.keys.sorted().map {
@@ -82,9 +82,9 @@ private final class FakeMicVolume: MicInputVolumeControlling {
     }
 
     func bind(captureDeviceUID: String,
-              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+              onChange: @escaping @MainActor @Sendable (MicInputVolumeChange) -> Void) throws(MicInputVolumeFailure)
         -> MicInputVolumeSnapshot {
-        self.onExternalChange = onExternalChange
+        self.onChange = onChange
         return current
     }
     func snapshot() throws(MicInputVolumeFailure) -> MicInputVolumeSnapshot { current }
@@ -94,11 +94,11 @@ private final class FakeMicVolume: MicInputVolumeControlling {
         for value in requested { values[value.element] = value.scalar }
         return current
     }
-    func unbind() throws(MicInputVolumeFailure) { onExternalChange = nil }
+    func unbind() throws(MicInputVolumeFailure) { onChange = nil }
 
     func userMovesSlider(to scalar: Float) {
         values[0] = scalar
-        onExternalChange?()
+        onChange?(.controls)
     }
 }
 
@@ -223,7 +223,7 @@ struct MicInputStatusTests {
         let (defaults, suiteName) = try temporaryDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let engine = FakeAppCaptureEngine()
-        engine.stopResult = AudioCaptureStopResult(checkpoint: testCheckpoint(), didOverflow: false)
+        engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
         let live = speechBatches(seconds: 0..<1, dBFS: -40)
@@ -256,7 +256,7 @@ struct MicInputStatusTests {
         let (defaults, suiteName) = try temporaryDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let engine = FakeAppCaptureEngine()
-        engine.stopResult = AudioCaptureStopResult(checkpoint: testCheckpoint(), didOverflow: false)
+        engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionIDs: [UUID] = []
         engine.onStart = { startedSessionIDs.append($0) }
         let state = makeState(paths: paths, engine: engine, defaults: defaults,
@@ -265,15 +265,15 @@ struct MicInputStatusTests {
         await state.startRecording()
         let first = try #require(startedSessionIDs.first)
         let firstHandler = try #require(engine.micStatusHandler)
-        let low = MicInputStatus(warning: .low, adjustment: .active)
+        let low = MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .active)
         firstHandler(first, low)
         #expect(state.micInputStatus == low)
         engine.warningHandler?("空き容量が少なくなっています")
-        let recovered = MicInputStatus(warning: nil, adjustment: .active)
+        let recovered = MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .active)
         firstHandler(first, recovered)
         #expect(state.micInputStatus == recovered)
         #expect(state.captureWarningText == "空き容量が少なくなっています")
-        firstHandler(UUID(), MicInputStatus(warning: .clipping, adjustment: .active))
+        firstHandler(UUID(), MicInputStatus(warning: .clipping, speechMonitoringUnavailable: false, adjustment: .active))
         #expect(state.micInputStatus == recovered)
 
         await state.stopRecording()
@@ -286,7 +286,7 @@ struct MicInputStatusTests {
         #expect(second != first)
         firstHandler(first, low)
         #expect(state.micInputStatus == nil)
-        let paused = MicInputStatus(warning: nil, adjustment: .pausedByExternalChange)
+        let paused = MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .pausedByExternalChange)
         let secondHandler = try #require(engine.micStatusHandler)
         secondHandler(second, paused)
         #expect(state.micInputStatus == paused)
@@ -301,7 +301,7 @@ struct MicInputStatusTests {
         let (defaults, suiteName) = try temporaryDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let engine = FakeAppCaptureEngine()
-        engine.stopResult = AudioCaptureStopResult(checkpoint: testCheckpoint(), didOverflow: false)
+        engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
         let state = makeState(paths: paths, engine: engine, defaults: defaults,
@@ -310,13 +310,13 @@ struct MicInputStatusTests {
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
         let handler = try #require(engine.micStatusHandler)
-        handler(sessionID, MicInputStatus(warning: .low, adjustment: .active))
+        handler(sessionID, MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .active))
         engine.onStop = {
-            handler(sessionID, MicInputStatus(warning: .low, adjustment: .restoreFailed(.writeRejected)))
+            handler(sessionID, MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .restoreFailed(.writeRejected)))
         }
         await state.stopRecording()
         #expect(state.recordingPhase == .idle)
-        #expect(state.micInputStatus == MicInputStatus(warning: nil, adjustment: .restoreFailed(.writeRejected)))
+        #expect(state.micInputStatus == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .restoreFailed(.writeRejected)))
 
         engine.onStop = nil
         await state.startRecording()
@@ -331,7 +331,7 @@ struct MicInputStatusTests {
         let (defaults, suiteName) = try temporaryDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let engine = FakeAppCaptureEngine()
-        engine.stopResult = AudioCaptureStopResult(checkpoint: testCheckpoint(), didOverflow: false)
+        engine.stopResult = cleanStopResult(testCheckpoint())
         let vad = ScriptedLiveVAD(batches: speechBatches(seconds: 0..<2, dBFS: -40))
         var measureRequests: [Bool] = []
         let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure in
@@ -359,7 +359,7 @@ struct MicInputStatusTests {
         let (defaults, suiteName) = try temporaryDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let engine = FakeAppCaptureEngine()
-        engine.stopResult = AudioCaptureStopResult(checkpoint: testCheckpoint(), didOverflow: false)
+        engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
         let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _ in
@@ -391,11 +391,11 @@ struct MicInputStatusTests {
         let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _ in vad }
 
         await state.startRecording()
-        #expect(state.micInputStatus == MicInputStatus(warning: nil, adjustment: .disabledBySetting))
+        #expect(state.micInputStatus == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
         try await waitUntil { state.micInputStatus?.warning == .low }
-        #expect(state.micInputStatus == MicInputStatus(warning: .low, adjustment: .disabledBySetting))
+        #expect(state.micInputStatus == MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
         try await waitUntil { await vad.deliveredBatches == batches.count }
-        #expect(state.micInputStatus == MicInputStatus(warning: nil, adjustment: .disabledBySetting))
+        #expect(state.micInputStatus == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
         await state.stopRecording()
         #expect(engine.volumeFactoryCalls == 0)
         #expect(state.micInputStatus == nil)
@@ -425,7 +425,7 @@ struct MicInputStatusTests {
             try await waitUntil { await vad.deliveredBatches == 12 }
             #expect(await vad.deliveredBatches == 12)
             #expect(engine.volume.writes.count == 1)
-            #expect(state.micInputStatus == MicInputStatus(warning: .low, adjustment: .pausedByExternalChange))
+            #expect(state.micInputStatus == MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .pausedByExternalChange))
         }
 
         await state.stopRecording()

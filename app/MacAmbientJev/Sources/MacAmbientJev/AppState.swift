@@ -9,23 +9,6 @@ import MacAmbientJevCapture
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
-extension AudioCheckpoint {
-    /// Replacement silence is durable, but is not captured microphone input.
-    var hasCapturedAudio: Bool {
-        guard committedFrames > 0 else { return false }
-        var coveredThrough: Int64 = 0
-        for gap in gapEvents {
-            if gap.startFrame > coveredThrough { return true }
-            guard gap.startFrame >= 0, gap.startFrame < committedFrames,
-                  gap.frameCount > 0 else { continue }
-            let end = gap.startFrame + min(gap.frameCount, committedFrames - gap.startFrame)
-            coveredThrough = max(coveredThrough, end)
-            if coveredThrough >= committedFrames { return false }
-        }
-        return coveredThrough < committedFrames
-    }
-}
-
 /// Incremental VAD is independent of capture and consumes only durable checkpoints.
 protocol LiveVADProcessing: Sendable {
     var segmentationRunID: String { get }

@@ -53,7 +53,7 @@ func recordingPowerLifetimePairsEveryExit() async throws {
             #expect(try AudioCheckpoint.loadRecovered(from: directory)?.committedFrames == 10)
         } else {
             if exit == "normal" || exit == "write failure" {
-                #expect(ring.push(samples: Array(repeating: 0.25, count: 10)))
+                #expect(pushRingMono(Array(repeating: 0.25, count: 10), at: 0, into: ring))
             }
             if exit == "write failure" {
                 let blockedChunk = directory.appending(path: "chunk-000000.f32le")
@@ -83,6 +83,44 @@ func recordingPowerLifetimePairsEveryExit() async throws {
         #expect(provider.acquisitions == 1)
         #expect(provider.releases == 1)
     }
+}
+
+@MainActor
+@Test("a writer failure after committed chunks stops with the healthy prefix and a cause naming the chunk")
+func writerFailureReturnsHealthyPrefix() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let engine = AudioCaptureEngine(paths: paths, power: FakePower(), micInputVolumeFactory: {
+        preconditionFailure("Input-free teardown never binds a microphone volume control")
+    })
+    let directory = root.appending(path: "capture", directoryHint: .isDirectory)
+    let writer = try DurableAudioWriter(
+        directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 10)
+    let receiver = AudioCaptureReceiver(
+        ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, meter: nil
+    )
+    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    #expect(engine.power.begin())
+    engine.installCapture(
+        session: nil, output: nil, receiver: receiver, callbackQueue: nil,
+        ring: ring, drain: drain, drainTask: nil, sessionID: UUID(),
+        timeline: ProcessingTimeline(sampleRate: 10, channelCount: 1, sampleFormat: .float32LE)
+    )
+    #expect(pushRingMono(Array(repeating: 0.25, count: 10), at: 0, into: ring))
+    _ = try await drain.drainAvailable()
+    try FileManager.default.createDirectory(
+        at: directory.appending(path: "chunk-000001.f32le"), withIntermediateDirectories: false
+    )
+    #expect(pushRingMono(Array(repeating: 0.5, count: 5), at: 10, into: ring))
+
+    let result = try await engine.stop()
+    #expect(result.writerFailure == "録音の保存に失敗しました: chunk-000001.f32le を書き込めませんでした")
+    #expect(result.checkpoint.committedFrames == 10)
+    #expect(try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint)
+        .readSamples(frameRange: 0..<10) == Array(repeating: Float(0.25), count: 10))
+    #expect(!engine.power.active && !engine.isRecording)
 }
 
 @MainActor
@@ -142,15 +180,19 @@ private final class TestCaptureDisk: CaptureDiskSpaceProviding {
 }
 
 @MainActor
-@Test("recording stalls after last buffer, without mistaking continuous silent buffers for a stall")
-func recordingStallMonitor() {
+@Test("recording stalls after last buffer, named by input source, without mistaking silent buffers for a stall",
+      arguments: [
+          (CaptureSource.microphone, "マイクから音声が届かなくなりました。録音を停止しました"),
+          (CaptureSource.systemAudio, "システム音声が届かなくなりました。録音を停止しました")
+      ])
+func recordingStallMonitor(source: CaptureSource, message: String) {
     let clock = TestCaptureClock(millis: 10_000)
     let disk = TestCaptureDisk(free: 500_000_000)
     var failures: [String] = []
     var warnings: [String] = []
     var dropouts: [UInt64] = []
     let monitor = CaptureHealthMonitor(
-        clock: clock, diskSpace: disk,
+        source: source, clock: clock, diskSpace: disk,
         directory: FileManager.default.temporaryDirectory, startedAt: 10,
         onFailure: { failures.append($0) },
         onWarning: { warnings.append($0) },
@@ -162,7 +204,7 @@ func recordingStallMonitor() {
     #expect(dropouts == [2])
     clock.millis.store(13_000, ordering: .relaxed)
     #expect(!monitor.poll(lastBufferMillis: 10_000, silentSinceMillis: 10_000, dropouts: 2))
-    #expect(failures == ["マイクから音声が届かなくなりました。録音を停止しました"])
+    #expect(failures == [message])
     #expect(warnings.isEmpty)
     #expect(disk.checks.load(ordering: .relaxed) == 0)
 }
@@ -177,7 +219,7 @@ func recordingDiskAndSilenceMonitor() {
     var dropouts: [UInt64] = []
     var silenceStates: [Bool] = []
     let monitor = CaptureHealthMonitor(
-        clock: clock, diskSpace: disk,
+        source: .microphone, clock: clock, diskSpace: disk,
         directory: FileManager.default.temporaryDirectory, startedAt: 10,
         onFailure: { failures.append($0) },
         onWarning: { warnings.append($0) },

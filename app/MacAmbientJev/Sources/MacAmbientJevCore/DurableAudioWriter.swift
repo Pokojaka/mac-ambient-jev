@@ -1,10 +1,46 @@
 import Foundation
 
-public enum DurableAudioWriterError: Error, Equatable {
+public enum DurableAudioWriterError: LocalizedError, Equatable {
     case invalidChannelSampleCount
     case incompatibleCheckpoint
     case corruptChunk(String)
     case checkpointFrameCountMismatch
+    case outOfSpace(String)
+    case writeFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidChannelSampleCount:
+            "入力された音声のチャンネル構成が録音開始時と一致しません"
+        case .incompatibleCheckpoint:
+            "保存済み音声の索引が録音の形式と一致しません"
+        case .corruptChunk(let filename):
+            "保存済み音声の断片 \(filename) が壊れています"
+        case .checkpointFrameCountMismatch:
+            "保存済み音声の長さが索引と一致しません"
+        case .outOfSpace(let filename):
+            "空き容量が不足したため \(filename) を書き込めませんでした"
+        case .writeFailed(let filename):
+            "\(filename) を書き込めませんでした"
+        }
+    }
+
+    /// Maps a file-system failure while writing `filename` to its user-facing cause.
+    static func writing<T>(_ filename: String, _ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch let error as DurableAudioWriterError {
+            throw error
+        } catch {
+            let nsError = error as NSError
+            let outOfSpace = (nsError.domain == NSCocoaErrorDomain
+                    && nsError.code == NSFileWriteOutOfSpaceError)
+                || (nsError.domain == NSPOSIXErrorDomain
+                    && (nsError.code == Int(ENOSPC) || nsError.code == Int(EDQUOT)))
+            throw outOfSpace ? DurableAudioWriterError.outOfSpace(filename)
+                : DurableAudioWriterError.writeFailed(filename)
+        }
+    }
 }
 private struct AudioChunkCommit: Codable {
     let index: Int
@@ -358,14 +394,9 @@ public actor DurableAudioWriter {
         let event = AudioGapEvent(
             startFrame: startFrame, frameCount: frameCount, reason: reason
         )
-        let url = directory.appending(path: Self.gapEventsFilename)
-        let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
         var line = try JSONEncoder().encode(event)
         line.append(0x0A)
-        try handle.write(contentsOf: line)
-        try handle.synchronize()
+        try appendSynchronized(line, to: Self.gapEventsFilename)
         gapEvents.append(event)
     }
 
@@ -400,13 +431,17 @@ public actor DurableAudioWriter {
         )
         let url = directory.appending(path: filename)
         let data = pendingSamples[..<sampleCount].withUnsafeBytes { Data($0) }
-        try data.write(to: url, options: .atomic)
         // An index record must never be durable before the chunk it names.
-        let chunk = try FileHandle(forReadingFrom: url)
-        defer { try? chunk.close() }
-        try chunk.synchronize()
+        try DurableAudioWriterError.writing(filename) {
+            try data.write(to: url, options: .atomic)
+            let chunk = try FileHandle(forReadingFrom: url)
+            try chunk.synchronize()
+            try chunk.close()
+        }
         let frames = sampleCount / channelCount
-        try appendChunkCommit(index: nextChunkIndex, frames: frames)
+        var line = try JSONEncoder().encode(AudioChunkCommit(index: nextChunkIndex, frames: frames))
+        line.append(0x0A)
+        try appendSynchronized(line, to: Self.chunkIndexFilename)
         pendingSamples.removeAll(keepingCapacity: true)
         committedFrames += Int64(frames)
         chunkFiles.append(filename)
@@ -414,15 +449,14 @@ public actor DurableAudioWriter {
         nextChunkIndex += 1
     }
 
-    private func appendChunkCommit(index: Int, frames: Int) throws {
-        let url = directory.appending(path: Self.chunkIndexFilename)
-        let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
-        var line = try JSONEncoder().encode(AudioChunkCommit(index: index, frames: frames))
-        line.append(0x0A)
-        try handle.write(contentsOf: line)
-        try handle.synchronize()
+    private func appendSynchronized(_ line: Data, to filename: String) throws {
+        try DurableAudioWriterError.writing(filename) {
+            let handle = try FileHandle(forWritingTo: directory.appending(path: filename))
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+            try handle.synchronize()
+            try handle.close()
+        }
     }
 
     private func currentCheckpoint() -> AudioCheckpoint {
@@ -439,11 +473,8 @@ public actor DurableAudioWriter {
 
     private func persist(_ checkpoint: AudioCheckpoint) throws {
         let data = try JSONEncoder().encode(checkpoint)
-        try data.write(
-            to: directory.appending(
-                path: Self.checkpointFilename
-            ),
-            options: .atomic
-        )
+        try DurableAudioWriterError.writing(Self.checkpointFilename) {
+            try data.write(to: directory.appending(path: Self.checkpointFilename), options: .atomic)
+        }
     }
 }

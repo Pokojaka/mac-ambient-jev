@@ -37,10 +37,18 @@ public struct MicInputVolumeWriteFailure: Error, Sendable, Equatable {
     }
 }
 
+/// An outside change seen by a bound volume control.
+public enum MicInputVolumeChange: Sendable, Equatable {
+    /// A bound control's value or the bound device's state changed.
+    case controls
+    /// The system default input device changed; the bound device is no longer the recording input.
+    case defaultInputDevice
+}
+
 @MainActor
 public protocol MicInputVolumeControlling: AnyObject {
     func bind(captureDeviceUID: String,
-              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+              onChange: @escaping @MainActor @Sendable (MicInputVolumeChange) -> Void) throws(MicInputVolumeFailure)
         -> MicInputVolumeSnapshot
     func snapshot() throws(MicInputVolumeFailure) -> MicInputVolumeSnapshot
     func setVolumes(_ values: [MicInputVolumeElement],
@@ -51,6 +59,7 @@ public protocol MicInputVolumeControlling: AnyObject {
 
 /// One recording's ownership of the system input volume. Decisions come from MicGainPolicy;
 /// restoration touches only elements whose current value is still the app's last effective write.
+/// A default-input change ends ownership: no later write and no restore.
 @MainActor
 final class MicInputVolumeController {
     static let ownershipTolerance: Float = 0.001
@@ -71,6 +80,7 @@ final class MicInputVolumeController {
     private var active = true
     private var bound = false
     private var monitoringUnavailable = false
+    private var ownershipAbandoned = false
     private var policyWarning: MicInputWarning?
     private var lastStatus: MicInputStatus?
     private var current: MicInputVolumeSnapshot?
@@ -101,7 +111,7 @@ final class MicInputVolumeController {
 
     var status: MicInputStatus {
         MicInputStatus(
-            warning: policyWarning ?? (monitoringUnavailable ? .monitoringUnavailable : nil),
+            warning: policyWarning, speechMonitoringUnavailable: monitoringUnavailable,
             adjustment: adjustment
         )
     }
@@ -112,8 +122,11 @@ final class MicInputVolumeController {
         guard let volume else { return }
         let snapshot: MicInputVolumeSnapshot
         do throws(MicInputVolumeFailure) {
-            snapshot = try volume.bind(captureDeviceUID: captureDeviceUID) { [weak self] in
-                self?.externalChange()
+            snapshot = try volume.bind(captureDeviceUID: captureDeviceUID) { [weak self] change in
+                switch change {
+                case .controls: self?.externalChange()
+                case .defaultInputDevice: self?.defaultInputDeviceChanged()
+                }
             }
         } catch {
             adjustment = .failed(error)
@@ -250,7 +263,7 @@ final class MicInputVolumeController {
     }
 
     private func externalChange() {
-        guard bound, let volume else { return }
+        guard bound, !ownershipAbandoned, let volume else { return }
         adjustment = .pausedByExternalChange
         do throws(MicInputVolumeFailure) {
             let snapshot = try volume.snapshot()
@@ -269,13 +282,26 @@ final class MicInputVolumeController {
         publishStatus()
     }
 
+    /// The bound device stopped being the recording input. Every element is given up,
+    /// including one an in-flight write may still move, so it is neither written nor restored.
+    private func defaultInputDeviceChanged() {
+        guard bound, !ownershipAbandoned else { return }
+        ownershipAbandoned = true
+        relinquished.formUnion(originals.keys)
+        owned.removeAll()
+        if case .failed = adjustment {} else { adjustment = .pausedByDefaultDeviceChange }
+        publishStatus()
+    }
+
     /// Stops decisions, settles any in-flight write, then restores app-owned controls.
     func stop() async {
         active = false
         await quiescePending()
         guard let volume, bound else { return }
-        if !unresolved.isEmpty { reportStop(.restoreFailed(.writeUnresolved)) }
-        await restoreOwned(volume)
+        if !ownershipAbandoned {
+            if !unresolved.isEmpty { reportStop(.restoreFailed(.writeUnresolved)) }
+            await restoreOwned(volume)
+        }
         release(volume)
     }
 
