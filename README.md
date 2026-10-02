@@ -116,7 +116,7 @@ swift tools/process-recording.swift \
 
 注釈付きの評価（保持必須語・誤除外・場面転換時刻）は設計から外しました。保持すべき発話が残っているかは、マイクを使った実機試験で確認します。
 
-評価の方針は `docs/evaluation.md`、長時間・障害時の受け入れ試験は `docs/v1-acceptance.md` を参照してください。
+評価の方針は `docs/evaluation.md`、長時間・障害時の受け入れ試験は `docs/v1-acceptance.md` を参照してください。ドキュメントの一覧は `docs/README.md` にあります。
 
 ## アプリでの動作確認
 

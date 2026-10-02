@@ -80,7 +80,7 @@ run ID は `<recording-id>-<UTC timestamp>` とする。各 run の `engine-metr
 
 ## 5. 結果の判定
 
-討論抜粋と長時間録音は、処理完了、復旧、処理時間、メモリ、熱状態の確認に使う。注釈の作成、`GoldenCorpusEvaluator` の変更、用語保持率、誤低優先度、誤背景の合否判定は今回行わない。既存の `manifest.json` と `docs/evaluation.md` は残すが、これらの指標を合格として報告しない。`docs/v1-acceptance-results-2026-09-23.md` には、元の設計の評価項目を今回省いたことと、そのために判定できない範囲を記す。
+討論抜粋と長時間録音は、処理完了、復旧、処理時間、メモリ、熱状態の確認に使う。注釈の作成、`GoldenCorpusEvaluator` の変更、用語保持率、誤低優先度、誤背景の合否判定は今回行わない。既存の `manifest.json` と `docs/evaluation.md` は残すが、これらの指標を合格として報告しない。`docs/records/v1-acceptance-results-2026-09-23.md` には、元の設計の評価項目を今回省いたことと、そのために判定できない範囲を記す。
 
 ## 6. 実装を進める順序と終了条件
 
@@ -89,6 +89,6 @@ run ID は `<recording-id>-<UTC timestamp>` とする。各 run の `engine-metr
 | A. CLI 引数と read-only inspect | `MacAmbientJevProcessRecording/main.swift`, `SessionRecoveryScanner.swift` | inspect と resume は指定 ID 以外を読まない。inspect で元のイベントログが不変。 |
 | B. 復旧入口と出力 | `NativeSessionProcessor.swift`, `PipelineCoordinator.swift`, `Materialization.swift`, CLI | pending だけを実行し、最後の active run を材料に最終結果を export。383を出力区間にせず、再実行で ASR 重複なし。 |
 | C. 計測と中断 | `PipelineCoordinator.swift`, CLI, `scripts/measure_v1_run.sh` | ASR と待機の時間を分離し、メトリクスを CLI からスクリプトへ渡す。5秒ごとにメモリを記録。critical の区間境界で停止して pending を保持。 |
-| D. 実データ | Git 管理外の各 run、`docs/v1-acceptance-results-2026-09-23.md` | 各段階のゲートと理由を記録。注釈付き評価、マイク実機、キー未設定の Jev は NOT VERIFIED。 |
+| D. 実データ | Git 管理外の各 run、`docs/records/v1-acceptance-results-2026-09-23.md` | 各段階のゲートと理由を記録。注釈付き評価、マイク実機、キー未設定の Jev は NOT VERIFIED。 |
 
 各単位で対象の Swift テスト、必要な CLI 実行、`git diff --check` を通してから次へ進む。`RUN_MODEL_TESTS=1` の全検証はコード変更がそろった後に一回実行する。処理中は別のビルドやモデル処理を起動しない。長時間 run の証拠を `test-data/recordings/local/_v1-run/decisions.tsv` から参照できるようにする。
