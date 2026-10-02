@@ -1,10 +1,7 @@
 {
   "id": "lecture-ja-001",
   "audio": "audio.wav",
-  "annotations": {
-    "scene_transitions": [],
-    "must_keep_terms": [],
-    "must_not_be_low_priority": [],
-    "must_not_be_background": []
+  "reference": {
+    "file": "reference.txt"
   }
 }
