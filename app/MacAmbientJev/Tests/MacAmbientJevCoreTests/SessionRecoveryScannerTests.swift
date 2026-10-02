@@ -1008,10 +1008,7 @@ func recoveryScannerSchedulesOnlyDeferredPrioritySegments() async throws {
         segmentID: "seg_000001",
         payload: ContentPriorityEventPayload(
             priority: .primary,
-            confidence: nil,
-            model: nil,
-            inputTokens: nil,
-            needsRetry: true
+            decision: .retryPending
         )
     ))
     _ = try await writer.append(EventDraft(

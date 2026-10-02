@@ -6,30 +6,37 @@ private struct SpeakerAcousticProfile: Sendable {
     let spectralSharpness: Double
 }
 
+enum TimelineProximityEvidenceError: LocalizedError {
+    case speakerSampleUnreadable(
+        speakerID: String,
+        frameRange: Range<Int64>,
+        reason: String
+    )
+
+    var errorDescription: String? {
+        switch self {
+        case .speakerSampleUnreadable(let speakerID, let frameRange, let reason):
+            "話者 \(speakerID) の音声（フレーム \(frameRange.lowerBound)..<\(frameRange.upperBound)）を近接度の判定用に読み取れませんでした: \(reason)"
+        }
+    }
+}
+
+/// Builds one fixed acoustic profile per speaker for the whole session and
+/// compares it with the session median.
 actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
+    private static let maxSamplesPerSpeaker = 8
+    private static let maxSecondsPerSample = 2.0
+    private static let minimumSampleSeconds = 0.35
+    private static let minimumSignalRMS = 1e-5
+
     private let reader: ProcessingTimelineReader
-    private let maxSamplesPerSpeaker: Int
-    private let maxSecondsPerSample: Double
-    private let minimumSampleSeconds: Double
-    private let minimumSignalRMS = 1e-5
 
     private var profiles: [String: SpeakerAcousticProfile]?
     private var sessionLevelMedian: Double?
     private var sessionSpectralMedian: Double?
 
-    init(
-        reader: ProcessingTimelineReader,
-        maxSamplesPerSpeaker: Int = 8,
-        maxSecondsPerSample: Double = 2.0,
-        minimumSampleSeconds: Double = 0.35
-    ) {
-        precondition(maxSamplesPerSpeaker > 0)
-        precondition(maxSecondsPerSample > 0)
-        precondition(minimumSampleSeconds > 0)
+    init(reader: ProcessingTimelineReader) {
         self.reader = reader
-        self.maxSamplesPerSpeaker = maxSamplesPerSpeaker
-        self.maxSecondsPerSample = maxSecondsPerSample
-        self.minimumSampleSeconds = minimumSampleSeconds
     }
 
     func evidenceSpans(
@@ -40,7 +47,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
         guard endFrame > startFrame else { return [] }
 
         if profiles == nil {
-            buildProfiles(speakerSpans: speakerSpans)
+            try buildProfiles(speakerSpans: speakerSpans)
         }
 
         let clipped = speakerSpans.compactMap { span -> SpeakerSpan? in
@@ -107,13 +114,13 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
         return result
     }
 
-    private func buildProfiles(speakerSpans: [SpeakerSpan]) {
+    private func buildProfiles(speakerSpans: [SpeakerSpan]) throws {
         let sampleRate = reader.checkpoint.sampleRate
         let minimumFrames = Int64(
-            (minimumSampleSeconds * sampleRate).rounded(.up)
+            (Self.minimumSampleSeconds * sampleRate).rounded(.up)
         )
         let maximumFrames = Int64(
-            (maxSecondsPerSample * sampleRate).rounded(.down)
+            (Self.maxSecondsPerSample * sampleRate).rounded(.down)
         )
 
         let grouped = Dictionary(grouping: speakerSpans) { $0.speakerID }
@@ -139,14 +146,24 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
                 .sorted { lhs, rhs in
                     lhs.count > rhs.count
                 }
-                .prefix(maxSamplesPerSpeaker)
+                .prefix(Self.maxSamplesPerSpeaker)
 
             var levels: [Double] = []
             var sharpnessValues: [Double] = []
 
             for range in candidates {
-                guard let features = try? acousticFeatures(
-                    frameRange: range
+                let interleaved: [Float]
+                do {
+                    interleaved = try reader.readSamples(frameRange: range)
+                } catch {
+                    throw TimelineProximityEvidenceError.speakerSampleUnreadable(
+                        speakerID: speakerID,
+                        frameRange: range,
+                        reason: error.localizedDescription
+                    )
+                }
+                guard let features = acousticFeatures(
+                    interleaved: interleaved
                 ) else {
                     continue
                 }
@@ -229,12 +246,10 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
         )
     }
 
+    /// Returns nil when the sample is too short or too quiet to describe.
     private func acousticFeatures(
-        frameRange: Range<Int64>
-    ) throws -> SpeakerAcousticProfile? {
-        let interleaved = try reader.readSamples(
-            frameRange: frameRange
-        )
+        interleaved: [Float]
+    ) -> SpeakerAcousticProfile? {
         let channelCount = reader.checkpoint.channelCount
         guard channelCount > 0,
               !interleaved.isEmpty else {
@@ -267,7 +282,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
         }
 
         let rms = sqrt(sumSquares / Double(frameCount))
-        guard rms >= minimumSignalRMS else {
+        guard rms >= Self.minimumSignalRMS else {
             return nil
         }
         let diffRMS = sqrt(
@@ -281,7 +296,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
     }
 
     private func median(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
+        precondition(!values.isEmpty)
         let sorted = values.sorted()
         let middle = sorted.count / 2
         if sorted.count.isMultiple(of: 2) {

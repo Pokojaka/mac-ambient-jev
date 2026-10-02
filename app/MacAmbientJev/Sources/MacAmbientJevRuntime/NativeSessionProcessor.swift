@@ -1083,83 +1083,10 @@ public actor NativeSessionProcessor {
         baseActiveRuns: ActiveRuns,
         onStatus: StatusHandler?
     ) async throws -> SceneEnrichmentContext {
-        guard let decisions = try makeJevDecisionCoordinatorIfAvailable() else {
-            return SceneEnrichmentContext(
-                runID: localSceneRunID,
-                events: localSceneResult.events,
-                materializedSegments: localSceneResult.materializedSegments
-            )
-        }
-
-        if let onStatus {
-            await onStatus(UserFacingStatus.classifyingWithJev.text)
-        }
-
-        let semanticRunID =
-            "jev_scene_\(UUID().uuidString.lowercased())"
-        let collector = JevSceneCueCollector(
-            sessionID: sessionID,
-            runID: semanticRunID,
-            writer: try SessionWriter(
-                sessionURL: sessionURL(for: sessionID)
-            ),
-            decisions: decisions,
-            sampleRate: checkpoint.sampleRate
-        )
-        let collection = try await collector.collect(
-            segments: localSceneResult.materializedSegments
-        )
-
-        if !collection.retryPendingSegmentIDs.isEmpty,
-           let onStatus {
-            await onStatus(UserFacingStatus.jevDeferred.text)
-        }
-
-        guard !collection.cues.isEmpty else {
-            return SceneEnrichmentContext(
-                runID: localSceneRunID,
-                events: localSceneResult.events,
-                materializedSegments: localSceneResult.materializedSegments
-            )
-        }
-
-        let enhancedRunID =
-            "scene_semantic_\(UUID().uuidString.lowercased())"
-        let coordinator = SceneCoordinator(
-            sessionID: sessionID,
-            runID: enhancedRunID,
-            writer: try SessionWriter(
-                sessionURL: sessionURL(for: sessionID)
-            ),
-            materializer: TranscriptMaterializer(
-                sampleRate: checkpoint.sampleRate
-            )
-        )
-        let result = try await coordinator.process(
-            speakerSpans: speakerSpans,
-            totalFrames: checkpoint.committedFrames,
-            sampleRate: checkpoint.sampleRate,
-            existingEvents: localSceneResult.events,
-            activeRuns: ActiveRuns(
-                segmentation: baseActiveRuns.segmentation,
-                asr: baseActiveRuns.asr,
-                diarization: baseActiveRuns.diarization,
-                scene: enhancedRunID,
-                scope: baseActiveRuns.scope,
-                contentPriority: baseActiveRuns.contentPriority
-            ),
-            semanticCues: collection.cues
-        )
-
-        try selectSceneRun(
-            sessionID: sessionID,
-            sceneRunID: enhancedRunID
-        )
-
-        return SceneEnrichmentContext(
-            runID: enhancedRunID,
-            events: result.events,
-            materializedSegments: result.materializedSegments
+        SceneEnrichmentContext(
+            runID: localSceneRunID,
+            events: localSceneResult.events,
+            materializedSegments: localSceneResult.materializedSegments
         )
     }
 
