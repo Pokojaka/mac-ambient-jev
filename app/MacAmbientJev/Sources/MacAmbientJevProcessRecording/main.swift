@@ -188,7 +188,7 @@ struct ProcessRecordingCommand {
         switch input {
         case .inspect(let id, let root):
             try inspect(sessionID: id, root: root)
-            return .completed(metrics: .zero, noSpeech: false)
+            return .completed(metrics: nil, noSpeech: false)
         case .resume(let id, let root, let output, let pacingMode):
             try checkStart(pacingMode: pacingMode)
             return try await resume(
@@ -382,7 +382,7 @@ struct ProcessRecordingCommand {
         }
         try export(sessionURL: sessionURL, outputURL: outputURL)
         print("segments.json を生成しました: \(outputURL.path)")
-        return result ?? .completed(metrics: .zero, noSpeech: false)
+        return result ?? .completed(metrics: nil, noSpeech: false)
     }
 
     /// Measured runs pause on the monitor's thermal policy; others pause at critical thermal state.

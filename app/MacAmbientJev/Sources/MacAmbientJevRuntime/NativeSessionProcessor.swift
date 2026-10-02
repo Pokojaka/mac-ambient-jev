@@ -44,7 +44,8 @@ public struct SessionProcessingResult: Sendable {
     /// Set when the finalization did not complete and a display was retained.
     public let retainedTranscript: RetainedTranscript?
 
-    public static func completed(metrics: ASRBatchMetrics, noSpeech: Bool) -> SessionProcessingResult {
+    /// `metrics` is nil only when nothing was processed.
+    public static func completed(metrics: ASRBatchMetrics?, noSpeech: Bool) -> SessionProcessingResult {
         SessionProcessingResult(
             disposition: .completed,
             metrics: metrics,
