@@ -1,20 +1,20 @@
 import Foundation
 import MacAmbientJevCore
 
-private enum EvaluateDiarizationError: LocalizedError {
-    case invalidArguments
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidArguments:
-            return "speaker-reference.json と diarization.json を指定してください"
-        }
-    }
-}
+private struct InvalidArguments: Error {}
 
 @main
 struct EvaluateDiarizationCommand {
-    static func main() throws {
+    static func main() {
+        do {
+            try run()
+        } catch {
+            FileHandle.standardError.write(Data("\(error)\n".utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         let outputURL: URL?
         switch arguments.count {
@@ -32,7 +32,7 @@ struct EvaluateDiarizationCommand {
                     """.utf8
                 )
             )
-            throw EvaluateDiarizationError.invalidArguments
+            throw InvalidArguments()
         }
 
         let decoder = JSONDecoder()
@@ -67,10 +67,8 @@ struct EvaluateDiarizationCommand {
                 withIntermediateDirectories: true
             )
             try data.write(to: outputURL, options: .atomic)
-            try FileHandle.standardOutput.write(
-                contentsOf: Data(
-                    "\(outputURL.path)\n".utf8
-                )
+            FileHandle.standardOutput.write(
+                Data("\(outputURL.path)\n".utf8)
             )
         } else {
             FileHandle.standardOutput.write(data)

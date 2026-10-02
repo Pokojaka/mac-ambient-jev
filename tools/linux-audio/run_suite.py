@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from enum import Enum
 
 from common.baseline import (
+    REFERENCE_KINDS,
     build_asr_baseline_record,
     build_diarization_baseline_record,
 )
+from common.files import write_json_atomic
 
 
 class Status(str, Enum):
@@ -175,8 +177,10 @@ def optional_command_check(
 
 def asr_baseline_check(
     *,
+    name: str,
     audio_path: pathlib.Path,
     reference_path: pathlib.Path,
+    reference_kind: str,
     artifact_path: pathlib.Path,
     evaluation_path: pathlib.Path,
     output_path: pathlib.Path,
@@ -190,7 +194,7 @@ def asr_baseline_check(
     ):
         if not path.is_file():
             return CheckResult(
-                "asr-baseline-record",
+                name,
                 Status.SKIPPED_MISSING_DEPENDENCY,
                 f"Required artifact {str(path)!r} is missing",
             )
@@ -200,19 +204,17 @@ def asr_baseline_check(
             evaluation_path=evaluation_path,
             audio_path=audio_path,
             reference_path=reference_path,
+            reference_kind=reference_kind,
         )
         record.write(output_path)
     except Exception as exc:
         return CheckResult(
-            "asr-baseline-record",
+            name,
             Status.FAIL,
             f"{type(exc).__name__}: {exc}",
         )
-    return CheckResult(
-        "asr-baseline-record",
-        Status.PASS,
-        str(output_path),
-    )
+    return CheckResult(name, Status.PASS, str(output_path))
+
 
 def diarization_baseline_check(
     *,
@@ -260,79 +262,85 @@ def asr_model_checks(
     *,
     here: pathlib.Path,
     audio_path: pathlib.Path,
+    asr_references: dict[str, pathlib.Path],
     work_root: pathlib.Path,
     device: str,
-    asr_reference: pathlib.Path | None = None,
 ) -> list[CheckResult]:
-    work_root.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    """Runs Qwen3-ASR once and scores it against each reference kind.
+
+    The verbatim reference is the primary CER; a content reference, when
+    given, is scored as a supplementary CER.
+    """
+    if "verbatim" not in asr_references:
+        raise ValueError("a verbatim ASR reference is required")
+    unknown = set(asr_references) - set(REFERENCE_KINDS)
+    if unknown:
+        raise ValueError(f"unknown ASR reference kinds: {sorted(unknown)}")
+    work_root.mkdir(parents=True, exist_ok=True)
 
     qwen_output = work_root / "qwen3-asr.json"
-    asr_evaluation_output = work_root / "asr-evaluation.json"
-    asr_baseline_output = work_root / "qwen3-asr-current.json"
     qwen_output.unlink(missing_ok=True)
-    asr_evaluation_output.unlink(missing_ok=True)
-    asr_baseline_output.unlink(missing_ok=True)
-    qwen = optional_command_check(
-        "qwen3-asr-runner",
-        [
-            sys.executable,
-            "-m",
-            "asr.qwen3_asr",
-            str(audio_path),
-            "--output",
-            str(qwen_output),
-            "--device",
-            device,
-            "--language",
-            "Japanese",
-        ],
-        here,
-        modules=("qwen_asr", "torch"),
-        paths=(audio_path,),
-    )
-
-    resolved_asr_reference = (
-        asr_reference
-        if asr_reference is not None
-        else audio_path.with_name("reference-content.txt")
-    )
-    root = here.parents[1]
-    asr_evaluator = optional_command_check(
-        "asr-evaluator",
-        [
-            "swift",
-            "run",
-            "--package-path",
-            str(root / "app" / "MacAmbientJev"),
-            "MacAmbientJevEvaluateASR",
-            str(resolved_asr_reference),
-            str(qwen_output),
-            "--output",
-            str(asr_evaluation_output),
-        ],
-        root,
-        executables=("swift",),
-        paths=(
-            resolved_asr_reference,
-            qwen_output,
-        ),
-        outputs=(asr_evaluation_output,),
-    )
-    asr_baseline = asr_baseline_check(
-        audio_path=audio_path,
-        reference_path=resolved_asr_reference,
-        artifact_path=qwen_output,
-        evaluation_path=asr_evaluation_output,
-        output_path=asr_baseline_output,
-    )
-    return [
-        qwen,
-        asr_evaluator,
-        asr_baseline,
+    checks = [
+        optional_command_check(
+            "qwen3-asr-runner",
+            [
+                sys.executable,
+                "-m",
+                "asr.qwen3_asr",
+                str(audio_path),
+                "--output",
+                str(qwen_output),
+                "--device",
+                device,
+                "--language",
+                "Japanese",
+            ],
+            here,
+            modules=("qwen_asr", "torch"),
+            paths=(audio_path,),
+        )
     ]
+
+    root = here.parents[1]
+    for kind in REFERENCE_KINDS:
+        if kind not in asr_references:
+            continue
+        reference = asr_references[kind]
+        evaluation_output = work_root / f"asr-evaluation-{kind}.json"
+        baseline_output = work_root / f"qwen3-asr-{kind}-current.json"
+        evaluation_output.unlink(missing_ok=True)
+        checks.append(
+            optional_command_check(
+                f"asr-evaluator-{kind}",
+                [
+                    "swift",
+                    "run",
+                    "--package-path",
+                    str(root / "app" / "MacAmbientJev"),
+                    "MacAmbientJevEvaluateASR",
+                    str(reference),
+                    str(qwen_output),
+                    "--output",
+                    str(evaluation_output),
+                ],
+                root,
+                executables=("swift",),
+                paths=(reference, qwen_output),
+                outputs=(evaluation_output,),
+            )
+        )
+        checks.append(
+            asr_baseline_check(
+                name=f"asr-baseline-{kind}",
+                audio_path=audio_path,
+                reference_path=reference,
+                reference_kind=kind,
+                artifact_path=qwen_output,
+                evaluation_path=evaluation_output,
+                output_path=baseline_output,
+            )
+        )
+    return checks
 
 
 def diarization_model_checks(
@@ -342,14 +350,12 @@ def diarization_model_checks(
     speaker_reference: pathlib.Path,
     work_root: pathlib.Path,
     device: str,
-    match_threshold: float | None,
-    ambiguity_margin: float | None,
-    min_clean_speech_ms: int | None,
+    profile: str,
+    match_threshold: float,
+    ambiguity_margin: float,
+    min_clean_speech_ms: int,
 ) -> list[CheckResult]:
-    work_root.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    work_root.mkdir(parents=True, exist_ok=True)
 
     nemotron_output = work_root / "nemotron3.json"
     diarization_evaluation_output = (
@@ -360,49 +366,36 @@ def diarization_model_checks(
     )
     nemotron_output.unlink(missing_ok=True)
     diarization_evaluation_output.unlink(missing_ok=True)
-    diarization_baseline_output.unlink(missing_ok=True)
     root = here.parents[1]
 
-    if (
-        match_threshold is None
-        or ambiguity_margin is None
-        or min_clean_speech_ms is None
-    ):
-        nemotron = CheckResult(
-            "nemotron3-runner",
-            Status.SKIPPED_MISSING_DEPENDENCY,
-            (
-                "calibrated speaker match threshold, ambiguity "
-                "margin, and minimum clean speech duration are required"
-            ),
-        )
-    else:
-        nemotron = optional_command_check(
-            "nemotron3-runner",
-            [
-                sys.executable,
-                "-m",
-                "diarization.nemotron3",
-                str(audio_path),
-                "--output",
-                str(nemotron_output),
-                "--device",
-                device,
-                "--match-threshold",
-                str(match_threshold),
-                "--ambiguity-margin",
-                str(ambiguity_margin),
-                "--min-clean-speech-ms",
-                str(min_clean_speech_ms),
-            ],
-            here,
-            modules=(
-                "nemo",
-                "huggingface_hub",
-                "torch",
-            ),
-            paths=(audio_path,),
-        )
+    nemotron = optional_command_check(
+        "nemotron3-runner",
+        [
+            sys.executable,
+            "-m",
+            "diarization.nemotron3",
+            str(audio_path),
+            "--output",
+            str(nemotron_output),
+            "--device",
+            device,
+            "--profile",
+            profile,
+            "--match-threshold",
+            str(match_threshold),
+            "--ambiguity-margin",
+            str(ambiguity_margin),
+            "--min-clean-speech-ms",
+            str(min_clean_speech_ms),
+        ],
+        here,
+        modules=(
+            "nemo",
+            "huggingface_hub",
+            "torch",
+        ),
+        paths=(audio_path,),
+    )
 
     diarization_evaluator = optional_command_check(
         "diarization-evaluator",
@@ -448,78 +441,85 @@ def main(argv: list[str] | None = None) -> int:
     )
     mode.add_argument("--smoke", action="store_true")
     mode.add_argument("--full", action="store_true")
+    parser.add_argument("--json", type=pathlib.Path)
+    parser.add_argument("--full-audio", type=pathlib.Path)
     parser.add_argument(
-        "--json",
+        "--full-asr-reference-verbatim",
         type=pathlib.Path,
-    )
-
-    default_cache = (
-        pathlib.Path.home()
-        / ".cache"
-        / "mac-ambient-jev"
-        / "linux-audio"
+        help="primary CER reference",
     )
     parser.add_argument(
-        "--full-audio",
+        "--full-asr-reference-content",
         type=pathlib.Path,
-        default=(
-            default_cache
-            / "voicevox"
-            / "speakers-10"
-            / "audio.wav"
-        ),
+        help="supplementary CER reference without fillers",
     )
-    parser.add_argument(
-        "--full-speaker-reference",
-        type=pathlib.Path,
-    )
-    parser.add_argument(
-        "--full-asr-reference",
-        type=pathlib.Path,
-    )
-    parser.add_argument(
-        "--work-root",
-        type=pathlib.Path,
-        default=default_cache / "results",
-    )
-    parser.add_argument(
-        "--device",
-        default="cpu",
-    )
+    parser.add_argument("--work-root", type=pathlib.Path)
+    parser.add_argument("--device")
     parser.add_argument(
         "--with-diarization",
         action="store_true",
         help="add the post-V1 Nemotron diarization checks to --full",
     )
-    parser.add_argument(
-        "--speaker-match-threshold",
-        type=float,
-    )
-    parser.add_argument(
-        "--speaker-ambiguity-margin",
-        type=float,
-    )
-    parser.add_argument(
-        "--min-clean-speech-ms",
-        type=int,
-    )
+    parser.add_argument("--full-speaker-reference", type=pathlib.Path)
+    parser.add_argument("--diarization-profile")
+    parser.add_argument("--speaker-match-threshold", type=float)
+    parser.add_argument("--speaker-ambiguity-margin", type=float)
+    parser.add_argument("--min-clean-speech-ms", type=int)
     args = parser.parse_args(argv)
-    diarization_options = [
-        option
-        for option, value in (
-            ("--full-speaker-reference", args.full_speaker_reference),
-            ("--speaker-match-threshold", args.speaker_match_threshold),
-            ("--speaker-ambiguity-margin", args.speaker_ambiguity_margin),
-            ("--min-clean-speech-ms", args.min_clean_speech_ms),
-        )
-        if value is not None
-    ]
-    if args.with_diarization and not args.full:
-        parser.error("--with-diarization requires --full")
-    if diarization_options and not args.with_diarization:
-        parser.error(
-            f"{', '.join(diarization_options)} requires --with-diarization"
-        )
+
+    full_options = {
+        "--full-audio": args.full_audio,
+        "--full-asr-reference-verbatim":
+            args.full_asr_reference_verbatim,
+        "--work-root": args.work_root,
+        "--device": args.device,
+    }
+    diarization_options = {
+        "--full-speaker-reference": args.full_speaker_reference,
+        "--diarization-profile": args.diarization_profile,
+        "--speaker-match-threshold": args.speaker_match_threshold,
+        "--speaker-ambiguity-margin": args.speaker_ambiguity_margin,
+        "--min-clean-speech-ms": args.min_clean_speech_ms,
+    }
+    if args.full:
+        missing = [name for name, value in full_options.items() if value is None]
+        if missing:
+            parser.error(f"--full requires {', '.join(missing)}")
+    else:
+        given = [
+            name
+            for name, value in (
+                full_options
+                | {"--full-asr-reference-content":
+                    args.full_asr_reference_content}
+            ).items()
+            if value is not None
+        ]
+        if given or args.with_diarization:
+            parser.error(
+                f"{', '.join(given or ['--with-diarization'])} "
+                "requires --full"
+            )
+    if args.with_diarization:
+        missing = [
+            name
+            for name, value in diarization_options.items()
+            if value is None
+        ]
+        if missing:
+            parser.error(
+                f"--with-diarization requires {', '.join(missing)}"
+            )
+    else:
+        given = [
+            name
+            for name, value in diarization_options.items()
+            if value is not None
+        ]
+        if given:
+            parser.error(
+                f"{', '.join(given)} requires --with-diarization"
+            )
 
     here = pathlib.Path(__file__).resolve().parent
     root = here.parents[1]
@@ -551,30 +551,27 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     if args.full:
+        asr_references = {"verbatim": args.full_asr_reference_verbatim}
+        if args.full_asr_reference_content is not None:
+            asr_references["content"] = args.full_asr_reference_content
         checks.extend(
             asr_model_checks(
                 here=here,
                 audio_path=args.full_audio,
+                asr_references=asr_references,
                 work_root=args.work_root,
                 device=args.device,
-                asr_reference=args.full_asr_reference,
             )
         )
     if args.with_diarization:
-        speaker_reference = (
-            args.full_speaker_reference
-            if args.full_speaker_reference is not None
-            else args.full_audio.with_name(
-                "speaker-reference.json"
-            )
-        )
         checks.extend(
             diarization_model_checks(
                 here=here,
                 audio_path=args.full_audio,
-                speaker_reference=speaker_reference,
+                speaker_reference=args.full_speaker_reference,
                 work_root=args.work_root,
                 device=args.device,
+                profile=args.diarization_profile,
                 match_threshold=args.speaker_match_threshold,
                 ambiguity_margin=args.speaker_ambiguity_margin,
                 min_clean_speech_ms=args.min_clean_speech_ms,
@@ -591,18 +588,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     if args.json:
-        args.json.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-        args.json.write_text(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                indent=2,
-            ) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(args.json, payload)
     return summary.exit_code
 
 
