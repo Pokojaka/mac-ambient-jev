@@ -171,20 +171,37 @@ private func savePreviousRuns(sessionURL: URL) throws -> ActiveRuns {
         scope: "scope_previous"
     )
     try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
-        timelineVersion: 1,
-        vadVersion: "old-vad",
-        vadConfigHash: "old-config",
-        asrEngine: "old-asr",
-        asrModel: "old-model",
-        asrVersion: "old-version",
-        diarizationVersion: "old-diarization",
-        sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1,
-        policyVersion: 1,
-        materializerSchemaVersion: 1,
-        activeRuns: runs
+        finalizationAttempt: FinalizationAttempt(attemptID: "finalize_previous", state: .complete, failureReason: nil),
+        activeRuns: runs,
+        pendingContentPrioritySegmentIDs: []
     ))
     return runs
+}
+
+private func processFinal(
+    _ processor: NativeSessionProcessor,
+    sessionID: UUID,
+    checkpoint: AudioCheckpoint,
+    metadataPolicy: UnreadableMetadataPolicy,
+    statuses: FinalizationStatusRecorder,
+    states: FinalizationStateRecorder,
+    phases: FinalizationCallLog
+) async -> SessionProcessingResult {
+    await processor.processFinalTranscript(
+        sessionID: sessionID,
+        checkpoint: checkpoint,
+        pacingMode: .normal,
+        shouldPause: { false },
+        onPhase: { await phases.append("phase:\($0.rawValue)") },
+        metadataPolicy: metadataPolicy,
+        onStatus: { await statuses.append($0) },
+        onUpdate: { segments, state in await states.append((segments.map(\.text), state)) }
+    )
+}
+
+private func eventObjects(_ sessionURL: URL) throws -> [[String: Any]] {
+    try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
+        .lines.compactMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] }
 }
 
 @Test
@@ -215,10 +232,9 @@ func finalTranscriptPipelineSplitsVADSegmentsAtSpeakerChangesBeforeASR() async t
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint,
-        onStatus: { await statuses.append($0) }
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .completed)
@@ -285,7 +301,10 @@ func finalTranscriptPipelinePassesOverlappingSpeakerSpansInOneASRCall() async th
         finalTranscriptVAD: vad
     )
 
-    let result = await processor.processFinalTranscript(sessionID: sessionID, checkpoint: checkpoint)
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
 
     #expect(result.disposition == .completed)
     let loadedActiveRuns = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
@@ -324,7 +343,10 @@ func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async 
         finalTranscriptVAD: vad
     )
 
-    let result = await processor.processFinalTranscript(sessionID: sessionID, checkpoint: checkpoint)
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
 
     #expect(result.disposition == .completed)
     let loadedActiveRuns = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
@@ -365,9 +387,9 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
         }
     )
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .completed)
@@ -399,13 +421,14 @@ func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched(diarization
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint,
-        onStatus: { await statuses.append($0) }
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .failed)
+    #expect((result.metrics == nil) == diarizationFails)
+    #expect(result.retainedTranscript == .finalized)
     #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
     let failedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     #expect(failedMetadata?.activeRuns == previousRuns)
@@ -441,10 +464,15 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
     let finish = await processor.finishLiveTranscription(
         sessionID: sessionID,
         checkpoint: checkpoint,
-        onStatus: { await statuses.append($0) }
+        finalSegments: [],
+        pacingMode: .normal,
+        shouldPause: { false },
+        onPhase: { _ in },
+        onStatus: { await statuses.append($0) },
+        onUpdate: { _, _ in }
     )
 
-    #expect(finish == .completed)
+    #expect(finish.disposition == .completed)
     #expect(await statuses.snapshot().last?.contains("完了しました") == true)
 }
 
@@ -462,14 +490,13 @@ func finalTranscriptPipelineReportsNoSpeechAsTerminalStatus() async throws {
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint,
-        onStatus: { await statuses.append($0) }
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .completed)
-    #expect(result.message == "noSpeech")
+    #expect(result.noSpeech)
     #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
 }
 
@@ -494,19 +521,18 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint,
-        onStatus: { await statuses.append($0) }
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .completed)
-    #expect(result.message == "noSpeech")
+    #expect(result.noSpeech)
     #expect(await asr.prepareCallCount == 0)
     #expect(jevFactoryCalls.count() == 0)
     #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
     let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(metadata?.pendingContentPrioritySegmentIDs == nil)
+    #expect(metadata?.pendingContentPrioritySegmentIDs == [])
     let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
     let completions = try recovered.lines.compactMap { line -> (String, Bool, Int, Int)? in
         guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -551,13 +577,9 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint,
-        onStatus: { await statuses.append($0) },
-        onUpdate: { segments, state in
-            await states.append((segments.map(\.text), state))
-        }
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: statuses, states: states, phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .completed)
@@ -613,7 +635,11 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         shouldPause: {
             await log.append("pause")
             return false
-        }
+        },
+        onPhase: { _ in },
+        metadataPolicy: .reject,
+        onStatus: { _ in },
+        onUpdate: { _, _ in }
     )
 
     #expect(result.disposition == .completed)
@@ -641,10 +667,9 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
         )
     )
 
-    let result = await processor.processFinalTranscript(
-        sessionID: sessionID,
-        checkpoint: checkpoint,
-        onPhase: { await log.append("phase:\($0.rawValue)") }
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: log
     )
 
     #expect(result.disposition == .completed)
@@ -686,7 +711,6 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
     let pipeline = FinalTranscriptPipeline(
         sessionID: sessionID,
         sessionURL: sessionURL,
-        processingDirectory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
         checkpoint: checkpoint,
         asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
         diarization: FakeFinalDiarizer(
@@ -707,10 +731,325 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
     )
 
     await #expect {
-        _ = try await pipeline.process(onStatus: nil)
+        _ = try await pipeline.process(
+            onStatus: { _ in }, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in }
+        )
     } throws: { error in
-        guard case .persistedSegmentsMismatch = error as? FinalTranscriptPipelineError else { return false }
-        return true
+        guard let failure = error as? FinalTranscriptPipelineFailure else { return false }
+        return failure.message.contains("の保存済み区間が一致しません") && failure.metrics != nil
     }
     #expect(await log.snapshot() == ["vad", "diarize", "asr:0", "asr:1"])
+}
+
+private struct FailingEvidenceProvider: ProximityEvidenceProvider {
+    func evidenceSpans(
+        startFrame: Int64,
+        endFrame: Int64,
+        speakerSpans: [SpeakerSpan]
+    ) async throws -> [ProximityEvidenceSpan] {
+        throw FakeFinalizationError.expected
+    }
+}
+
+@Test
+func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["最初の確定", "二回目"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+    let first = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(first.disposition == .completed)
+    let publishedValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
+    let published = try #require(publishedValue)
+
+    // The second attempt fails in the scope stage, after ASR.
+    let pipeline = FinalTranscriptPipeline(
+        sessionID: sessionID,
+        sessionURL: sessionURL,
+        checkpoint: checkpoint,
+        asr: FakeFinalASR(log: log, values: ["置き換えない"]),
+        diarization: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        vadSegmenter: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        ),
+        proximityEvidenceProvider: FailingEvidenceProvider()
+    )
+    await #expect {
+        _ = try await pipeline.process(
+            onStatus: { _ in }, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in }
+        )
+    } throws: { error in
+        (error as? FinalTranscriptPipelineFailure)?.metrics?.initialPendingCount == 1
+    }
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns == published)
+}
+
+@Test
+func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let vad = FakeFinalVAD(
+        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+        log: log
+    )
+    let spans = [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)]
+    let succeeding = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["最初の確定"]),
+        diarizationEngine: FakeFinalDiarizer(spans: spans, log: log, shouldFail: false),
+        finalTranscriptVAD: vad
+    )
+    _ = await processFinal(
+        succeeding, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    let published = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
+
+    let failing = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["失敗"], shouldFail: true),
+        diarizationEngine: FakeFinalDiarizer(spans: spans, log: log, shouldFail: false),
+        finalTranscriptVAD: vad
+    )
+    let states = FinalizationStateRecorder()
+    let result = await processFinal(
+        failing, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: states, phases: FinalizationCallLog()
+    )
+
+    #expect(result.disposition == .failed)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(result.metrics?.initialPendingCount == 1)
+    #expect(result.message?.contains("認識できない 1区間") == true)
+    let last = try #require(await states.snapshot().last)
+    #expect(last.texts == ["最初の確定"])
+    guard case .partialFailure = last.state else {
+        Issue.record("a failed finalization reports a partial failure")
+        return
+    }
+    let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
+    #expect(metadata?.activeRuns == published)
+    #expect(metadata?.finalizationAttempt?.state == .failed)
+}
+
+@Test
+func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let writer = try SessionWriter(sessionURL: sessionURL)
+    try await writer.append(EventDraft(
+        eventType: "segment.created",
+        sessionID: sessionID,
+        segmentationRunID: "seg_live",
+        segmentID: "live_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 16_000,
+        payload: EmptyPayload()
+    ))
+    try await writer.append(EventDraft(
+        eventType: "asr.pending",
+        sessionID: sessionID,
+        processingRunID: "asr_live_interrupted",
+        segmentationRunID: "seg_live",
+        segmentID: "live_000001",
+        sourceStartFrame: 0,
+        sourceEndFrame: 16_000,
+        payload: EmptyPayload()
+    ))
+    let scanner = SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
+    let candidate = try #require(try scanner.inspect(sessionID: sessionID))
+    #expect(candidate.action == .finalize)
+    guard case .recordedTimeline(let recovered) = candidate.source else {
+        Issue.record("a recording recovers from its timeline")
+        return
+    }
+    #expect(recovered == checkpoint)
+
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["復旧した本文"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: recovered, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+
+    #expect(result.disposition == .completed)
+    let runsValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
+    let runs = try #require(runsValue)
+    #expect(runs.segmentation?.hasPrefix("seg_final_") == true)
+    #expect(runs.asr?.hasPrefix("asr_final_") == true)
+    #expect(runs.diarization?.hasPrefix("diar_final_") == true)
+    #expect(runs.scene?.hasPrefix("scene_final_") == true)
+    #expect(runs.scope?.hasPrefix("scope_final_") == true)
+    #expect(try scanner.inspect(sessionID: sessionID) == nil)
+}
+
+@Test(arguments: [Int64(-1), Int64(16_001)])
+func speakerSpanOutsideTheRecordingFailsExplicitly(boundary: Int64) async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let span = boundary < 0
+        ? SpeakerSpan(speakerID: "S2", startFrame: boundary, endFrame: 8_000, confidence: 0.9)
+        : SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: boundary, confidence: 0.9)
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["使われない"]),
+        diarizationEngine: FakeFinalDiarizer(spans: [span], log: log, shouldFail: false),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+
+    #expect(result.disposition == .failed)
+    #expect(result.message?.contains(
+        FinalTranscriptPipelineError.invalidSpeakerSpan(
+            speakerID: "S2",
+            startFrame: span.startFrame,
+            endFrame: span.endFrame,
+            totalFrames: 16_000
+        ).localizedDescription
+    ) == true)
+    #expect(await log.snapshot() == ["vad", "diarize"])
+}
+
+@Test
+func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["一回目", "二回目"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+    var startedRunsByAttempt: [[String: String]] = []
+    for _ in 0..<2 {
+        let result = await processFinal(
+            processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+            statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+        )
+        #expect(result.disposition == .completed)
+        let runsValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
+        let runs = try #require(runsValue)
+        let started = try eventObjects(sessionURL).filter { $0["event_type"] as? String == "processing.run.started" }
+        var engines: [String: String] = [:]
+        for (stage, runID) in [
+            ("segmentation", runs.segmentation), ("diarization", runs.diarization), ("asr", runs.asr),
+            ("scene", runs.scene), ("scope", runs.scope),
+        ] {
+            let ofRun = started.filter { $0["processing_run_id"] as? String == runID }
+            #expect(ofRun.count == 1)
+            let payload = ofRun.first?["payload"] as? [String: Any]
+            #expect(payload?["stage"] as? String == stage)
+            let provenance = payload?["provenance"] as? [String: Any]
+            engines[stage] = provenance?["engine"] as? String
+            #expect(provenance?["version"] as? String != nil)
+        }
+        #expect(engines == [
+            "segmentation": "fake-vad",
+            "diarization": "fake-diarizer",
+            "asr": "fake-asr",
+            "scene": FinalTranscriptStageSettings.sceneProvenance.engine,
+            "scope": FinalTranscriptStageSettings.scopeProvenance.engine,
+        ])
+        startedRunsByAttempt.append(Dictionary(uniqueKeysWithValues: started.compactMap { object in
+            (object["processing_run_id"] as? String).map { ($0, $0) }
+        }))
+    }
+    #expect(startedRunsByAttempt[1].count == startedRunsByAttempt[0].count + 5)
+}
+
+@Test
+func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let metadataURL = sessionURL.appending(path: "processing_metadata.json")
+    let broken = Data("{broken".utf8)
+    try broken.write(to: metadataURL)
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        asr: FakeFinalASR(log: log, values: ["再処理"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+            log: log
+        )
+    )
+
+    let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+    #expect(scan.candidates.isEmpty)
+    #expect(scan.failures.map(\.sessionURL.lastPathComponent) == [sessionID.uuidString])
+
+    let rejected = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(rejected.disposition == .failed)
+    #expect(try Data(contentsOf: metadataURL) == broken)
+    #expect(await log.snapshot().isEmpty)
+
+    let replaced = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .replace,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(replaced.disposition == .completed)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
 }

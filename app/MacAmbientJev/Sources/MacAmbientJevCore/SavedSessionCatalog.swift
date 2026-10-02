@@ -186,10 +186,10 @@ public struct SavedSessionCatalog {
         for metadata: ProcessingMetadata?
     ) -> SavedSessionProcessingStatus {
         switch metadata?.finalizationAttempt?.state {
-        case .running:
+        case .running, .paused:
             .running
         case .complete:
-            metadata?.pendingContentPrioritySegmentIDs?.isEmpty == false
+            metadata?.pendingContentPrioritySegmentIDs.isEmpty == false
                 ? .classificationPending
                 : .complete
         case .failed:

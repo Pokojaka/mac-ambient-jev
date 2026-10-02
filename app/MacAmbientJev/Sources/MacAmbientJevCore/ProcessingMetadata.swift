@@ -3,6 +3,7 @@ import Foundation
 public struct FinalizationAttempt: Codable, Sendable, Equatable {
     public enum State: String, Codable, Sendable, Equatable {
         case running
+        case paused
         case failed
         case complete
     }
@@ -14,176 +15,79 @@ public struct FinalizationAttempt: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case attemptID = "attemptId"
         case state
-        case failureReason = "failureReason"
+        case failureReason
     }
 
-    public init(
-        attemptID: String,
-        state: State,
-        failureReason: String? = nil
-    ) {
+    public init(attemptID: String, state: State, failureReason: String?) {
         self.attemptID = attemptID
         self.state = state
         self.failureReason = failureReason
     }
 }
 
+/// Per-session processing state. Which engines and settings produced each run is
+/// recorded on the run itself as a `processing.run.started` event.
 public struct ProcessingMetadata: Codable, Sendable, Equatable {
-    public let timelineVersion: Int
-    public let vadVersion: String
-    public let vadConfigHash: String
-    public let asrEngine: String
-    public let asrModel: String
-    public let asrVersion: String
-    public let diarizationVersion: String
-    public let sceneAnalyzerVersion: Int
-    public let jevSchemaVersion: Int
-    public let policyVersion: Int
-    public let materializerSchemaVersion: Int
-    public let activeRuns: ActiveRuns?
-    public let finalizationAttempt: FinalizationAttempt?
-    public let pendingContentPrioritySegmentIDs: [String]?
+    public var finalizationAttempt: FinalizationAttempt?
+    /// The published run set. Set only when a finalization attempt completes.
+    public var activeRuns: ActiveRuns?
+    public var pendingContentPrioritySegmentIDs: [String]
 
     public init(
-        timelineVersion: Int,
-        vadVersion: String,
-        vadConfigHash: String,
-        asrEngine: String,
-        asrModel: String,
-        asrVersion: String,
-        diarizationVersion: String,
-        sceneAnalyzerVersion: Int,
-        jevSchemaVersion: Int,
-        policyVersion: Int,
-        materializerSchemaVersion: Int,
-        activeRuns: ActiveRuns? = nil,
-        finalizationAttempt: FinalizationAttempt? = nil,
-        pendingContentPrioritySegmentIDs: [String]? = nil
+        finalizationAttempt: FinalizationAttempt?,
+        activeRuns: ActiveRuns?,
+        pendingContentPrioritySegmentIDs: [String]
     ) {
-        self.timelineVersion = timelineVersion
-        self.vadVersion = vadVersion
-        self.vadConfigHash = vadConfigHash
-        self.asrEngine = asrEngine
-        self.asrModel = asrModel
-        self.asrVersion = asrVersion
-        self.diarizationVersion = diarizationVersion
-        self.sceneAnalyzerVersion = sceneAnalyzerVersion
-        self.jevSchemaVersion = jevSchemaVersion
-        self.policyVersion = policyVersion
-        self.materializerSchemaVersion = materializerSchemaVersion
-        self.activeRuns = activeRuns
         self.finalizationAttempt = finalizationAttempt
+        self.activeRuns = activeRuns
         self.pendingContentPrioritySegmentIDs = pendingContentPrioritySegmentIDs
-    }
-
-    public func withActiveRuns(_ activeRuns: ActiveRuns) -> ProcessingMetadata {
-        ProcessingMetadata(
-            timelineVersion: timelineVersion,
-            vadVersion: vadVersion,
-            vadConfigHash: vadConfigHash,
-            asrEngine: asrEngine,
-            asrModel: asrModel,
-            asrVersion: asrVersion,
-            diarizationVersion: diarizationVersion,
-            sceneAnalyzerVersion: sceneAnalyzerVersion,
-            jevSchemaVersion: jevSchemaVersion,
-            policyVersion: policyVersion,
-            materializerSchemaVersion: materializerSchemaVersion,
-            activeRuns: activeRuns,
-            finalizationAttempt: finalizationAttempt,
-            pendingContentPrioritySegmentIDs: pendingContentPrioritySegmentIDs
-        )
-    }
-
-    public func withFinalizationAttempt(
-        _ finalizationAttempt: FinalizationAttempt?
-    ) -> ProcessingMetadata {
-        ProcessingMetadata(
-            timelineVersion: timelineVersion,
-            vadVersion: vadVersion,
-            vadConfigHash: vadConfigHash,
-            asrEngine: asrEngine,
-            asrModel: asrModel,
-            asrVersion: asrVersion,
-            diarizationVersion: diarizationVersion,
-            sceneAnalyzerVersion: sceneAnalyzerVersion,
-            jevSchemaVersion: jevSchemaVersion,
-            policyVersion: policyVersion,
-            materializerSchemaVersion: materializerSchemaVersion,
-            activeRuns: activeRuns,
-            finalizationAttempt: finalizationAttempt,
-            pendingContentPrioritySegmentIDs: pendingContentPrioritySegmentIDs
-        )
-    }
-
-    public func withCompletedFinalization(
-        attemptID: String,
-        activeRuns: ActiveRuns
-    ) -> ProcessingMetadata {
-        ProcessingMetadata(
-            timelineVersion: timelineVersion,
-            vadVersion: vadVersion,
-            vadConfigHash: vadConfigHash,
-            asrEngine: asrEngine,
-            asrModel: asrModel,
-            asrVersion: asrVersion,
-            diarizationVersion: diarizationVersion,
-            sceneAnalyzerVersion: sceneAnalyzerVersion,
-            jevSchemaVersion: jevSchemaVersion,
-            policyVersion: policyVersion,
-            materializerSchemaVersion: materializerSchemaVersion,
-            activeRuns: activeRuns,
-            finalizationAttempt: FinalizationAttempt(
-                attemptID: attemptID,
-                state: .complete
-            ),
-            pendingContentPrioritySegmentIDs: pendingContentPrioritySegmentIDs
-        )
-    }
-
-    public func withPendingContentPrioritySegmentIDs(
-        _ segmentIDs: [String]
-    ) -> ProcessingMetadata {
-        ProcessingMetadata(
-            timelineVersion: timelineVersion,
-            vadVersion: vadVersion,
-            vadConfigHash: vadConfigHash,
-            asrEngine: asrEngine,
-            asrModel: asrModel,
-            asrVersion: asrVersion,
-            diarizationVersion: diarizationVersion,
-            sceneAnalyzerVersion: sceneAnalyzerVersion,
-            jevSchemaVersion: jevSchemaVersion,
-            policyVersion: policyVersion,
-            materializerSchemaVersion: materializerSchemaVersion,
-            activeRuns: activeRuns,
-            finalizationAttempt: finalizationAttempt,
-            pendingContentPrioritySegmentIDs: segmentIDs.isEmpty ? nil : segmentIDs
-        )
     }
 }
 
-public enum ProcessingMetadataStoreError: Error, Equatable {
+/// What a new finalization attempt does with a `processing_metadata.json` that cannot be decoded.
+public enum UnreadableMetadataPolicy: Sendable, Equatable {
+    /// Fail: the file is reported and left untouched.
+    case reject
+    /// Start over with fresh metadata. Only an explicit user reprocess chooses this.
+    case replace
+}
+
+public enum ProcessingMetadataStoreError: Error, LocalizedError, Equatable {
     case metadataMissing
     case finalizationAttemptMismatch
+    case unreadable(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .metadataMissing:
+            "処理状態ファイルがありません"
+        case .finalizationAttemptMismatch:
+            "処理状態ファイルの確定処理 ID が一致しません"
+        case .unreadable(let reason):
+            "処理状態ファイルを読めません: \(reason)"
+        }
+    }
 }
 
 public struct ProcessingMetadataStore: Sendable {
     public let url: URL
 
     public init(sessionURL: URL) {
-        self.url = sessionURL.appending(path: "processing_metadata.json")
+        self.url = SessionLayout(sessionURL: sessionURL).processingMetadataURL
     }
 
     public func load() throws -> ProcessingMetadata? {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return nil
         }
-
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(ProcessingMetadata.self, from: data)
+        do {
+            return try decoder.decode(ProcessingMetadata.self, from: data)
+        } catch let error as DecodingError {
+            throw ProcessingMetadataStoreError.unreadable(String(describing: error))
+        }
     }
 
     public func save(_ metadata: ProcessingMetadata) throws {
@@ -193,54 +97,86 @@ public struct ProcessingMetadataStore: Sendable {
         try data.write(to: url, options: .atomic)
     }
 
+    /// Marks a new attempt as running and returns the metadata it replaced
+    /// (nil when there was none or `policy` replaced an unreadable file).
+    /// The published runs and pending classifications stay as they were.
+    @discardableResult
     public func beginFinalization(
         attemptID: String,
-        defaultMetadata: ProcessingMetadata? = nil
-    ) throws {
-        let metadata: ProcessingMetadata
-        if let existing = try load() {
-            metadata = existing
-        } else if let defaultMetadata {
-            metadata = defaultMetadata
-        } else {
+        policy: UnreadableMetadataPolicy
+    ) throws -> ProcessingMetadata? {
+        let previous: ProcessingMetadata?
+        do {
+            previous = try load()
+        } catch ProcessingMetadataStoreError.unreadable where policy == .replace {
+            previous = nil
+        }
+        var metadata = previous ?? ProcessingMetadata(
+            finalizationAttempt: nil,
+            activeRuns: nil,
+            pendingContentPrioritySegmentIDs: []
+        )
+        metadata.finalizationAttempt = FinalizationAttempt(
+            attemptID: attemptID,
+            state: .running,
+            failureReason: nil
+        )
+        try save(metadata)
+        return previous
+    }
+
+    public func pauseFinalization(attemptID: String) throws {
+        try updateAttempt(attemptID: attemptID) { metadata in
+            metadata.finalizationAttempt = FinalizationAttempt(
+                attemptID: attemptID,
+                state: .paused,
+                failureReason: nil
+            )
+        }
+    }
+
+    public func failFinalization(attemptID: String, reason: String) throws {
+        try updateAttempt(attemptID: attemptID) { metadata in
+            metadata.finalizationAttempt = FinalizationAttempt(
+                attemptID: attemptID,
+                state: .failed,
+                failureReason: reason
+            )
+        }
+    }
+
+    /// Publishes `activeRuns` as the whole run set. Classifications of the
+    /// previous runs no longer apply, so none are pending.
+    public func completeFinalization(attemptID: String, activeRuns: ActiveRuns) throws {
+        try updateAttempt(attemptID: attemptID) { metadata in
+            metadata.finalizationAttempt = FinalizationAttempt(
+                attemptID: attemptID,
+                state: .complete,
+                failureReason: nil
+            )
+            metadata.activeRuns = activeRuns
+            metadata.pendingContentPrioritySegmentIDs = []
+        }
+    }
+
+    /// Applies `change` to existing metadata.
+    public func update(_ change: (inout ProcessingMetadata) throws -> Void) throws {
+        guard var metadata = try load() else {
             throw ProcessingMetadataStoreError.metadataMissing
         }
-        try save(metadata.withFinalizationAttempt(FinalizationAttempt(
-            attemptID: attemptID,
-            state: .running
-        )))
+        try change(&metadata)
+        try save(metadata)
     }
 
-    public func failFinalization(
+    private func updateAttempt(
         attemptID: String,
-        reason: String
+        _ change: (inout ProcessingMetadata) -> Void
     ) throws {
-        let metadata = try matchingFinalizationAttempt(attemptID: attemptID)
-        try save(metadata.withFinalizationAttempt(FinalizationAttempt(
-            attemptID: attemptID,
-            state: .failed,
-            failureReason: reason
-        )))
-    }
-
-    public func completeFinalization(
-        attemptID: String,
-        activeRuns: ActiveRuns
-    ) throws {
-        let metadata = try matchingFinalizationAttempt(attemptID: attemptID)
-        try save(metadata.withCompletedFinalization(
-            attemptID: attemptID,
-            activeRuns: activeRuns
-        ))
-    }
-
-    private func matchingFinalizationAttempt(
-        attemptID: String
-    ) throws -> ProcessingMetadata {
-        guard let metadata = try load(),
-              metadata.finalizationAttempt?.attemptID == attemptID else {
-            throw ProcessingMetadataStoreError.finalizationAttemptMismatch
+        try update { metadata in
+            guard metadata.finalizationAttempt?.attemptID == attemptID else {
+                throw ProcessingMetadataStoreError.finalizationAttemptMismatch
+            }
+            change(&metadata)
         }
-        return metadata
     }
 }

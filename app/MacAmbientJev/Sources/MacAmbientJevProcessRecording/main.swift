@@ -52,7 +52,60 @@ enum RecordingInput {
 @main
 struct ProcessRecordingCommand {
     static func main() async throws {
-        var arguments = Array(CommandLine.arguments.dropFirst())
+        let invocation: Invocation
+        do {
+            invocation = try parseCommandLine(Array(CommandLine.arguments.dropFirst()))
+        } catch ProcessRecordingError.invalidArguments {
+            printUsage()
+            throw ProcessRecordingError.invalidArguments
+        }
+        let input = invocation.input
+        let monitor = try invocation.measurement.map { measurement in
+            try RunMonitor(
+                runID: measurement.runID,
+                metricsURL: URL(fileURLWithPath: measurement.metricsPath),
+                thermalURL: URL(fileURLWithPath: measurement.thermalPath),
+                memoryURL: URL(fileURLWithPath: measurement.memoryPath)
+            )
+        }
+        let monitorTask: Task<Void, Never>? = monitor.map { monitor in
+            Task { await monitor.run() }
+        }
+        let result: SessionProcessingResult
+        do {
+            result = try await execute(input: input, monitor: monitor)
+        } catch {
+            monitorTask?.cancel()
+            await monitorTask?.value
+            if let monitor {
+                try await monitor.write(.failed(
+                    message: error.localizedDescription, metrics: nil, retained: nil
+                ))
+            }
+            throw error
+        }
+        monitorTask?.cancel()
+        await monitorTask?.value
+        if let monitor { try await monitor.write(result) }
+        guard result.disposition == .completed else {
+            throw ProcessRecordingError.processingFailed(result.message ?? result.disposition.rawValue)
+        }
+    }
+
+    private struct Measurement {
+        let runID: String
+        let metricsPath: String
+        let thermalPath: String
+        let memoryPath: String
+    }
+
+    private struct Invocation {
+        let input: RecordingInput
+        let measurement: Measurement?
+    }
+
+    private static func parseCommandLine(_ originalArguments: [String]) throws -> Invocation {
+        var arguments = originalArguments
         let runID = try removeOption("--run-id", from: &arguments)
         let metricsPath = try removeOption("--metrics-output", from: &arguments)
         let thermalPath = try removeOption("--thermal-output", from: &arguments)
@@ -67,39 +120,15 @@ struct ProcessRecordingCommand {
             }
         }
         let input = try parseInput(arguments, measured: runID != nil)
-        let monitor: RunMonitor?
-        if let runID, let metricsPath, let thermalPath, let memoryPath {
-            monitor = try RunMonitor(
-                runID: runID,
-                metricsURL: URL(fileURLWithPath: metricsPath),
-                thermalURL: URL(fileURLWithPath: thermalPath),
-                memoryURL: URL(fileURLWithPath: memoryPath)
-            )
-        } else {
-            monitor = nil
+        guard let runID, let metricsPath, let thermalPath, let memoryPath else {
+            return Invocation(input: input, measurement: nil)
         }
-        let monitorTask: Task<Void, Never>? = monitor.map { monitor in
-            Task { await monitor.run() }
-        }
-        let result: SessionProcessingResult
-        do {
-            result = try await execute(input: input, monitor: monitor)
-        } catch {
-            monitorTask?.cancel()
-            await monitorTask?.value
-            if let monitor {
-                try await monitor.write(SessionProcessingResult(
-                    disposition: .failed, metrics: nil, message: error.localizedDescription
-                ))
-            }
-            throw error
-        }
-        monitorTask?.cancel()
-        await monitorTask?.value
-        if let monitor { try await monitor.write(result) }
-        guard result.disposition == .completed else {
-            throw ProcessRecordingError.processingFailed(result.message ?? result.disposition.rawValue)
-        }
+        return Invocation(input: input, measurement: Measurement(
+            runID: runID,
+            metricsPath: metricsPath,
+            thermalPath: thermalPath,
+            memoryPath: memoryPath
+        ))
     }
 
     static func parseInput(_ originalArguments: [String], measured: Bool) throws -> RecordingInput {
@@ -159,7 +188,7 @@ struct ProcessRecordingCommand {
         switch input {
         case .inspect(let id, let root):
             try inspect(sessionID: id, root: root)
-            return SessionProcessingResult(disposition: .completed, metrics: nil)
+            return .completed(metrics: .zero, noSpeech: false)
         case .resume(let id, let root, let output, let pacingMode):
             try checkStart(pacingMode: pacingMode)
             return try await resume(
@@ -235,8 +264,9 @@ struct ProcessRecordingCommand {
             sessionID: sessionID,
             originalURL: imported.originalURL,
             pacingMode: pacingMode,
-            shouldPause: { await monitor?.shouldPause() ?? (ProcessInfo.processInfo.thermalState == .critical) },
+            shouldPause: pauseCheck(monitor),
             onPhase: { phase in await monitor?.setPhase(phase) },
+            metadataPolicy: .reject,
             onStatus: { message in
                 print(message)
             },
@@ -280,23 +310,18 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.invalidSession("指定されたセッションが見つかりません")
         }
         let action: String
-        let pending: Int
         do {
             switch try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)?.action {
-            case .finalize: action = "finalize"; pending = 0
-            case .resumeASR(let plan): action = "resumeASR"; pending = plan.pendingSegments.count
-            case .selectCompletedASR: action = "selectCompletedASR"; pending = 0
-            case .runDiarization: action = "runDiarization"; pending = 0
-            case .retryContentPriority: action = "retryContentPriority"; pending = 0
-            case .reprocess: action = "reprocess"; pending = 0
-            case nil: action = "none"; pending = 0
+            case .finalize: action = "finalize"
+            case .retryContentPriority: action = "retryContentPriority"
+            case nil: action = "none"
             }
         } catch SessionRecoveryScannerError.missingAudio,
                 SessionAudioSourceError.importedOriginalMissing {
-            action = "unrecoverable"; pending = 0
+            action = "unrecoverable"
         }
         let data = try JSONSerialization.data(
-            withJSONObject: ["session_id": sessionID.uuidString, "action": action, "pending_count": pending],
+            withJSONObject: ["session_id": sessionID.uuidString, "action": action],
             options: [.sortedKeys]
         )
         print(String(decoding: data, as: UTF8.self))
@@ -309,49 +334,63 @@ struct ProcessRecordingCommand {
         pacingMode: ASRPacingMode,
         monitor: RunMonitor?
     ) async throws -> SessionProcessingResult {
-        let sessionURL = root.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-        let scanner = SessionRecoveryScanner(sessionsRoot: root)
-        let candidate = try scanner.inspect(sessionID: sessionID)
-        let manifestURL = sessionURL.appending(path: "session.json")
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let manifest = try decoder.decode(SessionManifest.self, from: Data(contentsOf: manifestURL))
-        guard manifest.sessionID == sessionID,
-              manifest.sourceKind == .importedFile else {
-            throw ProcessRecordingError.invalidSession("import 済みの UUID を指定してください")
+        let sessionURL = SessionLayout(sessionsRoot: root, sessionID: sessionID).sessionURL
+        guard FileManager.default.fileExists(atPath: SessionLayout(sessionURL: sessionURL).manifestURL.path) else {
+            throw ProcessRecordingError.invalidSession("指定されたセッションが見つかりません")
         }
+        let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
 
         let processor = NativeSessionProcessor(paths: try .systemDefault(), sessionsRoot: root)
         let collector = ProcessingResultCollector()
         let onUpdate: NativeSessionProcessor.UpdateHandler = { segments, state in
             await collector.update(segments: segments, state: state)
         }
+        let onStatus: NativeSessionProcessor.StatusHandler = { message in print(message) }
+        let onPhase: NativeSessionProcessor.PhaseHandler = { phase in await monitor?.setPhase(phase) }
         let result: SessionProcessingResult?
         switch (candidate?.action, candidate?.source) {
         case (.retryContentPriority?, _):
             throw ProcessRecordingError.invalidSession("この復旧 action は CLI の対象外です")
-        case (_?, .importedOriginal(let originalURL)?):
+        case (.finalize?, .recordedTimeline(let checkpoint)?):
+            result = await processor.processFinalTranscript(
+                sessionID: sessionID,
+                checkpoint: checkpoint,
+                pacingMode: pacingMode,
+                shouldPause: pauseCheck(monitor),
+                onPhase: onPhase,
+                metadataPolicy: .reject,
+                onStatus: onStatus,
+                onUpdate: onUpdate
+            )
+        case (.finalize?, .importedOriginal(let originalURL)?):
             result = await processor.processImportedSession(
                 sessionID: sessionID,
                 originalURL: originalURL,
                 pacingMode: pacingMode,
-                shouldPause: { await monitor?.shouldPause() ?? (ProcessInfo.processInfo.thermalState == .critical) },
-                onPhase: { phase in await monitor?.setPhase(phase) },
+                shouldPause: pauseCheck(monitor),
+                onPhase: onPhase,
+                metadataPolicy: .reject,
+                onStatus: onStatus,
                 onUpdate: onUpdate
             )
-        case (nil, nil):
+        case (nil, _), (.finalize?, nil):
             result = nil
-        default:
-            throw ProcessRecordingError.invalidSession("この復旧 action は CLI の対象外です")
         }
         if let result, result.disposition != .completed { return result }
-        let snapshot = await collector.snapshot()
-        if candidate != nil, snapshot.state != .complete {
+        if result != nil, await collector.snapshot().state != .complete {
             throw ProcessRecordingError.processingFailed("後処理が完了状態へ到達しませんでした")
         }
         try export(sessionURL: sessionURL, outputURL: outputURL)
         print("segments.json を生成しました: \(outputURL.path)")
-        return result ?? SessionProcessingResult(disposition: .completed, metrics: nil)
+        return result ?? .completed(metrics: .zero, noSpeech: false)
+    }
+
+    /// Measured runs pause on the monitor's thermal policy; others pause at critical thermal state.
+    private static func pauseCheck(_ monitor: RunMonitor?) -> NativeSessionProcessor.PauseCheck {
+        if let monitor {
+            return { await monitor.shouldPause() }
+        }
+        return { ProcessInfo.processInfo.thermalState == .critical }
     }
 
     private static func export(sessionURL: URL, outputURL: URL) throws {
@@ -405,7 +444,7 @@ struct ProcessRecordingCommand {
     }
 
     private static func printUsage() {
-        print(
+        FileHandle.standardError.write(Data(
             """
             使い方:
               MacAmbientJevProcessRecording [--keep-session] [--low-heat] <audio-file> [segments.json]
@@ -421,7 +460,8 @@ struct ProcessRecordingCommand {
             通常はテスト用セッションを処理後に削除します。
             デバッグ用にセッションを残す場合だけ --keep-session を指定します。
             --low-heat は発話区間の文字起こし完了ごとに約2秒休止します。
-            """
-        )
+
+            """.utf8
+        ))
     }
 }

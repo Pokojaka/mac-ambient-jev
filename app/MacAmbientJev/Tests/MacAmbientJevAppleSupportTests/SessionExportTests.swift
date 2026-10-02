@@ -290,11 +290,9 @@ struct ExportFixture {
             ))
         }
         try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-            timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-            asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-            diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-            jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
-            activeRuns: activeRuns
+            finalizationAttempt: nil,
+            activeRuns: activeRuns,
+            pendingContentPrioritySegmentIDs: []
         ))
     }
 }
