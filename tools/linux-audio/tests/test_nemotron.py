@@ -1,35 +1,56 @@
 from __future__ import annotations
 
+import json
 import math
+import wave
 
 import pytest
 
-import diarization.nemotron3 as nemotron3_module
-
 from diarization.nemotron3 import (
-    DEFAULT_MODEL,
-    DEFAULT_MODEL_FILENAME,
-    DEFAULT_MODEL_REVISION,
-    PROFILES,
+    LoadedModels,
     apply_nemo_profile,
-    load_nemotron_model,
     parse_nemo_segments,
     run_diarization,
 )
 from diarization.speaker_overflow import (
     SpeakerOverflowResolver,
-    is_clean_speech_span,
+    first_clean_subspan,
     resolve_spans_with_embeddings,
 )
 
 
-def test_nemotron_profiles_match_recommended_values():
-    assert PROFILES["offline-30.4s"] == (
-        264, 40, 340, 40, 300
+PACKAGES = {"nemo_toolkit": "2.6.0", "torch": "2.10.0"}
+
+
+def one_hot(index: int, size: int = 10) -> list[float]:
+    return [
+        1.0 if position == index else 0.0
+        for position in range(size)
+    ]
+
+
+def borderline(score: float) -> list[float]:
+    """An embedding whose cosine similarity to one_hot(0) is score."""
+    return [score, math.sqrt(1 - score ** 2)] + [0.0] * 8
+
+
+def make_resolver() -> SpeakerOverflowResolver:
+    return SpeakerOverflowResolver(
+        match_threshold=0.8,
+        ambiguity_margin=0.05,
     )
-    assert PROFILES["ultra-low-0.32s"] == (
-        264, 264, 3, 1, 222
-    )
+
+
+def make_wav(path, frames: int = 16_000) -> None:
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * frames)
+
+
+def span(start: int, end: int, label: str) -> dict:
+    return {"start_ms": start, "end_ms": end, "speaker_label": label}
 
 
 def test_parse_nemo_segments_preserves_overlap():
@@ -37,12 +58,13 @@ def test_parse_nemo_segments_preserves_overlap():
         "0.400 2.100 speaker_0",
         "1.800 3.250 speaker_1",
     ])
-    assert spans[0]["start_ms"] == 400
-    assert spans[0]["end_ms"] == 2100
-    assert spans[1]["start_ms"] == 1800
+    assert spans == [
+        span(400, 2100, "speaker_0"),
+        span(1800, 3250, "speaker_1"),
+    ]
 
 
-def test_apply_profile_updates_model():
+def test_apply_profile_updates_model_and_checks_parameters():
     class Modules:
         pass
 
@@ -60,391 +82,230 @@ def test_apply_profile_updates_model():
     assert model.sortformer_modules.chunk_right_context == 2
     assert model.checked
 
-
-def one_hot(index: int, size: int = 10) -> list[float]:
-    return [
-        1.0 if position == index else 0.0
-        for position in range(size)
-    ]
+    with pytest.raises(ValueError, match="unknown profile"):
+        apply_nemo_profile(model, "fastest")
 
 
 def test_overflow_resolver_tracks_seven_then_uses_other():
-    resolver = SpeakerOverflowResolver(
-        match_threshold=0.8,
-        ambiguity_margin=0.05,
-    )
+    resolver = make_resolver()
     assigned = [
         resolver.resolve(one_hot(index))
         for index in range(10)
     ]
 
-    assert [x["index"] for x in assigned[:7]] == list(
-        range(1, 8)
-    )
-    assert [x["kind"] for x in assigned[7:]] == [
-        "other", "other", "other"
-    ]
-    assert resolver.resolve(one_hot(2)) == {
-        "kind": "tracked",
-        "index": 3,
-    }
+    assert [x["index"] for x in assigned[:7]] == list(range(1, 8))
+    assert [x["kind"] for x in assigned[7:]] == ["other"] * 3
+    assert resolver.resolve(one_hot(2)) == {"kind": "tracked", "index": 3}
 
 
-def test_overflow_resolver_keeps_borderline_as_unknown():
-    resolver = SpeakerOverflowResolver(
-        match_threshold=0.8,
-        ambiguity_margin=0.05,
-    )
-    for index in range(7):
+@pytest.mark.parametrize("registered", [1, 7])
+def test_ambiguous_score_is_unknown_before_and_after_seven_speakers(
+    registered,
+):
+    resolver = make_resolver()
+    for index in range(registered):
         resolver.resolve(one_hot(index))
 
-    candidate = [
-        0.78,
-        math.sqrt(1 - 0.78 ** 2),
-    ] + [0.0] * 8
+    assert resolver.resolve(borderline(0.78)) == {"kind": "unknown"}
+    assert len(resolver.references) == registered
 
-    assert resolver.resolve(candidate) == {
-        "kind": "unknown"
+
+def test_clearly_new_voice_opens_a_slot_below_the_ambiguity_band():
+    resolver = make_resolver()
+    resolver.resolve(one_hot(0))
+
+    assert resolver.resolve(borderline(0.70)) == {
+        "kind": "tracked",
+        "index": 2,
     }
 
 
-
-def test_resolve_spans_with_embeddings_emits_public_schema():
-    resolver = SpeakerOverflowResolver(
-        match_threshold=0.8,
-        ambiguity_margin=0.05,
-    )
-    raw = [
-        {
-            "start_ms": index * 1000,
-            "end_ms": (index + 1) * 1000,
-            "speaker_label": f"raw-{index}",
-        }
-        for index in range(10)
+def test_first_clean_subspan_uses_non_overlapping_part():
+    spans = [
+        span(0, 1400, "a"),
+        span(1000, 2000, "b"),
+        span(3000, 3300, "c"),
+        span(5000, 6000, "d"),
+        span(5200, 5600, "d"),
     ]
+
+    assert first_clean_subspan(
+        spans[1], spans, min_clean_speech_ms=500
+    ) == (1400, 2000)
+    assert first_clean_subspan(
+        spans[0], spans, min_clean_speech_ms=500
+    ) == (0, 1000)
+    assert first_clean_subspan(
+        spans[2], spans, min_clean_speech_ms=500
+    ) is None
+    assert first_clean_subspan(
+        spans[3], spans, min_clean_speech_ms=500
+    ) == (5000, 6000)
+
+
+def test_span_without_clean_speech_is_unknown_and_never_registers():
+    resolver = make_resolver()
+    calls = []
+
+    resolved = resolve_spans_with_embeddings(
+        [span(0, 2000, "a"), span(500, 900, "b")],
+        embedding_for_span=lambda clean: calls.append(clean)
+            or one_hot(len(calls)),
+        resolver=resolver,
+        min_clean_speech_ms=500,
+    )
+
+    assert calls == [{"start_ms": 0, "end_ms": 500}]
+    assert [item["speaker"] for item in resolved] == [
+        {"kind": "tracked", "index": 1},
+        {"kind": "unknown"},
+    ]
+    assert len(resolver.references) == 1
+
+
+def test_arrival_order_follows_first_clean_utterance():
+    # a backchannels inside b's turn, so a only arrives with its later
+    # clean utterance, after c.
+    spans = [
+        span(0, 3000, "b"),
+        span(200, 600, "a"),
+        span(3500, 4500, "c"),
+        span(5000, 6000, "a"),
+    ]
+    voices = {600: "b", 3500: "c", 5000: "a"}
+    embeddings = {"b": one_hot(0), "c": one_hot(1), "a": one_hot(2)}
+
+    resolved = resolve_spans_with_embeddings(
+        spans,
+        embedding_for_span=lambda clean:
+            embeddings[voices[clean["start_ms"]]],
+        resolver=make_resolver(),
+        min_clean_speech_ms=500,
+    )
+
+    assert [item["speaker"] for item in resolved] == [
+        {"kind": "tracked", "index": 1},
+        {"kind": "unknown"},
+        {"kind": "tracked", "index": 2},
+        {"kind": "tracked", "index": 3},
+    ]
+
+
+def test_resolved_spans_use_public_schema_in_start_order():
+    raw = [span(index * 1000, (index + 1) * 1000, f"raw-{index}")
+           for index in range(10)]
 
     resolved = resolve_spans_with_embeddings(
         list(reversed(raw)),
-        embedding_for_span=lambda span: one_hot(
-            int(span["speaker_label"].split("-")[1])
-        ),
-        resolver=resolver,
+        embedding_for_span=lambda clean: one_hot(clean["start_ms"] // 1000),
+        resolver=make_resolver(),
+        min_clean_speech_ms=500,
     )
 
-    assert [span["start_ms"] for span in resolved] == [
-        index * 1000
-        for index in range(10)
+    assert [item["start_ms"] for item in resolved] == [
+        index * 1000 for index in range(10)
     ]
-    assert [
-        span["speaker"]["index"]
-        for span in resolved[:7]
-    ] == list(range(1, 8))
-    assert [
-        span["speaker"]["kind"]
-        for span in resolved[7:]
-    ] == ["other", "other", "other"]
-    assert all(
-        "speaker_label" not in span
-        for span in resolved
-    )
+    assert [item["speaker"]["kind"] for item in resolved[7:]] == [
+        "other"
+    ] * 3
+    assert all(set(item) == {"start_ms", "end_ms", "speaker"}
+               for item in resolved)
 
 
+class FakeDiarizer:
+    def __init__(self, raw):
+        self.raw = raw
 
-def test_run_diarization_writes_resolved_artifact(tmp_path):
-    import json
-    import wave
+    def diarize(self, audio_path):
+        return self.raw
 
-    audio = tmp_path / "audio.wav"
-    with wave.open(str(audio), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16_000)
-        wav.writeframes(b"\x00\x00" * 16_000)
 
-    output = tmp_path / "diarization.json"
-    raw = [
-        {
-            "start_ms": index * 100,
-            "end_ms": (index + 1) * 100,
-            "speaker_label": f"raw-{index}",
-        }
-        for index in range(10)
-    ]
-    times = iter([10.0, 10.25])
+class FakeEmbedder:
+    def embedding_for_span(self, audio_path, clean):
+        return one_hot(clean["start_ms"] // 100)
 
-    artifact = run_diarization(
-        audio_path=audio,
-        output_path=output,
-        profile="offline-30.4s",
-        model="nvidia/Nemotron-3-Diarization",
-        revision="test-revision",
-        device="cuda:0",
-        embedding_model="test-embedding",
-        embedding_revision="test-embedding-revision",
-        match_threshold=0.8,
-        ambiguity_margin=0.05,
-        min_clean_speech_ms=50,
-        diarize_raw=lambda _audio, _profile: raw,
-        embedding_for_span=lambda span: one_hot(
-            int(span["speaker_label"].split("-")[1])
-        ),
-        clock=lambda: next(times),
-    )
 
-    assert output.is_file()
-    assert json.loads(output.read_text()) == artifact
-    assert artifact["runtime"]["audio_seconds"] == 1.0
-    assert artifact["runtime"]["inference_seconds"] == 0.25
-    assert artifact["raw_spans"] == raw
-    assert artifact["overflow_resolver"] == {
+def run_fake(audio, output, raw, **overrides):
+    arguments = {
+        "audio_path": audio,
+        "output_path": output,
+        "profile": "offline-30.4s",
+        "model": "nvidia/Nemotron-3-Diarization",
+        "revision": "test-revision",
+        "device": "cpu",
         "embedding_model": "test-embedding",
         "embedding_revision": "test-embedding-revision",
         "match_threshold": 0.8,
         "ambiguity_margin": 0.05,
         "min_clean_speech_ms": 50,
+        "load_models": lambda: LoadedModels(
+            diarizer=FakeDiarizer(raw),
+            embedder=FakeEmbedder(),
+        ),
+        "package_versions": lambda: PACKAGES,
     }
-    assert [
-        span["speaker"]["kind"]
-        for span in artifact["spans"][7:]
-    ] == ["other", "other", "other"]
+    arguments.update(overrides)
+    return run_diarization(**arguments)
 
 
-def test_run_diarization_removes_stale_output_on_failure(
+def test_run_diarization_writes_artifact_with_reproduction_conditions(
     tmp_path,
 ):
-    import wave
-
     audio = tmp_path / "audio.wav"
-    with wave.open(str(audio), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16_000)
-        wav.writeframes(b"\x00\x00" * 1600)
-
     output = tmp_path / "diarization.json"
+    make_wav(audio)
+    raw = [span(index * 100, (index + 1) * 100, f"raw-{index}")
+           for index in range(10)]
+
+    artifact = run_fake(audio, output, raw)
+
+    assert json.loads(output.read_text()) == artifact
+    assert artifact["schema_version"] == 2
+    assert artifact["raw_spans"] == raw
+    assert artifact["engine"]["package_versions"] == PACKAGES
+    assert artifact["engine"]["inference_config"] == {
+        "profile": "offline-30.4s",
+        "streaming": {
+            "spkcache_len": 264,
+            "fifo_len": 40,
+            "chunk_len": 340,
+            "chunk_right_context": 40,
+            "spkcache_update_period": 300,
+        },
+        "batch_size": 1,
+    }
+    assert artifact["overflow_resolver"]["min_clean_speech_ms"] == 50
+    assert set(artifact["runtime"]) == {
+        "audio_seconds",
+        "model_load_seconds",
+        "inference_seconds",
+        "rtf",
+    }
+    assert [item["speaker"]["kind"] for item in artifact["spans"][7:]] == [
+        "other"
+    ] * 3
+
+
+def test_run_diarization_removes_stale_output_when_model_load_fails(
+    tmp_path,
+):
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "diarization.json"
+    make_wav(audio)
     output.write_text('{"stale": true}')
 
-    def fail(_audio, _profile):
-        raise RuntimeError("boom")
+    def fail():
+        raise RuntimeError("load failed")
 
-    with pytest.raises(RuntimeError, match="boom"):
-        run_diarization(
-            audio_path=audio,
-            output_path=output,
-            profile="offline-30.4s",
-            model="nvidia/Nemotron-3-Diarization",
-            revision=None,
-            device="cuda:0",
-            embedding_model="test-embedding",
-            embedding_revision="test-embedding-revision",
-            match_threshold=0.8,
-            ambiguity_margin=0.05,
-            diarize_raw=fail,
-            embedding_for_span=lambda span: one_hot(0),
-        )
+    with pytest.raises(RuntimeError, match="load failed"):
+        run_fake(audio, output, [], load_models=fail)
 
     assert not output.exists()
 
 
-
-def test_clean_speech_rejects_short_and_overlapping_spans():
-    spans = [
-        {
-            "start_ms": 0,
-            "end_ms": 400,
-            "speaker_label": "short",
-        },
-        {
-            "start_ms": 1000,
-            "end_ms": 2200,
-            "speaker_label": "a",
-        },
-        {
-            "start_ms": 1800,
-            "end_ms": 2600,
-            "speaker_label": "b",
-        },
-        {
-            "start_ms": 3000,
-            "end_ms": 4200,
-            "speaker_label": "clean",
-        },
-    ]
-
-    assert not is_clean_speech_span(
-        spans[0],
-        spans,
-        min_duration_ms=500,
-    )
-    assert not is_clean_speech_span(
-        spans[1],
-        spans,
-        min_duration_ms=500,
-    )
-    assert not is_clean_speech_span(
-        spans[2],
-        spans,
-        min_duration_ms=500,
-    )
-    assert is_clean_speech_span(
-        spans[3],
-        spans,
-        min_duration_ms=500,
-    )
-
-
-def test_ineligible_span_becomes_unknown_without_embedding():
-    resolver = SpeakerOverflowResolver(
-        match_threshold=0.8,
-        ambiguity_margin=0.05,
-    )
-    calls = []
-
-    resolved = resolve_spans_with_embeddings(
-        [{
-            "start_ms": 0,
-            "end_ms": 200,
-            "speaker_label": "short",
-        }],
-        embedding_for_span=lambda span: calls.append(span)
-            or one_hot(0),
-        resolver=resolver,
-        eligible_for_resolution=lambda _span: False,
-    )
-
-    assert calls == []
-    assert resolved == [{
-        "start_ms": 0,
-        "end_ms": 200,
-        "speaker": {"kind": "unknown"},
-    }]
-    assert resolver.references == []
-
-
-
-def test_load_nemotron_model_pins_checkpoint_revision(tmp_path):
-    checkpoint = tmp_path / "nemotron.nemo"
-    checkpoint.write_bytes(b"checkpoint")
-    downloads = []
-    restores = []
-
-    def download_checkpoint(**kwargs):
-        downloads.append(kwargs)
-        return str(checkpoint)
-
-    class ModelClass:
-        @classmethod
-        def restore_from(cls, **kwargs):
-            restores.append(kwargs)
-            return Model()
-
-    class Modules:
-        pass
-
-    class Model:
-        def __init__(self):
-            self.sortformer_modules = Modules()
-            self.evaluated = False
-            self.checked = False
-
-        def eval(self):
-            self.evaluated = True
-            return self
-
-        def _check_streaming_parameters(self):
-            self.checked = True
-
-    model = load_nemotron_model(
-        model_name=DEFAULT_MODEL,
-        revision=DEFAULT_MODEL_REVISION,
-        device="cpu",
-        profile="offline-30.4s",
-        download_checkpoint=download_checkpoint,
-        model_class=ModelClass,
-    )
-
-    assert downloads == [{
-        "repo_id": DEFAULT_MODEL,
-        "filename": DEFAULT_MODEL_FILENAME,
-        "revision": DEFAULT_MODEL_REVISION,
-    }]
-    assert restores == [{
-        "restore_path": str(checkpoint),
-        "map_location": "cpu",
-        "strict": False,
-    }]
-    assert model.evaluated
-    assert model.checked
-
-
-def test_run_diarization_rejects_nonpositive_clean_speech_gate(
-    tmp_path,
-):
-    import wave
-
+def test_run_diarization_rejects_nonpositive_clean_speech_gate(tmp_path):
     audio = tmp_path / "audio.wav"
-    with wave.open(str(audio), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16_000)
-        wav.writeframes(b"\x00\x00" * 1600)
+    make_wav(audio)
 
     with pytest.raises(ValueError, match="min_clean_speech_ms"):
-        run_diarization(
-            audio_path=audio,
-            output_path=tmp_path / "out.json",
-            profile="offline-30.4s",
-            model=DEFAULT_MODEL,
-            revision=DEFAULT_MODEL_REVISION,
-            device="cpu",
-            embedding_model="test-embedding",
-            embedding_revision="test-embedding-revision",
-            match_threshold=0.8,
-            ambiguity_margin=0.05,
-            min_clean_speech_ms=0,
-            diarize_raw=lambda _audio, _profile: [],
-            embedding_for_span=lambda _span: one_hot(0),
-        )
-
-
-def test_run_diarization_records_peak_vram(
-    monkeypatch,
-    tmp_path,
-):
-    import wave
-
-    audio = tmp_path / "audio.wav"
-    with wave.open(str(audio), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16_000)
-        wav.writeframes(b"\x00\x00" * 16_000)
-
-    monkeypatch.setattr(
-        nemotron3_module,
-        "begin_cuda_measurement",
-        lambda device: "probe-token",
-    )
-    monkeypatch.setattr(
-        nemotron3_module,
-        "end_cuda_measurement",
-        lambda device, token: 654.25,
-    )
-
-    artifact = run_diarization(
-        audio_path=audio,
-        output_path=tmp_path / "out.json",
-        profile="offline-30.4s",
-        model=DEFAULT_MODEL,
-        revision=DEFAULT_MODEL_REVISION,
-        device="cuda:0",
-        embedding_model="test-embedding",
-        embedding_revision="test-embedding-revision",
-        match_threshold=0.8,
-        ambiguity_margin=0.05,
-        min_clean_speech_ms=50,
-        diarize_raw=lambda _audio, _profile: [],
-        embedding_for_span=lambda _span: one_hot(0),
-    )
-
-    assert artifact["runtime"]["peak_vram_mb"] == 654.25
+        run_fake(audio, tmp_path / "out.json", [], min_clean_speech_ms=0)
