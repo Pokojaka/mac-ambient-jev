@@ -1,6 +1,7 @@
 import AVFoundation
 import SwiftUI
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
 
 struct SettingsView: View {
     private static let apiKeyAccount = "jev-api-key"

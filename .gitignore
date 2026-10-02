@@ -11,3 +11,10 @@ dist/
 # Local evaluation recordings and annotations.
 # Real lectures, conversations, and personal recordings must stay local.
 test-data/recordings/local/
+# Linux audio validation caches and generated fixtures.
+tools/linux-audio/.venv/
+tools/linux-audio/**/__pycache__/
+tools/linux-audio/.pytest_cache/
+test-data/generated/
+test-data/corpora-cache/
+

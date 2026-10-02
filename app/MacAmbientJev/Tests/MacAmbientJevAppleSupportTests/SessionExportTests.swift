@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
+@testable import MacAmbientJevAppleSupport
 @testable import MacAmbientJevCore
 
 private let fixtureSampleRate = 16_000.0

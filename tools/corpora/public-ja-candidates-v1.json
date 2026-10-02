@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "japanese-public-corpus-candidates-v1",
+  "sources": [
+    {
+      "id": "csj-public-samples",
+      "kind": ["interview", "dialogue", "read-speech"],
+      "language": "ja",
+      "source_page": "https://clrd.ninjal.ac.jp/csj/sample.html",
+      "reference_parser": "csj-transcript-v1",
+      "suite_state": "candidate-needs-sha256-lock"
+    },
+    {
+      "id": "rwcp-sp99-public-sample",
+      "kind": ["news"],
+      "language": "ja",
+      "source_page": "https://research.nii.ac.jp/src/en/RWCP-SP99.html",
+      "suite_state": "candidate-needs-sha256-lock"
+    },
+    {
+      "id": "aozora-librivox-reading",
+      "kind": ["reading"],
+      "language": "ja",
+      "suite_state": "candidate-needs-work-level-license-and-sha256"
+    }
+  ]
+}

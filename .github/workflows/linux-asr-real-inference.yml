@@ -1,0 +1,226 @@
+name: Linux ASR real inference
+
+on:
+  push:
+    branches:
+      - work/linux-asr-evaluation
+    paths:
+      - .github/workflows/linux-asr-real-inference.yml
+  workflow_dispatch:
+
+jobs:
+  qwen-real-inference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: tools/linux-audio
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system audio tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ffmpeg \
+            sox \
+            libsox-fmt-all
+
+      - name: Install Qwen3-ASR runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.10.0
+          python -m pip install qwen-asr==0.0.6 pytest
+          python - <<'PY'
+          import torch
+          import transformers
+          import qwen_asr
+
+          print("torch", torch.__version__)
+          print("transformers", transformers.__version__)
+          print("cuda", torch.cuda.is_available())
+          print("qwen_asr", qwen_asr.__file__)
+          PY
+
+      - name: Run transcription-side unit tests
+        run: |
+          python -m pytest -q \
+            tools/linux-audio/tests/test_asr_runner.py \
+            tools/linux-audio/tests/test_audio.py \
+            tools/linux-audio/tests/test_corpus.py \
+            tools/linux-audio/tests/test_csj.py \
+            tools/linux-audio/tests/test_prepare_fixture.py \
+            tools/linux-audio/tests/test_baseline.py \
+            tools/linux-audio/tests/test_run_suite.py \
+            tools/linux-audio/tests/test_voicevox_cli.py
+
+      - name: Generate Japanese speech fixture with VOICEVOX
+        run: |
+          mkdir -p real-inference
+          printf '%s\n' \
+            '今日は音声認識のテストです。公開鍵暗号を勉強します。' \
+            > real-inference/reference.txt
+
+          IMAGE=voicevox/voicevox_engine:cpu-latest
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" \
+            --format 'image_id={{.Id}} repo_digests={{json .RepoDigests}}' \
+            > real-inference/voicevox-image.txt
+          docker run -d --name mac-ambient-voicevox \
+            -p 127.0.0.1:50021:50021 "$IMAGE"
+          trap 'docker logs mac-ambient-voicevox; docker rm -f mac-ambient-voicevox' EXIT
+
+          for attempt in {1..120}; do
+            if curl --fail --silent http://127.0.0.1:50021/version \
+              > real-inference/voicevox-version.txt; then
+              break
+            fi
+            sleep 2
+          done
+          test -s real-inference/voicevox-version.txt
+          curl --fail --silent --show-error \
+            http://127.0.0.1:50021/speakers \
+            > real-inference/voicevox-speakers.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          speakers = json.loads(Path("real-inference/voicevox-speakers.json").read_text())
+          name = next(
+              speaker["name"]
+              for speaker in speakers
+              if any(style["id"] == 3 for style in speaker["styles"])
+          )
+          Path("real-inference/CREDIT.txt").write_text(
+              f"VOICEVOX: {name}\n", encoding="utf-8"
+          )
+          print(f"VOICEVOX speaker style 3: {name}")
+          PY
+
+          python -m common.voicevox_cli \
+            --base-url http://127.0.0.1:50021 \
+            --text "$(cat real-inference/reference.txt)" \
+            --speaker 3 \
+            --output real-inference/voicevox.wav
+
+          ffmpeg -hide_banner -loglevel error -y \
+            -i real-inference/voicevox.wav \
+            -ac 1 \
+            -ar 16000 \
+            -c:a pcm_s16le \
+            real-inference/japanese-16k.wav
+
+          ffprobe -hide_banner real-inference/japanese-16k.wav
+          free -h
+
+      - name: Try pinned Qwen3-ASR-1.7B on CPU
+        id: qwen17
+        continue-on-error: true
+        run: |
+          python -m asr.qwen3_asr \
+            real-inference/japanese-16k.wav \
+            --output real-inference/qwen3-asr-1.7b.json \
+            --model Qwen/Qwen3-ASR-1.7B \
+            --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
+            --device cpu \
+            --language Japanese
+
+          python - <<'PY'
+          import json
+
+          path = "real-inference/qwen3-asr-1.7b.json"
+          payload = json.load(open(path, encoding="utf-8"))
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          assert payload["segments"][0]["text"].strip()
+          assert (
+              payload["engine"]["revision"]
+              == "7278e1e70fe206f11671096ffdd38061171dd6e5"
+          )
+          PY
+
+      - name: Run pinned Qwen3-ASR-0.6B fallback
+        if: steps.qwen17.outcome != 'success'
+        run: |
+          rm -rf \
+            ~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B \
+            || true
+
+          python -m asr.qwen3_asr \
+            real-inference/japanese-16k.wav \
+            --output real-inference/qwen3-asr-0.6b.json \
+            --model Qwen/Qwen3-ASR-0.6B \
+            --revision 5eb144179a02acc5e5ba31e748d22b0cf3e303b0 \
+            --device cpu \
+            --language Japanese
+
+          python - <<'PY'
+          import json
+
+          path = "real-inference/qwen3-asr-0.6b.json"
+          payload = json.load(open(path, encoding="utf-8"))
+          print(json.dumps(payload, ensure_ascii=False, indent=2))
+          assert payload["segments"][0]["text"].strip()
+          assert (
+              payload["engine"]["revision"]
+              == "5eb144179a02acc5e5ba31e748d22b0cf3e303b0"
+          )
+          PY
+
+      - name: Evaluate CER with portable Swift CLI
+        run: |
+          swift --version
+
+          ARTIFACT=real-inference/qwen3-asr-1.7b.json
+          if [ ! -f "$ARTIFACT" ]; then
+            ARTIFACT=real-inference/qwen3-asr-0.6b.json
+          fi
+
+          swift run \
+            --package-path app/MacAmbientJev \
+            MacAmbientJevEvaluateASR \
+            real-inference/reference.txt \
+            "$ARTIFACT" \
+            --output real-inference/asr-evaluation.json
+
+          cat real-inference/asr-evaluation.json
+
+          python - <<'PY'
+          import json
+
+          with open("real-inference/asr-evaluation.json", encoding="utf-8") as handle:
+              evaluation = json.load(handle)
+          normalized_cer = evaluation["normalized"]["rate"]
+          print(f"normalized CER: {normalized_cer:.4f}")
+          assert normalized_cer <= 0.10, (
+              f"Japanese fixture CER exceeds 10%: {normalized_cer:.4f}"
+          )
+          PY
+
+      - name: Record runner result
+        if: always()
+        run: |
+          mkdir -p real-inference
+          {
+            if [ -f real-inference/qwen3-asr-1.7b.json ]; then
+              echo "qwen17_outcome=success"
+            else
+              echo "qwen17_outcome=fallback-or-failure"
+            fi
+            echo "runner=$(uname -a)"
+            free -h
+          } | tee real-inference/run-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-asr-real-inference
+          path: real-inference/
+          retention-days: 3

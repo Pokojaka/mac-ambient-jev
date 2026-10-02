@@ -1,5 +1,6 @@
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
 
 public protocol FinalTranscriptVADSegmenter: Sendable {
     func segment(

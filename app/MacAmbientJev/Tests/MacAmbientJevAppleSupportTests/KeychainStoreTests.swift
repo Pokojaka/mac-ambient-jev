@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MacAmbientJevCore
+@testable import MacAmbientJevAppleSupport
 
 @Test
 func keychainStoreRoundTripsAndDeletesValue() throws {

@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 
 public enum SessionExportLayout {
     public static let transcriptFilename = "transcript.txt"

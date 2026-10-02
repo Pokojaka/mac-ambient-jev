@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "id": "voicevox-ja-core-v1",
+  "kind": "synthetic",
+  "engine": "voicevox",
+  "language": "ja",
+  "speaker_policy": {
+    "selection": "distinct_available_styles",
+    "minimum_distinct_speakers": 10
+  },
+  "utterances": [
+    {
+      "id": "general-001",
+      "text": "今日は音声認識の動作を確認します。"
+    },
+    {
+      "id": "security-001",
+      "text": "RSA暗号では公開鍵と秘密鍵の二種類の鍵を使用します。"
+    },
+    {
+      "id": "network-001",
+      "text": "IPv6ではアドレス長が128ビットに拡張されています。"
+    },
+    {
+      "id": "statistics-001",
+      "text": "今日の講義ではベイズ推定について説明します。"
+    },
+    {
+      "id": "numbers-001",
+      "text": "2026年9月26日の測定値は28.4でした。"
+    },
+    {
+      "id": "english-001",
+      "text": "HTTPとTLSとDNSの関係を順番に確認します。"
+    },
+    {
+      "id": "filler-001",
+      "text": "えーと、次はこの式の意味を見ていきます。"
+    },
+    {
+      "id": "question-001",
+      "text": "この場合、公開鍵はどこで配布されるのでしょうか。"
+    },
+    {
+      "id": "long-001",
+      "text": "通信相手を認証したあと、セッション鍵を共有し、その鍵を使って以降の通信内容を暗号化する流れを考えます。"
+    },
+    {
+      "id": "proper-001",
+      "text": "京都産業大学の情報理工学部でネットワーク実験を行います。"
+    }
+  ],
+  "diarization_scenarios": [
+    {
+      "id": "speakers-2",
+      "speaker_count": 2,
+      "overlap_ratio": 0.0
+    },
+    {
+      "id": "speakers-4",
+      "speaker_count": 4,
+      "overlap_ratio": 0.1
+    },
+    {
+      "id": "speakers-7",
+      "speaker_count": 7,
+      "overlap_ratio": 0.1
+    },
+    {
+      "id": "speakers-8",
+      "speaker_count": 8,
+      "overlap_ratio": 0.1
+    },
+    {
+      "id": "speakers-10",
+      "speaker_count": 10,
+      "overlap_ratio": 0.2,
+      "collapse_policy": "first7-plus-other"
+    }
+  ]
+}

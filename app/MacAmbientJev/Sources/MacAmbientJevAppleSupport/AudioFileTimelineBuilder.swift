@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MacAmbientJevCore
 
 public enum AudioFileTimelineBuilderError: LocalizedError {
     case unsupportedPCMFormat
