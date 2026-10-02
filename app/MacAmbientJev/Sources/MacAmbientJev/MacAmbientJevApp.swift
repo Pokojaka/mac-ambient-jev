@@ -31,7 +31,7 @@ struct MacAmbientJevApp: App {
                 )
                     .environmentObject(appState)
                     .tabItem {
-                        Label("Jev", systemImage: "sparkles")
+                        Label("一般", systemImage: "gearshape")
                     }
 
                 DiagnosticsView(usageCounter: appState.jevUsageCounter)
@@ -118,9 +118,17 @@ private struct ContentView: View {
                 isUnavailableForReprocess: appState.recordingPhase != .idle,
                 isSelectionUnavailable: appState.recordingPhase != .idle,
                 queuedSessionIDs: appState.queuedFinalizationSessionIDs,
+                sessionExports: appState.sessionExports,
+                hasExportDestination: appState.exportDirectoryPath != nil,
                 onRefresh: appState.refreshSavedSessions,
                 onSelect: appState.selectSavedSession(sessionID:),
-                onReprocess: appState.reprocess(sessionID:)
+                onReprocess: appState.reprocess(sessionID:),
+                onExport: { sessionID in
+                    Task { await appState.exportSavedSession(sessionID: sessionID) }
+                },
+                onRevealExport: { sessionID in
+                    Task { await appState.revealExport(sessionID: sessionID) }
+                }
             )
         }
     }

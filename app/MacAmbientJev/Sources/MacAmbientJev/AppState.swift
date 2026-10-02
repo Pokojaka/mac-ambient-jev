@@ -181,6 +181,12 @@ final class AppState: ObservableObject {
         }
     }
 
+    enum SessionExportState: Equatable {
+        case exporting
+        case exported(URL)
+        case failed(String)
+    }
+
     private struct LiveASRBatch {
         let segments: [SegmentReference]
         let checkpoint: AudioCheckpoint
@@ -201,11 +207,15 @@ final class AppState: ObservableObject {
     @Published private(set) var processingStatusText: String?
     @Published private(set) var savedSessions: [SavedSessionSummary] = []
     @Published private(set) var selectedSavedSessionID: UUID?
+    @Published private(set) var exportDirectoryPath: String?
+    @Published private(set) var exportDestinationMessage: String?
+    @Published private(set) var sessionExports: [UUID: SessionExportState] = [:]
 
     let transcriptViewModel = LiveTranscriptViewModel()
     let jevUsageCounter: JevUsageCounter
 
     private let paths: AppPaths
+    private let exportDestination = ExportDestinationStore()
     private let captureEngine: any AppCaptureEngine
     private let sessionProcessor: NativeSessionProcessor
     // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
@@ -260,6 +270,7 @@ final class AppState: ObservableObject {
             allowExternalJev: true,
             jevUsageCounter: jevUsageCounter
         )
+        self.exportDirectoryPath = exportDestination.path
 
         terminationObserver = TerminationObservation { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
@@ -332,56 +343,28 @@ final class AppState: ObservableObject {
         transcriptViewModel.update(segments: [])
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
+        guard let audioSource = savedSessions
+            .first(where: { $0.sessionID == sessionID })?.audioSource else {
+            transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
+            return
+        }
         do {
-            let sessionURL = paths.sessionsRoot.appending(
-                path: sessionID.uuidString,
-                directoryHint: .isDirectory
-            )
-            guard let metadata = try ProcessingMetadataStore(
-                sessionURL: sessionURL
-            ).load(), let activeRuns = metadata.activeRuns,
-                  activeRuns.asr != nil else {
+            switch try SavedTranscriptLoader.load(
+                sessionURL: paths.sessionsRoot.appending(
+                    path: sessionID.uuidString,
+                    directoryHint: .isDirectory
+                ),
+                audioSource: audioSource
+            ) {
+            case .unavailable:
                 transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
-                return
+            case .segments(let segments):
+                transcriptViewModel.update(segments: segments)
+                transcriptViewModel.setStatus(
+                    segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
+                )
+                Task { await probeExistingExport(sessionID: sessionID) }
             }
-            guard let audioSource = savedSessions
-                .first(where: { $0.sessionID == sessionID })?.audioSource else {
-                transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
-                return
-            }
-            let sampleRate: Double
-            switch audioSource {
-            case .processingTimeline(let checkpoint):
-                sampleRate = checkpoint.sampleRate
-            case .importedOriginal(let originalURL):
-                let original = try AVAudioFile(forReading: originalURL)
-                sampleRate = original.processingFormat.sampleRate
-                guard sampleRate.isFinite, sampleRate > 0 else {
-                    transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
-                    return
-                }
-            }
-
-            let eventsURL = sessionURL.appending(path: "events.jsonl")
-            let lines: [Data]
-            if FileManager.default.fileExists(atPath: eventsURL.path) {
-                lines = try SessionRecovery.recoverJSONL(
-                    Data(contentsOf: eventsURL)
-                ).lines
-            } else {
-                lines = []
-            }
-            let events = try EventLogTranscriptReader().events(
-                lines: lines,
-                activeRuns: activeRuns
-            )
-            let segments = TranscriptMaterializer(
-                sampleRate: sampleRate
-            ).materialize(events: events, activeRuns: activeRuns)
-            transcriptViewModel.update(segments: segments)
-            transcriptViewModel.setStatus(
-                segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
-            )
         } catch {
             transcriptViewModel.setStatus(
                 "保存済み文字起こしを読み込めませんでした: \(error.localizedDescription)"
@@ -402,6 +385,114 @@ final class AppState: ObservableObject {
         selectSavedSession(sessionID: sessionID)
         guard finalizationGate.claim(sessionID) else { return }
         enqueueProcessing(.finalize(sessionID: sessionID, source: source))
+    }
+
+    @discardableResult
+    func chooseExportDirectory() -> Bool {
+        let panel = NSOpenPanel()
+        panel.title = "書き出し先フォルダを選択"
+        panel.prompt = "選択"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let directory = panel.url else {
+            return false
+        }
+        do {
+            try exportDestination.save(directory: directory)
+            exportDirectoryPath = exportDestination.path
+            exportDestinationMessage = nil
+            sessionExports = [:]
+            return true
+        } catch {
+            exportDestinationMessage = "書き出し先フォルダを保存できませんでした: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func revealExportDirectory() async {
+        do {
+            try await exportDestination.withAccess { directory in
+                NSWorkspace.shared.activateFileViewerSelecting([directory])
+            }
+            exportDestinationMessage = nil
+        } catch {
+            exportDestinationMessage = error.localizedDescription
+        }
+    }
+
+    func exportSavedSession(sessionID: UUID) async {
+        guard exportDirectoryPath != nil || chooseExportDirectory(),
+              let session = savedSessions.first(where: { $0.sessionID == sessionID }) else {
+            return
+        }
+        await export(session)
+    }
+
+    func revealExport(sessionID: UUID) async {
+        guard case .exported(let folder) = sessionExports[sessionID] else { return }
+        do {
+            try await exportDestination.withAccess { _ in
+                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            }
+        } catch {
+            sessionExports[sessionID] = .failed(error.localizedDescription)
+        }
+    }
+
+    private func autoExportIfEnabled(sessionID: UUID) async {
+        guard exportDirectoryPath != nil, exportDestination.isAutoExportEnabled else { return }
+        refreshSavedSessions()
+        guard let session = savedSessions.first(where: { $0.sessionID == sessionID }),
+              session.hasActiveTranscript else {
+            return
+        }
+        switch session.processingStatus {
+        case .complete, .classificationPending:
+            await export(session)
+        case .notProcessed, .running, .failed:
+            break
+        }
+    }
+
+    private func export(_ session: SavedSessionSummary) async {
+        guard sessionExports[session.sessionID] != .exporting else { return }
+        sessionExports[session.sessionID] = .exporting
+        let sessionsRoot = paths.sessionsRoot
+        do {
+            let folder = try await exportDestination.withAccess { directory in
+                try await Task.detached {
+                    try SessionExporter().export(
+                        session: session,
+                        sessionsRoot: sessionsRoot,
+                        to: directory
+                    )
+                }.value
+            }
+            sessionExports[session.sessionID] = .exported(folder)
+            processingStatusText = "「\(folder.lastPathComponent)」に書き出しました"
+        } catch {
+            sessionExports[session.sessionID] = .failed(error.localizedDescription)
+            processingStatusText = "書き出せませんでした: \(error.localizedDescription)"
+        }
+    }
+
+    private func probeExistingExport(sessionID: UUID) async {
+        guard sessionExports[sessionID] == nil,
+              exportDirectoryPath != nil,
+              let session = savedSessions.first(where: { $0.sessionID == sessionID }) else {
+            return
+        }
+        let folderName = SessionExportLayout.folderName(for: session)
+        let existing = try? await exportDestination.withAccess { directory -> URL? in
+            let folder = directory.appending(path: folderName, directoryHint: .isDirectory)
+            return FileManager.default.fileExists(atPath: folder.path) ? folder : nil
+        }
+        if let folder = existing ?? nil, sessionExports[sessionID] == nil {
+            sessionExports[sessionID] = .exported(folder)
+        }
     }
 
     func prepareASRModel() {
@@ -1129,6 +1220,7 @@ final class AppState: ObservableObject {
                 }
             }
 
+            var completedSessionID: UUID? = request.sessionID
             switch request {
             case .finalize(let sessionID, let source):
                 switch source {
@@ -1171,6 +1263,7 @@ final class AppState: ObservableObject {
                         sessionID: sessionID
                     )
                     cleanupLiveASRState(sessionID: sessionID)
+                    completedSessionID = nil
                     processingStatusText =
                         "ライブ文字起こしを再処理します: \(failure)"
                     pendingProcessing.insert(
@@ -1190,6 +1283,7 @@ final class AppState: ObservableObject {
                     cleanupLiveASRState(sessionID: sessionID)
 
                     if case .fallbackRequired(let reason) = result {
+                        completedSessionID = nil
                         processingStatusText =
                             "録音後に文字起こしを再実行します: \(reason)"
                         pendingProcessing.insert(
@@ -1213,6 +1307,7 @@ final class AppState: ObservableObject {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
+                completedSessionID = nil
                 refreshSavedSessions()
             case .resumeASR(let sessionID, let checkpoint, let plan):
                 await sessionProcessor.resumePendingASRSession(
@@ -1244,6 +1339,9 @@ final class AppState: ObservableObject {
                 processingState = .backlogged
                 processingStatusText = "次の文字起こし処理を開始します"
                 transcriptViewModel.setStatus("次の文字起こし処理を開始します")
+            }
+            if let completedSessionID {
+                await autoExportIfEnabled(sessionID: completedSessionID)
             }
             currentlyProcessingSessionID = nil
         }

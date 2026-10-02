@@ -7,9 +7,13 @@ struct SavedSessionsView: View {
     let isUnavailableForReprocess: Bool
     let isSelectionUnavailable: Bool
     let queuedSessionIDs: Set<UUID>
+    let sessionExports: [UUID: AppState.SessionExportState]
+    let hasExportDestination: Bool
     let onRefresh: () -> Void
     let onSelect: (UUID) -> Void
     let onReprocess: (UUID) -> Void
+    let onExport: (UUID) -> Void
+    let onRevealExport: (UUID) -> Void
 
     var body: some View {
         NavigationSplitView {
@@ -105,6 +109,7 @@ struct SavedSessionsView: View {
                 Text("この録音には表示できる確定文字起こしがありません。")
                     .foregroundStyle(.secondary)
             }
+            exportControls(for: session)
             if let error = session.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
@@ -117,6 +122,54 @@ struct SavedSessionsView: View {
         }
         .padding(AppSpacing.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func exportControls(for session: SavedSessionSummary) -> some View {
+        let state = sessionExports[session.sessionID]
+        HStack(spacing: AppSpacing.sm) {
+            Button {
+                onExport(session.sessionID)
+            } label: {
+                if state == .exporting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label(hasExportDestination ? "書き出す" : "書き出す…", systemImage: "square.and.arrow.up")
+                }
+            }
+            .disabled(!session.hasActiveTranscript || state == .exporting || queuedSessionIDs.contains(session.sessionID))
+            .help(exportHelp(session))
+
+            if case .exported = state {
+                Button {
+                    onRevealExport(session.sessionID)
+                } label: {
+                    Label("Finderで表示", systemImage: "folder")
+                }
+                .help("書き出したフォルダを Finder で表示")
+            }
+        }
+        switch state {
+        case .exported(let folder):
+            Text("書き出し済み: \(folder.lastPathComponent)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        case .exporting, nil:
+            EmptyView()
+        }
+    }
+
+    private func exportHelp(_ session: SavedSessionSummary) -> String {
+        if !session.hasActiveTranscript { return "確定文字起こしがないため書き出せません" }
+        if queuedSessionIDs.contains(session.sessionID) { return "処理が終わってから書き出せます" }
+        if !hasExportDestination { return "書き出し先フォルダを選んでから、文字起こしと音声を書き出します" }
+        return "文字起こしと音声を書き出し先フォルダに保存"
     }
 
     private func sourceName(_ kind: SessionSourceKind?, captureSource: CaptureSource?) -> String {

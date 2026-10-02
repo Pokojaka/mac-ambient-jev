@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("jev.isPaused") private var isJevPaused = false
     @AppStorage(MicInputVolumePreference.key)
     private var automaticMicInputVolume = MicInputVolumePreference.initialValue
+    @AppStorage(ExportDestinationStore.autoExportKey) private var isAutoExportEnabled = true
     @State private var apiKey = ""
     @State private var hasStoredKey = false
     @State private var statusMessage: String?
@@ -45,6 +46,39 @@ struct SettingsView: View {
                 Text("初回は約2.5 GBをアプリ内にダウンロードします。録音中でも音声の保存と発話検出は続きます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("保存先") {
+                LabeledContent("書き出し先") {
+                    Text(appState.exportDirectoryPath ?? "未設定")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+
+                HStack {
+                    Button("フォルダを選択…") {
+                        appState.chooseExportDirectory()
+                    }
+                    Button("Finderで表示") {
+                        Task { await appState.revealExportDirectory() }
+                    }
+                    .disabled(appState.exportDirectoryPath == nil)
+                }
+
+                Toggle("処理完了後に自動で書き出す", isOn: $isAutoExportEnabled)
+                    .disabled(appState.exportDirectoryPath == nil)
+
+                Text("録音ごとにフォルダを作り、文字起こし（transcript.txt）と音声を保存します。録音した音声は可逆圧縮の FLAC、読み込んだ音声は元のファイルのままです。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let message = appState.exportDestinationMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
 
             Section("Jev") {
