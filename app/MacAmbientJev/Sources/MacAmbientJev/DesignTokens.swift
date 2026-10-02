@@ -8,9 +8,3 @@ enum AppSpacing {
     static let xl: CGFloat = 24
     static let xxl: CGFloat = 32
 }
-
-enum AppIconSize {
-    static let small: CGFloat = 12
-    static let regular: CGFloat = 16
-    static let large: CGFloat = 20
-}

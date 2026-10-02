@@ -337,6 +337,34 @@ func liveASRFailureKeepsRunUnsuccessfulForFallback() async throws {
 
 
 @Test
+func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async throws {
+    let fixture = try await makeLiveASRFixture(failOnCall: 1)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+    _ = try await fixture.session.register(segments: [segment])
+
+    let eventsURL = fixture.root.appending(path: "events.jsonl")
+    let backupURL = fixture.root.appending(path: "events.backup")
+    try FileManager.default.moveItem(at: eventsURL, to: backupURL)
+    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    await #expect(throws: (any Error).self) {
+        try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    }
+    try FileManager.default.removeItem(at: eventsURL)
+    try FileManager.default.moveItem(at: backupURL, to: eventsURL)
+
+    let retried = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    #expect(retried.failedCount == 0)
+    #expect(retried.completedCount == 1)
+    #expect(retried.pendingCount == 0)
+    #expect(await fixture.engine.counts().transcribe == 2)
+}
+
+
+@Test
 func liveASRRegistrationIsRecoverableBeforeInferenceStarts() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

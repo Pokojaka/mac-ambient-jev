@@ -27,3 +27,16 @@ func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() {
     #expect(LiveTranscriptView.speakerHeading(for: 2, in: renderedRows) == "Speaker 2")
     #expect(currentRows.isEmpty)
 }
+
+@Test
+func collapsedLowPriorityRowsSayTheyAreLowPriority() {
+    #expect(LiveTranscriptView.lowPriorityCollapsedTitle.contains("低優先度"))
+}
+
+@Test
+func transcriptHeaderNamesEveryNonEmptyDisplayState() {
+    #expect(TranscriptDisplayState.empty.badge == nil)
+    #expect(TranscriptDisplayState.live.badge?.text == "ライブ（暫定）")
+    #expect(TranscriptDisplayState.finalizing.badge?.text == "確定処理中")
+    #expect(TranscriptDisplayState.finalized.badge?.text == "確定済み")
+}

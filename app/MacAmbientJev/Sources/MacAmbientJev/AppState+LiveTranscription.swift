@@ -16,7 +16,8 @@ extension AppState {
         try await LiveVADSession.make(
             processingDirectory: processingDirectory,
             initialCheckpoint: initialCheckpoint,
-            measureMicInputLevels: measureMicInputLevels
+            measureMicInputLevels: measureMicInputLevels,
+            segmentationRunID: "seg_live_\(UUID().uuidString.lowercased())"
         )
     }
 
@@ -142,13 +143,12 @@ extension AppState {
         }
 
         liveASRQueues[sessionID, default: []].append(
-            LiveASRBatch(
-                segments: segments,
-                checkpoint: checkpoint,
-                enqueuedAt: Date()
-            )
+            LiveASRBatch(segments: segments, checkpoint: checkpoint)
         )
+        startLiveASRDrainIfIdle(sessionID: sessionID)
+    }
 
+    func startLiveASRDrainIfIdle(sessionID: UUID) {
         guard liveASRTasks[sessionID] == nil else { return }
         liveASRTasks[sessionID] = Task { [weak self] in
             await self?.drainLiveASRQueue(sessionID: sessionID)
@@ -171,26 +171,11 @@ extension AppState {
 
     func drainLiveASRQueue(sessionID: UUID) async {
         while liveASRFailures[sessionID] == nil,
-              let pending = liveASRQueues[sessionID],
-              let oldest = pending.first {
-            if recordingSessionID == sessionID,
-               recordingPhase == .recording {
-                let pressure = Self.thermalPressure(
-                    from: ProcessInfo.processInfo.thermalState
-                )
-                let pendingCount = pending.reduce(0) { $0 + $1.segments.count }
-                let decision = LiveASRThermalPolicy.decision(
-                    pressure: pressure,
-                    pendingCount: pendingCount,
-                    oldestPendingAge: Date().timeIntervalSince(oldest.enqueuedAt)
-                )
-                if case .wait(let delay) = decision {
-                    processingState = .backlogged
-                    let text = "発熱を抑えるため文字起こしを調整中（未処理 \(pendingCount)区間）"
-                    processingStatusText = text
-                    transcriptViewModel.setStatus(text)
-                    try? await Task.sleep(for: delay)
-                }
+              liveASRQueues[sessionID]?.isEmpty == false {
+            do {
+                try await waitForLiveThermalHeadroom(sessionID: sessionID)
+            } catch {
+                break
             }
 
             guard liveASRFailures[sessionID] == nil,
@@ -231,23 +216,56 @@ extension AppState {
 
         liveASRTasks[sessionID] = nil
 
-        if liveASRFailures[sessionID] == nil,
-           let queue = liveASRQueues[sessionID],
-           !queue.isEmpty {
-            liveASRTasks[sessionID] = Task { [weak self] in
-                await self?.drainLiveASRQueue(sessionID: sessionID)
+        if !Task.isCancelled,
+           liveASRFailures[sessionID] == nil,
+           liveASRQueues[sessionID]?.isEmpty == false {
+            startLiveASRDrainIfIdle(sessionID: sessionID)
+        }
+    }
+
+    /// Thermal pressure only throttles live recognition while recording; the queued backlog stays intact
+    /// and resumes from its oldest batch once pressure drops below critical.
+    func waitForLiveThermalHeadroom(sessionID: UUID) async throws {
+        while isCurrentRecording(sessionID) {
+            switch LiveASRThermalPolicy.decision(pressure: readLiveThermalPressure()) {
+            case .processNow:
+                return
+            case .wait(let delay):
+                let pendingCount = liveASRQueues[sessionID, default: []]
+                    .reduce(0) { $0 + $1.segments.count }
+                showLiveThermalStatus(
+                    "発熱を抑えるため文字起こしを調整中（未処理 \(pendingCount)区間）",
+                    sessionID: sessionID
+                )
+                try await Task.sleep(for: delay)
+                return
+            case .suspendUntilCooled:
+                showLiveThermalStatus(
+                    UserFacingStatus.liveTranscriptionThermalSuspended.text,
+                    sessionID: sessionID
+                )
+                try await Task.sleep(
+                    for: .milliseconds(LiveTranscriptionCadence.thermalRecheckIntervalMilliseconds)
+                )
             }
         }
     }
 
-    static func thermalPressure(
-        from state: ProcessInfo.ThermalState
-    ) -> ThermalPressure {
-        switch state {
+    private func showLiveThermalStatus(_ text: String, sessionID: UUID) {
+        processingState = .backlogged
+        processingStatusText = text
+        if displayedSessionID == sessionID {
+            transcriptViewModel.setStatus(text)
+        }
+    }
+
+    static func currentThermalPressure() -> ThermalPressure {
+        switch ProcessInfo.processInfo.thermalState {
         case .nominal: .nominal
         case .fair: .fair
         case .serious: .serious
         case .critical: .critical
+        // An unknown state is treated as critical so live recognition never runs on unclassified heat.
         @unknown default: .critical
         }
     }

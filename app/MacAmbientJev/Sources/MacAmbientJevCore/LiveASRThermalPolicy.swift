@@ -10,25 +10,19 @@ public enum ThermalPressure: Sendable, Equatable {
 public enum LiveASRThermalDecision: Sendable, Equatable {
     case processNow
     case wait(Duration)
+    /// Live recognition stops; recording and segment registration continue, and finalization recognizes everything.
+    case suspendUntilCooled
 }
 
 public enum LiveASRThermalPolicy {
-    public static func decision(
-        pressure: ThermalPressure,
-        pendingCount: Int,
-        oldestPendingAge: TimeInterval
-    ) -> LiveASRThermalDecision {
-        guard pendingCount > 0, oldestPendingAge < 30 else {
-            return .processNow
-        }
-
+    public static func decision(pressure: ThermalPressure) -> LiveASRThermalDecision {
         switch pressure {
         case .nominal, .fair:
-            return .processNow
+            .processNow
         case .serious:
-            return .wait(.milliseconds(750))
+            .wait(.milliseconds(750))
         case .critical:
-            return .wait(.seconds(2))
+            .suspendUntilCooled
         }
     }
 }

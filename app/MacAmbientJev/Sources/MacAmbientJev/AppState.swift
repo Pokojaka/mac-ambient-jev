@@ -201,7 +201,6 @@ final class AppState: ObservableObject {
     struct LiveASRBatch {
         let segments: [SegmentReference]
         let checkpoint: AudioCheckpoint
-        let enqueuedAt: Date
     }
 
     @Published var statusText = UserFacingStatus.idle.text
@@ -255,6 +254,7 @@ final class AppState: ObservableObject {
     var liveASRQueues: [UUID: [LiveASRBatch]] = [:]
     var liveASRTasks: [UUID: Task<Void, Never>] = [:]
     var liveASRFailures: [UUID: String] = [:]
+    var readLiveThermalPressure: @MainActor () -> ThermalPressure = AppState.currentThermalPressure
 
     init(
         paths: AppPaths,

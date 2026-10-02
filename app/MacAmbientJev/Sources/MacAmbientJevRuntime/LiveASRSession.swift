@@ -189,14 +189,12 @@ public actor LiveASRSession {
 
         for segment in pendingSegments {
             guard !finalized else { break }
-            defer { finishedSegmentIDs.insert(segment.segmentID) }
 
             let input: ASRAudioInput
             do {
                 input = try loader.load(segment: segment)
             } catch {
-                failedCount += 1
-                await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
+                try await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
                 continue
             }
 
@@ -204,39 +202,35 @@ public actor LiveASRSession {
             do {
                 result = try await asr.transcribe(input)
             } catch {
-                failedCount += 1
-                await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
+                try await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
                 continue
             }
 
-            do {
-                let completed = try await writer.append(EventDraft(
-                    eventType: "asr.completed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: ASRCompletedEventPayload(
-                        text: result.text,
-                        detectedLanguage: result.detectedLanguage,
-                        engine: "qwen3-asr",
-                        model: ModelStore.qwen3ASRModelID
-                    )
-                ))
-                transcriptEvents.append(.asrCompleted(
-                    seq: completed.eventSeq,
-                    runID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
+            let completed = try await writer.append(EventDraft(
+                eventType: "asr.completed",
+                sessionID: sessionID,
+                processingRunID: asrRunID,
+                segmentationRunID: segmentationRunID,
+                segmentID: segment.segmentID,
+                sourceStartFrame: segment.startFrame,
+                sourceEndFrame: segment.endFrame,
+                payload: ASRCompletedEventPayload(
                     text: result.text,
-                    detectedLanguage: result.detectedLanguage
-                ))
-                completedCount += 1
-            } catch {
-                failedCount += 1
-            }
+                    detectedLanguage: result.detectedLanguage,
+                    engine: "qwen3-asr",
+                    model: ModelStore.qwen3ASRModelID
+                )
+            ))
+            transcriptEvents.append(.asrCompleted(
+                seq: completed.eventSeq,
+                runID: asrRunID,
+                segmentationRunID: segmentationRunID,
+                segmentID: segment.segmentID,
+                text: result.text,
+                detectedLanguage: result.detectedLanguage
+            ))
+            completedCount += 1
+            finishedSegmentIDs.insert(segment.segmentID)
         }
 
         return currentProgress()
@@ -291,12 +285,13 @@ public actor LiveASRSession {
         }
     }
 
+    /// A segment counts as finished only once its failure is durable; an unwritable log stops the live run.
     private func appendFailure(
         segment: SegmentReference,
         kind: ASRFailureKind,
         error: any Error
-    ) async {
-        _ = try? await writer.append(EventDraft(
+    ) async throws {
+        _ = try await writer.append(EventDraft(
             eventType: "asr.failed",
             sessionID: sessionID,
             processingRunID: asrRunID,
@@ -309,6 +304,8 @@ public actor LiveASRSession {
                 message: error.localizedDescription
             )
         ))
+        failedCount += 1
+        finishedSegmentIDs.insert(segment.segmentID)
     }
 
     private func beginWork() {

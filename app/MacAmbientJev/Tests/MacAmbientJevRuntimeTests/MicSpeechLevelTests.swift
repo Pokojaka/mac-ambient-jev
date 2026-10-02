@@ -44,7 +44,6 @@ private actor ScriptedProbabilityVAD: VADChunkSegmenting {
     }
 
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] { [] }
-    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? { nil }
 }
 
 private func alternating(_ amplitude: Float, count: Int) -> [Float] {
