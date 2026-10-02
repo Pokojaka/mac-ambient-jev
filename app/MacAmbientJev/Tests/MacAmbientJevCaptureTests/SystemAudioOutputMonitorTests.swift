@@ -68,7 +68,7 @@ func briefExternalOutputDoesNotWarn() async {
 @Test("Any exact nonzero sample permanently disables the silenced-tap warning")
 func nonZeroInputDisablesSilentTapWarning() async {
     let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 4),
-                                   frameCapacity: 4, clock: SystemCaptureClock())
+                                   frameCapacity: 4, clock: SystemCaptureClock(), meter: nil)
     sink.silence(startFrame: 0, frameCount: 4)
     let initiallyNonZero = sink.everNonZero.load(ordering: .acquiring)
     #expect(!initiallyNonZero)

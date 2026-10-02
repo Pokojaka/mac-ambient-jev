@@ -1,8 +1,47 @@
 import FluidAudio
 import MacAmbientJevCore
 
+struct VADChunkOutput: Sendable {
+    let segments: [SegmentReference]
+    let micLevel: MicLevelWindow?
+}
+
+/// Speech-gated level evidence for one unpadded 16 kHz VAD chunk.
+enum MicSpeechLevelMeasurement {
+    static let sampleRate = Double(VadManager.sampleRate)
+    static let speechProbabilityThreshold: Float = 0.85
+
+    static func measure(
+        samples: [Float], startSeconds: Double, speechProbability: Float
+    ) -> MicLevelWindow {
+        let seconds = Double(samples.count) / sampleRate
+        let nonSpeech = MicLevelWindow(
+            startSeconds: startSeconds, endSeconds: startSeconds + seconds,
+            speechSeconds: 0, speechMeanSquare: nil, speechPeak: 0,
+            inputPeak: 0, clippedFraction: 0
+        )
+        guard !samples.isEmpty, startSeconds.isFinite, startSeconds >= 0,
+              speechProbability.isFinite, speechProbability <= 1,
+              speechProbability >= speechProbabilityThreshold else { return nonSpeech }
+        var sumOfSquares = 0.0
+        var peak: Float = 0
+        for sample in samples {
+            guard sample.isFinite else { return nonSpeech }
+            let value = Double(sample)
+            sumOfSquares += value * value
+            peak = max(peak, abs(sample))
+        }
+        guard peak > 0 else { return nonSpeech }
+        return MicLevelWindow(
+            startSeconds: startSeconds, endSeconds: startSeconds + seconds,
+            speechSeconds: seconds, speechMeanSquare: sumOfSquares / Double(samples.count),
+            speechPeak: peak, inputPeak: 0, clippedFraction: 0
+        )
+    }
+}
+
 protocol VADChunkSegmenting: Sendable {
-    func process16kChunk(_ samples: [Float]) async throws -> [SegmentReference]
+    func process16kChunk(_ samples: [Float]) async throws -> VADChunkOutput
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference]
     func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange?
 }
@@ -13,10 +52,12 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     private var assembler: SegmentationAssembler
     private let frameMapper: VADFrameMapper
     private let segmentationConfig: VadSegmentationConfig
+    private let measureMicInputLevels: Bool
 
     static func make(
         segmentationRunID: String,
         canonicalSampleRate: Double,
+        measureMicInputLevels: Bool,
         preRollSeconds: Double = 0.10,
         maxSegmentSeconds: Double = 14.0,
         minSilenceSeconds: Double = 0.75
@@ -26,6 +67,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
             manager: manager,
             segmentationRunID: segmentationRunID,
             canonicalSampleRate: canonicalSampleRate,
+            measureMicInputLevels: measureMicInputLevels,
             preRollSeconds: preRollSeconds,
             maxSegmentSeconds: maxSegmentSeconds,
             minSilenceSeconds: minSilenceSeconds
@@ -36,11 +78,13 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         manager: VadManager,
         segmentationRunID: String,
         canonicalSampleRate: Double,
+        measureMicInputLevels: Bool,
         preRollSeconds: Double,
         maxSegmentSeconds: Double,
         minSilenceSeconds: Double
     ) {
         self.manager = manager
+        self.measureMicInputLevels = measureMicInputLevels
         self.streamState = VadStreamState.initial()
         self.frameMapper = VADFrameMapper(canonicalSampleRate: canonicalSampleRate)
         self.assembler = SegmentationAssembler(
@@ -59,9 +103,10 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         )
     }
 
-    func process16kChunk(_ samples: [Float]) async throws -> [SegmentReference] {
-        guard !samples.isEmpty else { return [] }
+    func process16kChunk(_ samples: [Float]) async throws -> VADChunkOutput {
+        guard !samples.isEmpty else { return VADChunkOutput(segments: [], micLevel: nil) }
 
+        let startSeconds = Double(streamState.processedSamples) / MicSpeechLevelMeasurement.sampleRate
         let result = try await manager.processStreamingChunk(
             samples,
             state: streamState,
@@ -87,7 +132,15 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
             emitted.append(split)
         }
 
-        return emitted
+        return VADChunkOutput(
+            segments: emitted,
+            micLevel: measureMicInputLevels
+                ? MicSpeechLevelMeasurement.measure(
+                    samples: samples, startSeconds: startSeconds,
+                    speechProbability: result.probability
+                )
+                : nil
+        )
     }
 
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] {

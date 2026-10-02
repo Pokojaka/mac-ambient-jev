@@ -186,14 +186,15 @@ final class SystemAudioTap: SystemAudioTapProviding {
         do {
             // A global tap follows the system mix when the output device changes.
             // Only changes to the tap's audio format require stopping.
-            let formatListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            // Core Audio invokes these blocks on callbackQueue, not the starting actor.
+            let formatListener: AudioObjectPropertyListenerBlock = { @Sendable [weak self] _, _ in
                 self?.notifyChange("システム音声の形式が変わったため、録音を停止しました")
             }
             self.formatListener = formatListener
             try Self.check(hardware.addFormatListener(tapID, callbackQueue, formatListener), "タップ監視")
             listening = true
             var proc: AudioDeviceIOProcID?
-            let procStatus = hardware.createIOProc(&proc, deviceID, callbackQueue) { [weak self] _, input, timestamp, _, _ in
+            let procStatus = hardware.createIOProc(&proc, deviceID, callbackQueue) { @Sendable [weak self] _, input, timestamp, _, _ in
                 self?.receive(input: input, timestamp: timestamp, sink: sink)
             }
             ioProc = proc

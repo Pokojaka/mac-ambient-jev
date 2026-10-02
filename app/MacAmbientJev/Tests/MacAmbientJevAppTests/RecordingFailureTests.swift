@@ -9,6 +9,12 @@ import MacAmbientJevRuntime
 final class FakeAppCaptureEngine: AppCaptureEngine {
     var onStart: ((UUID) async throws -> Void)?
     private var failureHandler: (@MainActor @Sendable (String) -> Void)?
+    private(set) var warningHandler: (@MainActor @Sendable (String) -> Void)?
+    private(set) var micStatusHandler: (@MainActor @Sendable (UUID, MicInputStatus) -> Void)?
+    private var pendingMicConfiguration: Bool?
+    private(set) var micConfigurations: [Bool] = []
+    private(set) var consumedMicSpeechLevels: [(sessionID: UUID, windows: [MicLevelWindow])] = []
+    private(set) var micMonitoringUnavailableSessions: [UUID] = []
     var onCancelStart: (() -> Void)?
     var onStop: (() -> Void)?
     var onTerminate: (() -> Void)?
@@ -32,8 +38,32 @@ final class FakeAppCaptureEngine: AppCaptureEngine {
     ) async throws {
         starts += 1
         events.append("start")
+        if source == .microphone {
+            guard pendingMicConfiguration != nil else {
+                throw AudioCaptureEngineError.micInputVolumeNotConfigured
+            }
+            pendingMicConfiguration = nil
+        }
         failureHandler = onFailure
+        warningHandler = onWarning
         try await onStart?(sessionID)
+    }
+
+    func configureMicInputVolume(
+        automaticAdjustmentEnabled: Bool,
+        onStatus: @escaping @MainActor @Sendable (UUID, MicInputStatus) -> Void
+    ) {
+        pendingMicConfiguration = automaticAdjustmentEnabled
+        micConfigurations.append(automaticAdjustmentEnabled)
+        micStatusHandler = onStatus
+    }
+
+    func consumeMicSpeechLevels(_ windows: [MicLevelWindow], sessionID: UUID) {
+        consumedMicSpeechLevels.append((sessionID, windows))
+    }
+
+    func micSpeechMonitoringUnavailable(sessionID: UUID) {
+        micMonitoringUnavailableSessions.append(sessionID)
     }
 
     func cancelStarting() { cancellations += 1; events.append("cancel"); onCancelStart?() }
@@ -61,19 +91,19 @@ final class FakeAppCaptureEngine: AppCaptureEngine {
     }
 }
 
-private actor FakeLiveVAD: LiveVADProcessing {
+actor FakeLiveVAD: LiveVADProcessing {
     nonisolated let segmentationRunID = "test-vad"
     private(set) var finishedCheckpoints: [AudioCheckpoint] = []
 
     func processAvailable(checkpoint: AudioCheckpoint) -> LiveVADProgress {
         LiveVADProgress(emittedSegments: [], totalSegmentCount: 0,
-                        committedFrames: checkpoint.committedFrames)
+                        committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
     }
 
     func finish(checkpoint: AudioCheckpoint) -> LiveVADProgress {
         finishedCheckpoints.append(checkpoint)
         return LiveVADProgress(emittedSegments: [], totalSegmentCount: 1,
-                               committedFrames: checkpoint.committedFrames)
+                               committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
     }
 }
 
@@ -84,6 +114,19 @@ func temporaryRecordingPaths() -> (root: URL, paths: AppPaths) {
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
         cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
     ))
+}
+
+/// A disposable preference domain with the app's registered defaults; removed by the caller.
+func temporaryDefaults() throws -> (defaults: UserDefaults, suiteName: String) {
+    let suiteName = "MacAmbientJevTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    MicInputVolumePreference.register(in: defaults)
+    return (defaults, suiteName)
+}
+
+@MainActor
+func idleLiveVADFactory() -> LiveVADFactory {
+    { _, _, _ in FakeLiveVAD() }
 }
 
 func testCheckpoint() -> AudioCheckpoint {
@@ -102,8 +145,11 @@ func durableWriteFailureStopsCaptureWithoutDeletingAudio() async throws {
     let engine = FakeAppCaptureEngine()
     engine.onStart = { startedSessionID = $0 }
     engine.stopError = AudioCaptureEngineError.writerFailure("disk full")
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
-        paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true
+        paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
+        userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
     )
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
@@ -153,9 +199,12 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             if trigger == .startingFailure { engine.signalFailure("capture interrupted") }
         }
         engine.stopResult = AudioCaptureStopResult(checkpoint: checkpoint, didOverflow: false)
+        let (defaults, suiteName) = try temporaryDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
-            pausesProcessing: true, liveVADSession: vad
+            pausesProcessing: true, userDefaults: defaults,
+            makeLiveVADSession: { _, _, _ in vad }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -177,7 +226,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         }
         #expect(engine.events == ["start", "stop"])
         #expect(state.recordingPhase == .idle)
-        #expect(await vad.finishedCheckpoints == [checkpoint])
+        // A failure reported while starting ends the recording before live VAD exists.
+        #expect(await vad.finishedCheckpoints == (trigger == .startingFailure ? [] : [checkpoint]))
         #expect(state.pendingProcessing.count == 1)
         guard state.pendingProcessing.count == 1,
               case .finishLive(let queuedID, let queuedCheckpoint) = state.pendingProcessing[0] else {
@@ -217,9 +267,12 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
             _ = try await writer.finish()
             throw AudioCaptureEngineError.captureFailure("startup failed")
         }
+        let (defaults, suiteName) = try temporaryDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
-            pausesProcessing: true
+            pausesProcessing: true, userDefaults: defaults,
+            makeLiveVADSession: idleLiveVADFactory()
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)

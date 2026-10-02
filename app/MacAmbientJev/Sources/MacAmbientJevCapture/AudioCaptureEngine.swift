@@ -16,6 +16,7 @@ public enum AudioCaptureEngineError: LocalizedError {
     case insufficientDiskSpace(Int64)
     case cancelled
     case captureFailure(String)
+    case micInputVolumeNotConfigured
 
     public var errorDescription: String? {
         switch self {
@@ -39,6 +40,8 @@ public enum AudioCaptureEngineError: LocalizedError {
             "録音の開始を中止しました"
         case .captureFailure(let message):
             message
+        case .micInputVolumeNotConfigured:
+            "マイク入力音量の設定が録音開始前に指定されていません"
         }
     }
 }
@@ -101,8 +104,10 @@ final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBuffer
 
     init(ring: AudioBlockRing, sampleRate: Double, channelCount: Int,
          onFormatChange: @escaping @Sendable () -> Void,
-         clock: any CaptureClock = SystemCaptureClock(), frameCapacity: Int = 16_384) {
-        self.sink = TimestampedMonoSink(ring: ring, frameCapacity: frameCapacity, clock: clock)
+         clock: any CaptureClock = SystemCaptureClock(), frameCapacity: Int = 16_384,
+         meter: RawInputMeter?) {
+        self.sink = TimestampedMonoSink(ring: ring, frameCapacity: frameCapacity, clock: clock,
+                                        meter: meter)
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.onFormatChange = onFormatChange
@@ -188,8 +193,17 @@ final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBuffer
     }
 }
 
+private struct MicInputVolumeConfiguration {
+    let automaticAdjustmentEnabled: Bool
+    let onStatus: @MainActor @Sendable (UUID, MicInputStatus) -> Void
+}
+
 @MainActor
 public final class AudioCaptureEngine {
+    static let micMeterPollInterval: Duration = .milliseconds(100)
+    static let micAcknowledgementTimeout: TimeInterval = 1
+    static let micPendingWriteTimeout: TimeInterval = 1.5
+
     private let paths: AppPaths
     private let bufferFrameCount: Int
     private let ringCapacity: Int
@@ -227,11 +241,18 @@ public final class AudioCaptureEngine {
     private let tapFactory: @MainActor () throws -> any SystemAudioTapProviding
     private let systemAudioPermission: any SystemAudioPermissionProviding
     private let outputProcesses: any SystemAudioOutputProcessProviding
+    private let micInputVolumeFactory: @MainActor () -> any MicInputVolumeControlling
+    private var micInputVolumeConfiguration: MicInputVolumeConfiguration?
+    private var micInputVolume: MicInputVolumeController?
+    private var micMeterTask: Task<Void, Never>?
 
     public var isRecording: Bool { session != nil || tap != nil }
 
     public convenience init(paths: AppPaths) {
-        self.init(paths: paths, bufferFrameCount: 16_384)
+        self.init(paths: paths, bufferFrameCount: 16_384, micInputVolumeFactory: {
+            CoreAudioMicInputVolume(hal: CoreAudioMicInputVolumeHAL(),
+                                    acknowledgementTimeout: AudioCaptureEngine.micAcknowledgementTimeout)
+        })
     }
 
     init(
@@ -245,7 +266,8 @@ public final class AudioCaptureEngine {
         notifications: any CaptureNotificationProviding = SystemCaptureNotifications(),
         tapFactory: @escaping @MainActor () throws -> any SystemAudioTapProviding = { try SystemAudioTap() },
         systemAudioPermission: any SystemAudioPermissionProviding = TCCSystemAudioPermission(),
-        outputProcesses: any SystemAudioOutputProcessProviding = CoreAudioOutputProcesses()
+        outputProcesses: any SystemAudioOutputProcessProviding = CoreAudioOutputProcesses(),
+        micInputVolumeFactory: @escaping @MainActor () -> any MicInputVolumeControlling
     ) {
         precondition(bufferFrameCount > 0)
         precondition(ringCapacity > 0)
@@ -261,6 +283,32 @@ public final class AudioCaptureEngine {
         self.tapFactory = tapFactory
         self.systemAudioPermission = systemAudioPermission
         self.outputProcesses = outputProcesses
+        self.micInputVolumeFactory = micInputVolumeFactory
+    }
+
+    /// Required before every microphone recording; consumed by that recording's start.
+    /// Touches no device: volume probing starts only after the first microphone buffer.
+    public func configureMicInputVolume(
+        automaticAdjustmentEnabled: Bool,
+        onStatus: @escaping @MainActor @Sendable (UUID, MicInputStatus) -> Void
+    ) {
+        precondition(!isRecording && !checkingSystemPermission,
+                     "Microphone input volume is configured only while idle")
+        micInputVolumeConfiguration = MicInputVolumeConfiguration(
+            automaticAdjustmentEnabled: automaticAdjustmentEnabled, onStatus: onStatus
+        )
+    }
+
+    public func consumeMicSpeechLevels(_ windows: [MicLevelWindow], sessionID: UUID) {
+        guard activeSessionID == sessionID, let micInputVolume,
+              micInputVolume.sessionID == sessionID else { return }
+        micInputVolume.consumeSpeech(windows)
+    }
+
+    public func micSpeechMonitoringUnavailable(sessionID: UUID) {
+        guard activeSessionID == sessionID, let micInputVolume,
+              micInputVolume.sessionID == sessionID else { return }
+        micInputVolume.speechMonitoringUnavailable()
     }
 
 
@@ -313,6 +361,7 @@ public final class AudioCaptureEngine {
         }
         let device: AVCaptureDevice?
         let input: AVCaptureDeviceInput?
+        var micConfiguration: MicInputVolumeConfiguration?
         let tapBackend: (any SystemAudioTapProviding)?
         let sampleRate: Double
         let inputChannels: Int
@@ -325,6 +374,11 @@ public final class AudioCaptureEngine {
             input = nil
         } else {
             tapBackend = nil
+            guard let configuration = micInputVolumeConfiguration else {
+                throw AudioCaptureEngineError.micInputVolumeNotConfigured
+            }
+            micInputVolumeConfiguration = nil
+            micConfiguration = configuration
             guard let selected = AVCaptureDevice.default(for: .audio) else {
                 throw AudioCaptureEngineError.inputUnavailable
             }
@@ -363,7 +417,10 @@ public final class AudioCaptureEngine {
             blockFrameCapacity: slotSamples, sampleRate: sampleRate
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
-        let sink = TimestampedMonoSink(ring: ring, frameCapacity: bufferFrameCount, clock: clock)
+        let sink = TimestampedMonoSink(
+            ring: ring, frameCapacity: bufferFrameCount, clock: clock,
+            meter: input == nil ? nil : RawInputMeter(channelCount: inputChannels, sampleRate: sampleRate)
+        )
         var captureSession: AVCaptureSession?
         var audioOutput: AVCaptureAudioDataOutput?
         var receiver: AudioCaptureReceiver?
@@ -477,6 +534,13 @@ public final class AudioCaptureEngine {
                         ) else { break }
                     }
                 }
+                if let device, let micConfiguration {
+                    beginMicInputVolume(
+                        captureDeviceUID: device.uniqueID, sessionID: sessionID,
+                        automaticAdjustmentEnabled: micConfiguration.automaticAdjustmentEnabled,
+                        onStatus: micConfiguration.onStatus
+                    )
+                }
                 if source == .systemAudio {
                     let outputMonitor = SystemAudioOutputMonitor(
                         provider: outputProcesses, captureStartMillis: Int64(startedAt * 1_000)
@@ -541,12 +605,63 @@ public final class AudioCaptureEngine {
         self.timeline = timeline
     }
 
+    /// Starts volume ownership for a ready microphone run. The first valid buffer has arrived,
+    /// so the sink's current end frame anchors capture time to the monotonic clock.
+    func beginMicInputVolume(
+        captureDeviceUID: String, sessionID: UUID, automaticAdjustmentEnabled: Bool,
+        onStatus: @escaping @MainActor @Sendable (UUID, MicInputStatus) -> Void
+    ) {
+        guard captureSource == .microphone, activeSessionID == sessionID,
+              let sink, let meter = sink.meter, micInputVolume == nil else {
+            preconditionFailure("Microphone input volume requires the active microphone run")
+        }
+        let clock = clock
+        let origin = clock.now() - Double(sink.lastEndFrame) / meter.sampleRate
+        let controller = MicInputVolumeController(
+            sessionID: sessionID,
+            volume: automaticAdjustmentEnabled ? micInputVolumeFactory() : nil,
+            pendingWriteTimeout: Self.micPendingWriteTimeout,
+            now: { clock.now() - origin },
+            onStatus: { [weak self] id, status in
+                guard self?.activeSessionID == id else { return }
+                onStatus(id, status)
+            },
+            onEffectiveChange: { meter.requestReset() }
+        )
+        micInputVolume = controller
+        controller.bind(captureDeviceUID: captureDeviceUID)
+        micMeterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: Self.micMeterPollInterval) } catch { return }
+                guard let self, self.micInputVolume === controller else { return }
+                self.pollMicMeter()
+            }
+        }
+    }
+
+    func pollMicMeter() {
+        guard let micInputVolume, let meter = sink?.meter else { return }
+        let rate = meter.sampleRate
+        micInputVolume.consumeRaw(meter.takeWindows().map { window in
+            MicLevelWindow(
+                startSeconds: Double(window.startFrame) / rate,
+                endSeconds: Double(window.startFrame + Int64(window.frameCount)) / rate,
+                speechSeconds: 0, speechMeanSquare: nil, speechPeak: 0,
+                inputPeak: window.peak, clippedFraction: window.clippedFraction
+            )
+        })
+    }
+
     public func cancelStarting() {
         startingCancelled = true
     }
 
     /// Termination cannot await a final partial chunk; previously committed chunks stay recoverable.
     public func terminate() {
+        micMeterTask?.cancel()
+        micMeterTask = nil
+        micInputVolume?.terminate()
+        micInputVolume = nil
         healthTask?.cancel()
         drainTask?.cancel()
         output?.setSampleBufferDelegate(nil, queue: nil)
@@ -582,6 +697,12 @@ public final class AudioCaptureEngine {
         outputMonitorTask?.cancel()
         outputMonitorTask = nil
         failureObservers.stop()
+        micMeterTask?.cancel()
+        micMeterTask = nil
+        if let micInputVolume {
+            await micInputVolume.stop()
+            self.micInputVolume = nil
+        }
         defer {
             self.session = nil
             self.output = nil

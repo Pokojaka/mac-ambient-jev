@@ -15,7 +15,8 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
     ) async throws -> [SegmentReference] {
         let engine = try await FluidVADSegmentationEngine.make(
             segmentationRunID: runID,
-            canonicalSampleRate: reader.checkpoint.sampleRate
+            canonicalSampleRate: reader.checkpoint.sampleRate,
+            measureMicInputLevels: false
         )
         return try await FluidVADTimelineProcessor(
             reader: reader,

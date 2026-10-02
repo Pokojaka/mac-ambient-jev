@@ -8,9 +8,9 @@ private actor RecordingVADChunkSegmenter: VADChunkSegmenting {
 
     func process16kChunk(
         _ samples: [Float]
-    ) async throws -> [SegmentReference] {
+    ) async throws -> VADChunkOutput {
         sizes.append(samples.count)
-        return []
+        return VADChunkOutput(segments: [], micLevel: nil)
     }
 
     func finish(
@@ -102,12 +102,15 @@ private actor FailingOnceVADChunkSegmenter: VADChunkSegmenting {
     private var calls = 0
     private var acceptedFrames = 0
 
-    func process16kChunk(_ samples: [Float]) async throws -> [SegmentReference] {
+    func process16kChunk(_ samples: [Float]) async throws -> VADChunkOutput {
         calls += 1
         if calls == 2 { throw InjectedVADFailure.secondChunk }
         acceptedFrames += samples.count
-        guard calls == 1 else { return [] }
-        return [SegmentReference(segmentationRunID: "seg", segmentID: "before-failure", startFrame: 0, endFrame: 100)]
+        guard calls == 1 else { return VADChunkOutput(segments: [], micLevel: nil) }
+        return VADChunkOutput(
+            segments: [SegmentReference(segmentationRunID: "seg", segmentID: "before-failure", startFrame: 0, endFrame: 100)],
+            micLevel: nil
+        )
     }
 
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] { [] }

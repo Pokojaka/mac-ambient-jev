@@ -51,7 +51,8 @@ private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @
         paths: AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root),
         bufferFrameCount: 8, diskSpace: GateDisk(),
         tapFactory: { creations(); return tap }, systemAudioPermission: permission,
-        outputProcesses: GateOutput()
+        outputProcesses: GateOutput(),
+        micInputVolumeFactory: { preconditionFailure("System audio never binds a microphone volume control") }
     )
 }
 

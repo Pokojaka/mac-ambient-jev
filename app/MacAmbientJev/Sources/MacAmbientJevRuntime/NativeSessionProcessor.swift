@@ -765,7 +765,8 @@ public actor NativeSessionProcessor {
 
         let vad = try await FluidVADSegmentationEngine.make(
             segmentationRunID: segmentationRunID,
-            canonicalSampleRate: checkpoint.sampleRate
+            canonicalSampleRate: checkpoint.sampleRate,
+            measureMicInputLevels: false
         )
         let segments = try await FluidVADTimelineProcessor(
             reader: reader,

@@ -19,6 +19,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     var events: [String] = []
     var formatListener: AudioObjectPropertyListenerBlock?
     var callback: AudioDeviceIOBlock?
+    var callbackQueue: DispatchQueue?
     private let proc = unsafeBitCast(UInt(0x1234), to: AudioDeviceIOProcID.self)
     private let tap: AudioObjectID = 41
     private let device: AudioObjectID = 42
@@ -81,6 +82,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
         events.append("ioProc")
         #expect(device == self.device)
         self.callback = callback
+        callbackQueue = queue
         if !returnNilIOProc && (failure != .ioProc || returnIDOnFailure) { result = proc }
         return failure == .ioProc ? -50 : noErr
     }
@@ -155,7 +157,7 @@ func tapStartFailureBoundaries() throws {
         let tap = try SystemAudioTap(hardware: hardware)
         let initial = hardware.events.count
         let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 8),
-                                       frameCapacity: 8, clock: FixedClock())
+                                       frameCapacity: 8, clock: FixedClock(), meter: nil)
         do {
             try tap.start(sink: sink, onFailure: { _ in })
             Issue.record("Expected \(stage) to fail")
@@ -172,7 +174,7 @@ func tapStartFailureBoundaries() throws {
 @Test("A missing IOProc ID and a normal stop both release their exact acquired resources")
 func tapIOProcMissingAndNormalStop() throws {
     let sink = TimestampedMonoSink(ring: AudioBlockRing(capacity: 4, blockFrameCapacity: 8),
-                                   frameCapacity: 8, clock: FixedClock())
+                                   frameCapacity: 8, clock: FixedClock(), meter: nil)
     let missing = FakeTapHardware()
     missing.returnNilIOProc = true
     let missingTap = try SystemAudioTap(hardware: missing)
@@ -195,38 +197,53 @@ func tapIOProcMissingAndNormalStop() throws {
     #expect(normal.events == afterStop)
 }
 
+/// Core Audio's imported block aliases erase Sendable; immutable copies cross to the fake queue.
+private struct TapCallbackBlocks: @unchecked Sendable {
+    let receive: AudioDeviceIOBlock
+    let formatChanged: AudioObjectPropertyListenerBlock
+}
+
 @MainActor
-@Test("Tap callbacks stop accepting matching-layout audio after format invalidation")
-func tapRejectsAudioAfterFormatInvalidation() throws {
+@Test("Background tap callbacks stop accepting matching-layout audio after format invalidation")
+func tapRejectsAudioAfterFormatInvalidation() async throws {
     let hardware = FakeTapHardware()
     let tap = try SystemAudioTap(hardware: hardware)
     defer { tap.stop() }
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 8, sampleRate: 48_000)
-    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock())
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock(), meter: nil)
     try tap.start(sink: sink, onFailure: { _ in })
-    let callback = try #require(hardware.callback)
-    let listener = try #require(hardware.formatListener)
-    var samples: [Float] = [0.25, -0.5]
-    var timestamp = AudioTimeStamp()
-    timestamp.mFlags = .sampleTimeValid
-    samples.withUnsafeMutableBytes { bytes in
-        var input = AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count),
-                                 mData: bytes.baseAddress)
-        )
-        var output = AudioBufferList()
-        withUnsafePointer(to: &timestamp) { time in
-            callback(time, &input, time, &output, time)
-        }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        listener(1, &address)
-        timestamp.mSampleTime = 2
-        withUnsafePointer(to: &timestamp) { time in
-            callback(time, &input, time, &output, time)
+    let callbacks = TapCallbackBlocks(
+        receive: try #require(hardware.callback),
+        formatChanged: try #require(hardware.formatListener)
+    )
+    let callbackQueue = try #require(hardware.callbackQueue)
+    await withCheckedContinuation { continuation in
+        callbackQueue.async { @Sendable in
+            #expect(!Thread.isMainThread)
+            var samples: [Float] = [0.25, -0.5]
+            var timestamp = AudioTimeStamp()
+            timestamp.mFlags = .sampleTimeValid
+            samples.withUnsafeMutableBytes { bytes in
+                var input = AudioBufferList(
+                    mNumberBuffers: 1,
+                    mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count),
+                                         mData: bytes.baseAddress)
+                )
+                var output = AudioBufferList()
+                withUnsafePointer(to: &timestamp) { time in
+                    callbacks.receive(time, &input, time, &output, time)
+                }
+                var address = AudioObjectPropertyAddress(
+                    mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain
+                )
+                callbacks.formatChanged(1, &address)
+                timestamp.mSampleTime = 2
+                withUnsafePointer(to: &timestamp) { time in
+                    callbacks.receive(time, &input, time, &output, time)
+                }
+            }
+            continuation.resume()
         }
     }
     ring.finish(tailFrame: sink.lastEndFrame)
@@ -278,7 +295,7 @@ func timestampMapperReanchorsWhenSampleTimeRestarts() {
 func timestampMapperRestartPreservesHostTimeGap() throws {
     let mapper = CaptureFrameTimestampMapper()
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 512, sampleRate: 48_000)
-    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: FixedClock())
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: FixedClock(), meter: nil)
     let timestamps: [(Double?, UInt64?, Int64)] = [
         (48_000, 10_000_000_000, 0),
         (48_480, 10_010_000_000, 480),
@@ -306,7 +323,7 @@ func timestampMapperRestartPreservesHostTimeGap() throws {
 func timestampedMonoConversionAndGapAccounting() throws {
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 8, sampleRate: 1_000)
     let clock = FixedClock()
-    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: clock)
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: clock, meter: nil)
     var packed: [Float] = [0.25, 0.75, -0.5, 0.5]
     var left: [Float] = [1, -1]
     var right: [Float] = [-1, 1]
@@ -347,7 +364,7 @@ func timestampedMonoConversionAndGapAccounting() throws {
 @Test("Invalid callback preserves its timestamp and blocks a false ready signal")
 func timestampedMonoInvalidBuffer() throws {
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 8)
-    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock())
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 8, clock: FixedClock(), meter: nil)
     sink.missing(startFrame: 10, frameCount: 3)
     ring.finish(tailFrame: sink.lastEndFrame)
     #expect(sink.lastBufferMillis.load(ordering: .relaxed) == 0)
@@ -358,7 +375,7 @@ func timestampedMonoInvalidBuffer() throws {
 @Test("Explicit silent packets contain zeros and retain preceding timestamp gaps")
 func timestampedSilentPacketAfterSignal() throws {
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 4, sampleRate: 1_000)
-    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 4, clock: FixedClock())
+    let sink = TimestampedMonoSink(ring: ring, frameCapacity: 4, clock: FixedClock(), meter: nil)
     var sample: Float = 0.75
     var stride = 1
     withUnsafePointer(to: &sample) { value in
@@ -441,6 +458,38 @@ private struct NoExternalOutput: SystemAudioOutputProcessProviding {
     func runningExternalOutputPIDs() async -> Set<Int32>? { [] }
 }
 
+/// System-audio runs must never construct, bind, write or restore a microphone volume control.
+@MainActor
+private final class MicVolumeFactoryProbe {
+    private(set) var calls = 0
+    func make() -> any MicInputVolumeControlling {
+        calls += 1
+        return TrapMicVolume()
+    }
+}
+
+@MainActor
+private final class TrapMicVolume: MicInputVolumeControlling {
+    func bind(captureDeviceUID: String,
+              onExternalChange: @escaping @MainActor @Sendable () -> Void) throws(MicInputVolumeFailure)
+        -> MicInputVolumeSnapshot {
+        Issue.record("System audio bound a microphone volume control")
+        throw .notBound
+    }
+    func snapshot() throws(MicInputVolumeFailure) -> MicInputVolumeSnapshot {
+        Issue.record("System audio read a microphone volume control")
+        throw .notBound
+    }
+    func setVolumes(_ values: [MicInputVolumeElement], expected: MicInputVolumeSnapshot)
+        async throws(MicInputVolumeWriteFailure) -> MicInputVolumeSnapshot {
+        Issue.record("System audio wrote a microphone volume control")
+        throw MicInputVolumeWriteFailure(reason: .notBound, effective: [], unresolved: [])
+    }
+    func unbind() throws(MicInputVolumeFailure) {
+        Issue.record("System audio unbound a microphone volume control")
+    }
+}
+
 @MainActor
 @Test("A fake process tap records through durable mono chunks and pairs cleanup with power")
 func fakeTapEngineLifecycle() async throws {
@@ -449,16 +498,22 @@ func fakeTapEngineLifecycle() async throws {
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
     let tap = FakeTap()
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8, ringCapacity: 8,
                                     chunkDurationSeconds: 0.004, power: power,
                                     diskSpace: AvailableDisk(), tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
+    engine.configureMicInputVolume(automaticAdjustmentEnabled: true) { _, _ in
+        Issue.record("System audio reported a microphone input status")
+    }
     let session = UUID()
     try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in })
     #expect(engine.isRecording && engine.activeSessionID == session)
     #expect(engine.timeline?.channelCount == 1)
     let result = try await engine.stop()
+    #expect(micVolumes.calls == 0)
     #expect(result.checkpoint.committedFrames == 4)
     #expect(result.dropoutCount == 0 && result.gapCount == 0)
     #expect(result.sleepAssertionHeld)
@@ -476,12 +531,15 @@ func fakeTapSilentStartupAndStop() async throws {
     let tap = FakeTap()
     tap.emitsSilence = true
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8, power: power,
                                     diskSpace: AvailableDisk(), tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
     let result = try await engine.stop()
+    #expect(micVolumes.calls == 0)
     #expect(result.checkpoint.committedFrames == 4)
     #expect(result.dropoutCount == 0 && result.gapCount == 0)
     #expect(tap.starts == 1 && tap.stops == 1)
@@ -496,14 +554,17 @@ func fakeTapGapUsesSharedDrain() async throws {
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
     let tap = FakeTap()
     tap.emitsGap = true
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 8,
                                     power: FakeCapturePower(), diskSpace: AvailableDisk(),
                                     tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     let sessionID = UUID()
     try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in })
     let result = try await engine.stop()
+    #expect(micVolumes.calls == 0)
     #expect(result.checkpoint.committedFrames == 10)
     #expect(result.didOverflow && result.dropoutCount == 1)
     #expect(result.gapCount == 1 && result.totalGapFrames == 2)
@@ -523,10 +584,12 @@ func fakeTapStartFailureReleasesResources() async throws {
     let tap = FakeTap()
     tap.shouldFail = true
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
                                     tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
         Issue.record("Expected denial")
@@ -545,10 +608,12 @@ func tapPreflightDiskRejection() async throws {
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
     let tap = FakeTap()
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(bytes: 0),
                                     tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
         Issue.record("Expected selected-volume disk rejection")
@@ -567,10 +632,12 @@ func tapWriterDirectoryFailure() async throws {
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
     let tap = FakeTap()
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
                                     tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
         Issue.record("Expected directory creation to fail")
@@ -589,10 +656,12 @@ func tapStartCancellation() async throws {
     let tap = FakeTap()
     tap.emitsBuffer = false
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
                                     tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     tap.onStarted = { engine.cancelStarting() }
     do {
         try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
@@ -612,10 +681,12 @@ func tapWriterFlushFailureReleasesResources() async throws {
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
     let tap = FakeTap()
     let power = FakeCapturePower()
+    let micVolumes = MicVolumeFactoryProbe()
     let engine = AudioCaptureEngine(paths: paths, power: power, diskSpace: AvailableDisk(),
                                     tapFactory: { tap },
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
-                                    outputProcesses: NoExternalOutput())
+                                    outputProcesses: NoExternalOutput(),
+                                    micInputVolumeFactory: micVolumes.make)
     let session = UUID()
     try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in })
     let processing = root.appending(path: session.uuidString)

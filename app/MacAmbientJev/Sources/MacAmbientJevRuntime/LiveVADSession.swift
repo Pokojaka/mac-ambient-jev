@@ -7,17 +7,21 @@ public struct LiveVADProgress: Sendable, Equatable {
     public let totalSegmentCount: Int
     public let committedFrames: Int64
     public let openSpeech: OpenSpeechRange?
+    /// Newly measured VAD-confirmed speech windows in capture-relative seconds.
+    public let micSpeechLevels: [MicLevelWindow]
 
     public init(
         emittedSegments: [SegmentReference],
         totalSegmentCount: Int,
         committedFrames: Int64,
-        openSpeech: OpenSpeechRange? = nil
+        openSpeech: OpenSpeechRange? = nil,
+        micSpeechLevels: [MicLevelWindow]
     ) {
         self.emittedSegments = emittedSegments
         self.totalSegmentCount = totalSegmentCount
         self.committedFrames = committedFrames
         self.openSpeech = openSpeech
+        self.micSpeechLevels = micSpeechLevels
     }
 }
 
@@ -39,12 +43,14 @@ public actor LiveVADSession {
     public static func make(
         processingDirectory: URL,
         initialCheckpoint: AudioCheckpoint,
+        measureMicInputLevels: Bool,
         segmentationRunID: String = "seg_live_\(UUID().uuidString.lowercased())",
         latencyTrace: LiveLatencyTrace? = nil
     ) async throws -> LiveVADSession {
         let engine = try await FluidVADSegmentationEngine.make(
             segmentationRunID: segmentationRunID,
-            canonicalSampleRate: initialCheckpoint.sampleRate
+            canonicalSampleRate: initialCheckpoint.sampleRate,
+            measureMicInputLevels: measureMicInputLevels
         )
         let reader = ProcessingTimelineReader(
             directory: processingDirectory,
@@ -82,7 +88,8 @@ public actor LiveVADSession {
                 emittedSegments: [],
                 totalSegmentCount: segments.count,
                 committedFrames: lastCommittedFrames,
-                openSpeech: nil
+                openSpeech: nil,
+                micSpeechLevels: []
             )
         }
 
@@ -129,7 +136,8 @@ public actor LiveVADSession {
             emittedSegments: emitted,
             totalSegmentCount: segments.count,
             committedFrames: checkpoint.committedFrames,
-            openSpeech: openSpeech
+            openSpeech: openSpeech,
+            micSpeechLevels: await processor.takeMicSpeechLevels()
         )
     }
 
@@ -142,7 +150,8 @@ public actor LiveVADSession {
                 emittedSegments: [],
                 totalSegmentCount: segments.count,
                 committedFrames: lastCommittedFrames,
-                openSpeech: nil
+                openSpeech: nil,
+                micSpeechLevels: []
             )
         }
 
@@ -155,7 +164,8 @@ public actor LiveVADSession {
             emittedSegments: emitted,
             totalSegmentCount: segments.count,
             committedFrames: checkpoint.committedFrames,
-            openSpeech: nil
+            openSpeech: nil,
+            micSpeechLevels: await processor.takeMicSpeechLevels()
         )
     }
 
