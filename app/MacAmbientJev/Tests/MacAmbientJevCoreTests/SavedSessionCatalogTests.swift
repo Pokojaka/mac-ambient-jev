@@ -62,7 +62,7 @@ func catalogShowsJapaneseMessageForDecodingFailureButPreservesOtherErrors() thro
         == "保存セッションの ID がフォルダー名と一致しません")
 }
 
-@Test(arguments: [0.0, 999.0, 768_001.0, Double.nan, Double.infinity, -Double.infinity])
+@Test(arguments: [0.0, -1.0, Double.nan, Double.infinity, -Double.infinity])
 func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -77,8 +77,13 @@ func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
         positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN"
     )
     try encoder.encode(AudioCheckpoint(
-        committedFrames: 1, sampleRate: sampleRate, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"], chunkFrameCounts: [1]
+        committedFrames: 1,
+        sampleRate: sampleRate,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [1],
+        gapEvents: []
     )).write(to: checkpoint)
 
     let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
@@ -87,8 +92,8 @@ func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
     #expect(!row.canReprocess)
 }
 
-@Test(arguments: [1_000.0, 768_000.0])
-func catalogAcceptsCheckpointSampleRateBoundaries(_ sampleRate: Double) throws {
+@Test(arguments: [16_000.0, 48_000.0])
+func catalogReportsDurationFromCheckpointSampleRate(_ sampleRate: Double) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -98,8 +103,13 @@ func catalogAcceptsCheckpointSampleRateBoundaries(_ sampleRate: Double) throws {
     )
     let checkpoint = session.appending(path: "audio/processing/\(DurableAudioWriter.checkpointFilename)")
     try JSONEncoder().encode(AudioCheckpoint(
-        committedFrames: 1, sampleRate: sampleRate, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"], chunkFrameCounts: [1]
+        committedFrames: 1,
+        sampleRate: sampleRate,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [1],
+        gapEvents: []
     )).write(to: checkpoint)
 
     let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
@@ -253,16 +263,24 @@ private func writeCatalogSession(
     try encoder.encode(SessionManifest(
         sessionID: id,
         createdAt: Date(timeIntervalSince1970: createdAt),
-        sourceKind: source
+        sourceKind: source,
+        captureSource: .microphone
     )).write(to: session.appending(path: "session.json"), options: .atomic)
     if includeAudio {
         let processing = session.appending(path: "audio/processing", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: processing, withIntermediateDirectories: true)
         let filename = "chunk-000000.f32le"
         try Data([0, 0, 0, 0]).write(to: processing.appending(path: filename))
+        try Data().write(to: processing.appending(path: DurableAudioWriter.chunkIndexFilename))
+        try Data().write(to: processing.appending(path: DurableAudioWriter.gapEventsFilename))
         try JSONEncoder().encode(AudioCheckpoint(
-            committedFrames: 1, sampleRate: 48_000, channelCount: 1,
-            chunkFiles: [filename], chunkFrameCounts: [1]
+            committedFrames: 1,
+            sampleRate: 48_000,
+            channelCount: 1,
+            sampleFormat: .float32LE,
+            chunkFiles: [filename],
+            chunkFrameCounts: [1],
+            gapEvents: []
         )).write(to: processing.appending(path: DurableAudioWriter.checkpointFilename), options: .atomic)
     }
     return session
@@ -300,6 +318,7 @@ func catalogReportsZeroAudioScopeOnlySessionAsComplete() throws {
     let session = try writeCatalogSession(
         id: UUID(), createdAt: 1_700_000_000, source: .importedFile, root: root, includeAudio: true
     )
+    try Data([1, 2, 3]).write(to: session.appending(path: "audio/original.wav"))
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
         timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
         asrEngine: "qwen", asrModel: "model", asrVersion: "version",

@@ -21,17 +21,18 @@ public enum SavedTranscriptLoaderError: Error, LocalizedError, Equatable {
 public enum SavedTranscriptLoader {
     public static func load(
         sessionURL: URL,
-        audioSource: SavedSessionAudioSource
+        audioSource: SessionAudioSource
     ) throws -> SavedTranscript {
+        let layout = SessionLayout(sessionURL: sessionURL)
         guard let activeRuns = try ProcessingMetadataStore(
-            sessionURL: sessionURL
+            sessionURL: layout.sessionURL
         ).load()?.activeRuns, activeRuns.asr != nil else {
             return .unavailable
         }
 
         let sampleRate: Double
         switch audioSource {
-        case .processingTimeline(let checkpoint):
+        case .recordedTimeline(let checkpoint):
             sampleRate = checkpoint.sampleRate
         case .importedOriginal(let originalURL):
             sampleRate = try AVAudioFile(forReading: originalURL)
@@ -41,7 +42,7 @@ public enum SavedTranscriptLoader {
             throw SavedTranscriptLoaderError.invalidSampleRate
         }
 
-        let eventsURL = sessionURL.appending(path: "events.jsonl")
+        let eventsURL = layout.eventsURL
         let lines = FileManager.default.fileExists(atPath: eventsURL.path)
             ? try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL)).lines
             : []

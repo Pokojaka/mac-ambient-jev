@@ -27,9 +27,9 @@ public enum SessionExportLayout {
             .replacingOccurrences(of: ":", with: "-")
     }
 
-    public static func audioFilename(for source: SavedSessionAudioSource) -> String {
+    public static func audioFilename(for source: SessionAudioSource) -> String {
         switch source {
-        case .processingTimeline:
+        case .recordedTimeline:
             return "audio.flac"
         case .importedOriginal(let originalURL):
             let ext = originalURL.pathExtension
@@ -82,12 +82,9 @@ public struct SessionExporter: Sendable {
         guard session.errorMessage == nil else { throw SessionExportError.sessionUnreadable }
         guard let audioSource = session.audioSource else { throw SessionExportError.audioUnavailable }
 
-        let sessionURL = sessionsRoot.appending(
-            path: session.sessionID.uuidString,
-            directoryHint: .isDirectory
-        )
+        let layout = SessionLayout(sessionsRoot: sessionsRoot, sessionID: session.sessionID)
         guard case .segments(let segments) = try SavedTranscriptLoader.load(
-            sessionURL: sessionURL,
+            sessionURL: layout.sessionURL,
             audioSource: audioSource
         ) else {
             throw SessionExportError.noTranscript
@@ -108,12 +105,12 @@ public struct SessionExporter: Sendable {
             )
             let audioURL = staging.appending(path: SessionExportLayout.audioFilename(for: audioSource))
             switch audioSource {
-            case .processingTimeline(let checkpoint):
+            case .recordedTimeline(let checkpoint):
                 try ProcessingTimelineAudioExporter(
                     framesPerBuffer: max(1, Int64(checkpoint.sampleRate * 10))
                 ).export(
                     reader: ProcessingTimelineReader(
-                        directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
+                        directory: layout.processingDirectory,
                         checkpoint: checkpoint
                     ),
                     to: audioURL,

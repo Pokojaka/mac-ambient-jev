@@ -24,15 +24,16 @@ func systemAudioSessionPersistsSourceAndCatalogDisplaysIt() throws {
 }
 
 @Test
-func legacySessionWithoutCaptureSourceDefaultsToMicrophone() throws {
+func sessionManifestWithoutCaptureSourceFailsToDecode() {
     let id = UUID()
     let json = """
     {"session_id":"\(id.uuidString)","created_at":"2026-09-28T00:00:00Z","source_kind":"live"}
     """
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
-    let manifest = try decoder.decode(SessionManifest.self, from: Data(json.utf8))
-    #expect(manifest.captureSource == .microphone)
+    #expect(throws: DecodingError.self) {
+        try decoder.decode(SessionManifest.self, from: Data(json.utf8))
+    }
 }
 
 @Test

@@ -200,6 +200,7 @@ func eventLogRecoveryCanTargetActiveRunBehindNewerFailedRun() async throws {
                 sourceStartFrame: 0,
                 sourceEndFrame: 100,
                 payload: ASRFailedEventPayload(
+                    kind: .transcriptionFailed,
                     message: "forced failure"
                 )
             ))

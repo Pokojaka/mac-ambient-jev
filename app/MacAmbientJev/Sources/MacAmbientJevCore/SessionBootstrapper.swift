@@ -13,7 +13,7 @@ public struct SessionBootstrapper {
         sessionID: UUID,
         sourceKind: SessionSourceKind,
         originalFilename: String? = nil,
-        captureSource: CaptureSource = .microphone,
+        captureSource: CaptureSource,
         createdAt: Date = Date()
     ) throws -> URL {
         let sessionURL = paths.sessionsRoot.appending(

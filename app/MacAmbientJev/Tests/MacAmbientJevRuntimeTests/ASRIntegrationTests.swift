@@ -45,7 +45,7 @@ struct ASRIntegrationTests {
         )
 
         let engine = NativeQwen3ASREngine(
-            modelStore: ModelStore(paths: .systemDefault())
+            modelStore: ModelStore(paths: try .systemDefault())
         )
         try await engine.prepare()
         let result = try await engine.transcribe(

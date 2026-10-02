@@ -30,22 +30,12 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         createdAt: Date,
         sourceKind: SessionSourceKind,
         originalFilename: String? = nil,
-        captureSource: CaptureSource = .microphone
+        captureSource: CaptureSource
     ) {
         self.sessionID = sessionID
         self.createdAt = createdAt
         self.sourceKind = sourceKind
         self.originalFilename = originalFilename
         self.captureSource = captureSource
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        sessionID = try container.decode(UUID.self, forKey: .sessionID)
-        createdAt = try container.decode(Date.self, forKey: .createdAt)
-        sourceKind = try container.decode(SessionSourceKind.self, forKey: .sourceKind)
-        originalFilename = try container.decodeIfPresent(String.self, forKey: .originalFilename)
-        captureSource = try container.decodeIfPresent(CaptureSource.self, forKey: .captureSource)
-            ?? .microphone
     }
 }

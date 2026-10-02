@@ -16,6 +16,7 @@ private actor LiveUpdateRecorder {
 }
 
 private actor StubLiveProcessorASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var prepareCount = 0
     private var transcribeCount = 0
 
@@ -58,7 +59,8 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .live
+        sourceKind: .live,
+        captureSource: .microphone
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -136,6 +138,7 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
 }
 
 private actor GatedLiveProcessorASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var release: CheckedContinuation<Void, Never>?
     private var waitingForStart: CheckedContinuation<Void, Never>?
 
@@ -184,7 +187,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     )
     let sessionID = UUID()
     let sessionURL = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: sessionID, sourceKind: .live
+        paths: paths, sessionID: sessionID, sourceKind: .live, captureSource: .microphone
     )
     let audioWriter = try DurableAudioWriter(
         directory: sessionURL

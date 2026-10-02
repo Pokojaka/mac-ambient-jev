@@ -67,7 +67,7 @@ public actor JevSceneCueCollector {
 
         for segment in segments.sorted(by: {
             $0.startMilliseconds < $1.startMilliseconds
-        }) where JevTranscriptEligibility.isEligible(segment.text) {
+        }) where segment.hasRecognizedText {
             let result: ProvisionalSceneDecision
             if providerUnavailable {
                 result = await decisions.deferSceneCueClassification(

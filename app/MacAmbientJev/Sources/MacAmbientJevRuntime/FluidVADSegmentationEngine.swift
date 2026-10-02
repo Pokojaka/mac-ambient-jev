@@ -47,6 +47,11 @@ protocol VADChunkSegmenting: Sendable {
 }
 
 actor FluidVADSegmentationEngine: VADChunkSegmenting {
+    static let preRollSeconds = 0.10
+    static let maxSegmentSeconds = 14.0
+    static let minSilenceSeconds = 0.75
+    static let minimumSegmentSeconds = ASRAudioInput.minimumDurationSeconds
+
     private let manager: VadManager
     private var streamState: VadStreamState
     private var assembler: SegmentationAssembler
@@ -57,20 +62,14 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     static func make(
         segmentationRunID: String,
         canonicalSampleRate: Double,
-        measureMicInputLevels: Bool,
-        preRollSeconds: Double = 0.10,
-        maxSegmentSeconds: Double = 14.0,
-        minSilenceSeconds: Double = 0.75
+        measureMicInputLevels: Bool
     ) async throws -> FluidVADSegmentationEngine {
         let manager = try await VadManager()
         return FluidVADSegmentationEngine(
             manager: manager,
             segmentationRunID: segmentationRunID,
             canonicalSampleRate: canonicalSampleRate,
-            measureMicInputLevels: measureMicInputLevels,
-            preRollSeconds: preRollSeconds,
-            maxSegmentSeconds: maxSegmentSeconds,
-            minSilenceSeconds: minSilenceSeconds
+            measureMicInputLevels: measureMicInputLevels
         )
     }
 
@@ -78,10 +77,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         manager: VadManager,
         segmentationRunID: String,
         canonicalSampleRate: Double,
-        measureMicInputLevels: Bool,
-        preRollSeconds: Double,
-        maxSegmentSeconds: Double,
-        minSilenceSeconds: Double
+        measureMicInputLevels: Bool
     ) {
         self.manager = manager
         self.measureMicInputLevels = measureMicInputLevels
@@ -89,16 +85,16 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         self.frameMapper = VADFrameMapper(canonicalSampleRate: canonicalSampleRate)
         self.assembler = SegmentationAssembler(
             segmentationRunID: segmentationRunID,
-            preRollFrames: Int64((preRollSeconds * canonicalSampleRate).rounded()),
-            maxSegmentFrames: Int64((maxSegmentSeconds * canonicalSampleRate).rounded()),
+            preRollFrames: Int64((Self.preRollSeconds * canonicalSampleRate).rounded()),
+            maxSegmentFrames: Int64((Self.maxSegmentSeconds * canonicalSampleRate).rounded()),
             minimumSegmentFrames: Int64(
-                (ASRAudioInput.minimumDurationSeconds * canonicalSampleRate).rounded()
+                (Self.minimumSegmentSeconds * canonicalSampleRate).rounded()
             )
         )
         self.segmentationConfig = VadSegmentationConfig(
             minSpeechDuration: 0,
-            minSilenceDuration: minSilenceSeconds,
-            maxSpeechDuration: maxSegmentSeconds,
+            minSilenceDuration: Self.minSilenceSeconds,
+            maxSpeechDuration: Self.maxSegmentSeconds,
             speechPadding: 0
         )
     }

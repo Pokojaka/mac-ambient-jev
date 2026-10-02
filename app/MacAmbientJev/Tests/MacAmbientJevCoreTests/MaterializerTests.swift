@@ -52,8 +52,17 @@ func materializerKeepsEmptyFinalTurnAndShortRecognizedSpeech() {
 }
 
 @Test
-func liveProjectionHidesWhitespaceOnlyButKeepsShortAcknowledgements() {
-    let segments = ["", " \n\t", "聞き取れませんでした", "うん"].enumerated().map { index, text in
+func liveProjectionHidesEmptyTextButShowsEverythingSpoken() {
+    let texts = [
+        "",
+        " \n\t",
+        "聞き取れませんでした",
+        "「聞き取れませんでした。」",
+        "『認識できませんでした』",
+        "えー",
+        "うん"
+    ]
+    let segments = texts.enumerated().map { index, text in
         MaterializedTranscriptSegment(
             segmentID: "s\(index)", startMilliseconds: Int64(index * 1000),
             endMilliseconds: Int64((index + 1) * 1000), text: text,
@@ -61,28 +70,7 @@ func liveProjectionHidesWhitespaceOnlyButKeepsShortAcknowledgements() {
         )
     }
 
-    #expect(LiveTranscriptProjection().rows(for: segments).map(\.text) == ["うん"])
-}
-
-@Test
-func liveProjectionSuppressesPunctuatedNonSpeechPlaceholder() {
-    let texts = [
-        "聞き取れませんでした",
-        "「聞き取れませんでした。」",
-        "(聞き取れませんでした!)",
-        "『聞き取れませんでした』",
-        "えー",
-        "うん"
-    ]
-    let segments = texts.enumerated().map { index, text in
-        MaterializedTranscriptSegment(
-            segmentID: "placeholder-\(index)", startMilliseconds: Int64(index * 1000),
-            endMilliseconds: Int64((index + 1) * 1000), text: text,
-            scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil
-        )
-    }
-
-    #expect(LiveTranscriptProjection().rows(for: segments).map(\.text) == ["えー", "うん"])
+    #expect(LiveTranscriptProjection().rows(for: segments).map(\.text) == Array(texts.dropFirst(2)))
 }
 
 @Test

@@ -131,8 +131,13 @@ func idleLiveVADFactory() -> LiveVADFactory {
 
 func testCheckpoint() -> AudioCheckpoint {
     AudioCheckpoint(
-        committedFrames: 16_000, sampleRate: 16_000, channelCount: 1,
-        chunkFiles: ["audio-00000.caf"], chunkFrameCounts: [16_000]
+        committedFrames: 16_000,
+        sampleRate: 16_000,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["audio-00000.caf"],
+        chunkFrameCounts: [16_000],
+        gapEvents: []
     )
 }
 
@@ -178,7 +183,7 @@ func durableWriteFailureStopsCaptureWithoutDeletingAudio() async throws {
     #expect(!state.isRecording)
     #expect(FileManager.default.fileExists(atPath: sessionURL.path))
     #expect(state.savedSessions.first(where: { $0.sessionID == sessionID })?.audioSource
-        == .processingTimeline(checkpoint))
+        == .recordedTimeline(checkpoint))
     #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
         .readSamples(frameRange: 0..<16_000) == Array(repeating: 0.25, count: 16_000))
 }

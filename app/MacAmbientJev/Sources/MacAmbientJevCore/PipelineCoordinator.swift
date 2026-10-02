@@ -1,32 +1,5 @@
 import Foundation
 
-public struct ASRCompletedEventPayload: Codable, Sendable, Equatable {
-    public let text: String
-    public let detectedLanguage: String?
-    public let engine: String
-    public let model: String
-
-    public init(
-        text: String,
-        detectedLanguage: String?,
-        engine: String,
-        model: String
-    ) {
-        self.text = text
-        self.detectedLanguage = detectedLanguage
-        self.engine = engine
-        self.model = model
-    }
-}
-
-public struct ASRFailedEventPayload: Codable, Sendable, Equatable {
-    public let message: String
-
-    public init(message: String) {
-        self.message = message
-    }
-}
-
 public struct ProcessingRunCompletedPayload: Codable, Sendable, Equatable {
     public let stage: ProcessingStage
     public let succeeded: Bool
@@ -273,16 +246,7 @@ public actor PipelineCoordinator {
             let message = error.localizedDescription
 
             for segment in segments {
-                _ = try? await writer.append(EventDraft(
-                    eventType: "asr.failed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: ASRFailedEventPayload(message: message)
-                ))
+                await appendFailure(segment: segment, kind: .engineUnavailable, error: error)
             }
 
             failedCount = segments.count
@@ -329,24 +293,34 @@ public actor PipelineCoordinator {
                     Date().timeIntervalSince(oldest)
                 )
             }
+            let input: ASRAudioInput
+            do {
+                input = try loader.load(segment: segment)
+            } catch {
+                failedCount += 1
+                await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
+                continue
+            }
+
+            let start = clock.now
+            let result: ASRResult
+            do {
+                result = try await asr.transcribe(input)
+            } catch {
+                if !input.isShorterThanMinimumASRDuration {
+                    metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                }
+                failedCount += 1
+                await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
+                continue
+            }
+            if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
+                metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
+            }
+
             var didComplete = false
             do {
-                let input = try loader.load(segment: segment)
-                let start = clock.now
-                let result: ASRResult
-                do {
-                    result = try await asr.transcribe(input)
-                } catch {
-                    if !input.isShorterThanMinimumASRDuration {
-                        metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
-                    }
-                    throw error
-                }
-                if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
-                    metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
-                    metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
-                }
-
                 let completed = try await writer.append(EventDraft(
                     eventType: "asr.completed",
                     sessionID: sessionID,
@@ -383,18 +357,6 @@ public actor PipelineCoordinator {
                 }
             } catch {
                 failedCount += 1
-                _ = try? await writer.append(EventDraft(
-                    eventType: "asr.failed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: ASRFailedEventPayload(
-                        message: error.localizedDescription
-                    )
-                ))
             }
 
             if pacingMode == .lowHeat,
@@ -453,6 +415,26 @@ public actor PipelineCoordinator {
             disposition: paused ? .paused : (succeeded ? .completed : .failed),
             metrics: metrics
         )
+    }
+
+    private func appendFailure(
+        segment: SegmentReference,
+        kind: ASRFailureKind,
+        error: any Error
+    ) async {
+        _ = try? await writer.append(EventDraft(
+            eventType: "asr.failed",
+            sessionID: sessionID,
+            processingRunID: asrRunID,
+            segmentationRunID: segmentationRunID,
+            segmentID: segment.segmentID,
+            sourceStartFrame: segment.startFrame,
+            sourceEndFrame: segment.endFrame,
+            payload: ASRFailedEventPayload(
+                kind: kind,
+                message: error.localizedDescription
+            )
+        ))
     }
 
     private func seconds(_ duration: Duration) -> Double {

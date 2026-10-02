@@ -3,6 +3,17 @@ import Foundation
 import MacAmbientJevCore
 
 actor FluidOfflineDiarizationEngine: DiarizationEngine {
+    static let version = "FluidAudio@0.15.8"
+
+    nonisolated var provenance: RunProvenance {
+        RunProvenance(
+            engine: "fluidaudio-offline-diarizer",
+            model: Repo.diarizer.rawValue,
+            version: Self.version,
+            configuration: ["config": "OfflineDiarizerConfig.default"]
+        )
+    }
+
     private let manager: OfflineDiarizerManager
     private let modelDirectory: URL
     private var prepared = false

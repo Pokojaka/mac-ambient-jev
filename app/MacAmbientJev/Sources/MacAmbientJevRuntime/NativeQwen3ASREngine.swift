@@ -6,6 +6,22 @@ enum NativeQwen3ASREngineError: Error {
 }
 
 actor NativeQwen3ASREngine: ASREngine {
+    static let engineName = "qwen3-asr-swift"
+    static let version = "speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003"
+    static let language = "ja"
+
+    nonisolated var provenance: RunProvenance {
+        RunProvenance(
+            engine: Self.engineName,
+            model: ModelStore.qwen3ASRModelID,
+            version: Self.version,
+            configuration: [
+                "language": Self.language,
+                "minimum_input_seconds": String(ASRAudioInput.minimumDurationSeconds),
+            ]
+        )
+    }
+
     private let modelStore: ModelStore
     private var model: Qwen3ASRModel?
     private var preparationTask: Task<Void, Error>?
@@ -68,7 +84,7 @@ actor NativeQwen3ASREngine: ASREngine {
         let text = model.transcribe(
             audio: input.samples,
             sampleRate: input.sampleRate,
-            language: "ja"
+            language: Self.language
         )
         state = .ready
 

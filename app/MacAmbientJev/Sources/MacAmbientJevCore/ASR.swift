@@ -36,6 +36,7 @@ public struct ASRAudioInput: Sendable, Equatable {
 }
 
 public protocol ASREngine: Sendable {
+    var provenance: RunProvenance { get }
     func prepare() async throws
     func prepare(onProgress: @escaping @Sendable (Double, String) -> Void) async throws
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult

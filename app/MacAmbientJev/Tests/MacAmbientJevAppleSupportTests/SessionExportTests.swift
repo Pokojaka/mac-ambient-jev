@@ -107,8 +107,8 @@ func reexportReplacesTheSameFolder() async throws {
     #expect(try String(contentsOf: second.appending(path: "transcript.txt"), encoding: .utf8).hasPrefix("[00:00] Speaker 1: こんにちは"))
 }
 
-@Test
-func exporterCopiesImportedOriginalByteForByte() async throws {
+@Test(arguments: [false, true])
+func exporterCopiesImportedOriginalByteForByte(withDerivedTimeline: Bool) async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
     let wav = fixture.root.appending(path: "source.wav")
@@ -126,12 +126,15 @@ func exporterCopiesImportedOriginalByteForByte() async throws {
         file.close()
     }
     let original = try Data(contentsOf: wav)
-    let session = try await fixture.writeImportedSession(originalFilename: "定例会議.wav", originalBytes: original)
+    let session = try await fixture.writeImportedSession(
+        originalFilename: "定例会議.wav", originalBytes: original, withDerivedTimeline: withDerivedTimeline
+    )
 
     let folder = try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot)
 
     #expect(folder.lastPathComponent.contains(" 定例会議 "))
     #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == original)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == ["audio.wav", "transcript.txt"])
     #expect(FileManager.default.fileExists(atPath: folder.appending(path: "transcript.txt").path))
 }
 
@@ -192,7 +195,8 @@ struct ExportFixture {
 
     func writeImportedSession(
         originalFilename: String,
-        originalBytes: Data
+        originalBytes: Data,
+        withDerivedTimeline: Bool
     ) async throws -> SavedSessionSummary {
         let id = UUID()
         let session = try writeManifest(id: id, source: .importedFile, originalFilename: originalFilename)
@@ -200,6 +204,16 @@ struct ExportFixture {
         try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
         let ext = URL(fileURLWithPath: originalFilename).pathExtension
         try originalBytes.write(to: audio.appending(path: "original.\(ext)"))
+        if withDerivedTimeline {
+            let writer = try DurableAudioWriter(
+                directory: audio.appending(path: "processing", directoryHint: .isDirectory),
+                sampleRate: fixtureSampleRate,
+                channelCount: 1,
+                chunkDurationSeconds: 0.5
+            )
+            try await writer.append(samples: Array(repeating: 0.25, count: 1_600))
+            _ = try await writer.finish()
+        }
         try await writeTranscript(sessionID: id, session: session, activeRuns: Self.completeRuns)
         return try summary(id)
     }
@@ -221,7 +235,8 @@ struct ExportFixture {
             sessionID: id,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             sourceKind: source,
-            originalFilename: originalFilename
+            originalFilename: originalFilename,
+            captureSource: .microphone
         )).write(to: session.appending(path: "session.json"), options: .atomic)
         return session
     }

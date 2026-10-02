@@ -4,6 +4,7 @@ import Testing
 @testable import MacAmbientJevRuntime
 
 private actor CountingASREngine: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var prepareCalls = 0
     private var transcribeCalls = 0
     private let failOnCall: Int?
@@ -38,6 +39,7 @@ private actor CountingASREngine: ASREngine {
 }
 
 private actor SuspendedASREngine: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var transcribeCalls = 0
     private var release: CheckedContinuation<Void, Never>?
     private var waitingForStart: CheckedContinuation<Void, Never>?

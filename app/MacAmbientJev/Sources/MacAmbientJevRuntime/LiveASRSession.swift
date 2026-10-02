@@ -189,10 +189,27 @@ public actor LiveASRSession {
 
         for segment in pendingSegments {
             guard !finalized else { break }
+            defer { finishedSegmentIDs.insert(segment.segmentID) }
+
+            let input: ASRAudioInput
             do {
-                let result = try await asr.transcribe(
-                    loader.load(segment: segment)
-                )
+                input = try loader.load(segment: segment)
+            } catch {
+                failedCount += 1
+                await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
+                continue
+            }
+
+            let result: ASRResult
+            do {
+                result = try await asr.transcribe(input)
+            } catch {
+                failedCount += 1
+                await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
+                continue
+            }
+
+            do {
                 let completed = try await writer.append(EventDraft(
                     eventType: "asr.completed",
                     sessionID: sessionID,
@@ -219,21 +236,7 @@ public actor LiveASRSession {
                 completedCount += 1
             } catch {
                 failedCount += 1
-                _ = try? await writer.append(EventDraft(
-                    eventType: "asr.failed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: ASRFailedEventPayload(
-                        message: error.localizedDescription
-                    )
-                ))
             }
-
-            finishedSegmentIDs.insert(segment.segmentID)
         }
 
         return currentProgress()
@@ -286,6 +289,26 @@ public actor LiveASRSession {
             waiters.forEach { $0.resume(throwing: error) }
             throw error
         }
+    }
+
+    private func appendFailure(
+        segment: SegmentReference,
+        kind: ASRFailureKind,
+        error: any Error
+    ) async {
+        _ = try? await writer.append(EventDraft(
+            eventType: "asr.failed",
+            sessionID: sessionID,
+            processingRunID: asrRunID,
+            segmentationRunID: segmentationRunID,
+            segmentID: segment.segmentID,
+            sourceStartFrame: segment.startFrame,
+            sourceEndFrame: segment.endFrame,
+            payload: ASRFailedEventPayload(
+                kind: kind,
+                message: error.localizedDescription
+            )
+        ))
     }
 
     private func beginWork() {

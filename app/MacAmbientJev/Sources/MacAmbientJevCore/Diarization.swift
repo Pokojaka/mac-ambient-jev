@@ -25,6 +25,7 @@ public struct SpeakerSpanMapper: Sendable, Equatable {
 
 
 public protocol DiarizationEngine: Sendable {
+    var provenance: RunProvenance { get }
     func prepare() async throws
     func diarize(
         fileURL: URL,

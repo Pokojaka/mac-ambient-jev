@@ -1,5 +1,16 @@
 import Foundation
 
+public enum AppPathsError: Error, LocalizedError, Equatable {
+    case directoryUnavailable(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .directoryUnavailable(let directory):
+            "保存先のシステムフォルダー（\(directory)）を取得できません"
+        }
+    }
+}
+
 public struct AppPaths: Sendable {
     public let applicationSupportURL: URL
     public let cacheURL: URL
@@ -17,23 +28,21 @@ public struct AppPaths: Sendable {
 
     public static func systemDefault(
         fileManager: FileManager = .default
-    ) -> AppPaths {
-        let applicationSupport = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library/Application Support", directoryHint: .isDirectory)
-
-        let cache = fileManager.urls(
-            for: .cachesDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library/Caches", directoryHint: .isDirectory)
-
-        return AppPaths(
-            applicationSupportURL: applicationSupport,
-            cacheURL: cache
+    ) throws -> AppPaths {
+        AppPaths(
+            applicationSupportURL: try userDirectory(.applicationSupportDirectory, fileManager: fileManager),
+            cacheURL: try userDirectory(.cachesDirectory, fileManager: fileManager)
         )
+    }
+
+    private static func userDirectory(
+        _ directory: FileManager.SearchPathDirectory,
+        fileManager: FileManager
+    ) throws -> URL {
+        guard let url = fileManager.urls(for: directory, in: .userDomainMask).first else {
+            throw AppPathsError.directoryUnavailable(String(describing: directory))
+        }
+        return url
     }
 
     public var root: URL {
@@ -47,10 +56,6 @@ public struct AppPaths: Sendable {
 
     public var modelsRoot: URL {
         root.appending(path: "models", directoryHint: .isDirectory)
-    }
-
-    public var configRoot: URL {
-        root.appending(path: "config", directoryHint: .isDirectory)
     }
 
     public var cachesRoot: URL {

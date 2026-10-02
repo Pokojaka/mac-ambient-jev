@@ -30,6 +30,7 @@ private enum PipelineTestError: Error {
 }
 
 private actor SuccessfulPipelineASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
@@ -41,6 +42,7 @@ private actor SuccessfulPipelineASR: ASREngine {
 }
 
 private actor FailingPipelineASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
@@ -51,6 +53,7 @@ private actor FailingPipelineASR: ASREngine {
 }
 
 private actor SequencedPipelineASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var count = 0
 
     func prepare() async throws {}
@@ -64,6 +67,7 @@ private actor SequencedPipelineASR: ASREngine {
 }
 
 private actor StalledPipelineASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var entered = false
     private var startWaiter: CheckedContinuation<Void, Never>?
     private var transcriptionWaiter: CheckedContinuation<ASRResult, Never>?
@@ -486,6 +490,7 @@ func resumePendingASRDoesNotDuplicateRegisteredOrCompletedEvents() async throws 
 
 
 private actor SuccessfulDiarizationEngine: DiarizationEngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
 
     func diarize(
@@ -564,4 +569,109 @@ func diarizationCoordinatorAppendsSpeakerSpansAndMaterializesThem() async throws
         log.components(separatedBy: #""event_type":"speaker.span""#).count - 1 == 2
     )
     #expect(log.contains(#""stage":"diarization""#))
+}
+
+private actor ScriptedPipelineASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
+    private var results: [String?]
+    private let prepareFails: Bool
+
+    init(results: [String?], prepareFails: Bool) {
+        self.results = results
+        self.prepareFails = prepareFails
+    }
+
+    func prepare() async throws {
+        if prepareFails { throw PipelineTestError.failed }
+    }
+
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        guard let text = results.removeFirst() else { throw PipelineTestError.failed }
+        return ASRResult(text: text)
+    }
+
+    func unload() async {}
+}
+
+private func asrEventPayloads(in root: URL) throws -> [String: [String: Any]] {
+    let lines = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    ).lines
+    var payloads: [String: [String: Any]] = [:]
+    for line in lines {
+        let event = try #require(try JSONSerialization.jsonObject(with: line) as? [String: Any])
+        guard let type = event["event_type"] as? String,
+              type == "asr.completed" || type == "asr.failed",
+              let segmentID = event["segment_id"] as? String else { continue }
+        payloads[segmentID] = try #require(event["payload"] as? [String: Any])
+    }
+    return payloads
+}
+
+@Test
+func asrEventsPersistRecognitionOutcomeAndFailureKind() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let processing = root.appending(path: "audio/processing")
+    let audioWriter = try DurableAudioWriter(
+        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await audioWriter.append(samples: Array(repeating: 0.25, count: 30))
+    let checkpoint = try await audioWriter.finish()
+    let coordinator = PipelineCoordinator(
+        sessionID: UUID(), segmentationRunID: "seg", asrRunID: "asr",
+        writer: try SessionWriter(sessionURL: root),
+        asr: ScriptedPipelineASR(results: ["話した内容", " \n", nil], prepareFails: false),
+        loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+            directory: processing, checkpoint: checkpoint
+        )),
+        materializer: TranscriptMaterializer(sampleRate: 10),
+        state: SessionProcessingState(captureState: .stopped)
+    )
+
+    let result = await coordinator.process(segments: [
+        SegmentReference(segmentationRunID: "seg", segmentID: "spoken", startFrame: 0, endFrame: 10),
+        SegmentReference(segmentationRunID: "seg", segmentID: "silent", startFrame: 10, endFrame: 20),
+        SegmentReference(segmentationRunID: "seg", segmentID: "failed", startFrame: 20, endFrame: 30),
+        SegmentReference(segmentationRunID: "seg", segmentID: "unreadable", startFrame: 20, endFrame: 40),
+    ])
+
+    #expect(result.completedCount == 2)
+    #expect(result.failedCount == 2)
+    #expect(result.materializedSegments.map(\.segmentID) == ["spoken", "silent"])
+    #expect(result.materializedSegments.map(\.hasRecognizedText) == [true, false])
+    let payloads = try asrEventPayloads(in: root)
+    #expect(payloads["spoken"]?["outcome"] as? String == "recognized")
+    #expect(payloads["silent"]?["outcome"] as? String == "empty")
+    #expect(payloads["failed"]?["kind"] as? String == "transcription_failed")
+    #expect(payloads["unreadable"]?["kind"] as? String == "audio_unreadable")
+}
+
+@Test
+func asrPreparationFailureIsPersistedAsEngineUnavailable() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let processing = root.appending(path: "audio/processing")
+    let audioWriter = try DurableAudioWriter(
+        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
+    )
+    try await audioWriter.append(samples: Array(repeating: 0.25, count: 10))
+    let checkpoint = try await audioWriter.finish()
+    let coordinator = PipelineCoordinator(
+        sessionID: UUID(), segmentationRunID: "seg", asrRunID: "asr",
+        writer: try SessionWriter(sessionURL: root),
+        asr: ScriptedPipelineASR(results: [], prepareFails: true),
+        loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+            directory: processing, checkpoint: checkpoint
+        )),
+        materializer: TranscriptMaterializer(sampleRate: 10),
+        state: SessionProcessingState(captureState: .stopped)
+    )
+
+    let result = await coordinator.process(segments: [
+        SegmentReference(segmentationRunID: "seg", segmentID: "s1", startFrame: 0, endFrame: 10)
+    ])
+
+    #expect(result.disposition == .failed)
+    #expect(try asrEventPayloads(in: root)["s1"]?["kind"] as? String == "engine_unavailable")
 }

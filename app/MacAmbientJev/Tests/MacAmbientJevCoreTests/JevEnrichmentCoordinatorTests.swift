@@ -234,7 +234,7 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-empty",
-            text: "聞き取れませんでした。"
+            text: " \n"
         ),
         .contentPriority(
             seq: 7,
@@ -277,7 +277,7 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
 }
 
 @Test
-func jevEnrichmentNeverClassifiesWhitespaceOrNoRecognitionPlaceholder() async throws {
+func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -293,18 +293,16 @@ func jevEnrichmentNeverClassifiesWhitespaceOrNoRecognitionPlaceholder() async th
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "blank", startFrame: 0, endFrame: 1_000),
         .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "blank", text: " \n  "),
-        .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "placeholder", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "placeholder", text: "聞き取れませんでした。"),
-        .segmentCreated(seq: 5, segmentationRunID: "seg", segmentID: "recognized-placeholder", startFrame: 2_000, endFrame: 3_000),
-        .asrCompleted(seq: 6, runID: "asr", segmentationRunID: "seg", segmentID: "recognized-placeholder", text: "『認識できませんでした。』")
+        .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "spoken", startFrame: 1_000, endFrame: 2_000),
+        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "spoken", text: "聞き取れませんでした。")
     ]
 
     let result = try await coordinator.process(
         existingEvents: events,
         activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        retryOnlySegmentIDs: ["blank", "placeholder", "recognized-placeholder"]
+        retryOnlySegmentIDs: ["blank", "spoken"]
     )
 
-    #expect(await provider.recordedPriorityCalls().isEmpty)
+    #expect(await provider.recordedPriorityCalls() == ["聞き取れませんでした。"])
     #expect(result.retryPendingSegmentIDs.isEmpty)
 }

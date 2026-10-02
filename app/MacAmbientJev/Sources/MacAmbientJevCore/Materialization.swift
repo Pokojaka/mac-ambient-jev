@@ -243,6 +243,7 @@ public struct MaterializedScopeSpan: Codable, Sendable, Equatable {
 
 public struct MaterializedTranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     public var id: String { segmentID }
+    public var hasRecognizedText: Bool { ASRRecognitionOutcome(text: text) == .recognized }
     public let segmentID: String
     public let startMilliseconds: Int64
     public let endMilliseconds: Int64
@@ -435,8 +436,7 @@ public struct LiveTranscriptProjection: Sendable {
                 && !segment.scopeSpans.isEmpty
                 && segment.scopeSpans.allSatisfy { $0.scope == .background }
 
-            guard !isBackgroundOnly,
-                  JevTranscriptEligibility.isEligible(segment.text) else { return nil }
+            guard !isBackgroundOnly, segment.hasRecognizedText else { return nil }
 
             return LiveTranscriptRow(
                 segmentID: segment.segmentID,

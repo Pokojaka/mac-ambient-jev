@@ -18,7 +18,7 @@ import Testing
         try existing.write(from: buffer)
     }
     let previous = try Data(contentsOf: destination)
-    let checkpoint = AudioCheckpoint(committedFrames: 1, sampleRate: 8_000, channelCount: 1, chunkFiles: ["missing.f32le"], chunkFrameCounts: [1])
+    let checkpoint = AudioCheckpoint(committedFrames: 1, sampleRate: 8_000, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["missing.f32le"], chunkFrameCounts: [1], gapEvents: [])
     let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     do {
         try ProcessingTimelineAudioExporter().export(reader: reader, to: destination)

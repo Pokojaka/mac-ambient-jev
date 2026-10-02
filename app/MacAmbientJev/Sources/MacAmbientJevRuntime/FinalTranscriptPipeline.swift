@@ -1,8 +1,10 @@
+import FluidAudio
 import Foundation
 import MacAmbientJevCore
 import MacAmbientJevAppleSupport
 
 public protocol FinalTranscriptVADSegmenter: Sendable {
+    var provenance: RunProvenance { get }
     func segment(
         reader: ProcessingTimelineReader,
         runID: String
@@ -10,6 +12,22 @@ public protocol FinalTranscriptVADSegmenter: Sendable {
 }
 
 struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
+    static let version = "FluidAudio@0.15.8"
+
+    var provenance: RunProvenance {
+        RunProvenance(
+            engine: "fluidaudio-silero-vad",
+            model: Repo.vad.rawValue,
+            version: Self.version,
+            configuration: [
+                "pre_roll_seconds": String(FluidVADSegmentationEngine.preRollSeconds),
+                "max_segment_seconds": String(FluidVADSegmentationEngine.maxSegmentSeconds),
+                "min_silence_seconds": String(FluidVADSegmentationEngine.minSilenceSeconds),
+                "minimum_segment_seconds": String(FluidVADSegmentationEngine.minimumSegmentSeconds),
+            ]
+        )
+    }
+
     func segment(
         reader: ProcessingTimelineReader,
         runID: String

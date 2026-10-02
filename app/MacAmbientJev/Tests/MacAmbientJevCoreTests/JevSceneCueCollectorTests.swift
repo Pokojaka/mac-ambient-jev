@@ -92,7 +92,7 @@ func jevSceneCueCollectorMapsTranscriptTimeToCanonicalFrame() async throws {
 }
 
 @Test
-func jevSceneCueCollectorSkipsBlankAndNoRecognitionSegments() async throws {
+func jevSceneCueCollectorSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -106,8 +106,7 @@ func jevSceneCueCollectorSkipsBlankAndNoRecognitionSegments() async throws {
     )
     let segments = [
         "blank": " \n",
-        "placeholder": "聞き取れませんでした。",
-        "recognized-placeholder": "『認識できませんでした。』"
+        "spoken": "聞き取れませんでした。"
     ].map { id, text in
         MaterializedTranscriptSegment(
             segmentID: id,
@@ -123,7 +122,6 @@ func jevSceneCueCollectorSkipsBlankAndNoRecognitionSegments() async throws {
 
     let result = try await collector.collect(segments: segments)
 
-    #expect(await provider.recordedTexts().isEmpty)
+    #expect(await provider.recordedTexts() == ["聞き取れませんでした。"])
     #expect(result.retryPendingSegmentIDs.isEmpty)
-    #expect(result.cues.isEmpty)
 }

@@ -20,7 +20,8 @@ func sessionBootstrapperCreatesManifestAndEventLog() throws {
         paths: paths,
         sessionID: sessionID,
         sourceKind: .importedFile,
-        originalFilename: "lecture.m4a"
+        originalFilename: "lecture.m4a",
+        captureSource: .microphone
     )
 
     #expect(

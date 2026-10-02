@@ -50,6 +50,7 @@ private actor FinalizationStateRecorder {
 }
 
 private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
+    let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     let segments: [SegmentReference]
     let log: FinalizationCallLog
 
@@ -67,6 +68,7 @@ private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
 }
 
 private struct FakeFinalDiarizer: DiarizationEngine {
+    let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     let spans: [SpeakerSpan]
     let log: FinalizationCallLog
     let shouldFail: Bool
@@ -81,6 +83,7 @@ private struct FakeFinalDiarizer: DiarizationEngine {
 }
 
 private actor FakeFinalASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private let log: FinalizationCallLog
     private let values: [String]
     private let shouldFail: Bool
@@ -114,6 +117,7 @@ private enum FakeFinalizationError: Error {
 }
 
 private actor PreparationFailingASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private(set) var prepareCallCount = 0
 
     func prepare() async throws {
@@ -142,7 +146,8 @@ private func finalizationFixture(
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .live
+        sourceKind: .live,
+        captureSource: .microphone
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -580,7 +585,9 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         to: originalURL
     )
     let sessionID = UUID()
-    _ = try SessionBootstrapper().createSession(paths: paths, sessionID: sessionID, sourceKind: .importedFile)
+    _ = try SessionBootstrapper().createSession(
+        paths: paths, sessionID: sessionID, sourceKind: .importedFile, captureSource: .microphone
+    )
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,

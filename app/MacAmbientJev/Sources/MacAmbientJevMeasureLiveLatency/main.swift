@@ -171,7 +171,7 @@ struct MeasureLiveLatencyCommand {
     @MainActor
     private static func run() async throws {
         let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
-        let paths = AppPaths.systemDefault()
+        let paths = try AppPaths.systemDefault()
         let fileManager = FileManager.default
         let qwenDirectory = ModelStore(paths: paths).qwen3ASRCacheRoot
         guard fileManager.fileExists(atPath: qwenDirectory.appending(path: "model.safetensors").path) else {

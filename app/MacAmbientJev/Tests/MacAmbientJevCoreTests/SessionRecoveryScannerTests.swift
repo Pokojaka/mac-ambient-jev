@@ -15,7 +15,8 @@ private func writeRecoveryManifest(
         sessionID: sessionID,
         createdAt: Date(timeIntervalSince1970: 1_700_000_000),
         sourceKind: sourceKind,
-        originalFilename: sourceKind == .importedFile ? "fixture.wav" : nil
+        originalFilename: sourceKind == .importedFile ? "fixture.wav" : nil,
+        captureSource: .microphone
     )
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -24,6 +25,11 @@ private func writeRecoveryManifest(
         to: sessionURL.appending(path: "session.json"),
         options: .atomic
     )
+    if sourceKind == .importedFile {
+        let audioURL = sessionURL.appending(path: "audio", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
+        try Data([0, 1, 2, 3]).write(to: audioURL.appending(path: "original.wav"))
+    }
 }
 
 @Test
@@ -69,8 +75,13 @@ func completedEmptyScopeDoesNotQueueSilentImportForReprocessing() async throws {
     let url = root.appending(path: id.uuidString)
     try writeRecoveryManifest(sessionID: id, sourceKind: .importedFile, to: url)
     try writeRecoveryCheckpoint(AudioCheckpoint(
-        committedFrames: 100, sampleRate: 100, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        committedFrames: 100,
+        sampleRate: 100,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     ), to: url)
     let scanner = SessionRecoveryScanner(sessionsRoot: root)
     #expect(try scanner.inspect(sessionID: id)?.action == .reprocess)
@@ -119,12 +130,17 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
         committedFrames: 48_000,
         sampleRate: 48_000,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [48_000],
+        gapEvents: []
     )
     try JSONEncoder().encode(checkpoint).write(
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
+    try Data().write(to: processingURL.appending(path: DurableAudioWriter.chunkIndexFilename))
+    try Data().write(to: processingURL.appending(path: DurableAudioWriter.gapEventsFilename))
     try Data(count: 48_000 * MemoryLayout<Float>.size)
         .write(to: processingURL.appending(path: "chunk-000000.f32le"))
     // Crash before finish(): the new chunk is durable despite stale JSON.
@@ -135,10 +151,14 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
         sessionsRoot: root
     ).pendingSessions()
 
-    #expect(candidates.first?.source == .processingTimeline(AudioCheckpoint(
-        committedFrames: 96_000, sampleRate: 48_000, channelCount: 1,
+    #expect(candidates.first?.source == .recordedTimeline(AudioCheckpoint(
+        committedFrames: 96_000,
+        sampleRate: 48_000,
+        channelCount: 1,
+        sampleFormat: .float32LE,
         chunkFiles: ["chunk-000000.f32le", "chunk-000001.f32le"],
-        chunkFrameCounts: [48_000, 48_000]
+        chunkFrameCounts: [48_000, 48_000],
+        gapEvents: []
     )))
 }
 
@@ -194,12 +214,22 @@ private func writeRecoveryCheckpoint(
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
-    let frameCounts = checkpoint.chunkFrameCounts
-        ?? checkpoint.chunkFiles.map { _ in Int(checkpoint.committedFrames) / checkpoint.chunkFiles.count }
-    for (filename, frames) in zip(checkpoint.chunkFiles, frameCounts) {
+    try Data().write(to: processingURL.appending(path: DurableAudioWriter.chunkIndexFilename))
+    try Data().write(to: processingURL.appending(path: DurableAudioWriter.gapEventsFilename))
+    for (filename, frames) in zip(checkpoint.chunkFiles, checkpoint.chunkFrameCounts) {
         try Data(count: frames * checkpoint.channelCount * MemoryLayout<Float>.size)
             .write(to: processingURL.appending(path: filename))
     }
+}
+
+private func importedOriginalURL(in sessionURL: URL) -> URL {
+    sessionURL.appending(path: "audio", directoryHint: .isDirectory)
+        .appending(path: "original.wav")
+}
+
+private func isImportedOriginal(_ source: SessionAudioSource?, in sessionURL: URL) -> Bool {
+    guard case .importedOriginal(let url) = source else { return false }
+    return url.resolvingSymlinksInPath() == importedOriginalURL(in: sessionURL).resolvingSymlinksInPath()
 }
 
 @Test
@@ -211,8 +241,13 @@ func inspectSessionReadsOnlyRequestedSessionAndDoesNotRepairItsTail() throws {
     let sessionURL = root.appending(path: sessionID.uuidString)
     try writeRecoveryManifest(sessionID: sessionID, sourceKind: .importedFile, to: sessionURL)
     let checkpoint = AudioCheckpoint(
-        committedFrames: 100, sampleRate: 100, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        committedFrames: 100,
+        sampleRate: 100,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
     let eventsURL = sessionURL.appending(path: "events.jsonl")
@@ -226,10 +261,7 @@ func inspectSessionReadsOnlyRequestedSessionAndDoesNotRepairItsTail() throws {
 
     let result = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
     #expect(result?.manifest.sessionID == sessionID)
-    #expect(result?.source == .processingTimeline(AudioCheckpoint(
-        committedFrames: 100, sampleRate: 100, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"], chunkFrameCounts: [100]
-    )))
+    #expect(isImportedOriginal(result?.source, in: sessionURL))
     #expect(try Data(contentsOf: eventsURL) == original)
 }
 
@@ -249,7 +281,10 @@ func recoveryScannerChoosesPendingOnlyASRResume() async throws {
         committedFrames: 200,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [200],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -313,8 +348,13 @@ func brokenSessionDoesNotBlockOtherPendingSessions() throws {
     let valid = root.appending(path: validID.uuidString, directoryHint: .isDirectory)
     try writeRecoveryManifest(sessionID: validID, sourceKind: .live, to: valid)
     try writeRecoveryCheckpoint(AudioCheckpoint(
-        committedFrames: 100, sampleRate: 100, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        committedFrames: 100,
+        sampleRate: 100,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     ), to: valid)
     let brokenID = UUID()
     let broken = root.appending(path: brokenID.uuidString, directoryHint: .isDirectory)
@@ -334,8 +374,13 @@ func crashAfterLastASRCompletionFinishesTheRunWithoutRerunningASR() async throws
         let sessionURL = root.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
         try writeRecoveryManifest(sessionID: sessionID, sourceKind: .live, to: sessionURL)
         try writeRecoveryCheckpoint(AudioCheckpoint(
-            committedFrames: 100, sampleRate: 100, channelCount: 1,
-            chunkFiles: ["chunk-000000.f32le"]
+            committedFrames: 100,
+            sampleRate: 100,
+            channelCount: 1,
+            sampleFormat: .float32LE,
+            chunkFiles: ["chunk-000000.f32le"],
+            chunkFrameCounts: [100],
+            gapEvents: []
         ), to: sessionURL)
         let writer = try SessionWriter(sessionURL: sessionURL)
         _ = try await writer.append(EventDraft(
@@ -380,8 +425,13 @@ func bulkDiscoverySkipsFolderWhoseManifestNamesAnotherSession() throws {
     let folder = root.appending(path: UUID().uuidString, directoryHint: .isDirectory)
     try writeRecoveryManifest(sessionID: UUID(), sourceKind: .live, to: folder)
     try writeRecoveryCheckpoint(AudioCheckpoint(
-        committedFrames: 100, sampleRate: 100, channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        committedFrames: 100,
+        sampleRate: 100,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     ), to: folder)
 
     #expect(try SessionRecoveryScanner(sessionsRoot: root).pendingSessions().isEmpty)
@@ -392,7 +442,7 @@ func inspectReportsPendingSessionWithoutAudioAsMissingAudio() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
-    try writeRecoveryManifest(sessionID: id, sourceKind: .importedFile, to: root.appending(path: id.uuidString))
+    try writeRecoveryManifest(sessionID: id, sourceKind: .live, to: root.appending(path: id.uuidString))
 
     #expect(throws: SessionRecoveryScannerError.missingAudio) {
         _ = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
@@ -402,8 +452,8 @@ func inspectReportsPendingSessionWithoutAudioAsMissingAudio() throws {
 @Test
 func recoveryUsesIntactOriginalWhenCheckpointIsUnusable() throws {
     let checkpoints = [
-        AudioCheckpoint(committedFrames: 100, sampleRate: 100, channelCount: 1, chunkFiles: ["missing.f32le"], chunkFrameCounts: [100]),
-        AudioCheckpoint(committedFrames: 1, sampleRate: 100, channelCount: 1, chunkFiles: ["../../../secret"], chunkFrameCounts: [1]),
+        AudioCheckpoint(committedFrames: 100, sampleRate: 100, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["missing.f32le"], chunkFrameCounts: [100], gapEvents: []),
+        AudioCheckpoint(committedFrames: 1, sampleRate: 100, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["../../../secret"], chunkFrameCounts: [1], gapEvents: []),
     ]
     for checkpoint in checkpoints {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
@@ -443,7 +493,10 @@ func recoveryScannerPromotesCompletedUnselectedASRRun() async throws {
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -523,7 +576,10 @@ func recoveryScannerRunsDiarizationWhenSelectedASRHasNoDiarizationRun() async th
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -680,7 +736,10 @@ func recoveryScannerRerunsPostASRStagesWhenScopeWasNotSelected() async throws {
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -752,7 +811,10 @@ func recoveryScannerTreatsSelectedScopeAsMandatoryLocalCompletion() async throws
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -817,7 +879,10 @@ func recoveryScannerUsesActiveGoodASREvenWhenNewerRunFailed() async throws {
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -858,6 +923,7 @@ func recoveryScannerUsesActiveGoodASREvenWhenNewerRunFailed() async throws {
         sourceStartFrame: 0,
         sourceEndFrame: 100,
         payload: ASRFailedEventPayload(
+            kind: .transcriptionFailed,
             message: "forced failure"
         )
     ))
@@ -919,7 +985,10 @@ func recoveryScannerSchedulesOnlyDeferredPrioritySegments() async throws {
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )
     try writeRecoveryCheckpoint(checkpoint, to: sessionURL)
 
@@ -1002,7 +1071,10 @@ func recoveryScannerFindsDeferredContentPriorityWithoutJevEvents() async throws 
         committedFrames: 1_600,
         sampleRate: 16_000,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [1_600],
+        gapEvents: []
     ), to: sessionURL)
     try await appendCompletedRecoveryASRRun(
         writer: SessionWriter(sessionURL: sessionURL),

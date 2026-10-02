@@ -5,6 +5,7 @@ import Testing
 @testable import MacAmbientJevRuntime
 
 private struct PausedImportVAD: FinalTranscriptVADSegmenter {
+    let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
         [SegmentReference(
             segmentationRunID: runID,
@@ -16,6 +17,7 @@ private struct PausedImportVAD: FinalTranscriptVADSegmenter {
 }
 
 private struct PausedImportDiarizer: DiarizationEngine {
+    let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
 
     func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
@@ -24,6 +26,7 @@ private struct PausedImportDiarizer: DiarizationEngine {
 }
 
 private actor PausedImportASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private(set) var calls = 0
 
     func prepare() async throws {}
@@ -49,7 +52,8 @@ func importedFinalizationPauseSkipsASRAndLeavesRunsInactive() async throws {
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .importedFile
+        sourceKind: .importedFile,
+        captureSource: .microphone
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)

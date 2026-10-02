@@ -33,7 +33,8 @@ private func writeFinalizationSession(
     let manifest = SessionManifest(
         sessionID: id,
         createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-        sourceKind: .live
+        sourceKind: .live,
+        captureSource: .microphone
     )
     let manifestEncoder = JSONEncoder()
     manifestEncoder.keyEncodingStrategy = .convertToSnakeCase
@@ -52,11 +53,16 @@ private func writeFinalizationSession(
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
-        chunkFiles: ["chunk-000000.f32le"]
+        sampleFormat: .float32LE,
+        chunkFiles: ["chunk-000000.f32le"],
+        chunkFrameCounts: [100],
+        gapEvents: []
     )).write(
         to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
         options: .atomic
     )
+    try Data().write(to: processingURL.appending(path: DurableAudioWriter.chunkIndexFilename))
+    try Data().write(to: processingURL.appending(path: DurableAudioWriter.gapEventsFilename))
     try Data(count: 100 * MemoryLayout<Float>.size)
         .write(to: processingURL.appending(path: "chunk-000000.f32le"))
     return sessionURL
@@ -125,12 +131,14 @@ func scannerQueuesInterruptedFinalizationAndDoesNotLoopFailedAttempt() throws {
     let interruptedValue = try scanner.inspect(sessionID: id)
     let interrupted = try #require(interruptedValue)
     #expect(interrupted.action == .finalize)
-    #expect(interrupted.source == .processingTimeline(AudioCheckpoint(
+    #expect(interrupted.source == .recordedTimeline(AudioCheckpoint(
         committedFrames: 100,
         sampleRate: 100,
         channelCount: 1,
+        sampleFormat: .float32LE,
         chunkFiles: ["chunk-000000.f32le"],
-        chunkFrameCounts: [100]
+        chunkFrameCounts: [100],
+        gapEvents: []
     )))
 
     try ProcessingMetadataStore(sessionURL: sessionURL).failFinalization(

@@ -196,13 +196,14 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.audioFileNotFound(audioURL.path)
         }
 
-        let paths = AppPaths.systemDefault()
+        let paths = try AppPaths.systemDefault()
         let sessionID = UUID()
         let sessionURL = try SessionBootstrapper().createSession(
             paths: paths,
             sessionID: sessionID,
             sourceKind: .importedFile,
-            originalFilename: audioURL.lastPathComponent
+            originalFilename: audioURL.lastPathComponent,
+            captureSource: .microphone
         )
         print("session_id: \(sessionID.uuidString)")
 
@@ -290,7 +291,8 @@ struct ProcessRecordingCommand {
             case .reprocess: action = "reprocess"; pending = 0
             case nil: action = "none"; pending = 0
             }
-        } catch SessionRecoveryScannerError.missingAudio {
+        } catch SessionRecoveryScannerError.missingAudio,
+                SessionAudioSourceError.importedOriginalMissing {
             action = "unrecoverable"; pending = 0
         }
         let data = try JSONSerialization.data(
@@ -319,23 +321,16 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.invalidSession("import 済みの UUID を指定してください")
         }
 
-        let processor = NativeSessionProcessor(paths: .systemDefault(), sessionsRoot: root)
+        let processor = NativeSessionProcessor(paths: try .systemDefault(), sessionsRoot: root)
         let collector = ProcessingResultCollector()
         let onUpdate: NativeSessionProcessor.UpdateHandler = { segments, state in
             await collector.update(segments: segments, state: state)
         }
         let result: SessionProcessingResult?
         switch (candidate?.action, candidate?.source) {
-        case (.finalize, .processingTimeline(let checkpoint)):
-            result = await processor.processFinalTranscript(
-                sessionID: sessionID,
-                checkpoint: checkpoint,
-                pacingMode: pacingMode,
-                shouldPause: { await monitor?.shouldPause() ?? (ProcessInfo.processInfo.thermalState == .critical) },
-                onPhase: { phase in await monitor?.setPhase(phase) },
-                onUpdate: onUpdate
-            )
-        case (.finalize, .importedOriginal(let originalURL)):
+        case (.retryContentPriority?, _):
+            throw ProcessRecordingError.invalidSession("この復旧 action は CLI の対象外です")
+        case (_?, .importedOriginal(let originalURL)?):
             result = await processor.processImportedSession(
                 sessionID: sessionID,
                 originalURL: originalURL,
@@ -344,24 +339,6 @@ struct ProcessRecordingCommand {
                 onPhase: { phase in await monitor?.setPhase(phase) },
                 onUpdate: onUpdate
             )
-        case (.resumeASR(let plan), .processingTimeline(let checkpoint)):
-            result = await processor.resumePendingASRSession(
-                sessionID: sessionID, checkpoint: checkpoint, plan: plan,
-                pacingMode: pacingMode,
-                shouldPause: { await monitor?.shouldPause() ?? (ProcessInfo.processInfo.thermalState == .critical) },
-                onPhase: { phase in await monitor?.setPhase(phase) },
-                onUpdate: onUpdate
-            )
-        case (.selectCompletedASR(let plan), .processingTimeline(let checkpoint)):
-            await processor.selectCompletedASRSession(
-                sessionID: sessionID, checkpoint: checkpoint, plan: plan, onUpdate: onUpdate
-            )
-            result = nil
-        case (.runDiarization(let plan), .processingTimeline(let checkpoint)):
-            await processor.runRecoveredDiarizationSession(
-                sessionID: sessionID, checkpoint: checkpoint, plan: plan, onUpdate: onUpdate
-            )
-            result = nil
         case (nil, nil):
             result = nil
         default:
@@ -395,7 +372,7 @@ struct ProcessRecordingCommand {
         let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
         let segments = TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
             events: events, activeRuns: runs
-        )
+        ).filter(\.hasRecognizedText)
         try FileManager.default.createDirectory(
             at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )

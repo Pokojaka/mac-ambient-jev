@@ -28,38 +28,27 @@ public struct AudioCheckpoint: Codable, Sendable, Equatable {
     public let committedFrames: Int64
     public let sampleRate: Double
     public let channelCount: Int
+    public let sampleFormat: PCMSampleFormat
     public let chunkFiles: [String]
-    public let chunkFrameCounts: [Int]?
+    public let chunkFrameCounts: [Int]
     public let gapEvents: [AudioGapEvent]
 
     public init(
         committedFrames: Int64,
         sampleRate: Double,
         channelCount: Int,
+        sampleFormat: PCMSampleFormat,
         chunkFiles: [String],
-        chunkFrameCounts: [Int]? = nil,
-        gapEvents: [AudioGapEvent] = []
+        chunkFrameCounts: [Int],
+        gapEvents: [AudioGapEvent]
     ) {
         self.committedFrames = committedFrames
         self.sampleRate = sampleRate
         self.channelCount = channelCount
+        self.sampleFormat = sampleFormat
         self.chunkFiles = chunkFiles
         self.chunkFrameCounts = chunkFrameCounts
         self.gapEvents = gapEvents
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case committedFrames, sampleRate, channelCount, chunkFiles, chunkFrameCounts, gapEvents
-    }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        committedFrames = try values.decode(Int64.self, forKey: .committedFrames)
-        sampleRate = try values.decode(Double.self, forKey: .sampleRate)
-        channelCount = try values.decode(Int.self, forKey: .channelCount)
-        chunkFiles = try values.decode([String].self, forKey: .chunkFiles)
-        chunkFrameCounts = try values.decodeIfPresent([Int].self, forKey: .chunkFrameCounts)
-        gapEvents = try values.decodeIfPresent([AudioGapEvent].self, forKey: .gapEvents) ?? []
     }
 }
 
@@ -71,8 +60,8 @@ extension AudioCheckpoint {
             }
     }
 
-    /// Rebuilds the latest committed timeline from the legacy JSON snapshot and
-    /// contiguous atomically published chunk files. Readers need not wait for finish().
+    /// Rebuilds the latest committed timeline from the JSON snapshot, the chunk
+    /// index and contiguous atomically published chunk files. Readers need not wait for finish().
     public static func loadRecovered(from directory: URL) throws -> AudioCheckpoint? {
         let checkpointURL = directory.appending(path: DurableAudioWriter.checkpointFilename)
         guard FileManager.default.fileExists(atPath: checkpointURL.path) else {
@@ -81,57 +70,52 @@ extension AudioCheckpoint {
         let snapshot = try JSONDecoder().decode(
             AudioCheckpoint.self, from: Data(contentsOf: checkpointURL)
         )
-        guard snapshot.hasPlainUniqueChunkFiles,
+        guard snapshot.sampleFormat == .float32LE,
+              snapshot.hasPlainUniqueChunkFiles,
               snapshot.channelCount > 0,
               snapshot.channelCount <= Int.max / MemoryLayout<Float>.size,
               snapshot.sampleRate.isFinite,
-              snapshot.sampleRate > 0 else {
+              snapshot.sampleRate > 0,
+              snapshot.chunkFrameCounts.count == snapshot.chunkFiles.count,
+              snapshot.chunkFrameCounts.allSatisfy({ (1...Int(Int32.max)).contains($0) }) else {
             throw DurableAudioWriterError.incompatibleCheckpoint
         }
+        var indexedFrames: Int64 = 0
+        for count in snapshot.chunkFrameCounts {
+            let (sum, overflow) = indexedFrames.addingReportingOverflow(Int64(count))
+            guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
+            indexedFrames = sum
+        }
+        guard indexedFrames == snapshot.committedFrames else {
+            throw DurableAudioWriterError.checkpointFrameCountMismatch
+        }
+
         let chunkIndex = try loadChunkIndex(from: directory)
         let bytesPerFrame = MemoryLayout<Float>.size * snapshot.channelCount
         var files = snapshot.chunkFiles
         var counts: [Int] = []
         var frames: Int64 = 0
-        let indexedCounts = snapshot.chunkFrameCounts
-        if let indexedCounts,
-           indexedCounts.count == files.count,
-           indexedCounts.allSatisfy({ (1...Int(Int32.max)).contains($0) }) {
-            var indexedFrames: Int64 = 0
-            for count in indexedCounts {
-                let (sum, overflow) = indexedFrames.addingReportingOverflow(Int64(count))
-                guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
-                indexedFrames = sum
-            }
-            guard indexedFrames == snapshot.committedFrames else {
-                throw DurableAudioWriterError.checkpointFrameCountMismatch
-            }
-        }
         for (index, filename) in files.enumerated() {
             let size = try directory.appending(path: filename)
                 .resourceValues(forKeys: [.fileSizeKey]).fileSize
             guard let size, size > 0, size % bytesPerFrame == 0 else {
                 throw DurableAudioWriterError.corruptChunk(filename)
             }
-            if let indexedCounts, indexedCounts.count == files.count {
-                let (expectedBytes, overflow) = indexedCounts[index].multipliedReportingOverflow(by: bytesPerFrame)
-                guard !overflow, expectedBytes == size else {
-                    throw DurableAudioWriterError.corruptChunk(filename)
-                }
+            let (expectedBytes, overflow) = snapshot.chunkFrameCounts[index]
+                .multipliedReportingOverflow(by: bytesPerFrame)
+            guard !overflow, expectedBytes == size else {
+                throw DurableAudioWriterError.corruptChunk(filename)
             }
             if let committed = chunkIndex[index], committed != size / bytesPerFrame {
                 throw DurableAudioWriterError.corruptChunk(filename)
             }
             let count = size / bytesPerFrame
             counts.append(count)
-            let (total, overflow) = frames.addingReportingOverflow(Int64(count))
-            guard !overflow else { throw DurableAudioWriterError.checkpointFrameCountMismatch }
-            frames = total
-        }
-        guard frames == snapshot.committedFrames else {
-            throw DurableAudioWriterError.checkpointFrameCountMismatch
+            frames += Int64(count)
         }
 
+        // A crash after publishing a chunk but before the next snapshot leaves
+        // complete trailing chunks that still belong to the timeline.
         var next = files.count
         while true {
             let filename = String(format: "chunk-%06d.f32le", next)
@@ -159,36 +143,34 @@ extension AudioCheckpoint {
         }
         return AudioCheckpoint(
             committedFrames: frames, sampleRate: snapshot.sampleRate,
-            channelCount: snapshot.channelCount, chunkFiles: files,
-            chunkFrameCounts: counts,
+            channelCount: snapshot.channelCount, sampleFormat: snapshot.sampleFormat,
+            chunkFiles: files, chunkFrameCounts: counts,
             gapEvents: try loadGapEvents(
-                from: directory, fallback: snapshot.gapEvents,
+                from: directory, snapshotEvents: snapshot.gapEvents,
                 snapshotFrames: snapshot.committedFrames, committedFrames: frames
             )
         )
     }
 
     private static func loadGapEvents(
-        from directory: URL, fallback: [AudioGapEvent],
+        from directory: URL, snapshotEvents: [AudioGapEvent],
         snapshotFrames: Int64, committedFrames: Int64
     ) throws -> [AudioGapEvent] {
         let url = directory.appending(path: DurableAudioWriter.gapEventsFilename)
-        let decoded: [AudioGapEvent]
-        if FileManager.default.fileExists(atPath: url.path) {
-            let data = try Data(contentsOf: url)
-            let recovered = try SessionRecovery.recoverJSONL(data)
-            var lines = recovered.lines
-            // Only newline-terminated records were fully appended and synchronized.
-            if data.last != 0x0A && !recovered.droppedIncompleteTail && !lines.isEmpty {
-                lines.removeLast()
-            }
-            decoded = try lines.map { try JSONDecoder().decode(AudioGapEvent.self, from: $0) }
-            guard decoded.starts(with: fallback)
-                    || committedGaps(Array(decoded.prefix(fallback.count)), through: snapshotFrames) == fallback else {
-                throw DurableAudioWriterError.incompatibleCheckpoint
-            }
-        } else {
-            decoded = fallback
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw DurableAudioWriterError.incompatibleCheckpoint
+        }
+        let data = try Data(contentsOf: url)
+        let recovered = try SessionRecovery.recoverJSONL(data)
+        var lines = recovered.lines
+        // Only newline-terminated records were fully appended and synchronized.
+        if data.last != 0x0A && !recovered.droppedIncompleteTail && !lines.isEmpty {
+            lines.removeLast()
+        }
+        let decoded = try lines.map { try JSONDecoder().decode(AudioGapEvent.self, from: $0) }
+        guard decoded.starts(with: snapshotEvents)
+                || committedGaps(Array(decoded.prefix(snapshotEvents.count)), through: snapshotFrames) == snapshotEvents else {
+            throw DurableAudioWriterError.incompatibleCheckpoint
         }
         // The gap record is synced before its silence. A crash can leave a valid
         // log entry whose corresponding audio never reached a durable chunk.
@@ -218,7 +200,9 @@ extension AudioCheckpoint {
     }
     private static func loadChunkIndex(from directory: URL) throws -> [Int: Int] {
         let url = directory.appending(path: DurableAudioWriter.chunkIndexFilename)
-        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw DurableAudioWriterError.incompatibleCheckpoint
+        }
         let data = try Data(contentsOf: url)
         let recovered = try SessionRecovery.recoverJSONL(data)
         let lines = data.last == 0x0A ? recovered.lines : Array(recovered.lines.dropLast(
@@ -327,17 +311,16 @@ public actor DurableAudioWriter {
         self.gapEvents = checkpoint?.gapEvents ?? []
         self.nextChunkIndex = checkpoint?.chunkFiles.count ?? 0
 
-        // Restore a torn gap-log tail before any new append. Legacy snapshots
-        // without a log are migrated here as well.
+        // Restore a torn gap-log tail before any new append.
         try AudioCheckpoint.repairGapLog(in: directory, events: gapEvents)
         try AudioCheckpoint.repairChunkIndex(in: directory)
 
-        // Initialization is a checkpoint boundary, including migration of
-        // legacy snapshots lacking frame counts and recovery of orphan chunks.
+        // Initialization is a checkpoint boundary, including recovery of orphan chunks.
         let initialCheckpoint = AudioCheckpoint(
             committedFrames: committedFrames,
             sampleRate: sampleRate,
             channelCount: channelCount,
+            sampleFormat: .float32LE,
             chunkFiles: chunkFiles,
             chunkFrameCounts: chunkFrameCounts,
             gapEvents: gapEvents
@@ -447,6 +430,7 @@ public actor DurableAudioWriter {
             committedFrames: committedFrames,
             sampleRate: sampleRate,
             channelCount: channelCount,
+            sampleFormat: .float32LE,
             chunkFiles: chunkFiles,
             chunkFrameCounts: chunkFrameCounts,
             gapEvents: AudioCheckpoint.committedGaps(gapEvents, through: committedFrames)

@@ -439,7 +439,7 @@ public actor NativeSessionProcessor {
             let fallback = materializer.materialize(
                 events: events,
                 activeRuns: activeRuns
-            ).filter { JevTranscriptEligibility.isEligible($0.text) }
+            ).filter(\.hasRecognizedText)
 
             if let onStatus {
                 await onStatus(
@@ -1199,9 +1199,7 @@ public actor NativeSessionProcessor {
         fallbackSegments: [MaterializedTranscriptSegment],
         onStatus: StatusHandler?
     ) async -> JevEnrichmentOutcome {
-        let visibleSegments = fallbackSegments.filter {
-            JevTranscriptEligibility.isEligible($0.text)
-        }
+        let visibleSegments = fallbackSegments.filter(\.hasRecognizedText)
         guard allowExternalJev else {
             return JevEnrichmentOutcome(
                 materializedSegments: visibleSegments,
@@ -1479,12 +1477,12 @@ public actor NativeSessionProcessor {
     private func makeProcessingMetadata(activeRuns: ActiveRuns?) -> ProcessingMetadata {
         ProcessingMetadata(
             timelineVersion: 1,
-            vadVersion: "fluidaudio-0.15.8",
+            vadVersion: FluidFinalTranscriptVADSegmenter.version,
             vadConfigHash: "default-v1",
-            asrEngine: "qwen3-asr-swift",
+            asrEngine: NativeQwen3ASREngine.engineName,
             asrModel: ModelStore.qwen3ASRModelID,
-            asrVersion: "speech-swift-c4c2fab",
-            diarizationVersion: "fluidaudio-0.15.8",
+            asrVersion: NativeQwen3ASREngine.version,
+            diarizationVersion: FluidOfflineDiarizationEngine.version,
             sceneAnalyzerVersion: 1,
             jevSchemaVersion: 1,
             policyVersion: 1,

@@ -1,10 +1,5 @@
 import Foundation
 
-public enum SavedSessionAudioSource: Sendable, Equatable {
-    case processingTimeline(AudioCheckpoint)
-    case importedOriginal(URL)
-}
-
 public enum SavedSessionSelectionPolicy {
     public static func canSelect(isRecording: Bool) -> Bool {
         !isRecording
@@ -53,7 +48,7 @@ public struct SavedSessionSummary: Sendable, Equatable, Identifiable {
     public let captureSource: CaptureSource?
     public let originalFilename: String?
     public let durationSeconds: Double?
-    public let audioSource: SavedSessionAudioSource?
+    public let audioSource: SessionAudioSource?
     public let hasActiveTranscript: Bool
     public let processingStatus: SavedSessionProcessingStatus
     public let errorMessage: String?
@@ -71,7 +66,7 @@ public struct SavedSessionSummary: Sendable, Equatable, Identifiable {
         captureSource: CaptureSource? = .microphone,
         originalFilename: String? = nil,
         durationSeconds: Double? = nil,
-        audioSource: SavedSessionAudioSource?,
+        audioSource: SessionAudioSource?,
         hasActiveTranscript: Bool,
         processingStatus: SavedSessionProcessingStatus,
         errorMessage: String? = nil
@@ -134,24 +129,24 @@ public struct SavedSessionCatalog {
         folderID: UUID
     ) -> SavedSessionSummary {
         do {
-            let manifestURL = sessionURL.appending(path: "session.json")
-            let manifest = try decodeManifest(at: manifestURL)
+            let layout = SessionLayout(sessionURL: sessionURL)
+            let manifest = try decodeManifest(at: layout.manifestURL)
             guard manifest.sessionID == folderID else {
                 throw SavedSessionCatalogError.sessionIDMismatch
             }
 
             let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-            let source = try audioSource(for: manifest, sessionURL: sessionURL)
+            let source = try layout.audioSource(for: manifest)
             let checkpoint: AudioCheckpoint?
-            if case .processingTimeline(let value) = source {
+            switch source {
+            case .recordedTimeline(let value):
                 checkpoint = value
-            } else {
-                checkpoint = try? loadCheckpoint(sessionURL: sessionURL)
+            case .importedOriginal:
+                checkpoint = try? AudioCheckpoint.loadRecovered(from: layout.processingDirectory)
+            case nil:
+                checkpoint = nil
             }
-            let duration = checkpoint.flatMap { checkpoint -> Double? in
-                guard checkpoint.sampleRate > 0 else { return nil }
-                return Double(checkpoint.committedFrames) / checkpoint.sampleRate
-            }
+            let duration = checkpoint.map { Double($0.committedFrames) / $0.sampleRate }
 
             return SavedSessionSummary(
                 sessionID: manifest.sessionID,
@@ -205,72 +200,15 @@ public struct SavedSessionCatalog {
                 : .complete
         }
     }
-
-    private func audioSource(
-        for manifest: SessionManifest,
-        sessionURL: URL
-    ) throws -> SavedSessionAudioSource? {
-        do {
-            if let checkpoint = try loadCheckpoint(sessionURL: sessionURL),
-               !checkpoint.chunkFiles.isEmpty,
-               checkpoint.committedFrames > 0 {
-                return .processingTimeline(checkpoint)
-            }
-        } catch {
-            if manifest.sourceKind == .importedFile,
-               let original = try findOriginalAudio(sessionURL: sessionURL) {
-                return .importedOriginal(original)
-            }
-            throw error
-        }
-
-        guard manifest.sourceKind == .importedFile,
-              let original = try findOriginalAudio(sessionURL: sessionURL) else {
-            return nil
-        }
-        return .importedOriginal(original)
-    }
-
-    private func loadCheckpoint(sessionURL: URL) throws -> AudioCheckpoint? {
-        let processingURL = sessionURL
-            .appending(path: "audio", directoryHint: .isDirectory)
-            .appending(path: "processing", directoryHint: .isDirectory)
-        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingURL) else {
-            return nil
-        }
-        guard (1_000...768_000).contains(checkpoint.sampleRate),
-              (try? ProcessingTimelineReader(directory: processingURL, checkpoint: checkpoint)
-                .validateChunkFiles()) != nil else {
-            throw SavedSessionCatalogError.invalidAudioCheckpoint
-        }
-        return checkpoint
-    }
-
-    private func findOriginalAudio(sessionURL: URL) throws -> URL? {
-        let audioURL = sessionURL.appending(path: "audio", directoryHint: .isDirectory)
-        guard fileManager.fileExists(atPath: audioURL.path) else { return nil }
-        return try fileManager.contentsOfDirectory(
-            at: audioURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )
-        .first { url in
-            (url.lastPathComponent == "original" || url.lastPathComponent.hasPrefix("original."))
-                && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-        }
-    }
 }
 
 private enum SavedSessionCatalogError: Error, LocalizedError {
     case sessionIDMismatch
-    case invalidAudioCheckpoint
 
     var errorDescription: String? {
         switch self {
         case .sessionIDMismatch:
             "保存セッションの ID がフォルダー名と一致しません"
-        case .invalidAudioCheckpoint:
-            "保存済み音声のチェックポイントが破損しています"
         }
     }
 }

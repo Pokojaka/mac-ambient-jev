@@ -187,7 +187,7 @@ func durableWriterPersistsCheckpointBesideChunks() async throws {
 }
 
 @Test
-func durableGapDiagnosticsSurviveRecoveryAndLegacyCheckpointDecode() async throws {
+func durableGapDiagnosticsSurviveRecovery() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let writer = try DurableAudioWriter(
@@ -213,11 +213,16 @@ func durableGapDiagnosticsSurviveRecoveryAndLegacyCheckpointDecode() async throw
     let final = try await reopened.finish()
     #expect(try AudioCheckpoint.loadRecovered(from: root) == final)
     #expect(final.gapEvents == expected)
+}
 
-    let legacyJSON = Data(
+@Test
+func checkpointWithoutFormatFrameCountsOrGapsFailsToDecode() {
+    let incomplete = Data(
         #"{"committedFrames":0,"sampleRate":10,"channelCount":1,"chunkFiles":[]}"#.utf8
     )
-    #expect(try JSONDecoder().decode(AudioCheckpoint.self, from: legacyJSON).gapEvents == [])
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(AudioCheckpoint.self, from: incomplete)
+    }
 }
 
 @Test
@@ -346,69 +351,4 @@ func timelineReaderUsesExactIndexForVariableLengthChunks() async throws {
         try reader.readSamples(frameRange: 4..<17)
             == (4..<17).map(Float.init)
     )
-}
-
-@Test
-func durableWriterMigratesLegacyCheckpointToChunkFrameIndex() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(
-        at: root,
-        withIntermediateDirectories: true
-    )
-
-    func writeChunk(_ values: [Float], name: String) throws {
-        let data = values.withUnsafeBytes { Data($0) }
-        try data.write(
-            to: root.appending(path: name),
-            options: .atomic
-        )
-    }
-
-    try writeChunk(
-        Array(repeating: Float(1), count: 5),
-        name: "chunk-000000.f32le"
-    )
-    try writeChunk(
-        Array(repeating: Float(2), count: 5),
-        name: "chunk-000001.f32le"
-    )
-
-    let legacy = AudioCheckpoint(
-        committedFrames: 10,
-        sampleRate: 10,
-        channelCount: 1,
-        chunkFiles: [
-            "chunk-000000.f32le",
-            "chunk-000001.f32le"
-        ]
-    )
-    try JSONEncoder().encode(legacy).write(
-        to: root.appending(
-            path: DurableAudioWriter.checkpointFilename
-        ),
-        options: .atomic
-    )
-
-    let resumed = try DurableAudioWriter(
-        directory: root,
-        sampleRate: 10,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
-    let checkpoint = await resumed.committedSnapshot()
-
-    #expect(checkpoint.committedFrames == 10)
-    #expect(checkpoint.chunkFrameCounts == [5, 5])
-
-    let persisted = try JSONDecoder().decode(
-        AudioCheckpoint.self,
-        from: Data(
-            contentsOf: root.appending(
-                path: DurableAudioWriter.checkpointFilename
-            )
-        )
-    )
-    #expect(persisted.chunkFrameCounts == [5, 5])
 }

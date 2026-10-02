@@ -7,7 +7,14 @@ struct MacAmbientJevApp: App {
 
     init() {
         MicInputVolumePreference.register(in: .standard)
+        let paths: AppPaths
+        do {
+            paths = try AppPaths.systemDefault()
+        } catch {
+            preconditionFailure("保存先を決められないため起動できません: \(error.localizedDescription)")
+        }
         _appState = StateObject(wrappedValue: AppState(
+            paths: paths,
             userDefaults: .standard,
             makeLiveVADSession: AppState.makeFluidLiveVADSession
         ))

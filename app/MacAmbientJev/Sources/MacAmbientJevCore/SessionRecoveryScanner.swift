@@ -1,10 +1,5 @@
 import Foundation
 
-public enum RecoverableAudioSource: Sendable, Equatable {
-    case processingTimeline(AudioCheckpoint)
-    case importedOriginal(URL)
-}
-
 public enum RecoverableProcessingAction: Sendable, Equatable {
     case finalize
     case reprocess
@@ -17,13 +12,13 @@ public enum RecoverableProcessingAction: Sendable, Equatable {
 public struct RecoverableSession: Sendable, Equatable {
     public let manifest: SessionManifest
     public let sessionURL: URL
-    public let source: RecoverableAudioSource
+    public let source: SessionAudioSource
     public let action: RecoverableProcessingAction
 
     public init(
         manifest: SessionManifest,
         sessionURL: URL,
-        source: RecoverableAudioSource,
+        source: SessionAudioSource,
         action: RecoverableProcessingAction
     ) {
         self.manifest = manifest
@@ -76,12 +71,12 @@ public struct SessionRecoveryScanner: Sendable {
         )
         guard values.isDirectory == true else { return nil }
 
-        let manifestURL = sessionURL.appending(path: "session.json")
-        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+        let layout = SessionLayout(sessionURL: sessionURL)
+        guard FileManager.default.fileExists(atPath: layout.manifestURL.path) else {
             return nil
         }
 
-        let manifest = try decodeManifest(at: manifestURL)
+        let manifest = try decodeManifest(at: layout.manifestURL)
         guard UUID(uuidString: sessionURL.lastPathComponent) == manifest.sessionID else {
             throw SessionRecoveryScannerError.sessionIDMismatch
         }
@@ -192,15 +187,7 @@ public struct SessionRecoveryScanner: Sendable {
 
         guard let action else { return nil }
 
-        let checkpoint = Result { try loadCheckpoint(sessionURL: sessionURL) }
-        let source: RecoverableAudioSource
-        if case .success(let checkpoint?) = checkpoint {
-            source = .processingTimeline(checkpoint)
-        } else if manifest.sourceKind == .importedFile,
-                  let original = try findOriginalAudio(sessionURL: sessionURL) {
-            source = .importedOriginal(original)
-        } else {
-            _ = try checkpoint.get()
+        guard let source = try layout.audioSource(for: manifest) else {
             throw SessionRecoveryScannerError.missingAudio
         }
 
@@ -222,7 +209,7 @@ public struct SessionRecoveryScanner: Sendable {
     }
 
     private func recoverEventLog(sessionURL: URL, repair: Bool) throws -> [Data] {
-        let eventsURL = sessionURL.appending(path: "events.jsonl")
+        let eventsURL = SessionLayout(sessionURL: sessionURL).eventsURL
         guard FileManager.default.fileExists(atPath: eventsURL.path) else {
             return []
         }
@@ -237,48 +224,5 @@ public struct SessionRecoveryScanner: Sendable {
             )
         }
         return recovered.lines
-    }
-
-    private func loadCheckpoint(
-        sessionURL: URL
-    ) throws -> AudioCheckpoint? {
-        let directory = sessionURL
-            .appending(path: "audio", directoryHint: .isDirectory)
-            .appending(path: "processing", directoryHint: .isDirectory)
-        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: directory) else {
-            return nil
-        }
-        try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
-            .validateChunkFiles()
-        return checkpoint
-    }
-
-    private func findOriginalAudio(
-        sessionURL: URL
-    ) throws -> URL? {
-        let audioURL = sessionURL.appending(
-            path: "audio",
-            directoryHint: .isDirectory
-        )
-        guard FileManager.default.fileExists(atPath: audioURL.path) else {
-            return nil
-        }
-
-        return try FileManager.default.contentsOfDirectory(
-            at: audioURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )
-        .first { url in
-            guard url.lastPathComponent == "original"
-                    || url.lastPathComponent.hasPrefix("original.")
-            else {
-                return false
-            }
-
-            return (try? url.resourceValues(
-                forKeys: [.isRegularFileKey]
-            ).isRegularFile) == true
-        }
     }
 }

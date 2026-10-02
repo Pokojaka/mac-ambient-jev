@@ -28,7 +28,7 @@ struct CaptureSystemAudioOptions {
 
     static func parse(
         _ arguments: [String],
-        appPaths: AppPaths = .systemDefault()
+        appPaths: AppPaths
     ) throws -> CaptureSystemAudioOptions {
         var duration: Double?
         var root: URL?
@@ -165,7 +165,9 @@ struct CaptureSystemAudioCommand {
     @MainActor
     static func main() async {
         do {
-            let options = try CaptureSystemAudioOptions.parse(Array(CommandLine.arguments.dropFirst()))
+            let options = try CaptureSystemAudioOptions.parse(
+                Array(CommandLine.arguments.dropFirst()), appPaths: try AppPaths.systemDefault()
+            )
             let summary = try await run(options)
             if !emit(summary) || !summary.errors.isEmpty { exit(1) }
         } catch {
@@ -177,7 +179,7 @@ struct CaptureSystemAudioCommand {
 
     @MainActor
     private static func run(_ options: CaptureSystemAudioOptions) async throws -> CaptureSummary {
-        let defaults = AppPaths.systemDefault()
+        let defaults = try AppPaths.systemDefault()
         let paths = AppPaths(
             applicationSupportURL: defaults.applicationSupportURL,
             cacheURL: defaults.cacheURL,

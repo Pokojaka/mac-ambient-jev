@@ -27,7 +27,13 @@ import Testing
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let checkpoint = AudioCheckpoint(
-        committedFrames: 0, sampleRate: 10, channelCount: Int.max, chunkFiles: []
+        committedFrames: 0,
+        sampleRate: 10,
+        channelCount: Int.max,
+        sampleFormat: .float32LE,
+        chunkFiles: [],
+        chunkFrameCounts: [],
+        gapEvents: []
     )
     try JSONEncoder().encode(checkpoint).write(
         to: root.appending(path: DurableAudioWriter.checkpointFilename)
@@ -46,14 +52,19 @@ import Testing
     try Data(repeating: 0, count: MemoryLayout<Float>.size)
         .write(to: root.appending(path: filename))
     let checkpoint = AudioCheckpoint(
-        committedFrames: 1, sampleRate: 10, channelCount: 1,
-        chunkFiles: [filename], chunkFrameCounts: [Int.max]
+        committedFrames: 1,
+        sampleRate: 10,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: [filename],
+        chunkFrameCounts: [Int.max],
+        gapEvents: []
     )
     try JSONEncoder().encode(checkpoint).write(
         to: root.appending(path: DurableAudioWriter.checkpointFilename)
     )
 
-    #expect(throws: DurableAudioWriterError.corruptChunk(filename)) {
+    #expect(throws: DurableAudioWriterError.incompatibleCheckpoint) {
         _ = try AudioCheckpoint.loadRecovered(from: root)
     }
 }
@@ -171,8 +182,13 @@ import Testing
     let filename = "chunk-000000.f32le"
     try [Float(9)].withUnsafeBytes { Data($0) }.write(to: root.appending(path: filename))
     let checkpoint = AudioCheckpoint(
-        committedFrames: 2, sampleRate: 1, channelCount: 1,
-        chunkFiles: [filename, filename], chunkFrameCounts: [1, 1]
+        committedFrames: 2,
+        sampleRate: 1,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: [filename, filename],
+        chunkFrameCounts: [1, 1],
+        gapEvents: []
     )
     let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
@@ -185,7 +201,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try Data(count: 8).write(to: root.appending(path: "chunk-000000.f32le"))
-    let checkpoint = AudioCheckpoint(committedFrames: 2, sampleRate: 10, channelCount: 0, chunkFiles: ["chunk-000000.f32le"])
+    let checkpoint = AudioCheckpoint(committedFrames: 2, sampleRate: 10, channelCount: 0, sampleFormat: .float32LE, chunkFiles: ["chunk-000000.f32le"], chunkFrameCounts: [2], gapEvents: [])
     #expect(throws: ProcessingTimelineReaderError.invalidFormat) {
         _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint).readSamples(frameRange: 0..<1)
     }
@@ -198,8 +214,13 @@ import Testing
     try FileManager.default.createDirectory(at: processing, withIntermediateDirectories: true)
     try [Float(7)].withUnsafeBytes { Data($0) }.write(to: root.appending(path: "secret"))
     let checkpoint = AudioCheckpoint(
-        committedFrames: 1, sampleRate: 10, channelCount: 1,
-        chunkFiles: ["../../secret"], chunkFrameCounts: [1]
+        committedFrames: 1,
+        sampleRate: 10,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: ["../../secret"],
+        chunkFrameCounts: [1],
+        gapEvents: []
     )
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
         _ = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint).readSamples(frameRange: 0..<1)
@@ -783,9 +804,15 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     }
 
     func committedSnapshot() -> AudioCheckpoint {
-        AudioCheckpoint(committedFrames: Int64(samples.count),
-                        sampleRate: 10, channelCount: channelCount,
-                        chunkFiles: [], gapEvents: gaps)
+        AudioCheckpoint(
+                        committedFrames: Int64(samples.count),
+                        sampleRate: 10,
+                        channelCount: channelCount,
+                        sampleFormat: .float32LE,
+                        chunkFiles: [],
+                        chunkFrameCounts: [],
+                        gapEvents: gaps
+                    )
     }
 
     func checkpoint() -> AudioCheckpoint { committedSnapshot() }
