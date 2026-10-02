@@ -146,8 +146,7 @@ private func finalizationFixture(
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .live,
-        captureSource: .microphone
+        source: .recording(.microphone)
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -586,7 +585,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     )
     let sessionID = UUID()
     _ = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: sessionID, sourceKind: .importedFile, captureSource: .microphone
+        paths: paths, sessionID: sessionID, source: .imported(originalFilename: "fixture.wav")
     )
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(

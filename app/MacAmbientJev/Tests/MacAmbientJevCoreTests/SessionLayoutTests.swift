@@ -2,13 +2,12 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-private func makeSession(sourceKind: SessionSourceKind) throws -> (SessionLayout, SessionManifest) {
+private func makeSession(source: SessionSource) throws -> (SessionLayout, SessionManifest) {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let manifest = SessionManifest(
         sessionID: UUID(),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-        sourceKind: sourceKind,
-        captureSource: .microphone
+        source: source
     )
     let layout = SessionLayout(sessionsRoot: root, sessionID: manifest.sessionID)
     try FileManager.default.createDirectory(at: layout.audioDirectory, withIntermediateDirectories: true)
@@ -17,7 +16,7 @@ private func makeSession(sourceKind: SessionSourceKind) throws -> (SessionLayout
 
 @Test
 func importedSessionAudioIsTheOriginalEvenWhenATimelineExists() async throws {
-    let (layout, manifest) = try makeSession(sourceKind: .importedFile)
+    let (layout, manifest) = try makeSession(source: .imported(originalFilename: "lecture.m4a"))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
     let original = layout.audioDirectory.appending(path: "original.m4a")
     try Data([1, 2, 3]).write(to: original)
@@ -36,7 +35,7 @@ func importedSessionAudioIsTheOriginalEvenWhenATimelineExists() async throws {
 
 @Test
 func importedSessionWithoutOriginalIsAnError() throws {
-    let (layout, manifest) = try makeSession(sourceKind: .importedFile)
+    let (layout, manifest) = try makeSession(source: .imported(originalFilename: "lecture.m4a"))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
 
     #expect(throws: SessionAudioSourceError.importedOriginalMissing) {
@@ -46,7 +45,7 @@ func importedSessionWithoutOriginalIsAnError() throws {
 
 @Test
 func importedSessionWithSeveralOriginalsIsAnError() throws {
-    let (layout, manifest) = try makeSession(sourceKind: .importedFile)
+    let (layout, manifest) = try makeSession(source: .imported(originalFilename: "lecture.m4a"))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
     try Data([1]).write(to: layout.audioDirectory.appending(path: "original.wav"))
     try Data([2]).write(to: layout.audioDirectory.appending(path: "original.m4a"))
@@ -58,7 +57,7 @@ func importedSessionWithSeveralOriginalsIsAnError() throws {
 
 @Test
 func recordingWithoutCapturedAudioHasNoSource() async throws {
-    let (layout, manifest) = try makeSession(sourceKind: .live)
+    let (layout, manifest) = try makeSession(source: .recording(.microphone))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
     #expect(try layout.audioSource(for: manifest) == nil)
 
@@ -70,7 +69,7 @@ func recordingWithoutCapturedAudioHasNoSource() async throws {
 
 @Test
 func recordingResolvesToItsTimelineAndRejectsACorruptOne() async throws {
-    let (layout, manifest) = try makeSession(sourceKind: .live)
+    let (layout, manifest) = try makeSession(source: .recording(.microphone))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
     let writer = try DurableAudioWriter(
         directory: layout.processingDirectory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1

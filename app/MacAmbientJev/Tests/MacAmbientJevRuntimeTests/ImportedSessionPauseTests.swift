@@ -52,8 +52,7 @@ func importedFinalizationPauseSkipsASRAndLeavesRunsInactive() async throws {
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .importedFile,
-        captureSource: .microphone
+        source: .imported(originalFilename: "fixture.wav")
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)

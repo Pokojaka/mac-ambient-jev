@@ -12,6 +12,63 @@ private enum EvaluateSessionError: LocalizedError {
     }
 }
 
+/// The `segments.json` fields the evaluation reads. Speaker spans are not evaluated.
+private struct SegmentsFileEntry: Decodable {
+    let segmentID: String
+    let startMilliseconds: Int64
+    let endMilliseconds: Int64
+    let text: String
+    let scene: SceneState
+    let scopeSpans: [ScopeSpanEntry]
+    let contentPriority: ContentPriority?
+
+    struct ScopeSpanEntry: Decodable {
+        let startMilliseconds: Int64
+        let endMilliseconds: Int64
+        let scope: AcousticScope
+        let confidence: Double
+
+        enum CodingKeys: String, CodingKey {
+            case startMilliseconds = "start_ms"
+            case endMilliseconds = "end_ms"
+            case scope
+            case confidence
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case segmentID = "segment_id"
+        case startMilliseconds = "start_ms"
+        case endMilliseconds = "end_ms"
+        case text
+        case scene
+        case scopeSpans = "scope_spans"
+        case contentPriority = "content_priority"
+    }
+
+    /// `segments.json` is the finalized CLI output, which always runs diarization.
+    var segment: MaterializedTranscriptSegment {
+        MaterializedTranscriptSegment(
+            segmentID: segmentID,
+            startMilliseconds: startMilliseconds,
+            endMilliseconds: endMilliseconds,
+            text: text,
+            scene: scene,
+            speakers: [],
+            scopeSpans: scopeSpans.map {
+                MaterializedScopeSpan(
+                    startMilliseconds: $0.startMilliseconds,
+                    endMilliseconds: $0.endMilliseconds,
+                    scope: $0.scope,
+                    confidence: $0.confidence
+                )
+            },
+            contentPriority: contentPriority,
+            isDiarized: true
+        )
+    }
+}
+
 @main
 struct EvaluateSessionCommand {
     static func main() throws {
@@ -42,9 +99,9 @@ struct EvaluateSessionCommand {
             from: Data(contentsOf: manifestURL)
         )
         let segments = try decoder.decode(
-            [MaterializedTranscriptSegment].self,
+            [SegmentsFileEntry].self,
             from: Data(contentsOf: segmentsURL)
-        )
+        ).map(\.segment)
 
         let referenceText = try manifest.reference?.resolvedText(
             relativeTo: manifestURL

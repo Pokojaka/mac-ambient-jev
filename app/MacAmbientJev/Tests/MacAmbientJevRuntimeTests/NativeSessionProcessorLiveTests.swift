@@ -59,8 +59,7 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .live,
-        captureSource: .microphone
+        source: .recording(.microphone)
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -187,7 +186,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     )
     let sessionID = UUID()
     let sessionURL = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: sessionID, sourceKind: .live, captureSource: .microphone
+        paths: paths, sessionID: sessionID, source: .recording(.microphone)
     )
     let audioWriter = try DurableAudioWriter(
         directory: sessionURL

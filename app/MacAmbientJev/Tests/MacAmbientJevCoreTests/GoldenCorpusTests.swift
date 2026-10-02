@@ -26,7 +26,8 @@ func goldenCorpusKeepsRequiredTechnicalContent() throws {
             scene: .lecture,
             speakers: [],
             scopeSpans: [],
-            contentPriority: .primary
+            contentPriority: .primary,
+            isDiarized: false
         )
     ]
 
@@ -74,7 +75,8 @@ func goldenCorpusCountsFalseExclusionsConservatively() throws {
                     confidence: 0.95
                 )
             ],
-            contentPriority: .lowPriority
+            contentPriority: .lowPriority,
+            isDiarized: false
         )
     ]
 
@@ -269,6 +271,7 @@ private func goldenTestSegment() -> MaterializedTranscriptSegment {
         scene: .lecture,
         speakers: [],
         scopeSpans: [],
-        contentPriority: .primary
+        contentPriority: .primary,
+        isDiarized: false
     )
 }

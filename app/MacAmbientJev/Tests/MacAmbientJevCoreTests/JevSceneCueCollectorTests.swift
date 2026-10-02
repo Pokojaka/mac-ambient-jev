@@ -79,7 +79,8 @@ func jevSceneCueCollectorMapsTranscriptTimeToCanonicalFrame() async throws {
             scene: .lecture,
             speakers: [],
             scopeSpans: [],
-            contentPriority: nil
+            contentPriority: nil,
+            isDiarized: false
         )
     ]
 
@@ -116,7 +117,8 @@ func jevSceneCueCollectorSkipsEmptyTextButClassifiesEverythingSpoken() async thr
             scene: .lecture,
             speakers: [],
             scopeSpans: [],
-            contentPriority: nil
+            contentPriority: nil,
+            isDiarized: false
         )
     }
 

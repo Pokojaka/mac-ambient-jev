@@ -27,11 +27,13 @@ public enum SpeakerDisplayMapper {
         })
     }
 
-    public static func label(for rawID: String?, labels: [String: String]) -> String {
-        guard let rawID else { return unknown }
-        return labels[rawID] ?? unknown
+    public static func label(for rawID: String, labels: [String: String]) -> String {
+        labels[rawID] ?? unknown
     }
 
+    /// Heading for one diarized segment: the speaker covering at least 80% of the
+    /// overlapped time, otherwise every overlapping speaker in order of appearance,
+    /// and `UNKNOWN` when no speaker span overlaps the segment.
     public static func turnLabels(
         for segment: MaterializedTranscriptSegment,
         labels: [String: String]

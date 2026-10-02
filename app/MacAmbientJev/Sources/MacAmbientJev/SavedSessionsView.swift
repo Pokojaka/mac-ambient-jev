@@ -57,66 +57,64 @@ struct SavedSessionsView: View {
         )
     }
 
-    private func sessionRow(_ session: SavedSessionSummary) -> some View {
+    private func sessionRow(_ summary: SavedSessionSummary) -> some View {
         HStack(alignment: .top, spacing: AppSpacing.sm) {
             VStack(alignment: .leading, spacing: AppSpacing.xs) {
-                Text(session.createdAt.map(Self.dateText) ?? "日時を読み取れません")
-                    .font(.headline)
-                Text(session.originalFilename ?? sourceName(session.sourceKind, captureSource: session.captureSource))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(statusText(session))
-                    .font(.caption)
-                    .foregroundStyle(session.errorMessage == nil ? Color.secondary : Color.red)
-                    .lineLimit(2)
+                switch summary {
+                case .readable(let session):
+                    Text(Self.dateText(session.createdAt))
+                        .font(.headline)
+                    Text(sourceLabel(session.source))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(statusText(session))
+                        .font(.caption)
+                        .foregroundStyle(hasProblem(session) ? Color.red : Color.secondary)
+                        .lineLimit(2)
+                case .unreadable(_, let reason):
+                    Text("日時を読み取れません")
+                        .font(.headline)
+                    Text("読み込みエラー: \(reason)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 4)
             Button {
-                onReprocess(session.sessionID)
+                onReprocess(summary.sessionID)
             } label: {
-                if queuedSessionIDs.contains(session.sessionID) {
+                if queuedSessionIDs.contains(summary.sessionID) {
                     ProgressView().controlSize(.small)
                 } else {
                     Text("再処理")
                 }
             }
             .controlSize(.small)
-            .disabled(isUnavailableForReprocess || !session.canReprocess || queuedSessionIDs.contains(session.sessionID))
-            .help(reprocessHelp(session))
+            .disabled(isUnavailableForReprocess || !summary.canReprocess || queuedSessionIDs.contains(summary.sessionID))
+            .help(reprocessHelp(summary))
         }
         .padding(.vertical, AppSpacing.xs)
         .contentShape(Rectangle())
         .onTapGesture {
             guard !isSelectionUnavailable else { return }
-            onSelect(session.sessionID)
+            onSelect(summary.sessionID)
         }
     }
 
-    private func detail(for session: SavedSessionSummary) -> some View {
+    @ViewBuilder
+    private func detail(for summary: SavedSessionSummary) -> some View {
         VStack(alignment: .leading, spacing: AppSpacing.md) {
-            Text(session.createdAt.map(Self.dateText) ?? "日時を読み取れません")
-                .font(.title2.weight(.semibold))
-            LabeledContent("種類", value: sourceName(session.sourceKind, captureSource: session.captureSource))
-            LabeledContent("処理状態", value: statusText(session))
-            if let duration = session.durationSeconds {
-                LabeledContent("長さ", value: SavedSessionDisplayText.duration(duration))
-            }
-            if session.hasActiveTranscript {
-                Label("保存済みの文字起こしを表示中", systemImage: "text.alignleft")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("この録音には表示できる確定文字起こしがありません。")
-                    .foregroundStyle(.secondary)
-            }
-            exportControls(for: session)
-            if let error = session.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+            switch summary {
+            case .readable(let session):
+                readableDetail(session)
+            case .unreadable(_, let reason):
+                Text("日時を読み取れません")
+                    .font(.title2.weight(.semibold))
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if !session.audioAvailable {
-                Label("保存済み音声が見つからないため、再処理できません。", systemImage: "waveform.slash")
-                    .foregroundStyle(.orange)
             }
             Spacer()
         }
@@ -125,7 +123,49 @@ struct SavedSessionsView: View {
     }
 
     @ViewBuilder
-    private func exportControls(for session: SavedSessionSummary) -> some View {
+    private func readableDetail(_ session: SavedSession) -> some View {
+        Text(Self.dateText(session.createdAt))
+            .font(.title2.weight(.semibold))
+        LabeledContent("種類", value: sourceName(session.source))
+        if case .imported(let originalFilename) = session.source {
+            LabeledContent("元のファイル", value: originalFilename)
+        }
+        LabeledContent("処理状態", value: statusText(session))
+        switch session.duration {
+        case .seconds(let seconds):
+            LabeledContent("長さ", value: SavedSessionDisplayText.duration(seconds))
+        case .unreadable(let reason):
+            LabeledContent("長さ", value: reason)
+        case .unknown:
+            EmptyView()
+        }
+        if session.hasActiveTranscript {
+            Label("保存済みの文字起こしを表示中", systemImage: "text.alignleft")
+                .foregroundStyle(.secondary)
+        } else {
+            Text("この録音には表示できる確定文字起こしがありません。")
+                .foregroundStyle(.secondary)
+        }
+        exportControls(for: session)
+        switch session.audio {
+        case .available:
+            if case .corrupted(let reason) = session.processingStatus {
+                Label("\(reason)。保存済み音声から再処理できます。", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .missing:
+            Label("保存済み音声が見つからないため、再処理できません。", systemImage: "waveform.slash")
+                .foregroundStyle(.orange)
+        case .unreadable(let reason):
+            Label("\(reason)。再処理できません。", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func exportControls(for session: SavedSession) -> some View {
         let state = sessionExports[session.sessionID]
         HStack(spacing: AppSpacing.sm) {
             Button {
@@ -137,7 +177,7 @@ struct SavedSessionsView: View {
                     Label(hasExportDestination ? "書き出す" : "書き出す…", systemImage: "square.and.arrow.up")
                 }
             }
-            .disabled(!session.hasActiveTranscript || state == .exporting || queuedSessionIDs.contains(session.sessionID))
+            .disabled(exportUnavailableReason(session) != nil || state == .exporting || queuedSessionIDs.contains(session.sessionID))
             .help(exportHelp(session))
 
             if case .exported = state {
@@ -161,46 +201,79 @@ struct SavedSessionsView: View {
                 .foregroundStyle(.red)
                 .fixedSize(horizontal: false, vertical: true)
         case .exporting, nil:
-            EmptyView()
+            if let reason = exportUnavailableReason(session) {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    private func exportHelp(_ session: SavedSessionSummary) -> String {
+    private func exportUnavailableReason(_ session: SavedSession) -> String? {
+        if case .corrupted = session.processingStatus { return "文字起こしデータが破損しているため書き出せません" }
         if !session.hasActiveTranscript { return "確定文字起こしがないため書き出せません" }
+        if session.audioSource == nil { return "保存済み音声を使えないため書き出せません" }
+        return nil
+    }
+
+    private func exportHelp(_ session: SavedSession) -> String {
+        if let reason = exportUnavailableReason(session) { return reason }
         if queuedSessionIDs.contains(session.sessionID) { return "処理が終わってから書き出せます" }
         if !hasExportDestination { return "書き出し先フォルダを選んでから、文字起こしと音声を書き出します" }
         return "文字起こしと音声を書き出し先フォルダに保存"
     }
 
-    private func sourceName(_ kind: SessionSourceKind?, captureSource: CaptureSource?) -> String {
-        switch kind {
-        case .live:
-            return captureSource == .systemAudio ? "システム音声" : "マイク"
-        case .importedFile:
-            return "読み込み音声"
-        case nil:
-            return "不明"
+    private func sourceName(_ source: SessionSource) -> String {
+        switch source {
+        case .recording(.microphone): "マイク"
+        case .recording(.systemAudio): "システム音声"
+        case .imported: "読み込み音声"
         }
     }
 
-    private func statusText(_ session: SavedSessionSummary) -> String {
-        if let error = session.errorMessage { return "読み込みエラー: \(error)" }
-        if !session.audioAvailable { return "保存済み音声がありません" }
+    private func sourceLabel(_ source: SessionSource) -> String {
+        switch source {
+        case .recording: sourceName(source)
+        case .imported(let originalFilename): originalFilename
+        }
+    }
+
+    private func hasProblem(_ session: SavedSession) -> Bool {
+        switch (session.audio, session.processingStatus) {
+        case (.unreadable, _), (_, .corrupted): true
+        default: false
+        }
+    }
+
+    private func statusText(_ session: SavedSession) -> String {
+        switch session.audio {
+        case .missing: return "保存済み音声がありません"
+        case .unreadable(let reason): return "音声を読めません: \(reason)"
+        case .available: break
+        }
         return switch session.processingStatus {
         case .notProcessed: "未処理"
         case .running: "処理中"
         case .complete: session.hasActiveTranscript ? "文字起こしあり" : "処理完了"
         case .classificationPending: "文字起こしあり・意味分類を再試行"
         case .failed(let reason): "再処理が必要: \(reason ?? "処理に失敗しました")"
+        case .corrupted: "文字起こしデータが破損しています（音声から再処理できます）"
         }
     }
 
-    private func reprocessHelp(_ session: SavedSessionSummary) -> String {
+    private func reprocessHelp(_ summary: SavedSessionSummary) -> String {
         if isUnavailableForReprocess { return "録音または読み込みが終わってから再処理できます" }
-        if queuedSessionIDs.contains(session.sessionID) { return "この録音は処理待ち、または処理中です" }
-        if let error = session.errorMessage { return error }
-        if !session.audioAvailable { return "保存済み音声がありません" }
-        return "保存済み音声から文字起こしをやり直す"
+        if queuedSessionIDs.contains(summary.sessionID) { return "この録音は処理待ち、または処理中です" }
+        switch summary {
+        case .unreadable(_, let reason):
+            return reason
+        case .readable(let session):
+            switch session.audio {
+            case .available: return "保存済み音声から文字起こしをやり直す"
+            case .missing: return "保存済み音声がありません"
+            case .unreadable(let reason): return reason
+            }
+        }
     }
 
     private static func dateText(_ date: Date) -> String {

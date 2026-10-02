@@ -2,9 +2,14 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+private enum RecoveryFixtureSource {
+    case live
+    case importedFile
+}
+
 private func writeRecoveryManifest(
     sessionID: UUID,
-    sourceKind: SessionSourceKind,
+    sourceKind: RecoveryFixtureSource,
     to sessionURL: URL
 ) throws {
     try FileManager.default.createDirectory(
@@ -14,9 +19,9 @@ private func writeRecoveryManifest(
     let manifest = SessionManifest(
         sessionID: sessionID,
         createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-        sourceKind: sourceKind,
-        originalFilename: sourceKind == .importedFile ? "fixture.wav" : nil,
-        captureSource: .microphone
+        source: sourceKind == .importedFile
+            ? .imported(originalFilename: "fixture.wav")
+            : .recording(.microphone)
     )
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase

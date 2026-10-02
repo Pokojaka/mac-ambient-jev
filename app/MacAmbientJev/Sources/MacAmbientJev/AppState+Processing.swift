@@ -116,8 +116,7 @@ extension AppState {
             try prepareSession(
                 sessionID: sessionID,
                 sessionURL: sessionURL,
-                sourceKind: .importedFile,
-                originalFilename: sourceURL.lastPathComponent
+                source: .imported(originalFilename: sourceURL.lastPathComponent)
             )
             let imported = try AudioImporter().importFile(
                 sourceURL,

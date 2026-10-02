@@ -201,9 +201,7 @@ struct ProcessRecordingCommand {
         let sessionURL = try SessionBootstrapper().createSession(
             paths: paths,
             sessionID: sessionID,
-            sourceKind: .importedFile,
-            originalFilename: audioURL.lastPathComponent,
-            captureSource: .microphone
+            source: .imported(originalFilename: audioURL.lastPathComponent)
         )
         print("session_id: \(sessionID.uuidString)")
 
@@ -317,7 +315,7 @@ struct ProcessRecordingCommand {
         decoder.dateDecodingStrategy = .iso8601
         let manifest = try decoder.decode(SessionManifest.self, from: Data(contentsOf: manifestURL))
         guard manifest.sessionID == sessionID,
-              manifest.sourceKind == .importedFile else {
+              case .imported = manifest.source else {
             throw ProcessRecordingError.invalidSession("import 済みの UUID を指定してください")
         }
 

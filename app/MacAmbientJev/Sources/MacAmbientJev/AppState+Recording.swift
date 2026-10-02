@@ -77,9 +77,7 @@ extension AppState {
             try prepareSession(
                 sessionID: sessionID,
                 sessionURL: sessionURL,
-                sourceKind: .live,
-                originalFilename: nil,
-                captureSource: captureSource
+                source: .recording(captureSource)
             )
             if captureSource == .microphone {
                 micInputSessionID = sessionID
@@ -336,16 +334,12 @@ extension AppState {
     func prepareSession(
         sessionID: UUID,
         sessionURL: URL,
-        sourceKind: SessionSourceKind,
-        originalFilename: String?,
-        captureSource: CaptureSource = .microphone
+        source: SessionSource
     ) throws {
         let createdURL = try SessionBootstrapper().createSession(
             paths: paths,
             sessionID: sessionID,
-            sourceKind: sourceKind,
-            originalFilename: originalFilename,
-            captureSource: captureSource
+            source: source
         )
         precondition(
             createdURL.standardizedFileURL == sessionURL.standardizedFileURL

@@ -185,3 +185,105 @@ func jevRetryAnalyzerUsesLatestAssignmentPerSegment() async throws {
     #expect(state.latestRunID == "priority-2")
     #expect(state.pendingSegmentIDs == ["seg-2"])
 }
+
+private func eventLine(_ object: [String: Any]) throws -> Data {
+    try JSONSerialization.data(withJSONObject: object)
+}
+
+@Test
+func eventLogTranscriptReaderRejectsAMalformedActiveRunEvent() throws {
+    let lines = [
+        try eventLine([
+            "event_seq": 1, "event_type": "segment.created",
+            "segmentation_run_id": "seg", "segment_id": "s1",
+            "source_start_frame": 0, "source_end_frame": 100,
+        ]),
+        try eventLine([
+            "event_seq": 2, "event_type": "asr.completed",
+            "processing_run_id": "asr", "segmentation_run_id": "seg", "segment_id": "s1",
+            "payload": ["engine": "test", "model": "test", "outcome": "recognized"],
+        ]),
+    ]
+
+    #expect(throws: EventLogTranscriptReaderError.malformedEvent(eventSeq: 2, eventType: "asr.completed")) {
+        try EventLogTranscriptReader().events(
+            lines: lines,
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        )
+    }
+}
+
+@Test
+func eventLogTranscriptReaderSkipsOtherRunsAndUnknownEventTypes() throws {
+    let lines = [
+        try eventLine([
+            "event_seq": 1, "event_type": "segment.created",
+            "segmentation_run_id": "seg", "segment_id": "s1",
+            "source_start_frame": 0, "source_end_frame": 100,
+        ]),
+        try eventLine([
+            "event_seq": 2, "event_type": "asr.completed",
+            "processing_run_id": "asr-other", "segmentation_run_id": "seg", "segment_id": "s1",
+            "payload": ["broken": true],
+        ]),
+        try eventLine(["event_seq": 3, "event_type": "future.event", "payload": 42]),
+        try eventLine([
+            "event_seq": 4, "event_type": "asr.completed",
+            "processing_run_id": "asr", "segmentation_run_id": "seg", "segment_id": "s1",
+            "payload": ["text": "発話", "engine": "test", "model": "test", "outcome": "recognized"],
+        ]),
+    ]
+
+    let events = try EventLogTranscriptReader().events(
+        lines: lines,
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+
+    #expect(events.map(\.eventSeq) == [1, 4])
+    #expect(events.last?.kind == .asrCompleted(ASRResult(text: "発話", detectedLanguage: nil)))
+}
+
+@Test
+func eventLogTranscriptReaderRejectsAnOutcomeThatContradictsTheText() throws {
+    let lines = [
+        try eventLine([
+            "event_seq": 1, "event_type": "asr.completed",
+            "processing_run_id": "asr", "segmentation_run_id": "seg", "segment_id": "s1",
+            "payload": ["text": "発話", "engine": "test", "model": "test", "outcome": "empty"],
+        ]),
+    ]
+
+    #expect(throws: EventLogTranscriptReaderError.asrOutcomeMismatch(eventSeq: 1)) {
+        try EventLogTranscriptReader().events(
+            lines: lines,
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        )
+    }
+}
+
+@Test
+func eventLogReadersRejectALineWithoutEnvelope() throws {
+    let lines = [try eventLine(["event_type": "segment.created"])]
+
+    #expect(throws: EventLogTranscriptReaderError.unreadableLine(index: 0)) {
+        try EventLogTranscriptReader().events(lines: lines, activeRuns: ActiveRuns(segmentation: "seg"))
+    }
+    #expect(throws: EventLogTranscriptReaderError.unreadableLine(index: 0)) {
+        try JevRetryAnalyzer().contentPriorityState(lines: lines)
+    }
+}
+
+@Test
+func jevRetryAnalyzerRejectsAnAssignmentWithoutRetryFlag() throws {
+    let lines = [
+        try eventLine([
+            "event_seq": 7, "event_type": "content_priority.assigned",
+            "processing_run_id": "priority", "segment_id": "s1",
+            "payload": ["priority": "primary"],
+        ]),
+    ]
+
+    #expect(throws: EventLogTranscriptReaderError.malformedEvent(eventSeq: 7, eventType: "content_priority.assigned")) {
+        try JevRetryAnalyzer().contentPriorityState(lines: lines)
+    }
+}

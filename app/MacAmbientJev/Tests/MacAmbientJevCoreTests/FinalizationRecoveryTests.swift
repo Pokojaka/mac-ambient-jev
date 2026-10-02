@@ -33,8 +33,7 @@ private func writeFinalizationSession(
     let manifest = SessionManifest(
         sessionID: id,
         createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-        sourceKind: .live,
-        captureSource: .microphone
+        source: .recording(.microphone)
     )
     let manifestEncoder = JSONEncoder()
     manifestEncoder.keyEncodingStrategy = .convertToSnakeCase

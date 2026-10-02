@@ -226,7 +226,7 @@ final class AppState: ObservableObject {
     let jevUsageCounter: JevUsageCounter
 
     let paths: AppPaths
-    let exportDestination = ExportDestinationStore()
+    let exportDestination: ExportDestinationStore
     let captureEngine: any AppCaptureEngine
     let sessionProcessor: NativeSessionProcessor
     // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
@@ -272,6 +272,7 @@ final class AppState: ObservableObject {
         self.microphoneAccess = microphoneAccess
         self.pausesProcessing = pausesProcessing
         self.userDefaults = userDefaults
+        self.exportDestination = ExportDestinationStore(defaults: userDefaults)
         self.makeLiveVADSession = makeLiveVADSession
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,

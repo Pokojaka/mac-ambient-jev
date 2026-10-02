@@ -27,7 +27,8 @@ func goldenCorpusEvaluatesInlineASRReference() throws {
             scene: .lecture,
             speakers: [],
             scopeSpans: [],
-            contentPriority: .primary
+            contentPriority: .primary,
+            isDiarized: false
         )
     ]
 

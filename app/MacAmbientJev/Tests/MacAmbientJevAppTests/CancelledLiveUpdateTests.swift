@@ -47,11 +47,13 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     let barrier = BlockedLiveUpdate()
     let segment = MaterializedTranscriptSegment(
         segmentID: "late", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "取り消した音声", scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil
+        text: "取り消した音声", scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil,
+        isDiarized: false
     )
     let current = MaterializedTranscriptSegment(
         segmentID: "current", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "録音中の音声", scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil
+        text: "録音中の音声", scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil,
+        isDiarized: false
     )
     await handler([current], .running)
     let beforeCancellation = state.transcriptViewModel.rows
