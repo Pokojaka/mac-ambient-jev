@@ -53,7 +53,7 @@ CLI の復旧経路、計測値の定義、14秒分割後の極短端数の扱�
 
 fake ASR の停止中に原音声保存が進む試験、イベントログ末尾破損、pending ASR の再投入、失敗 run が active run を置き換えない試験、Jev が使えない場合のローカル処理試験を、該当する自動テストと生成物で確認する。Jev のキーがアプリに設定された場合に限り少量の実通信、切断中のローカル処理、再接続後の保留分再試行を実機確認する。マイクを使わない間は、capture dropout、録音 callback、録音中 process kill、マイク権限と実録音の遅延・復旧窓を NOT VERIFIED とする。
 
-`docs/v1-acceptance-results-2026-09-23.md` と `docs/v1-acceptance.md` に、実測値・失敗・未検証理由を反映する。最後に全自動検証、`git diff --check`、Git の追跡対象を確認する。判定は各項目を VERIFIED、NOT VERIFIED、INCONCLUSIVE のいずれかで記す。マイク実機試験と Jev 実通信が未検証の今回、V1 全体の判定は NOT VERIFIED のままとする。後日の全条件が VERIFIED になった場合だけ合格を記す。
+`docs/records/v1-acceptance-results-2026-09-23.md` と `docs/v1-acceptance.md` に、実測値・失敗・未検証理由を反映する。最後に全自動検証、`git diff --check`、Git の追跡対象を確認する。判定は各項目を VERIFIED、NOT VERIFIED、INCONCLUSIVE のいずれかで記す。マイク実機試験と Jev 実通信が未検証の今回、V1 全体の判定は NOT VERIFIED のままとする。後日の全条件が VERIFIED になった場合だけ合格を記す。
 
 ## 実行順と作業の分離
 

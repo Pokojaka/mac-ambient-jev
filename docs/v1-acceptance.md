@@ -15,7 +15,7 @@
 - [ ] マイク権限の説明が日本語で表示される
 - [ ] 音声ファイル import が動作する
 - [ ] UI の主要状態・エラー表示が日本語である
-- [x] 既存の発話入り会話音声から切り出した75秒 excerpt の原速 replay で、最初の非空 view-model 更新までの P95 が3秒以内（6発話中6件、P50 1.159秒、P95 1.935秒。実マイク・画面描画・長時間熱状態は未検証。計測値は `docs/v1-live-latency-results-2026-09-25.md`）
+- [x] 既存の発話入り会話音声から切り出した75秒 excerpt の原速 replay で、最初の非空 view-model 更新までの P95 が3秒以内（6発話中6件、P50 1.159秒、P95 1.935秒。実マイク・画面描画・長時間熱状態は未検証。計測値は `docs/records/v1-live-latency-results-2026-09-25.md`）
 
 録音中に durable write または入力形式の異常が発生した場合は録音状態を直ちに終了し、日本語の原因別エラーを表示する。保存済みの chunk は削除せず、保存済み録音から読み出せるようにする。中断したライブ ASR からの遅延更新は表示しない。
 システム音声タップの形式変更通知後は、同じバッファ構造でも旧形式として音声を取り込まない。停止時はライブ VAD の終了待ちより先に入力を止め、受理済み音声を確定してから VAD を終了する。
@@ -75,7 +75,7 @@ crash recovery loss window:
 offline diarization completion time:
 ```
 
-2026-09-24 のファイル入力での測定値と、実録音では未検証の項目は `docs/v1-acceptance-results-2026-09-23.md` に記載する。初回の約84.3分 run はメモリ増加の閾値を超えた。`--low-heat` の MLX キャッシュ上限を2 GiBにした後、同じ録音の再測定でファイル処理のメモリ条件を満たした。ライブ録音全体の確認項目は未完了のままとする。既存音声を使った20秒 fixture と75秒 excerpt の first-visible latency replay、4秒 rolling input 上限、および計測限界は `docs/v1-live-latency-results-2026-09-25.md` を参照する。
+2026-09-24 のファイル入力での測定値と、実録音では未検証の項目は `docs/records/v1-acceptance-results-2026-09-23.md` に記載する。初回の約84.3分 run はメモリ増加の閾値を超えた。`--low-heat` の MLX キャッシュ上限を2 GiBにした後、同じ録音の再測定でファイル処理のメモリ条件を満たした。ライブ録音全体の確認項目は未完了のままとする。既存音声を使った20秒 fixture と75秒 excerpt の first-visible latency replay、4秒 rolling input 上限、および計測限界は `docs/records/v1-live-latency-results-2026-09-25.md` を参照する。
 
 受け入れ条件:
 
