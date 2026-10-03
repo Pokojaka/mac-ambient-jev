@@ -337,9 +337,10 @@ extension AppState {
         recordingPhase = .idle
         setCaptureStatus(message, tone: .error)
         enqueueProcessing(
-            .timeline(
+            .finalize(
                 sessionID: sessionID,
-                checkpoint: checkpoint
+                source: .recordedTimeline(checkpoint),
+                metadataPolicy: .reject
             )
         )
         refreshSavedSessions()
