@@ -273,9 +273,10 @@ extension AppState {
                     sessionID: sessionID
                 )
                 enqueueProcessing(
-                    .timeline(
+                    .finalize(
                         sessionID: sessionID,
-                        checkpoint: checkpoint
+                        source: .recordedTimeline(checkpoint),
+                        metadataPolicy: .reject
                     )
                 )
             }

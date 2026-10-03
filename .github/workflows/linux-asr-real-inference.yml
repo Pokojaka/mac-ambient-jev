@@ -10,8 +10,19 @@ on:
 
 jobs:
   qwen-real-inference:
+    name: ${{ matrix.slug }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slug: qwen3-asr-1.7b
+            model: Qwen/Qwen3-ASR-1.7B
+            revision: 7278e1e70fe206f11671096ffdd38061171dd6e5
+          - slug: qwen3-asr-0.6b
+            model: Qwen/Qwen3-ASR-0.6B
+            revision: 5eb144179a02acc5e5ba31e748d22b0cf3e303b0
     env:
       PYTHONPATH: tools/linux-audio
       HF_HUB_DISABLE_TELEMETRY: "1"
@@ -50,17 +61,9 @@ jobs:
           print("qwen_asr", qwen_asr.__file__)
           PY
 
-      - name: Run transcription-side unit tests
-        run: |
-          python -m pytest -q \
-            tools/linux-audio/tests/test_asr_runner.py \
-            tools/linux-audio/tests/test_audio.py \
-            tools/linux-audio/tests/test_corpus.py \
-            tools/linux-audio/tests/test_csj.py \
-            tools/linux-audio/tests/test_prepare_fixture.py \
-            tools/linux-audio/tests/test_baseline.py \
-            tools/linux-audio/tests/test_run_suite.py \
-            tools/linux-audio/tests/test_voicevox_cli.py
+      - name: Run Linux audio unit tests
+        working-directory: tools/linux-audio
+        run: python -m pytest -q tests
 
       - name: Generate Japanese speech fixture with VOICEVOX
         run: |
@@ -80,12 +83,12 @@ jobs:
 
           for attempt in {1..120}; do
             if curl --fail --silent http://127.0.0.1:50021/version \
-              > real-inference/voicevox-version.txt; then
+              > real-inference/voicevox-version.json; then
               break
             fi
             sleep 2
           done
-          test -s real-inference/voicevox-version.txt
+          test -s real-inference/voicevox-version.json
           curl --fail --silent --show-error \
             http://127.0.0.1:50021/speakers \
             > real-inference/voicevox-speakers.json
@@ -94,11 +97,11 @@ jobs:
           from pathlib import Path
 
           speakers = json.loads(Path("real-inference/voicevox-speakers.json").read_text())
-          name = next(
+          (name,) = [
               speaker["name"]
               for speaker in speakers
               if any(style["id"] == 3 for style in speaker["styles"])
-          )
+          ]
           Path("real-inference/CREDIT.txt").write_text(
               f"VOICEVOX: {name}\n", encoding="utf-8"
           )
@@ -108,8 +111,9 @@ jobs:
           python -m common.voicevox_cli \
             --base-url http://127.0.0.1:50021 \
             --text "$(cat real-inference/reference.txt)" \
-            --speaker 3 \
-            --output real-inference/voicevox.wav
+            --style-id 3 \
+            --output real-inference/voicevox.wav \
+            --query-output real-inference/voicevox-audio-query.json
 
           ffmpeg -hide_banner -loglevel error -y \
             -i real-inference/voicevox.wav \
@@ -118,76 +122,44 @@ jobs:
             -c:a pcm_s16le \
             real-inference/japanese-16k.wav
 
+          sha256sum real-inference/voicevox.wav real-inference/japanese-16k.wav \
+            | tee real-inference/fixture-sha256.txt
           ffprobe -hide_banner real-inference/japanese-16k.wav
           free -h
 
-      - name: Try pinned Qwen3-ASR-1.7B on CPU
-        id: qwen17
-        continue-on-error: true
+      - name: Run pinned ${{ matrix.model }} on CPU
         run: |
           python -m asr.qwen3_asr \
             real-inference/japanese-16k.wav \
-            --output real-inference/qwen3-asr-1.7b.json \
-            --model Qwen/Qwen3-ASR-1.7B \
-            --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
+            --output real-inference/${{ matrix.slug }}.json \
+            --model ${{ matrix.model }} \
+            --revision ${{ matrix.revision }} \
             --device cpu \
             --language Japanese
 
           python - <<'PY'
           import json
 
-          path = "real-inference/qwen3-asr-1.7b.json"
-          payload = json.load(open(path, encoding="utf-8"))
+          from common.artifact import validate_asr_artifact
+
+          path = "real-inference/${{ matrix.slug }}.json"
+          with open(path, encoding="utf-8") as handle:
+              payload = json.load(handle)
           print(json.dumps(payload, ensure_ascii=False, indent=2))
+          validate_asr_artifact(payload)
           assert payload["segments"][0]["text"].strip()
-          assert (
-              payload["engine"]["revision"]
-              == "7278e1e70fe206f11671096ffdd38061171dd6e5"
-          )
-          PY
-
-      - name: Run pinned Qwen3-ASR-0.6B fallback
-        if: steps.qwen17.outcome != 'success'
-        run: |
-          rm -rf \
-            ~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B \
-            || true
-
-          python -m asr.qwen3_asr \
-            real-inference/japanese-16k.wav \
-            --output real-inference/qwen3-asr-0.6b.json \
-            --model Qwen/Qwen3-ASR-0.6B \
-            --revision 5eb144179a02acc5e5ba31e748d22b0cf3e303b0 \
-            --device cpu \
-            --language Japanese
-
-          python - <<'PY'
-          import json
-
-          path = "real-inference/qwen3-asr-0.6b.json"
-          payload = json.load(open(path, encoding="utf-8"))
-          print(json.dumps(payload, ensure_ascii=False, indent=2))
-          assert payload["segments"][0]["text"].strip()
-          assert (
-              payload["engine"]["revision"]
-              == "5eb144179a02acc5e5ba31e748d22b0cf3e303b0"
-          )
+          assert payload["engine"]["revision"] == "${{ matrix.revision }}"
           PY
 
       - name: Evaluate CER with portable Swift CLI
         run: |
           swift --version
 
-          ARTIFACT=real-inference/qwen3-asr-1.7b.json
-          if [ ! -f "$ARTIFACT" ]; then
-            ARTIFACT=real-inference/qwen3-asr-0.6b.json
-          fi
-
           swift run \
             --package-path app/MacAmbientJev \
             MacAmbientJevEvaluateASR \
             real-inference/reference.txt \
-            "$ARTIFACT" \
+            real-inference/${{ matrix.slug }}.json \
             --output real-inference/asr-evaluation.json
 
           cat real-inference/asr-evaluation.json
@@ -209,11 +181,8 @@ jobs:
         run: |
           mkdir -p real-inference
           {
-            if [ -f real-inference/qwen3-asr-1.7b.json ]; then
-              echo "qwen17_outcome=success"
-            else
-              echo "qwen17_outcome=fallback-or-failure"
-            fi
+            echo "model=${{ matrix.model }}"
+            echo "revision=${{ matrix.revision }}"
             echo "runner=$(uname -a)"
             free -h
           } | tee real-inference/run-summary.txt
@@ -221,6 +190,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-asr-real-inference
+          name: linux-asr-real-inference-${{ matrix.slug }}
           path: real-inference/
           retention-days: 3

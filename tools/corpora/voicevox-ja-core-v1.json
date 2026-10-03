@@ -5,7 +5,7 @@
   "engine": "voicevox",
   "language": "ja",
   "speaker_policy": {
-    "selection": "distinct_available_styles",
+    "selection": "distinct_characters",
     "minimum_distinct_speakers": 10
   },
   "utterances": [
@@ -54,28 +54,27 @@
     {
       "id": "speakers-2",
       "speaker_count": 2,
-      "overlap_ratio": 0.0
+      "placement_overlap_factor": 0.0
     },
     {
       "id": "speakers-4",
       "speaker_count": 4,
-      "overlap_ratio": 0.1
+      "placement_overlap_factor": 0.1
     },
     {
       "id": "speakers-7",
       "speaker_count": 7,
-      "overlap_ratio": 0.1
+      "placement_overlap_factor": 0.1
     },
     {
       "id": "speakers-8",
       "speaker_count": 8,
-      "overlap_ratio": 0.1
+      "placement_overlap_factor": 0.1
     },
     {
       "id": "speakers-10",
       "speaker_count": 10,
-      "overlap_ratio": 0.2,
-      "collapse_policy": "first7-plus-other"
+      "placement_overlap_factor": 0.2
     }
   ]
 }

@@ -34,6 +34,10 @@ def test_normalize_to_wav_outputs_mono_16khz(
         assert wav.getnchannels() == 1
         assert wav.getframerate() == 16_000
         assert wav.getsampwidth() == 2
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "normalized.wav",
+        "source.wav",
+    ]
 
 
 def test_normalize_failure_removes_stale_output(
@@ -57,3 +61,4 @@ def test_normalize_failure_removes_stale_output(
         normalize_to_wav(source, output)
 
     assert not output.exists()
+    assert [path.name for path in tmp_path.iterdir()] == ["source.wav"]

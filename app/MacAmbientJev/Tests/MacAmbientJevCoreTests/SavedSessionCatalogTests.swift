@@ -212,12 +212,9 @@ func catalogSummaryShowsFinalizationStateAndActiveTranscript() throws {
     let id = UUID()
     let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000, source: .live, root: root, includeAudio: true)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
+        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .failed, failureReason: "decode failed"),
         activeRuns: ActiveRuns(asr: "asr"),
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .failed, failureReason: "decode failed")
+        pendingContentPrioritySegmentIDs: []
     ))
 
     let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
@@ -296,12 +293,8 @@ func catalogReportsPendingClassificationAfterLocalFinalization() throws {
         id: id, createdAt: 1_700_000_000, source: .live, root: root, includeAudio: true
     )
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
+        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
         activeRuns: ActiveRuns(asr: "asr", scope: "scope"),
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete),
         pendingContentPrioritySegmentIDs: ["seg_000001"]
     ))
 
@@ -320,11 +313,9 @@ func catalogReportsZeroAudioScopeOnlySessionAsComplete() throws {
     )
     try Data([1, 2, 3]).write(to: session.appending(path: "audio/original.wav"))
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
-        activeRuns: ActiveRuns(scope: "scope_empty")
+        finalizationAttempt: nil,
+        activeRuns: ActiveRuns(scope: "scope_empty"),
+        pendingContentPrioritySegmentIDs: []
     ))
 
     let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)

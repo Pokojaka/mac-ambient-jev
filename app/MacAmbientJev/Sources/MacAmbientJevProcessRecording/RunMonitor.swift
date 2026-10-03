@@ -11,12 +11,32 @@ struct EngineMetrics: Codable {
     let message: String?
 }
 
+enum RunMonitorError: LocalizedError, Equatable {
+    case duplicateDestination
+    case destinationExists(String)
+    case samplingFailed(path: String, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicateDestination:
+            "計測ファイルの出力先が重複しています"
+        case .destinationExists(let path):
+            "計測ファイルが既に存在します: \(path)"
+        case .samplingFailed(let path, let reason):
+            "計測サンプルを書き込めませんでした: \(path): \(reason)"
+        }
+    }
+}
+
+/// Samples thermal state and memory into JSONL files during a measured run.
+/// The first sample that cannot be written stops sampling and fails `write(_:)`.
 actor RunMonitor {
     let runID: String
     let metricsURL: URL
     let thermalURL: URL
     let memoryURL: URL
     private var phase: RunPhase = .preparing
+    private var samplingFailure: RunMonitorError?
 
     init(runID: String, metricsURL: URL, thermalURL: URL, memoryURL: URL) throws {
         let destinations = [metricsURL, thermalURL, memoryURL].map { url in
@@ -25,15 +45,11 @@ actor RunMonitor {
                 .appendingPathComponent(normalized.lastPathComponent).standardizedFileURL
         }
         guard Set(destinations).count == destinations.count else {
-            throw NSError(domain: "RunMonitor", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "計測ファイルの出力先が重複しています"
-            ])
+            throw RunMonitorError.duplicateDestination
         }
         for url in [metricsURL, thermalURL, memoryURL] {
             guard !FileManager.default.fileExists(atPath: url.path) else {
-                throw NSError(domain: "RunMonitor", code: 1, userInfo: [
-                    NSLocalizedDescriptionKey: "計測ファイルが既に存在します: \(url.path)"
-                ])
+                throw RunMonitorError.destinationExists(url.path)
             }
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -47,7 +63,7 @@ actor RunMonitor {
 
     func setPhase(_ phase: RunPhase) async {
         self.phase = phase
-        try? sample()
+        sample()
     }
 
     func shouldPause() -> Bool {
@@ -55,12 +71,12 @@ actor RunMonitor {
     }
 
     func run() async {
-        try? sample()
-        while !Task.isCancelled {
+        sample()
+        while !Task.isCancelled, samplingFailure == nil {
             do { try await Task.sleep(for: .seconds(5)) } catch { break }
-            try? sample()
+            sample()
         }
-        try? sample()
+        sample()
     }
 
     func write(_ result: SessionProcessingResult) throws {
@@ -69,29 +85,48 @@ actor RunMonitor {
             asr: result.metrics, message: result.message
         ))
         try data.write(to: metricsURL, options: .atomic)
+        if let samplingFailure { throw samplingFailure }
     }
 
-    private func sample() throws {
-        let formatter = ISO8601DateFormatter()
-        let timestamp = formatter.string(from: Date())
+    private func sample() {
+        guard samplingFailure == nil else { return }
+        let timestamp = ISO8601DateFormatter().string(from: Date())
         let thermal: [String: Any] = [
             "run_id": runID, "timestamp": timestamp,
             "state": String(describing: ProcessInfo.processInfo.thermalState)
         ]
-        try append(thermal, to: thermalURL)
+        guard append(thermal, to: thermalURL) else { return }
         let mlx = Memory.snapshot()
-        let memory: [String: Any] = [
+        var memory: [String: Any] = [
             "run_id": runID, "timestamp": timestamp, "phase": phase.rawValue,
-            "footprint_bytes": footprint().map { $0 as Any } ?? NSNull(),
             "mlx_active_bytes": mlx.activeMemory,
             "mlx_cache_bytes": mlx.cacheMemory,
             "mlx_peak_bytes": mlx.peakMemory,
             "mlx_cache_limit_bytes": Memory.cacheLimit
         ]
-        try append(memory, to: memoryURL)
+        switch Self.footprint() {
+        case .success(let bytes):
+            memory["footprint_bytes"] = bytes
+        case .failure(let error):
+            memory["footprint_bytes"] = NSNull()
+            memory["footprint_error"] = error.description
+        }
+        append(memory, to: memoryURL)
     }
 
-    private func footprint() -> UInt64? {
+    /// Appends one JSONL line; on failure records it as the run's sampling failure and returns false.
+    @discardableResult
+    private func append(_ value: [String: Any], to url: URL) -> Bool {
+        do {
+            try Self.appendLine(value, to: url)
+            return true
+        } catch {
+            samplingFailure = .samplingFailed(path: url.path, reason: error.localizedDescription)
+            return false
+        }
+    }
+
+    private static func footprint() -> Result<UInt64, TaskInfoError> {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
             MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
@@ -101,18 +136,33 @@ actor RunMonitor {
                 task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
             }
         }
-        return result == KERN_SUCCESS ? info.phys_footprint : nil
+        guard result == KERN_SUCCESS else { return .failure(TaskInfoError(code: result)) }
+        return .success(info.phys_footprint)
     }
 
-    private func append(_ value: [String: Any], to url: URL) throws {
+    private static func appendLine(_ value: [String: Any], to url: URL) throws {
         var data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
         data.append(0x0A)
         if !FileManager.default.fileExists(atPath: url.path) {
-            _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
+            }
         }
         let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: data)
+        let written = Result {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        }
+        try handle.close()
+        try written.get()
+    }
+}
+
+/// A failed `task_info` call, described by its `kern_return_t`.
+struct TaskInfoError: Error, CustomStringConvertible {
+    let code: kern_return_t
+
+    var description: String {
+        "task_info kern_return_t \(code): \(String(cString: mach_error_string(code)))"
     }
 }

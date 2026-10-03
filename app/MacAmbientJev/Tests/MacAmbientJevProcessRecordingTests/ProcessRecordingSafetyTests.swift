@@ -1,4 +1,6 @@
 import Foundation
+import MacAmbientJevCore
+import MacAmbientJevRuntime
 import Testing
 @testable import MacAmbientJevProcessRecording
 
@@ -34,13 +36,10 @@ func measurementOutputsMustBePairwiseDistinct() throws {
             directory.appending(path: $0)
         }
         paths[pair.1] = paths[pair.0]
-        do {
-            _ = try RunMonitor(
+        #expect(throws: RunMonitorError.duplicateDestination) {
+            try RunMonitor(
                 runID: "run", metricsURL: paths[0], thermalURL: paths[1], memoryURL: paths[2]
             )
-            Issue.record("duplicate measurement outputs must be rejected")
-        } catch {
-            #expect((error as NSError).domain == "RunMonitor")
         }
     }
 }
@@ -53,16 +52,36 @@ func measurementOutputsCannotAliasThroughSymlinkedDirectory() throws {
     let alias = root.appending(path: "alias")
     try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
 
-    do {
-        _ = try RunMonitor(
+    #expect(throws: RunMonitorError.duplicateDestination) {
+        try RunMonitor(
             runID: "run", metricsURL: root.appending(path: "metrics.json"),
             thermalURL: alias.appending(path: "metrics.json"),
             memoryURL: root.appending(path: "memory.json")
         )
-        Issue.record("symlink alias must be rejected")
-    } catch {
-        #expect((error as NSError).domain == "RunMonitor")
     }
+}
+
+@Test
+func unwritableSampleFailsTheMeasuredRun() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let metrics = root.appending(path: "metrics.json")
+    let thermal = root.appending(path: "thermal.jsonl")
+    let memory = root.appending(path: "memory.jsonl")
+    let monitor = try RunMonitor(runID: "run", metricsURL: metrics, thermalURL: thermal, memoryURL: memory)
+    try FileManager.default.createDirectory(at: thermal, withIntermediateDirectories: false)
+
+    await monitor.setPhase(.asr)
+    await monitor.setPhase(.postprocessing)
+
+    do {
+        try await monitor.write(.completed(metrics: nil, noSpeech: false))
+        Issue.record("a failed sample must fail the measured run")
+    } catch RunMonitorError.samplingFailed(let path, _) {
+        #expect(path == thermal.path)
+    }
+    #expect(FileManager.default.fileExists(atPath: metrics.path))
+    #expect(!FileManager.default.fileExists(atPath: memory.path))
 }
 
 @Test

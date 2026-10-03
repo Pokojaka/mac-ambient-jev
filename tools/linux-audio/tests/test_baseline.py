@@ -1,246 +1,301 @@
+import copy
+import dataclasses
 import json
 
 import pytest
 
+from common.artifact import (
+    build_asr_artifact,
+    build_diarization_artifact,
+    build_engine,
+    build_runtime,
+)
 from common.baseline import (
-    BaselineRecord,
-    compare_baseline,
     build_asr_baseline_record,
     build_diarization_baseline_record,
+    compare_baseline,
     load_baseline,
+)
+from common.runtime_metrics import RuntimeMeasurement
+
+
+CUDA_MEASUREMENT = RuntimeMeasurement(
+    model_load_seconds=20.0,
+    inference_seconds=2.0,
+    resident_vram_mb=3000.0,
+    peak_vram_mb=3500.0,
 )
 
 
-def make_record(cer: float = 0.10) -> BaselineRecord:
-    return BaselineRecord(
-        schema_version=1,
-        kind="asr",
-        engine="qwen3-asr",
-        model="Qwen/Qwen3-ASR-1.7B",
-        revision="abc123",
-        backend="transformers",
-        device="cuda:0",
-        evaluator_version="asr-eval-v1",
-        corpus={
-            "voicevox-ja-core-v1": "deadbeef" * 8,
-        },
-        metrics={
-            "normalized_cer": cer,
-            "rtf": 0.2,
-        },
+def cer(rate: float) -> dict:
+    return {
+        "rate": rate,
+        "substitutions": 1,
+        "deletions": 0,
+        "insertions": 0,
+        "reference_characters": 10,
+        "hypothesis_characters": 10,
+    }
+
+
+def write_json(path, payload):
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def asr_inputs(tmp_path, *, normalized_cer=0.0, dtype="bfloat16"):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    reference = tmp_path / "reference.txt"
+    reference.write_text("今日は音声認識です。\n", encoding="utf-8")
+    artifact = build_asr_artifact(
+        engine=build_engine(
+            name="qwen3-asr",
+            model="Qwen/Qwen3-ASR-1.7B",
+            revision="model-rev",
+            backend="transformers",
+            device="cuda:0",
+            package_versions={"qwen-asr": "0.0.6", "torch": "2.10.0"},
+            inference_config={"dtype": dtype, "language": "Japanese"},
+        ),
+        runtime=build_runtime(
+            device="cuda:0",
+            audio_seconds=10.0,
+            measurement=CUDA_MEASUREMENT,
+        ),
+        text="今日は音声認識です",
+        language="Japanese",
+    )
+    return {
+        "artifact_path": write_json(tmp_path / "qwen3-asr.json", artifact),
+        "evaluation_path": write_json(
+            tmp_path / "asr-evaluation.json",
+            {
+                "raw": cer(0.1),
+                "normalized": cer(normalized_cer),
+                "normalizer_version": "1",
+            },
+        ),
+        "audio_path": audio,
+        "reference_path": reference,
+    }
+
+
+def asr_record(tmp_path, **kwargs):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    return build_asr_baseline_record(
+        **asr_inputs(tmp_path, **kwargs),
+        reference_kind="verbatim",
     )
 
 
+def test_asr_baseline_records_engine_conditions_and_metrics(tmp_path):
+    record = asr_record(tmp_path)
+
+    assert record.engine["package_versions"]["qwen-asr"] == "0.0.6"
+    assert record.engine["inference_config"]["dtype"] == "bfloat16"
+    assert record.conditions == {
+        "reference_kind": "verbatim",
+        "normalizer_version": "1",
+    }
+    assert record.metrics == {
+        "raw_cer": 0.1,
+        "normalized_cer": 0.0,
+        "rtf": 0.2,
+        "model_load_seconds": 20.0,
+        "resident_vram_mb": 3000.0,
+        "peak_vram_mb": 3500.0,
+    }
+    assert set(record.corpus) == {"audio", "reference"}
+
+
 def test_baseline_round_trip(tmp_path):
-    record = make_record()
+    record = asr_record(tmp_path)
     path = tmp_path / "baseline.json"
     record.write(path)
     assert load_baseline(path) == record
 
 
-def test_baseline_requires_reproducibility_metadata(
-    tmp_path,
-):
-    path = tmp_path / "bad.json"
-    path.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "kind": "asr",
-        }),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="engine"):
+def test_load_baseline_rejects_missing_conditions(tmp_path):
+    record = asr_record(tmp_path)
+    payload = dataclasses.asdict(record)
+    del payload["conditions"]
+    path = write_json(tmp_path / "bad.json", payload)
+
+    with pytest.raises(ValueError, match="baseline keys"):
         load_baseline(path)
 
 
-def test_baseline_compare_rejects_revision_mismatch():
-    baseline = make_record()
-    current = make_record()
-    current = BaselineRecord(
-        **{
-            **current.__dict__,
-            "revision": "different",
-        }
-    )
-    with pytest.raises(ValueError, match="revision"):
-        compare_baseline(baseline, current)
+def test_asr_baseline_requires_normalizer_version(tmp_path):
+    inputs = asr_inputs(tmp_path)
+    evaluation = json.loads(inputs["evaluation_path"].read_text())
+    del evaluation["normalizer_version"]
+    write_json(inputs["evaluation_path"], evaluation)
+
+    with pytest.raises(ValueError, match="normalizer_version"):
+        build_asr_baseline_record(**inputs, reference_kind="verbatim")
 
 
-def test_baseline_compare_reports_metric_delta():
+def test_asr_baseline_rejects_unknown_reference_kind(tmp_path):
+    with pytest.raises(ValueError, match="reference_kind"):
+        build_asr_baseline_record(
+            **asr_inputs(tmp_path),
+            reference_kind="cleaned",
+        )
+
+
+def test_compare_reports_metric_delta(tmp_path):
     result = compare_baseline(
-        make_record(0.10),
-        make_record(0.12),
+        asr_record(tmp_path / "a", normalized_cer=0.10),
+        asr_record(tmp_path / "b", normalized_cer=0.12),
     )
     assert result["normalized_cer"]["baseline"] == 0.10
     assert result["normalized_cer"]["current"] == 0.12
-    assert result["normalized_cer"]["delta"] == pytest.approx(
-        0.02
+    assert result["normalized_cer"]["delta"] == pytest.approx(0.02)
+
+
+def test_compare_rejects_different_inference_config(tmp_path):
+    with pytest.raises(ValueError, match="engine"):
+        compare_baseline(
+            asr_record(tmp_path / "a"),
+            asr_record(tmp_path / "b", dtype="float16"),
+        )
+
+
+def test_compare_rejects_different_reference_kind(tmp_path):
+    baseline = asr_record(tmp_path)
+    current = dataclasses.replace(
+        baseline,
+        conditions={**baseline.conditions, "reference_kind": "content"},
     )
 
+    with pytest.raises(ValueError, match="conditions"):
+        compare_baseline(baseline, current)
 
-def test_diarization_baseline_collects_reproducibility_metadata(
-    tmp_path,
-):
+
+def test_record_with_missing_metric_is_invalid(tmp_path):
+    baseline = asr_record(tmp_path)
+    metrics = dict(baseline.metrics)
+    del metrics["peak_vram_mb"]
+
+    with pytest.raises(ValueError, match="metrics must be exactly"):
+        dataclasses.replace(baseline, metrics=metrics).validate()
+
+
+def diarization_evaluation(other_precision):
+    return {
+        "standard": {
+            "der": 0.1,
+            "miss_ms": 10,
+            "false_alarm_ms": 5,
+            "confusion_ms": 20,
+            "overlap_recall": 0.8,
+            "speaker_switch_boundary_mae_ms": 45.0,
+        },
+        "collapsed": {
+            "der": 0.05,
+            "tracked_speaker_confusion_ms": 100,
+            "other_precision": other_precision,
+            "other_recall": None,
+            "other_to_tracked_leakage_ms": 50,
+            "tracked_to_other_leakage_ms": 25,
+            "unknown_rate": 0.02,
+            "overflow_detection_recall": None,
+            "overlap_recall": 0.75,
+        },
+        "evaluator_version": "1",
+    }
+
+
+def diarization_record(tmp_path, other_precision=0.9):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
-    reference = tmp_path / "speaker-reference.json"
-    reference.write_text("[]", encoding="utf-8")
-    artifact = tmp_path / "nemotron3.json"
-    artifact.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "engine": {
-                "name": "nemotron-3-diarization",
-                "model": "nvidia/Nemotron-3-Diarization",
-                "revision": "model-rev",
-                "profile": "offline-30.4s",
-                "backend": "nemo",
-                "device": "cuda:0",
-            },
-            "overflow_resolver": {
-                "embedding_model": "titanet",
-                "embedding_revision": "embed-rev",
-                "match_threshold": 0.82,
-                "ambiguity_margin": 0.04,
-                "min_clean_speech_ms": 750,
-            },
-            "runtime": {
-                "rtf": 0.25,
-                "peak_vram_mb": 1536.0,
-            },
-        }),
-        encoding="utf-8",
+    reference = write_json(tmp_path / "speaker-reference.json", [])
+    artifact = build_diarization_artifact(
+        engine=build_engine(
+            name="nemotron-3-diarization",
+            model="nvidia/Nemotron-3-Diarization",
+            revision="model-rev",
+            backend="nemo",
+            device="cuda:0",
+            package_versions={"nemo_toolkit": "2.6.0"},
+            inference_config={"profile": "offline-30.4s"},
+        ),
+        runtime=build_runtime(
+            device="cuda:0",
+            audio_seconds=8.0,
+            measurement=CUDA_MEASUREMENT,
+        ),
+        spans=[],
+        raw_spans=[],
+        overflow_resolver={
+            "embedding_model": "titanet",
+            "embedding_revision": "embed-rev",
+            "match_threshold": 0.82,
+            "ambiguity_margin": 0.04,
+            "min_clean_speech_ms": 750,
+        },
     )
-    evaluation = tmp_path / "diarization-evaluation.json"
-    evaluation.write_text(
-        json.dumps({
-            "standard": {
-                "der": 0.1,
-                "overlap_recall": 0.8,
-                "speaker_switch_boundary_mae_ms": 45.0,
-            },
-            "collapsed": {
-                "der": 0.05,
-                "tracked_speaker_confusion_ms": 100,
-                "other_precision": 0.9,
-                "other_recall": 0.85,
-                "other_to_tracked_leakage_ms": 50,
-                "tracked_to_other_leakage_ms": 25,
-                "unknown_rate": 0.02,
-                "overflow_detection_recall": 0.95,
-                "overlap_recall": 0.75,
-            },
-        }),
-        encoding="utf-8",
-    )
-
-    record = build_diarization_baseline_record(
-        artifact_path=artifact,
-        evaluation_path=evaluation,
+    return build_diarization_baseline_record(
+        artifact_path=write_json(tmp_path / "nemotron3.json", artifact),
+        evaluation_path=write_json(
+            tmp_path / "diarization-evaluation.json",
+            diarization_evaluation(other_precision),
+        ),
         audio_path=audio,
         speaker_reference_path=reference,
     )
 
-    assert record.kind == "diarization"
-    assert record.engine == "nemotron-3-diarization"
-    assert record.revision == "model-rev"
-    assert record.corpus["audio"] != record.corpus[
-        "speaker_reference"
-    ]
-    assert len(record.corpus["audio"]) == 64
-    assert record.configuration["profile"] == "offline-30.4s"
-    assert (
-        record.configuration["overflow_resolver"]
-        ["embedding_revision"]
-        == "embed-rev"
+
+def test_diarization_baseline_keeps_not_applicable_metrics_as_null(
+    tmp_path,
+):
+    record = diarization_record(tmp_path)
+
+    assert record.conditions["overflow_resolver"]["embedding_revision"] == (
+        "embed-rev"
     )
+    assert record.conditions["evaluator_version"] == "1"
     assert record.metrics["standard_der"] == 0.1
     assert record.metrics["collapsed_der"] == 0.05
-    assert record.metrics["rtf"] == 0.25
-    assert record.metrics["peak_vram_mb"] == 1536.0
+    assert record.metrics["other_recall"] is None
+    assert record.metrics["overflow_detection_recall"] is None
+    assert record.metrics["peak_vram_mb"] == 3500.0
 
 
-def test_baseline_compare_rejects_configuration_mismatch():
-    baseline = BaselineRecord(
-        **{
-            **make_record().__dict__,
-            "configuration": {"profile": "offline"},
-        }
+def test_diarization_compare_reports_null_delta(tmp_path):
+    result = compare_baseline(
+        diarization_record(tmp_path / "a", other_precision=0.9),
+        diarization_record(tmp_path / "b", other_precision=None),
     )
-    current = BaselineRecord(
-        **{
-            **make_record().__dict__,
-            "configuration": {"profile": "streaming"},
-        }
-    )
-
-    with pytest.raises(ValueError, match="configuration"):
-        compare_baseline(baseline, current)
+    assert result["other_precision"] == {
+        "baseline": 0.9,
+        "current": None,
+        "delta": None,
+    }
 
 
-def test_asr_baseline_collects_cer_runtime_and_provenance(tmp_path):
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"audio")
-    reference = tmp_path / "reference.txt"
-    reference.write_text("今日は音声認識です。\n", encoding="utf-8")
-    artifact = tmp_path / "qwen3-asr.json"
-    artifact.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "engine": {
-                "name": "qwen3-asr",
-                "model": "Qwen/Qwen3-ASR-1.7B",
-                "revision": "model-rev",
-                "backend": "transformers",
-                "device": "cuda:0",
-            },
-            "segments": [{
-                "start_ms": 0,
-                "end_ms": 1000,
-                "text": "今日は音声認識です",
-                "language": "Japanese",
-            }],
-            "runtime": {
-                "rtf": 0.2,
-                "peak_vram_mb": 1024.0,
-            },
-        }),
-        encoding="utf-8",
-    )
-    evaluation = tmp_path / "asr-evaluation.json"
-    evaluation.write_text(
-        json.dumps({
-            "raw": {
-                "rate": 0.1,
-                "substitutions": 1,
-                "deletions": 0,
-                "insertions": 0,
-                "reference_length": 10,
-            },
-            "normalized": {
-                "rate": 0.0,
-                "substitutions": 0,
-                "deletions": 0,
-                "insertions": 0,
-                "reference_length": 9,
-            },
-        }),
-        encoding="utf-8",
-    )
+def test_diarization_baseline_rejects_missing_metric_key(tmp_path):
+    record = diarization_record(tmp_path)
+    evaluation = diarization_evaluation(0.9)
+    del evaluation["collapsed"]["unknown_rate"]
+    write_json(tmp_path / "diarization-evaluation.json", evaluation)
 
-    record = build_asr_baseline_record(
-        artifact_path=artifact,
-        evaluation_path=evaluation,
-        audio_path=audio,
-        reference_path=reference,
-    )
+    with pytest.raises(ValueError, match="collapsed.unknown_rate"):
+        build_diarization_baseline_record(
+            artifact_path=tmp_path / "nemotron3.json",
+            evaluation_path=tmp_path / "diarization-evaluation.json",
+            audio_path=tmp_path / "audio.wav",
+            speaker_reference_path=tmp_path / "speaker-reference.json",
+        )
+    assert record.metrics["unknown_rate"] == 0.02
 
-    assert record.kind == "asr"
-    assert record.engine == "qwen3-asr"
-    assert record.revision == "model-rev"
-    assert record.metrics["raw_cer"] == 0.1
-    assert record.metrics["normalized_cer"] == 0.0
-    assert record.metrics["rtf"] == 0.2
-    assert record.metrics["peak_vram_mb"] == 1024.0
-    assert len(record.corpus["audio"]) == 64
-    assert len(record.corpus["reference"]) == 64
+
+def test_null_is_rejected_for_always_defined_metrics(tmp_path):
+    record = diarization_record(tmp_path)
+    metrics = copy.deepcopy(record.metrics)
+    metrics["collapsed_der"] = None
+
+    with pytest.raises(ValueError, match="collapsed_der"):
+        dataclasses.replace(record, metrics=metrics).validate()

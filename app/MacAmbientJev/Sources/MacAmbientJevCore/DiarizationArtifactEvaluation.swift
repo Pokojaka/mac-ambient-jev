@@ -59,39 +59,54 @@ public struct DiarizationRawSpan:
 public struct DiarizationEvaluationArtifact:
     Codable, Sendable, Equatable
 {
+    public struct OverflowResolver: Codable, Sendable, Equatable {
+        public let minCleanSpeechMilliseconds: Int64
+
+        public init(minCleanSpeechMilliseconds: Int64) {
+            self.minCleanSpeechMilliseconds = minCleanSpeechMilliseconds
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case minCleanSpeechMilliseconds = "min_clean_speech_ms"
+        }
+    }
+
     public let schemaVersion: Int
     public let spans: [DiarizationArtifactSpan]
-    public let rawSpans: [DiarizationRawSpan]?
+    public let rawSpans: [DiarizationRawSpan]
+    public let overflowResolver: OverflowResolver
 
     public init(
         schemaVersion: Int,
         spans: [DiarizationArtifactSpan],
-        rawSpans: [DiarizationRawSpan]? = nil
+        rawSpans: [DiarizationRawSpan],
+        overflowResolver: OverflowResolver
     ) {
         self.schemaVersion = schemaVersion
         self.spans = spans
         self.rawSpans = rawSpans
+        self.overflowResolver = overflowResolver
     }
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case spans
         case rawSpans = "raw_spans"
+        case overflowResolver = "overflow_resolver"
     }
 }
 
 public struct DiarizationEvaluationReport:
     Codable, Sendable, Equatable
 {
-    public let standard: StandardDiarizationMetrics?
+    public let standard: StandardDiarizationMetrics
     public let collapsed: CollapsedDiarizationMetrics
+    public let evaluatorVersion: String
 
-    public init(
-        standard: StandardDiarizationMetrics?,
-        collapsed: CollapsedDiarizationMetrics
-    ) {
-        self.standard = standard
-        self.collapsed = collapsed
+    enum CodingKeys: String, CodingKey {
+        case standard
+        case collapsed
+        case evaluatorVersion = "evaluator_version"
     }
 }
 
@@ -99,6 +114,7 @@ public enum DiarizationArtifactEvaluationError:
     Error, Sendable, Equatable
 {
     case unsupportedSchemaVersion(Int)
+    case invalidMinCleanSpeech(Int64)
     case invalidReferenceSpan(index: Int)
     case emptyReferenceSpeakerLabel(index: Int)
     case invalidPublicSpan(index: Int)
@@ -107,13 +123,24 @@ public enum DiarizationArtifactEvaluationError:
 }
 
 public enum DiarizationArtifactEvaluator {
+    public static let schemaVersion = 2
+    /// Identifies the reference-collapse and metric rules. Change it
+    /// whenever they change so baselines never compare across rules.
+    public static let version = "1"
+
     public static func evaluate(
         reference: [SourceSpeakerSpan],
         artifact: DiarizationEvaluationArtifact
     ) throws -> DiarizationEvaluationReport {
-        guard artifact.schemaVersion == 1 else {
+        guard artifact.schemaVersion == schemaVersion else {
             throw DiarizationArtifactEvaluationError
                 .unsupportedSchemaVersion(artifact.schemaVersion)
+        }
+        let minCleanSpeech =
+            artifact.overflowResolver.minCleanSpeechMilliseconds
+        guard minCleanSpeech > 0 else {
+            throw DiarizationArtifactEvaluationError
+                .invalidMinCleanSpeech(minCleanSpeech)
         }
 
         for (index, span) in reference.enumerated() {
@@ -140,27 +167,26 @@ public enum DiarizationArtifactEvaluator {
                     .invalidPublicSpan(index: index)
             }
         }
-        if let rawSpans = artifact.rawSpans {
-            for (index, span) in rawSpans.enumerated() {
-                guard
-                    span.startMilliseconds >= 0,
-                    span.endMilliseconds
-                        > span.startMilliseconds
-                else {
-                    throw DiarizationArtifactEvaluationError
-                        .invalidRawSpan(index: index)
-                }
-                guard !span.speakerLabel.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                ).isEmpty else {
-                    throw DiarizationArtifactEvaluationError
-                        .emptyRawSpeakerLabel(index: index)
-                }
+        for (index, span) in artifact.rawSpans.enumerated() {
+            guard
+                span.startMilliseconds >= 0,
+                span.endMilliseconds > span.startMilliseconds
+            else {
+                throw DiarizationArtifactEvaluationError
+                    .invalidRawSpan(index: index)
+            }
+            guard !span.speakerLabel.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty else {
+                throw DiarizationArtifactEvaluationError
+                    .emptyRawSpeakerLabel(index: index)
             }
         }
 
-        let collapsedReference = try SpeakerArrivalCollapser
-            .collapse(reference)
+        let collapsedReference = try SpeakerArrivalCollapser.collapse(
+            reference,
+            minCleanSpeechMilliseconds: minCleanSpeech
+        )
         let collapsedHypothesis = artifact.spans.map {
             SpeakerEvaluationSpan(
                 startMilliseconds: $0.startMilliseconds,
@@ -168,21 +194,17 @@ public enum DiarizationArtifactEvaluator {
                 speaker: $0.speaker
             )
         }
-        let collapsed = CollapsedDiarizationEvaluator.evaluate(
-            reference: collapsedReference,
-            hypothesis: collapsedHypothesis
-        )
-
-        let standard = artifact.rawSpans.map { rawSpans in
-            StandardDiarizationEvaluator.evaluate(
-                reference: reference,
-                hypothesis: rawSpans.map(\.sourceSpan)
-            )
-        }
 
         return DiarizationEvaluationReport(
-            standard: standard,
-            collapsed: collapsed
+            standard: StandardDiarizationEvaluator.evaluate(
+                reference: reference,
+                hypothesis: artifact.rawSpans.map(\.sourceSpan)
+            ),
+            collapsed: CollapsedDiarizationEvaluator.evaluate(
+                reference: collapsedReference,
+                hypothesis: collapsedHypothesis
+            ),
+            evaluatorVersion: version
         )
     }
 }

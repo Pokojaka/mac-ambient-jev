@@ -17,6 +17,7 @@ public enum UserFacingStatus: Sendable, Equatable {
     case classifyingWithJev
     case jevDeferred
     case jevAuthorizationRequired
+    case finalizationPausedForHeat
 
     public var text: String {
         switch self {
@@ -52,6 +53,8 @@ public enum UserFacingStatus: Sendable, Equatable {
             return "意味分類を後で再試行します"
         case .jevAuthorizationRequired:
             return "Jev の API キーの修正が必要です。意味分類を保留しました"
+        case .finalizationPausedForHeat:
+            return "発熱のため確定処理を一時停止中"
         }
     }
 }

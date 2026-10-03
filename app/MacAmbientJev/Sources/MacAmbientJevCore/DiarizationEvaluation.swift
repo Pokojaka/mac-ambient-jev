@@ -112,51 +112,90 @@ public struct SpeakerEvaluationSpan: Codable, Sendable, Equatable {
     }
 }
 
+/// Maps raw reference speaker labels onto Speaker 1...7, OTHER, and
+/// UNKNOWN the way the Linux overflow resolver does.
+///
+/// A label arrives at the start of its first clean utterance: a contiguous
+/// stretch of at least `minCleanSpeechMilliseconds` that no other label
+/// overlaps. The first seven arrivals become tracked speakers and later
+/// ones OTHER. A label that never speaks cleanly can never be registered,
+/// so its spans are UNKNOWN.
 public enum SpeakerArrivalCollapser {
     public static func collapse(
-        _ spans: [SourceSpeakerSpan]
+        _ spans: [SourceSpeakerSpan],
+        minCleanSpeechMilliseconds: Int64
     ) throws -> [SpeakerEvaluationSpan] {
+        var arrivals: [String: (start: Int64, index: Int)] = [:]
+        for (index, span) in spans.enumerated() {
+            guard let start = firstCleanStart(
+                of: span,
+                among: spans,
+                minCleanSpeechMilliseconds: minCleanSpeechMilliseconds
+            ) else {
+                continue
+            }
+            if let existing = arrivals[span.speakerLabel],
+               (existing.start, existing.index) <= (start, index) {
+                continue
+            }
+            arrivals[span.speakerLabel] = (start, index)
+        }
+
+        let arrivalOrder = arrivals.sorted { lhs, rhs in
+            (lhs.value.start, lhs.value.index)
+                < (rhs.value.start, rhs.value.index)
+        }
+        var assignments = Dictionary(
+            spans.map { ($0.speakerLabel, SpeakerIdentity.unknown) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for (position, arrival) in arrivalOrder.enumerated() {
+            assignments[arrival.key] = position < 7
+                ? try .tracked(position + 1)
+                : .other
+        }
+
         let ordered = spans.enumerated().sorted { lhs, rhs in
-            if lhs.element.startMilliseconds
-                != rhs.element.startMilliseconds {
-                return lhs.element.startMilliseconds
-                    < rhs.element.startMilliseconds
-            }
-            return lhs.offset < rhs.offset
+            (lhs.element.startMilliseconds, lhs.offset)
+                < (rhs.element.startMilliseconds, rhs.offset)
         }
-
-        var assignments: [String: SpeakerIdentity] = [:]
-        var nextTrackedIndex = 1
-        var result: [SpeakerEvaluationSpan] = []
-        result.reserveCapacity(spans.count)
-
-        for (_, span) in ordered {
-            let label = span.speakerLabel.trimmingCharacters(
-                in: .whitespacesAndNewlines
+        return ordered.map { _, span in
+            SpeakerEvaluationSpan(
+                startMilliseconds: span.startMilliseconds,
+                endMilliseconds: span.endMilliseconds,
+                speaker: assignments[span.speakerLabel]!
             )
-            let speaker: SpeakerIdentity
-            if label.isEmpty {
-                speaker = .unknown
-            } else if let existing = assignments[label] {
-                speaker = existing
-            } else if nextTrackedIndex <= 7 {
-                speaker = try .tracked(nextTrackedIndex)
-                assignments[label] = speaker
-                nextTrackedIndex += 1
-            } else {
-                speaker = .other
-                assignments[label] = speaker
-            }
+        }
+    }
 
-            result.append(
-                SpeakerEvaluationSpan(
-                    startMilliseconds: span.startMilliseconds,
-                    endMilliseconds: span.endMilliseconds,
-                    speaker: speaker
+    private static func firstCleanStart(
+        of span: SourceSpeakerSpan,
+        among spans: [SourceSpeakerSpan],
+        minCleanSpeechMilliseconds: Int64
+    ) -> Int64? {
+        let blocked = spans
+            .filter {
+                $0.speakerLabel != span.speakerLabel
+                    && $0.startMilliseconds < span.endMilliseconds
+                    && $0.endMilliseconds > span.startMilliseconds
+            }
+            .map {
+                (
+                    max($0.startMilliseconds, span.startMilliseconds),
+                    min($0.endMilliseconds, span.endMilliseconds)
                 )
-            )
+            }
+            .sorted { $0 < $1 }
+
+        var cursor = span.startMilliseconds
+        for (blockedStart, blockedEnd) in blocked
+            + [(span.endMilliseconds, span.endMilliseconds)] {
+            if blockedStart - cursor >= minCleanSpeechMilliseconds {
+                return cursor
+            }
+            cursor = max(cursor, blockedEnd)
         }
-        return result
+        return nil
     }
 }
 
@@ -204,6 +243,58 @@ public struct CollapsedDiarizationMetrics:
             "overflow_detection_recall"
         case overlapRecall = "overlap_recall"
         case der
+    }
+
+    /// Writes metrics without a denominator as explicit null so readers
+    /// can tell "not applicable" from a missing key.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(
+            totalReferenceSpeakerMilliseconds,
+            forKey: .totalReferenceSpeakerMilliseconds
+        )
+        try container.encode(missMilliseconds, forKey: .missMilliseconds)
+        try container.encode(
+            falseAlarmMilliseconds,
+            forKey: .falseAlarmMilliseconds
+        )
+        try container.encode(
+            confusionMilliseconds,
+            forKey: .confusionMilliseconds
+        )
+        try container.encode(
+            unknownMilliseconds,
+            forKey: .unknownMilliseconds
+        )
+        try container.encode(
+            otherToTrackedLeakageMilliseconds,
+            forKey: .otherToTrackedLeakageMilliseconds
+        )
+        try container.encode(
+            trackedToOtherLeakageMilliseconds,
+            forKey: .trackedToOtherLeakageMilliseconds
+        )
+        try container.encode(
+            trackedSpeakerConfusionMilliseconds,
+            forKey: .trackedSpeakerConfusionMilliseconds
+        )
+        try container.encode(
+            referenceOverlapMilliseconds,
+            forKey: .referenceOverlapMilliseconds
+        )
+        try container.encode(
+            detectedOverlapMilliseconds,
+            forKey: .detectedOverlapMilliseconds
+        )
+        try container.encode(otherPrecision, forKey: .otherPrecision)
+        try container.encode(otherRecall, forKey: .otherRecall)
+        try container.encode(unknownRate, forKey: .unknownRate)
+        try container.encode(
+            overflowDetectionRecall,
+            forKey: .overflowDetectionRecall
+        )
+        try container.encode(overlapRecall, forKey: .overlapRecall)
+        try container.encode(der, forKey: .der)
     }
 }
 
@@ -392,6 +483,39 @@ public struct StandardDiarizationMetrics:
             "speaker_switch_boundary_mae_ms"
         case der
     }
+
+    /// Writes metrics without a denominator as explicit null so readers
+    /// can tell "not applicable" from a missing key.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(
+            totalReferenceSpeakerMilliseconds,
+            forKey: .totalReferenceSpeakerMilliseconds
+        )
+        try container.encode(missMilliseconds, forKey: .missMilliseconds)
+        try container.encode(
+            falseAlarmMilliseconds,
+            forKey: .falseAlarmMilliseconds
+        )
+        try container.encode(
+            confusionMilliseconds,
+            forKey: .confusionMilliseconds
+        )
+        try container.encode(
+            referenceOverlapMilliseconds,
+            forKey: .referenceOverlapMilliseconds
+        )
+        try container.encode(
+            detectedOverlapMilliseconds,
+            forKey: .detectedOverlapMilliseconds
+        )
+        try container.encode(overlapRecall, forKey: .overlapRecall)
+        try container.encode(
+            speakerSwitchBoundaryMAEMilliseconds,
+            forKey: .speakerSwitchBoundaryMAEMilliseconds
+        )
+        try container.encode(der, forKey: .der)
+    }
 }
 
 public enum StandardDiarizationEvaluator {
@@ -576,7 +700,7 @@ public enum StandardDiarizationEvaluator {
             }
             scores = next
         }
-        return scores.values.max() ?? 0
+        return scores.values.max()!
     }
 
     private static func switchBoundaries(
@@ -631,7 +755,7 @@ public enum StandardDiarizationEvaluator {
             partial, boundary in
             let nearest = hypothesisBoundaries
                 .map { abs($0 - boundary) }
-                .min() ?? 0
+                .min()!
             return partial + nearest
         }
         return Double(totalError)

@@ -42,11 +42,10 @@ def crop_wav_segment(
 
         start_frame = round(start_ms * frame_rate / 1000)
         end_frame = round(end_ms * frame_rate / 1000)
-        start_frame = min(start_frame, frame_count)
-        end_frame = min(end_frame, frame_count)
-        if end_frame <= start_frame:
+        if end_frame > frame_count:
             raise ValueError(
-                "speaker span is outside available audio"
+                f"speaker span {start_ms}-{end_ms} ms extends past "
+                f"the audio end ({frame_count} frames)"
             )
 
         input_wav.setpos(start_frame)
@@ -149,35 +148,27 @@ class TitaNetSpeakerEmbeddingAdapter:
 
 def load_titanet_adapter(
     *,
-    model_name: str = DEFAULT_TITANET_MODEL,
-    revision: str = DEFAULT_TITANET_REVISION,
-    device: str = "cuda:0",
-    download_checkpoint=None,
-    model_class=None,
+    model_name: str,
+    revision: str,
+    device: str,
 ) -> TitaNetSpeakerEmbeddingAdapter:
     if not revision:
         raise ValueError(
             "TitaNet revision must be pinned"
         )
 
-    if download_checkpoint is None:
-        from huggingface_hub import hf_hub_download
-        download_checkpoint = hf_hub_download
+    from huggingface_hub import hf_hub_download
+    from nemo.collections.asr.models import EncDecSpeakerLabelModel
 
-    if model_class is None:
-        from nemo.collections.asr.models import (
-            EncDecSpeakerLabelModel,
-        )
-        model_class = EncDecSpeakerLabelModel
-
-    checkpoint = download_checkpoint(
+    checkpoint = hf_hub_download(
         repo_id=model_name,
         filename=DEFAULT_TITANET_FILENAME,
         revision=revision,
     )
-    model = model_class.restore_from(
+    model = EncDecSpeakerLabelModel.restore_from(
         restore_path=str(checkpoint),
         map_location=device,
+        strict=True,
     )
     model.eval()
     return TitaNetSpeakerEmbeddingAdapter(model)
