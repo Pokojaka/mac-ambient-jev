@@ -98,7 +98,8 @@ func unknownScopeProviderNeverCreatesBackground() async throws {
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-1",
-            text: "重要な発話"
+            text: "重要な発話",
+            detectedLanguage: nil
         ),
         .sceneChanged(
             seq: 3,
@@ -150,7 +151,8 @@ func mixedScopeEvidenceRemainsSplitWithinOneSegment() async throws {
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-1",
-            text: "近距離と背景が混在する発話"
+            text: "近距離と背景が混在する発話",
+            detectedLanguage: nil
         ),
         .sceneChanged(
             seq: 3,
@@ -203,7 +205,8 @@ func scopeClassificationSplitsAtSceneTransitionInsideSegment() async throws {
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-1",
-            text: "討論終了から講義へ戻る区間"
+            text: "討論終了から講義へ戻る区間",
+            detectedLanguage: nil
         ),
         .sceneChanged(
             seq: 3,
@@ -253,7 +256,7 @@ func scopeAndDisplayAgreeOnOutOfOrderSceneTransitions() async throws {
     )
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "utterance", startFrame: 800, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "遠くの会話"),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "遠くの会話", detectedLanguage: nil),
         .sceneChanged(seq: 3, runID: "scene", atFrame: 700, scene: .discussion),
         .sceneChanged(seq: 4, runID: "scene", atFrame: 0, scene: .lecture)
     ]
@@ -285,7 +288,7 @@ func unreadableProximityAudioFailsTheScopeRun() async throws {
     )
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "seg-1", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "seg-1", text: "重要な発話")
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "seg-1", text: "重要な発話", detectedLanguage: nil)
     ]
 
     await #expect(throws: UnreadableAudioError()) {

@@ -52,7 +52,7 @@ public struct TranscriptEvent: Sendable, Equatable {
 
     public static func asrCompleted(
         seq: UInt64, runID: String, segmentationRunID: String,
-        segmentID: String, text: String, detectedLanguage: String? = nil
+        segmentID: String, text: String, detectedLanguage: String?
     ) -> TranscriptEvent {
         TranscriptEvent(
             eventSeq: seq,

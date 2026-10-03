@@ -245,7 +245,8 @@ private func retryEvents(segmentIDs: [String]) -> [TranscriptEvent] {
                 runID: "asr",
                 segmentationRunID: "seg",
                 segmentID: segmentID,
-                text: "同じ重要な発話"
+                text: "同じ重要な発話",
+                detectedLanguage: nil
             )
         ]
     }

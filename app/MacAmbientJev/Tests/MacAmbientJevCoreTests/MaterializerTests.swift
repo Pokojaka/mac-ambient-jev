@@ -11,11 +11,13 @@ func materializerUsesOnlySelectedASRRun() {
         ),
         .asrCompleted(
             seq: 2, runID: "asr_old", segmentationRunID: "seg_run_01",
-            segmentID: "seg_1", text: "古い文字列"
+            segmentID: "seg_1", text: "古い文字列",
+            detectedLanguage: nil
         ),
         .asrCompleted(
             seq: 3, runID: "asr_new", segmentationRunID: "seg_run_01",
-            segmentID: "seg_1", text: "新しい文字列"
+            segmentID: "seg_1", text: "新しい文字列",
+            detectedLanguage: nil
         )
     ]
     let runs = ActiveRuns(segmentation: "seg_run_01", asr: "asr_new")
@@ -35,11 +37,11 @@ func materializerKeepsEmptyFinalTurnAndShortRecognizedSpeech() {
         .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "short",
                         startFrame: 800_000, endFrame: 800_192),
         .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg",
-                      segmentID: "full", text: "前の発話"),
+                      segmentID: "full", text: "前の発話", detectedLanguage: nil),
         .asrCompleted(seq: 5, runID: "asr", segmentationRunID: "seg",
-                      segmentID: "tail", text: ""),
+                      segmentID: "tail", text: "", detectedLanguage: nil),
         .asrCompleted(seq: 6, runID: "asr", segmentationRunID: "seg",
-                      segmentID: "short", text: "短い発話")
+                      segmentID: "short", text: "短い発話", detectedLanguage: nil)
     ]
     let segments = TranscriptMaterializer(sampleRate: 48_000).materialize(
         events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
@@ -114,7 +116,8 @@ func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
         ),
         .asrCompleted(
             seq: 2, runID: "asr", segmentationRunID: "seg",
-            segmentID: "s1", text: "発話"
+            segmentID: "s1", text: "発話",
+            detectedLanguage: nil
         ),
         .speakerSpan(
             seq: 3, runID: "diar", speakerID: "speaker_1",
@@ -151,7 +154,7 @@ func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
 func liveProjectionUsesFirstAppearanceOfRawSpansOutsideVADTurns() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "turn", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "turn", text: "発話"),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "turn", text: "発話", detectedLanguage: nil),
         .speakerSpan(seq: 3, runID: "diar", speakerID: "in-turn", startFrame: 1_000, endFrame: 2_000, confidence: 0.9),
         .speakerSpan(seq: 4, runID: "diar", speakerID: "outside-turn", startFrame: 0, endFrame: 900, confidence: 0.8)
     ]
@@ -188,7 +191,8 @@ func materializerShowsASRBeforeEnrichment() throws {
         ),
         .asrCompleted(
             seq: 2, runID: "asr", segmentationRunID: "seg",
-            segmentID: "s1", text: "公開鍵暗号です"
+            segmentID: "s1", text: "公開鍵暗号です",
+            detectedLanguage: nil
         )
     ]
     let segment = try #require(
@@ -231,7 +235,7 @@ func materializedSegmentEncodesStableAgentFields() throws {
 func materializerMarksSegmentsDiarizedOnlyWhenADiarizationRunIsActive() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "s1", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "s1", text: "発話")
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "s1", text: "発話", detectedLanguage: nil)
     ]
     let live = try #require(TranscriptMaterializer(sampleRate: 1_000).materialize(
         events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
@@ -295,7 +299,7 @@ func liveProjectionHidesOnlyBackgroundOnlyDiscussionSegments() {
 func materializerSelectsSceneByLatestTransitionFrameNotAppendOrder() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "utterance", startFrame: 800, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "speech"),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "speech", detectedLanguage: nil),
         .sceneChanged(seq: 3, runID: "scene", atFrame: 700, scene: .discussion),
         .sceneChanged(seq: 4, runID: "scene", atFrame: 0, scene: .lecture),
         .sceneChanged(seq: 5, runID: "scene", atFrame: 900, scene: .lecture)
@@ -319,7 +323,8 @@ func materializerHandlesTenThousandSegmentLog() {
         ))
         events.append(.asrCompleted(
             seq: UInt64(index * 3 + 2), runID: "asr", segmentationRunID: "seg",
-            segmentID: segmentID, text: "utterance \(index)"
+            segmentID: segmentID, text: "utterance \(index)",
+            detectedLanguage: nil
         ))
         events.append(.sceneChanged(
             seq: UInt64(index * 3 + 3), runID: "scene",

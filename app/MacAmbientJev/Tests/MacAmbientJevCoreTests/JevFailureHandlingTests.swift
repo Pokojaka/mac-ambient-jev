@@ -35,7 +35,8 @@ private func fiveSegmentEvents() -> [TranscriptEvent] {
         events.append(.asrCompleted(
             seq: seq, runID: "asr", segmentationRunID: "seg",
             segmentID: "s\(index)",
-            text: "公開鍵の説明その\(index)"
+            text: "公開鍵の説明その\(index)",
+            detectedLanguage: nil
         ))
         seq += 1
     }

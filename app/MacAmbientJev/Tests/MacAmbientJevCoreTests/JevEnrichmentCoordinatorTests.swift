@@ -57,7 +57,8 @@ func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-1",
-            text: "えー、RSAでは公開鍵を使います"
+            text: "えー、RSAでは公開鍵を使います",
+            detectedLanguage: nil
         )
     ]
 
@@ -108,7 +109,8 @@ func jevFailureKeepsPrimaryAndRecordsRetryPending() async throws {
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-1",
-            text: "重要な発話"
+            text: "重要な発話",
+            detectedLanguage: nil
         )
     ]
 
@@ -183,7 +185,8 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-1",
-            text: "えー"
+            text: "えー",
+            detectedLanguage: nil
         ),
         .segmentCreated(
             seq: 3,
@@ -197,7 +200,8 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-2",
-            text: "重要な発話"
+            text: "重要な発話",
+            detectedLanguage: nil
         ),
         .segmentCreated(
             seq: 5,
@@ -211,7 +215,8 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
             runID: "asr",
             segmentationRunID: "seg",
             segmentID: "seg-empty",
-            text: " \n"
+            text: " \n",
+            detectedLanguage: nil
         ),
         .contentPriority(
             seq: 7,
@@ -294,9 +299,9 @@ func retryRunWithoutAPriorityToCarryOverFailsBeforeSendingAnything() async throw
     )
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "a", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "a", text: "一つ目"),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "a", text: "一つ目", detectedLanguage: nil),
         .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "b", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "b", text: "二つ目")
+        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "b", text: "二つ目", detectedLanguage: nil)
     ]
 
     await #expect(throws: JevEnrichmentError.noPriorityToCarryOver(segmentID: "b")) {
@@ -337,9 +342,9 @@ func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
     )
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "blank", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "blank", text: " \n  "),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "blank", text: " \n  ", detectedLanguage: nil),
         .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "spoken", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "spoken", text: "聞き取れませんでした。")
+        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "spoken", text: "聞き取れませんでした。", detectedLanguage: nil)
     ]
 
     let result = try await coordinator.process(

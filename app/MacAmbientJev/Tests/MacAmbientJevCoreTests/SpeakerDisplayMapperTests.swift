@@ -113,7 +113,7 @@ func liveProjectionSummarizesMultipleSpeakersAndKeepsUnknownLabel() throws {
 func materializerKeepsEmptyASRResultForShortFinalTurn() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "final", segmentID: "short", startFrame: 0, endFrame: 100),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "final", segmentID: "short", text: "")
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "final", segmentID: "short", text: "", detectedLanguage: nil)
     ]
 
     let segment = try #require(
