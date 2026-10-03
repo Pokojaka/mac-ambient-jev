@@ -404,7 +404,13 @@ struct MeasureLiveLatencyCommand {
         ]
         let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
-        try? fileManager.removeItem(at: sessionsRoot)
+        do {
+            try fileManager.removeItem(at: sessionsRoot)
+        } catch {
+            FileHandle.standardError.write(
+                Data("一時セッションを削除できませんでした: \(error.localizedDescription)\n".utf8)
+            )
+        }
     }
 
     private static func outputFormat(options: Options, sourceFormat: AVAudioFormat) throws -> AVAudioFormat {

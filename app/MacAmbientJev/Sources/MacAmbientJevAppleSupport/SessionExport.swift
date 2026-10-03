@@ -88,6 +88,7 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
     case audioUnavailable
     case transcriptCorrupted(String)
     case noTranscript
+    case stagingNotRemoved(path: String, exportFailure: String, cleanupFailure: String)
 
     public var errorDescription: String? {
         switch self {
@@ -97,6 +98,8 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
             "文字起こしデータが破損しているため書き出せません: \(reason)"
         case .noTranscript:
             "確定文字起こしがないため書き出せません"
+        case .stagingNotRemoved(let path, let exportFailure, let cleanupFailure):
+            "書き出せませんでした: \(exportFailure)。作業用フォルダー \(path) も削除できませんでした: \(cleanupFailure)"
         }
     }
 }
@@ -163,7 +166,17 @@ public struct SessionExporter: Sendable {
                 try fileManager.moveItem(at: staging, to: destination)
             }
         } catch {
-            try? fileManager.removeItem(at: staging)
+            if fileManager.fileExists(atPath: staging.path) {
+                do {
+                    try fileManager.removeItem(at: staging)
+                } catch let cleanupError {
+                    throw SessionExportError.stagingNotRemoved(
+                        path: staging.path,
+                        exportFailure: error.localizedDescription,
+                        cleanupFailure: cleanupError.localizedDescription
+                    )
+                }
+            }
             throw error
         }
         return destination

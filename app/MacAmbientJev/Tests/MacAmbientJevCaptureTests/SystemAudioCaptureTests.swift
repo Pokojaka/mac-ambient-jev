@@ -304,37 +304,37 @@ private final class FixedClock: CaptureClock {
     func now() -> TimeInterval { Double(millis.load(ordering: .relaxed)) / 1_000 }
 }
 
-@Test("Device sample and host time preserve discontinuities and fall back without timestamps")
-func timestampMapperContinuityAndClockFallback() {
+@Test("Device sample and host time preserve discontinuities; untimestamped buffers stay contiguous")
+func timestampMapperContinuityAndHostClockMapping() {
     let mapper = CaptureFrameTimestampMapper()
     #expect(mapper.startFrame(sampleTime: 48_000, hostTimeNanos: 10_000_000_000,
-                              sampleRate: 48_000, fallbackEndFrame: 0) == 0)
+                              sampleRate: 48_000, contiguousEndFrame: 0) == 0)
     #expect(mapper.startFrame(sampleTime: 48_480, hostTimeNanos: 10_010_000_000,
-                              sampleRate: 48_000, fallbackEndFrame: 240) == 480)
+                              sampleRate: 48_000, contiguousEndFrame: 240) == 480)
     #expect(mapper.startFrame(sampleTime: nil, hostTimeNanos: 10_020_000_000,
-                              sampleRate: 48_000, fallbackEndFrame: 500) == 960)
+                              sampleRate: 48_000, contiguousEndFrame: 500) == 960)
     #expect(mapper.startFrame(sampleTime: nil, hostTimeNanos: nil,
-                              sampleRate: 48_000, fallbackEndFrame: 1_008) == 1_008)
+                              sampleRate: 48_000, contiguousEndFrame: 1_008) == 1_008)
     let hostOnly = CaptureFrameTimestampMapper()
     #expect(hostOnly.startFrame(sampleTime: nil, hostTimeNanos: 5_000_000_000,
-                                sampleRate: 1_000, fallbackEndFrame: 10) == 10)
+                                sampleRate: 1_000, contiguousEndFrame: 10) == 10)
     #expect(hostOnly.startFrame(sampleTime: nil, hostTimeNanos: 5_005_000_000,
-                                sampleRate: 1_000, fallbackEndFrame: 11) == 15)
+                                sampleRate: 1_000, contiguousEndFrame: 11) == 15)
 }
 
 @Test("A device sample clock that restarts continues the timeline instead of rewinding it")
 func timestampMapperReanchorsWhenSampleTimeRestarts() {
     let mapper = CaptureFrameTimestampMapper()
     #expect(mapper.startFrame(sampleTime: 48_000, hostTimeNanos: nil,
-                              sampleRate: 48_000, fallbackEndFrame: 0) == 0)
+                              sampleRate: 48_000, contiguousEndFrame: 0) == 0)
     #expect(mapper.startFrame(sampleTime: 48_480, hostTimeNanos: nil,
-                              sampleRate: 48_000, fallbackEndFrame: 480) == 480)
+                              sampleRate: 48_000, contiguousEndFrame: 480) == 480)
     #expect(mapper.startFrame(sampleTime: 100, hostTimeNanos: nil,
-                              sampleRate: 48_000, fallbackEndFrame: 960) == 960)
+                              sampleRate: 48_000, contiguousEndFrame: 960) == 960)
     #expect(mapper.startFrame(sampleTime: 580, hostTimeNanos: nil,
-                              sampleRate: 48_000, fallbackEndFrame: 1_440) == 1_440)
+                              sampleRate: 48_000, contiguousEndFrame: 1_440) == 1_440)
     #expect(mapper.startFrame(sampleTime: 1_540, hostTimeNanos: nil,
-                              sampleRate: 48_000, fallbackEndFrame: 1_920) == 2_400)
+                              sampleRate: 48_000, contiguousEndFrame: 1_920) == 2_400)
 }
 
 @Test("A restarted sample clock preserves the host-time gap and later timestamp mappings")
@@ -351,7 +351,7 @@ func timestampMapperRestartPreservesHostTimeGap() throws {
     ]
     for (sampleTime, hostTime, expectedFrame) in timestamps {
         let start = mapper.startFrame(sampleTime: sampleTime, hostTimeNanos: hostTime,
-                                      sampleRate: 48_000, fallbackEndFrame: sink.lastEndFrame)
+                                      sampleRate: 48_000, contiguousEndFrame: sink.lastEndFrame)
         #expect(start == expectedFrame)
         sink.silence(startFrame: start, frameCount: 480)
     }

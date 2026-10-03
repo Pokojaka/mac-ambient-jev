@@ -137,12 +137,16 @@ extension AppState {
                 )
             )
         } catch {
-            try? FileManager.default.removeItem(at: sessionURL)
+            var message = "音声ファイルを読み込めませんでした: \(error.localizedDescription)"
+            if FileManager.default.fileExists(atPath: sessionURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: sessionURL)
+                } catch let cleanupError {
+                    message += "（読み込み途中のセッションを削除できませんでした: \(cleanupError.localizedDescription)）"
+                }
+            }
             recordingPhase = .idle
-            setCaptureStatus(
-                "音声ファイルを読み込めませんでした: \(error.localizedDescription)",
-                tone: .error
-            )
+            setCaptureStatus(message, tone: .error)
         }
     }
 

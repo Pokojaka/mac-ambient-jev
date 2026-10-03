@@ -5,6 +5,7 @@ import MacAmbientJevCore
 public enum ProcessingTimelineAudioExporterError: LocalizedError {
     case invalidFormat
     case missingChannelData
+    case temporaryFileNotRemoved(path: String, writeFailure: String, cleanupFailure: String)
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +13,8 @@ public enum ProcessingTimelineAudioExporterError: LocalizedError {
             "処理用音声の書き出し形式を作成できません"
         case .missingChannelData:
             "処理用音声のPCMバッファを作成できません"
+        case .temporaryFileNotRemoved(let path, let writeFailure, let cleanupFailure):
+            "処理用音声を書き出せませんでした: \(writeFailure)。一時ファイル \(path) も削除できませんでした: \(cleanupFailure)"
         }
     }
 }
@@ -60,7 +63,17 @@ public struct ProcessingTimelineAudioExporter: Sendable {
                 try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
             }
         } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
+            if FileManager.default.fileExists(atPath: temporaryURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: temporaryURL)
+                } catch let cleanupError {
+                    throw ProcessingTimelineAudioExporterError.temporaryFileNotRemoved(
+                        path: temporaryURL.path,
+                        writeFailure: error.localizedDescription,
+                        cleanupFailure: cleanupError.localizedDescription
+                    )
+                }
+            }
             throw error
         }
     }

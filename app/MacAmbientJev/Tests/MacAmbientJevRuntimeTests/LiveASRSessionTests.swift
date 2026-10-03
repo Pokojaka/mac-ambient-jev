@@ -303,7 +303,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
 }
 
 @Test
-func liveASRFailureKeepsRunUnsuccessfulForFallback() async throws {
+func liveASRFailureKeepsRunUnsuccessful() async throws {
     let fixture = try await makeLiveASRFixture(failOnCall: 2)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 

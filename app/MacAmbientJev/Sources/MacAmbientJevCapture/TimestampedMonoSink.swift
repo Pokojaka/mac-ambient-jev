@@ -248,23 +248,24 @@ final class TimestampedMonoSink: @unchecked Sendable {
 }
 
 /// Platform-independent conversion from device timestamps into ring frame positions.
-/// Used only by one serialized producer callback; absence of a timestamp is contiguous.
+/// Used only by one serialized producer callback. A buffer without a usable
+/// timestamp starts at `contiguousEndFrame`, right after the previous buffer.
 final class CaptureFrameTimestampMapper: @unchecked Sendable {
     private var sampleOrigin: Int64?
     private var hostOriginNanos: UInt64?
     private var hostBaseFrame: Int64 = 0
 
     func startFrame(sampleTime: Double?, hostTimeNanos: UInt64?,
-                    sampleRate: Double, fallbackEndFrame: Int64) -> Int64 {
-        guard sampleRate > 0, sampleRate.isFinite else { return fallbackEndFrame }
+                    sampleRate: Double, contiguousEndFrame: Int64) -> Int64 {
+        precondition(sampleRate > 0 && sampleRate.isFinite, "The capture format has no valid sample rate")
         if let sampleTime, sampleTime.isFinite, abs(sampleTime) < 1_000_000_000_000 {
             let frame = Int64(sampleTime.rounded())
             if sampleOrigin == nil { sampleOrigin = frame }
             // Preserve elapsed host time across a device sample-clock restart.
-            if frame - sampleOrigin! < fallbackEndFrame - 1 {
-                let restartFrame = max(fallbackEndFrame, hostFrame(
+            if frame - sampleOrigin! < contiguousEndFrame - 1 {
+                let restartFrame = max(contiguousEndFrame, hostFrame(
                     hostTimeNanos: hostTimeNanos, sampleRate: sampleRate,
-                    fallbackEndFrame: fallbackEndFrame
+                    contiguousEndFrame: contiguousEndFrame
                 ))
                 sampleOrigin = frame - restartFrame
                 hostOriginNanos = hostTimeNanos
@@ -277,22 +278,22 @@ final class CaptureFrameTimestampMapper: @unchecked Sendable {
             return frame - sampleOrigin!
         }
         return hostFrame(hostTimeNanos: hostTimeNanos, sampleRate: sampleRate,
-                         fallbackEndFrame: fallbackEndFrame)
+                         contiguousEndFrame: contiguousEndFrame)
     }
 
     private func hostFrame(hostTimeNanos: UInt64?, sampleRate: Double,
-                           fallbackEndFrame: Int64) -> Int64 {
+                           contiguousEndFrame: Int64) -> Int64 {
         if let hostTimeNanos {
             if hostOriginNanos == nil {
                 hostOriginNanos = hostTimeNanos
-                hostBaseFrame = fallbackEndFrame
+                hostBaseFrame = contiguousEndFrame
             }
-            guard hostTimeNanos >= hostOriginNanos! else { return fallbackEndFrame }
+            guard hostTimeNanos >= hostOriginNanos! else { return contiguousEndFrame }
             let frames = Double(hostTimeNanos - hostOriginNanos!) * sampleRate / 1_000_000_000
             if frames.isFinite, frames >= 0, frames < 1_000_000_000_000 {
                 return hostBaseFrame + Int64(frames.rounded())
             }
         }
-        return fallbackEndFrame
+        return contiguousEndFrame
     }
 }

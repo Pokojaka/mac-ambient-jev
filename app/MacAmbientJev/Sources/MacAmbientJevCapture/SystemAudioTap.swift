@@ -145,7 +145,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
                 throw SystemAudioTapError.permissionDenied
             }
             try Self.check(hardware.tapFormat(tapID, &format), "タップ形式の取得")
-            guard format.mSampleRate > 0, format.mFormatID == kAudioFormatLinearPCM,
+            guard format.mSampleRate > 0, format.mSampleRate.isFinite, format.mFormatID == kAudioFormatLinearPCM,
                   format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
                   format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0,
                   format.mBitsPerChannel == 32, format.mChannelsPerFrame > 0,
@@ -251,7 +251,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
             hostTimeNanos: timestamp.pointee.mFlags.contains(.hostTimeValid)
                 ? AudioConvertHostTimeToNanos(timestamp.pointee.mHostTime) : nil,
             sampleRate: format.mSampleRate,
-            fallbackEndFrame: sink.lastEndFrame
+            contiguousEndFrame: sink.lastEndFrame
         )
         if first.mData == nil {
             var allSilent = true

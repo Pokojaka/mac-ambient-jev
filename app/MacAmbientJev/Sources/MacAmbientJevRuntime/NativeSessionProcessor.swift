@@ -638,9 +638,9 @@ public actor NativeSessionProcessor {
         previous: ProcessingMetadata?,
         provisional: [MaterializedTranscriptSegment]
     ) async -> (segments: [MaterializedTranscriptSegment], kind: RetainedTranscript, readFailure: String?) {
-        let fallbackKind: RetainedTranscript = provisional.isEmpty ? .nothing : .provisional
+        let unpublishedKind: RetainedTranscript = provisional.isEmpty ? .nothing : .provisional
         guard let activeRuns = previous?.activeRuns else {
-            return (provisional, fallbackKind, nil)
+            return (provisional, unpublishedKind, nil)
         }
         do {
             guard let checkpoint = try AudioCheckpoint.loadRecovered(
@@ -656,7 +656,7 @@ public actor NativeSessionProcessor {
         } catch {
             return (
                 provisional,
-                fallbackKind,
+                unpublishedKind,
                 "以前の確定結果を読み込めませんでした: \(error.localizedDescription)"
             )
         }
