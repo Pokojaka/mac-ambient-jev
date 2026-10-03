@@ -32,6 +32,12 @@ struct MacAmbientJevApp: App {
         }
         .defaultSize(width: 900, height: 620)
 
+        Window("保存済み録音", id: SavedSessionsWindow.id) {
+            SavedSessionsWindow()
+                .environmentObject(appState)
+        }
+        .defaultSize(width: 900, height: 560)
+
         Settings {
             TabView {
                 SettingsView(secretStore: KeychainStore())
@@ -53,7 +59,7 @@ struct MacAmbientJevApp: App {
 private struct ContentView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.openSettings) private var openSettings
-    @State private var showsSavedSessions = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -80,7 +86,7 @@ private struct ContentView: View {
 
                 Button {
                     appState.refreshSavedSessions()
-                    showsSavedSessions = true
+                    openWindow(id: SavedSessionsWindow.id)
                 } label: {
                     Label("保存済み録音", systemImage: "waveform.and.mic")
                 }
@@ -116,26 +122,6 @@ private struct ContentView: View {
                 }
                 .help("Jev とマイクの設定を開く")
             }
-        }
-        .sheet(isPresented: $showsSavedSessions) {
-            SavedSessionsView(
-                sessions: appState.savedSessions,
-                selectedSessionID: appState.selectedSavedSessionID,
-                isUnavailableForReprocess: appState.recordingPhase != .idle,
-                isSelectionUnavailable: appState.recordingPhase != .idle,
-                queuedSessionIDs: appState.queuedFinalizationSessionIDs,
-                sessionExports: appState.sessionExports,
-                hasExportDestination: appState.exportDirectoryPath != nil,
-                onRefresh: appState.refreshSavedSessions,
-                onSelect: appState.selectSavedSession(sessionID:),
-                onReprocess: appState.reprocess(sessionID:),
-                onExport: { sessionID in
-                    Task { await appState.exportSavedSession(sessionID: sessionID) }
-                },
-                onRevealExport: { sessionID in
-                    Task { await appState.revealExport(sessionID: sessionID) }
-                }
-            )
         }
     }
 
@@ -311,5 +297,32 @@ private struct ContentView: View {
         case .warning, .error:
             AnyShapeStyle(Color.primary)
         }
+    }
+}
+
+private struct SavedSessionsWindow: View {
+    static let id = "saved-sessions"
+
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        SavedSessionsView(
+            sessions: appState.savedSessions,
+            selectedSessionID: appState.selectedSavedSessionID,
+            isUnavailableForReprocess: appState.recordingPhase != .idle,
+            isSelectionUnavailable: appState.recordingPhase != .idle,
+            queuedSessionIDs: appState.queuedFinalizationSessionIDs,
+            sessionExports: appState.sessionExports,
+            hasExportDestination: appState.exportDirectoryPath != nil,
+            onRefresh: appState.refreshSavedSessions,
+            onSelect: appState.selectSavedSession(sessionID:),
+            onReprocess: appState.reprocess(sessionID:),
+            onExport: { sessionID in
+                Task { await appState.exportSavedSession(sessionID: sessionID) }
+            },
+            onRevealExport: { sessionID in
+                Task { await appState.revealExport(sessionID: sessionID) }
+            }
+        )
     }
 }
