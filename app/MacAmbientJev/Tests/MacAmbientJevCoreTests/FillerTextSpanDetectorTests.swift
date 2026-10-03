@@ -76,7 +76,8 @@ func projectionBuildsFillerFragmentsForTranscriptRows() throws {
         scene: .lecture,
         speakers: [],
         scopeSpans: [],
-        contentPriority: .primary
+        contentPriority: .primary,
+        isDiarized: false
     )
     let projection = LiveTranscriptProjection()
     let finalRow = try #require(projection.rows(for: [segment]).first)

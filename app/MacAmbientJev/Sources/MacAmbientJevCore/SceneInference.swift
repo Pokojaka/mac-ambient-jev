@@ -176,8 +176,8 @@ public struct SceneStateMachine: Sendable {
     private var phase: Phase
 
     public init(
-        state: SceneState = .lecture,
-        config: SceneStateMachineConfig = .production
+        state: SceneState,
+        config: SceneStateMachineConfig
     ) {
         switch state {
         case .discussionCandidate:
@@ -223,39 +223,6 @@ public struct SceneStateMachine: Sendable {
                 : .building(target: target, origin: origin, streak: streak)
         } else {
             phase = .settled(origin)
-        }
-
-        return transition(from: previous)
-    }
-
-    @discardableResult
-    public mutating func observeSemanticCue(
-        _ cue: SemanticSceneCue
-    ) -> SceneTransition? {
-        let target: SceneState
-        switch cue {
-        case .discussionStart:
-            target = .discussion
-        case .discussionEnd:
-            target = .lecture
-        case .none:
-            return nil
-        }
-
-        let previous = state
-        let origin = settledState
-
-        if target == origin {
-            phase = .settled(origin)
-        } else {
-            phase = .building(
-                target: target,
-                origin: origin,
-                streak: max(
-                    streak(toward: target),
-                    candidateObservations(for: target)
-                )
-            )
         }
 
         return transition(from: previous)

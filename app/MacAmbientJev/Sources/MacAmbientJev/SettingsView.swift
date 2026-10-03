@@ -11,12 +11,15 @@ struct SettingsView: View {
     @AppStorage("jev.isPaused") private var isJevPaused = false
     @AppStorage(MicInputVolumePreference.key)
     private var automaticMicInputVolume = MicInputVolumePreference.initialValue
-    @AppStorage(ExportDestinationStore.autoExportKey) private var isAutoExportEnabled = true
+    @AppStorage(ExportDestinationStore.autoExportKey)
+    private var isAutoExportEnabled = ExportDestinationStore.autoExportInitialValue
     @State private var apiKey = ""
     @State private var hasStoredKey = false
     @State private var statusMessage: String?
     @State private var statusIsError = false
     @State private var isCheckingJev = false
+    @State private var isRevealingExportDirectory = false
+    @State private var isRetryingDeferred = false
     @State private var microphoneAccess = AVCaptureDevice.authorizationStatus(for: .audio)
 
     private let secretStore: any SecretStore
@@ -63,9 +66,18 @@ struct SettingsView: View {
                         appState.chooseExportDirectory()
                     }
                     Button("Finderで表示") {
-                        Task { await appState.revealExportDirectory() }
+                        isRevealingExportDirectory = true
+                        Task {
+                            await appState.revealExportDirectory()
+                            isRevealingExportDirectory = false
+                        }
                     }
-                    .disabled(appState.exportDirectoryPath == nil)
+                    .disabled(appState.exportDirectoryPath == nil || isRevealingExportDirectory)
+                    if isRevealingExportDirectory {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Finderで表示しています")
+                    }
                 }
 
                 Toggle("処理完了後に自動で書き出す", isOn: $isAutoExportEnabled)
@@ -127,9 +139,18 @@ struct SettingsView: View {
                         .disabled(isJevPaused || isCheckingJev)
 
                         Button("保留中の分類を再試行") {
-                            onRetryDeferred()
+                            isRetryingDeferred = true
+                            Task {
+                                await appState.retryDeferredJev()
+                                isRetryingDeferred = false
+                            }
                         }
-                        .disabled(isJevPaused || isCheckingJev)
+                        .disabled(isJevPaused || isCheckingJev || isRetryingDeferred)
+                        if isRetryingDeferred {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("保留中の分類を再試行しています")
+                        }
                     }
                 }
 

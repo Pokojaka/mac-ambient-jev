@@ -19,9 +19,7 @@ func sessionBootstrapperCreatesManifestAndEventLog() throws {
     let sessionURL = try SessionBootstrapper().createSession(
         paths: paths,
         sessionID: sessionID,
-        sourceKind: .importedFile,
-        originalFilename: "lecture.m4a",
-        captureSource: .microphone
+        source: .imported(originalFilename: "lecture.m4a")
     )
 
     #expect(
@@ -43,6 +41,7 @@ func sessionBootstrapperCreatesManifestAndEventLog() throws {
     let manifest = try decoder.decode(SessionManifest.self, from: data)
 
     #expect(manifest.sessionID == sessionID)
-    #expect(manifest.sourceKind == .importedFile)
-    #expect(manifest.originalFilename == "lecture.m4a")
+    #expect(manifest.source == .imported(originalFilename: "lecture.m4a"))
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["capture_source"] == nil)
 }

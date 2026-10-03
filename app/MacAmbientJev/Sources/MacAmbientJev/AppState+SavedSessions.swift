@@ -34,15 +34,12 @@ extension AppState {
 
         guard let audioSource = savedSessions
             .first(where: { $0.sessionID == sessionID })?.audioSource else {
-            transcriptViewModel.setStatus("保存済み文字起こしの音声時間情報がありません")
+            transcriptViewModel.setStatus("保存済み音声を使えないため、文字起こしを表示できません")
             return
         }
         do {
             switch try SavedTranscriptLoader.load(
-                sessionURL: paths.sessionsRoot.appending(
-                    path: sessionID.uuidString,
-                    directoryHint: .isDirectory
-                ),
+                sessionURL: SessionLayout(sessionsRoot: paths.sessionsRoot, sessionID: sessionID).sessionURL,
                 audioSource: audioSource
             ) {
             case .unavailable:
@@ -100,10 +97,17 @@ extension AppState {
 
     func exportSavedSession(sessionID: UUID) async {
         guard exportDirectoryPath != nil || chooseExportDirectory(),
-              let session = savedSessions.first(where: { $0.sessionID == sessionID }) else {
+              let session = readableSavedSession(sessionID) else {
             return
         }
         await export(session)
+    }
+
+    func readableSavedSession(_ sessionID: UUID) -> SavedSession? {
+        guard case .readable(let session) = savedSessions.first(where: { $0.sessionID == sessionID }) else {
+            return nil
+        }
+        return session
     }
 
     func revealExport(sessionID: UUID) async {
@@ -118,21 +122,27 @@ extension AppState {
     }
 
     func autoExportIfEnabled(sessionID: UUID) async {
-        guard exportDirectoryPath != nil, exportDestination.isAutoExportEnabled else { return }
+        guard exportDirectoryPath != nil else { return }
+        do {
+            guard try exportDestination.isAutoExportEnabled() else { return }
+        } catch {
+            exportDestinationMessage = error.localizedDescription
+            processingStatusText = error.localizedDescription
+            return
+        }
         refreshSavedSessions()
-        guard let session = savedSessions.first(where: { $0.sessionID == sessionID }),
-              session.hasActiveTranscript else {
+        guard let session = readableSavedSession(sessionID), session.hasActiveTranscript else {
             return
         }
         switch session.processingStatus {
         case .complete, .classificationPending:
             await export(session)
-        case .notProcessed, .running, .failed:
+        case .notProcessed, .running, .paused, .failed, .corrupted:
             break
         }
     }
 
-    func export(_ session: SavedSessionSummary) async {
+    func export(_ session: SavedSession) async {
         guard sessionExports[session.sessionID] != .exporting else { return }
         sessionExports[session.sessionID] = .exporting
         let sessionsRoot = paths.sessionsRoot
@@ -142,7 +152,8 @@ extension AppState {
                     try SessionExporter().export(
                         session: session,
                         sessionsRoot: sessionsRoot,
-                        to: directory
+                        to: directory,
+                        timeZone: .current
                     )
                 }.value
             }
@@ -154,19 +165,29 @@ extension AppState {
         }
     }
 
+    /// Marks the session exported only when its folder holds both `transcript.txt` and the audio file.
     func probeExistingExport(sessionID: UUID) async {
         guard sessionExports[sessionID] == nil,
               exportDirectoryPath != nil,
-              let session = savedSessions.first(where: { $0.sessionID == sessionID }) else {
+              let session = readableSavedSession(sessionID),
+              let audioSource = session.audioSource else {
             return
         }
-        let folderName = SessionExportLayout.folderName(for: session)
-        let existing = try? await exportDestination.withAccess { directory -> URL? in
-            let folder = directory.appending(path: folderName, directoryHint: .isDirectory)
-            return FileManager.default.fileExists(atPath: folder.path) ? folder : nil
+        let folderName = SessionExportLayout.folderName(for: session, timeZone: .current)
+        let state: SessionExportState?
+        do {
+            let existing = try await exportDestination.withAccess { directory -> URL? in
+                let folder = directory.appending(path: folderName, directoryHint: .isDirectory)
+                return SessionExportLayout.isCompleteExport(folder: folder, audioSource: audioSource)
+                    ? folder
+                    : nil
+            }
+            state = existing.map(SessionExportState.exported)
+        } catch {
+            state = .failed("書き出し先を確認できません: \(error.localizedDescription)")
         }
-        if let folder = existing ?? nil, sessionExports[sessionID] == nil {
-            sessionExports[sessionID] = .exported(folder)
+        if let state, sessionExports[sessionID] == nil {
+            sessionExports[sessionID] = state
         }
     }
 }

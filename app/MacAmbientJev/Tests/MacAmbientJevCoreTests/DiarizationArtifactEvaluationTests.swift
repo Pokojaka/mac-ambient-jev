@@ -2,17 +2,28 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+private let resolver = DiarizationEvaluationArtifact.OverflowResolver(
+    minCleanSpeechMilliseconds: 500
+)
+
 @Test
 func diarizationArtifactDecodesRawAndPublicSpans() throws {
     let data = Data(#"""
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "spans": [
         {"start_ms":0,"end_ms":1000,"speaker":{"kind":"tracked","index":1}}
       ],
       "raw_spans": [
         {"start_ms":0,"end_ms":1000,"speaker_label":"speaker_0"}
-      ]
+      ],
+      "overflow_resolver": {
+        "embedding_model": "titanet",
+        "embedding_revision": "rev",
+        "match_threshold": 0.8,
+        "ambiguity_margin": 0.05,
+        "min_clean_speech_ms": 500
+      }
     }
     """#.utf8)
 
@@ -21,11 +32,10 @@ func diarizationArtifactDecodesRawAndPublicSpans() throws {
         from: data
     )
 
-    #expect(artifact.schemaVersion == 1)
+    #expect(artifact.schemaVersion == 2)
     #expect(artifact.spans.count == 1)
-    #expect(
-        artifact.rawSpans?.first?.speakerLabel == "speaker_0"
-    )
+    #expect(artifact.rawSpans.first?.speakerLabel == "speaker_0")
+    #expect(artifact.overflowResolver.minCleanSpeechMilliseconds == 500)
 }
 
 @Test
@@ -63,9 +73,10 @@ func diarizationArtifactEvaluationSeparatesStandardAndCollapsedDER()
         )
     }
     let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 1,
+        schemaVersion: 2,
         spans: publicSpans,
-        rawSpans: rawSpans
+        rawSpans: rawSpans,
+        overflowResolver: resolver
     )
 
     let report = try DiarizationArtifactEvaluator.evaluate(
@@ -73,54 +84,24 @@ func diarizationArtifactEvaluationSeparatesStandardAndCollapsedDER()
         artifact: artifact
     )
 
-    #expect(report.standard?.der == 0)
+    #expect(report.standard.der == 0)
     #expect(report.collapsed.der == 0)
-}
-
-@Test
-func diarizationArtifactEvaluationKeepsStandardUnmeasuredWithoutRawSpans()
-    throws
-{
-    let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 1,
-        spans: [
-            DiarizationArtifactSpan(
-                startMilliseconds: 0,
-                endMilliseconds: 1_000,
-                speaker: try .tracked(1)
-            )
-        ],
-        rawSpans: nil
-    )
-    let reference = [
-        SourceSpeakerSpan(
-            startMilliseconds: 0,
-            endMilliseconds: 1_000,
-            speakerLabel: "person-1"
-        )
-    ]
-
-    let report = try DiarizationArtifactEvaluator.evaluate(
-        reference: reference,
-        artifact: artifact
-    )
-
-    #expect(report.standard == nil)
-    #expect(report.collapsed.der == 0)
+    #expect(report.evaluatorVersion == DiarizationArtifactEvaluator.version)
 }
 
 @Test
 func diarizationArtifactEvaluationRejectsUnknownSchema() {
     let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 2,
+        schemaVersion: 1,
         spans: [],
-        rawSpans: []
+        rawSpans: [],
+        overflowResolver: resolver
     )
 
     #expect(
         throws:
             DiarizationArtifactEvaluationError
-            .unsupportedSchemaVersion(2)
+            .unsupportedSchemaVersion(1)
     ) {
         _ = try DiarizationArtifactEvaluator.evaluate(
             reference: [],
@@ -148,14 +129,16 @@ func diarizationArtifactEvaluationRejectsInvalidPublicSpan()
     throws
 {
     let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 1,
+        schemaVersion: 2,
         spans: [
             DiarizationArtifactSpan(
                 startMilliseconds: 1_000,
                 endMilliseconds: 1_000,
                 speaker: try .tracked(1)
             )
-        ]
+        ],
+        rawSpans: [],
+        overflowResolver: resolver
     )
 
     #expect(
@@ -173,7 +156,7 @@ func diarizationArtifactEvaluationRejectsInvalidPublicSpan()
 @Test
 func diarizationArtifactEvaluationRejectsEmptyRawSpeakerLabel() {
     let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 1,
+        schemaVersion: 2,
         spans: [],
         rawSpans: [
             DiarizationRawSpan(
@@ -181,7 +164,8 @@ func diarizationArtifactEvaluationRejectsEmptyRawSpeakerLabel() {
                 endMilliseconds: 1_000,
                 speakerLabel: "  "
             )
-        ]
+        ],
+        overflowResolver: resolver
     )
 
     #expect(
@@ -199,8 +183,10 @@ func diarizationArtifactEvaluationRejectsEmptyRawSpeakerLabel() {
 @Test
 func diarizationArtifactEvaluationRejectsInvalidReferenceSpan() {
     let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 1,
-        spans: []
+        schemaVersion: 2,
+        spans: [],
+        rawSpans: [],
+        overflowResolver: resolver
     )
     let reference = [
         SourceSpeakerSpan(
@@ -225,7 +211,7 @@ func diarizationArtifactEvaluationRejectsInvalidReferenceSpan() {
 @Test
 func diarizationArtifactEvaluationRejectsInvalidRawSpan() {
     let artifact = DiarizationEvaluationArtifact(
-        schemaVersion: 1,
+        schemaVersion: 2,
         spans: [],
         rawSpans: [
             DiarizationRawSpan(
@@ -233,7 +219,8 @@ func diarizationArtifactEvaluationRejectsInvalidRawSpan() {
                 endMilliseconds: 999,
                 speakerLabel: "stream-1"
             )
-        ]
+        ],
+        overflowResolver: resolver
     )
 
     #expect(
@@ -246,4 +233,66 @@ func diarizationArtifactEvaluationRejectsInvalidRawSpan() {
             artifact: artifact
         )
     }
+}
+
+@Test
+func diarizationArtifactEvaluationRejectsNonPositiveCleanSpeechGate() {
+    let artifact = DiarizationEvaluationArtifact(
+        schemaVersion: 2,
+        spans: [],
+        rawSpans: [],
+        overflowResolver: .init(minCleanSpeechMilliseconds: 0)
+    )
+
+    #expect(
+        throws: DiarizationArtifactEvaluationError.invalidMinCleanSpeech(0)
+    ) {
+        _ = try DiarizationArtifactEvaluator.evaluate(
+            reference: [],
+            artifact: artifact
+        )
+    }
+}
+
+@Test
+func diarizationReportWritesUnmeasurableMetricsAsNull() throws {
+    let artifact = DiarizationEvaluationArtifact(
+        schemaVersion: 2,
+        spans: [
+            DiarizationArtifactSpan(
+                startMilliseconds: 0,
+                endMilliseconds: 1_000,
+                speaker: try .tracked(1)
+            )
+        ],
+        rawSpans: [
+            DiarizationRawSpan(
+                startMilliseconds: 0,
+                endMilliseconds: 1_000,
+                speakerLabel: "stream-1"
+            )
+        ],
+        overflowResolver: resolver
+    )
+    let report = try DiarizationArtifactEvaluator.evaluate(
+        reference: [
+            SourceSpeakerSpan(
+                startMilliseconds: 0,
+                endMilliseconds: 1_000,
+                speakerLabel: "person-1"
+            )
+        ],
+        artifact: artifact
+    )
+
+    let object = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(report)
+    ) as! [String: Any]
+    let collapsed = object["collapsed"] as! [String: Any]
+    let standard = object["standard"] as! [String: Any]
+
+    #expect(collapsed["other_precision"] is NSNull)
+    #expect(collapsed["overflow_detection_recall"] is NSNull)
+    #expect(standard["overlap_recall"] is NSNull)
+    #expect(standard["speaker_switch_boundary_mae_ms"] is NSNull)
 }

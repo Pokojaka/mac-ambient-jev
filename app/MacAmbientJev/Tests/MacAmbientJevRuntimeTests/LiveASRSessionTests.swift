@@ -335,44 +335,31 @@ func liveASRFailureKeepsRunUnsuccessfulForFallback() async throws {
     #expect(completion.failedCount == 1)
 }
 
-
 @Test
-func liveASRRegistrationIsRecoverableBeforeInferenceStarts() async throws {
-    let fixture = try await makeLiveASRFixture()
+func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async throws {
+    let fixture = try await makeLiveASRFixture(failOnCall: 1)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test",
-        segmentID: "seg_000001",
-        startFrame: 0,
-        endFrame: 4_000
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
     )
+    _ = try await fixture.session.register(segments: [segment])
 
-    let registered = try await fixture.session.register(
-        segments: [segment]
-    )
-    #expect(registered.completedCount == 0)
-    #expect(registered.failedCount == 0)
-    #expect(registered.pendingCount == 1)
+    let eventsURL = fixture.root.appending(path: "events.jsonl")
+    let backupURL = fixture.root.appending(path: "events.backup")
+    try FileManager.default.moveItem(at: eventsURL, to: backupURL)
+    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    await #expect(throws: (any Error).self) {
+        try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    }
+    try FileManager.default.removeItem(at: eventsURL)
+    try FileManager.default.moveItem(at: backupURL, to: eventsURL)
 
-    let countsBeforeInference = await fixture.engine.counts()
-    #expect(countsBeforeInference.prepare == 0)
-    #expect(countsBeforeInference.transcribe == 0)
-
-    let recovered = try SessionRecovery.recoverJSONL(
-        Data(
-            contentsOf: fixture.root.appending(path: "events.jsonl")
-        )
-    )
-    let plan = try EventLogRecoveryAnalyzer().latestASRPlan(
-        lines: recovered.lines
-    )
-
-    #expect(plan?.segmentationRunID == "seg_live_test")
-    #expect(plan?.asrRunID == "asr_live_test")
-    #expect(plan?.pendingSegments == [segment])
-    #expect(plan?.hasFailures == false)
-    #expect(plan?.runSucceeded == false)
+    let retried = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    #expect(retried.failedCount == 0)
+    #expect(retried.completedCount == 1)
+    #expect(retried.pendingCount == 0)
+    #expect(await fixture.engine.counts().transcribe == 2)
 }
 
 @Test

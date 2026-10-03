@@ -43,7 +43,6 @@ enum MicSpeechLevelMeasurement {
 protocol VADChunkSegmenting: Sendable {
     func process16kChunk(_ samples: [Float]) async throws -> VADChunkOutput
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference]
-    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange?
 }
 
 actor FluidVADSegmentationEngine: VADChunkSegmenting {
@@ -140,14 +139,6 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     }
 
     func finish(totalCanonicalFrames: Int64) async -> [SegmentReference] {
-        assembler.finish(atFrame: totalCanonicalFrames)
-    }
-
-    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
-        assembler.openSpeechRange(upToFrame: durableFrame)
-    }
-
-    func reset() {
-        streamState = VadStreamState.initial()
+        assembler.speechEnded(atFrame: totalCanonicalFrames)
     }
 }

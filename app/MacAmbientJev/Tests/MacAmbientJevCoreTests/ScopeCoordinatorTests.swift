@@ -22,6 +22,28 @@ private struct DistantEvidenceProvider: ProximityEvidenceProvider {
     }
 }
 
+private struct UnknownEvidenceProvider: ProximityEvidenceProvider {
+    func evidenceSpans(
+        startFrame: Int64,
+        endFrame: Int64,
+        speakerSpans: [SpeakerSpan]
+    ) async throws -> [ProximityEvidenceSpan] {
+        [ProximityEvidenceSpan(startFrame: startFrame, endFrame: endFrame, evidence: .unknown)]
+    }
+}
+
+private struct UnreadableAudioError: Error, Equatable {}
+
+private struct UnreadableEvidenceProvider: ProximityEvidenceProvider {
+    func evidenceSpans(
+        startFrame: Int64,
+        endFrame: Int64,
+        speakerSpans: [SpeakerSpan]
+    ) async throws -> [ProximityEvidenceSpan] {
+        throw UnreadableAudioError()
+    }
+}
+
 private struct MixedEvidenceProvider: ProximityEvidenceProvider {
     func evidenceSpans(
         startFrame: Int64,
@@ -59,7 +81,7 @@ func unknownScopeProviderNeverCreatesBackground() async throws {
         sessionID: UUID(),
         runID: "scope-test",
         writer: writer,
-        provider: UnknownProximityEvidenceProvider(),
+        provider: UnknownEvidenceProvider(),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
 
@@ -246,4 +268,36 @@ func scopeAndDisplayAgreeOnOutOfOrderSceneTransitions() async throws {
     #expect(result.scopeSpans.map(\.scope) == [.background])
     #expect(segment.scopeSpans.map(\.scope) == [.background])
     #expect(LiveTranscriptProjection().rows(for: result.materializedSegments).isEmpty)
+}
+
+@Test
+func unreadableProximityAudioFailsTheScopeRun() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let coordinator = ScopeCoordinator(
+        sessionID: UUID(),
+        runID: "scope-unreadable",
+        writer: try SessionWriter(sessionURL: root),
+        provider: UnreadableEvidenceProvider(),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let events: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "seg-1", startFrame: 0, endFrame: 1_000),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "seg-1", text: "重要な発話")
+    ]
+
+    await #expect(throws: UnreadableAudioError()) {
+        try await coordinator.process(
+            existingEvents: events,
+            speakerSpans: [],
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        )
+    }
+    let eventsURL = root.appending(path: "events.jsonl")
+    if FileManager.default.fileExists(atPath: eventsURL.path) {
+        let log = try String(contentsOf: eventsURL, encoding: .utf8)
+        #expect(!log.contains("processing.run.completed"))
+    }
 }

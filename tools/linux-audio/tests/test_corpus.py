@@ -51,3 +51,21 @@ def test_prepare_resource_requires_locked_sha256(tmp_path):
             },
             cache_root=tmp_path / "cache",
         )
+
+
+def test_prepare_resource_rejects_cached_file_with_wrong_hash(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    destination = cache / "fixture.bin"
+    destination.write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        prepare_resource(
+            {
+                "url": "unused",
+                "filename": "fixture.bin",
+                "sha256": hashlib.sha256(b"original").hexdigest(),
+            },
+            cache_root=cache,
+        )
+    assert destination.read_bytes() == b"tampered"

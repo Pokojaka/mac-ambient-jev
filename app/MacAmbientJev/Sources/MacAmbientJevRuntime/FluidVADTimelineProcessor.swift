@@ -147,11 +147,6 @@ actor FluidVADTimelineProcessor {
         return takeUndelivered()
     }
 
-    func openSpeechRange(upToFrame durableFrame: Int64) async -> OpenSpeechRange? {
-        guard !finished else { return nil }
-        return await engine.openSpeechRange(upToFrame: durableFrame)
-    }
-
     private func drainFullVADChunks() async throws {
         while pending16k.count - pendingOffset >= VadManager.chunkSize {
             let end = pendingOffset + VadManager.chunkSize

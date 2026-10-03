@@ -50,12 +50,11 @@ func speakerDisplayMapperIgnoresZeroLengthSpansAndKeepsEarliestValidStart() {
 }
 
 @Test
-func speakerDisplayMapperKeepsMissingAndUnmappedSpeakersUnknown() {
+func speakerDisplayMapperKeepsUnmappedSpeakersUnknown() {
     let labels = SpeakerDisplayMapper.makeLabels(
         spans: [SpeakerSpan(speakerID: "A", startFrame: 0, endFrame: 10, confidence: nil)]
     )
 
-    #expect(SpeakerDisplayMapper.label(for: nil, labels: labels) == "UNKNOWN")
     #expect(SpeakerDisplayMapper.label(for: "missing", labels: labels) == "UNKNOWN")
     #expect(SpeakerDisplayMapper.label(for: "A", labels: labels) == "Speaker 1")
 }
@@ -70,10 +69,11 @@ func speakerDisplayMapperDeduplicatesOtherInMixedTurns() {
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
         text: "会話", scene: .unknown,
         speakers: [
-            MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 600, confidence: nil),
-            MaterializedSpeakerSpan(id: "S8", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil),
-            MaterializedSpeakerSpan(id: "S9", startMilliseconds: 700, endMilliseconds: 1_000, confidence: nil)
-        ], scopeSpans: [], contentPriority: nil
+            MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 600, confidence: nil, displayLabel: nil),
+            MaterializedSpeakerSpan(id: "S8", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil, displayLabel: nil),
+            MaterializedSpeakerSpan(id: "S9", startMilliseconds: 700, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
+        ], scopeSpans: [], contentPriority: nil,
+        isDiarized: true
     )
 
     #expect(SpeakerDisplayMapper.turnLabels(
@@ -84,19 +84,21 @@ func speakerDisplayMapperDeduplicatesOtherInMixedTurns() {
 @Test
 func liveProjectionSummarizesMultipleSpeakersAndKeepsUnknownLabel() throws {
     let overlappingSpeakers = [
-        MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 1_000, confidence: nil),
-        MaterializedSpeakerSpan(id: "S2", startMilliseconds: 500, endMilliseconds: 1_000, confidence: nil)
+        MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 1_000, confidence: nil, displayLabel: nil),
+        MaterializedSpeakerSpan(id: "S2", startMilliseconds: 500, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
     ]
     let segments = [
         MaterializedTranscriptSegment(
             segmentID: "overlap", startMilliseconds: 0, endMilliseconds: 1_000,
             text: "重なり", scene: .unknown, speakers: overlappingSpeakers,
-            scopeSpans: [], contentPriority: nil
+            scopeSpans: [], contentPriority: nil,
+            isDiarized: true
         ),
         MaterializedTranscriptSegment(
             segmentID: "unknown", startMilliseconds: 1_000, endMilliseconds: 2_000,
             text: "不明", scene: .unknown, speakers: [],
-            scopeSpans: [], contentPriority: nil
+            scopeSpans: [], contentPriority: nil,
+            isDiarized: true
         )
     ]
 
@@ -130,11 +132,26 @@ func projectionShowsNoSpeakerHeadingBeforeDiarization() {
         MaterializedTranscriptSegment(
             segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
             text: "ライブ", scene: .unknown, speakers: [],
-            scopeSpans: [], contentPriority: nil
+            scopeSpans: [], contentPriority: nil, isDiarized: false
         )
     ]
 
     let rows = LiveTranscriptProjection().rows(for: segments)
 
     #expect(rows.map(\.displaySpeakerLabels) == [[]])
+}
+
+@Test
+func projectionShowsUnknownForDiarizedResultWithoutAnySpeakerSpan() {
+    let segments = [
+        MaterializedTranscriptSegment(
+            segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
+            text: "確定", scene: .unknown, speakers: [],
+            scopeSpans: [], contentPriority: nil, isDiarized: true
+        )
+    ]
+
+    let rows = LiveTranscriptProjection().rows(for: segments)
+
+    #expect(rows.map(\.displaySpeakerLabels) == [["UNKNOWN"]])
 }

@@ -73,8 +73,8 @@ public struct SessionLayout: Sendable, Equatable {
     /// The session's source audio, chosen only by how the session was created.
     /// Returns nil for a recording that captured no audio.
     public func audioSource(for manifest: SessionManifest) throws -> SessionAudioSource? {
-        switch manifest.sourceKind {
-        case .live:
+        switch manifest.source {
+        case .recording:
             guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory),
                   checkpoint.committedFrames > 0 else {
                 return nil
@@ -82,7 +82,7 @@ public struct SessionLayout: Sendable, Equatable {
             try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
                 .validateChunkFiles()
             return .recordedTimeline(checkpoint)
-        case .importedFile:
+        case .imported:
             return .importedOriginal(try importedOriginalURL())
         }
     }

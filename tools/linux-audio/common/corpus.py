@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import pathlib
 import tempfile
 import urllib.request
 from typing import Any
+
+from common.files import sha256_file
 
 
 def load_manifest(path: pathlib.Path) -> dict[str, Any]:
@@ -18,14 +19,6 @@ def load_manifest(path: pathlib.Path) -> dict[str, Any]:
     if not isinstance(resources, list):
         raise ValueError("resources must be a list")
     return data
-
-
-def _sha256(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def prepare_resource(
@@ -55,9 +48,13 @@ def prepare_resource(
     cache_root.mkdir(parents=True, exist_ok=True)
     destination = cache_root / filename
     if destination.exists():
-        if _sha256(destination) == expected:
-            return destination
-        destination.unlink()
+        cached = sha256_file(destination)
+        if cached != expected:
+            raise ValueError(
+                f"cached {destination} has SHA-256 {cached}, "
+                f"expected {expected}; inspect or remove it manually"
+            )
+        return destination
 
     fd, temp_name = tempfile.mkstemp(
         prefix=filename + ".",
@@ -74,7 +71,7 @@ def prepare_resource(
                 if not chunk:
                     break
                 output.write(chunk)
-        actual = _sha256(temp_path)
+        actual = sha256_file(temp_path)
         if actual != expected:
             raise ValueError(
                 f"SHA-256 mismatch for "
@@ -83,7 +80,6 @@ def prepare_resource(
             )
         temp_path.replace(destination)
         return destination
-    except Exception:
+    except BaseException:
         temp_path.unlink(missing_ok=True)
-        destination.unlink(missing_ok=True)
         raise

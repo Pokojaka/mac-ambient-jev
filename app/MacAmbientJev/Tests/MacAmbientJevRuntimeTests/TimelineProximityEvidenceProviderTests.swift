@@ -197,3 +197,21 @@ func timelineProximityEvidenceKeepsOverlappingSpeechUnknown() async throws {
     #expect(evidence.count == 1)
     #expect(evidence[0].evidence.distanceHint == .unknown)
 }
+
+@Test
+func unreadableTimelineChunkFailsInsteadOfReportingUnknown() async throws {
+    let fixture = try await makeProximityFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let firstChunk = try #require(fixture.reader.checkpoint.chunkFiles.first)
+    try FileManager.default.removeItem(at: fixture.root.appending(path: firstChunk))
+
+    let provider = TimelineProximityEvidenceProvider(reader: fixture.reader)
+
+    await #expect(throws: TimelineProximityEvidenceError.self) {
+        try await provider.evidenceSpans(
+            startFrame: 0,
+            endFrame: 16_000,
+            speakerSpans: fixture.spans
+        )
+    }
+}

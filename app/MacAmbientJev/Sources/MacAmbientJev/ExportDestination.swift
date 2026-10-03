@@ -3,6 +3,8 @@ import Foundation
 enum ExportDestinationError: LocalizedError {
     case notSet
     case unavailable
+    case bookmarkRefreshFailed(String)
+    case autoExportSettingUnreadable
 
     var errorDescription: String? {
         switch self {
@@ -10,6 +12,10 @@ enum ExportDestinationError: LocalizedError {
             "書き出し先フォルダが設定されていません。設定の「保存先」で選んでください"
         case .unavailable:
             "書き出し先フォルダが見つかりません。設定の「保存先」で選び直してください"
+        case .bookmarkRefreshFailed(let reason):
+            "書き出し先フォルダの参照を更新できません。設定の「保存先」で選び直してください: \(reason)"
+        case .autoExportSettingUnreadable:
+            "自動書き出しの設定を読めないため、自動では書き出しません。設定の「保存先」で切り替え直してください"
         }
     }
 }
@@ -17,12 +23,14 @@ enum ExportDestinationError: LocalizedError {
 @MainActor
 struct ExportDestinationStore {
     static let autoExportKey = "export.autoExport"
+    /// Auto-export is on until the user turns it off.
+    static let autoExportInitialValue = true
     private static let bookmarkKey = "export.destinationBookmark"
     private static let pathKey = "export.destinationPath"
 
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults) {
         self.defaults = defaults
     }
 
@@ -30,8 +38,16 @@ struct ExportDestinationStore {
         defaults.data(forKey: Self.bookmarkKey) == nil ? nil : defaults.string(forKey: Self.pathKey)
     }
 
-    var isAutoExportEnabled: Bool {
-        defaults.object(forKey: Self.autoExportKey) as? Bool ?? true
+    /// Throws when the stored value is not a Bool, so a damaged setting never turns on
+    /// writes to the external folder.
+    func isAutoExportEnabled() throws -> Bool {
+        guard let stored = defaults.object(forKey: Self.autoExportKey) else {
+            return Self.autoExportInitialValue
+        }
+        guard let value = stored as? Bool else {
+            throw ExportDestinationError.autoExportSettingUnreadable
+        }
+        return value
     }
 
     func save(directory: URL) throws {
@@ -49,12 +65,15 @@ struct ExportDestinationStore {
             throw ExportDestinationError.notSet
         }
         var isStale = false
-        guard let directory = try? URL(
-            resolvingBookmarkData: bookmark,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale
-        ) else {
+        let directory: URL
+        do {
+            directory = try URL(
+                resolvingBookmarkData: bookmark,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+        } catch {
             throw ExportDestinationError.unavailable
         }
 
@@ -64,11 +83,21 @@ struct ExportDestinationStore {
                 directory.stopAccessingSecurityScopedResource()
             }
         }
-        guard (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+        let isDirectory: Bool
+        do {
+            isDirectory = try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+        } catch {
+            throw ExportDestinationError.unavailable
+        }
+        guard isDirectory else {
             throw ExportDestinationError.unavailable
         }
         if isStale {
-            try? save(directory: directory)
+            do {
+                try save(directory: directory)
+            } catch {
+                throw ExportDestinationError.bookmarkRefreshFailed(error.localizedDescription)
+            }
         }
         return try await body(directory)
     }

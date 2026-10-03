@@ -1,9 +1,190 @@
 import Foundation
 
-public enum EventLogTranscriptReaderError: Error, Equatable {
-    case malformedEvent
+public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
+    /// The line is not a JSON event with `event_seq` and `event_type`.
+    case unreadableLine(index: Int)
+    /// An event the reader needs is missing a required field or has a field of the wrong type.
+    case malformedEvent(eventSeq: UInt64, eventType: String)
+    /// An `asr.completed` event whose `outcome` contradicts its `text`.
+    case asrOutcomeMismatch(eventSeq: UInt64)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unreadableLine(let index):
+            "イベントログの \(index + 1) 行目を読めません"
+        case .malformedEvent(let eventSeq, let eventType):
+            "イベントログの \(eventType)（event_seq \(eventSeq)）が壊れています"
+        case .asrOutcomeMismatch(let eventSeq):
+            "イベントログの asr.completed（event_seq \(eventSeq)）の outcome が本文と一致しません"
+        }
+    }
 }
 
+/// One `events.jsonl` line. The envelope header is decoded first; a typed body is decoded
+/// only for events the caller needs, so other runs and unknown event types stay unparsed.
+struct EventLogLine {
+    struct Header: Decodable {
+        let eventSeq: UInt64
+        let eventType: String
+        let processingRunID: String?
+        let segmentationRunID: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case eventSeq = "event_seq"
+            case eventType = "event_type"
+            case processingRunID = "processing_run_id"
+            case segmentationRunID = "segmentation_run_id"
+        }
+    }
+
+    let header: Header
+    private let data: Data
+
+    init(index: Int, data: Data) throws {
+        do {
+            header = try JSONDecoder().decode(Header.self, from: data)
+        } catch is DecodingError {
+            throw EventLogTranscriptReaderError.unreadableLine(index: index)
+        }
+        self.data = data
+    }
+
+    func body<Body: Decodable>(_ type: Body.Type) throws -> Body {
+        do {
+            return try JSONDecoder().decode(Body.self, from: data)
+        } catch is DecodingError {
+            throw EventLogTranscriptReaderError.malformedEvent(
+                eventSeq: header.eventSeq,
+                eventType: header.eventType
+            )
+        }
+    }
+
+    static func decode(_ lines: [Data]) throws -> [EventLogLine] {
+        try lines.enumerated().map { try EventLogLine(index: $0.offset, data: $0.element) }
+    }
+}
+
+private enum EventLogKeys: String, CodingKey {
+    case processingRunID = "processing_run_id"
+    case segmentationRunID = "segmentation_run_id"
+    case segmentID = "segment_id"
+    case sourceStartFrame = "source_start_frame"
+    case sourceEndFrame = "source_end_frame"
+    case payload
+}
+
+private struct SegmentCreatedBody: Decodable {
+    let segmentID: String
+    let startFrame: Int64
+    let endFrame: Int64
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: EventLogKeys.self)
+        segmentID = try container.decode(String.self, forKey: .segmentID)
+        startFrame = try container.decode(Int64.self, forKey: .sourceStartFrame)
+        endFrame = try container.decode(Int64.self, forKey: .sourceEndFrame)
+    }
+}
+
+private struct ASRCompletedBody: Decodable {
+    let segmentID: String
+    let text: String
+    let detectedLanguage: String?
+    let outcome: ASRRecognitionOutcome
+
+    private enum PayloadKeys: String, CodingKey {
+        case text
+        case detectedLanguage = "detected_language"
+        case outcome
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: EventLogKeys.self)
+        segmentID = try container.decode(String.self, forKey: .segmentID)
+        let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        text = try payload.decode(String.self, forKey: .text)
+        detectedLanguage = try payload.decodeIfPresent(String.self, forKey: .detectedLanguage)
+        outcome = try payload.decode(ASRRecognitionOutcome.self, forKey: .outcome)
+    }
+}
+
+private struct SpeakerSpanBody: Decodable {
+    let span: SpeakerSpan
+
+    private enum PayloadKeys: String, CodingKey {
+        case speakerID = "speaker_id"
+        case startFrame = "start_frame"
+        case endFrame = "end_frame"
+        case confidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let payload = try decoder.container(keyedBy: EventLogKeys.self)
+            .nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        span = SpeakerSpan(
+            speakerID: try payload.decode(String.self, forKey: .speakerID),
+            startFrame: try payload.decode(Int64.self, forKey: .startFrame),
+            endFrame: try payload.decode(Int64.self, forKey: .endFrame),
+            confidence: try payload.decodeIfPresent(Double.self, forKey: .confidence)
+        )
+    }
+}
+
+private struct SceneChangedBody: Decodable {
+    let frame: Int64
+    let scene: SceneState
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: EventLogKeys.self)
+        frame = try container.decode(Int64.self, forKey: .sourceStartFrame)
+        scene = try container.decode(SceneState.self, forKey: .payload)
+    }
+}
+
+private struct ScopeSpanBody: Decodable {
+    let span: ScopeSpan
+
+    private enum PayloadKeys: String, CodingKey {
+        case startFrame = "start_frame"
+        case endFrame = "end_frame"
+        case scope
+        case confidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let payload = try decoder.container(keyedBy: EventLogKeys.self)
+            .nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        span = ScopeSpan(
+            startFrame: try payload.decode(Int64.self, forKey: .startFrame),
+            endFrame: try payload.decode(Int64.self, forKey: .endFrame),
+            scope: try payload.decode(AcousticScope.self, forKey: .scope),
+            confidence: try payload.decode(Double.self, forKey: .confidence)
+        )
+    }
+}
+
+private struct ContentPriorityBody: Decodable {
+    let segmentID: String
+    let priority: ContentPriority
+    let needsRetry: Bool
+
+    private enum PayloadKeys: String, CodingKey {
+        case priority
+        case needsRetry = "needs_retry"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: EventLogKeys.self)
+        segmentID = try container.decode(String.self, forKey: .segmentID)
+        let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        priority = try payload.decode(ContentPriority.self, forKey: .priority)
+        needsRetry = try payload.decode(Bool.self, forKey: .needsRetry)
+    }
+}
+
+/// Reads the events of the active runs. Events of other runs and unknown event types are skipped;
+/// an active-run event with a missing or mistyped field throws.
 public struct EventLogTranscriptReader: Sendable {
     public init() {}
 
@@ -11,162 +192,84 @@ public struct EventLogTranscriptReader: Sendable {
         lines: [Data],
         activeRuns: ActiveRuns
     ) throws -> [TranscriptEvent] {
-        let dictionaries = try decode(lines: lines)
         var events: [TranscriptEvent] = []
 
-        for event in dictionaries {
-            guard let seq = uint64(event["event_seq"]),
-                  let eventType = event["event_type"] as? String else {
-                continue
-            }
+        for line in try EventLogLine.decode(lines) {
+            let header = line.header
+            let seq = header.eventSeq
 
-            switch eventType {
+            switch header.eventType {
             case "segment.created":
-                guard let segmentationRunID =
-                        event["segmentation_run_id"] as? String,
-                      segmentationRunID == activeRuns.segmentation,
-                      let segmentID =
-                        event["segment_id"] as? String,
-                      let startFrame =
-                        int64(event["source_start_frame"]),
-                      let endFrame =
-                        int64(event["source_end_frame"])
-                else {
-                    continue
-                }
-
+                let segmentationRunID = try requiredRunID(header.segmentationRunID, of: header)
+                guard segmentationRunID == activeRuns.segmentation else { continue }
+                let body = try line.body(SegmentCreatedBody.self)
                 events.append(.segmentCreated(
                     seq: seq,
                     segmentationRunID: segmentationRunID,
-                    segmentID: segmentID,
-                    startFrame: startFrame,
-                    endFrame: endFrame
+                    segmentID: body.segmentID,
+                    startFrame: body.startFrame,
+                    endFrame: body.endFrame
                 ))
 
             case "asr.completed":
-                guard let runID =
-                        event["processing_run_id"] as? String,
-                      runID == activeRuns.asr,
-                      event["segmentation_run_id"] as? String
-                        == activeRuns.segmentation,
-                      let segmentationRunID =
-                        event["segmentation_run_id"] as? String,
-                      let segmentID =
-                        event["segment_id"] as? String,
-                      let payload =
-                        event["payload"] as? [String: Any],
-                      let text = payload["text"] as? String
-                else {
-                    continue
+                let runID = try requiredRunID(header.processingRunID, of: header)
+                let segmentationRunID = try requiredRunID(header.segmentationRunID, of: header)
+                guard runID == activeRuns.asr,
+                      segmentationRunID == activeRuns.segmentation else { continue }
+                let body = try line.body(ASRCompletedBody.self)
+                guard body.outcome == ASRRecognitionOutcome(text: body.text) else {
+                    throw EventLogTranscriptReaderError.asrOutcomeMismatch(eventSeq: seq)
                 }
-
                 events.append(.asrCompleted(
                     seq: seq,
                     runID: runID,
                     segmentationRunID: segmentationRunID,
-                    segmentID: segmentID,
-                    text: text,
-                    detectedLanguage:
-                        payload["detected_language"] as? String
+                    segmentID: body.segmentID,
+                    text: body.text,
+                    detectedLanguage: body.detectedLanguage
                 ))
 
             case "speaker.span":
-                guard event["processing_run_id"] as? String
-                        == activeRuns.diarization,
-                      let runID =
-                        event["processing_run_id"] as? String,
-                      let payload =
-                        event["payload"] as? [String: Any],
-                      let speakerID =
-                        payload["speaker_id"] as? String,
-                      let startFrame =
-                        int64(payload["start_frame"]),
-                      let endFrame =
-                        int64(payload["end_frame"])
-                else {
-                    continue
-                }
-
+                let runID = try requiredRunID(header.processingRunID, of: header)
+                guard runID == activeRuns.diarization else { continue }
+                let span = try line.body(SpeakerSpanBody.self).span
                 events.append(.speakerSpan(
                     seq: seq,
                     runID: runID,
-                    speakerID: speakerID,
-                    startFrame: startFrame,
-                    endFrame: endFrame,
-                    confidence: double(payload["confidence"])
+                    speakerID: span.speakerID,
+                    startFrame: span.startFrame,
+                    endFrame: span.endFrame,
+                    confidence: span.confidence
                 ))
 
             case "scene.changed":
-                guard event["processing_run_id"] as? String
-                        == activeRuns.scene,
-                      let runID =
-                        event["processing_run_id"] as? String,
-                      let frame =
-                        int64(event["source_start_frame"]),
-                      let rawScene = event["payload"] as? String,
-                      let scene = SceneState(rawValue: rawScene)
-                else {
-                    continue
-                }
-
-                events.append(.sceneChanged(
-                    seq: seq,
-                    runID: runID,
-                    atFrame: frame,
-                    scene: scene
-                ))
+                let runID = try requiredRunID(header.processingRunID, of: header)
+                guard runID == activeRuns.scene else { continue }
+                let body = try line.body(SceneChangedBody.self)
+                events.append(.sceneChanged(seq: seq, runID: runID, atFrame: body.frame, scene: body.scene))
 
             case "scope.span":
-                guard event["processing_run_id"] as? String
-                        == activeRuns.scope,
-                      let runID =
-                        event["processing_run_id"] as? String,
-                      let payload =
-                        event["payload"] as? [String: Any],
-                      let startFrame =
-                        int64(payload["start_frame"]),
-                      let endFrame =
-                        int64(payload["end_frame"]),
-                      let rawScope = payload["scope"] as? String,
-                      let scope =
-                        AcousticScope(rawValue: rawScope),
-                      let confidence =
-                        double(payload["confidence"])
-                else {
-                    continue
-                }
-
+                let runID = try requiredRunID(header.processingRunID, of: header)
+                guard runID == activeRuns.scope else { continue }
+                let span = try line.body(ScopeSpanBody.self).span
                 events.append(.scopeSpan(
                     seq: seq,
                     runID: runID,
-                    startFrame: startFrame,
-                    endFrame: endFrame,
-                    scope: scope,
-                    confidence: confidence
+                    startFrame: span.startFrame,
+                    endFrame: span.endFrame,
+                    scope: span.scope,
+                    confidence: span.confidence
                 ))
 
             case "content_priority.assigned":
-                guard event["processing_run_id"] as? String
-                        == activeRuns.contentPriority,
-                      let runID =
-                        event["processing_run_id"] as? String,
-                      let segmentID =
-                        event["segment_id"] as? String,
-                      let payload =
-                        event["payload"] as? [String: Any],
-                      let rawPriority =
-                        payload["priority"] as? String,
-                      let priority =
-                        ContentPriority(rawValue: rawPriority)
-                else {
-                    continue
-                }
-
+                let runID = try requiredRunID(header.processingRunID, of: header)
+                guard runID == activeRuns.contentPriority else { continue }
+                let body = try line.body(ContentPriorityBody.self)
                 events.append(.contentPriority(
                     seq: seq,
                     runID: runID,
-                    segmentID: segmentID,
-                    priority: priority
+                    segmentID: body.segmentID,
+                    priority: body.priority
                 ))
 
             default:
@@ -177,32 +280,15 @@ public struct EventLogTranscriptReader: Sendable {
         return events.sorted { $0.eventSeq < $1.eventSeq }
     }
 
-    private func decode(
-        lines: [Data]
-    ) throws -> [[String: Any]] {
-        try lines.map { line in
-            guard let object = try JSONSerialization.jsonObject(
-                with: line
-            ) as? [String: Any] else {
-                throw EventLogTranscriptReaderError.malformedEvent
-            }
-            return object
+    /// The run ID a known event type is keyed by; its absence makes the event unattributable.
+    private func requiredRunID(_ value: String?, of header: EventLogLine.Header) throws -> String {
+        guard let value else {
+            throw EventLogTranscriptReaderError.malformedEvent(
+                eventSeq: header.eventSeq,
+                eventType: header.eventType
+            )
         }
-    }
-
-    private func uint64(_ value: Any?) -> UInt64? {
-        (value as? NSNumber)?.uint64Value
-            ?? value as? UInt64
-    }
-
-    private func int64(_ value: Any?) -> Int64? {
-        (value as? NSNumber)?.int64Value
-            ?? value as? Int64
-    }
-
-    private func double(_ value: Any?) -> Double? {
-        (value as? NSNumber)?.doubleValue
-            ?? value as? Double
+        return value
     }
 }
 
@@ -222,66 +308,39 @@ public struct ContentPriorityRecoveryState: Sendable, Equatable {
     }
 }
 
+/// Reads every run's `content_priority.assigned` events; a malformed one throws.
 public struct JevRetryAnalyzer: Sendable {
     public init() {}
 
     public func contentPriorityState(
         lines: [Data]
     ) throws -> ContentPriorityRecoveryState {
-        var latestBySegment: [
-            String: (
-                seq: UInt64,
-                runID: String,
-                needsRetry: Bool
-            )
-        ] = [:]
+        var latestBySegment: [String: (seq: UInt64, needsRetry: Bool)] = [:]
         var latestRun: (seq: UInt64, runID: String)?
 
-        for line in lines {
-            guard let event = try JSONSerialization.jsonObject(
-                with: line
-            ) as? [String: Any] else {
-                throw EventLogTranscriptReaderError.malformedEvent
+        for line in try EventLogLine.decode(lines)
+        where line.header.eventType == "content_priority.assigned" {
+            let seq = line.header.eventSeq
+            guard let runID = line.header.processingRunID else {
+                throw EventLogTranscriptReaderError.malformedEvent(
+                    eventSeq: seq,
+                    eventType: line.header.eventType
+                )
             }
-            guard event["event_type"] as? String
-                    == "content_priority.assigned",
-                  let seq = uint64(event["event_seq"]),
-                  let runID =
-                    event["processing_run_id"] as? String,
-                  let segmentID =
-                    event["segment_id"] as? String,
-                  let payload =
-                    event["payload"] as? [String: Any],
-                  let needsRetry =
-                    payload["needs_retry"] as? Bool
-            else {
-                continue
-            }
+            let body = try line.body(ContentPriorityBody.self)
 
-            if let currentLatest = latestRun {
-                if seq > currentLatest.seq {
-                    latestRun = (seq, runID)
-                }
-            } else {
+            if latestRun.map({ seq > $0.seq }) != false {
                 latestRun = (seq, runID)
             }
-
-            if let existing = latestBySegment[segmentID],
-               existing.seq >= seq {
+            if let existing = latestBySegment[body.segmentID], existing.seq >= seq {
                 continue
             }
-            latestBySegment[segmentID] = (
-                seq,
-                runID,
-                needsRetry
-            )
+            latestBySegment[body.segmentID] = (seq, body.needsRetry)
         }
 
         let pending = latestBySegment
             .filter { $0.value.needsRetry }
-            .sorted { lhs, rhs in
-                lhs.value.seq < rhs.value.seq
-            }
+            .sorted { $0.value.seq < $1.value.seq }
             .map(\.key)
 
         return ContentPriorityRecoveryState(
@@ -289,10 +348,5 @@ public struct JevRetryAnalyzer: Sendable {
             pendingSegmentIDs: pending,
             hasAssignments: !latestBySegment.isEmpty
         )
-    }
-
-    private func uint64(_ value: Any?) -> UInt64? {
-        (value as? NSNumber)?.uint64Value
-            ?? value as? UInt64
     }
 }

@@ -13,21 +13,30 @@ func systemAudioSessionPersistsSourceAndCatalogDisplaysIt() throws {
     )
     let id = UUID()
     let sessionURL = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: id, sourceKind: .live, captureSource: .systemAudio
+        paths: paths, sessionID: id, source: .recording(.systemAudio)
     )
     let data = try Data(contentsOf: sessionURL.appending(path: "session.json"))
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let manifest = try decoder.decode(SessionManifest.self, from: data)
-    #expect(manifest.captureSource == .systemAudio)
-    #expect(try SavedSessionCatalog().list(sessionsRoot: paths.sessionsRoot).first?.captureSource == .systemAudio)
+    #expect(manifest.source == .recording(.systemAudio))
+    guard case .readable(let session) = try SavedSessionCatalog().list(sessionsRoot: paths.sessionsRoot).first else {
+        Issue.record("expected a readable session")
+        return
+    }
+    #expect(session.source == .recording(.systemAudio))
 }
 
-@Test
-func sessionManifestWithoutCaptureSourceFailsToDecode() {
-    let id = UUID()
+@Test(arguments: [
+    #""source_kind":"recording""#,
+    #""source_kind":"recording","original_filename":"a.wav""#,
+    #""source_kind":"imported""#,
+    #""source_kind":"imported","original_filename":"""#,
+    #""source_kind":"imported","capture_source":"microphone""#,
+])
+func sessionManifestRequiresTheFieldsOfItsSourceKind(_ sourceFields: String) {
     let json = """
-    {"session_id":"\(id.uuidString)","created_at":"2026-09-28T00:00:00Z","source_kind":"live"}
+    {"session_id":"\(UUID().uuidString)","created_at":"2026-09-28T00:00:00Z",\(sourceFields)}
     """
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601

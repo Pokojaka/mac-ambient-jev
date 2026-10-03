@@ -11,9 +11,7 @@ public struct SessionBootstrapper {
     public func createSession(
         paths: AppPaths,
         sessionID: UUID,
-        sourceKind: SessionSourceKind,
-        originalFilename: String? = nil,
-        captureSource: CaptureSource,
+        source: SessionSource,
         createdAt: Date = Date()
     ) throws -> URL {
         let sessionURL = paths.sessionsRoot.appending(
@@ -23,9 +21,7 @@ public struct SessionBootstrapper {
         let manifest = SessionManifest(
             sessionID: sessionID,
             createdAt: createdAt,
-            sourceKind: sourceKind,
-            originalFilename: originalFilename,
-            captureSource: captureSource
+            source: source
         )
 
         let encoder = JSONEncoder()

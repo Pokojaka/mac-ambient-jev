@@ -1,30 +1,52 @@
 import SwiftUI
 import MacAmbientJevCore
 
+extension TranscriptDisplayState {
+    /// Whole-screen badge; rows themselves carry no live/final marker.
+    var badge: (text: String, systemImage: String)? {
+        switch self {
+        case .empty: nil
+        case .live: ("ライブ（暫定）", "dot.radiowaves.left.and.right")
+        case .finalizing: ("確定処理中", "hourglass")
+        case .finalized: ("確定済み", "checkmark.seal")
+        }
+    }
+}
+
 struct LiveTranscriptView: View {
+    static let lowPriorityCollapsedTitle = "低優先度の発話"
+
     @ObservedObject var viewModel: LiveTranscriptViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expandedLowPriorityRowIDs: Set<String> = []
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcriptHeader
-            Divider()
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                transcriptHeader(proxy: proxy)
+                Divider()
 
-            if viewModel.rows.isEmpty {
-                ContentUnavailableView(
-                    "文字起こしはまだありません",
-                    systemImage: "waveform",
-                    description: Text("録音を開始するか、音声ファイルを読み込むとここに文字起こしが表示されます。")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                transcriptList
+                if viewModel.rows.isEmpty {
+                    ContentUnavailableView(
+                        "文字起こしはまだありません",
+                        systemImage: "waveform",
+                        description: Text("録音を開始するか、音声ファイルを読み込むとここに文字起こしが表示されます。")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    transcriptList(proxy: proxy)
+                }
             }
         }
     }
 
-    private var transcriptHeader: some View {
+    private func transcriptHeader(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: AppSpacing.sm) {
+            if let badge = viewModel.displayState.badge {
+                Label(badge.text, systemImage: badge.systemImage)
+                    .font(.caption.weight(.semibold))
+            }
+
             Text(viewModel.statusText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -34,6 +56,7 @@ struct LiveTranscriptView: View {
             if !viewModel.autoFollowEnabled {
                 Button {
                     viewModel.resumeAutoFollow()
+                    scrollToLatest(proxy: proxy)
                 } label: {
                     Label("最新へ戻る", systemImage: "arrow.down")
                 }
@@ -43,34 +66,39 @@ struct LiveTranscriptView: View {
         .padding(.vertical, AppSpacing.sm)
     }
 
-    private var transcriptList: some View {
-        ScrollViewReader { proxy in
-            let rows = viewModel.rows
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { entry in
-                        transcriptRow(entry.element, speakerHeading: Self.speakerHeading(for: entry.offset, in: rows))
-                            .id(entry.element.id)
-                    }
+    private func transcriptList(proxy: ScrollViewProxy) -> some View {
+        let rows = viewModel.rows
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { entry in
+                    transcriptRow(entry.element, speakerHeading: Self.speakerHeading(for: entry.offset, in: rows))
+                        .id(entry.element.id)
                 }
-                .padding(AppSpacing.lg)
             }
-            .onChange(of: viewModel.rows.count) {
-                guard viewModel.autoFollowEnabled,
-                      let last = viewModel.rows.last else { return }
+            .padding(AppSpacing.lg)
+        }
+        .onChange(of: viewModel.rows.count) {
+            guard viewModel.autoFollowEnabled else { return }
+            scrollToLatest(proxy: proxy)
+        }
+        .onScrollPhaseChange { _, phase in
+            // Only user-driven scrolling stops following; the app's own animated scrollTo reports .animating.
+            switch phase {
+            case .interacting, .decelerating:
+                viewModel.pauseAutoFollow()
+            case .idle, .tracking, .animating:
+                break
+            }
+        }
+    }
 
-                if reduceMotion {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                } else {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
-            }
-            .onScrollPhaseChange { _, phase in
-                if phase != .idle {
-                    viewModel.pauseAutoFollow()
-                }
+    private func scrollToLatest(proxy: ScrollViewProxy) {
+        guard let last = viewModel.rows.last else { return }
+        if reduceMotion {
+            proxy.scrollTo(last.id, anchor: .bottom)
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(last.id, anchor: .bottom)
             }
         }
     }
@@ -97,24 +125,52 @@ struct LiveTranscriptView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                DisclosureGroup {
-                    transcriptDetails(row)
-                } label: {
-                    transcriptText(row)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                if row.isLowPriority {
+                    DisclosureGroup(isExpanded: lowPriorityExpansion(for: row.id)) {
+                        transcriptText(row)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        transcriptDetails(row)
+                    } label: {
+                        Label(Self.lowPriorityCollapsedTitle, systemImage: "arrow.down.circle")
+                            .foregroundStyle(.secondary)
+                            .help("意味分類により優先度が低いと判定された発話です")
+                    }
+                    .accessibilityHint("原文と詳細を表示または閉じます")
+                } else {
+                    DisclosureGroup {
+                        transcriptDetails(row)
+                    } label: {
+                        transcriptText(row)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .accessibilityHint("詳細を表示または閉じます。場面、音響範囲、話者区間を確認できます")
                 }
-                .accessibilityHint("詳細を表示または閉じます。場面、音響範囲、優先度、話者区間を確認できます")
             }
         }
         .accessibilityElement(children: .contain)
     }
 
+    private func lowPriorityExpansion(for rowID: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedLowPriorityRowIDs.contains(rowID) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedLowPriorityRowIDs.insert(rowID)
+                } else {
+                    expandedLowPriorityRowIDs.remove(rowID)
+                }
+            }
+        )
+    }
+
     private func transcriptText(_ row: LiveTranscriptRow) -> Text {
         row.textFragments.reduce(Text("")) { result, fragment in
             let piece = Text(fragment.text)
-            if row.isLowPriority || fragment.isFiller {
+            if fragment.isFiller {
                 return result + piece.foregroundColor(.secondary)
             }
             return result + piece.foregroundColor(.primary)
@@ -125,11 +181,6 @@ struct LiveTranscriptView: View {
         VStack(alignment: .leading, spacing: AppSpacing.xs) {
             sceneDescription(row.scene)
             scopeDescriptions(row.scopeSpans)
-
-            if row.isLowPriority {
-                Label("低優先度", systemImage: "arrow.down.circle")
-                    .help("意味分類により優先度が低いと判定された発話です")
-            }
 
             if !row.speakers.isEmpty {
                 Text("話者区間")

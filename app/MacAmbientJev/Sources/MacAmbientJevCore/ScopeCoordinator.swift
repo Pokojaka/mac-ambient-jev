@@ -17,31 +17,13 @@ public struct ProximityEvidenceSpan: Sendable, Equatable {
 }
 
 public protocol ProximityEvidenceProvider: Sendable {
+    /// Returns `.unknown` evidence where the audio gives too little to judge,
+    /// and throws when the audio cannot be read. A throw fails the scope run.
     func evidenceSpans(
         startFrame: Int64,
         endFrame: Int64,
         speakerSpans: [SpeakerSpan]
     ) async throws -> [ProximityEvidenceSpan]
-}
-
-public struct UnknownProximityEvidenceProvider: ProximityEvidenceProvider {
-    public init() {}
-
-    public func evidenceSpans(
-        startFrame: Int64,
-        endFrame: Int64,
-        speakerSpans: [SpeakerSpan]
-    ) async throws -> [ProximityEvidenceSpan] {
-        guard endFrame > startFrame else { return [] }
-
-        return [
-            ProximityEvidenceSpan(
-                startFrame: startFrame,
-                endFrame: endFrame,
-                evidence: .unknown
-            )
-        ]
-    }
 }
 
 public struct ScopeBatchResult: Sendable, Equatable {
@@ -65,7 +47,7 @@ public actor ScopeCoordinator {
     private let runID: String
     private let writer: SessionWriter
     private let provider: any ProximityEvidenceProvider
-    private let classifier: ScopeClassifier
+    private let classifier = ScopeClassifier()
     private let materializer: TranscriptMaterializer
 
     public init(
@@ -73,14 +55,12 @@ public actor ScopeCoordinator {
         runID: String,
         writer: SessionWriter,
         provider: any ProximityEvidenceProvider,
-        classifier: ScopeClassifier = ScopeClassifier(),
         materializer: TranscriptMaterializer
     ) {
         self.sessionID = sessionID
         self.runID = runID
         self.writer = writer
         self.provider = provider
-        self.classifier = classifier
         self.materializer = materializer
     }
 

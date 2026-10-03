@@ -7,15 +7,15 @@ import MacAmbientJevCore
 func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() {
     var currentRows = [
         LiveTranscriptRow(
-            segmentID: "first", startMilliseconds: 0, text: "最初", scene: .unknown,
+            segmentID: "first", startMilliseconds: 0, endMilliseconds: 1_000, text: "最初", scene: .unknown,
             speakers: [], displaySpeakerLabels: ["Speaker 1"], scopeSpans: [], isLowPriority: false
         ),
         LiveTranscriptRow(
-            segmentID: "second", startMilliseconds: 1_000, text: "続き", scene: .unknown,
+            segmentID: "second", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "続き", scene: .unknown,
             speakers: [], displaySpeakerLabels: ["Speaker 1"], scopeSpans: [], isLowPriority: false
         ),
         LiveTranscriptRow(
-            segmentID: "third", startMilliseconds: 2_000, text: "次", scene: .unknown,
+            segmentID: "third", startMilliseconds: 2_000, endMilliseconds: 3_000, text: "次", scene: .unknown,
             speakers: [], displaySpeakerLabels: ["Speaker 2"], scopeSpans: [], isLowPriority: false
         )
     ]
@@ -26,4 +26,17 @@ func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() {
     #expect(LiveTranscriptView.speakerHeading(for: 1, in: renderedRows) == nil)
     #expect(LiveTranscriptView.speakerHeading(for: 2, in: renderedRows) == "Speaker 2")
     #expect(currentRows.isEmpty)
+}
+
+@Test
+func collapsedLowPriorityRowsSayTheyAreLowPriority() {
+    #expect(LiveTranscriptView.lowPriorityCollapsedTitle.contains("低優先度"))
+}
+
+@Test
+func transcriptHeaderNamesEveryNonEmptyDisplayState() {
+    #expect(TranscriptDisplayState.empty.badge == nil)
+    #expect(TranscriptDisplayState.live.badge?.text == "ライブ（暫定）")
+    #expect(TranscriptDisplayState.finalizing.badge?.text == "確定処理中")
+    #expect(TranscriptDisplayState.finalized.badge?.text == "確定済み")
 }
