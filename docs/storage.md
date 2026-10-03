@@ -28,7 +28,7 @@
 
 - 録音では処理タイムライン自体が保存音声です。入力の全 channel を平均した mono の 32-bit float PCM を保存します。sample rate は録音開始時の形式です。
 - import では元ファイルを無再圧縮コピーした `original` または original に元の拡張子を付けたファイルが保存音声です。audio 直下の該当する通常ファイルは **ちょうど 1 つ**必要です。0 個または複数個ならエラーです。元の外部ファイルを再処理の入力にはしません。
-- import の処理タイムラインは派生物で、元ファイルの sample rate と channel 数を保持した interleaved float PCM です。`processImportedSession` は毎回保存済み original を builder に渡します。builder は既存 checkpoint の長さがデコード元の長さ以上なら再利用し、不足する場合は既存末尾から読み足します。
+- import の処理タイムラインは派生物で、元ファイルの sample rate と channel 数を保持した interleaved float PCM です。`processImportedSession` は確定処理のたびに処理タイムラインを削除し、保存済み original から作り直します。そのため処理タイムラインが壊れていても、original が無傷なら再処理できます。
 - `derived` の CAF は処理用の派生音声です。録音の書き出し音声は 24-bit FLAC、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
 
 根拠: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[SessionLayout.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)、[AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioCaptureEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。
