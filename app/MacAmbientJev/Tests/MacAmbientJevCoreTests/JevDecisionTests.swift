@@ -9,27 +9,36 @@ private struct FailingDecisionProvider: DecisionProvider {
     func classifyPriority(text: String) async throws -> ContentPriorityDecision {
         throw URLError(.notConnectedToInternet)
     }
-
-    func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        throw URLError(.notConnectedToInternet)
-    }
 }
 
 @Test
-func jevFailureLeavesSegmentPrimaryAndRetryable() async {
+func networkFailureStopsTheBatchAsProviderUnavailable() async {
     let coordinator = JevDecisionCoordinator(
-        provider: FailingDecisionProvider()
+        provider: FailingDecisionProvider(),
+        usageCounter: JevUsageCounter()
     )
 
-    let result = await coordinator.classify(text: "えー")
+    let result = await coordinator.classify(text: "えー", segmentID: "seg-1", sessionID: UUID())
 
-    #expect(result.visiblePriority == .primary)
-    #expect(result.needsRetry)
-    #expect(result.decision == nil)
+    #expect(result == .failed(stopsBatch: .providerUnavailable))
+}
+
+@Test(arguments: [
+    (401, JevBatchStopReason.authorizationRejected),
+    (403, .authorizationRejected),
+    (429, .providerUnavailable),
+    (500, .providerUnavailable),
+    (503, .providerUnavailable)
+] as [(Int, JevBatchStopReason)])
+func httpStatusSelectsTheBatchStopReason(status: Int, reason: JevBatchStopReason) {
+    #expect(JevBatchStopReason(error: JevClientError.httpStatus(status)) == reason)
+}
+
+@Test
+func requestSpecificFailuresDoNotStopTheBatch() {
+    #expect(JevBatchStopReason(error: JevClientError.httpStatus(400)) == nil)
+    #expect(JevBatchStopReason(error: JevClientError.missingAnswer("content_priority")) == nil)
+    #expect(JevBatchStopReason(error: JevClientError.invalidChoice("content_priority")) == nil)
 }
 
 private actor MockJevTransport: JevHTTPTransport {
@@ -101,86 +110,24 @@ func jevPriorityClientSendsOnlyCurrentUtteranceAndChoiceQuestion() async throws 
     #expect(priority["type"] as? String == "choice")
 }
 
-@Test
-func jevSceneClientLimitsContextToPreviousThreeUtterances() async throws {
-    let transport = MockJevTransport(json: """
-    {
-      "model": "jev-1.13.0",
-      "answers": {
-        "scene_cue": {
-          "type": "choice",
-          "choice": "discussion_start",
-          "confidence": 0.84,
-          "probabilities": {
-            "discussion_start": 0.84,
-            "discussion_end": 0.02,
-            "none": 0.14
-          }
-        }
-      },
-      "usage": {"input_tokens": 55, "output_tokens": 7}
-    }
-    """)
-
-    let client = JevClient(apiKey: "test-key", transport: transport)
-    let decision = try await client.classifySceneCue(
-        currentText: "では質問を受けます",
-        previousTexts: ["a", "b", "c", "d"],
-        currentScene: .lecture
-    )
-    #expect(decision.cue == .discussionStart)
-
-    let request = try #require(await transport.capturedRequest())
-    let body = try #require(request.httpBody)
-    let object = try #require(
-        JSONSerialization.jsonObject(with: body) as? [String: Any]
-    )
-    let state = try #require(object["state"] as? [String: Any])
-    let previous = try #require(state["previous_texts"] as? [String])
-    #expect(previous == ["b", "c", "d"])
-    #expect(state["current_scene"] as? String == "lecture")
+private func lowPriority(confidence: Double) -> ContentPriorityDecision {
+    ContentPriorityDecision(priority: .lowPriority, confidence: confidence, model: "jev-test", inputTokens: 1)
 }
 
 @Test
-func mixedContentCannotBeDemotedByPolicy() {
-    let policy = ContentPriorityPolicy()
-    let result = policy.apply(
-        providerDecision: ContentPriorityDecision(
-            priority: .lowPriority,
-            confidence: 0.91
-        ),
-        text: "えー、RSAでは公開鍵を使います"
-    )
-
-    #expect(result == .primary)
+func confidentLowPriorityDemotesAnyUtterance() {
+    #expect(ContentPriorityPolicy.visiblePriority(for: lowPriority(confidence: 0.90)) == .lowPriority)
 }
 
 @Test
-func confidentFillerOnlyUtteranceCanBeDemotedByPolicy() {
-    let policy = ContentPriorityPolicy()
-    let result = policy.apply(
-        providerDecision: ContentPriorityDecision(
-            priority: .lowPriority,
-            confidence: 0.96
-        ),
-        text: "えー"
-    )
-
-    #expect(result == .lowPriority)
+func lowPriorityBelowThresholdStaysPrimary() {
+    #expect(ContentPriorityPolicy.visiblePriority(for: lowPriority(confidence: 0.89)) == .primary)
 }
 
 @Test
-func lowConfidenceDemotionFallsBackToPrimary() {
-    let policy = ContentPriorityPolicy(minimumDemotionConfidence: 0.90)
-    let result = policy.apply(
-        providerDecision: ContentPriorityDecision(
-            priority: .lowPriority,
-            confidence: 0.89
-        ),
-        text: "えー"
-    )
-
-    #expect(result == .primary)
+func confidentPrimaryStaysPrimary() {
+    let decision = ContentPriorityDecision(priority: .primary, confidence: 0.99, model: "jev-test", inputTokens: 1)
+    #expect(ContentPriorityPolicy.visiblePriority(for: decision) == .primary)
 }
 
 private struct LowPriorityDecisionProvider: DecisionProvider {
@@ -196,54 +143,51 @@ private struct LowPriorityDecisionProvider: DecisionProvider {
         )
     }
 
-    func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        SemanticSceneDecision(
-            cue: .none,
-            confidence: 1,
-            model: "jev-test",
-            inputTokens: 1
-        )
-    }
 }
 
 @Test
-func coordinatorAppliesMixedContentGuardBeforeVisibleDemotion() async {
+func coordinatorDemotesConfidentNonFillerUtterance() async {
     let coordinator = JevDecisionCoordinator(
-        provider: LowPriorityDecisionProvider(
-            confidence: 0.99,
-            inputTokens: 23
-        )
+        provider: LowPriorityDecisionProvider(confidence: 0.90, inputTokens: 23),
+        usageCounter: JevUsageCounter()
     )
 
     let result = await coordinator.classify(
-        text: "えー、RSAでは公開鍵を使います"
+        text: "えー、RSAでは公開鍵を使います",
+        segmentID: "seg-1",
+        sessionID: UUID()
     )
 
-    #expect(result.visiblePriority == .primary)
-    #expect(result.decision?.priority == .lowPriority)
-    #expect(!result.needsRetry)
+    guard case .classified(let decision, let visiblePriority) = result else {
+        Issue.record("expected a classification, got \(result)")
+        return
+    }
+    #expect(visiblePriority == .lowPriority)
+    #expect(decision.inputTokens == 23)
 }
 
 @Test
-func usageCounterTracksSuccessFailureAndRetryBacklog() async {
+func usageCounterSeparatesUnreportedTokenUsageFromZeroTokens() async {
     let counter = JevUsageCounter()
+    let sessionID = UUID()
 
     await counter.recordAttempt()
-    await counter.recordSuccess(inputTokens: 42)
+    await counter.recordSuccess(sessionID: sessionID, segmentID: "a", inputTokens: 42)
     await counter.recordAttempt()
-    await counter.recordFailure(retryPending: true)
+    await counter.recordSuccess(sessionID: sessionID, segmentID: "b", inputTokens: 0)
+    await counter.recordAttempt()
+    await counter.recordSuccess(sessionID: sessionID, segmentID: "c", inputTokens: nil)
+    await counter.recordAttempt()
+    await counter.recordFailure(sessionID: sessionID, segmentID: "d")
 
-    let snapshot = await counter.snapshot()
-
-    #expect(snapshot.sendCount == 2)
-    #expect(snapshot.estimatedInputTokens == 42)
-    #expect(snapshot.successCount == 1)
-    #expect(snapshot.failureCount == 1)
-    #expect(snapshot.retryPendingCount == 1)
+    #expect(await counter.snapshot() == JevUsageSnapshot(
+        sendCount: 4,
+        reportedInputTokens: 42,
+        successCount: 3,
+        unreportedTokenSuccessCount: 1,
+        failureCount: 1,
+        retryPendingCount: 1
+    ))
 }
 
 private actor RecoveringDecisionProvider: DecisionProvider {
@@ -253,32 +197,9 @@ private actor RecoveringDecisionProvider: DecisionProvider {
 
     func classifyPriority(text: String) async throws -> ContentPriorityDecision {
         if offline { throw URLError(.notConnectedToInternet) }
-        return ContentPriorityDecision(priority: .primary, confidence: 1)
+        return ContentPriorityDecision(priority: .primary, confidence: 1, model: "jev-test", inputTokens: nil)
     }
 
-    func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        SemanticSceneDecision(cue: .none, confidence: 1)
-    }
-}
-
-@Test
-func directClassificationStillResolvesItsRetry() async {
-    let provider = RecoveringDecisionProvider()
-    let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-
-    let failed = await coordinator.classify(text: "重要な発話")
-    #expect(failed.needsRetry)
-    #expect(await counter.snapshot().retryPendingCount == 1)
-
-    await provider.reconnect()
-    let recovered = await coordinator.classify(text: "重要な発話")
-    #expect(!recovered.needsRetry)
-    #expect(await counter.snapshot().retryPendingCount == 0)
 }
 
 @Test
@@ -289,19 +210,20 @@ func identicalTextFailuresStayPendingBySegmentAcrossCoordinators() async {
         usageCounter: counter
     )
     let text = "同じ重要な発話"
+    let sessionID = UUID()
 
-    #expect(await failing.classify(text: text, segmentID: "seg-1").needsRetry)
-    #expect(await failing.classify(text: text, segmentID: "seg-2").needsRetry)
-    #expect(await failing.classify(text: text, segmentID: "seg-1").needsRetry)
+    _ = await failing.classify(text: text, segmentID: "seg-1", sessionID: sessionID)
+    _ = await failing.classify(text: text, segmentID: "seg-2", sessionID: sessionID)
+    _ = await failing.classify(text: text, segmentID: "seg-1", sessionID: sessionID)
     #expect(await counter.snapshot().retryPendingCount == 2)
 
     let recovered = JevDecisionCoordinator(
         provider: LowPriorityDecisionProvider(confidence: 0.99, inputTokens: 23),
         usageCounter: counter
     )
-    #expect(!(await recovered.classify(text: text, segmentID: "seg-1")).needsRetry)
+    _ = await recovered.classify(text: text, segmentID: "seg-1", sessionID: sessionID)
     #expect(await counter.snapshot().retryPendingCount == 1)
-    #expect(!(await recovered.classify(text: text, segmentID: "seg-2")).needsRetry)
+    _ = await recovered.classify(text: text, segmentID: "seg-2", sessionID: sessionID)
     let snapshot = await counter.snapshot()
     #expect(snapshot.retryPendingCount == 0)
     #expect(snapshot.failureCount == 3)
@@ -395,60 +317,41 @@ func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
     let counter = JevUsageCounter()
     let writer = try SessionWriter(sessionURL: root)
     let sessionID = UUID()
-    let events = retryEvents(segmentIDs: ["seg-1", "seg-2"])
-    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
 
-    let initial = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-initial",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(existingEvents: events, activeRuns: runs)
-    #expect(Set(initial.retryPendingSegmentIDs) == ["seg-1", "seg-2"])
+    func run(
+        _ runID: String,
+        after previous: (runID: String, result: JevEnrichmentBatchResult)?,
+        retrying segmentIDs: Set<String>?
+    ) async throws -> (runID: String, result: JevEnrichmentBatchResult) {
+        let result = try await JevEnrichmentCoordinator(
+            sessionID: sessionID,
+            runID: runID,
+            writer: writer,
+            decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+            materializer: TranscriptMaterializer(sampleRate: 1_000)
+        ).process(
+            existingEvents: previous?.result.events ?? retryEvents(segmentIDs: ["seg-1", "seg-2"]),
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", contentPriority: previous?.runID),
+            retryOnlySegmentIDs: segmentIDs
+        )
+        return (runID, result)
+    }
+
+    let initial = try await run("priority-initial", after: nil, retrying: nil)
+    #expect(Set(initial.result.retryPendingSegmentIDs) == ["seg-1", "seg-2"])
     #expect(await counter.snapshot().retryPendingCount == 2)
 
-    let stillOffline = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-still-offline",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(
-        existingEvents: events,
-        activeRuns: runs,
-        retryOnlySegmentIDs: ["seg-1"]
-    )
-    #expect(stillOffline.retryPendingSegmentIDs == ["seg-1"])
+    let stillOffline = try await run("priority-still-offline", after: initial, retrying: ["seg-1"])
+    #expect(stillOffline.result.retryPendingSegmentIDs == ["seg-1"])
     #expect(await counter.snapshot().retryPendingCount == 2)
 
     await provider.reconnect()
-    let retry = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-retry",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(
-        existingEvents: events,
-        activeRuns: runs,
-        retryOnlySegmentIDs: ["seg-1"]
-    )
-    #expect(retry.retryPendingSegmentIDs.isEmpty)
+    let retry = try await run("priority-retry", after: stillOffline, retrying: ["seg-1"])
+    #expect(retry.result.retryPendingSegmentIDs.isEmpty)
     #expect(await counter.snapshot().retryPendingCount == 1)
 
-    let final = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-final",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(
-        existingEvents: events,
-        activeRuns: runs,
-        retryOnlySegmentIDs: ["seg-2"]
-    )
-    #expect(final.retryPendingSegmentIDs.isEmpty)
+    let final = try await run("priority-final", after: retry, retrying: ["seg-2"])
+    #expect(final.result.retryPendingSegmentIDs.isEmpty)
     let snapshot = await counter.snapshot()
     #expect(snapshot.retryPendingCount == 0)
     #expect(snapshot.sendCount == 4)

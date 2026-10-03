@@ -1,5 +1,17 @@
 import Foundation
 
+/// Payload of `processing.run.started`: written once when a run begins and
+/// records what produced it.
+public struct ProcessingRunStartedPayload: Codable, Sendable, Equatable {
+    public let stage: ProcessingStage
+    public let provenance: RunProvenance
+
+    public init(stage: ProcessingStage, provenance: RunProvenance) {
+        self.stage = stage
+        self.provenance = provenance
+    }
+}
+
 public struct ProcessingRunCompletedPayload: Codable, Sendable, Equatable {
     public let stage: ProcessingStage
     public let succeeded: Bool
@@ -16,31 +28,6 @@ public struct ProcessingRunCompletedPayload: Codable, Sendable, Equatable {
         self.succeeded = succeeded
         self.completedCount = completedCount
         self.failedCount = failedCount
-    }
-}
-
-public struct PipelineBatchResult: Sendable, Equatable {
-    public let events: [TranscriptEvent]
-    public let materializedSegments: [MaterializedTranscriptSegment]
-    public let completedCount: Int
-    public let failedCount: Int
-    public let disposition: BatchDisposition
-    public let metrics: ASRBatchMetrics
-
-    public init(
-        events: [TranscriptEvent],
-        materializedSegments: [MaterializedTranscriptSegment],
-        completedCount: Int,
-        failedCount: Int,
-        disposition: BatchDisposition = .completed,
-        metrics: ASRBatchMetrics = .zero
-    ) {
-        self.events = events
-        self.materializedSegments = materializedSegments
-        self.completedCount = completedCount
-        self.failedCount = failedCount
-        self.disposition = disposition
-        self.metrics = metrics
     }
 }
 
@@ -80,25 +67,89 @@ public enum ASRPacingMode: Sendable, Equatable {
     case lowHeat
 }
 
-public actor PipelineCoordinator {
-    public typealias UpdateHandler = @Sendable (
-        _ segments: [MaterializedTranscriptSegment],
-        _ processingState: ProcessingState
-    ) async -> Void
+/// Why an ASR run did not succeed: recognition failures by kind, and the first
+/// event-log write that failed.
+public struct ASRRunFailure: Error, LocalizedError, Sendable, Equatable {
+    public let failedSegmentCount: Int
+    public let failureCounts: [ASRFailureKind: Int]
+    public let firstRecognitionMessage: String?
+    public let persistenceFailure: String?
 
+    public var errorDescription: String? {
+        var parts: [String] = []
+        if !failureCounts.isEmpty {
+            let breakdown = ASRFailureKind.reportingOrder.compactMap { kind -> String? in
+                failureCounts[kind].map { "\(kind.label) \($0)区間" }
+            }.joined(separator: "、")
+            let detail = firstRecognitionMessage.map { ": \($0)" } ?? ""
+            parts.append("文字起こしに失敗しました（\(breakdown)）\(detail)")
+        }
+        if let persistenceFailure {
+            parts.append("イベントログへ保存できませんでした: \(persistenceFailure)")
+        }
+        return "確定文字起こしで\(failedSegmentCount)区間失敗しました。" + parts.joined(separator: "。")
+    }
+}
+
+private extension ASRFailureKind {
+    static let reportingOrder: [ASRFailureKind] = [.engineUnavailable, .audioUnreadable, .transcriptionFailed]
+
+    var label: String {
+        switch self {
+        case .engineUnavailable: "音声認識エンジンを使えない"
+        case .audioUnreadable: "音声を読めない"
+        case .transcriptionFailed: "認識できない"
+        }
+    }
+}
+
+public enum ASRRunDisposition: Sendable, Equatable {
+    case completed
+    case paused
+    case failed(ASRRunFailure)
+}
+
+public struct ASRRunResult: Sendable {
+    /// `existingEvents` followed by this run's persisted `asr.completed` events.
+    public let events: [TranscriptEvent]
+    public let completedCount: Int
+    public let metrics: ASRBatchMetrics
+    public let disposition: ASRRunDisposition
+}
+
+public enum PipelineCoordinatorError: Error, LocalizedError, Equatable {
+    case missingPendingTime(segmentID: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .missingPendingTime(let segmentID):
+            "区間 \(segmentID) の asr.pending 記録時刻がありません"
+        }
+    }
+}
+
+private struct FailureTally {
+    var failureCounts: [ASRFailureKind: Int] = [:]
+    var firstRecognitionMessage: String?
+    var persistenceFailedCount = 0
+    var persistenceFailure: String?
+
+    mutating func recordPersistenceFailure(_ error: any Error) {
+        if persistenceFailure == nil { persistenceFailure = error.localizedDescription }
+    }
+}
+
+/// Runs one ASR run over segments whose `asr.pending` events are already persisted.
+public actor PipelineCoordinator {
     private let sessionID: UUID
     private let segmentationRunID: String
     private let asrRunID: String
     private let writer: SessionWriter
     private let asr: any ASREngine
     private let loader: ASRAudioLoader
-    private let materializer: TranscriptMaterializer
-    private let state: SessionProcessingState
     private let pacingMode: ASRPacingMode
     private let sleep: @Sendable (Duration) async throws -> Void
     private let shouldPause: @Sendable () async -> Bool
-    private let pendingSince: [String: Date]
-    private let onPhase: @Sendable (RunPhase) async -> Void
 
     public init(
         sessionID: UUID,
@@ -107,13 +158,9 @@ public actor PipelineCoordinator {
         writer: SessionWriter,
         asr: any ASREngine,
         loader: ASRAudioLoader,
-        materializer: TranscriptMaterializer,
-        state: SessionProcessingState,
-        pacingMode: ASRPacingMode = .normal,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        shouldPause: @escaping @Sendable () async -> Bool = { false },
-        pendingSince: [String: Date] = [:],
-        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in }
+        pacingMode: ASRPacingMode,
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        shouldPause: @escaping @Sendable () async -> Bool
     ) {
         self.sessionID = sessionID
         self.segmentationRunID = segmentationRunID
@@ -121,308 +168,197 @@ public actor PipelineCoordinator {
         self.writer = writer
         self.asr = asr
         self.loader = loader
-        self.materializer = materializer
-        self.state = state
         self.pacingMode = pacingMode
         self.sleep = sleep
         self.shouldPause = shouldPause
-        self.pendingSince = pendingSince
-        self.onPhase = onPhase
     }
 
-    public func process(
+    /// - Parameter pendingSince: the `created_at` of each segment's `asr.pending` event.
+    public func run(
         segments: [SegmentReference],
-        onUpdate: UpdateHandler? = nil
-    ) async -> PipelineBatchResult {
-        await run(
-            segments: segments,
-            existingEvents: [],
-            registerPending: true,
-            onUpdate: onUpdate
-        )
-    }
-
-    public func resumePendingASR(
-        segments: [SegmentReference],
-        existingEvents: [TranscriptEvent],
-        onUpdate: UpdateHandler? = nil
-    ) async -> PipelineBatchResult {
-        await run(
-            segments: segments,
-            existingEvents: existingEvents,
-            registerPending: false,
-            onUpdate: onUpdate
-        )
-    }
-
-    private func run(
-        segments: [SegmentReference],
-        existingEvents: [TranscriptEvent],
-        registerPending: Bool,
-        onUpdate: UpdateHandler?
-    ) async -> PipelineBatchResult {
-        await state.setProcessing(.running)
+        pendingSince: [String: Date],
+        existingEvents: [TranscriptEvent]
+    ) async throws -> ASRRunResult {
+        let pendingDates = try segments.map { segment in
+            guard let date = pendingSince[segment.segmentID] else {
+                throw PipelineCoordinatorError.missingPendingTime(segmentID: segment.segmentID)
+            }
+            return date
+        }
 
         var transcriptEvents = existingEvents
-        var completedCount = existingEvents.reduce(into: 0) { count, event in
-            guard event.processingRunID == asrRunID else { return }
-            if case .asrCompleted = event.kind {
-                count += 1
-            }
-        }
-        var failedCount = 0
+        var completedCount = 0
+        var tally = FailureTally()
         var metrics = ASRBatchMetrics()
         metrics.initialPendingCount = segments.count
         metrics.maximumPendingCount = segments.count
-        let batchStarted = Date()
         let clock = ContinuousClock()
 
-        if registerPending {
+        var prepared = true
+        if !segments.isEmpty {
             do {
+                let start = clock.now
+                try await asr.prepare()
+                metrics.modelLoadSeconds = seconds(start.duration(to: clock.now))
+            } catch {
+                prepared = false
                 for segment in segments {
-                    let created = try await writer.append(EventDraft(
-                        eventType: "segment.created",
-                        sessionID: sessionID,
-                        segmentationRunID: segmentationRunID,
-                        segmentID: segment.segmentID,
-                        sourceStartFrame: segment.startFrame,
-                        sourceEndFrame: segment.endFrame,
-                        payload: EmptyPayload()
-                    ))
-                    transcriptEvents.append(.segmentCreated(
-                        seq: created.eventSeq,
-                        segmentationRunID: segmentationRunID,
-                        segmentID: segment.segmentID,
-                        startFrame: segment.startFrame,
-                        endFrame: segment.endFrame
-                    ))
+                    await recordFailure(segment, kind: .engineUnavailable, error: error, in: &tally)
+                }
+            }
+        }
 
-                    _ = try await writer.append(EventDraft(
-                        eventType: "asr.pending",
+        var paused = false
+        if prepared {
+            for (index, segment) in segments.enumerated() {
+                if await shouldPause() {
+                    paused = true
+                    break
+                }
+                if let oldest = pendingDates[index...].min() {
+                    metrics.oldestPendingAgeSeconds = max(
+                        metrics.oldestPendingAgeSeconds,
+                        Date().timeIntervalSince(oldest)
+                    )
+                }
+                let input: ASRAudioInput
+                do {
+                    input = try loader.load(segment: segment)
+                } catch {
+                    await recordFailure(segment, kind: .audioUnreadable, error: error, in: &tally)
+                    continue
+                }
+
+                let start = clock.now
+                let result: ASRResult
+                do {
+                    result = try await asr.transcribe(input)
+                } catch {
+                    if !input.isShorterThanMinimumASRDuration {
+                        metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                    }
+                    await recordFailure(segment, kind: .transcriptionFailed, error: error, in: &tally)
+                    continue
+                }
+                if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
+                    metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                    metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
+                }
+
+                do {
+                    let completed = try await writer.append(EventDraft(
+                        eventType: "asr.completed",
                         sessionID: sessionID,
                         processingRunID: asrRunID,
                         segmentationRunID: segmentationRunID,
                         segmentID: segment.segmentID,
                         sourceStartFrame: segment.startFrame,
                         sourceEndFrame: segment.endFrame,
-                        payload: EmptyPayload()
+                        payload: ASRCompletedEventPayload(
+                            text: result.text,
+                            detectedLanguage: result.detectedLanguage,
+                            engine: "qwen3-asr",
+                            model: ModelStore.qwen3ASRModelID
+                        )
                     ))
-                }
-            } catch {
-                let message =
-                    "イベントログへ未処理区間を保存できませんでした: \(error.localizedDescription)"
-                let stateValue = ProcessingState.partialFailure(message)
-                await state.setProcessing(stateValue)
-
-                let materialized = materializer.materialize(
-                    events: transcriptEvents,
-                    activeRuns: ActiveRuns(
-                        segmentation: segmentationRunID,
-                        asr: asrRunID
-                    )
-                )
-                if let onUpdate {
-                    await onUpdate(materialized, stateValue)
-                }
-                return PipelineBatchResult(
-                    events: transcriptEvents,
-                    materializedSegments: materialized,
-                    completedCount: completedCount,
-                    failedCount: segments.count,
-                    disposition: .failed,
-                    metrics: metrics
-                )
-            }
-        }
-
-        do {
-            if !segments.isEmpty {
-                let start = clock.now
-                try await asr.prepare()
-                metrics.modelLoadSeconds = seconds(start.duration(to: clock.now))
-            }
-            await onPhase(.asr)
-        } catch {
-            let message = error.localizedDescription
-
-            for segment in segments {
-                await appendFailure(segment: segment, kind: .engineUnavailable, error: error)
-            }
-
-            failedCount = segments.count
-            let stateValue = ProcessingState.partialFailure(
-                "音声認識モデルを準備できませんでした: \(message)"
-            )
-            await state.setProcessing(stateValue)
-
-            let materialized = materializer.materialize(
-                events: transcriptEvents,
-                activeRuns: ActiveRuns(
-                    segmentation: segmentationRunID,
-                    asr: asrRunID
-                )
-            )
-            if let onUpdate {
-                await onUpdate(materialized, stateValue)
-            }
-            return PipelineBatchResult(
-                events: transcriptEvents,
-                materializedSegments: materialized,
-                completedCount: completedCount,
-                failedCount: failedCount,
-                disposition: .failed,
-                metrics: metrics
-            )
-        }
-
-        let activeRuns = ActiveRuns(
-            segmentation: segmentationRunID,
-            asr: asrRunID
-        )
-
-        var paused = false
-        for (index, segment) in segments.enumerated() {
-            if await shouldPause() {
-                paused = true
-                break
-            }
-            let pending = segments[index...]
-            if let oldest = pending.map({ pendingSince[$0.segmentID] ?? batchStarted }).min() {
-                metrics.oldestPendingAgeSeconds = max(
-                    metrics.oldestPendingAgeSeconds,
-                    Date().timeIntervalSince(oldest)
-                )
-            }
-            let input: ASRAudioInput
-            do {
-                input = try loader.load(segment: segment)
-            } catch {
-                failedCount += 1
-                await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
-                continue
-            }
-
-            let start = clock.now
-            let result: ASRResult
-            do {
-                result = try await asr.transcribe(input)
-            } catch {
-                if !input.isShorterThanMinimumASRDuration {
-                    metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
-                }
-                failedCount += 1
-                await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
-                continue
-            }
-            if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
-                metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
-                metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
-            }
-
-            var didComplete = false
-            do {
-                let completed = try await writer.append(EventDraft(
-                    eventType: "asr.completed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    sourceStartFrame: segment.startFrame,
-                    sourceEndFrame: segment.endFrame,
-                    payload: ASRCompletedEventPayload(
+                    transcriptEvents.append(.asrCompleted(
+                        seq: completed.eventSeq,
+                        runID: asrRunID,
+                        segmentationRunID: segmentationRunID,
+                        segmentID: segment.segmentID,
                         text: result.text,
-                        detectedLanguage: result.detectedLanguage,
-                        engine: "qwen3-asr",
-                        model: ModelStore.qwen3ASRModelID
-                    )
-                ))
-
-                transcriptEvents.append(.asrCompleted(
-                    seq: completed.eventSeq,
-                    runID: asrRunID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: segment.segmentID,
-                    text: result.text,
-                    detectedLanguage: result.detectedLanguage
-                ))
-                completedCount += 1
-                didComplete = true
-
-                if let onUpdate {
-                    let materialized = materializer.materialize(
-                        events: transcriptEvents,
-                        activeRuns: activeRuns
-                    )
-                    await onUpdate(materialized, .running)
-                }
-            } catch {
-                failedCount += 1
-            }
-
-            if pacingMode == .lowHeat,
-               index < segments.count - 1,
-               didComplete {
-                do {
-                    let start = clock.now
-                    try await sleep(.seconds(2))
-                    metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
-                    metrics.pacingWaitCount += 1
+                        detectedLanguage: result.detectedLanguage
+                    ))
+                    completedCount += 1
                 } catch {
-                    paused = true
-                    break
+                    tally.persistenceFailedCount += 1
+                    tally.recordPersistenceFailure(error)
+                    continue
+                }
+
+                if pacingMode == .lowHeat, index < segments.count - 1 {
+                    do {
+                        let start = clock.now
+                        try await sleep(.seconds(2))
+                        metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
+                        metrics.pacingWaitCount += 1
+                    } catch {
+                        paused = true
+                        break
+                    }
                 }
             }
         }
 
-        var succeeded = failedCount == 0 && !paused
-        if !paused {
-            do {
-                _ = try await writer.append(EventDraft(
-                    eventType: "processing.run.completed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    payload: ProcessingRunCompletedPayload(
-                        stage: .asr,
-                        succeeded: succeeded,
-                        completedCount: completedCount,
-                        failedCount: failedCount
-                    )
-                ))
-            } catch {
-                succeeded = false
-                failedCount += 1
-            }
+        if paused {
+            return ASRRunResult(
+                events: transcriptEvents,
+                completedCount: completedCount,
+                metrics: metrics,
+                disposition: .paused
+            )
         }
 
-        let materialized = materializer.materialize(
-            events: transcriptEvents,
-            activeRuns: activeRuns
-        )
-        let finalState: ProcessingState = paused
-            ? .backlogged
-            : (succeeded ? .complete : .partialFailure("一部の発話を文字起こしできませんでした"))
-
-        await state.setProcessing(finalState)
-        if let onUpdate {
-            await onUpdate(materialized, finalState)
+        let failedCount = tally.failureCounts.values.reduce(0, +) + tally.persistenceFailedCount
+        do {
+            try await writer.append(EventDraft(
+                eventType: "processing.run.completed",
+                sessionID: sessionID,
+                processingRunID: asrRunID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: .asr,
+                    succeeded: failedCount == 0 && tally.persistenceFailure == nil,
+                    completedCount: completedCount,
+                    failedCount: failedCount
+                )
+            ))
+        } catch {
+            tally.recordPersistenceFailure(error)
         }
 
-        return PipelineBatchResult(
+        let disposition: ASRRunDisposition
+        if failedCount == 0, tally.persistenceFailure == nil {
+            disposition = .completed
+        } else {
+            disposition = .failed(ASRRunFailure(
+                failedSegmentCount: failedCount,
+                failureCounts: tally.failureCounts,
+                firstRecognitionMessage: tally.firstRecognitionMessage,
+                persistenceFailure: tally.persistenceFailure
+            ))
+        }
+        return ASRRunResult(
             events: transcriptEvents,
-            materializedSegments: materialized,
             completedCount: completedCount,
-            failedCount: failedCount,
-            disposition: paused ? .paused : (succeeded ? .completed : .failed),
-            metrics: metrics
+            metrics: metrics,
+            disposition: disposition
         )
+    }
+
+    /// Records a recognition failure and its `asr.failed` event; a failed write is kept as a persistence failure.
+    private func recordFailure(
+        _ segment: SegmentReference,
+        kind: ASRFailureKind,
+        error: any Error,
+        in tally: inout FailureTally
+    ) async {
+        tally.failureCounts[kind, default: 0] += 1
+        if tally.firstRecognitionMessage == nil {
+            tally.firstRecognitionMessage = error.localizedDescription
+        }
+        do {
+            try await appendFailure(segment: segment, kind: kind, error: error)
+        } catch {
+            tally.recordPersistenceFailure(error)
+        }
     }
 
     private func appendFailure(
         segment: SegmentReference,
         kind: ASRFailureKind,
         error: any Error
-    ) async {
-        _ = try? await writer.append(EventDraft(
+    ) async throws {
+        try await writer.append(EventDraft(
             eventType: "asr.failed",
             sessionID: sessionID,
             processingRunID: asrRunID,

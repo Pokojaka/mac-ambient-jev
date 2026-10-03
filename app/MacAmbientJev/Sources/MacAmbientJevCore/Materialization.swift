@@ -174,7 +174,7 @@ struct SceneTransitionTimeline {
     }
 }
 
-public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
+public struct MaterializedSpeakerSpan: Encodable, Sendable, Equatable {
     public let id: String
     public let startMilliseconds: Int64
     public let endMilliseconds: Int64
@@ -183,7 +183,7 @@ public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
 
     public init(
         id: String, startMilliseconds: Int64, endMilliseconds: Int64,
-        confidence: Double?, displayLabel: String? = nil
+        confidence: Double?, displayLabel: String?
     ) {
         self.id = id
         self.startMilliseconds = startMilliseconds
@@ -199,15 +199,6 @@ public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
         case confidence
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        startMilliseconds = try container.decode(Int64.self, forKey: .startMilliseconds)
-        endMilliseconds = try container.decode(Int64.self, forKey: .endMilliseconds)
-        confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
-        displayLabel = nil
-    }
-
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -217,7 +208,7 @@ public struct MaterializedSpeakerSpan: Codable, Sendable, Equatable {
     }
 }
 
-public struct MaterializedScopeSpan: Codable, Sendable, Equatable {
+public struct MaterializedScopeSpan: Encodable, Sendable, Equatable {
     public let startMilliseconds: Int64
     public let endMilliseconds: Int64
     public let scope: AcousticScope
@@ -241,7 +232,9 @@ public struct MaterializedScopeSpan: Codable, Sendable, Equatable {
     }
 }
 
-public struct MaterializedTranscriptSegment: Codable, Sendable, Equatable, Identifiable {
+/// One transcript segment of the active runs. Encoded as a `segments.json` entry;
+/// `isDiarized` is not part of that file.
+public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Identifiable {
     public var id: String { segmentID }
     public var hasRecognizedText: Bool { ASRRecognitionOutcome(text: text) == .recognized }
     public let segmentID: String
@@ -252,11 +245,14 @@ public struct MaterializedTranscriptSegment: Codable, Sendable, Equatable, Ident
     public let speakers: [MaterializedSpeakerSpan]
     public let scopeSpans: [MaterializedScopeSpan]
     public let contentPriority: ContentPriority?
+    /// True when the result comes from a diarization run, even if no span overlaps this segment.
+    public let isDiarized: Bool
 
     public init(
         segmentID: String, startMilliseconds: Int64, endMilliseconds: Int64,
         text: String, scene: SceneState, speakers: [MaterializedSpeakerSpan],
-        scopeSpans: [MaterializedScopeSpan], contentPriority: ContentPriority?
+        scopeSpans: [MaterializedScopeSpan], contentPriority: ContentPriority?,
+        isDiarized: Bool
     ) {
         self.segmentID = segmentID
         self.startMilliseconds = startMilliseconds
@@ -266,6 +262,7 @@ public struct MaterializedTranscriptSegment: Codable, Sendable, Equatable, Ident
         self.speakers = speakers
         self.scopeSpans = scopeSpans
         self.contentPriority = contentPriority
+        self.isDiarized = isDiarized
     }
 
     enum CodingKeys: String, CodingKey {
@@ -365,7 +362,8 @@ public struct TranscriptMaterializer: Sendable {
                 scene: scene,
                 speakers: speakers,
                 scopeSpans: scopeSpans,
-                contentPriority: priorities[segmentID]
+                contentPriority: priorities[segmentID],
+                isDiarized: activeRuns.diarization != nil
             )
         }
         .sorted { $0.startMilliseconds < $1.startMilliseconds }
@@ -392,12 +390,11 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
     public init(
         segmentID: String,
         startMilliseconds: Int64,
-        endMilliseconds: Int64 = 0,
+        endMilliseconds: Int64,
         text: String,
-        textFragments: [TranscriptTextFragment]? = nil,
         scene: SceneState,
         speakers: [MaterializedSpeakerSpan],
-        displaySpeakerLabels: [String] = [],
+        displaySpeakerLabels: [String],
         scopeSpans: [MaterializedScopeSpan],
         isLowPriority: Bool
     ) {
@@ -405,7 +402,7 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
         self.startMilliseconds = startMilliseconds
         self.endMilliseconds = endMilliseconds
         self.text = text
-        self.textFragments = textFragments ?? FillerTextSpanDetector().fragments(in: text)
+        self.textFragments = FillerTextSpanDetector().fragments(in: text)
         self.scene = scene
         self.speakers = speakers
         self.displaySpeakerLabels = displaySpeakerLabels
@@ -414,6 +411,9 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
     }
 }
 
+/// The single rule for which segments a reader sees, used by the screen and by `transcript.txt`:
+/// segments with recognized text, except discussion segments whose scope spans are all background.
+/// Diarized segments carry speaker headings; segments without a diarization run carry none.
 public struct LiveTranscriptProjection: Sendable {
     public init() {}
 
@@ -429,7 +429,6 @@ public struct LiveTranscriptProjection: Sendable {
             )
         }
         let labels = SpeakerDisplayMapper.makeLabels(spans: allSpeakerSpans)
-        let hasSpeakerSpans = !allSpeakerSpans.isEmpty
 
         return segments.compactMap { segment in
             let isBackgroundOnly = segment.scene == .discussion
@@ -443,10 +442,9 @@ public struct LiveTranscriptProjection: Sendable {
                 startMilliseconds: segment.startMilliseconds,
                 endMilliseconds: segment.endMilliseconds,
                 text: segment.text,
-                textFragments: FillerTextSpanDetector().fragments(in: segment.text),
                 scene: segment.scene,
                 speakers: segment.speakers,
-                displaySpeakerLabels: hasSpeakerSpans
+                displaySpeakerLabels: segment.isDiarized
                     ? SpeakerDisplayMapper.turnLabels(for: segment, labels: labels)
                     : [],
                 scopeSpans: segment.scopeSpans,

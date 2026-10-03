@@ -44,6 +44,34 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
     }
 }
 
+/// Settings of the acoustic scene and scope stages, recorded as their run provenance.
+enum FinalTranscriptStageSettings {
+    static let sceneConfig = SceneStateMachineConfig.production
+    static let sceneWindowSeconds = 20.0
+    static let sceneHopSeconds = 1.0
+
+    static let sceneProvenance = RunProvenance(
+        engine: "acoustic-scene-state-machine",
+        model: nil,
+        version: "1",
+        configuration: [
+            "window_seconds": String(sceneWindowSeconds),
+            "hop_seconds": String(sceneHopSeconds),
+            "discussion_candidate_observations": String(sceneConfig.discussionCandidateObservations),
+            "discussion_confirm_observations": String(sceneConfig.discussionConfirmObservations),
+            "lecture_candidate_observations": String(sceneConfig.lectureCandidateObservations),
+            "lecture_confirm_observations": String(sceneConfig.lectureConfirmObservations),
+        ]
+    )
+
+    static let scopeProvenance = RunProvenance(
+        engine: "proximity-scope-classifier",
+        model: nil,
+        version: "1",
+        configuration: ["evidence": "timeline-level-and-spectral"]
+    )
+}
+
 struct FinalTranscriptPipelineResult: Sendable {
     let activeRuns: ActiveRuns
     let materializedSegments: [MaterializedTranscriptSegment]
@@ -51,26 +79,36 @@ struct FinalTranscriptPipelineResult: Sendable {
     let metrics: ASRBatchMetrics
 }
 
+enum FinalTranscriptPipelineOutcome: Sendable {
+    case completed(FinalTranscriptPipelineResult)
+    /// ASR stopped before every segment was transcribed; nothing was published.
+    case paused(metrics: ASRBatchMetrics)
+}
+
+/// A pipeline failure with the ASR metrics gathered before it (nil when ASR never started).
+struct FinalTranscriptPipelineFailure: Error, LocalizedError {
+    let message: String
+    let metrics: ASRBatchMetrics?
+
+    var errorDescription: String? { message }
+}
+
 enum FinalTranscriptPipelineError: LocalizedError {
-    case asrFailed(failedCount: Int, disposition: BatchDisposition, reason: String?)
-    case missingSuccessfulStage(ProcessingStage, String)
+    case missingRunEvent(eventType: String, stage: ProcessingStage, runID: String)
     case invalidVADRange(String)
+    case invalidSpeakerSpan(speakerID: String, startFrame: Int64, endFrame: Int64, totalFrames: Int64)
     case persistedSegmentsMismatch(String)
 
     var errorDescription: String? {
         switch self {
-        case let .asrFailed(failedCount, disposition, reason):
-            if disposition == .paused {
-                return "熱状態のため確定文字起こしを完了できませんでした"
-            }
-            let detail = reason.map { "（\($0)）" } ?? ""
-            return "確定文字起こしで\(failedCount)区間失敗しました\(detail)"
-        case let .missingSuccessfulStage(stage, runID):
-            return "\(stage.rawValue) run \(runID) の成功イベントを確認できません"
+        case let .missingRunEvent(eventType, stage, runID):
+            "\(stage.rawValue) run \(runID) の \(eventType) を確認できません"
         case let .invalidVADRange(segmentID):
-            return "VAD 区間 \(segmentID) の範囲が不正です"
+            "VAD 区間 \(segmentID) の範囲が不正です"
+        case let .invalidSpeakerSpan(speakerID, startFrame, endFrame, totalFrames):
+            "話者 \(speakerID) の区間 \(startFrame)〜\(endFrame) が音声の範囲 0〜\(totalFrames) を外れています"
         case let .persistedSegmentsMismatch(runID):
-            return "segmentation run \(runID) の保存済み区間が一致しません"
+            "segmentation run \(runID) の保存済み区間が一致しません"
         }
     }
 }
@@ -78,21 +116,46 @@ enum FinalTranscriptPipelineError: LocalizedError {
 struct FinalTranscriptPipeline: Sendable {
     let sessionID: UUID
     let sessionURL: URL
-    let processingDirectory: URL
     let checkpoint: AudioCheckpoint
     let asr: any ASREngine
     let diarization: any DiarizationEngine
     let vadSegmenter: any FinalTranscriptVADSegmenter
     let proximityEvidenceProvider: any ProximityEvidenceProvider
 
+    /// - Throws: `FinalTranscriptPipelineFailure`.
     func process(
-        onStatus: NativeSessionProcessor.StatusHandler?,
-        pacingMode: ASRPacingMode = .normal,
-        shouldPause: @escaping @Sendable () async -> Bool = { false },
-        onPhase: @escaping @Sendable (RunPhase) async -> Void = { _ in }
-    ) async throws -> FinalTranscriptPipelineResult {
+        onStatus: @escaping NativeSessionProcessor.StatusHandler,
+        pacingMode: ASRPacingMode,
+        shouldPause: @escaping @Sendable () async -> Bool,
+        onPhase: @escaping @Sendable (RunPhase) async -> Void
+    ) async throws -> FinalTranscriptPipelineOutcome {
+        var asrMetrics: ASRBatchMetrics?
+        do {
+            return try await run(
+                onStatus: onStatus,
+                pacingMode: pacingMode,
+                shouldPause: shouldPause,
+                onPhase: onPhase,
+                asrMetrics: &asrMetrics
+            )
+        } catch {
+            throw FinalTranscriptPipelineFailure(
+                message: error.localizedDescription,
+                metrics: asrMetrics
+            )
+        }
+    }
+
+    private func run(
+        onStatus: @escaping NativeSessionProcessor.StatusHandler,
+        pacingMode: ASRPacingMode,
+        shouldPause: @escaping @Sendable () async -> Bool,
+        onPhase: @escaping @Sendable (RunPhase) async -> Void,
+        asrMetrics: inout ASRBatchMetrics?
+    ) async throws -> FinalTranscriptPipelineOutcome {
+        let layout = SessionLayout(sessionURL: sessionURL)
         let reader = ProcessingTimelineReader(
-            directory: processingDirectory,
+            directory: layout.processingDirectory,
             checkpoint: checkpoint
         )
         let materializer = TranscriptMaterializer(sampleRate: checkpoint.sampleRate)
@@ -103,19 +166,27 @@ struct FinalTranscriptPipeline: Sendable {
         let sceneRunID = "scene_final_\(UUID().uuidString.lowercased())"
         let scopeRunID = "scope_final_\(UUID().uuidString.lowercased())"
 
-        if let onStatus { await onStatus(UserFacingStatus.detectingSpeech.text) }
+        func startRun(_ stage: ProcessingStage, _ runID: String, _ provenance: RunProvenance) async throws {
+            try await writer.append(EventDraft(
+                eventType: "processing.run.started",
+                sessionID: sessionID,
+                processingRunID: runID,
+                payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
+            ))
+        }
+
+        await onStatus(UserFacingStatus.detectingSpeech.text)
+        try await startRun(.segmentation, segmentationRunID, vadSegmenter.provenance)
         let vadSegments = try await vadSegmenter.segment(reader: reader, runID: segmentationRunID)
         try validateVADSegments(vadSegments, runID: segmentationRunID)
 
-        let derivedDirectory = sessionURL
-            .appending(path: "audio", directoryHint: .isDirectory)
-            .appending(path: "derived", directoryHint: .isDirectory)
-        let diarizationInputURL = derivedDirectory.appending(path: "diarization-input.caf")
+        let diarizationInputURL = layout.derivedDirectory.appending(path: "diarization-input.caf")
         try ProcessingTimelineAudioExporter(
             framesPerBuffer: max(1, Int64(checkpoint.sampleRate.rounded()))
         ).export(reader: reader, to: diarizationInputURL)
 
-        if let onStatus { await onStatus(UserFacingStatus.preparingDiarization.text) }
+        await onStatus(UserFacingStatus.preparingDiarization.text)
+        try await startRun(.diarization, diarizationRunID, diarization.provenance)
         let diarizationCoordinator = DiarizationCoordinator(
             sessionID: sessionID,
             runID: diarizationRunID,
@@ -123,7 +194,7 @@ struct FinalTranscriptPipeline: Sendable {
             engine: diarization,
             materializer: materializer
         )
-        if let onStatus { await onStatus(UserFacingStatus.diarizing.text) }
+        await onStatus(UserFacingStatus.diarizing.text)
         let diarizationResult = try await diarizationCoordinator.process(
             fileURL: diarizationInputURL,
             canonicalSampleRate: checkpoint.sampleRate,
@@ -134,16 +205,18 @@ struct FinalTranscriptPipeline: Sendable {
                 diarization: diarizationRunID
             )
         )
+        try validateSpeakerSpans(diarizationResult.speakerSpans)
 
-        if let onStatus { await onStatus(UserFacingStatus.preparingASR.text) }
-        let state = SessionProcessingState(captureState: .stopped)
+        await onStatus(UserFacingStatus.preparingASR.text)
         let asrSegments = try SpeakerTurnSegmenter.split(
             vadSegments,
             speakerSpans: diarizationResult.speakerSpans,
             sampleRate: checkpoint.sampleRate
         )
         try validateVADSegments(asrSegments, runID: segmentationRunID)
+        try await startRun(.asr, asrRunID, asr.provenance)
         var transcriptEvents = diarizationResult.events
+        var pendingSince: [String: Date] = [:]
         for segment in asrSegments {
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
@@ -161,7 +234,7 @@ struct FinalTranscriptPipeline: Sendable {
                 startFrame: segment.startFrame,
                 endFrame: segment.endFrame
             ))
-            _ = try await writer.append(EventDraft(
+            let pending = try await writer.append(EventDraft(
                 eventType: "asr.pending",
                 sessionID: sessionID,
                 processingRunID: asrRunID,
@@ -171,8 +244,9 @@ struct FinalTranscriptPipeline: Sendable {
                 sourceEndFrame: segment.endFrame,
                 payload: EmptyPayload()
             ))
+            pendingSince[segment.segmentID] = pending.createdAt
         }
-        _ = try await writer.append(EventDraft(
+        try await writer.append(EventDraft(
             eventType: "processing.run.completed",
             sessionID: sessionID,
             processingRunID: segmentationRunID,
@@ -190,32 +264,38 @@ struct FinalTranscriptPipeline: Sendable {
             writer: writer,
             asr: asr,
             loader: ASRAudioLoader(reader: reader),
-            materializer: materializer,
-            state: state,
             pacingMode: pacingMode,
+            sleep: { try await Task.sleep(for: $0) },
             shouldPause: shouldPause
         )
         await onPhase(.asr)
-        let asrResult = await asrCoordinator.resumePendingASR(
+        let asrResult = try await asrCoordinator.run(
             segments: asrSegments,
+            pendingSince: pendingSince,
             existingEvents: transcriptEvents
         )
-        guard asrResult.disposition == .completed else {
-            throw FinalTranscriptPipelineError.asrFailed(
-                failedCount: asrResult.failedCount,
-                disposition: asrResult.disposition,
-                reason: try failureReason(forRunID: asrRunID)
-            )
+        asrMetrics = asrResult.metrics
+        switch asrResult.disposition {
+        case .completed:
+            break
+        case .paused:
+            return .paused(metrics: asrResult.metrics)
+        case .failed(let failure):
+            throw failure
         }
         transcriptEvents = asrResult.events
 
-        if let onStatus { await onStatus(UserFacingStatus.analyzingScene.text) }
+        await onStatus(UserFacingStatus.analyzingScene.text)
         await onPhase(.postprocessing)
+        try await startRun(.scene, sceneRunID, FinalTranscriptStageSettings.sceneProvenance)
         let sceneCoordinator = SceneCoordinator(
             sessionID: sessionID,
             runID: sceneRunID,
             writer: writer,
-            materializer: materializer
+            materializer: materializer,
+            config: FinalTranscriptStageSettings.sceneConfig,
+            windowSeconds: FinalTranscriptStageSettings.sceneWindowSeconds,
+            hopSeconds: FinalTranscriptStageSettings.sceneHopSeconds
         )
         let sceneResult = try await sceneCoordinator.process(
             speakerSpans: diarizationResult.speakerSpans,
@@ -230,7 +310,8 @@ struct FinalTranscriptPipeline: Sendable {
             )
         )
 
-        if let onStatus { await onStatus(UserFacingStatus.analyzingScope.text) }
+        await onStatus(UserFacingStatus.analyzingScope.text)
+        try await startRun(.scope, scopeRunID, FinalTranscriptStageSettings.scopeProvenance)
         let scopeCoordinator = ScopeCoordinator(
             sessionID: sessionID,
             runID: scopeRunID,
@@ -263,7 +344,7 @@ struct FinalTranscriptPipeline: Sendable {
             ]
         )
 
-        return FinalTranscriptPipelineResult(
+        return .completed(FinalTranscriptPipelineResult(
             activeRuns: activeRuns,
             materializedSegments: materializer.materialize(
                 events: scopeResult.events,
@@ -271,7 +352,7 @@ struct FinalTranscriptPipeline: Sendable {
             ),
             completedCount: asrResult.completedCount,
             metrics: asrResult.metrics
-        )
+        ))
     }
 
     private func validateVADSegments(
@@ -291,31 +372,65 @@ struct FinalTranscriptPipeline: Sendable {
         }
     }
 
+    private func validateSpeakerSpans(_ spans: [SpeakerSpan]) throws {
+        for span in spans {
+            guard span.startFrame >= 0,
+                  span.startFrame < span.endFrame,
+                  span.endFrame <= checkpoint.committedFrames else {
+                throw FinalTranscriptPipelineError.invalidSpeakerSpan(
+                    speakerID: span.speakerID,
+                    startFrame: span.startFrame,
+                    endFrame: span.endFrame,
+                    totalFrames: checkpoint.committedFrames
+                )
+            }
+        }
+    }
+
     private func validatePersistedRuns(
         segmentationRunID: String,
         segments: [SegmentReference],
         expected: [(ProcessingStage, String)]
     ) throws {
-        let eventData = try Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
+        let eventData = try Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)
         let recovered = try SessionRecovery.recoverJSONL(eventData)
         let objects = try recovered.lines.compactMap { line in
             try JSONSerialization.jsonObject(with: line) as? [String: Any]
         }
-        let stages = objects.compactMap { object -> (String, String, Bool, Int?)? in
-            guard object["event_type"] as? String == "processing.run.completed",
+        struct RunEvent {
+            let eventType: String
+            let runID: String
+            let stage: String
+            let succeeded: Bool?
+            let completedCount: Int?
+        }
+        let runEvents = objects.compactMap { object -> RunEvent? in
+            guard let eventType = object["event_type"] as? String,
+                  eventType == "processing.run.started" || eventType == "processing.run.completed",
                   let runID = object["processing_run_id"] as? String,
                   let payload = object["payload"] as? [String: Any],
-                  let stage = payload["stage"] as? String,
-                  let succeeded = payload["succeeded"] as? Bool else {
+                  let stage = payload["stage"] as? String else {
                 return nil
             }
-            return (runID, stage, succeeded, payload["completed_count"] as? Int)
+            return RunEvent(
+                eventType: eventType,
+                runID: runID,
+                stage: stage,
+                succeeded: payload["succeeded"] as? Bool,
+                completedCount: payload["completed_count"] as? Int
+            )
         }
         for (stage, runID) in expected {
-            guard stages.contains(where: {
-                $0.0 == runID && $0.1 == stage.rawValue && $0.2
-            }) else {
-                throw FinalTranscriptPipelineError.missingSuccessfulStage(stage, runID)
+            let ofRun = runEvents.filter { $0.runID == runID && $0.stage == stage.rawValue }
+            guard ofRun.filter({ $0.eventType == "processing.run.started" }).count == 1 else {
+                throw FinalTranscriptPipelineError.missingRunEvent(
+                    eventType: "processing.run.started", stage: stage, runID: runID
+                )
+            }
+            guard ofRun.contains(where: { $0.eventType == "processing.run.completed" && $0.succeeded == true }) else {
+                throw FinalTranscriptPipelineError.missingRunEvent(
+                    eventType: "processing.run.completed", stage: stage, runID: runID
+                )
             }
         }
         let persisted = objects.compactMap { object -> SegmentReference? in
@@ -333,27 +448,13 @@ struct FinalTranscriptPipeline: Sendable {
                 endFrame: endFrame
             )
         }
-        let completedCounts = stages.filter {
-            $0.0 == segmentationRunID && $0.1 == ProcessingStage.segmentation.rawValue && $0.2
-        }.map(\.3)
+        let completedCounts = runEvents.filter {
+            $0.eventType == "processing.run.completed"
+                && $0.runID == segmentationRunID
+                && $0.succeeded == true
+        }.map(\.completedCount)
         guard persisted == segments, completedCounts == [segments.count] else {
             throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
         }
-    }
-
-    private func failureReason(forRunID runID: String) throws -> String? {
-        let eventData = try Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
-        let recovered = try SessionRecovery.recoverJSONL(eventData)
-        for line in recovered.lines.reversed() {
-            guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  object["event_type"] as? String == "asr.failed",
-                  object["processing_run_id"] as? String == runID,
-                  let payload = object["payload"] as? [String: Any],
-                  let message = payload["message"] as? String else {
-                continue
-            }
-            return message
-        }
-        return nil
     }
 }

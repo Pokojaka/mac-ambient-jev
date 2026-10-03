@@ -11,7 +11,8 @@ struct SettingsView: View {
     @AppStorage("jev.isPaused") private var isJevPaused = false
     @AppStorage(MicInputVolumePreference.key)
     private var automaticMicInputVolume = MicInputVolumePreference.initialValue
-    @AppStorage(ExportDestinationStore.autoExportKey) private var isAutoExportEnabled = true
+    @AppStorage(ExportDestinationStore.autoExportKey)
+    private var isAutoExportEnabled = ExportDestinationStore.autoExportInitialValue
     @State private var apiKey = ""
     @State private var hasStoredKey = false
     @State private var statusMessage: String?

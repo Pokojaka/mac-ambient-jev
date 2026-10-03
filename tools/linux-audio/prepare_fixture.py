@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 
 from common.audio import normalize_to_wav
 from common.corpus import load_manifest, prepare_resource
 from common.csj import (
     csj_reference_text,
+    csj_speaker_reference,
     parse_csj_transcript,
 )
+from common.files import write_json_atomic
+
+
+ROLES = {"audio", "csj-transcript"}
 
 
 def prepare_fixture(
@@ -23,91 +27,57 @@ def prepare_fixture(
     resources_by_role: dict[str, dict] = {}
     for resource in manifest["resources"]:
         role = resource.get("role")
-        if not isinstance(role, str) or not role:
-            raise ValueError("resource role is required")
+        if role not in ROLES:
+            raise ValueError(
+                f"resource role must be one of {sorted(ROLES)}, "
+                f"got {role!r}"
+            )
         if role in resources_by_role:
             raise ValueError(f"duplicate role: {role}")
         resources_by_role[role] = resource
+    missing = ROLES - set(resources_by_role)
+    if missing:
+        raise ValueError(f"missing resource roles: {sorted(missing)}")
 
-    roles: dict[str, pathlib.Path] = {}
-    for role, resource in resources_by_role.items():
-        roles[role] = prepare_resource(
+    roles = {
+        role: prepare_resource(
             resource,
             cache_root=cache_root / manifest["id"],
         )
+        for role, resource in resources_by_role.items()
+    }
 
     fixture_dir = output_root / manifest["id"]
     fixture_dir.mkdir(parents=True, exist_ok=True)
+
+    utterances = parse_csj_transcript(
+        roles["csj-transcript"].read_text(encoding="utf-8")
+    )
+    normalize_to_wav(roles["audio"], fixture_dir / "audio.wav")
+    (fixture_dir / "reference-verbatim.txt").write_text(
+        csj_reference_text(utterances, keep_fillers=True) + "\n",
+        encoding="utf-8",
+    )
+    (fixture_dir / "reference-content.txt").write_text(
+        csj_reference_text(utterances, keep_fillers=False) + "\n",
+        encoding="utf-8",
+    )
+    write_json_atomic(
+        fixture_dir / "speaker-reference.json",
+        csj_speaker_reference(utterances),
+    )
+
     result = {
         "schema_version": 1,
         "id": manifest["id"],
-        "files": {},
+        "files": {
+            "audio": "audio.wav",
+            "reference_verbatim": "reference-verbatim.txt",
+            "reference_content": "reference-content.txt",
+            "speaker_reference": "speaker-reference.json",
+        },
     }
-
-    if "audio" in roles:
-        normalized = normalize_to_wav(
-            roles["audio"],
-            fixture_dir / "audio.wav",
-        )
-        result["files"]["audio"] = normalized.name
-
-    if "csj-transcript" in roles:
-        utterances = parse_csj_transcript(
-            roles["csj-transcript"].read_text(
-                encoding="utf-8"
-            )
-        )
-        verbatim = csj_reference_text(
-            utterances,
-            keep_fillers=True,
-        )
-        content = csj_reference_text(
-            utterances,
-            keep_fillers=False,
-        )
-        (fixture_dir / "reference-verbatim.txt").write_text(
-            verbatim + "\n",
-            encoding="utf-8",
-        )
-        (fixture_dir / "reference-content.txt").write_text(
-            content + "\n",
-            encoding="utf-8",
-        )
-        spans = [
-            {
-                "start_ms": item.start_ms,
-                "end_ms": item.end_ms,
-                "speaker_label": item.speaker,
-            }
-            for item in utterances
-        ]
-        (fixture_dir / "speaker-reference.json").write_text(
-            json.dumps(
-                spans,
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ) + "\n",
-            encoding="utf-8",
-        )
-        result["files"].update({
-            "reference_verbatim":
-                "reference-verbatim.txt",
-            "reference_content":
-                "reference-content.txt",
-            "speaker_reference":
-                "speaker-reference.json",
-        })
-
-    (fixture_dir / "fixture.json").write_text(
-        json.dumps(
-            result,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ) + "\n",
-        encoding="utf-8",
-    )
+    write_json_atomic(fixture_dir / "fixture.json", result)
     return result
 
 

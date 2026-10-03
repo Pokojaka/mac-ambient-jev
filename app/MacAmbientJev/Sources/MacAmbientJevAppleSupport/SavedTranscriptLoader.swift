@@ -42,10 +42,7 @@ public enum SavedTranscriptLoader {
             throw SavedTranscriptLoaderError.invalidSampleRate
         }
 
-        let eventsURL = layout.eventsURL
-        let lines = FileManager.default.fileExists(atPath: eventsURL.path)
-            ? try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL)).lines
-            : []
+        let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL)).lines
         let events = try EventLogTranscriptReader().events(
             lines: lines,
             activeRuns: activeRuns

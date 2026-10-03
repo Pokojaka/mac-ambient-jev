@@ -43,7 +43,7 @@ run_dir="$(dirname "$output")/$run_id"
 mkdir "$run_dir"
 tar -czf "$run_dir/source-snapshot.tar.gz" -C "$repo" \
   app/MacAmbientJev/Sources app/MacAmbientJev/Package.swift \
-  app/MacAmbientJev/Package.resolved scripts/measure_v1_run.sh tools/process-recording.swift
+  app/MacAmbientJev/Package.resolved scripts/measure_v1_run.sh
 
 args=(--run-id "$run_id" --metrics-output "$run_dir/engine-metrics.json" --thermal-output "$run_dir/thermal.jsonl" --memory-output "$run_dir/memory.jsonl")
 if [[ -n "$resume" ]]; then
@@ -72,14 +72,29 @@ def digest(path):
     with open(path, 'rb') as f:
         for block in iter(lambda: f.read(1024 * 1024), b''): h.update(block)
     return h.hexdigest()
-metric_path = folder / 'engine-metrics.json'
+def fail(message):
+    print(f'{message} (CLI exit code {exit_code}, log {folder / "stderr.log"})', file=sys.stderr)
+    sys.exit(1)
+def read_json(path):
+    try: return json.loads(path.read_text())
+    except (OSError, ValueError) as error: fail(f'{path.name} is unreadable: {error}')
+def read_jsonl(path):
+    try: return [json.loads(line) for line in path.read_text().splitlines()]
+    except (OSError, ValueError) as error: fail(f'{path.name} is unreadable: {error}')
 reason = {}
-try:
-    metric = json.loads(metric_path.read_text())
-    if metric.get('runID') != run: raise ValueError('run ID mismatch')
-except (OSError, ValueError) as error:
-    metric = {}
-    reason['engine_metrics'] = str(error)
+metric = read_json(folder / 'engine-metrics.json')
+if metric.get('runID') != run: fail('engine-metrics.json run ID mismatch')
+status = metric.get('disposition')
+if status not in ('completed', 'failed', 'paused'): fail(f'engine-metrics.json has no valid disposition: {status!r}')
+asr_keys = ('modelLoadSeconds', 'asrCallSeconds', 'processedAudioSeconds', 'pacingWaitSeconds',
+            'pacingWaitCount', 'initialPendingCount', 'maximumPendingCount', 'oldestPendingAgeSeconds')
+if 'asr' in metric:
+    asr = metric['asr']
+    missing = [k for k in asr_keys if not isinstance(asr.get(k), (int, float))]
+    if missing: fail(f'engine-metrics.json asr lacks {", ".join(missing)}')
+else:
+    asr = None
+    reason['asr'] = f'the engine measured no ASR batch in this {status} invocation'
 time_output = (folder / 'stderr.log').read_text(errors='replace')
 def value(pattern):
     match = re.search(pattern, time_output)
@@ -87,18 +102,18 @@ def value(pattern):
 peak = value(r'(\d+)\s+peak memory footprint')
 rss = value(r'(\d+)\s+maximum resident set size')
 if peak is None: reason['peak_memory_mb'] = 'not reported by /usr/bin/time -l'
-asr = metric.get('asr') or {}
-processed = asr.get('processedAudioSeconds') or 0
-rtf = asr.get('asrCallSeconds', 0) / processed if processed else None
-if rtf is None: reason['asr_rtf'] = 'no measured ASR audio in this invocation'
-memory_path = folder / 'memory.jsonl'
-samples = [json.loads(s) for s in memory_path.read_text().splitlines()] if memory_path.exists() else []
-thermal_path = folder / 'thermal.jsonl'
-thermal_samples = [json.loads(s) for s in thermal_path.read_text().splitlines()] if thermal_path.exists() else []
-if not samples: reason['memory_samples'] = 'memory.jsonl missing or empty'
-if not thermal_samples: reason['thermal_samples'] = 'thermal.jsonl missing or empty'
-if any(s.get('run_id') != run for s in samples): reason['memory_run_id'] = 'memory sample run ID mismatch'
-if any(s.get('run_id') != run for s in thermal_samples): reason['thermal_run_id'] = 'thermal sample run ID mismatch'
+def asr_value(key):
+    return asr[key] if asr is not None else None
+rtf = asr['asrCallSeconds'] / asr['processedAudioSeconds'] if asr is not None and asr['processedAudioSeconds'] > 0 else None
+if asr is not None and rtf is None: reason['asr_rtf'] = 'no ASR audio was processed in this invocation'
+samples = read_jsonl(folder / 'memory.jsonl')
+thermal_samples = read_jsonl(folder / 'thermal.jsonl')
+if not samples: fail('memory.jsonl has no samples')
+if not thermal_samples: fail('thermal.jsonl has no samples')
+if any(s.get('run_id') != run for s in samples): fail('memory.jsonl run ID mismatch')
+if any(s.get('run_id') != run for s in thermal_samples): fail('thermal.jsonl run ID mismatch')
+footprint_errors = sorted({s['footprint_error'] for s in samples if 'footprint_error' in s})
+if footprint_errors: reason['footprint_bytes'] = '; '.join(footprint_errors)
 asr_samples = [s['footprint_bytes'] for s in samples if s.get('phase') == 'asr' and isinstance(s.get('footprint_bytes'), int)]
 asr_timed = [(datetime.datetime.fromisoformat(s['timestamp'].replace('Z', '+00:00')), s['footprint_bytes']) for s in samples if s.get('phase') == 'asr' and isinstance(s.get('footprint_bytes'), int)]
 growth = None
@@ -129,8 +144,11 @@ if audio:
     probe = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',audio], capture_output=True, text=True)
     if probe.returncode == 0:
         try: duration = float(probe.stdout.strip())
-        except ValueError: pass
-if duration is None: reason['recording_duration_seconds'] = 'ffprobe could not read the audio'
+        except ValueError: reason['recording_duration_seconds'] = f'ffprobe printed no duration: {probe.stdout.strip()!r}'
+    else:
+        reason['recording_duration_seconds'] = f'ffprobe could not read the audio: {probe.stderr.strip()}'
+else:
+    reason['recording_duration_seconds'] = 'the session has no single original audio file'
 event_lines = []
 if events and events.exists():
     try: event_lines = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
@@ -145,7 +163,7 @@ sample_rate = None
 if metadata and metadata.exists():
     active_runs = json.loads(metadata.read_text()).get('active_runs') or {}
 if checkpoint and checkpoint.exists():
-    sample_rate = json.loads(checkpoint.read_text()).get('sampleRate')
+    sample_rate = read_json(checkpoint)['sampleRate']
 completed = [e for e in event_lines if e.get('event_type') == 'processing.run.completed' and e.get('payload', {}).get('succeeded') is True]
 diarization = next((e for e in reversed(completed) if e.get('processing_run_id') == active_runs.get('diarization') and e.get('payload', {}).get('stage') == 'diarization'), None)
 if not diarization: reason['diarization_completed_at'] = 'no successful active diarization run was observed'
@@ -164,7 +182,7 @@ report = {
  'run_id': run, 'recording_id': recording, 'session_id': session,
  'metric_scope': 'this_invocation', 'started_at': started, 'finished_at': finished,
  'wall_seconds': (datetime.datetime.fromisoformat(finished.replace('Z','+00:00')) - datetime.datetime.fromisoformat(started.replace('Z','+00:00'))).total_seconds(),
- 'exit_code': int(exit_code), 'status': metric.get('disposition', 'failed'),
+ 'exit_code': int(exit_code), 'status': status,
  'command': ['MacAmbientJevProcessRecording', *args],
  'build_configuration': 'release', 'output_path': output,
  'environment': {'os': platform.platform(), 'machine': platform.machine(),
@@ -179,13 +197,13 @@ report = {
  'input_sha256': digest(audio) if audio else None,
  'recording_duration_seconds': duration,
  'event_log_sha256': digest(events) if events and events.exists() else None,
- 'asr_call_seconds': asr.get('asrCallSeconds'),
- 'model_load_seconds': asr.get('modelLoadSeconds'),
- 'processed_audio_seconds': asr.get('processedAudioSeconds'),
- 'pacing_wait_seconds': asr.get('pacingWaitSeconds'),
+ 'asr_call_seconds': asr_value('asrCallSeconds'),
+ 'model_load_seconds': asr_value('modelLoadSeconds'),
+ 'processed_audio_seconds': asr_value('processedAudioSeconds'),
+ 'pacing_wait_seconds': asr_value('pacingWaitSeconds'),
  'asr_rtf': rtf,
- 'maximum_pending_count': asr.get('maximumPendingCount'),
- 'oldest_pending_age_ms': round(asr['oldestPendingAgeSeconds'] * 1000) if 'oldestPendingAgeSeconds' in asr else None,
+ 'maximum_pending_count': asr_value('maximumPendingCount'),
+ 'oldest_pending_age_ms': round(asr['oldestPendingAgeSeconds'] * 1000) if asr is not None else None,
  'peak_memory_mb': peak / (1024 * 1024) if peak is not None else None,
  'max_rss_bytes': rss,
  'memory_growth_mb': growth, 'memory_verdict': memory_verdict,
@@ -203,21 +221,8 @@ if int(exit_code) == 0 and pathlib.Path(output).exists():
     shutil.copy2(output, folder / 'segments.json')
 (folder / 'run.json').write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
 print(folder / 'run.json')
+if status != 'completed': fail(f'processing did not complete: {status}')
+if memory_verdict == 'FAILED': fail('memory verdict FAILED')
 PY
 
-if [[ ! -s "$run_dir/engine-metrics.json" ]]; then
-  echo "engine metrics missing" >&2
-  exit 1
-fi
-if ! python3 - "$run_dir/run.json" <<'PY'
-import json, sys
-report = json.load(open(sys.argv[1]))
-if (any(k in report['unavailable_reason'] for k in ('engine_metrics', 'memory_samples', 'thermal_samples', 'memory_run_id', 'thermal_run_id'))
-        or report['status'] != 'completed' or report['memory_verdict'] == 'FAILED'):
-    sys.exit(1)
-PY
-then
-  echo "engine metrics invalid or processing did not complete" >&2
-  exit 1
-fi
 exit "$exit_code"

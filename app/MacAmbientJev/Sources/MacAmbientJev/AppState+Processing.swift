@@ -22,7 +22,7 @@ extension AppState {
         }
         selectSavedSession(sessionID: sessionID)
         guard finalizationGate.claim(sessionID) else { return }
-        enqueueProcessing(.finalize(sessionID: sessionID, source: source))
+        enqueueProcessing(.finalize(sessionID: sessionID, source: source, metadataPolicy: .replace))
     }
 
     func prepareASRModel() {
@@ -50,7 +50,7 @@ extension AppState {
         do {
             let candidates = try SessionRecoveryScanner(
                 sessionsRoot: paths.sessionsRoot
-            ).pendingSessions()
+            ).pendingSessions().candidates
 
             var queuedCount = 0
             for candidate in candidates {
@@ -116,8 +116,7 @@ extension AppState {
             try prepareSession(
                 sessionID: sessionID,
                 sessionURL: sessionURL,
-                sourceKind: .importedFile,
-                originalFilename: sourceURL.lastPathComponent
+                source: .imported(originalFilename: sourceURL.lastPathComponent)
             )
             let imported = try AudioImporter().importFile(
                 sourceURL,
@@ -131,9 +130,10 @@ extension AppState {
                 tone: .neutral
             )
             enqueueProcessing(
-                .imported(
+                .finalize(
                     sessionID: sessionID,
-                    originalURL: imported.originalURL
+                    source: .importedOriginal(imported.originalURL),
+                    metadataPolicy: .reject
                 )
             )
         } catch {
@@ -146,14 +146,13 @@ extension AppState {
         }
     }
 
+    nonisolated static var isThermallyCritical: Bool {
+        ProcessInfo.processInfo.thermalState == .critical
+    }
+
     func enqueueProcessing(_ request: PendingProcessing) {
-        if !pausesProcessing {
-            switch request {
-            case .imported, .timeline, .resumeASR, .finalize:
-                prepareASRModel()
-            case .finishLive, .retryContentPriority, .selectCompletedASR, .diarization:
-                break
-            }
+        if !pausesProcessing, request.finalizesTranscript {
+            prepareASRModel()
         }
 
         pendingProcessing.append(request)
@@ -171,9 +170,36 @@ extension AppState {
         }
     }
 
+    /// Keeps a finalization until the Mac leaves critical thermal state.
+    func holdForHeat(_ request: PendingProcessing) {
+        thermallyHeldProcessing.append(request)
+        processingState = .backlogged
+        processingStatusText = UserFacingStatus.finalizationPausedForHeat.text
+        if displayedSessionID == request.sessionID {
+            transcriptViewModel.setStatus(UserFacingStatus.finalizationPausedForHeat.text)
+        }
+    }
+
+    func resumeThermallyHeldProcessing() {
+        guard !Self.isThermallyCritical, !thermallyHeldProcessing.isEmpty, !pausesProcessing else {
+            return
+        }
+        pendingProcessing.insert(contentsOf: thermallyHeldProcessing, at: 0)
+        thermallyHeldProcessing = []
+        prepareASRModel()
+        guard processingTask == nil else { return }
+        processingTask = Task { [weak self] in
+            await self?.drainProcessingQueue()
+        }
+    }
+
     func drainProcessingQueue() async {
         while !pendingProcessing.isEmpty {
             let request = pendingProcessing.removeFirst()
+            if request.finalizesTranscript, Self.isThermallyCritical {
+                holdForHeat(request)
+                continue
+            }
             let requestSessionID = request.sessionID
             currentlyProcessingSessionID = requestSessionID
             processingState = .running
@@ -198,46 +224,47 @@ extension AppState {
                     }
                 }
             }
+            let shouldPause: NativeSessionProcessor.PauseCheck = { Self.isThermallyCritical }
 
             if displayedSessionID == requestSessionID, request.finalizesTranscript {
                 transcriptViewModel.setDisplayState(.finalizing)
             }
 
-            var completedSessionID: UUID? = request.sessionID
+            let finalization: SessionProcessingResult?
             switch request {
-            case .finalize(let sessionID, let source):
+            case .finalize(let sessionID, let source, let metadataPolicy):
+                let result: SessionProcessingResult
                 switch source {
                 case .recordedTimeline(let checkpoint):
-                    _ = await sessionProcessor.processFinalTranscript(
+                    result = await sessionProcessor.processFinalTranscript(
                         sessionID: sessionID,
                         checkpoint: checkpoint,
+                        pacingMode: .normal,
+                        shouldPause: shouldPause,
+                        onPhase: { _ in },
+                        metadataPolicy: metadataPolicy,
                         onStatus: statusHandler,
                         onUpdate: updateHandler
                     )
                 case .importedOriginal(let originalURL):
-                    _ = await sessionProcessor.processImportedSession(
+                    result = await sessionProcessor.processImportedSession(
                         sessionID: sessionID,
                         originalURL: originalURL,
+                        pacingMode: .normal,
+                        shouldPause: shouldPause,
+                        onPhase: { _ in },
+                        metadataPolicy: metadataPolicy,
                         onStatus: statusHandler,
                         onUpdate: updateHandler
                     )
                 }
-                finalizationGate.release(sessionID)
+                if result.disposition == .paused {
+                    holdForHeat(request)
+                } else {
+                    finalizationGate.release(sessionID)
+                }
                 refreshSavedSessions()
-            case .imported(let sessionID, let originalURL):
-                await sessionProcessor.processImportedSession(
-                    sessionID: sessionID,
-                    originalURL: originalURL,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-            case .timeline(let sessionID, let checkpoint):
-                await sessionProcessor.processTimelineSession(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
+                finalization = result
             case .finishLive(let sessionID, let checkpoint):
                 await waitForLiveASRDrain(sessionID: sessionID)
 
@@ -245,39 +272,29 @@ extension AppState {
                     await sessionProcessor.cancelLiveTranscription(
                         sessionID: sessionID
                     )
-                    cleanupLiveASRState(sessionID: sessionID)
-                    completedSessionID = nil
                     processingStatusText =
-                        "ライブ文字起こしを再処理します: \(failure)"
-                    pendingProcessing.insert(
-                        .timeline(
-                            sessionID: sessionID,
-                            checkpoint: checkpoint
-                        ),
-                        at: 0
-                    )
-                } else {
-                    let result = await sessionProcessor.finishLiveTranscription(
-                        sessionID: sessionID,
-                        checkpoint: checkpoint,
-                        onStatus: statusHandler,
-                        onUpdate: updateHandler
-                    )
-                    cleanupLiveASRState(sessionID: sessionID)
-
-                    if case .fallbackRequired(let reason) = result {
-                        completedSessionID = nil
-                        processingStatusText =
-                            "録音後に文字起こしを再実行します: \(reason)"
-                        pendingProcessing.insert(
-                            .timeline(
-                                sessionID: sessionID,
-                                checkpoint: checkpoint
-                            ),
-                            at: 0
-                        )
-                    }
+                        "ライブ文字起こしは停止しました。録音全体を確定処理します: \(failure)"
                 }
+                let result = await sessionProcessor.finishLiveTranscription(
+                    sessionID: sessionID,
+                    checkpoint: checkpoint,
+                    finalSegments: [],
+                    pacingMode: .normal,
+                    shouldPause: shouldPause,
+                    onPhase: { _ in },
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
+                cleanupLiveASRState(sessionID: sessionID)
+                if result.disposition == .paused {
+                    // The live session has ended; resuming finalizes the saved recording.
+                    holdForHeat(.finalize(
+                        sessionID: sessionID,
+                        source: .recordedTimeline(checkpoint),
+                        metadataPolicy: .reject
+                    ))
+                }
+                finalization = result
             case .retryContentPriority(
                 let sessionID,
                 let checkpoint,
@@ -290,46 +307,31 @@ extension AppState {
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
-                completedSessionID = nil
                 refreshSavedSessions()
-            case .resumeASR(let sessionID, let checkpoint, let plan):
-                await sessionProcessor.resumePendingASRSession(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    plan: plan,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-            case .selectCompletedASR(let sessionID, let checkpoint, let plan):
-                await sessionProcessor.selectCompletedASRSession(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    plan: plan,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-            case .diarization(let sessionID, let checkpoint, let plan):
-                await sessionProcessor.runRecoveredDiarizationSession(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    plan: plan,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
+                finalization = nil
             }
 
+            if let retained = finalization?.retainedTranscript,
+               displayedSessionID == requestSessionID {
+                switch retained {
+                case .finalized: transcriptViewModel.setDisplayState(.finalized)
+                case .provisional: transcriptViewModel.setDisplayState(.live)
+                case .nothing: transcriptViewModel.setDisplayState(.empty)
+                }
+            }
             if !pendingProcessing.isEmpty {
                 processingState = .backlogged
                 processingStatusText = "次の文字起こし処理を開始します"
                 transcriptViewModel.setStatus("次の文字起こし処理を開始します")
             }
-            if let completedSessionID {
-                await autoExportIfEnabled(sessionID: completedSessionID)
+            if finalization?.disposition == .completed {
+                await autoExportIfEnabled(sessionID: requestSessionID)
             }
             currentlyProcessingSessionID = nil
         }
 
-        if processingState == .running || processingState == .backlogged {
+        if thermallyHeldProcessing.isEmpty,
+           processingState == .running || processingState == .backlogged {
             processingState = .complete
         }
         processingTask = nil
@@ -337,83 +339,45 @@ extension AppState {
 
     func recoverPendingSessions() async {
         do {
-            let candidates = try SessionRecoveryScanner(
+            let scan = try SessionRecoveryScanner(
                 sessionsRoot: paths.sessionsRoot
             ).pendingSessions()
+            let candidates = scan.candidates
                 .filter { $0.manifest.sessionID != recordingSessionID }
 
-            guard !candidates.isEmpty else { return }
-
-            processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"
-            transcriptViewModel.setStatus(
-                "未完了の文字起こしを復旧しています"
-            )
+            if !candidates.isEmpty {
+                processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"
+                transcriptViewModel.setStatus(
+                    "未完了の文字起こしを復旧しています"
+                )
+            }
 
             for candidate in candidates {
-                let sessionID = candidate.manifest.sessionID
-
-                switch (candidate.action, candidate.source) {
-                case (.retryContentPriority(let segmentIDs), _):
+                switch candidate.action {
+                case .retryContentPriority(let segmentIDs):
                     enqueueProcessing(
                         try contentPriorityRetry(
                             for: candidate,
                             segmentIDs: segmentIDs
                         )
                     )
-
-                case (.resumeASR(let plan), .recordedTimeline(let checkpoint)):
+                case .finalize:
                     enqueueProcessing(
-                        .resumeASR(
-                            sessionID: sessionID,
-                            checkpoint: checkpoint,
-                            plan: plan
-                        )
-                    )
-
-                case (.selectCompletedASR(let plan), .recordedTimeline(let checkpoint)):
-                    enqueueProcessing(
-                        .selectCompletedASR(
-                            sessionID: sessionID,
-                            checkpoint: checkpoint,
-                            plan: plan
-                        )
-                    )
-
-                case (.runDiarization(let plan), .recordedTimeline(let checkpoint)):
-                    enqueueProcessing(
-                        .diarization(
-                            sessionID: sessionID,
-                            checkpoint: checkpoint,
-                            plan: plan
-                        )
-                    )
-
-                case (.reprocess, .recordedTimeline(let checkpoint)):
-                    enqueueProcessing(
-                        .timeline(
-                            sessionID: sessionID,
-                            checkpoint: checkpoint
-                        )
-                    )
-
-                case (.finalize, .recordedTimeline(let checkpoint)):
-                    enqueueProcessing(
-                        .timeline(
-                            sessionID: sessionID,
-                            checkpoint: checkpoint
-                        )
-                    )
-
-                case (_, .importedOriginal(let originalURL)):
-                    // An import's timeline is derived from its original, so
-                    // recovery rebuilds it and reruns the whole import.
-                    enqueueProcessing(
-                        .imported(
-                            sessionID: sessionID,
-                            originalURL: originalURL
+                        .finalize(
+                            sessionID: candidate.manifest.sessionID,
+                            source: candidate.source,
+                            metadataPolicy: .reject
                         )
                     )
                 }
+            }
+
+            if let firstFailure = scan.failures.first {
+                processingStatusText =
+                    "復旧できないセッションがあります（\(scan.failures.count)件）: \(firstFailure.message)"
+                transcriptViewModel.setStatus(
+                    "復旧できないセッションがあります（\(scan.failures.count)件）"
+                )
             }
         } catch {
             processingState = .partialFailure(error.localizedDescription)
@@ -425,24 +389,16 @@ extension AppState {
         }
     }
 
-    /// Jev retries reuse the timeline the existing events were computed against;
-    /// for an import that is the timeline derived from its original.
+    /// Jev retries reuse the timeline the published runs were computed against.
     func contentPriorityRetry(
         for candidate: RecoverableSession,
         segmentIDs: [String]
     ) throws -> PendingProcessing {
-        let checkpoint: AudioCheckpoint
-        switch candidate.source {
-        case .recordedTimeline(let value):
-            checkpoint = value
-        case .importedOriginal:
-            let layout = SessionLayout(sessionURL: candidate.sessionURL)
-            guard let value = try AudioCheckpoint.loadRecovered(
-                from: layout.processingDirectory
-            ) else {
-                throw SessionRecoveryScannerError.missingAudio
-            }
-            checkpoint = value
+        let layout = SessionLayout(sessionURL: candidate.sessionURL)
+        guard let checkpoint = try AudioCheckpoint.loadRecovered(
+            from: layout.processingDirectory
+        ) else {
+            throw SessionRecoveryScannerError.missingAudio
         }
         return .retryContentPriority(
             sessionID: candidate.manifest.sessionID,

@@ -1,11 +1,9 @@
 import Foundation
 
+/// What recovery does with a session. Finalization always reruns every stage
+/// from the session's source audio.
 public enum RecoverableProcessingAction: Sendable, Equatable {
     case finalize
-    case reprocess
-    case resumeASR(ASRRecoveryPlan)
-    case selectCompletedASR(ASRRecoveryPlan)
-    case runDiarization(ASRRecoveryPlan)
     case retryContentPriority(segmentIDs: [String])
 }
 
@@ -28,9 +26,42 @@ public struct RecoverableSession: Sendable, Equatable {
     }
 }
 
-public enum SessionRecoveryScannerError: Error, Equatable {
+/// A session folder whose recovery state could not be determined.
+public struct SessionRecoveryFailure: Sendable, Equatable {
+    public let sessionURL: URL
+    public let message: String
+
+    public init(sessionURL: URL, message: String) {
+        self.sessionURL = sessionURL
+        self.message = message
+    }
+}
+
+public struct SessionRecoveryScan: Sendable, Equatable {
+    public let candidates: [RecoverableSession]
+    public let failures: [SessionRecoveryFailure]
+
+    public init(candidates: [RecoverableSession], failures: [SessionRecoveryFailure]) {
+        self.candidates = candidates
+        self.failures = failures
+    }
+}
+
+public enum SessionRecoveryScannerError: Error, LocalizedError, Equatable {
     case sessionIDMismatch
     case missingAudio
+    case unreadableManifest(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .sessionIDMismatch:
+            "セッションフォルダ名とセッション情報の ID が一致しません"
+        case .missingAudio:
+            "確定処理が途中のセッションに音声がありません"
+        case .unreadableManifest(let reason):
+            "セッション情報を読めません: \(reason)"
+        }
+    }
 }
 
 public struct SessionRecoveryScanner: Sendable {
@@ -41,14 +72,14 @@ public struct SessionRecoveryScanner: Sendable {
     }
 
     public func inspect(sessionID: UUID) throws -> RecoverableSession? {
-        let url = sessionsRoot.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try candidate(at: url, repairEventLog: false)
+        let layout = SessionLayout(sessionsRoot: sessionsRoot, sessionID: sessionID)
+        guard FileManager.default.fileExists(atPath: layout.manifestURL.path) else { return nil }
+        return try candidate(layout: layout)
     }
 
-    public func pendingSessions() throws -> [RecoverableSession] {
+    public func pendingSessions() throws -> SessionRecoveryScan {
         guard FileManager.default.fileExists(atPath: sessionsRoot.path) else {
-            return []
+            return SessionRecoveryScan(candidates: [], failures: [])
         }
 
         let sessionURLs = try FileManager.default.contentsOfDirectory(
@@ -57,172 +88,109 @@ public struct SessionRecoveryScanner: Sendable {
             options: [.skipsHiddenFiles]
         )
 
-        return sessionURLs
-            .compactMap { try? candidate(at: $0, repairEventLog: true) }
-            .sorted { $0.manifest.createdAt < $1.manifest.createdAt }
+        var candidates: [RecoverableSession] = []
+        var failures: [SessionRecoveryFailure] = []
+        for sessionURL in sessionURLs {
+            let layout = SessionLayout(sessionURL: sessionURL)
+            do {
+                guard try sessionURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
+                      FileManager.default.fileExists(atPath: layout.manifestURL.path) else {
+                    continue
+                }
+                if let candidate = try candidate(layout: layout) {
+                    candidates.append(candidate)
+                }
+            } catch {
+                failures.append(SessionRecoveryFailure(
+                    sessionURL: sessionURL,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+        return SessionRecoveryScan(
+            candidates: candidates.sorted { $0.manifest.createdAt < $1.manifest.createdAt },
+            failures: failures.sorted { $0.sessionURL.lastPathComponent < $1.sessionURL.lastPathComponent }
+        )
     }
 
-    private func candidate(
-        at sessionURL: URL,
-        repairEventLog: Bool
-    ) throws -> RecoverableSession? {
-        let values = try sessionURL.resourceValues(
-            forKeys: [.isDirectoryKey]
-        )
-        guard values.isDirectory == true else { return nil }
-
-        let layout = SessionLayout(sessionURL: sessionURL)
-        guard FileManager.default.fileExists(atPath: layout.manifestURL.path) else {
-            return nil
-        }
-
+    private func candidate(layout: SessionLayout) throws -> RecoverableSession? {
         let manifest = try decodeManifest(at: layout.manifestURL)
-        guard UUID(uuidString: sessionURL.lastPathComponent) == manifest.sessionID else {
+        guard UUID(uuidString: layout.sessionURL.lastPathComponent) == manifest.sessionID else {
             throw SessionRecoveryScannerError.sessionIDMismatch
         }
-        let recoveredLines = try recoverEventLog(
-            sessionURL: sessionURL,
-            repair: repairEventLog
-        )
-        let analyzer = EventLogRecoveryAnalyzer()
-        let latestASRPlan = try analyzer.latestASRPlan(
-            lines: recoveredLines
-        )
-        let metadata = try ProcessingMetadataStore(
-            sessionURL: sessionURL
-        ).load()
-        let activeASRPlan: ASRRecoveryPlan?
-        if let activeASRRunID = metadata?.activeRuns?.asr {
-            activeASRPlan = try analyzer.asrPlan(
-                runID: activeASRRunID,
-                lines: recoveredLines
-            )
-        } else {
-            activeASRPlan = nil
-        }
+        let metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()
 
-        let action: RecoverableProcessingAction?
-        if metadata?.finalizationAttempt?.state == .running {
+        let action: RecoverableProcessingAction
+        switch metadata?.finalizationAttempt?.state {
+        case .running, .paused:
             action = .finalize
-        } else if metadata?.finalizationAttempt?.state == .failed {
-            action = nil
-        } else if let activePlan = activeASRPlan,
-           activePlan.pendingSegments.isEmpty,
-           activePlan.runSucceeded,
-           !activePlan.hasFailures {
-            // Scope is the final mandatory local stage. If it was not
-            // selected, rerun diarization and all later local stages from
-            // the known-good active ASR run. This deliberately trades some
-            // duplicate computation for simple, crash-safe recovery.
-            if metadata?.activeRuns?.scope == nil {
-                action = .runDiarization(activePlan)
-            } else {
-                let jevState = try JevRetryAnalyzer()
-                    .contentPriorityState(
-                        lines: recoveredLines
-                    )
-                let metadataPendingIDs = metadata?
-                    .pendingContentPrioritySegmentIDs ?? []
-                let pendingPriorityIDs = metadataPendingIDs.isEmpty
-                    ? jevState.pendingSegmentIDs
-                    : metadataPendingIDs
-
-                if !pendingPriorityIDs.isEmpty {
-                    let activePriorityRunID =
-                        metadata?.activeRuns?.contentPriority
-
-                    if !jevState.hasAssignments
-                        || jevState.latestRunID == activePriorityRunID {
-                        action = .retryContentPriority(
-                            segmentIDs: pendingPriorityIDs
-                        )
-                    } else {
-                        // A newer priority run exists in the log but was
-                        // never selected, which indicates an interrupted
-                        // retry. Rebuild a complete fresh run rather than
-                        // adopting a possibly partial result.
-                        let allSegmentIDs = activePlan
-                            .transcriptEvents
-                            .compactMap { event -> String? in
-                                if case .segmentCreated = event.kind {
-                                    return event.segmentID
-                                }
-                                return nil
-                            }
-                        action = allSegmentIDs.isEmpty
-                            ? nil
-                            : .retryContentPriority(
-                                segmentIDs: allSegmentIDs
-                            )
-                    }
-                } else {
-                    action = nil
-                }
+        case nil:
+            // A recording that crashed before it stopped, or an import never processed.
+            guard metadata?.activeRuns == nil,
+                  let source = try layout.audioSource(for: manifest) else {
+                return nil
             }
-        } else if let plan = latestASRPlan {
-            if metadata?.activeRuns?.asr == plan.asrRunID {
-                action = nil
-            } else if plan.pendingSegments.isEmpty
-                        && plan.runSucceeded
-                        && !plan.hasFailures {
-                action = .selectCompletedASR(plan)
-            } else if !plan.hasFailures
-                        && (!plan.pendingSegments.isEmpty
-                            || !plan.asrRunID.hasPrefix("asr_live_")) {
-                action = .resumeASR(plan)
-            } else if metadata?.activeRuns?.asr == nil {
-                action = .reprocess
-            } else {
-                // A failed reprocessing run must not displace the existing
-                // active run or be retried indefinitely on every launch.
-                action = nil
+            return RecoverableSession(
+                manifest: manifest,
+                sessionURL: layout.sessionURL,
+                source: source,
+                action: .finalize
+            )
+        case .failed:
+            return nil
+        case .complete:
+            guard let metadata, let activeRuns = metadata.activeRuns,
+                  !metadata.pendingContentPrioritySegmentIDs.isEmpty else {
+                return nil
             }
-        } else if metadata?.activeRuns?.scope != nil {
-            action = nil
-        } else if metadata?.activeRuns?.asr == nil {
-            action = .reprocess
-        } else {
-            action = nil
+            action = .retryContentPriority(segmentIDs: try contentPrioritySegmentIDs(
+                layout: layout,
+                activeRuns: activeRuns,
+                pendingSegmentIDs: metadata.pendingContentPrioritySegmentIDs
+            ))
         }
-
-        guard let action else { return nil }
 
         guard let source = try layout.audioSource(for: manifest) else {
             throw SessionRecoveryScannerError.missingAudio
         }
-
         return RecoverableSession(
             manifest: manifest,
-            sessionURL: sessionURL,
+            sessionURL: layout.sessionURL,
             source: source,
             action: action
         )
     }
 
-    private func decodeManifest(at url: URL) throws -> SessionManifest {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(
-            SessionManifest.self,
-            from: Data(contentsOf: url)
-        )
+    /// A content-priority run newer than the selected one means a retry was
+    /// interrupted before it was published; its partial result is not adopted,
+    /// so every segment of the published segmentation is classified again.
+    private func contentPrioritySegmentIDs(
+        layout: SessionLayout,
+        activeRuns: ActiveRuns,
+        pendingSegmentIDs: [String]
+    ) throws -> [String] {
+        let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL)).lines
+        let jevState = try JevRetryAnalyzer().contentPriorityState(lines: lines)
+        guard jevState.hasAssignments, jevState.latestRunID != activeRuns.contentPriority else {
+            return pendingSegmentIDs
+        }
+        return try EventLogTranscriptReader()
+            .events(lines: lines, activeRuns: activeRuns)
+            .compactMap { event in
+                guard case .segmentCreated = event.kind,
+                      event.segmentationRunID == activeRuns.segmentation else { return nil }
+                return event.segmentID
+            }
     }
 
-    private func recoverEventLog(sessionURL: URL, repair: Bool) throws -> [Data] {
-        let eventsURL = SessionLayout(sessionURL: sessionURL).eventsURL
-        guard FileManager.default.fileExists(atPath: eventsURL.path) else {
-            return []
+    private func decodeManifest(at url: URL) throws -> SessionManifest {
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            return try decoder.decode(SessionManifest.self, from: data)
+        } catch let error as DecodingError {
+            throw SessionRecoveryScannerError.unreadableManifest(String(describing: error))
         }
-
-        let recovered = try SessionRecovery.recoverJSONL(
-            Data(contentsOf: eventsURL)
-        )
-        if repair && recovered.droppedIncompleteTail {
-            try recovered.normalizedData.write(
-                to: eventsURL,
-                options: .atomic
-            )
-        }
-        return recovered.lines
     }
 }

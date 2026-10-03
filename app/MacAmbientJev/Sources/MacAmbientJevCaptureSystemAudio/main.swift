@@ -187,8 +187,7 @@ struct CaptureSystemAudioCommand {
         )
         let sessionID = UUID()
         let sessionURL = try SessionBootstrapper().createSession(
-            paths: paths, sessionID: sessionID, sourceKind: .live,
-            captureSource: .systemAudio
+            paths: paths, sessionID: sessionID, source: .recording(.systemAudio)
         )
         let failures = CaptureFailureLog()
         let engine = AudioCaptureEngine(paths: paths)
@@ -235,7 +234,14 @@ struct CaptureSystemAudioCommand {
         if options.transcribe, let result, errors.isEmpty {
             let processor = NativeSessionProcessor(paths: paths, allowExternalJev: false)
             let processing = await processor.processFinalTranscript(
-                sessionID: sessionID, checkpoint: result.checkpoint
+                sessionID: sessionID,
+                checkpoint: result.checkpoint,
+                pacingMode: .normal,
+                shouldPause: { ProcessInfo.processInfo.thermalState == .critical },
+                onPhase: { _ in },
+                metadataPolicy: .reject,
+                onStatus: { _ in },
+                onUpdate: { _, _ in }
             )
             if processing.disposition == .completed {
                 do {

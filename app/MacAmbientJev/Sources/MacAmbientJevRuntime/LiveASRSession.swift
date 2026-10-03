@@ -20,13 +20,6 @@ public struct LiveASRProgress: Sendable, Equatable {
     }
 }
 
-public enum LiveTranscriptionFinishResult: Sendable, Equatable {
-    case completed
-    case noSpeech
-    case fallbackRequired(String)
-    case postProcessingFailed(String)
-}
-
 public struct LiveASRCompletion: Sendable, Equatable {
     public let events: [TranscriptEvent]
     public let materializedSegments: [MaterializedTranscriptSegment]

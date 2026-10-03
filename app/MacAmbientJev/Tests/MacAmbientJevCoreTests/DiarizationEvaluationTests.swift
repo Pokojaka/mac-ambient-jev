@@ -23,7 +23,10 @@ func arrivalCollapserMapsEighthThroughTenthToOther() throws {
         )
     }
 
-    let collapsed = try SpeakerArrivalCollapser.collapse(source)
+    let collapsed = try SpeakerArrivalCollapser.collapse(
+        source,
+        minCleanSpeechMilliseconds: 500
+    )
 
     for index in 0..<7 {
         #expect(
@@ -34,6 +37,91 @@ func arrivalCollapserMapsEighthThroughTenthToOther() throws {
     #expect(collapsed[7].speaker == .other)
     #expect(collapsed[8].speaker == .other)
     #expect(collapsed[9].speaker == .other)
+}
+
+@Test
+func arrivalCollapserCountsArrivalFromFirstCleanUtterance() throws {
+    // A backchannels inside B's turn before speaking cleanly, so B
+    // arrives first even though A's first span starts earlier.
+    let source = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 3_000,
+            speakerLabel: "B"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 200,
+            endMilliseconds: 600,
+            speakerLabel: "A"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 4_000,
+            endMilliseconds: 5_000,
+            speakerLabel: "A"
+        ),
+    ]
+
+    let collapsed = try SpeakerArrivalCollapser.collapse(
+        source,
+        minCleanSpeechMilliseconds: 500
+    )
+
+    #expect(collapsed.map(\.speaker) == [
+        try .tracked(1),
+        try .tracked(2),
+        try .tracked(2),
+    ])
+}
+
+@Test
+func arrivalCollapserUsesCleanPartOfPartiallyOverlappedSpan() throws {
+    // A's only span overlaps B for its first 400 ms, then continues
+    // cleanly for 600 ms, which is enough to register A.
+    let source = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 1_400,
+            speakerLabel: "B"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 1_000,
+            endMilliseconds: 2_000,
+            speakerLabel: "A"
+        ),
+    ]
+
+    let collapsed = try SpeakerArrivalCollapser.collapse(
+        source,
+        minCleanSpeechMilliseconds: 500
+    )
+
+    #expect(collapsed.map(\.speaker) == [
+        try .tracked(1),
+        try .tracked(2),
+    ])
+}
+
+@Test
+func arrivalCollapserMarksSpeakerWithoutCleanSpeechUnknown() throws {
+    let source = [
+        SourceSpeakerSpan(
+            startMilliseconds: 0,
+            endMilliseconds: 2_000,
+            speakerLabel: "A"
+        ),
+        SourceSpeakerSpan(
+            startMilliseconds: 500,
+            endMilliseconds: 900,
+            speakerLabel: "B"
+        ),
+    ]
+
+    let collapsed = try SpeakerArrivalCollapser.collapse(
+        source,
+        minCleanSpeechMilliseconds: 500
+    )
+
+    #expect(collapsed.map(\.speaker) == [try .tracked(1), .unknown])
 }
 
 @Test

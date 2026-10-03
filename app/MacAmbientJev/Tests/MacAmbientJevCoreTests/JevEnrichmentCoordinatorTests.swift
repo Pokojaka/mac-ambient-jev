@@ -10,17 +10,6 @@ private struct FixedPriorityProvider: DecisionProvider {
     ) async throws -> ContentPriorityDecision {
         decision
     }
-
-    func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        SemanticSceneDecision(
-            cue: .none,
-            confidence: 1
-        )
-    }
 }
 
 private struct ThrowingPriorityProvider: DecisionProvider {
@@ -29,18 +18,10 @@ private struct ThrowingPriorityProvider: DecisionProvider {
     ) async throws -> ContentPriorityDecision {
         throw URLError(.notConnectedToInternet)
     }
-
-    func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        throw URLError(.notConnectedToInternet)
-    }
 }
 
 @Test
-func jevEnrichmentAppliesConservativePriorityPolicy() async throws {
+func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -57,7 +38,8 @@ func jevEnrichmentAppliesConservativePriorityPolicy() async throws {
                     model: "jev-test",
                     inputTokens: 12
                 )
-            )
+            ),
+            usageCounter: JevUsageCounter()
         ),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
@@ -88,9 +70,10 @@ func jevEnrichmentAppliesConservativePriorityPolicy() async throws {
     )
 
     #expect(result.retryPendingSegmentIDs.isEmpty)
+    #expect(result.stopReason == nil)
     #expect(
         result.materializedSegments.first?.contentPriority
-            == .primary
+            == .lowPriority
     )
 }
 
@@ -105,7 +88,8 @@ func jevFailureKeepsPrimaryAndRecordsRetryPending() async throws {
         runID: "priority-test",
         writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(
-            provider: ThrowingPriorityProvider()
+            provider: ThrowingPriorityProvider(),
+            usageCounter: JevUsageCounter()
         ),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
@@ -158,16 +142,6 @@ private actor CountingRetryProvider: DecisionProvider {
         )
     }
 
-    func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        SemanticSceneDecision(
-            cue: .none,
-            confidence: 1
-        )
-    }
 
     func recordedPriorityCalls() -> [String] {
         priorityCalls
@@ -186,7 +160,8 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
         runID: "priority-retry",
         writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(
-            provider: provider
+            provider: provider,
+            usageCounter: JevUsageCounter()
         ),
         materializer: TranscriptMaterializer(
             sampleRate: 1_000
@@ -274,6 +249,74 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
     #expect(byID["seg-1"] == .some(.lowPriority))
     #expect(byID["seg-2"] == .some(.primary))
     #expect(!result.retryPendingSegmentIDs.contains("seg-empty"))
+
+    let payloads = try persistedPriorityPayloads(root: root)
+    #expect(payloads["seg-1"]?["decision"] as? [String: [String: String]]
+        == ["carried_over": ["source_run_id": "priority-old"]])
+    #expect(payloads["seg-1"]?["priority"] as? String == "lowPriority")
+    #expect(payloads["seg-1"]?["needs_retry"] as? Bool == false)
+    let classified = try #require(
+        (payloads["seg-2"]?["decision"] as? [String: Any])?["classified"] as? [String: Any]
+    )
+    #expect(classified["model"] as? String == "jev-test")
+    #expect(classified["input_tokens"] as? Int == 4)
+}
+
+private func persistedPriorityPayloads(root: URL) throws -> [String: [String: Any]] {
+    let lines = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    ).lines
+    var payloads: [String: [String: Any]] = [:]
+    for line in lines {
+        let event = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+        guard event["event_type"] as? String == "content_priority.assigned",
+              let segmentID = event["segment_id"] as? String else { continue }
+        payloads[segmentID] = try #require(event["payload"] as? [String: Any])
+    }
+    return payloads
+}
+
+@Test
+func retryRunWithoutAPriorityToCarryOverFailsBeforeSendingAnything() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let provider = CountingRetryProvider()
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(),
+        runID: "priority-retry",
+        writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let events: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "a", startFrame: 0, endFrame: 1_000),
+        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "a", text: "一つ目"),
+        .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "b", startFrame: 1_000, endFrame: 2_000),
+        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "b", text: "二つ目")
+    ]
+
+    await #expect(throws: JevEnrichmentError.noPriorityToCarryOver(segmentID: "b")) {
+        try await coordinator.process(
+            existingEvents: events,
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
+            retryOnlySegmentIDs: ["a"]
+        )
+    }
+    #expect(await provider.recordedPriorityCalls().isEmpty)
+}
+
+@Test
+func contentPriorityPayloadRejectsNeedsRetryThatContradictsTheDecision() throws {
+    let json = Data("""
+    {"priority":"primary","needs_retry":false,"decision":{"retry_pending":{}}}
+    """.utf8)
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    #expect(throws: DecodingError.self) {
+        try decoder.decode(ContentPriorityEventPayload.self, from: json)
+    }
 }
 
 @Test
@@ -287,7 +330,7 @@ func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
         sessionID: UUID(),
         runID: "priority-empty-filter",
         writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(provider: provider),
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
     let events: [TranscriptEvent] = [

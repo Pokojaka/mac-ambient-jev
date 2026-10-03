@@ -295,6 +295,11 @@ struct MeasureLiveLatencyCommand {
         let finalResult = await processor.finishLiveTranscription(
             sessionID: sessionID,
             checkpoint: checkpoint,
+            finalSegments: [],
+            pacingMode: .normal,
+            shouldPause: { ProcessInfo.processInfo.thermalState == .critical },
+            onPhase: { _ in },
+            onStatus: { _ in },
             onUpdate: { segments, state in
                 await collector.update(segments)
                 await collector.recordFinalUpdate(segments, state: state)
@@ -383,7 +388,7 @@ struct MeasureLiveLatencyCommand {
             "p50_seconds": percentile(latencies, 0.50) as Any? ?? NSNull(),
             "p95_seconds": percentile(latencies, 0.95) as Any? ?? NSNull(),
             "maximum_seconds": latencies.last as Any? ?? NSNull(),
-            "final_processing_result": String(describing: finalResult),
+            "final_processing_result": finalResult.disposition.rawValue,
             "transcripts": collected.texts
         ]
         let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
