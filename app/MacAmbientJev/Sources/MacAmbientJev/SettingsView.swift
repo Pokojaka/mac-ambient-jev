@@ -197,7 +197,6 @@ struct SettingsView: View {
 
             Section("送信される情報") {
                 Text("内容優先度判定では現在の発話テキストだけを送信します。")
-                Text("場面転換の補助判定では現在の発話、直前3発話まで、現在の場面状態だけを送信します。")
                 Text("原音声、音声ファイルのパス、話者埋め込み、セッション全文は送信しません。")
             }
             .font(.callout)
@@ -289,7 +288,7 @@ struct SettingsView: View {
 
     private func refreshStoredKeyState() {
         do {
-            hasStoredKey = try secretStore.load(account: Self.apiKeyAccount) != nil
+            hasStoredKey = try secretStore.contains(account: Self.apiKeyAccount)
             statusIsError = false
         } catch {
             hasStoredKey = false

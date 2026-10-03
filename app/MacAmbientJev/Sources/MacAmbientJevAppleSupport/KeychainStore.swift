@@ -4,6 +4,7 @@ import Security
 public protocol SecretStore: Sendable {
     func save(_ value: String, account: String) throws
     func load(account: String) throws -> String?
+    func contains(account: String) throws -> Bool
     func delete(account: String) throws
 }
 
@@ -65,6 +66,24 @@ public struct KeychainStore: SecretStore, Sendable {
         }
 
         return value
+    }
+
+    public func contains(account: String) throws -> Bool {
+        var query = baseQuery(account: account)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        switch status {
+        case errSecSuccess:
+            return true
+        case errSecItemNotFound:
+            return false
+        default:
+            throw KeychainStoreError(status: status)
+        }
     }
 
     public func delete(account: String) throws {
