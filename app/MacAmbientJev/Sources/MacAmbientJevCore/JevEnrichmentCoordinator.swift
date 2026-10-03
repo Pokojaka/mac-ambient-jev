@@ -87,6 +87,14 @@ public struct JevEnrichmentBatchResult: Sendable, Equatable {
     }
 }
 
+/// Which segments a content-priority run sends to Jev.
+public enum JevEnrichmentScope: Sendable, Equatable {
+    /// Every segment with recognized text.
+    case all
+    /// Only these segments; every other segment carries over its active priority.
+    case retry(Set<String>)
+}
+
 public actor JevEnrichmentCoordinator {
     private let sessionID: UUID
     private let runID: String
@@ -111,7 +119,7 @@ public actor JevEnrichmentCoordinator {
     public func process(
         existingEvents: [TranscriptEvent],
         activeRuns: ActiveRuns,
-        retryOnlySegmentIDs: Set<String>? = nil
+        scope: JevEnrichmentScope
     ) async throws -> JevEnrichmentBatchResult {
         let baseSegments = materializer.materialize(
             events: existingEvents,
@@ -120,7 +128,7 @@ public actor JevEnrichmentCoordinator {
         let carriedOverPriorities = try carriedOverPriorities(
             segments: baseSegments,
             activeRuns: activeRuns,
-            retryOnlySegmentIDs: retryOnlySegmentIDs
+            scope: scope
         )
 
         var events = existingEvents
@@ -232,9 +240,9 @@ public actor JevEnrichmentCoordinator {
     private func carriedOverPriorities(
         segments: [MaterializedTranscriptSegment],
         activeRuns: ActiveRuns,
-        retryOnlySegmentIDs: Set<String>?
+        scope: JevEnrichmentScope
     ) throws -> [String: ContentPriorityEventPayload] {
-        guard let retryOnlySegmentIDs else { return [:] }
+        guard case .retry(let retryOnlySegmentIDs) = scope else { return [:] }
 
         var payloads: [String: ContentPriorityEventPayload] = [:]
         for segment in segments where !retryOnlySegmentIDs.contains(segment.segmentID) {

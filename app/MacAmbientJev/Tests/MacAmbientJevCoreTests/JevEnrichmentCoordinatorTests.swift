@@ -66,7 +66,8 @@ func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
         activeRuns: ActiveRuns(
             segmentation: "seg",
             asr: "asr"
-        )
+        ),
+        scope: .all
     )
 
     #expect(result.retryPendingSegmentIDs.isEmpty)
@@ -116,7 +117,8 @@ func jevFailureKeepsPrimaryAndRecordsRetryPending() async throws {
         activeRuns: ActiveRuns(
             segmentation: "seg",
             asr: "asr"
-        )
+        ),
+        scope: .all
     )
 
     #expect(result.retryPendingSegmentIDs == ["seg-1"])
@@ -232,7 +234,7 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
             asr: "asr",
             contentPriority: "priority-old"
         ),
-        retryOnlySegmentIDs: ["seg-2", "seg-empty"]
+        scope: .retry(["seg-2", "seg-empty"])
     )
 
     #expect(
@@ -301,7 +303,7 @@ func retryRunWithoutAPriorityToCarryOverFailsBeforeSendingAnything() async throw
         try await coordinator.process(
             existingEvents: events,
             activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-            retryOnlySegmentIDs: ["a"]
+            scope: .retry(["a"])
         )
     }
     #expect(await provider.recordedPriorityCalls().isEmpty)
@@ -343,7 +345,7 @@ func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
     let result = try await coordinator.process(
         existingEvents: events,
         activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        retryOnlySegmentIDs: ["blank", "spoken"]
+        scope: .retry(["blank", "spoken"])
     )
 
     #expect(await provider.recordedPriorityCalls() == ["聞き取れませんでした。"])

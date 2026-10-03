@@ -269,7 +269,7 @@ func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
         writer: writer,
         decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(existingEvents: events, activeRuns: runs)
+    ).process(existingEvents: events, activeRuns: runs, scope: .all)
     #expect(initial.retryPendingSegmentIDs == ["seg-1"])
     #expect(await counter.snapshot().retryPendingCount == 1)
 
@@ -282,7 +282,7 @@ func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
     ).process(
         existingEvents: events,
         activeRuns: runs,
-        retryOnlySegmentIDs: ["seg-1"]
+        scope: .retry(["seg-1"])
     )
     #expect(stillOffline.retryPendingSegmentIDs == ["seg-1"])
     #expect(await counter.snapshot().retryPendingCount == 1)
@@ -297,7 +297,7 @@ func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
     ).process(
         existingEvents: events,
         activeRuns: runs,
-        retryOnlySegmentIDs: ["seg-1"]
+        scope: .retry(["seg-1"])
     )
     #expect(retry.retryPendingSegmentIDs.isEmpty)
     #expect(await counter.snapshot().retryPendingCount == 0)
@@ -321,7 +321,7 @@ func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
     func run(
         _ runID: String,
         after previous: (runID: String, result: JevEnrichmentBatchResult)?,
-        retrying segmentIDs: Set<String>?
+        scope: JevEnrichmentScope
     ) async throws -> (runID: String, result: JevEnrichmentBatchResult) {
         let result = try await JevEnrichmentCoordinator(
             sessionID: sessionID,
@@ -332,25 +332,25 @@ func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
         ).process(
             existingEvents: previous?.result.events ?? retryEvents(segmentIDs: ["seg-1", "seg-2"]),
             activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", contentPriority: previous?.runID),
-            retryOnlySegmentIDs: segmentIDs
+            scope: scope
         )
         return (runID, result)
     }
 
-    let initial = try await run("priority-initial", after: nil, retrying: nil)
+    let initial = try await run("priority-initial", after: nil, scope: .all)
     #expect(Set(initial.result.retryPendingSegmentIDs) == ["seg-1", "seg-2"])
     #expect(await counter.snapshot().retryPendingCount == 2)
 
-    let stillOffline = try await run("priority-still-offline", after: initial, retrying: ["seg-1"])
+    let stillOffline = try await run("priority-still-offline", after: initial, scope: .retry(["seg-1"]))
     #expect(stillOffline.result.retryPendingSegmentIDs == ["seg-1"])
     #expect(await counter.snapshot().retryPendingCount == 2)
 
     await provider.reconnect()
-    let retry = try await run("priority-retry", after: stillOffline, retrying: ["seg-1"])
+    let retry = try await run("priority-retry", after: stillOffline, scope: .retry(["seg-1"]))
     #expect(retry.result.retryPendingSegmentIDs.isEmpty)
     #expect(await counter.snapshot().retryPendingCount == 1)
 
-    let final = try await run("priority-final", after: retry, retrying: ["seg-2"])
+    let final = try await run("priority-final", after: retry, scope: .retry(["seg-2"]))
     #expect(final.result.retryPendingSegmentIDs.isEmpty)
     let snapshot = await counter.snapshot()
     #expect(snapshot.retryPendingCount == 0)

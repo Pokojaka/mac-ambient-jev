@@ -60,7 +60,8 @@ func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws
     )
     let result = try await coordinator.process(
         existingEvents: fiveSegmentEvents(),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
+        scope: .all
     )
     let calls = await transport.calls
     let timeout = await transport.lastRequest?.timeoutInterval
@@ -106,7 +107,8 @@ func rejectedAPIKeyStopsTheBatchAndKeepsEverySegmentPending(status: Int) async t
 
     let result = try await coordinator.process(
         existingEvents: fiveSegmentEvents(),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
+        scope: .all
     )
 
     let allSegmentIDs = Set((0..<5).map { "s\($0)" })
@@ -140,7 +142,8 @@ func requestSpecificFailureKeepsSendingTheRemainingSegments() async throws {
 
     let result = try await coordinator.process(
         existingEvents: fiveSegmentEvents(),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
+        scope: .all
     )
 
     #expect(await transport.calls == 5)

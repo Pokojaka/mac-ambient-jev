@@ -396,7 +396,7 @@ public actor NativeSessionProcessor {
             let result = try await coordinator.process(
                 existingEvents: events,
                 activeRuns: activeRuns,
-                retryOnlySegmentIDs: Set(segmentIDs)
+                scope: .retry(Set(segmentIDs))
             )
 
             try selectContentPriorityRun(
@@ -763,7 +763,8 @@ public actor NativeSessionProcessor {
                     guard let segmentID = event.segmentID else { return true }
                     return visibleSegmentIDs.contains(segmentID)
                 },
-                activeRuns: activeRuns
+                activeRuns: activeRuns,
+                scope: .all
             )
         } catch {
             await onStatus(UserFacingStatus.jevDeferred.text)
