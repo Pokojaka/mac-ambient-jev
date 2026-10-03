@@ -1,0 +1,176 @@
+# Linux 音声評価
+
+Linux 側は検証用の Python runner と portable Swift 評価器を使う。macOS アプリの録音・GUI・MLX 実行環境とは別であり、Python、CUDA、NeMo はアプリの依存ではない。Mac と Linux の認識文の完全一致を要求せず、参照文、評価規則、実行条件を明示して比較する。Swift の共通部分と通常検証は [testing.md](testing.md) を参照する。
+
+## 環境と実行範囲
+
+- Python 3.12 以上。ASR の依存は `tools/linux-audio/asr/pyproject.toml` にあり、`qwen-asr==0.0.6` を使う。
+- Python unit test には pytest が必要。音声変換には ffmpeg、Swift 評価器には Swift 6 系が必要。
+- Nemotron の依存は `tools/linux-audio/diarization/pyproject.toml` にある。NeMo Speech の revision を固定し、話者 embedding 用モデルも使う。CUDA 実行には対応する PyTorch と NVIDIA GPU が必要。
+- runner の device は `cpu`、`cuda`、`cuda:N` のいずれか。CUDA を指定して利用できない場合は失敗し、CPU へ切り替えない。
+
+以下はリポジトリルートから実行する。音声・参照文・出力先は、自分の実在するファイルや保存先を指す環境変数に設定する。
+
+```bash
+export PYTHONPATH="$PWD/tools/linux-audio${PYTHONPATH:+:$PYTHONPATH}"
+bash scripts/verify_linux_audio.sh --smoke
+```
+
+`tools/linux-audio/run_suite.py` は smoke/full のどちらでも portable Core 検証、Python unit test、ffmpeg の有無、qwen_asr の有無を確認する。smoke はモデル推論を実行しない。
+
+| 全体状態 | 終了コード | 意味 |
+| --- | --- | --- |
+| `PASS` | 0 | 実行対象の check がすべて成功 |
+| `FAIL` | 1 | 少なくとも一つの check が失敗 |
+| `SKIPPED_MISSING_DEPENDENCY` | 2 | 失敗はないが、依存・必要 fixture・artifact が欠けている |
+
+FAIL は SKIP より優先する。標準出力は `overall`、`exit_code`、`checks` の JSON。各 check は `name`、`status`、必要に応じて `detail` を持つ。`--json` で同じ summary の保存先を指定できる。SKIP は推論や精度の合格を意味しない。
+
+## 全量評価
+
+ASR の必須引数は `--full-audio`、`--full-asr-reference-verbatim`、`--work-root`、`--device`。自然会話は filler を含む verbatim 参照文が主評価で、`--full-asr-reference-content` は filler を除いた補助評価に使う。同じ推論結果をそれぞれの参照文で採点する。
+
+```bash
+bash scripts/verify_linux_audio.sh --full \
+  --full-audio "$AUDIO_WAV" \
+  --full-asr-reference-verbatim "$REFERENCE_VERBATIM" \
+  --full-asr-reference-content "$REFERENCE_CONTENT" \
+  --work-root "$WORK_ROOT" \
+  --device cpu \
+  --json "$SUMMARY_JSON"
+```
+
+content 参照文と summary 出力は省略できる。full 用の引数を smoke に渡すことはできない。full の ASR は Qwen3-ASR の既定 1.7B モデルを実行し、Swift CER 評価と baseline record 作成まで行う。suite の PASS 自体には CER の閾値判定や採用済み baseline との比較を含まない。
+
+Nemotron を加えるには `--with-diarization` と次の五つの引数がすべて必要。値を省略したり、diarization を有効にせず指定したりすると引数エラーになる。
+
+```bash
+bash scripts/verify_linux_audio.sh --full \
+  --full-audio "$AUDIO_WAV" \
+  --full-asr-reference-verbatim "$REFERENCE_VERBATIM" \
+  --work-root "$WORK_ROOT" \
+  --device cuda \
+  --with-diarization \
+  --full-speaker-reference "$SPEAKER_REFERENCE" \
+  --diarization-profile offline-30.4s \
+  --speaker-match-threshold "$MATCH_THRESHOLD" \
+  --speaker-ambiguity-margin "$AMBIGUITY_MARGIN" \
+  --min-clean-speech-ms "$MIN_CLEAN_SPEECH_MS"
+```
+
+閾値は評価 corpus に合わせた値を明示する。`0 <= ambiguity_margin <= match_threshold <= 1`、clean speech の最小長は正の整数 ms。profile は `offline-30.4s`、`low-1.04s`、`very-low-0.64s`、`ultra-low-0.32s` のいずれか。full だけでは Nemotron を実行しない。
+
+## ASR 実行と CER
+
+`tools/linux-audio/asr/qwen3_asr.py` は公式 qwen-asr の Transformers backend を使う。既定モデル ID は Qwen/Qwen3-ASR-1.7B（Hugging Face の ID であり、リポジトリ内のパスではない）、revision は `7278e1e70fe206f11671096ffdd38061171dd6e5`。モデルを変える場合は `--revision` が必要。
+
+```bash
+python3 -m asr.qwen3_asr "$AUDIO_WAV" \
+  --output "$ASR_ARTIFACT" \
+  --device cpu \
+  --language Japanese
+
+swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
+  "$REFERENCE_VERBATIM" "$ASR_ARTIFACT" --output "$ASR_REPORT"
+```
+
+推論設定は dtype `bfloat16`、batch size 1、max new tokens 4096、context は空文字。指定した device と language も来歴に保存する。評価結果は `raw`、`normalized`、`normalizer_version` を持つ。正規化は Unicode 互換合成、空白・改行・句読点の除去で、filler 除去ではない。content 評価も hypothesis に同じ CER 正規化を適用するだけなので、verbatim と同等の主判定として扱わない。
+
+## 評価 artifact のスキーマ v2
+
+厳密な Python validator は `tools/linux-audio/common/artifact.py` にある。キー集合は固定で、余分なキーも拒否する。Swift 評価器は採点に必要な部分を読むため、来歴を含む形式確認には Python validator を使う。
+
+共通の `engine` は次の七つのキーをすべて持つ。
+
+| キー | 内容 |
+| --- | --- |
+| `name` | ASR は `qwen3-asr`、話者分離は `nemotron-3-diarization` |
+| `model` / `revision` | 空でないモデル ID / revision |
+| `backend` | ASR は `transformers`、話者分離は `nemo` |
+| `device` | CPU または CUDA の device 指定 |
+| `package_versions` | 空でない package 名 → 実インストール version の辞書 |
+| `inference_config` | 空でない実推論設定の辞書 |
+
+`runtime` は `audio_seconds`、`model_load_seconds`、`inference_seconds`、`rtf`。有限の非負数で、audio の長さは正、RTF は inference/audio に一致する。cold model load とロード後の warm 推論を分ける。CUDA では `resident_vram_mb` と `peak_vram_mb` がさらに必須で、CPU ではこの二つのキーを持たない。単位は 1024² bytes。resident はモデルロード直後の PyTorch allocated memory、peak は推論中の allocated memory の最大値であり、GPU 全体の使用量ではない。
+
+### ASR の artifact
+
+トップレベルは `schema_version: 2`、`engine`、`segments`、`runtime` のみ。`segments` は全音声を包む一つの区間で、発話時刻の精度を表すものではなく CER の hypothesis 用である。区間は次の四キーを持つ。
+
+- `start_ms`: 整数 0。
+- `end_ms`: audio_seconds × 1000 を round した整数。
+- `text`: 認識文。空文字も形式上は許可する。
+- `language`: エンジンが返した言語の文字列。
+
+### 話者分離の artifact
+
+トップレベルは `schema_version: 2`、`engine`、`speaker_policy`、`spans`、`raw_spans`、`overflow_resolver`、`runtime`。
+
+- `speaker_policy` は `{"tracked_limit":7,"overflow":"other"}`。
+- `spans` の要素は `start_ms`、`end_ms`、`speaker`。speaker は `{"kind":"tracked","index":1}`〜index 7、`{"kind":"other"}`、`{"kind":"unknown"}`。
+- `raw_spans` の要素は `start_ms`、`end_ms`、空でない `speaker_label`。
+- 区間の時刻は整数で、`0 <= start_ms < end_ms`。
+- `overflow_resolver` は `embedding_model`、`embedding_revision`、`match_threshold`、`ambiguity_margin`、`min_clean_speech_ms` の五キー。
+- Nemotron の `inference_config` は `profile`、`streaming`、`batch_size`。streaming に cache/FIFO/chunk/right-context/update-period の実値を保存する。
+
+人物の初登場順は、十分な長さの非重複 subspan が初めて得られる順。clean 部分が不足する span は UNKNOWN で人物登録をしない。embedding と登録済み人物の最大 cosine 類似度が閾値以上なら既知人物、閾値直下の曖昧帯なら登録人数に関係なく UNKNOWN、曖昧帯未満なら新規人物とし、7 人登録後は OTHER。Nemotron の raw stream 番号そのものを OTHER と決めない。
+
+話者参照文は `start_ms`、`end_ms`、`speaker_label` を持つ配列。`MacAmbientJevEvaluateDiarization` は参照配列と artifact を位置引数に取り、任意の `--output` を後ろに指定する。レポートには raw label の `standard`、7 人＋OTHER＋UNKNOWN の `collapsed`、`evaluator_version` がある。
+
+## baseline のスキーマ v2
+
+`tools/linux-audio/common/baseline.py` の record は `schema_version: 2`、`kind`、`engine`、`conditions`、`corpus`、`metrics` の六キー。kind は `asr` または `diarization`。engine は artifact の来歴をそのまま持つ。
+
+| kind | conditions | corpus（値は小文字の SHA-256） |
+| --- | --- | --- |
+| `asr` | `reference_kind`（verbatim/content）、`normalizer_version` | `audio`、`reference` |
+| `diarization` | `overflow_resolver`、`evaluator_version` | `audio`、`speaker_reference` |
+
+ASR metrics は `raw_cer`、`normalized_cer`、`rtf`、`model_load_seconds`。話者分離 metrics は `standard_der`、`standard_miss_ms`、`standard_false_alarm_ms`、`standard_confusion_ms`、`standard_overlap_recall`、`speaker_switch_boundary_mae_ms`、`collapsed_der`、`tracked_speaker_confusion_ms`、`other_precision`、`other_recall`、`other_to_tracked_leakage_ms`、`tracked_to_other_leakage_ms`、`unknown_rate`、`overflow_detection_recall`、`collapsed_overlap_recall`、`rtf`、`model_load_seconds`。いずれも CUDA では常駐・peak VRAM の二項目を追加する。分母のない overlap recall、OTHER precision/recall、overflow recall、境界 MAE は null を許可する。
+
+suite は work root に ASR artifact、参照種別ごとの評価、`qwen3-asr-verbatim-current.json`、必要なら `qwen3-asr-content-current.json` を作る。話者分離を有効にすると artifact、評価、`nemotron3-current.json` も作る。採用済み baseline は current 出力とは別に管理する。`baselines/` は保存領域であり、固定ファイル名の採用済み record が必ずあるわけではない。
+
+比較関数 `compare_baseline` は kind、engine 全体（package version・推論設定を含む）、conditions、corpus が完全一致する場合だけ比較し、各 metric の baseline/current/delta を返す。null を含む差分は null。異なる backend、モデル、normalizer、参照種別を横断した差分は出さない。比較関数は suite に自動接続されていない。
+
+## VOICEVOX の評価 corpus
+
+固定台本と 2/4/7/8/10 人シナリオは `tools/corpora/voicevox-ja-core-v1.json` にある。`tools/linux-audio/common/voicevox_cli.py` は VOICEVOX の API endpoint /audio_query から得た JSON をそのまま synthesis に渡し、WAV と query を保存する。API endpoint はリポジトリ内のパスではない。
+
+```bash
+python3 -m common.voicevox_cli \
+  --base-url http://127.0.0.1:50021 \
+  --text '今日は音声認識の動作を確認します。' \
+  --style-id 3 \
+  --output "$VOICEVOX_WAV" \
+  --query-output "$VOICEVOX_QUERY"
+```
+
+複数話者の生成は `tools/linux-audio/voicevox_suite.py` の `generate_scenario` 関数。専用 CLI や run_suite からの自動生成はない。style 違いではなく speaker_uuid が異なる人物を選び、10 人シナリオには 10 人の異なる人物が必要。
+
+`scenario.json` は schema version 1 で、engine version、人物 UUID/名前と style、台本、audio_query、raw WAV hash、混合音声 hash を保存する。これは推論 artifact v2 とは別形式である。
+
+`placement_overlap_factor` は隣接する clip の短い方の長さに掛ける配置係数。`measured_overlap_ratio` は一人以上が発話している時間のうち二人以上が重なる割合で、配置係数と同じ値とは限らない。DER の reference は PCM16 振幅の絶対値 328 以上の最初から最後までとし、TTS の前後無音を除く。clip 内部の無音を細分割する VAD ではない。混合は mono PCM16 / 16 kHz。
+
+## CSJ の評価素材と外部音声
+
+`tools/linux-audio/prepare_fixture.py` は schema version 1 の manifest を受け取る。必要な `resources` は role `audio` と `csj-transcript` が一つずつで、各 resource に `url`、`filename`、固定した `sha256` を指定する。
+
+```bash
+python3 tools/linux-audio/prepare_fixture.py "$CORPUS_MANIFEST" \
+  --cache-root "$CACHE_ROOT" --output-root "$FIXTURE_ROOT"
+```
+
+生成物は mono PCM16 / 16 kHz の `audio.wav`、`reference-verbatim.txt`、`reference-content.txt`、`speaker-reference.json`、`fixture.json`。CSJ 転記は UTF-8 で読む。
+
+`tools/linux-audio/common/csj.py` の parser は番号・秒単位 start-end・英字話者名を持つ header と、surface と katakana を `&` で区切る本文を読む。空行と `%` コメントを無視する。`(F ...)` filler、`(D ...)` 言い直し断片、`(? ...)` 不確かな聞き取りを入れ子で扱う。verbatim は全注釈の中の語を残し、content は F だけを除く。header の `<笑>`・`<雑音>` 等は非言語区間で、本文・ASR 参照文・話者 reference に含めない。未知の書式、本文のない speech、非言語区間の本文、不正時刻は明示エラー。
+
+既存 cache の SHA-256 不一致は直ちに失敗し、暗黙の再取得で上書きしない。新規 download も hash を検証してから公開する。外部音声は Git に入れず、利用条件と音声・参照文の対応を確認してローカルで準備する。`tools/corpora/public-ja-candidates-v1.json` は CSJ、RWCP、青空文庫/LibriVox の候補一覧であり、prepare 用の hash 固定済み resource manifest ではない。
+
+## CI の実推論
+
+`.github/workflows/linux-asr-real-inference.yml` は workflow_dispatch と、指定 branch での workflow ファイルへの push を入口にする。Ubuntu / Python 3.12 / CPU PyTorch 2.10.0 / qwen-asr 0.0.6 で実行し、二モデルを独立した matrix job で判定する。fail-fast は無効。
+
+- 1.7B: モデル ID Qwen/Qwen3-ASR-1.7B、revision `7278e1e70fe206f11671096ffdd38061171dd6e5`。
+- 0.6B: モデル ID Qwen/Qwen3-ASR-0.6B、revision `5eb144179a02acc5e5ba31e748d22b0cf3e303b0`。
+
+各 job は Python unit test、VOICEVOX による日本語音声の生成、16 kHz mono 化、指定モデルの CPU 推論、artifact validator、portable Swift CER 評価を行う。非空の認識文・revision 一致・normalized CER 10% 以下を確認する。1.7B の失敗を 0.6B の成功で代替しない。Docker image ID/digest、VOICEVOX engine version・speaker 一覧・query、音声 hash、推論結果、評価、runner 情報を artifact として保存し、保持期間は 3 日。Nemotron 実推論はこの workflow の対象ではない。
