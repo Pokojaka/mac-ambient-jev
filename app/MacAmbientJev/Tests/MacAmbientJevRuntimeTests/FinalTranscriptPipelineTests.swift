@@ -593,6 +593,62 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     #expect(metadata.pendingContentPrioritySegmentIDs == ["seg_000001"])
 }
 
+private struct RejectedKeyDecisionProvider: DecisionProvider {
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        throw JevClientError.httpStatus(401)
+    }
+}
+
+@Test
+func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        allowExternalJev: true,
+        asr: FakeFinalASR(log: log, values: ["一つ目", "二つ目"]),
+        diarizationEngine: FakeFinalDiarizer(
+            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+            log: log,
+            shouldFail: false
+        ),
+        finalTranscriptVAD: FakeFinalVAD(
+            segments: [
+                SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 8_000),
+                SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000002", startFrame: 8_000, endFrame: 16_000)
+            ],
+            log: log
+        ),
+        jevDecisionCoordinatorFactory: {
+            JevDecisionCoordinator(provider: RejectedKeyDecisionProvider(), usageCounter: JevUsageCounter())
+        }
+    )
+    let statuses = FinalizationStatusRecorder()
+
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+
+    #expect(result.disposition == .completed)
+    #expect(await statuses.snapshot().last == UserFacingStatus.jevAuthorizationRequired.text)
+    let pending = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+        .pendingContentPrioritySegmentIDs
+    #expect(Set(pending) == ["seg_000001", "seg_000002"])
+
+    let retryStatuses = FinalizationStatusRecorder()
+    await processor.retryContentPrioritySession(
+        sessionID: sessionID,
+        checkpoint: checkpoint,
+        segmentIDs: pending,
+        onStatus: { await retryStatuses.append($0) },
+        onUpdate: { _, _ in }
+    )
+    #expect(await retryStatuses.snapshot().last == UserFacingStatus.jevAuthorizationRequired.text)
+}
+
 @Test
 func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     let sourceSessionID = UUID()

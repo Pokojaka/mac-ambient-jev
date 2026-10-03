@@ -122,10 +122,7 @@ private func appendPriority(runID: String, segmentID: String, sessionID: UUID, w
         segmentID: segmentID,
         payload: ContentPriorityEventPayload(
             priority: .primary,
-            confidence: nil,
-            model: nil,
-            inputTokens: nil,
-            needsRetry: true
+            decision: .retryPending
         )
     ))
 }

@@ -23,6 +23,14 @@ private struct JevEnrichmentOutcome: Sendable {
     let materializedSegments: [MaterializedTranscriptSegment]
     let pendingSegmentIDs: [String]
     let persistenceFailure: String?
+    let stopReason: JevBatchStopReason?
+}
+
+extension Optional<JevBatchStopReason> {
+    /// The status for segments a batch left pending.
+    fileprivate var pendingStatus: UserFacingStatus {
+        self == .authorizationRejected ? .jevAuthorizationRequired : .jevDeferred
+    }
 }
 
 /// What stays on screen when a finalization does not complete.
@@ -361,7 +369,7 @@ public actor NativeSessionProcessor {
             if result.retryPendingSegmentIDs.isEmpty {
                 await onStatus("保留中の意味分類を更新しました")
             } else {
-                await onStatus(UserFacingStatus.jevDeferred.text)
+                await onStatus(result.stopReason.pendingStatus.text)
             }
         } catch {
             await onStatus("意味分類を再試行できませんでした: \(error.localizedDescription)")
@@ -507,6 +515,7 @@ public actor NativeSessionProcessor {
     ) async {
         var finalSegments = final.materializedSegments
         var deferredContentPriorityIDs: [String] = []
+        var deferredContentPriorityStatus = UserFacingStatus.jevDeferred
         var retryStatePersistenceFailure: String?
         if allowExternalJev, !final.materializedSegments.isEmpty {
             do {
@@ -521,6 +530,7 @@ public actor NativeSessionProcessor {
                 )
                 finalSegments = outcome.materializedSegments
                 deferredContentPriorityIDs = outcome.pendingSegmentIDs
+                deferredContentPriorityStatus = outcome.stopReason.pendingStatus
                 retryStatePersistenceFailure = outcome.persistenceFailure
             } catch {
                 deferredContentPriorityIDs = final.materializedSegments
@@ -541,7 +551,7 @@ public actor NativeSessionProcessor {
         if final.completedCount == 0 {
             await onStatus("発話区間は検出されませんでした")
         } else if !deferredContentPriorityIDs.isEmpty {
-            await onStatus(UserFacingStatus.jevDeferred.text)
+            await onStatus(deferredContentPriorityStatus.text)
         } else if retryStatePersistenceFailure == nil {
             await onStatus(
                 "文字起こし、話者分離、場面判定、音響範囲整理が完了しました（\(final.completedCount)区間）"
@@ -649,7 +659,7 @@ public actor NativeSessionProcessor {
         version: "1",
         configuration: [
             "endpoint": JevClient.endpoint.absoluteString,
-            "minimum_demotion_confidence": String(ContentPriorityPolicy().minimumDemotionConfidence),
+            "minimum_demotion_confidence": String(ContentPriorityPolicy.minimumDemotionConfidence),
         ]
     )
 
@@ -684,7 +694,8 @@ public actor NativeSessionProcessor {
             return JevEnrichmentOutcome(
                 materializedSegments: [],
                 pendingSegmentIDs: [],
-                persistenceFailure: nil
+                persistenceFailure: nil,
+                stopReason: nil
             )
         }
         let initialPersistenceFailure = persistPendingContentPriority(
@@ -694,7 +705,8 @@ public actor NativeSessionProcessor {
         let deferred = JevEnrichmentOutcome(
             materializedSegments: visibleSegments,
             pendingSegmentIDs: allSegmentIDs,
-            persistenceFailure: initialPersistenceFailure
+            persistenceFailure: initialPersistenceFailure,
+            stopReason: nil
         )
         let decisions: JevDecisionCoordinator
         do {
@@ -749,7 +761,7 @@ public actor NativeSessionProcessor {
         }
 
         if !result.retryPendingSegmentIDs.isEmpty {
-            await onStatus(UserFacingStatus.jevDeferred.text)
+            await onStatus(result.stopReason.pendingStatus.text)
         }
 
         return JevEnrichmentOutcome(
@@ -757,7 +769,8 @@ public actor NativeSessionProcessor {
             pendingSegmentIDs: selectionFailure == nil
                 ? result.retryPendingSegmentIDs
                 : allSegmentIDs,
-            persistenceFailure: selectionFailure
+            persistenceFailure: selectionFailure,
+            stopReason: result.stopReason
         )
     }
 
