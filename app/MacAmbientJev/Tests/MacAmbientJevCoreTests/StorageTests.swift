@@ -58,25 +58,6 @@ import Testing
     #expect(runs.asr == "asr_run_02")
 }
 
-@Test func processingMetadataPersistsReprocessingVersions() throws {
-    let metadata = ProcessingMetadata(
-        timelineVersion: 1,
-        vadVersion: "fluidaudio-vad",
-        vadConfigHash: "abc123",
-        asrEngine: "qwen3-asr-swift",
-        asrModel: "aufklarer/Qwen3-ASR-1.7B-MLX-8bit",
-        asrVersion: "pinned-revision",
-        diarizationVersion: "fluidaudio-0.15.8",
-        sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1,
-        policyVersion: 1,
-        materializerSchemaVersion: 1
-    )
-    let data = try JSONEncoder().encode(metadata)
-    let restored = try JSONDecoder().decode(ProcessingMetadata.self, from: data)
-    #expect(restored == metadata)
-}
-
 @Test func activeRunsCodingPersistsOnlySelectedPointers() throws {
     var runs = ActiveRuns(asr: "asr_run_01")
     runs.markCompleted(stage: .asr, runID: "asr_run_02", succeeded: true)
@@ -102,18 +83,9 @@ func processingMetadataStorePersistsActiveRunsAtomically() throws {
         asr: "asr_run_07"
     )
     let metadata = ProcessingMetadata(
-        timelineVersion: 1,
-        vadVersion: "fluidaudio-0.15.8",
-        vadConfigHash: "default-v1",
-        asrEngine: "qwen3-asr-swift",
-        asrModel: ModelStore.qwen3ASRModelID,
-        asrVersion: "speech-swift-c4c2fab",
-        diarizationVersion: "fluidaudio-0.15.8",
-        sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1,
-        policyVersion: 1,
-        materializerSchemaVersion: 1,
-        activeRuns: active
+        finalizationAttempt: nil,
+        activeRuns: active,
+        pendingContentPrioritySegmentIDs: []
     )
 
     let store = ProcessingMetadataStore(sessionURL: root)

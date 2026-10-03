@@ -254,6 +254,7 @@ struct SavedSessionsView: View {
         return switch session.processingStatus {
         case .notProcessed: "未処理"
         case .running: "処理中"
+        case .paused: "一時停止中（発熱）"
         case .complete: session.hasActiveTranscript ? "文字起こしあり" : "処理完了"
         case .classificationPending: "文字起こしあり・意味分類を再試行"
         case .failed(let reason): "再処理が必要: \(reason ?? "処理に失敗しました")"

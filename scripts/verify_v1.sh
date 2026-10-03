@@ -29,10 +29,6 @@ swift build \
   --package-path "$PACKAGE" \
   --product MacAmbientJevEvaluateSession
 
-for tool in "$ROOT"/tools/*.swift; do
-  swiftc -typecheck "$tool"
-done
-
 if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
   MODEL_TESTS="$(swift test --package-path "$PACKAGE" list)"
   if ! grep -Fq "ASRIntegrationTests" <<< "$MODEL_TESTS"; then

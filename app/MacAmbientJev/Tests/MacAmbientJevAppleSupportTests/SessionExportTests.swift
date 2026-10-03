@@ -297,11 +297,9 @@ struct ExportFixture {
             ))
         }
         try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-            timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-            asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-            diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-            jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
-            activeRuns: activeRuns
+            finalizationAttempt: nil,
+            activeRuns: activeRuns,
+            pendingContentPrioritySegmentIDs: []
         ))
     }
 }
@@ -413,8 +411,11 @@ func corruptProcessingMetadataBlocksExportButKeepsTheSessionReprocessable() asyn
     }
 
     #expect(summary.canReprocess)
-    #expect(session.processingStatus == .corrupted("処理情報（processing_metadata.json）が壊れています"))
-    #expect(throws: SessionExportError.transcriptCorrupted("処理情報（processing_metadata.json）が壊れています")) {
+    guard case .corrupted(let reason) = session.processingStatus else {
+        Issue.record("expected corrupted derived results, got \(session.processingStatus)")
+        return
+    }
+    #expect(throws: SessionExportError.transcriptCorrupted(reason)) {
         try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot, timeZone: .current)
     }
     #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))

@@ -137,7 +137,7 @@ extension AppState {
         switch session.processingStatus {
         case .complete, .classificationPending:
             await export(session)
-        case .notProcessed, .running, .failed, .corrupted:
+        case .notProcessed, .running, .paused, .failed, .corrupted:
             break
         }
     }

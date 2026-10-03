@@ -20,6 +20,8 @@ public enum SavedSessionDisplayText {
 public enum SavedSessionProcessingStatus: Sendable, Equatable {
     case notProcessed
     case running
+    /// Finalization stopped for heat and resumes from the oldest unfinished segment.
+    case paused
     case complete
     case classificationPending
     case failed(String?)
@@ -185,9 +187,6 @@ public struct SavedSessionCatalog {
         do {
             metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()
             processingStatus = status(for: metadata)
-        } catch is DecodingError {
-            metadata = nil
-            processingStatus = .corrupted("処理情報（processing_metadata.json）が壊れています")
         } catch {
             metadata = nil
             processingStatus = .corrupted(error.localizedDescription)
@@ -248,8 +247,10 @@ public struct SavedSessionCatalog {
         switch metadata?.finalizationAttempt?.state {
         case .running:
             .running
+        case .paused:
+            .paused
         case .complete:
-            metadata?.pendingContentPrioritySegmentIDs?.isEmpty == false
+            metadata?.pendingContentPrioritySegmentIDs.isEmpty == false
                 ? .classificationPending
                 : .complete
         case .failed:

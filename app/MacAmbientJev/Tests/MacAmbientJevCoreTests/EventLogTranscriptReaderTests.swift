@@ -87,10 +87,7 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
         segmentID: "seg-1",
         payload: ContentPriorityEventPayload(
             priority: .lowPriority,
-            confidence: 0.99,
-            model: "jev-test",
-            inputTokens: 4,
-            needsRetry: false
+            decision: .classified(confidence: 0.99, model: "jev-test", inputTokens: 4)
         )
     ))
 
@@ -141,10 +138,7 @@ func jevRetryAnalyzerUsesLatestAssignmentPerSegment() async throws {
         segmentID: "seg-1",
         payload: ContentPriorityEventPayload(
             priority: .primary,
-            confidence: nil,
-            model: nil,
-            inputTokens: nil,
-            needsRetry: true
+            decision: .retryPending
         )
     ))
     _ = try await writer.append(EventDraft(
@@ -154,10 +148,7 @@ func jevRetryAnalyzerUsesLatestAssignmentPerSegment() async throws {
         segmentID: "seg-2",
         payload: ContentPriorityEventPayload(
             priority: .primary,
-            confidence: nil,
-            model: nil,
-            inputTokens: nil,
-            needsRetry: true
+            decision: .retryPending
         )
     ))
     _ = try await writer.append(EventDraft(
@@ -167,10 +158,7 @@ func jevRetryAnalyzerUsesLatestAssignmentPerSegment() async throws {
         segmentID: "seg-1",
         payload: ContentPriorityEventPayload(
             priority: .lowPriority,
-            confidence: 0.99,
-            model: "jev-test",
-            inputTokens: 3,
-            needsRetry: false
+            decision: .classified(confidence: 0.99, model: "jev-test", inputTokens: 3)
         )
     ))
 

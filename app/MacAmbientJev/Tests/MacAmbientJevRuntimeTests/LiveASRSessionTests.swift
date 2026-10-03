@@ -337,45 +337,6 @@ func liveASRFailureKeepsRunUnsuccessfulForFallback() async throws {
 
 
 @Test
-func liveASRRegistrationIsRecoverableBeforeInferenceStarts() async throws {
-    let fixture = try await makeLiveASRFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-
-    let segment = SegmentReference(
-        segmentationRunID: "seg_live_test",
-        segmentID: "seg_000001",
-        startFrame: 0,
-        endFrame: 4_000
-    )
-
-    let registered = try await fixture.session.register(
-        segments: [segment]
-    )
-    #expect(registered.completedCount == 0)
-    #expect(registered.failedCount == 0)
-    #expect(registered.pendingCount == 1)
-
-    let countsBeforeInference = await fixture.engine.counts()
-    #expect(countsBeforeInference.prepare == 0)
-    #expect(countsBeforeInference.transcribe == 0)
-
-    let recovered = try SessionRecovery.recoverJSONL(
-        Data(
-            contentsOf: fixture.root.appending(path: "events.jsonl")
-        )
-    )
-    let plan = try EventLogRecoveryAnalyzer().latestASRPlan(
-        lines: recovered.lines
-    )
-
-    #expect(plan?.segmentationRunID == "seg_live_test")
-    #expect(plan?.asrRunID == "asr_live_test")
-    #expect(plan?.pendingSegments == [segment])
-    #expect(plan?.hasFailures == false)
-    #expect(plan?.runSucceeded == false)
-}
-
-@Test
 func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

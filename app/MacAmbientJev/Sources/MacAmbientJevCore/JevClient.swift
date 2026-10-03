@@ -49,27 +49,9 @@ private struct JevChoiceQuestion: Encodable {
     let criteria: [String: String]
 }
 
-private struct JevPriorityRequest: Encodable {
+private struct JevRequest: Encodable {
     let model: String
     let state: String
-    let questions: [String: JevChoiceQuestion]
-}
-
-private struct JevSceneStatePayload: Encodable {
-    let currentText: String
-    let previousTexts: [String]
-    let currentScene: String
-
-    enum CodingKeys: String, CodingKey {
-        case currentText = "current_text"
-        case previousTexts = "previous_texts"
-        case currentScene = "current_scene"
-    }
-}
-
-private struct JevSceneRequest: Encodable {
-    let model: String
-    let state: JevSceneStatePayload
     let questions: [String: JevChoiceQuestion]
 }
 
@@ -99,28 +81,26 @@ private struct JevChoiceResponse: Decodable {
 public struct JevClient: DecisionProvider, Sendable {
     public static let endpoint = URL(string: "https://api.typesafe.ai/v1/systemone")!
     public static let requestTimeout: TimeInterval = 15
+    public static let model = "jev-latest"
 
     private let apiKey: String
-    private let model: String
     private let transport: any JevHTTPTransport
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
         apiKey: String,
-        model: String = "jev-latest",
         transport: any JevHTTPTransport = URLSessionJevHTTPTransport()
     ) {
         self.apiKey = apiKey
-        self.model = model
         self.transport = transport
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
     }
 
     public func classifyPriority(text: String) async throws -> ContentPriorityDecision {
-        let body = JevPriorityRequest(
-            model: model,
+        let body = JevRequest(
+            model: Self.model,
             state: text,
             questions: [
                 "content_priority": JevChoiceQuestion(
@@ -156,48 +136,8 @@ public struct JevClient: DecisionProvider, Sendable {
         )
     }
 
-    public func classifySceneCue(
-        currentText: String,
-        previousTexts: [String],
-        currentScene: SceneState
-    ) async throws -> SemanticSceneDecision {
-        let body = JevSceneRequest(
-            model: model,
-            state: JevSceneStatePayload(
-                currentText: currentText,
-                previousTexts: Array(previousTexts.suffix(3)),
-                currentScene: currentScene.rawValue
-            ),
-            questions: [
-                "scene_cue": JevChoiceQuestion(
-                    instructions: "発話内容から場面転換の補助 cue を判定してください。音響判定を置き換えず、明示的な転換だけを選んでください。",
-                    criteria: [
-                        "discussion_start": "講義から複数人の議論や質疑へ移ることを明示している",
-                        "discussion_end": "議論や質疑を終えて講義へ戻ることを明示している",
-                        "none": "場面転換を明示していない、または判断できない"
-                    ]
-                )
-            ]
-        )
-
-        let response = try await perform(body)
-        guard let answer = response.answers["scene_cue"] else {
-            throw JevClientError.missingAnswer("scene_cue")
-        }
-        guard let cue = SemanticSceneCue(rawValue: answer.choice) else {
-            throw JevClientError.invalidChoice("scene_cue")
-        }
-
-        return SemanticSceneDecision(
-            cue: cue,
-            confidence: answer.confidence,
-            model: response.model,
-            inputTokens: response.usage?.inputTokens
-        )
-    }
-
-    private func perform<Body: Encodable & Sendable>(
-        _ body: Body
+    private func perform(
+        _ body: JevRequest
     ) async throws -> JevChoiceResponse {
         var request = URLRequest(url: Self.endpoint, timeoutInterval: Self.requestTimeout)
         request.httpMethod = "POST"
@@ -210,6 +150,15 @@ public struct JevClient: DecisionProvider, Sendable {
             throw JevClientError.httpStatus(response.statusCode)
         }
 
-        return try decoder.decode(JevChoiceResponse.self, from: data)
+        let decoded: JevChoiceResponse
+        do {
+            decoded = try decoder.decode(JevChoiceResponse.self, from: data)
+        } catch is DecodingError {
+            throw JevClientError.invalidResponse
+        }
+        if let inputTokens = decoded.usage?.inputTokens, inputTokens < 0 {
+            throw JevClientError.invalidResponse
+        }
+        return decoded
     }
 }

@@ -4,13 +4,9 @@ import wave
 import pytest
 
 from diarization.speaker_embedding import (
-    DEFAULT_TITANET_FILENAME,
-    DEFAULT_TITANET_MODEL,
-    DEFAULT_TITANET_REVISION,
     TitaNetSpeakerEmbeddingAdapter,
     crop_wav_segment,
     embedding_to_vector,
-    load_titanet_adapter,
 )
 
 
@@ -55,6 +51,21 @@ def test_crop_wav_segment_rejects_non_16k_mono(tmp_path):
         )
 
 
+def test_crop_wav_segment_rejects_span_past_audio_end(tmp_path):
+    source = tmp_path / "source.wav"
+    destination = tmp_path / "crop.wav"
+    make_wav(source, frames=1600)
+
+    with pytest.raises(ValueError, match="past the audio end"):
+        crop_wav_segment(
+            source,
+            destination,
+            start_ms=50,
+            end_ms=101,
+        )
+    assert not destination.exists()
+
+
 def test_embedding_to_vector_flattens_single_batch():
     assert embedding_to_vector([[0.25, -0.5]]) == [
         0.25,
@@ -93,51 +104,3 @@ def test_titanet_adapter_embeds_cropped_span(tmp_path):
 
     assert model.frames == 1600
     assert vector == [0.1, 0.2, 0.3]
-
-
-
-def test_load_titanet_adapter_pins_checkpoint_revision(tmp_path):
-    checkpoint = tmp_path / "titanet.nemo"
-    checkpoint.write_bytes(b"checkpoint")
-    downloads = []
-    restores = []
-
-    def download_checkpoint(**kwargs):
-        downloads.append(kwargs)
-        return str(checkpoint)
-
-    class ModelClass:
-        @classmethod
-        def restore_from(cls, **kwargs):
-            restores.append(kwargs)
-            return Model()
-
-    class Model:
-        def __init__(self):
-            self.evaluated = False
-
-        def eval(self):
-            self.evaluated = True
-            return self
-
-        def get_embedding(self, _path):
-            return [[1.0]]
-
-    adapter = load_titanet_adapter(
-        model_name=DEFAULT_TITANET_MODEL,
-        revision=DEFAULT_TITANET_REVISION,
-        device="cpu",
-        download_checkpoint=download_checkpoint,
-        model_class=ModelClass,
-    )
-
-    assert downloads == [{
-        "repo_id": DEFAULT_TITANET_MODEL,
-        "filename": DEFAULT_TITANET_FILENAME,
-        "revision": DEFAULT_TITANET_REVISION,
-    }]
-    assert restores == [{
-        "restore_path": str(checkpoint),
-        "map_location": "cpu",
-    }]
-    assert adapter.model.evaluated

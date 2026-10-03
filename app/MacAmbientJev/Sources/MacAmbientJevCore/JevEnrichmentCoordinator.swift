@@ -1,38 +1,87 @@
 import Foundation
 
 public struct ContentPriorityEventPayload: Codable, Sendable, Equatable {
-    public let priority: ContentPriority
-    public let confidence: Double?
-    public let model: String?
-    public let inputTokens: Int?
-    public let needsRetry: Bool
+    public enum Decision: Codable, Sendable, Equatable {
+        /// Jev classified the segment in this run.
+        case classified(confidence: Double, model: String?, inputTokens: Int?)
+        /// The segment stays primary until a later run classifies it.
+        case retryPending
+        /// This run did not resend the segment and keeps the priority that
+        /// run `sourceRunID` assigned.
+        case carriedOver(sourceRunID: String)
+    }
 
-    public init(
-        priority: ContentPriority,
-        confidence: Double?,
-        model: String?,
-        inputTokens: Int?,
-        needsRetry: Bool
-    ) {
+    public let priority: ContentPriority
+    public let decision: Decision
+
+    public var needsRetry: Bool {
+        decision == .retryPending
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case priority
+        case needsRetry
+        case decision
+    }
+
+    public init(priority: ContentPriority, decision: Decision) {
+        precondition(decision != .retryPending || priority == .primary)
         self.priority = priority
-        self.confidence = confidence
-        self.model = model
-        self.inputTokens = inputTokens
-        self.needsRetry = needsRetry
+        self.decision = decision
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let priority = try container.decode(ContentPriority.self, forKey: .priority)
+        let decision = try container.decode(Decision.self, forKey: .decision)
+        let needsRetry = try container.decode(Bool.self, forKey: .needsRetry)
+        guard needsRetry == (decision == .retryPending),
+              decision != .retryPending || priority == .primary else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .needsRetry,
+                in: container,
+                debugDescription: "needs_retry does not match the decision"
+            )
+        }
+        self.priority = priority
+        self.decision = decision
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(priority, forKey: .priority)
+        try container.encode(needsRetry, forKey: .needsRetry)
+        try container.encode(decision, forKey: .decision)
+    }
+}
+
+public enum JevEnrichmentError: LocalizedError, Sendable, Equatable {
+    /// A retry run must carry over every segment it does not resend, but the
+    /// active content priority run holds no priority for this segment.
+    case noPriorityToCarryOver(segmentID: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noPriorityToCarryOver(let segmentID):
+            "区間 \(segmentID) の以前の意味分類が見つからないため、再試行結果を保存できません"
+        }
     }
 }
 
 public struct JevEnrichmentBatchResult: Sendable, Equatable {
     public let retryPendingSegmentIDs: [String]
+    public let stopReason: JevBatchStopReason?
     public let events: [TranscriptEvent]
     public let materializedSegments: [MaterializedTranscriptSegment]
 
     public init(
         retryPendingSegmentIDs: [String],
+        stopReason: JevBatchStopReason?,
         events: [TranscriptEvent],
         materializedSegments: [MaterializedTranscriptSegment]
     ) {
         self.retryPendingSegmentIDs = retryPendingSegmentIDs
+        self.stopReason = stopReason
         self.events = events
         self.materializedSegments = materializedSegments
     }
@@ -68,54 +117,55 @@ public actor JevEnrichmentCoordinator {
             events: existingEvents,
             activeRuns: activeRuns
         ).filter(\.hasRecognizedText)
+        let carriedOverPriorities = try carriedOverPriorities(
+            segments: baseSegments,
+            activeRuns: activeRuns,
+            retryOnlySegmentIDs: retryOnlySegmentIDs
+        )
 
         var events = existingEvents
         var retryPendingSegmentIDs: [String] = []
-        var providerUnavailable = false
+        var stopReason: JevBatchStopReason?
 
         for segment in baseSegments {
-            let shouldCallProvider = retryOnlySegmentIDs == nil
-                || retryOnlySegmentIDs?.contains(segment.segmentID) == true
-
             let payload: ContentPriorityEventPayload
-            if shouldCallProvider {
-                let result: ProvisionalPriorityDecision
-                if providerUnavailable {
-                    result = await decisions.deferClassification(
-                        text: segment.text,
-                        segmentID: segment.segmentID,
-                        sessionID: sessionID
-                    )
-                } else {
-                    result = await decisions.classify(
-                        text: segment.text,
-                        segmentID: segment.segmentID,
-                        sessionID: sessionID
-                    )
-                    providerUnavailable = result.providerUnavailable
-                }
-                payload = ContentPriorityEventPayload(
-                    priority: result.visiblePriority,
-                    confidence: result.decision?.confidence,
-                    model: result.decision?.model,
-                    inputTokens: result.decision?.inputTokens,
-                    needsRetry: result.needsRetry
+            if let carriedOver = carriedOverPriorities[segment.segmentID] {
+                payload = carriedOver
+            } else if stopReason != nil {
+                await decisions.deferClassification(
+                    segmentID: segment.segmentID,
+                    sessionID: sessionID
                 )
-
-                if result.needsRetry {
-                    retryPendingSegmentIDs.append(segment.segmentID)
-                }
+                payload = ContentPriorityEventPayload(
+                    priority: .primary,
+                    decision: .retryPending
+                )
             } else {
-                // A retry run becomes the new active run, so copy the
-                // previously materialized value for segments that do not need
-                // another API request.
-                payload = ContentPriorityEventPayload(
-                    priority: segment.contentPriority ?? .primary,
-                    confidence: nil,
-                    model: nil,
-                    inputTokens: nil,
-                    needsRetry: false
-                )
+                switch await decisions.classify(
+                    text: segment.text,
+                    segmentID: segment.segmentID,
+                    sessionID: sessionID
+                ) {
+                case .classified(let decision, let visiblePriority):
+                    payload = ContentPriorityEventPayload(
+                        priority: visiblePriority,
+                        decision: .classified(
+                            confidence: decision.confidence,
+                            model: decision.model,
+                            inputTokens: decision.inputTokens
+                        )
+                    )
+                case .failed(let batchStopReason):
+                    stopReason = batchStopReason
+                    payload = ContentPriorityEventPayload(
+                        priority: .primary,
+                        decision: .retryPending
+                    )
+                }
+            }
+
+            if payload.needsRetry {
+                retryPendingSegmentIDs.append(segment.segmentID)
             }
 
             let envelope = try await writer.append(EventDraft(
@@ -168,11 +218,37 @@ public actor JevEnrichmentCoordinator {
 
         return JevEnrichmentBatchResult(
             retryPendingSegmentIDs: retryPendingSegmentIDs,
+            stopReason: stopReason,
             events: events,
             materializedSegments: materializer.materialize(
                 events: events,
                 activeRuns: selectedRuns
             )
         )
+    }
+
+    /// Payloads for the segments a retry run does not resend. Checked before
+    /// any request so that a retry never leaves a partial run behind.
+    private func carriedOverPriorities(
+        segments: [MaterializedTranscriptSegment],
+        activeRuns: ActiveRuns,
+        retryOnlySegmentIDs: Set<String>?
+    ) throws -> [String: ContentPriorityEventPayload] {
+        guard let retryOnlySegmentIDs else { return [:] }
+
+        var payloads: [String: ContentPriorityEventPayload] = [:]
+        for segment in segments where !retryOnlySegmentIDs.contains(segment.segmentID) {
+            guard let sourceRunID = activeRuns.contentPriority,
+                  let priority = segment.contentPriority else {
+                throw JevEnrichmentError.noPriorityToCarryOver(
+                    segmentID: segment.segmentID
+                )
+            }
+            payloads[segment.segmentID] = ContentPriorityEventPayload(
+                priority: priority,
+                decision: .carriedOver(sourceRunID: sourceRunID)
+            )
+        }
+        return payloads
     }
 }

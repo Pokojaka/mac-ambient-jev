@@ -40,7 +40,7 @@ private actor PausedImportASR: ASREngine {
 }
 
 @Test
-func importedFinalizationPauseSkipsASRAndLeavesRunsInactive() async throws {
+func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -65,7 +65,7 @@ func importedFinalizationPauseSkipsASRAndLeavesRunsInactive() async throws {
     )
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
-    let sourceURL = root.appending(path: "sample.caf")
+    let sourceURL = sessionURL.appending(path: "audio/original.caf")
     try ProcessingTimelineAudioExporter().export(
         reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint),
         to: sourceURL
@@ -78,15 +78,47 @@ func importedFinalizationPauseSkipsASRAndLeavesRunsInactive() async throws {
         diarizationEngine: PausedImportDiarizer(),
         finalTranscriptVAD: PausedImportVAD()
     )
-    let result = await processor.processImportedSession(
+    let paused = await processor.processImportedSession(
         sessionID: sessionID,
         originalURL: sourceURL,
-        shouldPause: { true }
+        pacingMode: .normal,
+        shouldPause: { true },
+        onPhase: { _ in },
+        metadataPolicy: .reject,
+        onStatus: { _ in },
+        onUpdate: { _, _ in }
     )
 
-    #expect(result.disposition != .completed)
-    let transcriptions = await asr.calls
-    #expect(transcriptions == 0)
-    let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(metadata?.activeRuns == nil)
+    #expect(paused.disposition == .paused)
+    #expect(paused.metrics?.initialPendingCount == 1)
+    #expect(paused.retainedTranscript == .nothing)
+    #expect(await asr.calls == 0)
+    let pausedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
+    #expect(pausedMetadata?.activeRuns == nil)
+    #expect(pausedMetadata?.finalizationAttempt?.state == .paused)
+
+    let candidate = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID)
+    #expect(candidate?.action == .finalize)
+    guard case .importedOriginal(let originalURL) = candidate?.source else {
+        Issue.record("a paused import resumes from its original")
+        return
+    }
+
+    let resumed = await processor.processImportedSession(
+        sessionID: sessionID,
+        originalURL: originalURL,
+        pacingMode: .normal,
+        shouldPause: { false },
+        onPhase: { _ in },
+        metadataPolicy: .reject,
+        onStatus: { _ in },
+        onUpdate: { _, _ in }
+    )
+
+    #expect(resumed.disposition == .completed)
+    #expect(await asr.calls == 1)
+    let completed = try ProcessingMetadataStore(sessionURL: sessionURL).load()
+    #expect(completed?.finalizationAttempt?.state == .complete)
+    #expect(completed?.activeRuns?.scope != nil)
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID) == nil)
 }

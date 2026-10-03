@@ -88,6 +88,22 @@ protocol AppCaptureEngine {
 
 extension AudioCaptureEngine: AppCaptureEngine {}
 
+final class ThermalStateObservation {
+    private let token: NSObjectProtocol
+    private let center: NotificationCenter
+
+    init(center: NotificationCenter = .default, onChange: @escaping @Sendable () -> Void) {
+        self.center = center
+        token = center.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in onChange() }
+    }
+
+    deinit { center.removeObserver(token) }
+}
+
 final class TerminationObservation {
     private let token: NSObjectProtocol
     private let center: NotificationCenter
@@ -142,49 +158,30 @@ final class AppState: ObservableObject {
     }
 
     enum PendingProcessing {
-        case imported(sessionID: UUID, originalURL: URL)
-        case timeline(sessionID: UUID, checkpoint: AudioCheckpoint)
         case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
-        case finalize(sessionID: UUID, source: SessionAudioSource)
+        case finalize(
+            sessionID: UUID,
+            source: SessionAudioSource,
+            metadataPolicy: UnreadableMetadataPolicy
+        )
         case retryContentPriority(
             sessionID: UUID,
             checkpoint: AudioCheckpoint,
             segmentIDs: [String]
         )
-        case resumeASR(
-            sessionID: UUID,
-            checkpoint: AudioCheckpoint,
-            plan: ASRRecoveryPlan
-        )
-        case selectCompletedASR(
-            sessionID: UUID,
-            checkpoint: AudioCheckpoint,
-            plan: ASRRecoveryPlan
-        )
-        case diarization(
-            sessionID: UUID,
-            checkpoint: AudioCheckpoint,
-            plan: ASRRecoveryPlan
-        )
 
         var sessionID: UUID {
             switch self {
-            case .imported(let sessionID, _),
-                 .timeline(let sessionID, _),
-                 .finishLive(let sessionID, _),
-                 .finalize(let sessionID, _),
-                 .retryContentPriority(let sessionID, _, _),
-                 .resumeASR(let sessionID, _, _),
-                 .selectCompletedASR(let sessionID, _, _),
-                 .diarization(let sessionID, _, _):
+            case .finishLive(let sessionID, _),
+                 .finalize(let sessionID, _, _),
+                 .retryContentPriority(let sessionID, _, _):
                 sessionID
             }
         }
 
         var finalizesTranscript: Bool {
             switch self {
-            case .imported, .timeline, .finishLive, .finalize,
-                 .resumeASR, .selectCompletedASR, .diarization:
+            case .finishLive, .finalize:
                 true
             case .retryContentPriority:
                 false
@@ -241,6 +238,9 @@ final class AppState: ObservableObject {
     var displayedSessionID: UUID?
     var pendingCaptureFailure: (sessionID: UUID, message: String)?
     var pendingProcessing: [PendingProcessing] = []
+    /// Finalizations held while the Mac is at critical thermal state, resumed in order when it cools.
+    var thermallyHeldProcessing: [PendingProcessing] = []
+    var thermalObserver: ThermalStateObservation?
     var currentlyProcessingSessionID: UUID?
     var finalizationGate = SavedSessionReprocessGate()
     var processingTask: Task<Void, Never>?
@@ -284,6 +284,9 @@ final class AppState: ObservableObject {
         terminationObserver = TerminationObservation { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }
+        thermalObserver = ThermalStateObservation { [weak self] in
+            MainActor.assumeIsolated { self?.resumeThermallyHeldProcessing() }
+        }
 
         if !pausesProcessing {
             Task { [weak self] in
@@ -317,6 +320,7 @@ final class AppState: ObservableObject {
     var queuedFinalizationSessionIDs: Set<UUID> {
         finalizationGate.sessionIDs
             .union(pendingProcessing.map(\.sessionID))
+            .union(thermallyHeldProcessing.map(\.sessionID))
             .union(currentlyProcessingSessionID.map { [$0] } ?? [])
     }
 }

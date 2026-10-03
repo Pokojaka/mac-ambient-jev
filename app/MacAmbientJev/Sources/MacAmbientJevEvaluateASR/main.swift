@@ -1,27 +1,7 @@
 import Foundation
 import MacAmbientJevCore
 
-private enum EvaluateASRError: LocalizedError {
-    case invalidArguments
-    case emptySegments
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidArguments:
-            return "reference.txt と asr-artifact.json を指定してください"
-        case .emptySegments:
-            return "ASR artifact に segments がありません"
-        }
-    }
-}
-
-private struct ASRArtifact: Decodable {
-    struct Segment: Decodable {
-        let text: String
-    }
-
-    let segments: [Segment]
-}
+private struct InvalidArguments: Error {}
 
 @main
 struct EvaluateASRCommand {
@@ -29,9 +9,7 @@ struct EvaluateASRCommand {
         do {
             try run()
         } catch {
-            FileHandle.standardError.write(
-                Data("\(error.localizedDescription)\n".utf8)
-            )
+            FileHandle.standardError.write(Data("\(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
     }
@@ -54,7 +32,7 @@ struct EvaluateASRCommand {
                     """.utf8
                 )
             )
-            throw EvaluateASRError.invalidArguments
+            throw InvalidArguments()
         }
 
         let reference = try String(
@@ -63,22 +41,11 @@ struct EvaluateASRCommand {
         )
         let artifact = try JSONDecoder().decode(
             ASRArtifact.self,
-            from: Data(
-                contentsOf: URL(
-                    fileURLWithPath: arguments[1]
-                )
-            )
+            from: Data(contentsOf: URL(fileURLWithPath: arguments[1]))
         )
-        guard !artifact.segments.isEmpty else {
-            throw EvaluateASRError.emptySegments
-        }
-
-        let hypothesis = artifact.segments
-            .map(\.text)
-            .joined(separator: "\n")
-        let report = ASREvaluation.evaluate(
+        let report = try ASRArtifactEvaluator.evaluate(
             reference: reference,
-            hypothesis: hypothesis
+            artifact: artifact
         )
 
         let encoder = JSONEncoder()

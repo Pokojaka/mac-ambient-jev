@@ -209,7 +209,10 @@ func corruptProcessingMetadataIsReportedButIntactAudioStaysReprocessable() throw
     let summary = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
     let row = try readable(summary)
 
-    #expect(row.processingStatus == .corrupted("処理情報（processing_metadata.json）が壊れています"))
+    guard case .corrupted = row.processingStatus else {
+        Issue.record("expected corrupted derived results, got \(row.processingStatus)")
+        return
+    }
     #expect(!row.hasActiveTranscript)
     #expect(summary.canReprocess)
     guard case .available(.recordedTimeline) = row.audio else {
@@ -226,18 +229,34 @@ func catalogSummaryShowsFinalizationStateAndActiveTranscript() throws {
     let id = UUID()
     let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
+        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .failed, failureReason: "decode failed"),
         activeRuns: ActiveRuns(asr: "asr"),
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .failed, failureReason: "decode failed")
+        pendingContentPrioritySegmentIDs: []
     ))
 
     let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
 
     #expect(row.hasActiveTranscript)
     #expect(row.processingStatus == .failed("decode failed"))
+}
+
+@Test
+func catalogReportsHeatPausedFinalizationAsPaused() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let session = try writeCatalogSession(
+        id: UUID(), createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
+    )
+    try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
+        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .paused, failureReason: nil),
+        activeRuns: ActiveRuns(asr: "asr"),
+        pendingContentPrioritySegmentIDs: []
+    ))
+
+    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+
+    #expect(row.processingStatus == .paused)
 }
 
 @Test
@@ -309,12 +328,8 @@ func catalogReportsPendingClassificationAfterLocalFinalization() throws {
         id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
     )
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
+        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
         activeRuns: ActiveRuns(asr: "asr", scope: "scope"),
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete),
         pendingContentPrioritySegmentIDs: ["seg_000001"]
     ))
 
@@ -333,11 +348,9 @@ func catalogReportsZeroAudioScopeOnlySessionAsComplete() throws {
     )
     try Data([1, 2, 3]).write(to: session.appending(path: "audio/original.wav"))
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        timelineVersion: 1, vadVersion: "vad", vadConfigHash: "hash",
-        asrEngine: "qwen", asrModel: "model", asrVersion: "version",
-        diarizationVersion: "diar", sceneAnalyzerVersion: 1,
-        jevSchemaVersion: 1, policyVersion: 1, materializerSchemaVersion: 1,
-        activeRuns: ActiveRuns(scope: "scope_empty")
+        finalizationAttempt: nil,
+        activeRuns: ActiveRuns(scope: "scope_empty"),
+        pendingContentPrioritySegmentIDs: []
     ))
 
     let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))

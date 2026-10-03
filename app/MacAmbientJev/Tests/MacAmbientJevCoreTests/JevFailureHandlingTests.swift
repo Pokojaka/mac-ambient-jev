@@ -23,7 +23,7 @@ private actor CountingStatusTransport: JevHTTPTransport {
     }
 }
 
-private func fiveSegmentEvents(repeatText: Bool = false) -> [TranscriptEvent] {
+private func fiveSegmentEvents() -> [TranscriptEvent] {
     var events: [TranscriptEvent] = []
     var seq: UInt64 = 1
     for index in 0..<5 {
@@ -35,7 +35,7 @@ private func fiveSegmentEvents(repeatText: Bool = false) -> [TranscriptEvent] {
         events.append(.asrCompleted(
             seq: seq, runID: "asr", segmentationRunID: "seg",
             segmentID: "s\(index)",
-            text: repeatText ? "公開鍵の説明" : "公開鍵の説明その\(index)"
+            text: "公開鍵の説明その\(index)"
         ))
         seq += 1
     }
@@ -53,7 +53,8 @@ func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws
         runID: "priority-429",
         writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(
-            provider: JevClient(apiKey: "sk-secret-123", transport: transport)
+            provider: JevClient(apiKey: "sk-secret-123", transport: transport),
+            usageCounter: JevUsageCounter()
         ),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
@@ -69,50 +70,82 @@ func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws
     #expect(result.materializedSegments.allSatisfy { $0.contentPriority != .lowPriority })
     #expect(calls == 1)
     #expect(timeout == 15)
+    #expect(result.stopReason == .providerUnavailable)
 }
 
-@Test(arguments: [429, 503, nil] as [Int?])
-func sceneCueBatchStopsAfterProviderFailureAndKeepsAllSegmentsPending(
-    status: Int?
-) async throws {
+private func pendingRetrySegmentIDs(root: URL) throws -> [String] {
+    let persisted = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    return try persisted.lines.compactMap { line -> String? in
+        let event = try JSONSerialization.jsonObject(with: line) as? [String: Any]
+        guard event?["event_type"] as? String == "content_priority.pending_retry" else {
+            return nil
+        }
+        return event?["segment_id"] as? String
+    }
+}
+
+@Test(arguments: [401, 403])
+func rejectedAPIKeyStopsTheBatchAndKeepsEverySegmentPending(status: Int) async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
-    let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unavailable\"}")
+    let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unauthorized\"}")
     let counter = JevUsageCounter()
-    let collector = JevSceneCueCollector(
+    let coordinator = JevEnrichmentCoordinator(
         sessionID: UUID(),
-        runID: "scene-failure",
+        runID: "priority-\(status)",
         writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(
             provider: JevClient(apiKey: "sk-secret-123", transport: transport),
             usageCounter: counter
         ),
-        sampleRate: 1_000
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
-    let segments = TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: fiveSegmentEvents(repeatText: true),
+
+    let result = try await coordinator.process(
+        existingEvents: fiveSegmentEvents(),
         activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
     )
 
-    let result = try await collector.collect(segments: segments)
-    let persisted = try SessionRecovery.recoverJSONL(
-        Data(contentsOf: root.appending(path: "events.jsonl"))
-    )
-    let pendingIDs = try persisted.lines.compactMap { line -> String? in
-        let event = try JSONSerialization.jsonObject(with: line) as? [String: Any]
-        guard event?["event_type"] as? String == "scene_cue.pending_retry" else {
-            return nil
-        }
-        return event?["segment_id"] as? String
-    }
-
+    let allSegmentIDs = Set((0..<5).map { "s\($0)" })
     #expect(await transport.calls == 1)
-    #expect(Set(result.retryPendingSegmentIDs) == Set((0..<5).map { "s\($0)" }))
-    #expect(result.cues.isEmpty)
-    #expect(await counter.snapshot().retryPendingCount == 5)
-    #expect(pendingIDs.count == 5)
-    #expect(Set(pendingIDs) == Set((0..<5).map { "s\($0)" }))
+    #expect(result.stopReason == .authorizationRejected)
+    #expect(Set(result.retryPendingSegmentIDs) == allSegmentIDs)
+    #expect(Set(try pendingRetrySegmentIDs(root: root)) == allSegmentIDs)
+    #expect(result.materializedSegments.allSatisfy { $0.contentPriority == .primary })
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.failureCount == 1)
+    #expect(snapshot.retryPendingCount == 5)
+}
+
+@Test
+func requestSpecificFailureKeepsSendingTheRemainingSegments() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transport = CountingStatusTransport(status: 400, body: "{\"error\":\"bad request\"}")
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(),
+        runID: "priority-400",
+        writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(
+            provider: JevClient(apiKey: "sk-secret-123", transport: transport),
+            usageCounter: JevUsageCounter()
+        ),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+
+    let result = try await coordinator.process(
+        existingEvents: fiveSegmentEvents(),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+
+    #expect(await transport.calls == 5)
+    #expect(result.stopReason == nil)
+    #expect(result.retryPendingSegmentIDs.count == 5)
 }
 
 @Test
