@@ -1,36 +1,35 @@
 # ローカル評価用録音データ
 
-実講義、会話、個人録音などの実データは `test-data/recordings/local/` に置く。
+実講義、会話、個人録音はこのディレクトリ内の local に置く。local 配下はルートの `.gitignore` で除外される。原音声、参照文、処理結果、計測結果を Git に含めない。
 
-この `local/` ディレクトリは `.gitignore` で除外されているため、録音本体・annotation・評価途中の生成物をまとめて置いてよい。
-
-推奨構成:
+配置例:
 
 ```text
-test-data/recordings/local/
-├── lecture-ja-001/
-│   ├── audio.wav
-│   └── segments.json
-└── ...
+test-data/recordings/local/lecture-ja-001/
+  audio.wav
+  reference.txt
+  segments.json
 ```
 
-注釈付きの評価（`manifest.json` の annotation、`tools/evaluate-session.swift`、`tools/test-recording.swift`、`tools/test-corpus.swift`）は設計から外した。理由と削除予定は `docs/evaluation.md` を参照する。
+## segments.json の生成
 
-## 録音から segments.json を生成
-
-音声ファイルだけ置けば、同じディレクトリに `segments.json` を生成できる。
+リポジトリのルートから SwiftPM の CLI を実行する。`AUDIO` には音声ファイルのパスを指定する。
 
 ```bash
-swift tools/process-recording.swift \
-  test-data/recordings/local/lecture-ja-001/audio.m4a
+swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording "$AUDIO"
 ```
 
-通常、処理中に作成するアプリ側セッションは終了時に削除する。
-パイプラインのデバッグでセッションを残したい場合だけ、`--keep-session` を付ける。
+出力先を省略すると音声と同じディレクトリに `segments.json` を生成する。明示する場合は音声ファイルの次に出力パスを指定する。入力音声と同じファイルへの出力は拒否する。
+
+通常、処理用に作ったアプリ側セッションは処理終了時に削除する。復旧や保存形式を調べる場合は保持する。
 
 ```bash
-swift run --package-path app/MacAmbientJev \
-  MacAmbientJevProcessRecording \
-  --keep-session \
-  test-data/recordings/local/lecture-ja-001/audio.m4a
+swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
+  --keep-session "$AUDIO" "$SEGMENTS"
 ```
+
+Jev は CLI では無効。音声処理はアプリと同じ確定パイプラインを使う。`segments.json` には空本文の区間を含めず、イベントログには保持する。
+
+## 参照文による評価
+
+`MacAmbientJevEvaluateSession` は音声と参照文を指定する manifest と生成済みの `segments.json` を受け取り、ASR CER と場面振動数を出力する。manifest の形式、モデルテストの設定、計測方法は [検証と計測](../../docs/testing.md)、Linux corpus は [Linux 評価](../../docs/linux.md)を参照。

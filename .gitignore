@@ -8,7 +8,7 @@ app/MacAmbientJev/.build/
 # Local build and packaging output.
 dist/
 
-# Local evaluation recordings and annotations.
+# Local evaluation audio, reference text, and generated results.
 # Real lectures, conversations, and personal recordings must stay local.
 test-data/recordings/local/
 # Linux audio validation caches and generated fixtures.

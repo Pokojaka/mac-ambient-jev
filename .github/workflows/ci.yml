@@ -16,6 +16,10 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Check documentation references
+        run: |
+          python3 scripts/test_doc_references.py
+          python3 scripts/check_doc_references.py
       - name: Swift version
         run: swift --version
       - name: Verify V1
