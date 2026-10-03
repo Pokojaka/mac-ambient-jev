@@ -136,19 +136,16 @@ struct CaptureDiskPolicy: Sendable {
     }
     static func checkStart(
         diskSpace: any CaptureDiskSpaceProviding, directory: URL,
-        sampleRate: Double, channelCount: Int,
-        onWarning: (String) -> Void
+        sampleRate: Double, channelCount: Int
     ) throws {
         let available: Int64?
         do {
             available = try diskSpace.availableBytes(at: directory)
         } catch {
-            onWarning("録音開始前の空き容量を確認できませんでした")
-            return
+            throw AudioCaptureEngineError.diskSpaceUnavailable(error.localizedDescription)
         }
         guard let available else {
-            onWarning("録音開始前の空き容量を確認できませんでした")
-            return
+            throw AudioCaptureEngineError.diskSpaceUnavailable("ボリュームが空き容量を報告しませんでした")
         }
         guard mayStart(availableBytes: available, sampleRate: sampleRate, channelCount: channelCount)
         else {

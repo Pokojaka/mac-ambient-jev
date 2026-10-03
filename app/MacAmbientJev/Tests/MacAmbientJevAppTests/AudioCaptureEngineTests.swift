@@ -109,46 +109,45 @@ private struct MeasuredDiskSpace: CaptureDiskSpaceProviding {
     func availableBytes(at url: URL) throws -> Int64? { bytes }
 }
 
-@Test("disk capacity query errors warn but permit recording startup")
-func diskCapacityQueryFailureDoesNotBlockStart() throws {
-    var warnings: [String] = []
-    try CaptureDiskPolicy.checkStart(
-        diskSpace: UnavailableDiskSpace(), directory: FileManager.default.temporaryDirectory,
-        sampleRate: 48_000, channelCount: 1,
-        onWarning: { warnings.append($0) }
-    )
-    #expect(warnings == ["録音開始前の空き容量を確認できませんでした"])
+@Test("disk capacity query errors reject recording startup")
+func diskCapacityQueryFailureRejectsStart() {
+    #expect {
+        try CaptureDiskPolicy.checkStart(
+            diskSpace: UnavailableDiskSpace(), directory: FileManager.default.temporaryDirectory,
+            sampleRate: 48_000, channelCount: 1
+        )
+    } throws: { error in
+        guard case AudioCaptureEngineError.diskSpaceUnavailable = error else { return false }
+        return true
+    }
 }
 
-@Test("unknown capacity warns, but measured insufficient capacity rejects startup")
+@Test("unknown or insufficient capacity rejects startup; measured sufficient capacity starts")
 func diskCapacityCheckPreservesMeasuredThreshold() throws {
     let required = CaptureDiskPolicy.requiredStartBytes(sampleRate: 48_000, channelCount: 1)
-    var warnings: [String] = []
     let directory = FileManager.default.temporaryDirectory
-    try CaptureDiskPolicy.checkStart(
-        diskSpace: MeasuredDiskSpace(bytes: nil), directory: directory,
-        sampleRate: 48_000, channelCount: 1,
-        onWarning: { warnings.append($0) }
-    )
-    #expect(warnings == ["録音開始前の空き容量を確認できませんでした"])
-    warnings.removeAll()
+    #expect {
+        try CaptureDiskPolicy.checkStart(
+            diskSpace: MeasuredDiskSpace(bytes: nil), directory: directory,
+            sampleRate: 48_000, channelCount: 1
+        )
+    } throws: { error in
+        guard case AudioCaptureEngineError.diskSpaceUnavailable = error else { return false }
+        return true
+    }
     try CaptureDiskPolicy.checkStart(
         diskSpace: MeasuredDiskSpace(bytes: required), directory: directory,
-        sampleRate: 48_000, channelCount: 1,
-        onWarning: { warnings.append($0) }
+        sampleRate: 48_000, channelCount: 1
     )
-    #expect(warnings.isEmpty)
     do {
         try CaptureDiskPolicy.checkStart(
             diskSpace: MeasuredDiskSpace(bytes: required - 1), directory: directory,
-            sampleRate: 48_000, channelCount: 1,
-            onWarning: { warnings.append($0) }
+            sampleRate: 48_000, channelCount: 1
         )
         Issue.record("Measured low capacity must reject recording startup")
     } catch AudioCaptureEngineError.insufficientDiskSpace(let requested) {
         #expect(requested == required)
     }
-    #expect(warnings.isEmpty)
 }
 
 private func makeAudioSampleBuffer(sampleRate: Double, pts: Double = 0) throws -> CMSampleBuffer {

@@ -16,3 +16,19 @@ func userFacingStatusStringsRemainJapanese() {
             == "発話区間を検出しています"
     )
 }
+
+@Test
+func pausedAndSuspendedStatusesNameTheirCause() {
+    #expect(
+        UserFacingStatus.finalizationPausedForHeat.text
+            == "発熱のため確定処理を一時停止中"
+    )
+    #expect(
+        UserFacingStatus.jevAuthorizationRequired.text
+            == "Jev の API キーの修正が必要です。意味分類を保留しました"
+    )
+    #expect(
+        UserFacingStatus.liveTranscriptionThermalSuspended.text
+            == "発熱のためライブ表示を一時停止中"
+    )
+}

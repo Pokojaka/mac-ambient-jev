@@ -14,6 +14,7 @@ public enum AudioCaptureEngineError: LocalizedError {
     case noAudioCaptured
     case writerFailure(String)
     case insufficientDiskSpace(Int64)
+    case diskSpaceUnavailable(String)
     case cancelled
     case captureFailure(String)
     case micInputVolumeNotConfigured
@@ -36,6 +37,8 @@ public enum AudioCaptureEngineError: LocalizedError {
             "録音の保存に失敗しました: \(cause)"
         case .insufficientDiskSpace(let bytes):
             "90分の録音に必要な空き容量がありません（必要: \(bytes / 1_000_000) MB）"
+        case .diskSpaceUnavailable(let cause):
+            "空き容量を確認できないため録音を開始できません: \(cause)"
         case .cancelled:
             "録音の開始を中止しました"
         case .captureFailure(let message):
@@ -549,8 +552,7 @@ public final class AudioCaptureEngine {
         }
         try CaptureDiskPolicy.checkStart(
             diskSpace: diskSpace, directory: paths.sessionsRoot,
-            sampleRate: sampleRate, channelCount: 1,
-            onWarning: onWarning
+            sampleRate: sampleRate, channelCount: 1
         )
         let processingDirectory = SessionLayout(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
             .processingDirectory

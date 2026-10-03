@@ -30,10 +30,13 @@ public struct SegmentationAssembler: Sendable {
         maxSegmentFrames: Int64,
         minimumSegmentFrames: Int64
     ) {
+        precondition(preRollFrames >= 0, "preRollFrames must not be negative")
+        precondition(maxSegmentFrames > 0, "maxSegmentFrames must be positive")
+        precondition(minimumSegmentFrames >= 0, "minimumSegmentFrames must not be negative")
         self.segmentationRunID = segmentationRunID
-        self.preRollFrames = max(0, preRollFrames)
-        self.maxSegmentFrames = max(1, maxSegmentFrames)
-        self.minimumSegmentFrames = max(0, minimumSegmentFrames)
+        self.preRollFrames = preRollFrames
+        self.maxSegmentFrames = maxSegmentFrames
+        self.minimumSegmentFrames = minimumSegmentFrames
     }
 
     public mutating func speechStarted(atFrame frame: Int64) {
