@@ -48,6 +48,7 @@ public enum PriorityClassification: Sendable, Equatable {
     /// The segment stays primary and pending. A non-nil reason means the
     /// remaining segments of the batch must not be sent.
     case failed(stopsBatch: JevBatchStopReason?)
+    case cancelled
 }
 
 public enum ContentPriorityPolicy {
@@ -84,6 +85,7 @@ public actor JevDecisionCoordinator {
 
         do {
             let decision = try await provider.classifyPriority(text: text)
+            try Task.checkCancellation()
             await usageCounter.recordSuccess(
                 sessionID: sessionID,
                 segmentID: segmentID,
@@ -94,6 +96,9 @@ public actor JevDecisionCoordinator {
                 visiblePriority: ContentPriorityPolicy.visiblePriority(for: decision)
             )
         } catch {
+            if Task.isCancelled || error is CancellationError {
+                return .cancelled
+            }
             await usageCounter.recordFailure(
                 sessionID: sessionID,
                 segmentID: segmentID
@@ -111,5 +116,11 @@ public actor JevDecisionCoordinator {
             sessionID: sessionID,
             segmentID: segmentID
         )
+    }
+}
+
+extension JevDecisionCoordinator {
+    public func clearDeferred(sessionID: UUID, segmentIDs: Set<String>) async {
+        await usageCounter.clearDeferred(sessionID: sessionID, segmentIDs: segmentIDs)
     }
 }

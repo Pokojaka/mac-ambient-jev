@@ -8,7 +8,7 @@ public struct ContentPriorityEventPayload: Codable, Sendable, Equatable {
         case retryPending
         /// This run did not resend the segment and keeps the priority that
         /// run `sourceRunID` assigned.
-        case carriedOver(sourceRunID: String)
+        case carriedOver(sourceRunID: String, sourceSegmentationRunID: String, sourceSegmentID: String)
     }
 
     public let priority: ContentPriority
@@ -59,9 +59,12 @@ public enum JevEnrichmentError: LocalizedError, Sendable, Equatable {
     /// A retry run must carry over every segment it does not resend, but the
     /// active content priority run holds no priority for this segment.
     case noPriorityToCarryOver(segmentID: String)
+    case missingSegmentationRun
 
     public var errorDescription: String? {
         switch self {
+        case .missingSegmentationRun:
+            "意味分類の分割実行 ID がありません"
         case .noPriorityToCarryOver(let segmentID):
             "区間 \(segmentID) の以前の意味分類が見つからないため、再試行結果を保存できません"
         }
@@ -99,14 +102,21 @@ public actor JevEnrichmentCoordinator {
     private let sessionID: UUID
     private let runID: String
     private let writer: SessionWriter
-    private let decisions: JevDecisionCoordinator
+    private let decisions: JevDecisionCoordinator?
     private let materializer: TranscriptMaterializer
 
+    private var stopReason: JevBatchStopReason?
+    private var assignedSegments: Set<SegmentKey> = []
+    private var pendingSegments: [String] = []
+    private struct SegmentKey: Hashable {
+        let segmentationRunID: String
+        let segmentID: String
+    }
     public init(
         sessionID: UUID,
         runID: String,
         writer: SessionWriter,
-        decisions: JevDecisionCoordinator,
+        decisions: JevDecisionCoordinator?,
         materializer: TranscriptMaterializer
     ) {
         self.sessionID = sessionID
@@ -119,12 +129,24 @@ public actor JevEnrichmentCoordinator {
     public func process(
         existingEvents: [TranscriptEvent],
         activeRuns: ActiveRuns,
-        scope: JevEnrichmentScope
+        scope: JevEnrichmentScope,
+        reusableDecisions: [String: ContentPriorityEventPayload],
+        completeRun: Bool,
+        onAssignment: (@Sendable (TranscriptEvent, ContentPriorityEventPayload) async -> Void)?
     ) async throws -> JevEnrichmentBatchResult {
+        try Task.checkCancellation()
+        guard let segmentationRunID = activeRuns.segmentation else {
+            throw JevEnrichmentError.missingSegmentationRun
+        }
         let baseSegments = materializer.materialize(
             events: existingEvents,
             activeRuns: activeRuns
-        ).filter(\.hasRecognizedText)
+        ).filter {
+            $0.hasRecognizedText && !assignedSegments.contains(SegmentKey(
+                segmentationRunID: segmentationRunID,
+                segmentID: $0.segmentID
+            ))
+        }
         let carriedOverPriorities = try carriedOverPriorities(
             segments: baseSegments,
             activeRuns: activeRuns,
@@ -133,14 +155,18 @@ public actor JevEnrichmentCoordinator {
 
         var events = existingEvents
         var retryPendingSegmentIDs: [String] = []
-        var stopReason: JevBatchStopReason?
 
         for segment in baseSegments {
+            try Task.checkCancellation()
             let payload: ContentPriorityEventPayload
             if let carriedOver = carriedOverPriorities[segment.segmentID] {
                 payload = carriedOver
-            } else if stopReason != nil {
-                await decisions.deferClassification(
+            } else if scope == .all,
+                      let reusable = reusableDecisions[ContentPriorityText.normalized(segment.text)],
+                      case .carriedOver = reusable.decision {
+                payload = reusable
+            } else if stopReason != nil || decisions == nil {
+                await decisions?.deferClassification(
                     segmentID: segment.segmentID,
                     sessionID: sessionID
                 )
@@ -149,11 +175,13 @@ public actor JevEnrichmentCoordinator {
                     decision: .retryPending
                 )
             } else {
-                switch await decisions.classify(
+                switch await decisions?.classify(
                     text: segment.text,
                     segmentID: segment.segmentID,
                     sessionID: sessionID
-                ) {
+                ) ?? .failed(stopsBatch: nil) {
+                case .cancelled:
+                    throw CancellationError()
                 case .classified(let decision, let visiblePriority):
                     payload = ContentPriorityEventPayload(
                         priority: visiblePriority,
@@ -172,57 +200,69 @@ public actor JevEnrichmentCoordinator {
                 }
             }
 
+            try Task.checkCancellation()
             if payload.needsRetry {
                 retryPendingSegmentIDs.append(segment.segmentID)
             }
 
+            let key = SegmentKey(
+                segmentationRunID: segmentationRunID,
+                segmentID: segment.segmentID
+            )
             let envelope = try await writer.append(EventDraft(
                 eventType: "content_priority.assigned",
                 sessionID: sessionID,
                 processingRunID: runID,
+                segmentationRunID: activeRuns.segmentation,
                 segmentID: segment.segmentID,
                 payload: payload
             ))
-            events.append(.contentPriority(
+            assignedSegments.insert(key)
+            if payload.needsRetry { pendingSegments.append(segment.segmentID) }
+            let assignment = TranscriptEvent.contentPriority(
                 seq: envelope.eventSeq,
                 runID: runID,
                 segmentID: segment.segmentID,
                 priority: payload.priority
-            ))
+            )
+            events.append(assignment)
+            await onAssignment?(assignment, payload)
 
             if payload.needsRetry {
                 _ = try await writer.append(EventDraft(
                     eventType: "content_priority.pending_retry",
                     sessionID: sessionID,
                     processingRunID: runID,
+                    segmentationRunID: activeRuns.segmentation,
                     segmentID: segment.segmentID,
                     payload: EmptyPayload()
                 ))
             }
         }
 
-        _ = try await writer.append(EventDraft(
-            eventType: "processing.run.completed",
-            sessionID: sessionID,
-            processingRunID: runID,
-            payload: ProcessingRunCompletedPayload(
-                stage: .contentPriority,
-                succeeded: true,
-                completedCount: baseSegments.count,
-                failedCount: retryPendingSegmentIDs.count
-            )
-        ))
-
+        try Task.checkCancellation()
+        if completeRun {
+            _ = try await writer.append(EventDraft(
+                eventType: "processing.run.completed",
+                sessionID: sessionID,
+                processingRunID: runID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: .contentPriority,
+                    succeeded: true,
+                    completedCount: assignedSegments.count,
+                    failedCount: pendingSegments.count
+                )
+            ))
+        }
         var selectedRuns = activeRuns
-        selectedRuns.markCompleted(
-            stage: .contentPriority,
-            runID: runID,
-            succeeded: true
-        )
-        try selectedRuns.select(
-            stage: .contentPriority,
-            runID: runID
-        )
+        if completeRun {
+            selectedRuns.markCompleted(
+                stage: .contentPriority,
+                runID: runID,
+                succeeded: true
+            )
+            try selectedRuns.select(stage: .contentPriority, runID: runID)
+        }
 
         return JevEnrichmentBatchResult(
             retryPendingSegmentIDs: retryPendingSegmentIDs,
@@ -247,6 +287,7 @@ public actor JevEnrichmentCoordinator {
         var payloads: [String: ContentPriorityEventPayload] = [:]
         for segment in segments where !retryOnlySegmentIDs.contains(segment.segmentID) {
             guard let sourceRunID = activeRuns.contentPriority,
+                  let sourceSegmentationRunID = activeRuns.segmentation,
                   let priority = segment.contentPriority else {
                 throw JevEnrichmentError.noPriorityToCarryOver(
                     segmentID: segment.segmentID
@@ -254,7 +295,11 @@ public actor JevEnrichmentCoordinator {
             }
             payloads[segment.segmentID] = ContentPriorityEventPayload(
                 priority: priority,
-                decision: .carriedOver(sourceRunID: sourceRunID)
+                decision: .carriedOver(
+                    sourceRunID: sourceRunID,
+                    sourceSegmentationRunID: sourceSegmentationRunID,
+                    sourceSegmentID: segment.segmentID
+                )
             )
         }
         return payloads

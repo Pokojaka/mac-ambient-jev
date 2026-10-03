@@ -20,6 +20,18 @@ public struct LiveASRProgress: Sendable, Equatable {
     }
 }
 
+public struct LiveASRSnapshot: Sendable, Equatable {
+    public let events: [TranscriptEvent]
+    public let activeRuns: ActiveRuns
+    public let progress: LiveASRProgress
+
+    public init(events: [TranscriptEvent], activeRuns: ActiveRuns, progress: LiveASRProgress) {
+        self.events = events
+        self.activeRuns = activeRuns
+        self.progress = progress
+    }
+}
+
 public struct LiveASRCompletion: Sendable, Equatable {
     public let events: [TranscriptEvent]
     public let materializedSegments: [MaterializedTranscriptSegment]
@@ -63,6 +75,7 @@ public actor LiveASRSession {
     private let materializer: TranscriptMaterializer
 
     private var transcriptEvents: [TranscriptEvent] = []
+    private var contentPriorityRunID: String?
     private var registeredSegmentIDs: Set<String> = []
     private var registeringSegmentIDs: Set<String> = []
     private var finishedSegmentIDs: Set<String> = []
@@ -136,7 +149,8 @@ public actor LiveASRSession {
     @discardableResult
     public func process(
         segments: [SegmentReference],
-        checkpoint: AudioCheckpoint
+        checkpoint: AudioCheckpoint,
+        onRecognized: (@Sendable (String, LiveASRSnapshot) async -> Void)? = nil
     ) async throws -> LiveASRProgress {
         guard !finalized else {
             return currentProgress()
@@ -212,9 +226,34 @@ public actor LiveASRSession {
             ))
             completedCount += 1
             finishedSegmentIDs.insert(segment.segmentID)
+            if let onRecognized {
+                await onRecognized(segment.segmentID, snapshot())
+            }
         }
 
         return currentProgress()
+    }
+
+    public func snapshot() -> LiveASRSnapshot {
+        LiveASRSnapshot(
+            events: transcriptEvents,
+            activeRuns: currentActiveRuns(),
+            progress: currentProgress()
+        )
+    }
+
+    /// Merges a durable assignment without discarding ASR rows recognized while Jev was working.
+    @discardableResult
+    public func applyContentPriority(event: TranscriptEvent) -> LiveASRSnapshot {
+        guard case .contentPriority = event.kind,
+              let runID = event.processingRunID,
+              let segmentID = event.segmentID,
+              registeredSegmentIDs.contains(segmentID) else {
+            return snapshot()
+        }
+        transcriptEvents.append(event)
+        contentPriorityRunID = runID
+        return snapshot()
     }
 
     public func finish() async throws -> LiveASRCompletion {
@@ -301,14 +340,19 @@ public actor LiveASRSession {
         waiters.forEach { $0.resume() }
     }
 
+    private func currentActiveRuns() -> ActiveRuns {
+        ActiveRuns(
+            segmentation: segmentationRunID,
+            asr: asrRunID,
+            contentPriority: contentPriorityRunID
+        )
+    }
+
     private func currentProgress() -> LiveASRProgress {
         LiveASRProgress(
             materializedSegments: materializer.materialize(
                 events: transcriptEvents,
-                activeRuns: ActiveRuns(
-                    segmentation: segmentationRunID,
-                    asr: asrRunID
-                )
+                activeRuns: currentActiveRuns()
             ),
             completedCount: completedCount,
             failedCount: failedCount,

@@ -59,11 +59,7 @@ func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws
         ),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
-    let result = try await coordinator.process(
-        existingEvents: fiveSegmentEvents(),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        scope: .all
-    )
+    let result = try await coordinator.process(existingEvents: fiveSegmentEvents(), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
     let calls = await transport.calls
     let timeout = await transport.lastRequest?.timeoutInterval
 
@@ -106,11 +102,7 @@ func rejectedAPIKeyStopsTheBatchAndKeepsEverySegmentPending(status: Int) async t
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
 
-    let result = try await coordinator.process(
-        existingEvents: fiveSegmentEvents(),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        scope: .all
-    )
+    let result = try await coordinator.process(existingEvents: fiveSegmentEvents(), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
 
     let allSegmentIDs = Set((0..<5).map { "s\($0)" })
     #expect(await transport.calls == 1)
@@ -141,11 +133,7 @@ func requestSpecificFailureKeepsSendingTheRemainingSegments() async throws {
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
 
-    let result = try await coordinator.process(
-        existingEvents: fiveSegmentEvents(),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        scope: .all
-    )
+    let result = try await coordinator.process(existingEvents: fiveSegmentEvents(), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
 
     #expect(await transport.calls == 5)
     #expect(result.stopReason == nil)

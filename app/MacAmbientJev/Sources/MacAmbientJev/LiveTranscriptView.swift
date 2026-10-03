@@ -19,6 +19,7 @@ struct LiveTranscriptView: View {
     @ObservedObject var viewModel: LiveTranscriptViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedLowPriorityRowIDs: Set<String> = []
+    @State private var detailRowID: String?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -69,9 +70,11 @@ struct LiveTranscriptView: View {
     private func transcriptList(proxy: ScrollViewProxy) -> some View {
         let rows = viewModel.rows
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: AppSpacing.md) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { entry in
-                    transcriptRow(entry.element, speakerHeading: Self.speakerHeading(for: entry.offset, in: rows))
+                    let heading = Self.speakerHeading(for: entry.offset, in: rows)
+                    transcriptRow(entry.element, speakerHeading: heading)
+                        .padding(.top, Self.topSpacing(forIndex: entry.offset, speakerHeading: heading))
                         .id(entry.element.id)
                 }
             }
@@ -110,13 +113,29 @@ struct LiveTranscriptView: View {
         return labels.joined(separator: " / ")
     }
 
+    /// A new speaker heading gets the larger gap; rows continuing the same turn stay close.
+    static func topSpacing(forIndex index: Int, speakerHeading: String?) -> CGFloat {
+        if index == 0 { return 0 }
+        return speakerHeading == nil ? AppSpacing.xs : AppSpacing.md
+    }
+
     private func transcriptRow(_ row: LiveTranscriptRow, speakerHeading: String?) -> some View {
         HStack(alignment: .top, spacing: AppSpacing.md) {
-            Text(formatTime(row.startMilliseconds))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 42, alignment: .leading)
-                .accessibilityLabel("時刻 \(formatTime(row.startMilliseconds))")
+            Button {
+                detailRowID = row.id
+            } label: {
+                Text(formatTime(row.startMilliseconds))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .help("詳細")
+            .accessibilityLabel("時刻 \(formatTime(row.startMilliseconds))、詳細を表示")
+            .popover(isPresented: detailPopover(for: row.id)) {
+                transcriptDetails(row)
+                    .padding(AppSpacing.md)
+            }
 
             VStack(alignment: .leading, spacing: AppSpacing.xs) {
                 if let speakerHeading {
@@ -131,27 +150,30 @@ struct LiveTranscriptView: View {
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        transcriptDetails(row)
                     } label: {
                         Label(Self.lowPriorityCollapsedTitle, systemImage: "arrow.down.circle")
                             .foregroundStyle(.secondary)
                             .help("意味分類により優先度が低いと判定された発話です")
                     }
-                    .accessibilityHint("原文と詳細を表示または閉じます")
+                    .accessibilityHint("原文を表示または閉じます")
                 } else {
-                    DisclosureGroup {
-                        transcriptDetails(row)
-                    } label: {
-                        transcriptText(row)
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .accessibilityHint("詳細を表示または閉じます。場面、音響範囲、話者区間を確認できます")
+                    transcriptText(row)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private func detailPopover(for rowID: String) -> Binding<Bool> {
+        Binding(
+            get: { detailRowID == rowID },
+            set: { isShown in
+                if !isShown, detailRowID == rowID { detailRowID = nil }
+            }
+        )
     }
 
     private func lowPriorityExpansion(for rowID: String) -> Binding<Bool> {
@@ -194,7 +216,6 @@ struct LiveTranscriptView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.top, AppSpacing.xs)
     }
 
     @ViewBuilder

@@ -1160,3 +1160,109 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
     #expect(replaced.disposition == .completed)
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
 }
+
+private actor LiveCarryOverProvider: DecisionProvider {
+    private var texts: [String] = []
+
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        texts.append(text)
+        return ContentPriorityDecision(
+            priority: .lowPriority, confidence: 0.95, model: "counting-jev", inputTokens: 3
+        )
+    }
+
+    func sentTexts() -> [String] { texts }
+}
+
+private actor LiveFoldGate {
+    private var folded = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func observe(_ segments: [MaterializedTranscriptSegment]) {
+        guard segments.contains(where: { $0.contentPriority == .lowPriority }) else { return }
+        folded = true
+        waiter?.resume()
+        waiter = nil
+    }
+
+    func wait() async {
+        guard !folded else { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+}
+
+@Test(arguments: [false, true])
+func finalizationUsesFinalTextAndOnlyReusesIdenticalLiveDecisions(changed: Bool) async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let liveText = " \n同じ発話\t "
+    let finalText = changed ? "変更された発話" : "同じ発話"
+    let provider = LiveCarryOverProvider()
+    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter())
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: [liveText, finalText]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log, shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(
+                    segmentationRunID: "ignored", segmentID: "final_row", startFrame: 0, endFrame: 16_000
+                )],
+                log: log
+            )
+        ),
+        contentPriority: .jev({ decisions })
+    )
+    _ = try await processor.startLiveTranscription(
+        sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate
+    )
+    let gate = LiveFoldGate()
+    _ = try await processor.processLiveSegments(
+        sessionID: sessionID,
+        segments: [SegmentReference(
+            segmentationRunID: "live_seg", segmentID: "live_row", startFrame: 0, endFrame: 16_000
+        )],
+        checkpoint: checkpoint, onStatus: nil,
+        onUpdate: { segments, _ in await gate.observe(segments) }
+    )
+    await gate.wait()
+    await processor.stopLiveContentPriority(sessionID: sessionID)
+    let result = await processor.finishLiveTranscription(
+        sessionID: sessionID, checkpoint: checkpoint, finalSegments: [], pacingMode: .normal,
+        shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    #expect(result.disposition == .completed)
+    #expect(await provider.sentTexts() == (changed ? [liveText, finalText] : [liveText]))
+    let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
+    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)).lines
+    let materialized = TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
+        events: try EventLogTranscriptReader().events(lines: lines, activeRuns: runs), activeRuns: runs
+    )
+    #expect(materialized.map(\.text) == [finalText])
+    #expect(materialized.map(\.segmentID) == ["final_row"])
+    #expect(materialized.map(\.contentPriority) == [.lowPriority])
+    let objects = try eventObjects(sessionURL)
+    let assignment = try #require(objects.first {
+        $0["event_type"] as? String == "content_priority.assigned"
+            && $0["processing_run_id"] as? String == runs.contentPriority
+    })
+    let payload = try #require(assignment["payload"] as? [String: Any])
+    let decision = try #require(payload["decision"] as? [String: Any])
+    if changed {
+        #expect(decision["classified"] != nil)
+    } else {
+        let source = try #require(decision["carried_over"] as? [String: Any])
+        let liveAssignment = try #require(objects.first {
+            $0["event_type"] as? String == "content_priority.assigned"
+                && $0["segment_id"] as? String == "live_row"
+        })
+        #expect(source["source_run_id"] as? String == liveAssignment["processing_run_id"] as? String)
+        #expect(source["source_segmentation_run_id"] as? String == "live_seg")
+        #expect(source["source_segment_id"] as? String == "live_row")
+    }
+}

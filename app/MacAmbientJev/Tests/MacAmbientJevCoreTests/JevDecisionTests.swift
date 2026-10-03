@@ -270,7 +270,7 @@ func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
         writer: writer,
         decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(existingEvents: events, activeRuns: runs, scope: .all)
+    ).process(existingEvents: events, activeRuns: runs, scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
     #expect(initial.retryPendingSegmentIDs == ["seg-1"])
     #expect(await counter.snapshot().retryPendingCount == 1)
 
@@ -280,11 +280,7 @@ func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
         writer: writer,
         decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(
-        existingEvents: events,
-        activeRuns: runs,
-        scope: .retry(["seg-1"])
-    )
+    ).process(existingEvents: events, activeRuns: runs, scope: .retry(["seg-1"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
     #expect(stillOffline.retryPendingSegmentIDs == ["seg-1"])
     #expect(await counter.snapshot().retryPendingCount == 1)
 
@@ -295,11 +291,7 @@ func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
         writer: writer,
         decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(
-        existingEvents: events,
-        activeRuns: runs,
-        scope: .retry(["seg-1"])
-    )
+    ).process(existingEvents: events, activeRuns: runs, scope: .retry(["seg-1"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
     #expect(retry.retryPendingSegmentIDs.isEmpty)
     #expect(await counter.snapshot().retryPendingCount == 0)
 
@@ -330,11 +322,7 @@ func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
             writer: writer,
             decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
             materializer: TranscriptMaterializer(sampleRate: 1_000)
-        ).process(
-            existingEvents: previous?.result.events ?? retryEvents(segmentIDs: ["seg-1", "seg-2"]),
-            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", contentPriority: previous?.runID),
-            scope: scope
-        )
+        ).process(existingEvents: previous?.result.events ?? retryEvents(segmentIDs: ["seg-1", "seg-2"]), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", contentPriority: previous?.runID), scope: scope, reusableDecisions: [:], completeRun: true, onAssignment: nil)
         return (runID, result)
     }
 

@@ -62,14 +62,10 @@ func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
         )
     ]
 
-    let result = try await coordinator.process(
-        existingEvents: events,
-        activeRuns: ActiveRuns(
-            segmentation: "seg",
-            asr: "asr"
-        ),
-        scope: .all
-    )
+    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(
+        segmentation: "seg",
+        asr: "asr"
+    ), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
 
     #expect(result.retryPendingSegmentIDs.isEmpty)
     #expect(result.stopReason == nil)
@@ -114,14 +110,10 @@ func jevFailureKeepsPrimaryAndRecordsRetryPending() async throws {
         )
     ]
 
-    let result = try await coordinator.process(
-        existingEvents: events,
-        activeRuns: ActiveRuns(
-            segmentation: "seg",
-            asr: "asr"
-        ),
-        scope: .all
-    )
+    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(
+        segmentation: "seg",
+        asr: "asr"
+    ), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
 
     #expect(result.retryPendingSegmentIDs == ["seg-1"])
     #expect(
@@ -232,15 +224,11 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
         )
     ]
 
-    let result = try await coordinator.process(
-        existingEvents: events,
-        activeRuns: ActiveRuns(
-            segmentation: "seg",
-            asr: "asr",
-            contentPriority: "priority-old"
-        ),
-        scope: .retry(["seg-2", "seg-empty"])
-    )
+    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(
+        segmentation: "seg",
+        asr: "asr",
+        contentPriority: "priority-old"
+    ), scope: .retry(["seg-2", "seg-empty"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
 
     #expect(
         await provider.recordedPriorityCalls()
@@ -259,7 +247,11 @@ func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async 
 
     let payloads = try persistedPriorityPayloads(root: root)
     #expect(payloads["seg-1"]?["decision"] as? [String: [String: String]]
-        == ["carried_over": ["source_run_id": "priority-old"]])
+        == ["carried_over": [
+            "source_run_id": "priority-old",
+            "source_segmentation_run_id": "seg",
+            "source_segment_id": "seg-1"
+        ]])
     #expect(payloads["seg-1"]?["priority"] as? String == "lowPriority")
     #expect(payloads["seg-1"]?["needs_retry"] as? Bool == false)
     let classified = try #require(
@@ -305,11 +297,7 @@ func retryRunWithoutAPriorityToCarryOverFailsBeforeSendingAnything() async throw
     ]
 
     await #expect(throws: JevEnrichmentError.noPriorityToCarryOver(segmentID: "b")) {
-        try await coordinator.process(
-            existingEvents: events,
-            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-            scope: .retry(["a"])
-        )
+        try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .retry(["a"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
     }
     #expect(await provider.recordedPriorityCalls().isEmpty)
 }
@@ -347,12 +335,135 @@ func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
         .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "spoken", text: "聞き取れませんでした。", detectedLanguage: nil)
     ]
 
-    let result = try await coordinator.process(
-        existingEvents: events,
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        scope: .retry(["blank", "spoken"])
-    )
+    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .retry(["blank", "spoken"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
 
     #expect(await provider.recordedPriorityCalls() == ["聞き取れませんでした。"])
     #expect(result.retryPendingSegmentIDs.isEmpty)
+}
+
+private func liveReuseEvents(_ texts: [(String, String)]) -> [TranscriptEvent] {
+    texts.enumerated().flatMap { index, entry in
+        [
+            .segmentCreated(seq: UInt64(index * 2 + 1), segmentationRunID: "seg",
+                            segmentID: entry.0, startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000)),
+            .asrCompleted(seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
+                          segmentID: entry.0, text: entry.1, detectedLanguage: nil)
+        ]
+    }
+}
+
+@Test
+func normalizedLiveReuseDoesNotReuseChangedOrPendingText() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let provider = CountingRetryProvider()
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(), runID: "final", writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let carried = ContentPriorityEventPayload(priority: .lowPriority, decision: .carriedOver(
+        sourceRunID: "live-priority", sourceSegmentationRunID: "live-seg", sourceSegmentID: "original"
+    ))
+    _ = try await coordinator.process(
+        existingEvents: liveReuseEvents([("same", " \n話題\n "), ("changed", "話題です"), ("pending", "未分類")]),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all,
+        reusableDecisions: ["話題": carried, "未分類": .init(priority: .primary, decision: .retryPending)],
+        completeRun: true, onAssignment: nil
+    )
+    #expect(await provider.recordedPriorityCalls() == ["話題です", "未分類"])
+    let payloads = try persistedPriorityPayloads(root: root)
+    #expect(payloads["same"]?["decision"] as? [String: [String: String]] == [
+        "carried_over": ["source_run_id": "live-priority", "source_segmentation_run_id": "live-seg", "source_segment_id": "original"]
+    ])
+}
+
+private struct StatusFailurePriorityProvider: DecisionProvider {
+    let status: Int
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        throw JevClientError.httpStatus(status)
+    }
+}
+
+@Test(arguments: [401, 503])
+func incrementalUnavailableRunStopsLaterRequestsAndCountsAllAssignments(status: Int) async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let counter = JevUsageCounter()
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(), runID: "live", writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(provider: StatusFailurePriorityProvider(status: status), usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
+    let first = try await coordinator.process(
+        existingEvents: liveReuseEvents([("a", "一")]), activeRuns: runs, scope: .all,
+        reusableDecisions: [:], completeRun: false, onAssignment: nil
+    )
+    let second = try await coordinator.process(
+        existingEvents: liveReuseEvents([("a", "一"), ("b", "二")]), activeRuns: runs, scope: .all,
+        reusableDecisions: [:], completeRun: true, onAssignment: nil
+    )
+    #expect(await counter.snapshot().sendCount == 1)
+    let expectedReason: JevBatchStopReason = status == 401 ? .authorizationRejected : .providerUnavailable
+    #expect(first.stopReason == expectedReason)
+    #expect(second.stopReason == expectedReason)
+    #expect(second.retryPendingSegmentIDs == ["b"])
+    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: root.appending(path: "events.jsonl"))).lines
+    let events = try lines.map { try #require(JSONSerialization.jsonObject(with: $0) as? [String: Any]) }
+    #expect(events.filter { $0["event_type"] as? String == "content_priority.assigned" }.count == 2)
+    let completed = try #require(events.last?["payload"] as? [String: Any])
+    #expect(completed["completed_count"] as? Int == 2)
+    #expect(completed["failed_count"] as? Int == 2)
+}
+
+private actor SuspendedPriorityProvider: DecisionProvider {
+    private var response: CheckedContinuation<ContentPriorityDecision, Never>?
+    private var entered: CheckedContinuation<Void, Never>?
+    private var hasEntered = false
+
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        await withCheckedContinuation { continuation in
+            response = continuation
+            hasEntered = true
+            entered?.resume()
+            entered = nil
+        }
+    }
+
+    func waitUntilEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { entered = $0 }
+    }
+
+    func respond() {
+        response?.resume(returning: .init(priority: .lowPriority, confidence: 1, model: nil, inputTokens: nil))
+        response = nil
+    }
+}
+
+@Test
+func cancellationDoesNotSaveReturnedClassification() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let provider = SuspendedPriorityProvider()
+    let counter = JevUsageCounter()
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(), runID: "live", writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    let task = Task {
+        try await coordinator.process(
+            existingEvents: liveReuseEvents([("a", "一")]),
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all,
+            reusableDecisions: [:], completeRun: false, onAssignment: nil
+        )
+    }
+    await provider.waitUntilEntered()
+    task.cancel()
+    await provider.respond()
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect(try persistedPriorityPayloads(root: root).isEmpty)
+    #expect(await counter.snapshot().successCount == 0)
 }

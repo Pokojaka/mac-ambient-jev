@@ -98,7 +98,7 @@ extension AppState {
                         segments: progress.emittedSegments,
                         checkpoint: checkpoint
                     )
-                    if processingState != .backlogged {
+                    if processingState != .backlogged, liveContentPriorityStatus[sessionID] == nil {
                         processingStatusText =
                             "録音中に発話を検出しています（\(progress.totalSegmentCount)区間）"
                     }
@@ -190,9 +190,15 @@ extension AppState {
                     guard let self,
                           self.recordingSessionID == sessionID,
                           self.recordingPhase == .recording else { return }
-                    self.processingStatusText = text
+                    if text == UserFacingStatus.jevAuthorizationRequired.text
+                        || text == UserFacingStatus.jevDeferred.text
+                        || text.hasPrefix("意味分類") {
+                        self.liveContentPriorityStatus[sessionID] = text
+                    }
+                    let visibleStatus = self.liveContentPriorityStatus[sessionID] ?? text
+                    self.processingStatusText = visibleStatus
                     if self.displayedSessionID == sessionID {
-                        self.transcriptViewModel.setStatus(text)
+                        self.transcriptViewModel.setStatus(visibleStatus)
                     }
                 }
             }
@@ -280,5 +286,6 @@ extension AppState {
         liveASRQueues[sessionID] = nil
         liveASRTasks[sessionID] = nil
         liveASRFailures[sessionID] = nil
+        liveContentPriorityStatus[sessionID] = nil
     }
 }

@@ -89,7 +89,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `speaker.span` | run、開始・終了範囲 | `speaker_id`: String、`start_frame`: Int64、`end_frame`: Int64、`confidence`: optional Double |
 | `scene.changed` | run、開始フレームのみ | **文字列そのもの**。`unknown`、`lecture`、`discussionCandidate`、`discussion`、`lectureCandidate` |
 | `scope.span` | run、segment、開始・終了範囲 | `start_frame`: Int64、`end_frame`: Int64、`scope`: `near` / `background` / `unknown`、`confidence`: Double |
-| `content_priority.assigned` | run、segment | `priority`: `primary` / `lowPriority`、`needs_retry`: Bool、`decision`: 下記の object |
+| `content_priority.assigned` | run、seg run、segment | `priority`: `primary` / `lowPriority`、`needs_retry`: Bool、`decision`: 下記の object |
 | `content_priority.pending_retry` | run、segment | 空 object `{}` |
 
 `stage` の raw value は `segmentation`、`asr`、`diarization`、`scene`、`scope`、`contentPriority` です。metadata のキー `content_priority` と、stage の値 `contentPriority` を混同しないでください。
@@ -117,10 +117,10 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 ```
 
 ```json
-{"carried_over":{"source_run_id":"priority_previous"}}
+{"carried_over":{"source_run_id":"priority_live_example","source_segmentation_run_id":"seg_live_example","source_segment_id":"live_000001"}}
 ```
 
-数値とモデル名は形を示す例です。classified の `confidence` は必須、`model` と `input_tokens` は optional です。`needs_retry` は retry_pending の場合にだけ true で、priority は必ず primary です。carried_over は再試行で送信しない区間に適用し、引き継ぎ元 run ID を残します。Jev の LOW_PRIORITY 応答は confidence が 0.90 以上の場合だけ `lowPriority` として公開します。低 confidence の応答でも classified の来歴自体は保存します。
+数値とモデル名は形を示す例です。classified の `confidence` は必須、`model` と `input_tokens` は optional です。`needs_retry` は retry_pending の場合にだけ true で、priority は必ず primary です。carried_over は確定本文と一致したライブ判定の再利用、または再試行で送信しない区間に適用し、引き継ぎ元の run・segmentation run・segment ID をすべて残します。ライブの再利用は前後の空白・改行の trim 後の完全一致に限り、同一本文ではイベント順で最新の classified 判定を使います。Jev の LOW_PRIORITY 応答は confidence が 0.90 以上の場合だけ `lowPriority` として公開します。低 confidence の応答でも classified の来歴自体は保存します。
 
 根拠: [JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JevDecision.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)。
 
@@ -146,7 +146,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | scope | `proximity-scope-classifier` / model なし / `1` | `evidence` = `timeline-level-and-spectral` |
 | contentPriority | `jev` / run の model なし / `1` | `endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`minimum_demotion_confidence` = `0.9`。応答モデルは区間の classified に保存 |
 
-Jev provenance は実際に優先度 run を始める場合に保存します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ run に出すわけではありません。
+Jev provenance は実際に優先度 run を始める場合に保存します。ライブ優先度 run は configuration に `mode: live` を加え、暫定判定を逐次保存します。録音停止で取り消す run は完了イベントなしでも保存済み classified 判定を保持します。ライブ run は metadata の active_runs に選ばず、確定処理は独立した content priority run を完了・選択します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ ASR run に出すわけではありません。
 
 根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SceneInference.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneInference.swift)。
 

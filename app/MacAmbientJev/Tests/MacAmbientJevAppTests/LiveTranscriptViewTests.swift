@@ -35,3 +35,10 @@ func transcriptHeaderNamesEveryNonEmptyDisplayState() {
     #expect(TranscriptDisplayState.finalizing.badge?.text == "確定処理中")
     #expect(TranscriptDisplayState.finalized.badge?.text == "確定済み")
 }
+
+@Test
+func rowTopSpacingSeparatesSpeakerTurnsAndKeepsContinuationsClose() {
+    #expect(LiveTranscriptView.topSpacing(forIndex: 0, speakerHeading: "Speaker 1") == 0)
+    #expect(LiveTranscriptView.topSpacing(forIndex: 1, speakerHeading: nil) == AppSpacing.xs)
+    #expect(LiveTranscriptView.topSpacing(forIndex: 2, speakerHeading: "Speaker 2") == AppSpacing.md)
+}

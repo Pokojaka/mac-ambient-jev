@@ -47,6 +47,7 @@ public actor JevUsageCounter {
     }
 
     func recordSuccess(sessionID: UUID, segmentID: String, inputTokens: Int?) {
+        guard !Task.isCancelled else { return }
         successCount += 1
         if let inputTokens {
             reportedInputTokens += inputTokens
@@ -57,12 +58,20 @@ public actor JevUsageCounter {
     }
 
     func recordFailure(sessionID: UUID, segmentID: String) {
+        guard !Task.isCancelled else { return }
         failureCount += 1
         recordDeferred(sessionID: sessionID, segmentID: segmentID)
     }
 
     func recordDeferred(sessionID: UUID, segmentID: String) {
+        guard !Task.isCancelled else { return }
         pendingSegments.insert(PendingSegment(sessionID: sessionID, segmentID: segmentID))
+    }
+
+    public func clearDeferred(sessionID: UUID, segmentIDs: Set<String>) {
+        for segmentID in segmentIDs {
+            pendingSegments.remove(PendingSegment(sessionID: sessionID, segmentID: segmentID))
+        }
     }
 
     public func snapshot() -> JevUsageSnapshot {

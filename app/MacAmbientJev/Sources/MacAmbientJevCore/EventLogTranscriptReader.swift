@@ -183,10 +183,98 @@ private struct ContentPriorityBody: Decodable {
     }
 }
 
+private struct LiveRunStartedBody: Decodable {
+    let payload: ProcessingRunStartedPayload
+}
+
+private struct LivePriorityBody: Decodable {
+    let segmentID: String
+    let priority: ContentPriority
+    let classified: Bool
+
+    private enum PayloadKeys: String, CodingKey {
+        case priority, decision
+        case needsRetry = "needs_retry"
+    }
+    private enum DecisionKeys: String, CodingKey { case classified }
+    private struct Classified: Decodable {
+        let confidence: Double
+        let model: String?
+        let inputTokens: Int?
+        private enum CodingKeys: String, CodingKey {
+            case confidence, model
+            case inputTokens = "input_tokens"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: EventLogKeys.self)
+        segmentID = try container.decode(String.self, forKey: .segmentID)
+        let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
+        priority = try payload.decode(ContentPriority.self, forKey: .priority)
+        let decision = try payload.nestedContainer(keyedBy: DecisionKeys.self, forKey: .decision)
+        let needsRetry = try payload.decode(Bool.self, forKey: .needsRetry)
+        if decision.contains(.classified) {
+            _ = try decision.decode(Classified.self, forKey: .classified)
+            classified = !needsRetry
+        } else {
+            classified = false
+        }
+    }
+}
+
 /// Reads the events of the active runs. Events of other runs and unknown event types are skipped;
 /// an active-run event with a missing or mistyped field throws.
 public struct EventLogTranscriptReader: Sendable {
     public init() {}
+
+    /// Reuses only durable classified live decisions, retaining their exact source identity.
+    public func liveContentPriorityDecisions(
+        lines: [Data]
+    ) throws -> [String: ContentPriorityEventPayload] {
+        struct SegmentKey: Hashable {
+            let segmentationRunID: String
+            let segmentID: String
+        }
+        let decoded = try EventLogLine.decode(lines).sorted { $0.header.eventSeq < $1.header.eventSeq }
+        var livePriorityRuns: Set<String> = []
+        for line in decoded where line.header.eventType == "processing.run.started" {
+            let runID = try requiredRunID(line.header.processingRunID, of: line.header)
+            let started = try line.body(LiveRunStartedBody.self).payload
+            guard started.provenance.configuration["mode"] == "live" else { continue }
+            if started.stage == .contentPriority { livePriorityRuns.insert(runID) }
+        }
+        var texts: [SegmentKey: String] = [:]
+        var result: [String: ContentPriorityEventPayload] = [:]
+        for line in decoded {
+            let header = line.header
+            guard let runID = header.processingRunID else { continue }
+            if header.eventType == "asr.completed" {
+                let segmentationRunID = try requiredRunID(header.segmentationRunID, of: header)
+                let body = try line.body(ASRCompletedBody.self)
+                guard body.outcome == ASRRecognitionOutcome(text: body.text) else {
+                    throw EventLogTranscriptReaderError.asrOutcomeMismatch(eventSeq: header.eventSeq)
+                }
+                texts[SegmentKey(segmentationRunID: segmentationRunID, segmentID: body.segmentID)]
+                    = ContentPriorityText.normalized(body.text)
+            } else if header.eventType == "content_priority.assigned", livePriorityRuns.contains(runID) {
+                let segmentationRunID = try requiredRunID(header.segmentationRunID, of: header)
+                let body = try line.body(LivePriorityBody.self)
+                guard body.classified,
+                      let text = texts[SegmentKey(segmentationRunID: segmentationRunID, segmentID: body.segmentID)],
+                      !text.isEmpty else { continue }
+                result[text] = ContentPriorityEventPayload(
+                    priority: body.priority,
+                    decision: .carriedOver(
+                        sourceRunID: runID,
+                        sourceSegmentationRunID: segmentationRunID,
+                        sourceSegmentID: body.segmentID
+                    )
+                )
+            }
+        }
+        return result
+    }
 
     public func events(
         lines: [Data],

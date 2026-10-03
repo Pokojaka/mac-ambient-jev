@@ -64,6 +64,8 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 ライブ VAD は閉じた発話区間を渡し、連続発話は最大 14 秒で分割します。分割の端数 continuation も保持します。長い発話は区間が閉じるまで初表示が遅れます。ライブ中は話者分離を行わず、結果は暫定です。
 
+非空のライブ ASR 本文は `LiveContentPrioritySession` の独立キューへ渡し、判定が届くまで（Jev 無効・失敗・保留・停止を除く）その行と時間順で後続の行を表示しません。`JevEnrichmentCoordinator` のバッチ停止規則を使い、保存した優先度イベントを進行中の ASR イベントへ追加します。Jev の待機・失敗は ASR drain に伝播しません。録音停止時に外部分類を取り消し、確定処理は開始時点で保存済みのライブ判定だけを本文の完全一致で再利用します。[ライブ](live.md)・[Jev](jev.md)
+
 根拠: [TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioBlockRing.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[AudioCaptureDrain.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioCaptureDrain.swift)、[DurableAudioWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[Segmentation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。
 
 ## ファイル入力と共通確定処理

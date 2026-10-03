@@ -116,7 +116,7 @@ public struct SessionProcessingEngines: Sendable {
     }
 }
 
-/// Whether finalization classifies content priority through Jev.
+/// Whether live transcription and finalization classify content priority through Jev.
 public enum ContentPriorityAccess: Sendable {
     case disabled
     /// The factory returns nil when Jev is currently unavailable; segments then stay pending.
@@ -142,6 +142,7 @@ public actor NativeSessionProcessor {
     private let finalTranscriptVAD: any FinalTranscriptVADSegmenter
     private let contentPriority: ContentPriorityAccess
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
+    private var liveContentPrioritySessions: [UUID: LiveContentPrioritySession] = [:]
 
     public init(
         paths: AppPaths,
@@ -189,15 +190,27 @@ public actor NativeSessionProcessor {
         sampleRate: Double
     ) throws -> String {
         let asrRunID = "asr_live_\(UUID().uuidString.lowercased())"
-        liveASRSessions[sessionID] = LiveASRSession(
+        let writer = try SessionWriter(sessionURL: layout(for: sessionID).sessionURL)
+        let liveSession = LiveASRSession(
             sessionID: sessionID,
             segmentationRunID: segmentationRunID,
             asrRunID: asrRunID,
             processingDirectory: layout(for: sessionID).processingDirectory,
-            writer: try SessionWriter(sessionURL: layout(for: sessionID).sessionURL),
+            writer: writer,
             asr: asr,
             sampleRate: sampleRate
         )
+        liveASRSessions[sessionID] = liveSession
+        if case .jev(let factory) = contentPriority {
+            liveContentPrioritySessions[sessionID] = LiveContentPrioritySession(
+                sessionID: sessionID,
+                runID: "priority_live_\(UUID().uuidString.lowercased())",
+                writer: writer,
+                liveASR: liveSession,
+                sampleRate: sampleRate,
+                makeDecisions: factory
+            )
+        }
         return asrRunID
     }
 
@@ -230,19 +243,75 @@ public actor NativeSessionProcessor {
 
         let progress = try await liveSession.process(
             segments: segments,
-            checkpoint: checkpoint
+            checkpoint: checkpoint,
+            onRecognized: { [weak self] segmentID, _ in
+                await self?.publishLiveRecognition(
+                    sessionID: sessionID,
+                    liveSession: liveSession,
+                    segmentID: segmentID,
+                    onStatus: onStatus,
+                    onUpdate: onUpdate
+                )
+            }
         )
 
         guard liveASRSessions[sessionID] === liveSession else {
             return progress
         }
-        if let onUpdate {
-            await onUpdate(progress.materializedSegments, .running)
-        }
+        await publishLiveRows(sessionID: sessionID, liveSession: liveSession, onUpdate: onUpdate)
         return progress
     }
 
+    private func publishLiveRecognition(
+        sessionID: UUID,
+        liveSession: LiveASRSession,
+        segmentID: String,
+        onStatus: StatusHandler?,
+        onUpdate: UpdateHandler?
+    ) async {
+        guard liveASRSessions[sessionID] === liveSession else { return }
+        let snapshot = await liveSession.snapshot()
+        // Queued before publishing so the new row is held back until its decision arrives.
+        if let enrichment = liveContentPrioritySessions[sessionID] {
+            await enrichment.enqueue(
+                segmentID: segmentID,
+                snapshot: snapshot,
+                onStatus: { text in await onStatus?(text) },
+                onUpdate: { [weak self] _ in
+                    await self?.publishLiveRows(
+                        sessionID: sessionID, liveSession: liveSession, onUpdate: onUpdate
+                    )
+                }
+            )
+        }
+        await publishLiveRows(sessionID: sessionID, liveSession: liveSession, onUpdate: onUpdate)
+    }
+
+    private func publishLiveRows(
+        sessionID: UUID,
+        liveSession: LiveASRSession,
+        onUpdate: UpdateHandler?
+    ) async {
+        guard liveASRSessions[sessionID] === liveSession, let onUpdate else { return }
+        let rows = await liveSession.snapshot().progress.materializedSegments
+        let displayable: [MaterializedTranscriptSegment]
+        if let enrichment = liveContentPrioritySessions[sessionID] {
+            displayable = await enrichment.displayable(rows)
+        } else {
+            displayable = rows
+        }
+        await onUpdate(displayable, .running)
+    }
+
+    /// Stops external classification immediately; the ASR backlog may still drain locally.
+    public func stopLiveContentPriority(sessionID: UUID) async {
+        if let enrichment = liveContentPrioritySessions.removeValue(forKey: sessionID) {
+            await enrichment.stop()
+        }
+    }
+
     public func cancelLiveTranscription(sessionID: UUID) async {
+        await stopLiveContentPriority(sessionID: sessionID)
         liveASRSessions[sessionID] = nil
     }
 
@@ -258,6 +327,7 @@ public actor NativeSessionProcessor {
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
     ) async -> SessionProcessingResult {
+        await stopLiveContentPriority(sessionID: sessionID)
         var provisional: [MaterializedTranscriptSegment] = []
         if let liveSession = liveASRSessions[sessionID] {
             if !finalSegments.isEmpty {
@@ -396,7 +466,10 @@ public actor NativeSessionProcessor {
             let result = try await coordinator.process(
                 existingEvents: events,
                 activeRuns: activeRuns,
-                scope: .retry(Set(segmentIDs))
+                scope: .retry(Set(segmentIDs)),
+                reusableDecisions: [:],
+                completeRun: true,
+                onAssignment: nil
             )
 
             try selectContentPriorityRun(
@@ -429,6 +502,7 @@ public actor NativeSessionProcessor {
         onUpdate: @escaping UpdateHandler,
         timeline: @Sendable () async throws -> AudioCheckpoint
     ) async -> SessionProcessingResult {
+        await stopLiveContentPriority(sessionID: sessionID)
         let sessionLayout = layout(for: sessionID)
         let metadataStore = ProcessingMetadataStore(sessionURL: sessionLayout.sessionURL)
         let attemptID = "finalize_\(UUID().uuidString.lowercased())"
@@ -445,6 +519,23 @@ public actor NativeSessionProcessor {
                 metrics: nil,
                 retained: provisional.isEmpty ? .nothing : .provisional
             )
+        }
+
+        // Freeze durable live decisions before any final recognition. In-flight live
+        // requests never become a dependency of finalization.
+        let reusableDecisions: [String: ContentPriorityEventPayload]
+        let liveDecisionReadFailure: String?
+        do {
+            if case .jev = contentPriority {
+                let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionLayout.eventsURL)).lines
+                reusableDecisions = try EventLogTranscriptReader().liveContentPriorityDecisions(lines: lines)
+            } else {
+                reusableDecisions = [:]
+            }
+            liveDecisionReadFailure = nil
+        } catch {
+            reusableDecisions = [:]
+            liveDecisionReadFailure = error.localizedDescription
         }
 
         await onPhase(.preparing)
@@ -537,6 +628,8 @@ public actor NativeSessionProcessor {
                 final,
                 sessionID: sessionID,
                 checkpoint: checkpoint,
+                reusableDecisions: reusableDecisions,
+                liveDecisionReadFailure: liveDecisionReadFailure,
                 onPhase: onPhase,
                 onStatus: onStatus,
                 onUpdate: onUpdate
@@ -549,6 +642,8 @@ public actor NativeSessionProcessor {
         _ final: FinalTranscriptPipelineResult,
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
+        reusableDecisions: [String: ContentPriorityEventPayload],
+        liveDecisionReadFailure: String?,
         onPhase: PhaseHandler,
         onStatus: @escaping StatusHandler,
         onUpdate: UpdateHandler
@@ -557,7 +652,8 @@ public actor NativeSessionProcessor {
         var deferredContentPriorityIDs: [String] = []
         var deferredContentPriorityStatus = UserFacingStatus.jevDeferred
         var retryStatePersistenceFailure: String?
-        if case .jev = contentPriority, !final.materializedSegments.isEmpty {
+        if case .jev = contentPriority, !final.materializedSegments.isEmpty,
+           liveDecisionReadFailure == nil {
             do {
                 let events = try loadTranscriptEvents(sessionID: sessionID, activeRuns: final.activeRuns)
                 let outcome = await runJevEnrichmentIfAvailable(
@@ -566,6 +662,7 @@ public actor NativeSessionProcessor {
                     existingEvents: events,
                     activeRuns: final.activeRuns,
                     segments: final.materializedSegments,
+                    reusableDecisions: reusableDecisions,
                     onStatus: onStatus
                 )
                 finalSegments = outcome.materializedSegments
@@ -582,6 +679,12 @@ public actor NativeSessionProcessor {
                 )
             }
         }
+        if liveDecisionReadFailure != nil {
+            deferredContentPriorityIDs = final.materializedSegments.filter(\.hasRecognizedText).map(\.segmentID)
+            retryStatePersistenceFailure = persistPendingContentPriority(
+                sessionID: sessionID, segmentIDs: deferredContentPriorityIDs
+            )
+        }
 
         await onUpdate(finalSegments, .complete)
         await onPhase(.complete)
@@ -590,6 +693,8 @@ public actor NativeSessionProcessor {
         }
         if final.completedCount == 0 {
             await onStatus("発話区間は検出されませんでした")
+        } else if let liveDecisionReadFailure {
+            await onStatus("ライブの意味分類を読み込めないため、意味分類を保留しました: \(liveDecisionReadFailure)")
         } else if !deferredContentPriorityIDs.isEmpty {
             await onStatus(deferredContentPriorityStatus.text)
         } else if retryStatePersistenceFailure == nil {
@@ -707,6 +812,7 @@ public actor NativeSessionProcessor {
         existingEvents: [TranscriptEvent],
         activeRuns: ActiveRuns,
         segments: [MaterializedTranscriptSegment],
+        reusableDecisions: [String: ContentPriorityEventPayload],
         onStatus: StatusHandler
     ) async -> JevEnrichmentOutcome {
         let visibleSegments = segments.filter(\.hasRecognizedText)
@@ -730,14 +836,14 @@ public actor NativeSessionProcessor {
             persistenceFailure: initialPersistenceFailure,
             stopReason: nil
         )
-        let decisions: JevDecisionCoordinator
+        let decisions: JevDecisionCoordinator?
         do {
-            guard let available = try makeJevDecisionCoordinatorIfAvailable() else {
-                await onStatus(UserFacingStatus.jevDeferred.text)
-                return deferred
-            }
-            decisions = available
+            decisions = try makeJevDecisionCoordinatorIfAvailable()
         } catch {
+            await onStatus("意味分類を開始できませんでした: \(error.localizedDescription)")
+            return deferred
+        }
+        guard decisions != nil || !reusableDecisions.isEmpty else {
             await onStatus(UserFacingStatus.jevDeferred.text)
             return deferred
         }
@@ -764,7 +870,10 @@ public actor NativeSessionProcessor {
                     return visibleSegmentIDs.contains(segmentID)
                 },
                 activeRuns: activeRuns,
-                scope: .all
+                scope: .all,
+                reusableDecisions: reusableDecisions,
+                completeRun: true,
+                onAssignment: nil
             )
         } catch {
             await onStatus(UserFacingStatus.jevDeferred.text)

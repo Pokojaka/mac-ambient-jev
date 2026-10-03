@@ -237,6 +237,7 @@ final class AppState: ObservableObject {
     var liveASRQueues: [UUID: [LiveASRBatch]] = [:]
     var liveASRTasks: [UUID: Task<Void, Never>] = [:]
     var liveASRFailures: [UUID: String] = [:]
+    var liveContentPriorityStatus: [UUID: String] = [:]
     var readLiveThermalPressure: @MainActor () -> ThermalPressure = AppState.currentThermalPressure
 
     init(
