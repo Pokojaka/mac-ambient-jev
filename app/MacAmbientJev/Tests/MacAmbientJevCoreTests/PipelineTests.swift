@@ -66,7 +66,7 @@ private actor StalledPipelineASR: ASREngine {
     }
 
     func finish() {
-        transcriptionWaiter?.resume(returning: ASRResult(text: "処理済み"))
+        transcriptionWaiter?.resume(returning: ASRResult(text: "処理済み", detectedLanguage: nil))
         transcriptionWaiter = nil
     }
 
@@ -418,7 +418,7 @@ private actor ScriptedPipelineASR: ASREngine {
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
         guard let text = results.removeFirst() else { throw PipelineTestError.failed }
-        return ASRResult(text: text)
+        return ASRResult(text: text, detectedLanguage: nil)
     }
 
     func unload() async {}

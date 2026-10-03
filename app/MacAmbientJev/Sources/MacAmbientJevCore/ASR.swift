@@ -12,7 +12,7 @@ public struct ASRResult: Sendable, Equatable {
     public let text: String
     public let detectedLanguage: String?
 
-    public init(text: String, detectedLanguage: String? = nil) {
+    public init(text: String, detectedLanguage: String?) {
         self.text = text
         self.detectedLanguage = detectedLanguage
     }

@@ -20,19 +20,19 @@ public struct ASRCompletedEventPayload: Codable, Sendable, Equatable {
     public let text: String
     public let detectedLanguage: String?
     public let engine: String
-    public let model: String
+    public let model: String?
     public let outcome: ASRRecognitionOutcome
 
+    /// `engine` and `model` come from the provenance of the engine that produced `text`.
     public init(
         text: String,
         detectedLanguage: String?,
-        engine: String,
-        model: String
+        provenance: RunProvenance
     ) {
         self.text = text
         self.detectedLanguage = detectedLanguage
-        self.engine = engine
-        self.model = model
+        self.engine = provenance.engine
+        self.model = provenance.model
         self.outcome = ASRRecognitionOutcome(text: text)
     }
 }

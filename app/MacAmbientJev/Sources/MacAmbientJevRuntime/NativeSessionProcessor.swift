@@ -91,6 +91,38 @@ public struct SessionProcessingResult: Sendable {
     }
 }
 
+/// The engines a processor runs. Tests substitute fakes; the app and CLIs use `production(paths:)`.
+public struct SessionProcessingEngines: Sendable {
+    public let asr: any ASREngine
+    public let diarization: any DiarizationEngine
+    public let finalTranscriptVAD: any FinalTranscriptVADSegmenter
+
+    public init(
+        asr: any ASREngine,
+        diarization: any DiarizationEngine,
+        finalTranscriptVAD: any FinalTranscriptVADSegmenter
+    ) {
+        self.asr = asr
+        self.diarization = diarization
+        self.finalTranscriptVAD = finalTranscriptVAD
+    }
+
+    public static func production(paths: AppPaths) -> SessionProcessingEngines {
+        SessionProcessingEngines(
+            asr: NativeQwen3ASREngine(modelStore: ModelStore(paths: paths)),
+            diarization: FluidOfflineDiarizationEngine(paths: paths),
+            finalTranscriptVAD: FluidFinalTranscriptVADSegmenter()
+        )
+    }
+}
+
+/// Whether finalization classifies content priority through Jev.
+public enum ContentPriorityAccess: Sendable {
+    case disabled
+    /// The factory returns nil when Jev is currently unavailable; segments then stay pending.
+    case jev(NativeSessionProcessor.JevDecisionCoordinatorFactory)
+}
+
 public actor NativeSessionProcessor {
     public typealias JevDecisionCoordinatorFactory = @Sendable () throws
         -> JevDecisionCoordinator?
@@ -104,36 +136,44 @@ public actor NativeSessionProcessor {
 
     private static let jevAPIKeyAccount = "jev-api-key"
 
-    private let paths: AppPaths
     private let sessionsRoot: URL
     private let asr: any ASREngine
     private let diarization: any DiarizationEngine
     private let finalTranscriptVAD: any FinalTranscriptVADSegmenter
-    private let allowExternalJev: Bool
-    private let jevDecisionCoordinatorFactory: JevDecisionCoordinatorFactory?
-    public let jevUsageCounter: JevUsageCounter
+    private let contentPriority: ContentPriorityAccess
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
 
     public init(
         paths: AppPaths,
-        allowExternalJev: Bool = false,
-        jevUsageCounter: JevUsageCounter = JevUsageCounter(),
-        asr: (any ASREngine)? = nil,
-        sessionsRoot: URL? = nil,
-        diarizationEngine: (any DiarizationEngine)? = nil,
-        finalTranscriptVAD: (any FinalTranscriptVADSegmenter)? = nil,
-        jevDecisionCoordinatorFactory: JevDecisionCoordinatorFactory? = nil
+        engines: SessionProcessingEngines,
+        contentPriority: ContentPriorityAccess
     ) {
-        self.paths = paths
-        self.sessionsRoot = sessionsRoot ?? paths.sessionsRoot
-        self.asr = asr ?? NativeQwen3ASREngine(
-            modelStore: ModelStore(paths: paths)
-        )
-        self.diarization = diarizationEngine ?? FluidOfflineDiarizationEngine(paths: paths)
-        self.finalTranscriptVAD = finalTranscriptVAD ?? FluidFinalTranscriptVADSegmenter()
-        self.allowExternalJev = allowExternalJev
-        self.jevDecisionCoordinatorFactory = jevDecisionCoordinatorFactory
-        self.jevUsageCounter = jevUsageCounter
+        self.sessionsRoot = paths.sessionsRoot
+        self.asr = engines.asr
+        self.diarization = engines.diarization
+        self.finalTranscriptVAD = engines.finalTranscriptVAD
+        self.contentPriority = contentPriority
+    }
+
+    /// Builds Jev from the API key saved in the Keychain, unless the user paused Jev.
+    public static func storedCredentialJevFactory(
+        usageCounter: JevUsageCounter
+    ) -> JevDecisionCoordinatorFactory {
+        {
+            guard !UserDefaults.standard.bool(forKey: "jev.isPaused") else {
+                return nil
+            }
+            guard let apiKey = try KeychainStore().load(
+                account: jevAPIKeyAccount
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !apiKey.isEmpty else {
+                return nil
+            }
+            return JevDecisionCoordinator(
+                provider: JevClient(apiKey: apiKey, transport: URLSessionJevHTTPTransport(session: .shared)),
+                usageCounter: usageCounter
+            )
+        }
     }
 
     public func prepareASR(
@@ -177,8 +217,8 @@ public actor NativeSessionProcessor {
         sessionID: UUID,
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
-        onStatus: StatusHandler? = nil,
-        onUpdate: UpdateHandler? = nil
+        onStatus: StatusHandler?,
+        onUpdate: UpdateHandler?
     ) async throws -> LiveASRProgress {
         guard let liveSession = liveASRSessions[sessionID] else {
             throw NativeSessionProcessorError.liveASRSessionNotStarted
@@ -517,7 +557,7 @@ public actor NativeSessionProcessor {
         var deferredContentPriorityIDs: [String] = []
         var deferredContentPriorityStatus = UserFacingStatus.jevDeferred
         var retryStatePersistenceFailure: String?
-        if allowExternalJev, !final.materializedSegments.isEmpty {
+        if case .jev = contentPriority, !final.materializedSegments.isEmpty {
             do {
                 let events = try loadTranscriptEvents(sessionID: sessionID, activeRuns: final.activeRuns)
                 let outcome = await runJevEnrichmentIfAvailable(
@@ -626,30 +666,12 @@ public actor NativeSessionProcessor {
 
     private func makeJevDecisionCoordinatorIfAvailable() throws
         -> JevDecisionCoordinator? {
-        guard allowExternalJev else {
-            return nil
+        switch contentPriority {
+        case .disabled:
+            nil
+        case .jev(let factory):
+            try factory()
         }
-
-        if let jevDecisionCoordinatorFactory {
-            return try jevDecisionCoordinatorFactory()
-        }
-
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: "jev.isPaused") else {
-            return nil
-        }
-
-        guard let apiKey = try KeychainStore().load(
-            account: Self.jevAPIKeyAccount
-        )?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !apiKey.isEmpty else {
-            return nil
-        }
-
-        return JevDecisionCoordinator(
-            provider: JevClient(apiKey: apiKey),
-            usageCounter: jevUsageCounter
-        )
     }
 
     /// The model is recorded on each Jev response; the run records the service and policy.

@@ -171,7 +171,7 @@ struct MeasureLiveLatencyCommand {
     @MainActor
     private static func run() async throws {
         let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
-        let paths = try AppPaths.systemDefault()
+        let paths = try AppPaths.systemDefault(fileManager: .default)
         let fileManager = FileManager.default
         let qwenDirectory = ModelStore(paths: paths).qwen3ASRCacheRoot
         guard fileManager.fileExists(atPath: qwenDirectory.appending(path: "model.safetensors").path) else {
@@ -211,7 +211,15 @@ struct MeasureLiveLatencyCommand {
             chunkDurationSeconds: LiveTranscriptionCadence.durableChunkDurationSeconds
         )
         var checkpoint = try await writer.checkpoint()
-        let processor = NativeSessionProcessor(paths: paths, sessionsRoot: sessionsRoot)
+        let processor = NativeSessionProcessor(
+            paths: AppPaths(
+                applicationSupportURL: paths.applicationSupportURL,
+                cacheURL: paths.cacheURL,
+                sessionsRootOverride: sessionsRoot
+            ),
+            engines: .production(paths: paths),
+            contentPriority: .disabled
+        )
         try await processor.prepareASR { progress, message in
             FileHandle.standardError.write(Data("ASR model \(Int(progress * 100))%: \(message)\n".utf8))
         }
@@ -262,6 +270,7 @@ struct MeasureLiveLatencyCommand {
                         sessionID: sessionID,
                         segments: progress.emittedSegments,
                         checkpoint: checkpoint,
+                        onStatus: nil,
                         onUpdate: { segments, _ in await collector.update(segments) }
                     )
                 }
@@ -278,6 +287,7 @@ struct MeasureLiveLatencyCommand {
                     sessionID: sessionID,
                     segments: progress.emittedSegments,
                     checkpoint: checkpoint,
+                    onStatus: nil,
                     onUpdate: { segments, _ in await collector.update(segments) }
                 )
             }
@@ -289,6 +299,7 @@ struct MeasureLiveLatencyCommand {
                 sessionID: sessionID,
                 segments: finalVAD.emittedSegments,
                 checkpoint: checkpoint,
+                onStatus: nil,
                 onUpdate: { segments, _ in await collector.update(segments) }
             )
         }

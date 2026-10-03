@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 extension AppState {
     func refreshSavedSessions() {
         do {
-            savedSessions = try SavedSessionCatalog().list(
+            savedSessions = try SavedSessionCatalog(fileManager: .default).list(
                 sessionsRoot: paths.sessionsRoot
             )
         } catch {

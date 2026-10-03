@@ -3,7 +3,7 @@ import Foundation
 public struct SessionBootstrapper {
     private let fileManager: FileManager
 
-    public init(fileManager: FileManager = .default) {
+    public init(fileManager: FileManager) {
         self.fileManager = fileManager
     }
 
@@ -12,7 +12,7 @@ public struct SessionBootstrapper {
         paths: AppPaths,
         sessionID: UUID,
         source: SessionSource,
-        createdAt: Date = Date()
+        createdAt: Date
     ) throws -> URL {
         let sessionURL = paths.sessionsRoot.appending(
             path: sessionID.uuidString,

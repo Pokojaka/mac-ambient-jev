@@ -48,8 +48,7 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
             directory: root,
             checkpoint: firstCheckpoint
         ),
-        engine: vad,
-        sourceReadSeconds: 1
+        engine: vad
     )
 
     _ = try await processor.processAvailable(
@@ -118,7 +117,7 @@ func vadProcessorRetryAfterChunkErrorNeitherReplaysAudioNorDropsSegments() async
     let vad = FailingOnceVADChunkSegmenter()
     let processor = FluidVADTimelineProcessor(
         reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-        engine: vad, sourceReadSeconds: 1
+        engine: vad
     )
     await #expect(throws: InjectedVADFailure.secondChunk) {
         try await processor.processAvailable(checkpoint: checkpoint)

@@ -66,7 +66,10 @@ func shortQuestionDuringLectureStaysLectureWithProductionConfig() async throws {
         sessionID: UUID(),
         runID: "scene-short-question",
         writer: try SessionWriter(sessionURL: root),
-        materializer: TranscriptMaterializer(sampleRate: sampleRate)
+        materializer: TranscriptMaterializer(sampleRate: sampleRate),
+        config: .production,
+        windowSeconds: 20,
+        hopSeconds: 1
     )
     let result = try await coordinator.process(
         speakerSpans: [

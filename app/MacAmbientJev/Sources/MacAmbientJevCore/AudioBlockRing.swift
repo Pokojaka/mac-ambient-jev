@@ -56,22 +56,22 @@ public final class AudioBlockRing: @unchecked Sendable {
     private let recordedOverflowCount = Atomic<UInt64>(0)
     private let recordedDropoutCount = Atomic<UInt64>(0)
 
-    /// Minimum slot count for the duration when callbacks can be as small as
+    public static let minimumBufferedSeconds: Double = 10
+
+    /// Minimum slot count for `minimumBufferedSeconds` when callbacks can be as small as
     /// 512 device frames. A slot stores interleaved samples, so dividing its
     /// sample capacity by channel count gives its usable frame capacity.
     /// Callers should use similarly small slots to avoid excessive allocation.
     public static func capacityForDuration(
         sampleRate: Double,
         blockFrameCapacity: Int,
-        channelCount: Int,
-        minimumDurationSeconds: Double = 10
+        channelCount: Int
     ) -> Int {
         precondition(sampleRate > 0 && sampleRate.isFinite)
-        precondition(minimumDurationSeconds > 0 && minimumDurationSeconds.isFinite)
         precondition(channelCount > 0 && blockFrameCapacity >= channelCount)
         let framesPerCallback = min(blockFrameCapacity / channelCount, 512)
         precondition(framesPerCallback > 0)
-        let requiredFrames = (sampleRate * minimumDurationSeconds).rounded(.up)
+        let requiredFrames = (sampleRate * minimumBufferedSeconds).rounded(.up)
         precondition(requiredFrames < Double(Int.max))
         return max(1, Int(requiredFrames) / framesPerCallback
             + (Int(requiredFrames) % framesPerCallback == 0 ? 0 : 1))
@@ -158,7 +158,7 @@ public final class AudioBlockRing: @unchecked Sendable {
                     destination[base + channel] = channelData[channel][offset + frame]
                 }
             }
-            publish(slot: slot, startFrame: normalizedStart + Int64(offset), frameCount: Int64(count), sampleCount: count * channelCount)
+            publish(slot: slot, startFrame: normalizedStart + Int64(offset), frameCount: Int64(count), sampleCount: count * channelCount, gap: nil)
             offset += count
         }
         return true
@@ -267,7 +267,7 @@ public final class AudioBlockRing: @unchecked Sendable {
     }
 
     private func publish(slot: Int, startFrame: Int64, frameCount: Int64,
-                         sampleCount: Int, gap: AudioGap? = nil) {
+                         sampleCount: Int, gap: AudioGap?) {
         lengths[slot] = sampleCount
         starts[slot] = startFrame
         frames[slot] = frameCount
@@ -294,10 +294,13 @@ public final class AudioBlockRing: @unchecked Sendable {
         }
     }
 
-    private func recordOverflow(startFrame: Int64 = 0, frameCount: Int64 = 0) {
-        if frameCount > 0 {
-            remember(AudioGap(startFrame: startFrame, frameCount: frameCount, reason: .overflow))
-        }
+    private func recordOverflow(startFrame: Int64, frameCount: Int64) {
+        remember(AudioGap(startFrame: startFrame, frameCount: frameCount, reason: .overflow))
+        recordOverflow()
+    }
+
+    /// Counts an overflow whose lost frame range is unknown.
+    private func recordOverflow() {
         _ = recordedOverflowCount.add(1, ordering: .relaxed)
         _ = recordedDropoutCount.add(1, ordering: .relaxed)
     }

@@ -12,15 +12,16 @@ func systemAudioSessionPersistsSourceAndCatalogDisplaysIt() throws {
         sessionsRootOverride: directory.appending(path: "chosen-sessions")
     )
     let id = UUID()
-    let sessionURL = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: id, source: .recording(.systemAudio)
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: id, source: .recording(.systemAudio),
+        createdAt: Date()
     )
     let data = try Data(contentsOf: sessionURL.appending(path: "session.json"))
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let manifest = try decoder.decode(SessionManifest.self, from: data)
     #expect(manifest.source == .recording(.systemAudio))
-    guard case .readable(let session) = try SavedSessionCatalog().list(sessionsRoot: paths.sessionsRoot).first else {
+    guard case .readable(let session) = try SavedSessionCatalog(fileManager: .default).list(sessionsRoot: paths.sessionsRoot).first else {
         Issue.record("expected a readable session")
         return
     }

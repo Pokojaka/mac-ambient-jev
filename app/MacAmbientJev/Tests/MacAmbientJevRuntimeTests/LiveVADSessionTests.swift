@@ -62,8 +62,7 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
             directory: root,
             checkpoint: firstCheckpoint
         ),
-        engine: vad,
-        sourceReadSeconds: 1
+        engine: vad
     )
     let session = LiveVADSession(
         segmentationRunID: runID,
@@ -125,8 +124,7 @@ func liveVADSessionFinishIsIdempotent() async throws {
                 directory: root,
                 checkpoint: checkpoint
             ),
-            engine: EmittingLiveVAD(runID: runID),
-            sourceReadSeconds: 1
+            engine: EmittingLiveVAD(runID: runID)
         ),
         initialCommittedFrames: checkpoint.committedFrames
     )

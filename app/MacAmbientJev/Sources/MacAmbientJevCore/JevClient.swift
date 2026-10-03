@@ -30,7 +30,7 @@ public protocol JevHTTPTransport: Sendable {
 public struct URLSessionJevHTTPTransport: JevHTTPTransport {
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession) {
         self.session = session
     }
 
@@ -90,7 +90,7 @@ public struct JevClient: DecisionProvider, Sendable {
 
     public init(
         apiKey: String,
-        transport: any JevHTTPTransport = URLSessionJevHTTPTransport()
+        transport: any JevHTTPTransport
     ) {
         self.apiKey = apiKey
         self.transport = transport

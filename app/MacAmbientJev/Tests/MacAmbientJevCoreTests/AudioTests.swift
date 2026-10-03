@@ -5,7 +5,7 @@ import Testing
 @Test func durableWriterRecordsCommittedFrameRange() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 48_000, channelCount: 1)
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 48_000, channelCount: 1, chunkDurationSeconds: 5)
 
     try await writer.append(samples: Array(repeating: 0.1, count: 4_800))
     let checkpoint = try await writer.checkpoint()

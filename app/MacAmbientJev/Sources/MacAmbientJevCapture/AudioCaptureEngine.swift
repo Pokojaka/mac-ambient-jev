@@ -94,7 +94,7 @@ final class AudioCaptureReceiver: NSObject, AVCaptureAudioDataOutputSampleBuffer
 
     init(ring: AudioBlockRing, sampleRate: Double, channelCount: Int,
          onFormatChange: @escaping @Sendable () -> Void,
-         clock: any CaptureClock = SystemCaptureClock(), frameCapacity: Int = 16_384,
+         clock: any CaptureClock, frameCapacity: Int,
          meter: RawInputMeter?) {
         self.sink = TimestampedMonoSink(ring: ring, frameCapacity: frameCapacity, clock: clock,
                                         meter: meter)
@@ -304,12 +304,12 @@ public final class AudioCaptureEngine {
 
     public func start(
         sessionID: UUID,
-        source: CaptureSource = .microphone,
+        source: CaptureSource,
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
-        onWarning: @escaping @MainActor @Sendable (String) -> Void = { _ in },
-        onPermissionWaiting: @escaping @MainActor @Sendable () -> Void = {},
-        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void = { _ in },
-        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void = { _ in }
+        onWarning: @escaping @MainActor @Sendable (String) -> Void,
+        onPermissionWaiting: @escaping @MainActor @Sendable () -> Void,
+        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
+        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
     ) async throws {
         guard !isRecording, !checkingSystemPermission else { throw AudioCaptureEngineError.alreadyRecording }
         systemAudioPermissionResult = nil
@@ -613,7 +613,7 @@ public final class AudioCaptureEngine {
     func installCapture(
         session: AVCaptureSession?, output: AVCaptureAudioDataOutput?,
         receiver: AudioCaptureReceiver?, callbackQueue: DispatchQueue?,
-        tap: (any SystemAudioTapProviding)? = nil, sink: TimestampedMonoSink? = nil,
+        tap: (any SystemAudioTapProviding)?, sink: TimestampedMonoSink,
         ring: AudioBlockRing, drain: AudioCaptureDrain,
         drainTask: Task<String?, Never>?, sessionID: UUID,
         timeline: ProcessingTimeline
@@ -623,7 +623,7 @@ public final class AudioCaptureEngine {
         self.receiver = receiver
         self.callbackQueue = callbackQueue
         self.tap = tap
-        self.sink = sink ?? receiver?.sink
+        self.sink = sink
         self.ring = ring
         self.drain = drain
         self.drainTask = drainTask

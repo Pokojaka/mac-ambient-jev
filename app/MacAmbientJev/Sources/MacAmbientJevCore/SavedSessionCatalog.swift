@@ -127,7 +127,7 @@ public enum SavedSessionSummary: Sendable, Equatable, Identifiable {
 public struct SavedSessionCatalog {
     private let fileManager: FileManager
 
-    public init(fileManager: FileManager = .default) {
+    public init(fileManager: FileManager) {
         self.fileManager = fileManager
     }
 

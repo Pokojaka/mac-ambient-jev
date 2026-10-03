@@ -257,8 +257,7 @@ public actor PipelineCoordinator {
                         payload: ASRCompletedEventPayload(
                             text: result.text,
                             detectedLanguage: result.detectedLanguage,
-                            engine: "qwen3-asr",
-                            model: ModelStore.qwen3ASRModelID
+                            provenance: asr.provenance
                         )
                     ))
                     transcriptEvents.append(.asrCompleted(

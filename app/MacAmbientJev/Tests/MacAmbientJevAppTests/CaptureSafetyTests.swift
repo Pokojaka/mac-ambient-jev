@@ -36,13 +36,14 @@ func recordingPowerLifetimePairsEveryExit() async throws {
         )
         let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 10)
         let receiver = AudioCaptureReceiver(
-            ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, meter: nil
+            ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, clock: SystemCaptureClock(), frameCapacity: 16_384, meter: nil
         )
         let drain = AudioCaptureDrain(ring: ring, writer: writer)
         #expect(engine.power.begin())
         engine.installCapture(
             session: AVCaptureSession(), output: AVCaptureAudioDataOutput(),
             receiver: receiver, callbackQueue: DispatchQueue(label: "test.capture.teardown"),
+            tap: nil, sink: receiver.sink,
             ring: ring, drain: drain, drainTask: nil, sessionID: UUID(),
             timeline: ProcessingTimeline(sampleRate: 10, channelCount: 1, sampleFormat: .float32LE)
         )
@@ -99,12 +100,13 @@ func writerFailureReturnsHealthyPrefix() async throws {
     )
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 10)
     let receiver = AudioCaptureReceiver(
-        ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, meter: nil
+        ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, clock: SystemCaptureClock(), frameCapacity: 16_384, meter: nil
     )
     let drain = AudioCaptureDrain(ring: ring, writer: writer)
     #expect(engine.power.begin())
     engine.installCapture(
         session: nil, output: nil, receiver: receiver, callbackQueue: nil,
+        tap: nil, sink: receiver.sink,
         ring: ring, drain: drain, drainTask: nil, sessionID: UUID(),
         timeline: ProcessingTimeline(sampleRate: 10, channelCount: 1, sampleFormat: .float32LE)
     )

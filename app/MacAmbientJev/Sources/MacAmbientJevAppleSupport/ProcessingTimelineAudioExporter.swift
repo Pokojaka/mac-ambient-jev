@@ -24,7 +24,7 @@ public struct ProcessingTimelineAudioExporter: Sendable {
 
     public let framesPerBuffer: Int64
 
-    public init(framesPerBuffer: Int64 = 48_000) {
+    public init(framesPerBuffer: Int64) {
         precondition(framesPerBuffer > 0)
         self.framesPerBuffer = framesPerBuffer
     }
@@ -32,7 +32,7 @@ public struct ProcessingTimelineAudioExporter: Sendable {
     public func export(
         reader: ProcessingTimelineReader,
         to destinationURL: URL,
-        encoding: Encoding = .float32
+        encoding: Encoding
     ) throws {
         try reader.validateChunkFiles()
         let checkpoint = reader.checkpoint

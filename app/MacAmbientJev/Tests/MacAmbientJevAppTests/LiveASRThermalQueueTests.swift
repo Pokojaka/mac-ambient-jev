@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import MacAmbientJev
+import MacAmbientJevCapture
 import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
@@ -12,12 +13,14 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: nil
     )
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
-        paths: paths, userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
+        paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
+        pausesProcessing: false, userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
     )
     let sessionID = UUID()
     state.selectSavedSession(sessionID: sessionID)

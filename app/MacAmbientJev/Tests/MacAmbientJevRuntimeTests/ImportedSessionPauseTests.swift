@@ -46,13 +46,15 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: nil
     )
     let sessionID = UUID()
-    let sessionURL = try SessionBootstrapper().createSession(
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths,
         sessionID: sessionID,
-        source: .imported(originalFilename: "fixture.wav")
+        source: .imported(originalFilename: "fixture.wav"),
+        createdAt: Date()
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -66,17 +68,21 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
-    try ProcessingTimelineAudioExporter().export(
+    try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint),
-        to: sourceURL
+        to: sourceURL,
+        encoding: .float32
     )
 
     let asr = PausedImportASR()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: asr,
-        diarizationEngine: PausedImportDiarizer(),
-        finalTranscriptVAD: PausedImportVAD()
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: PausedImportDiarizer(),
+            finalTranscriptVAD: PausedImportVAD()
+        ),
+        contentPriority: .disabled
     )
     let paused = await processor.processImportedSession(
         sessionID: sessionID,

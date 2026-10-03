@@ -53,13 +53,15 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         cacheURL: root.appending(
             path: "cache",
             directoryHint: .isDirectory
-        )
+        ),
+        sessionsRootOverride: nil
     )
     let sessionID = UUID()
-    let sessionURL = try SessionBootstrapper().createSession(
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths,
         sessionID: sessionID,
-        source: .recording(.microphone)
+        source: .recording(.microphone),
+        createdAt: Date()
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -79,8 +81,12 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
     let asr = StubLiveProcessorASR()
     let processor = NativeSessionProcessor(
         paths: paths,
-        allowExternalJev: false,
-        asr: asr
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: FluidOfflineDiarizationEngine(paths: paths),
+            finalTranscriptVAD: FluidFinalTranscriptVADSegmenter()
+        ),
+        contentPriority: .disabled
     )
     let segmentationRunID = "seg_live_test"
 
@@ -115,6 +121,7 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         sessionID: sessionID,
         segments: segments,
         checkpoint: checkpoint,
+        onStatus: nil,
         onUpdate: { segments, _ in
             await recorder.record(segments)
         }
@@ -149,7 +156,7 @@ private actor GatedLiveProcessorASR: ASREngine {
         await withCheckedContinuation { continuation in
             release = continuation
         }
-        return ASRResult(text: "取り消し後の結果")
+        return ASRResult(text: "取り消し後の結果", detectedLanguage: nil)
     }
 
     func waitUntilTranscribing() async {
@@ -182,11 +189,13 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: nil
     )
     let sessionID = UUID()
-    let sessionURL = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: sessionID, source: .recording(.microphone)
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .recording(.microphone),
+        createdAt: Date()
     )
     let audioWriter = try DurableAudioWriter(
         directory: sessionURL
@@ -197,7 +206,15 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audioWriter.committedSnapshot()
     let asr = GatedLiveProcessorASR()
-    let processor = NativeSessionProcessor(paths: paths, allowExternalJev: false, asr: asr)
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: FluidOfflineDiarizationEngine(paths: paths),
+            finalTranscriptVAD: FluidFinalTranscriptVADSegmenter()
+        ),
+        contentPriority: .disabled
+    )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "seg_live_test",
         sampleRate: checkpoint.sampleRate
@@ -211,6 +228,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     let processing = Task {
         try await processor.processLiveSegments(
             sessionID: sessionID, segments: [segment], checkpoint: checkpoint,
+            onStatus: nil,
             onUpdate: { _, _ in await updates.increment() }
         )
     }

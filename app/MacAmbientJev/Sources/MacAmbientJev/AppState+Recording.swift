@@ -42,7 +42,7 @@ extension AppState {
         if captureSource == .microphone {
             recordingPhase = .requestingPermission
             setCaptureStatus(UserFacingStatus.checkingMicrophone.text, tone: .neutral)
-            guard await requestMicrophoneAccessIfNeeded() else {
+            guard await microphoneAccess() else {
                 recordingPhase = .idle
                 setCaptureStatus(
                     "マイクへのアクセスが許可されていません。システム設定の「プライバシーとセキュリティ」→「マイク」で許可してください。",
@@ -363,8 +363,8 @@ extension AppState {
         }
     }
 
-    func requestMicrophoneAccessIfNeeded() async -> Bool {
-        if let microphoneAccess { return await microphoneAccess() }
+    /// Asks the system for microphone access when the user has not decided yet.
+    static func requestSystemMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             return true
@@ -382,10 +382,11 @@ extension AppState {
         sessionURL: URL,
         source: SessionSource
     ) throws {
-        let createdURL = try SessionBootstrapper().createSession(
+        let createdURL = try SessionBootstrapper(fileManager: .default).createSession(
             paths: paths,
             sessionID: sessionID,
-            source: source
+            source: source,
+            createdAt: Date()
         )
         precondition(
             createdURL.standardizedFileURL == sessionURL.standardizedFileURL

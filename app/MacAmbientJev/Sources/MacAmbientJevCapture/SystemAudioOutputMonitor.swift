@@ -14,7 +14,7 @@ final class SystemAudioOutputMonitor {
     private var warned = false
 
     init(
-        provider: any SystemAudioOutputProcessProviding = CoreAudioOutputProcesses(),
+        provider: any SystemAudioOutputProcessProviding,
         captureStartMillis: Int64
     ) {
         self.provider = provider

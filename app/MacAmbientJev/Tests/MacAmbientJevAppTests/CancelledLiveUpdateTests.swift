@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import MacAmbientJev
+import MacAmbientJevCapture
 import MacAmbientJevCore
 import MacAmbientJevRuntime
 
@@ -33,13 +34,15 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: nil
     )
     let sessionID = UUID()
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
-        paths: paths, userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
+        paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
+        pausesProcessing: false, userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
     )
     state.selectSavedSession(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)

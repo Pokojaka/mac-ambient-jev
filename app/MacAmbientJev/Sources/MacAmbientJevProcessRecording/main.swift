@@ -225,12 +225,13 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.audioFileNotFound(audioURL.path)
         }
 
-        let paths = try AppPaths.systemDefault()
+        let paths = try AppPaths.systemDefault(fileManager: .default)
         let sessionID = UUID()
-        let sessionURL = try SessionBootstrapper().createSession(
+        let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
             paths: paths,
             sessionID: sessionID,
-            source: .imported(originalFilename: audioURL.lastPathComponent)
+            source: .imported(originalFilename: audioURL.lastPathComponent),
+            createdAt: Date()
         )
         print("session_id: \(sessionID.uuidString)")
 
@@ -254,7 +255,9 @@ struct ProcessRecordingCommand {
         )
 
         let collector = ProcessingResultCollector()
-        let processor = NativeSessionProcessor(paths: paths)
+        let processor = NativeSessionProcessor(
+            paths: paths, engines: .production(paths: paths), contentPriority: .disabled
+        )
 
         print("処理を開始します: \(audioURL.path)")
 
@@ -338,7 +341,15 @@ struct ProcessRecordingCommand {
         }
         let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
 
-        let processor = NativeSessionProcessor(paths: try .systemDefault(), sessionsRoot: root)
+        let defaults = try AppPaths.systemDefault(fileManager: .default)
+        let paths = AppPaths(
+            applicationSupportURL: defaults.applicationSupportURL,
+            cacheURL: defaults.cacheURL,
+            sessionsRootOverride: root
+        )
+        let processor = NativeSessionProcessor(
+            paths: paths, engines: .production(paths: paths), contentPriority: .disabled
+        )
         let collector = ProcessingResultCollector()
         let onUpdate: NativeSessionProcessor.UpdateHandler = { segments, state in
             await collector.update(segments: segments, state: state)

@@ -35,7 +35,8 @@ func engineProvenanceNamesTheResolvedDependencyPins() throws {
     let speechSwift = try resolvedPin("speech-swift").state.revision
     let paths = AppPaths(
         applicationSupportURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString),
-        cacheURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        cacheURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString),
+        sessionsRootOverride: nil
     )
 
     #expect(NativeQwen3ASREngine(modelStore: ModelStore(paths: paths)).provenance.version

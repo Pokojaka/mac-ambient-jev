@@ -52,7 +52,8 @@ func asrMinimumDurationUsesInputSampleRate() {
 func modelStoreUsesManagedModelsDirectory() {
     let paths = AppPaths(
         applicationSupportURL: URL(fileURLWithPath: "/tmp/support"),
-        cacheURL: URL(fileURLWithPath: "/tmp/cache")
+        cacheURL: URL(fileURLWithPath: "/tmp/cache"),
+        sessionsRootOverride: nil
     )
     let store = ModelStore(paths: paths)
 

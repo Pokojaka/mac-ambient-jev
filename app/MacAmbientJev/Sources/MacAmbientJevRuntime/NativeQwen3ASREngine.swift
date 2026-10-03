@@ -77,7 +77,7 @@ actor NativeQwen3ASREngine: ASREngine {
         }
 
         guard !input.isShorterThanMinimumASRDuration else {
-            return ASRResult(text: "")
+            return ASRResult(text: "", detectedLanguage: nil)
         }
 
         state = .transcribing(segmentID: "")

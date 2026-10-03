@@ -10,13 +10,14 @@ public struct ProcessingTimeline: Codable, Sendable, Equatable {
     public let channelCount: Int
     public let sampleFormat: PCMSampleFormat
 
+    public static let currentVersion = 1
+
     public init(
-        version: Int = 1,
         sampleRate: Double,
         channelCount: Int,
         sampleFormat: PCMSampleFormat
     ) {
-        self.version = version
+        self.version = Self.currentVersion
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.sampleFormat = sampleFormat

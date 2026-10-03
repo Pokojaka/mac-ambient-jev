@@ -222,7 +222,7 @@ struct ExportFixture {
     }
 
     func summary(_ id: UUID) throws -> SavedSessionSummary {
-        try #require(SavedSessionCatalog().list(sessionsRoot: sessionsRoot).first { $0.sessionID == id })
+        try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: sessionsRoot).first { $0.sessionID == id })
     }
 
     private func readable(_ id: UUID) throws -> SavedSession {
@@ -278,8 +278,7 @@ struct ExportFixture {
                 payload: ASRCompletedEventPayload(
                     text: segment.text,
                     detectedLanguage: "ja",
-                    engine: "test",
-                    model: "test"
+                    provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
                 )
             ))
             _ = try await writer.append(EventDraft(

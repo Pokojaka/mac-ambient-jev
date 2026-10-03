@@ -183,7 +183,7 @@ struct FinalTranscriptPipeline: Sendable {
         let diarizationInputURL = layout.derivedDirectory.appending(path: "diarization-input.caf")
         try ProcessingTimelineAudioExporter(
             framesPerBuffer: max(1, Int64(checkpoint.sampleRate.rounded()))
-        ).export(reader: reader, to: diarizationInputURL)
+        ).export(reader: reader, to: diarizationInputURL, encoding: .float32)
 
         await onStatus(UserFacingStatus.preparingDiarization.text)
         try await startRun(.diarization, diarizationRunID, diarization.provenance)

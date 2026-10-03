@@ -313,7 +313,7 @@ public actor DurableAudioWriter {
         directory: URL,
         sampleRate: Double,
         channelCount: Int,
-        chunkDurationSeconds: Double = 5
+        chunkDurationSeconds: Double
     ) throws {
         precondition(sampleRate > 0)
         precondition(channelCount > 0)

@@ -145,7 +145,7 @@ private final class InputFreeMicCaptureEngine: AppCaptureEngine {
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: clock,
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
         engine.installCapture(
-            session: nil, output: nil, receiver: nil, callbackQueue: nil, sink: sink,
+            session: nil, output: nil, receiver: nil, callbackQueue: nil, tap: nil, sink: sink,
             ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer), drainTask: nil,
             sessionID: sessionID,
             timeline: ProcessingTimeline(sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE)

@@ -12,7 +12,7 @@ func catalogSortsSessionsNewestFirstAndReportsMissingAudio() throws {
     try writeCatalogSession(id: older, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true)
     try writeCatalogSession(id: newer, createdAt: 1_700_000_100, source: .recording(.microphone), root: root, includeAudio: false)
 
-    let summaries = try SavedSessionCatalog().list(sessionsRoot: root)
+    let summaries = try SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root)
 
     #expect(summaries.map(\.sessionID) == [newer, older])
     #expect(try readable(summaries[0]).audio == .missing)
@@ -30,7 +30,7 @@ func catalogKeepsCorruptSessionMetadataVisibleAsAnErrorRow() throws {
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
     try Data("{broken".utf8).write(to: session.appending(path: "session.json"))
 
-    let row = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    let row = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
 
     #expect(row == .unreadable(sessionID: id, reason: "セッション情報が壊れています"))
     #expect(row.canReprocess == false)
@@ -55,7 +55,7 @@ func catalogShowsJapaneseMessageForDecodingFailureButPreservesOtherErrors() thro
     try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
     try manifest.write(to: other.appending(path: "session.json"))
 
-    let rows = try SavedSessionCatalog().list(sessionsRoot: root)
+    let rows = try SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root)
     let otherID = try #require(UUID(uuidString: other.lastPathComponent))
     #expect(rows.contains(.unreadable(sessionID: brokenID, reason: "セッション情報が壊れています")))
     #expect(rows.contains(.unreadable(sessionID: otherID, reason: "保存セッションの ID がフォルダー名と一致しません")))
@@ -85,7 +85,7 @@ func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
         gapEvents: []
     )).write(to: checkpoint)
 
-    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
     #expect(row.sessionID == id)
     guard case .unreadable = row.audio else {
         Issue.record("expected unreadable audio, got \(row.audio)")
@@ -114,7 +114,7 @@ func catalogReportsDurationFromCheckpointSampleRate(_ sampleRate: Double) throws
         gapEvents: []
     )).write(to: checkpoint)
 
-    let summary = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
     #expect(summary.canReprocess)
     #expect(try readable(summary).duration == .seconds(1 / sampleRate))
 }
@@ -132,7 +132,7 @@ func catalogIncludesChunksCommittedAfterLastJSONCheckpoint() throws {
     try Data(count: MemoryLayout<Float>.size)
         .write(to: processing.appending(path: "chunk-000001.f32le"))
 
-    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
     #expect(row.duration == .seconds(2.0 / 48_000))
 }
 
@@ -159,7 +159,7 @@ func catalogUsesTheSavedImportedOriginalWhenTimelineIsAbsent() throws {
     try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
     try Data([1, 2, 3]).write(to: audio.appending(path: "original.wav"))
 
-    let summary = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
     let row = try readable(summary)
 
     #expect(row.source == .imported(originalFilename: "lecture.wav"))
@@ -189,7 +189,7 @@ func importedOriginalStaysReprocessableAndReportsUnreadableDurationWhenCheckpoin
         to: processing.appending(path: DurableAudioWriter.checkpointFilename)
     )
 
-    let summary = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
     #expect(summary.canReprocess)
     guard case .unreadable = try readable(summary).duration else {
         Issue.record("expected an unreadable duration")
@@ -206,7 +206,7 @@ func corruptProcessingMetadataIsReportedButIntactAudioStaysReprocessable() throw
     let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true)
     try Data("{broken".utf8).write(to: session.appending(path: "processing_metadata.json"))
 
-    let summary = try #require(SavedSessionCatalog().list(sessionsRoot: root).first)
+    let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
     let row = try readable(summary)
 
     guard case .corrupted = row.processingStatus else {
@@ -234,7 +234,7 @@ func catalogSummaryShowsFinalizationStateAndActiveTranscript() throws {
         pendingContentPrioritySegmentIDs: []
     ))
 
-    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
 
     #expect(row.hasActiveTranscript)
     #expect(row.processingStatus == .failed("decode failed"))
@@ -254,7 +254,7 @@ func catalogReportsHeatPausedFinalizationAsPaused() throws {
         pendingContentPrioritySegmentIDs: []
     ))
 
-    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
 
     #expect(row.processingStatus == .paused)
 }
@@ -333,7 +333,7 @@ func catalogReportsPendingClassificationAfterLocalFinalization() throws {
         pendingContentPrioritySegmentIDs: ["seg_000001"]
     ))
 
-    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
 
     #expect(row.hasActiveTranscript)
     #expect(row.processingStatus == .classificationPending)
@@ -353,7 +353,7 @@ func catalogReportsZeroAudioScopeOnlySessionAsComplete() throws {
         pendingContentPrioritySegmentIDs: []
     ))
 
-    let row = try readable(#require(SavedSessionCatalog().list(sessionsRoot: root).first))
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
     #expect(row.processingStatus == .complete)
     #expect(!row.hasActiveTranscript)
 }

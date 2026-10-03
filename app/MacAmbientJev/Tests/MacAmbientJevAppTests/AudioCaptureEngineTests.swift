@@ -13,6 +13,7 @@ func formatChangeAfterInvalidAudioBufferNotifiesExactlyOnce() throws {
         sampleRate: 48_000,
         channelCount: 1,
         onFormatChange: { _ = notificationCount.add(1, ordering: .relaxed) },
+        clock: SystemCaptureClock(), frameCapacity: 16_384,
         meter: nil
     )
 
@@ -34,7 +35,7 @@ func formatChangeAfterInvalidAudioBufferNotifiesExactlyOnce() throws {
 func receiverTracksInvalidBuffersAtTheirPresentationTimestamp() throws {
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 16)
     let receiver = AudioCaptureReceiver(
-        ring: ring, sampleRate: 1_000, channelCount: 1, onFormatChange: {}, meter: nil
+        ring: ring, sampleRate: 1_000, channelCount: 1, onFormatChange: {}, clock: SystemCaptureClock(), frameCapacity: 16_384, meter: nil
     )
     receiver.process(try makeAudioSampleBuffer(sampleRate: 1_000, pts: 0))
     receiver.process(try makeAudioSampleBuffer(sampleRate: 1_000, pts: 5))
@@ -379,7 +380,7 @@ private func drainMainActor() async {
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
         let sessionID = UUID()
         engine.installCapture(
-            session: nil, output: nil, receiver: nil, callbackQueue: nil, sink: sink,
+            session: nil, output: nil, receiver: nil, callbackQueue: nil, tap: nil, sink: sink,
             ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer), drainTask: nil,
             sessionID: sessionID,
             timeline: ProcessingTimeline(sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE)
@@ -429,7 +430,7 @@ private func drainMainActor() async {
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
         let sessionID = UUID()
         engine.installCapture(
-            session: nil, output: nil, receiver: nil, callbackQueue: nil, sink: sink,
+            session: nil, output: nil, receiver: nil, callbackQueue: nil, tap: nil, sink: sink,
             ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer), drainTask: nil,
             sessionID: sessionID,
             timeline: ProcessingTimeline(sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE)
@@ -453,7 +454,8 @@ private func drainMainActor() async {
             preconditionFailure("An unconfigured start never reaches volume binding")
         })
         do {
-            try await engine.start(sessionID: UUID(), source: .microphone, onFailure: { _ in })
+            try await engine.start(sessionID: UUID(), source: .microphone, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
             Issue.record("An unconfigured microphone start must fail")
         } catch AudioCaptureEngineError.micInputVolumeNotConfigured {
             #expect(!engine.isRecording)

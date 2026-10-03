@@ -112,7 +112,8 @@ func temporaryRecordingPaths() -> (root: URL, paths: AppPaths) {
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     return (root, AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: nil
     ))
 }
 

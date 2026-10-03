@@ -156,7 +156,7 @@ struct MicSpeechLevelTests {
             segmentationRunID: "seg",
             processor: FluidVADTimelineProcessor(
                 reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-                engine: vad, sourceReadSeconds: 1
+                engine: vad
             ),
             initialCommittedFrames: 0
         )
@@ -191,8 +191,7 @@ struct MicSpeechLevelTests {
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(
             reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-            engine: ScriptedProbabilityVAD(measures: true) { $0 == 1 ? 0.3 : 0.9 },
-            sourceReadSeconds: 1
+            engine: ScriptedProbabilityVAD(measures: true) { $0 == 1 ? 0.3 : 0.9 }
         )
         _ = try await processor.processAvailable(checkpoint: checkpoint)
         #expect(await processor.takeMicSpeechLevels().map(\.startSeconds) == [0, 0.512])
@@ -209,8 +208,7 @@ struct MicSpeechLevelTests {
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(
             reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-            engine: ScriptedProbabilityVAD(measures: true, failingCall: 2) { _ in 0.9 },
-            sourceReadSeconds: 1
+            engine: ScriptedProbabilityVAD(measures: true, failingCall: 2) { _ in 0.9 }
         )
         await #expect(throws: ScriptedVADFailure.injected) {
             try await processor.processAvailable(checkpoint: checkpoint)
@@ -236,8 +234,7 @@ struct MicSpeechLevelTests {
         #expect(checkpoint.gapEvents.count == 1)
         let processor = FluidVADTimelineProcessor(
             reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-            engine: ScriptedProbabilityVAD(measures: true) { _ in 0.9 },
-            sourceReadSeconds: 1
+            engine: ScriptedProbabilityVAD(measures: true) { _ in 0.9 }
         )
         _ = try await processor.processAvailable(checkpoint: checkpoint)
         #expect(await processor.takeMicSpeechLevels().map(\.startSeconds) == [0, 0.512])
@@ -257,7 +254,7 @@ struct MicSpeechLevelTests {
             segmentationRunID: "seg",
             processor: FluidVADTimelineProcessor(
                 reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-                engine: vad, sourceReadSeconds: 1
+                engine: vad
             ),
             initialCommittedFrames: 0
         )
@@ -285,8 +282,7 @@ struct MicSpeechLevelTests {
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(
             reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-            engine: ScriptedProbabilityVAD(measures: true) { _ in 0.9 },
-            sourceReadSeconds: 1
+            engine: ScriptedProbabilityVAD(measures: true) { _ in 0.9 }
         )
         _ = try await processor.processAvailable(checkpoint: checkpoint)
         let levels = await processor.takeMicSpeechLevels()

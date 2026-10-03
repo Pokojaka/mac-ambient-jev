@@ -12,14 +12,16 @@ func sessionBootstrapperCreatesManifestAndEventLog() throws {
 
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support"),
-        cacheURL: root.appending(path: "cache")
+        cacheURL: root.appending(path: "cache"),
+        sessionsRootOverride: nil
     )
     let sessionID = UUID()
 
-    let sessionURL = try SessionBootstrapper().createSession(
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths,
         sessionID: sessionID,
-        source: .imported(originalFilename: "lecture.m4a")
+        source: .imported(originalFilename: "lecture.m4a"),
+        createdAt: Date()
     )
 
     #expect(

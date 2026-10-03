@@ -42,20 +42,20 @@ actor FluidVADTimelineProcessor {
     private var knownGaps: [AudioGapEvent] = []
     private var finished = false
 
+    /// Seconds of source audio read from the timeline per VAD step.
+    static let sourceReadSeconds = 1.0
+
     init(
         reader: ProcessingTimelineReader,
-        engine: any VADChunkSegmenting,
-        sourceReadSeconds: Double = 1.0
+        engine: any VADChunkSegmenting
     ) {
-        precondition(sourceReadSeconds > 0)
-
         let checkpoint = reader.checkpoint
         self.directory = reader.directory
         self.initialCheckpoint = checkpoint
         self.engine = engine
         self.sourceFramesPerRead = max(
             1,
-            Int64((checkpoint.sampleRate * sourceReadSeconds).rounded())
+            Int64((checkpoint.sampleRate * Self.sourceReadSeconds).rounded())
         )
         self.resampler = VADResampler(
             sampleRate: checkpoint.sampleRate,

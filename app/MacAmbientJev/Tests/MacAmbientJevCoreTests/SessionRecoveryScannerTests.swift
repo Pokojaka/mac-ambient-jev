@@ -107,7 +107,7 @@ private func appendPublishedSegments(_ ids: [String], sessionID: UUID, writer: S
             segmentID: id,
             sourceStartFrame: Int64(index * 10),
             sourceEndFrame: Int64(index * 10 + 10),
-            payload: ASRCompletedEventPayload(text: "本文", detectedLanguage: "ja", engine: "test", model: "test")
+            payload: ASRCompletedEventPayload(text: "本文", detectedLanguage: "ja", provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:]))
         ))
     }
 }

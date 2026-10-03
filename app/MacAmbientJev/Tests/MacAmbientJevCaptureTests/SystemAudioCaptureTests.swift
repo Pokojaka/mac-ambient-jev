@@ -561,7 +561,8 @@ func fakeTapEngineLifecycle() async throws {
         Issue.record("System audio reported a microphone input status")
     }
     let session = UUID()
-    try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in })
+    try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     #expect(engine.isRecording && engine.activeSessionID == session)
     #expect(engine.timeline?.channelCount == 1)
     let result = try await engine.stop()
@@ -588,7 +589,8 @@ func fakeTapRefusedReleaseIsReported() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: MicVolumeFactoryProbe().make)
-    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let result = try await engine.stop()
     #expect(result.checkpoint.committedFrames == 4)
     #expect(result.writerFailure == nil)
@@ -611,7 +613,8 @@ func fakeTapSilentStartupAndStop() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
-    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let result = try await engine.stop()
     #expect(micVolumes.calls == 0)
     #expect(result.checkpoint.committedFrames == 4)
@@ -636,7 +639,8 @@ func fakeTapGapUsesSharedDrain() async throws {
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
     let sessionID = UUID()
-    try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in })
+    try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let result = try await engine.stop()
     #expect(micVolumes.calls == 0)
     #expect(result.checkpoint.committedFrames == 10)
@@ -665,7 +669,8 @@ func fakeTapStartFailureReleasesResources() async throws {
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Expected denial")
     } catch {
         #expect(error.localizedDescription.contains("システム音声"))
@@ -689,7 +694,8 @@ func tapPreflightDiskRejection() async throws {
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Expected selected-volume disk rejection")
     } catch AudioCaptureEngineError.insufficientDiskSpace {
         #expect(tap.starts == 0 && tap.stops == 1)
@@ -713,7 +719,8 @@ func tapWriterDirectoryFailure() async throws {
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Expected directory creation to fail")
     } catch {
         #expect(tap.starts == 0 && tap.stops == 1)
@@ -738,7 +745,8 @@ func tapStartCancellation() async throws {
                                     micInputVolumeFactory: micVolumes.make)
     tap.onStarted = { engine.cancelStarting() }
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in })
+        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Expected cancellation")
     } catch AudioCaptureEngineError.cancelled {
         #expect(tap.starts == 1 && tap.stops == 1)
@@ -762,7 +770,8 @@ func tapWriterFlushFailureReleasesResources() async throws {
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
     let session = UUID()
-    try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in })
+    try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let processing = root.appending(path: session.uuidString)
         .appending(path: "audio").appending(path: "processing")
     try FileManager.default.removeItem(at: processing)

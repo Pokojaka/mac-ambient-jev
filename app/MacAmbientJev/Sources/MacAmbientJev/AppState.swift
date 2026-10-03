@@ -75,7 +75,7 @@ final class ThermalStateObservation {
     private let token: NSObjectProtocol
     private let center: NotificationCenter
 
-    init(center: NotificationCenter = .default, onChange: @escaping @Sendable () -> Void) {
+    init(center: NotificationCenter, onChange: @escaping @Sendable () -> Void) {
         self.center = center
         token = center.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification,
@@ -91,7 +91,7 @@ final class TerminationObservation {
     private let token: NSObjectProtocol
     private let center: NotificationCenter
 
-    init(center: NotificationCenter = .default, onTermination: @escaping @Sendable () -> Void) {
+    init(center: NotificationCenter, onTermination: @escaping @Sendable () -> Void) {
         self.center = center
         token = center.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -209,7 +209,7 @@ final class AppState: ObservableObject {
     let captureEngine: any AppCaptureEngine
     let sessionProcessor: NativeSessionProcessor
     // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
-    let microphoneAccess: (@MainActor () async -> Bool)?
+    let microphoneAccess: @MainActor () async -> Bool
     let pausesProcessing: Bool
     let userDefaults: UserDefaults
     let makeLiveVADSession: LiveVADFactory
@@ -241,9 +241,9 @@ final class AppState: ObservableObject {
 
     init(
         paths: AppPaths,
-        captureEngine: (any AppCaptureEngine)? = nil,
-        microphoneAccess: (@MainActor () async -> Bool)? = nil,
-        pausesProcessing: Bool = false,
+        captureEngine: any AppCaptureEngine,
+        microphoneAccess: @escaping @MainActor () async -> Bool,
+        pausesProcessing: Bool,
         userDefaults: UserDefaults,
         makeLiveVADSession: @escaping LiveVADFactory
     ) {
@@ -251,7 +251,7 @@ final class AppState: ObservableObject {
 
         self.paths = paths
         self.jevUsageCounter = jevUsageCounter
-        self.captureEngine = captureEngine ?? AudioCaptureEngine(paths: paths)
+        self.captureEngine = captureEngine
         self.microphoneAccess = microphoneAccess
         self.pausesProcessing = pausesProcessing
         self.userDefaults = userDefaults
@@ -259,15 +259,17 @@ final class AppState: ObservableObject {
         self.makeLiveVADSession = makeLiveVADSession
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
-            allowExternalJev: true,
-            jevUsageCounter: jevUsageCounter
+            engines: .production(paths: paths),
+            contentPriority: .jev(
+                NativeSessionProcessor.storedCredentialJevFactory(usageCounter: jevUsageCounter)
+            )
         )
         self.exportDirectoryPath = exportDestination.path
 
-        terminationObserver = TerminationObservation { [weak self] in
+        terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }
-        thermalObserver = ThermalStateObservation { [weak self] in
+        thermalObserver = ThermalStateObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.resumeThermallyHeldProcessing() }
         }
 

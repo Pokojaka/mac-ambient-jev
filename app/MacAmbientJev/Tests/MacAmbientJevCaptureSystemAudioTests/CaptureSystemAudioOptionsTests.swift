@@ -15,11 +15,11 @@ func captureRequiresExplicitDurationAndSessionsRoot() throws {
         ["--duration", "1", "--sessions-root"],
     ] {
         #expect(throws: CaptureSystemAudioError.self) {
-            _ = try CaptureSystemAudioOptions.parse(arguments, appPaths: try AppPaths.systemDefault())
+            _ = try CaptureSystemAudioOptions.parse(arguments, appPaths: try AppPaths.systemDefault(fileManager: .default))
         }
     }
     let parsed = try CaptureSystemAudioOptions.parse(
-        ["--sessions-root", safe.path, "--transcribe", "--duration", "1.25"], appPaths: try AppPaths.systemDefault()
+        ["--sessions-root", safe.path, "--transcribe", "--duration", "1.25"], appPaths: try AppPaths.systemDefault(fileManager: .default)
     )
     #expect(parsed.sessionsRoot.path == safe.path)
     #expect(parsed.duration == 1.25)
@@ -33,14 +33,14 @@ func captureReadyFileIsOptionalAndAcceptsEitherOptionOrder() throws {
     let sessions = directory.appending(path: "sessions")
     let ready = directory.appending(path: "started")
     let withoutReady = try CaptureSystemAudioOptions.parse(
-        ["--duration", "1", "--sessions-root", sessions.path], appPaths: try AppPaths.systemDefault()
+        ["--duration", "1", "--sessions-root", sessions.path], appPaths: try AppPaths.systemDefault(fileManager: .default)
     )
     #expect(withoutReady.readyFile == nil)
     for arguments in [
         ["--ready-file", ready.path, "--sessions-root", sessions.path, "--duration", "1"],
         ["--sessions-root", sessions.path, "--duration", "1", "--ready-file", ready.path],
     ] {
-        let parsed = try CaptureSystemAudioOptions.parse(arguments, appPaths: try AppPaths.systemDefault())
+        let parsed = try CaptureSystemAudioOptions.parse(arguments, appPaths: try AppPaths.systemDefault(fileManager: .default))
         #expect(parsed.readyFile == ready)
     }
 }
@@ -59,7 +59,7 @@ func captureReadyFileRejectsMissingAndDuplicatePaths() {
                 "--ready-file", directory.appending(path: "other").path],
     ] {
         #expect(throws: CaptureSystemAudioError.usage) {
-            _ = try CaptureSystemAudioOptions.parse(arguments, appPaths: try AppPaths.systemDefault())
+            _ = try CaptureSystemAudioOptions.parse(arguments, appPaths: try AppPaths.systemDefault(fileManager: .default))
         }
     }
 }
@@ -71,7 +71,7 @@ func captureRejectsInvalidDurationAndAmbiguousOptions() throws {
     for duration in ["0", "-1", "nan", "inf", "1e300", "text"] {
         #expect(throws: CaptureSystemAudioError.self) {
             _ = try CaptureSystemAudioOptions.parse(
-                ["--duration", duration, "--sessions-root", safe.path], appPaths: try AppPaths.systemDefault()
+                ["--duration", duration, "--sessions-root", safe.path], appPaths: try AppPaths.systemDefault(fileManager: .default)
             )
         }
     }
@@ -83,7 +83,7 @@ func captureRejectsInvalidDurationAndAmbiguousOptions() throws {
     ] {
         #expect(throws: CaptureSystemAudioError.self) {
             _ = try CaptureSystemAudioOptions.parse(
-                ["--duration", "1", "--sessions-root", safe.path] + suffix, appPaths: try AppPaths.systemDefault()
+                ["--duration", "1", "--sessions-root", safe.path] + suffix, appPaths: try AppPaths.systemDefault(fileManager: .default)
             )
         }
     }
@@ -91,7 +91,7 @@ func captureRejectsInvalidDurationAndAmbiguousOptions() throws {
 
 @Test
 func captureNeverTargetsRealAppDataEvenWhenExplicitlyNamed() throws {
-    let defaults = try AppPaths.systemDefault()
+    let defaults = try AppPaths.systemDefault(fileManager: .default)
     for root in [
         defaults.root,
         defaults.sessionsRoot,
@@ -101,7 +101,7 @@ func captureNeverTargetsRealAppDataEvenWhenExplicitlyNamed() throws {
     ] {
         #expect(throws: CaptureSystemAudioError.unsafeSessionsRoot) {
             _ = try CaptureSystemAudioOptions.parse(
-                ["--duration", "1", "--sessions-root", root.path], appPaths: try AppPaths.systemDefault()
+                ["--duration", "1", "--sessions-root", root.path], appPaths: try AppPaths.systemDefault(fileManager: .default)
             )
         }
     }
@@ -114,7 +114,8 @@ func captureRejectsSymlinkAliasToAppDataRoot() throws {
     let appSupport = directory.appending(path: "Library/Application Support")
     let paths = AppPaths(
         applicationSupportURL: appSupport,
-        cacheURL: directory.appending(path: "Library/Caches")
+        cacheURL: directory.appending(path: "Library/Caches"),
+        sessionsRootOverride: nil
     )
     let alias = directory.appending(path: "alias")
     try FileManager.default.createDirectory(at: paths.sessionsRoot, withIntermediateDirectories: true)
@@ -142,7 +143,8 @@ func captureRequiresDirectoryAndProtectsBothAppStorageTrees() throws {
         .appending(path: "system-audio-root-\(UUID().uuidString)")
     let paths = AppPaths(
         applicationSupportURL: directory.appending(path: "Library/Application Support"),
-        cacheURL: directory.appending(path: "Library/Caches")
+        cacheURL: directory.appending(path: "Library/Caches"),
+        sessionsRootOverride: nil
     )
     try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: paths.cachesRoot, withIntermediateDirectories: true)

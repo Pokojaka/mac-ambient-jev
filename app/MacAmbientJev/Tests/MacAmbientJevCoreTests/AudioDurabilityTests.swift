@@ -396,7 +396,7 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2, sampleRate: 48_000)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 48_000, channelCount: 1)
+    let writer = try DurableAudioWriter(directory: root, sampleRate: 48_000, channelCount: 1, chunkDurationSeconds: 5)
     let drain = AudioCaptureDrain(ring: ring, writer: writer)
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(pushMono([3, 4], at: 22, into: ring))

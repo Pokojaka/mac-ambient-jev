@@ -28,7 +28,7 @@ private actor CountingASREngine: ASREngine {
                 ]
             )
         }
-        return ASRResult(text: "segment-\(transcribeCalls)")
+        return ASRResult(text: "segment-\(transcribeCalls)", detectedLanguage: nil)
     }
 
     func unload() async {}
@@ -49,14 +49,14 @@ private actor SuspendedASREngine: ASREngine {
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
         transcribeCalls += 1
         guard transcribeCalls == 1 else {
-            return ASRResult(text: "unexpected second result")
+            return ASRResult(text: "unexpected second result", detectedLanguage: nil)
         }
         waitingForStart?.resume()
         waitingForStart = nil
         await withCheckedContinuation { continuation in
             release = continuation
         }
-        return ASRResult(text: "late result")
+        return ASRResult(text: "late result", detectedLanguage: nil)
     }
 
     func waitUntilTranscribing() async {
@@ -463,8 +463,5 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     )
     let createdCount = log.split(separator: "\n")
         .filter { $0.contains("\"segment.created\"") }.count
-    let pendingCount = log.split(separator: "\n")
-        .filter { $0.contains("\"asr.pending\"") }.count
     #expect(createdCount == 1)
-    #expect(pendingCount == 1)
 }

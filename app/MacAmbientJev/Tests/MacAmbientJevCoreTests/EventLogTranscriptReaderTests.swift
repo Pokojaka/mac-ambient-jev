@@ -29,8 +29,7 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
         payload: ASRCompletedEventPayload(
             text: "古い結果",
             detectedLanguage: "ja",
-            engine: "test",
-            model: "test"
+            provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
         )
     ))
     _ = try await writer.append(EventDraft(
@@ -42,8 +41,7 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
         payload: ASRCompletedEventPayload(
             text: "現在の結果",
             detectedLanguage: "ja",
-            engine: "test",
-            model: "test"
+            provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
         )
     ))
     _ = try await writer.append(EventDraft(

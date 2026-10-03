@@ -30,9 +30,9 @@ public actor SceneCoordinator {
         runID: String,
         writer: SessionWriter,
         materializer: TranscriptMaterializer,
-        config: SceneStateMachineConfig = .production,
-        windowSeconds: Double = 20,
-        hopSeconds: Double = 1
+        config: SceneStateMachineConfig,
+        windowSeconds: Double,
+        hopSeconds: Double
     ) {
         precondition(windowSeconds > 0)
         precondition(hopSeconds > 0)

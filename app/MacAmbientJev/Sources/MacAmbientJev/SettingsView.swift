@@ -23,14 +23,9 @@ struct SettingsView: View {
     @State private var microphoneAccess = AVCaptureDevice.authorizationStatus(for: .audio)
 
     private let secretStore: any SecretStore
-    private let onRetryDeferred: () -> Void
 
-    init(
-        secretStore: any SecretStore = KeychainStore(),
-        onRetryDeferred: @escaping () -> Void = {}
-    ) {
+    init(secretStore: any SecretStore) {
         self.secretStore = secretStore
-        self.onRetryDeferred = onRetryDeferred
     }
 
     var body: some View {
@@ -221,7 +216,7 @@ struct SettingsView: View {
             set: { enabled in
                 isJevPaused = !enabled
                 if enabled {
-                    onRetryDeferred()
+                    Task { await appState.retryDeferredJev() }
                 }
             }
         )
@@ -238,7 +233,7 @@ struct SettingsView: View {
             statusIsError = false
             statusMessage = "APIキーを Keychain に保存しました"
             if !isJevPaused {
-                onRetryDeferred()
+                Task { await appState.retryDeferredJev() }
             }
         } catch {
             statusIsError = true
@@ -268,7 +263,7 @@ struct SettingsView: View {
                 statusMessage = "APIキーが保存されていません"
                 return
             }
-            let decision = try await JevClient(apiKey: key).classifyPriority(
+            let decision = try await JevClient(apiKey: key, transport: URLSessionJevHTTPTransport(session: .shared)).classifyPriority(
                 text: "これは接続確認のためのテスト文です。"
             )
             statusIsError = false

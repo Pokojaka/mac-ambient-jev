@@ -1,5 +1,7 @@
 import SwiftUI
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
+import MacAmbientJevCapture
 
 @main
 struct MacAmbientJevApp: App {
@@ -9,12 +11,15 @@ struct MacAmbientJevApp: App {
         MicInputVolumePreference.register(in: .standard)
         let paths: AppPaths
         do {
-            paths = try AppPaths.systemDefault()
+            paths = try AppPaths.systemDefault(fileManager: .default)
         } catch {
             preconditionFailure("保存先を決められないため起動できません: \(error.localizedDescription)")
         }
         _appState = StateObject(wrappedValue: AppState(
             paths: paths,
+            captureEngine: AudioCaptureEngine(paths: paths),
+            microphoneAccess: AppState.requestSystemMicrophoneAccess,
+            pausesProcessing: false,
             userDefaults: .standard,
             makeLiveVADSession: AppState.makeFluidLiveVADSession
         ))
@@ -29,13 +34,7 @@ struct MacAmbientJevApp: App {
 
         Settings {
             TabView {
-                SettingsView(
-                    onRetryDeferred: {
-                        Task {
-                            await appState.retryDeferredJev()
-                        }
-                    }
-                )
+                SettingsView(secretStore: KeychainStore())
                     .environmentObject(appState)
                     .tabItem {
                         Label("一般", systemImage: "gearshape")

@@ -166,7 +166,7 @@ struct CaptureSystemAudioCommand {
     static func main() async {
         do {
             let options = try CaptureSystemAudioOptions.parse(
-                Array(CommandLine.arguments.dropFirst()), appPaths: try AppPaths.systemDefault()
+                Array(CommandLine.arguments.dropFirst()), appPaths: try AppPaths.systemDefault(fileManager: .default)
             )
             let summary = try await run(options)
             if !emit(summary) || !summary.errors.isEmpty { exit(1) }
@@ -179,15 +179,16 @@ struct CaptureSystemAudioCommand {
 
     @MainActor
     private static func run(_ options: CaptureSystemAudioOptions) async throws -> CaptureSummary {
-        let defaults = try AppPaths.systemDefault()
+        let defaults = try AppPaths.systemDefault(fileManager: .default)
         let paths = AppPaths(
             applicationSupportURL: defaults.applicationSupportURL,
             cacheURL: defaults.cacheURL,
             sessionsRootOverride: options.sessionsRoot
         )
         let sessionID = UUID()
-        let sessionURL = try SessionBootstrapper().createSession(
-            paths: paths, sessionID: sessionID, source: .recording(.systemAudio)
+        let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+            paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
+            createdAt: Date()
         )
         let failures = CaptureFailureLog()
         let engine = AudioCaptureEngine(paths: paths)
@@ -196,7 +197,11 @@ struct CaptureSystemAudioCommand {
         do {
             try await engine.start(
                 sessionID: sessionID, source: .systemAudio,
-                onFailure: { failures.record($0) }
+                onFailure: { failures.record($0) },
+                onWarning: { _ in },
+                onPermissionWaiting: {},
+                onDropouts: { _ in },
+                onSilenceChanged: { _ in }
             )
             if let readyFile = options.readyFile {
                 try Data().write(to: readyFile, options: .atomic)
@@ -238,7 +243,9 @@ struct CaptureSystemAudioCommand {
         }
         var transcriptText: String?
         if options.transcribe, let result, errors.isEmpty {
-            let processor = NativeSessionProcessor(paths: paths, allowExternalJev: false)
+            let processor = NativeSessionProcessor(
+                paths: paths, engines: .production(paths: paths), contentPriority: .disabled
+            )
             let processing = await processor.processFinalTranscript(
                 sessionID: sessionID,
                 checkpoint: result.checkpoint,

@@ -17,6 +17,9 @@ public enum AudioFileTimelineBuilderError: LocalizedError {
 }
 
 public actor AudioFileTimelineBuilder {
+    /// Imported audio is written in one pass, so chunks only bound the size of each file.
+    static let chunkDurationSeconds: Double = 5
+
     public let readFrameCount: AVAudioFrameCount
 
     public init(readFrameCount: AVAudioFrameCount = 8_192) {
@@ -40,7 +43,8 @@ public actor AudioFileTimelineBuilder {
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
             sampleRate: format.sampleRate,
-            channelCount: Int(format.channelCount)
+            channelCount: Int(format.channelCount),
+            chunkDurationSeconds: Self.chunkDurationSeconds
         )
         let existing = try await writer.checkpoint()
 

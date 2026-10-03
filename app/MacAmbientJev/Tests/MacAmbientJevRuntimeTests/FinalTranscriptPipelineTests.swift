@@ -141,12 +141,14 @@ private func finalizationFixture(
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory)
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: nil
     )
-    let sessionURL = try SessionBootstrapper().createSession(
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths,
         sessionID: sessionID,
-        source: .recording(.microphone)
+        source: .recording(.microphone),
+        createdAt: Date()
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -224,10 +226,12 @@ func finalTranscriptPipelineSplitsVADSegmentsAtSpeakerChangesBeforeASR() async t
     )
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: asr,
-        sessionsRoot: paths.sessionsRoot,
-        diarizationEngine: diarizer,
-        finalTranscriptVAD: vad
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: diarizer,
+            finalTranscriptVAD: vad
+        ),
+        contentPriority: .disabled
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -295,9 +299,12 @@ func finalTranscriptPipelinePassesOverlappingSpeakerSpansInOneASRCall() async th
     )
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: asr,
-        diarizationEngine: diarizer,
-        finalTranscriptVAD: vad
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: diarizer,
+            finalTranscriptVAD: vad
+        ),
+        contentPriority: .disabled
     )
 
     let result = await processFinal(
@@ -337,9 +344,12 @@ func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async 
     )
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: asr,
-        diarizationEngine: diarizer,
-        finalTranscriptVAD: vad
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: diarizer,
+            finalTranscriptVAD: vad
+        ),
+        contentPriority: .disabled
     )
 
     let result = await processFinal(
@@ -369,21 +379,22 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
     let jevFactoryCalls = SynchronousCallRecorder()
     let processor = NativeSessionProcessor(
         paths: paths,
-        allowExternalJev: true,
-        asr: FakeFinalASR(log: log, values: [" \n\t"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: [" \n\t"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_empty", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_empty", startFrame: 0, endFrame: 16_000)],
-            log: log
-        ),
-        jevDecisionCoordinatorFactory: {
+        contentPriority: .jev({
             jevFactoryCalls.recordCall()
             return nil
-        }
+        })
     )
 
     let result = await processFinal(
@@ -414,9 +425,12 @@ func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched(diarization
     )
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: asr,
-        diarizationEngine: diarizer,
-        finalTranscriptVAD: vad
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: diarizer,
+            finalTranscriptVAD: vad
+        ),
+        contentPriority: .disabled
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -442,16 +456,19 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["確定文"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.8)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["確定文"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.8)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID,
@@ -483,9 +500,12 @@ func finalTranscriptPipelineReportsNoSpeechAsTerminalStatus() async throws {
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: []),
-        diarizationEngine: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
-        finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: []),
+            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
+            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+        ),
+        contentPriority: .disabled
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -509,14 +529,15 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     let jevFactoryCalls = SynchronousCallRecorder()
     let processor = NativeSessionProcessor(
         paths: paths,
-        allowExternalJev: true,
-        asr: asr,
-        diarizationEngine: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
-        finalTranscriptVAD: FakeFinalVAD(segments: [], log: log),
-        jevDecisionCoordinatorFactory: {
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
+            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+        ),
+        contentPriority: .jev({
             jevFactoryCalls.recordCall()
             return nil
-        }
+        })
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -560,18 +581,19 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        allowExternalJev: true,
-        asr: FakeFinalASR(log: log, values: ["表示する本文"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["表示する本文"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 16_000)],
-            log: log
-        ),
-        jevDecisionCoordinatorFactory: { nil }
+        contentPriority: .jev({ nil })
     )
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
@@ -606,23 +628,24 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        allowExternalJev: true,
-        asr: FakeFinalASR(log: log, values: ["一つ目", "二つ目"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["一つ目", "二つ目"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 8_000),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000002", startFrame: 8_000, endFrame: 16_000)
+                ],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [
-                SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 8_000),
-                SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000002", startFrame: 8_000, endFrame: 16_000)
-            ],
-            log: log
-        ),
-        jevDecisionCoordinatorFactory: {
+        contentPriority: .jev({
             JevDecisionCoordinator(provider: RejectedKeyDecisionProvider(), usageCounter: JevUsageCounter())
-        }
+        })
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -654,33 +677,38 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     let (paths, sourceSessionURL, checkpoint) = try await finalizationFixture(sessionID: sourceSessionID)
     defer { try? FileManager.default.removeItem(at: sourceSessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let originalURL = sourceSessionURL.appending(path: "original.caf")
-    try ProcessingTimelineAudioExporter().export(
+    try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: ProcessingTimelineReader(
             directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
             checkpoint: checkpoint
         ),
-        to: originalURL
+        to: originalURL,
+        encoding: .float32
     )
     let sessionID = UUID()
-    _ = try SessionBootstrapper().createSession(
-        paths: paths, sessionID: sessionID, source: .imported(originalFilename: "fixture.wav")
+    _ = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .imported(originalFilename: "fixture.wav"),
+        createdAt: Date()
     )
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [
-                SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 8_000, confidence: 0.9),
-                SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: 16_000, confidence: 0.9)
-            ],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
+            diarization: FakeFinalDiarizer(
+                spans: [
+                    SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 8_000, confidence: 0.9),
+                    SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: 16_000, confidence: 0.9)
+                ],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
 
     let result = await processor.processImportedSession(
@@ -710,16 +738,19 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["本文"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["本文"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
 
     let result = await processFinal(
@@ -814,16 +845,19 @@ func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async th
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["最初の確定", "二回目"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["最初の確定", "二回目"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
     let first = await processFinal(
         processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
@@ -873,9 +907,12 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
     let spans = [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)]
     let succeeding = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["最初の確定"]),
-        diarizationEngine: FakeFinalDiarizer(spans: spans, log: log, shouldFail: false),
-        finalTranscriptVAD: vad
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["最初の確定"]),
+            diarization: FakeFinalDiarizer(spans: spans, log: log, shouldFail: false),
+            finalTranscriptVAD: vad
+        ),
+        contentPriority: .disabled
     )
     _ = await processFinal(
         succeeding, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
@@ -885,9 +922,12 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
 
     let failing = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["失敗"], shouldFail: true),
-        diarizationEngine: FakeFinalDiarizer(spans: spans, log: log, shouldFail: false),
-        finalTranscriptVAD: vad
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["失敗"], shouldFail: true),
+            diarization: FakeFinalDiarizer(spans: spans, log: log, shouldFail: false),
+            finalTranscriptVAD: vad
+        ),
+        contentPriority: .disabled
     )
     let states = FinalizationStateRecorder()
     let result = await processFinal(
@@ -947,16 +987,19 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["復旧した本文"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["復旧した本文"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
     let result = await processFinal(
         processor, sessionID: sessionID, checkpoint: recovered, metadataPolicy: .reject,
@@ -985,12 +1028,15 @@ func speakerSpanOutsideTheRecordingFailsExplicitly(boundary: Int64) async throws
         : SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: boundary, confidence: 0.9)
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["使われない"]),
-        diarizationEngine: FakeFinalDiarizer(spans: [span], log: log, shouldFail: false),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["使われない"]),
+            diarization: FakeFinalDiarizer(spans: [span], log: log, shouldFail: false),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
+        ),
+        contentPriority: .disabled
     )
 
     let result = await processFinal(
@@ -1018,16 +1064,19 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["一回目", "二回目"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["一回目", "二回目"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
     var startedRunsByAttempt: [[String: String]] = []
     for _ in 0..<2 {
@@ -1077,16 +1126,19 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        asr: FakeFinalASR(log: log, values: ["再処理"]),
-        diarizationEngine: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["再処理"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        finalTranscriptVAD: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        )
+        contentPriority: .disabled
     )
 
     let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()

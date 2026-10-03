@@ -19,19 +19,18 @@ public struct AppPaths: Sendable {
     public init(
         applicationSupportURL: URL,
         cacheURL: URL,
-        sessionsRootOverride: URL? = nil
+        sessionsRootOverride: URL?
     ) {
         self.applicationSupportURL = applicationSupportURL
         self.cacheURL = cacheURL
         self.sessionsRootOverride = sessionsRootOverride
     }
 
-    public static func systemDefault(
-        fileManager: FileManager = .default
-    ) throws -> AppPaths {
+    public static func systemDefault(fileManager: FileManager) throws -> AppPaths {
         AppPaths(
             applicationSupportURL: try userDirectory(.applicationSupportDirectory, fileManager: fileManager),
-            cacheURL: try userDirectory(.cachesDirectory, fileManager: fileManager)
+            cacheURL: try userDirectory(.cachesDirectory, fileManager: fileManager),
+            sessionsRootOverride: nil
         )
     }
 

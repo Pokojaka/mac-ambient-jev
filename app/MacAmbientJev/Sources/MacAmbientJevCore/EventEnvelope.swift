@@ -18,25 +18,23 @@ public struct EventDraft<Payload: Codable & Sendable>: Sendable {
 
     public init(
         eventType: String,
-        schemaVersion: Int = 1,
         sessionID: UUID,
         processingRunID: String? = nil,
         segmentationRunID: String? = nil,
         segmentID: String? = nil,
         sourceStartFrame: Int64? = nil,
         sourceEndFrame: Int64? = nil,
-        createdAt: Date = Date(),
         payload: Payload
     ) {
         self.eventType = eventType
-        self.schemaVersion = schemaVersion
+        self.schemaVersion = 1
         self.sessionID = sessionID
         self.processingRunID = processingRunID
         self.segmentationRunID = segmentationRunID
         self.segmentID = segmentID
         self.sourceStartFrame = sourceStartFrame
         self.sourceEndFrame = sourceEndFrame
-        self.createdAt = createdAt
+        self.createdAt = Date()
         self.payload = payload
     }
 }

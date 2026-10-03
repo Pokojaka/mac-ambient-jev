@@ -49,8 +49,8 @@ public struct LiveASRCompletion: Sendable, Equatable {
 /// Incremental ASR run used while recording.
 ///
 /// Detection and transcription are intentionally separate. register first
-/// persists segment.created and asr.pending, making the backlog recoverable
-/// before model inference starts. process is idempotent for both registration
+/// persists segment.created, making the backlog recoverable before model
+/// inference starts. process is idempotent for both registration
 /// and transcription.
 public actor LiveASRSession {
     public nonisolated let segmentationRunID: String
@@ -127,17 +127,6 @@ public actor LiveASRSession {
                 startFrame: segment.startFrame,
                 endFrame: segment.endFrame
             ))
-
-            _ = try await writer.append(EventDraft(
-                eventType: "asr.pending",
-                sessionID: sessionID,
-                processingRunID: asrRunID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                sourceStartFrame: segment.startFrame,
-                sourceEndFrame: segment.endFrame,
-                payload: EmptyPayload()
-            ))
             registeredSegmentIDs.insert(segment.segmentID)
         }
 
@@ -210,8 +199,7 @@ public actor LiveASRSession {
                 payload: ASRCompletedEventPayload(
                     text: result.text,
                     detectedLanguage: result.detectedLanguage,
-                    engine: "qwen3-asr",
-                    model: ModelStore.qwen3ASRModelID
+                    provenance: asr.provenance
                 )
             ))
             transcriptEvents.append(.asrCompleted(
