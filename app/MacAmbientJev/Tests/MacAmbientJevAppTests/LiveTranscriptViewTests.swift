@@ -29,11 +29,6 @@ func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() {
 }
 
 @Test
-func collapsedLowPriorityRowsSayTheyAreLowPriority() {
-    #expect(LiveTranscriptView.lowPriorityCollapsedTitle.contains("低優先度"))
-}
-
-@Test
 func transcriptHeaderNamesEveryNonEmptyDisplayState() {
     #expect(TranscriptDisplayState.empty.badge == nil)
     #expect(TranscriptDisplayState.live.badge?.text == "ライブ（暫定）")

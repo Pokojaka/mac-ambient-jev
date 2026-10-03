@@ -26,8 +26,8 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
     state.selectSavedSession(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)
 
-    var pressure = ThermalPressure.critical
-    state.readLiveThermalPressure = { pressure }
+    let pressure = ThermalPressureSource(.critical)
+    state.readLiveThermalPressure = { pressure.value }
     let segments = [
         SegmentReference(segmentationRunID: "seg", segmentID: "seg_000001", startFrame: 0, endFrame: 8_000),
         SegmentReference(segmentationRunID: "seg", segmentID: "seg_000002", startFrame: 8_000, endFrame: 16_000)
@@ -45,7 +45,7 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
     #expect(state.transcriptViewModel.statusText == suspendedText)
 
     // No live ASR session was started, so the first recognition attempt fails visibly.
-    pressure = .fair
+    pressure.value = .fair
     let deadline = ContinuousClock.now + .seconds(5)
     while state.liveASRFailures[sessionID] == nil, ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(50))
@@ -55,4 +55,10 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
             == NativeSessionProcessorError.liveASRSessionNotStarted.localizedDescription
     )
     #expect(state.liveASRQueues[sessionID]?.isEmpty == true)
+}
+
+@MainActor
+private final class ThermalPressureSource {
+    var value: ThermalPressure
+    init(_ value: ThermalPressure) { self.value = value }
 }
