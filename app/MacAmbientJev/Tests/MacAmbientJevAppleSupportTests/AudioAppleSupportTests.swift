@@ -50,7 +50,7 @@ func audioFileTimelineBuilderCreatesDiskBackedProcessingTimeline() async throws 
 }
 
 @Test
-func audioFileTimelineBuilderResumesWithoutDuplicatingImportedAudio() async throws {
+func audioFileTimelineBuilderRebuildsACorruptedTimelineFromTheOriginal() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -74,7 +74,7 @@ func audioFileTimelineBuilderResumesWithoutDuplicatingImportedAudio() async thro
     }
 
     let processingDirectory = root.appending(
-        path: "processing-resume",
+        path: "processing-rebuild",
         directoryHint: .isDirectory
     )
     let builder = AudioFileTimelineBuilder(readFrameCount: 4)
@@ -82,6 +82,9 @@ func audioFileTimelineBuilderResumesWithoutDuplicatingImportedAudio() async thro
     let first = try await builder.build(
         from: source,
         into: processingDirectory
+    )
+    try Data([0xFF]).write(
+        to: processingDirectory.appending(path: first.chunkFiles[0])
     )
     let second = try await builder.build(
         from: source,

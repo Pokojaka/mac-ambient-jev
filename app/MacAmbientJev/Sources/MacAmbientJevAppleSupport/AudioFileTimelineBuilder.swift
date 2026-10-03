@@ -40,19 +40,15 @@ public actor AudioFileTimelineBuilder {
             throw AudioFileTimelineBuilderError.unsupportedPCMFormat
         }
 
+        if FileManager.default.fileExists(atPath: processingDirectory.path) {
+            try FileManager.default.removeItem(at: processingDirectory)
+        }
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
             sampleRate: format.sampleRate,
             channelCount: Int(format.channelCount),
             chunkDurationSeconds: Self.chunkDurationSeconds
         )
-        let existing = try await writer.checkpoint()
-
-        if existing.committedFrames >= file.length {
-            return existing
-        }
-
-        file.framePosition = existing.committedFrames
 
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: format,
