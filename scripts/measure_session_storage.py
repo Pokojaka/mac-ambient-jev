@@ -14,8 +14,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sessions-root", type=Path, required=True,
                         help="Explicit scratch directory outside real app data; each run gets a new child")
-    parser.add_argument("--seconds", type=int, default=600,
-                        help="Synthetic duration, in seconds (default: ten minutes)")
+    parser.add_argument("--seconds", type=int, required=True,
+                        help="Synthetic duration, in seconds")
     options = parser.parse_args()
     if options.seconds <= 0:
         parser.error("--seconds must be positive")
