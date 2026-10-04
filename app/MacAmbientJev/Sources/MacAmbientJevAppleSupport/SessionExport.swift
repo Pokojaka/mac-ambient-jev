@@ -4,33 +4,6 @@ import MacAmbientJevCore
 public enum SessionExportLayout {
     public static let transcriptFilename = "transcript.txt"
 
-    /// `<yyyy-MM-dd HHmm> <stem> <first 8 characters of the session ID>`. The stem is the
-    /// imported file's name without its extension, or `録音` for a recording.
-    public static func folderName(
-        for session: SavedSession,
-        timeZone: TimeZone
-    ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd HHmm"
-
-        let stem = switch session.source {
-        case .recording:
-            "録音"
-        case .imported(let originalFilename):
-            (originalFilename as NSString).deletingPathExtension
-        }
-        return [
-            formatter.string(from: session.createdAt),
-            stem,
-            String(session.sessionID.uuidString.prefix(8)),
-        ]
-        .joined(separator: " ")
-        .replacingOccurrences(of: "/", with: "-")
-        .replacingOccurrences(of: ":", with: "-")
-    }
-
     public static func audioFilename(for source: SessionAudioSource) -> String {
         switch source {
         case .recordedTimeline:
@@ -48,6 +21,7 @@ public enum SessionExportLayout {
             && fileManager.fileExists(atPath: folder.appending(path: audioFilename(for: audioSource)).path)
     }
 }
+
 
 public enum TranscriptTextRendererError: Error, LocalizedError, Equatable {
     case missingSpeakerHeading(segmentID: String)
@@ -109,13 +83,7 @@ public struct SessionExporter: Sendable {
 
     /// Writes into a hidden sibling first so an interrupted export never leaves
     /// a half-written folder under the final name.
-    @discardableResult
-    public func export(
-        session: SavedSession,
-        sessionsRoot: URL,
-        to directory: URL,
-        timeZone: TimeZone
-    ) throws -> URL {
+    public func export(session: SavedSession, to directory: URL) throws -> URL {
         guard let audioSource = session.audioSource else { throw SessionExportError.audioUnavailable }
         if case .corrupted(let reason) = session.processingStatus {
             throw SessionExportError.transcriptCorrupted(reason)
@@ -131,9 +99,10 @@ public struct SessionExporter: Sendable {
         let transcript = try TranscriptTextRenderer.render(segments)
 
         let fileManager = FileManager.default
-        let folderName = SessionExportLayout.folderName(for: session, timeZone: timeZone)
+        let folderName = session.sessionURL.lastPathComponent
         let destination = directory.appending(path: folderName, directoryHint: .isDirectory)
-        let staging = directory.appending(path: ".\(folderName).partial", directoryHint: .isDirectory)
+        let stagingName = ".export-\(session.sessionID.uuidString.lowercased()).partial"
+        let staging = directory.appending(path: stagingName, directoryHint: .isDirectory)
         if fileManager.fileExists(atPath: staging.path) {
             try fileManager.removeItem(at: staging)
         }

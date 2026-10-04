@@ -39,28 +39,6 @@ func savedTranscriptLoaderMaterializesActiveRuns() async throws {
     #expect(segments.map(\.startMilliseconds) == [0, 65_000, 70_000])
 }
 
-@Test
-func exportFolderNameUsesDateStemAndSessionPrefix() {
-    let id = UUID(uuidString: "0123ABCD-0000-0000-0000-000000000000")!
-    let utc = TimeZone(identifier: "UTC")!
-    func session(_ source: SessionSource) -> SavedSession {
-        SavedSession(
-            sessionID: id,
-            sessionURL: URL(fileURLWithPath: "/fixtures/session"),
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            source: source,
-            duration: .unknown,
-            audio: .missing,
-            hasActiveTranscript: true,
-            processingStatus: .complete
-        )
-    }
-
-    #expect(SessionExportLayout.folderName(for: session(.recording(.systemAudio)), timeZone: utc)
-        == "2023-11-14 2213 録音 0123ABCD")
-    #expect(SessionExportLayout.folderName(for: session(.imported(originalFilename: "定例:会議.mp3")), timeZone: utc)
-        == "2023-11-14 2213 定例-会議 0123ABCD")
-}
 
 @Test
 func exporterWritesReadableTranscriptAndFlacAudio() async throws {
@@ -69,12 +47,8 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
     let samples: [Float] = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 }
     let session = try await fixture.writeLiveSession(samples: samples)
 
-    let folder = try SessionExporter().export(
-        session: session,
-        sessionsRoot: fixture.sessionsRoot,
-        to: fixture.exportRoot,
-        timeZone: .current
-    )
+    let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    #expect(folder.lastPathComponent == session.sessionURL.lastPathComponent)
 
     let transcript = try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
     #expect(transcript == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
@@ -99,11 +73,13 @@ func reexportReplacesTheSameFolder() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
     let session = try await fixture.writeLiveSession()
-    let first = try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot, timeZone: .current)
+    let first = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    #expect(first.lastPathComponent == session.sessionURL.lastPathComponent)
     try Data("stale".utf8).write(to: first.appending(path: "stale.txt"))
     try Data("edited".utf8).write(to: first.appending(path: "transcript.txt"))
 
-    let second = try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot, timeZone: .current)
+    let second = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    #expect(second.lastPathComponent == session.sessionURL.lastPathComponent)
 
     #expect(second.standardizedFileURL == first.standardizedFileURL)
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [first.lastPathComponent])
@@ -134,12 +110,34 @@ func exporterCopiesImportedOriginalByteForByte(withDerivedTimeline: Bool) async 
         originalFilename: "定例会議.wav", originalBytes: original, withDerivedTimeline: withDerivedTimeline
     )
 
-    let folder = try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot, timeZone: .current)
+    let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
 
-    #expect(folder.lastPathComponent.contains(" 定例会議 "))
+    #expect(folder.lastPathComponent == session.sessionURL.lastPathComponent)
     #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == original)
     #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == ["audio.wav", "transcript.txt"])
-    #expect(FileManager.default.fileExists(atPath: folder.appending(path: "transcript.txt").path))
+    #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
+        == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
+}
+ 
+@Test
+func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeImportedSession(
+        originalFilename: String(repeating: "a", count: 300) + ".wav",
+        originalBytes: Data("fixture-audio".utf8),
+        withDerivedTimeline: false
+    )
+
+    let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
+
+    #expect(folder.lastPathComponent == session.sessionURL.lastPathComponent)
+    #expect(folder.lastPathComponent.utf8.count == 255)
+    #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == Data("fixture-audio".utf8))
+    #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
+        == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path)
+        == [folder.lastPathComponent])
 }
 
 @Test
@@ -149,7 +147,7 @@ func exporterRefusesSessionWithoutTranscriptAndWritesNothing() async throws {
     let session = try await fixture.writeLiveSession(activeRuns: ActiveRuns(segmentation: "seg-run"))
 
     #expect(throws: SessionExportError.noTranscript) {
-        try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot, timeZone: .current)
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
     }
     #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
 }
@@ -411,7 +409,7 @@ func corruptProcessingMetadataBlocksExportButKeepsTheSessionReprocessable() asyn
         return
     }
     #expect(throws: SessionExportError.transcriptCorrupted(reason)) {
-        try SessionExporter().export(session: session, sessionsRoot: fixture.sessionsRoot, to: fixture.exportRoot, timeZone: .current)
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
     }
     #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
 }

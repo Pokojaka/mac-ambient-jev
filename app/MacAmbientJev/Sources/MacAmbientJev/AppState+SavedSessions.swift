@@ -157,15 +157,12 @@ extension AppState {
     func export(_ session: SavedSession) async {
         guard sessionExports[session.sessionID] != .exporting else { return }
         sessionExports[session.sessionID] = .exporting
-        let sessionsRoot = paths.sessionsRoot
         do {
             let folder = try await exportDestination.withAccess { directory in
                 try await Task.detached {
                     try SessionExporter().export(
                         session: session,
-                        sessionsRoot: sessionsRoot,
-                        to: directory,
-                        timeZone: .current
+                        to: directory
                     )
                 }.value
             }
@@ -185,7 +182,7 @@ extension AppState {
               let audioSource = session.audioSource else {
             return
         }
-        let folderName = SessionExportLayout.folderName(for: session, timeZone: .current)
+        let folderName = session.sessionURL.lastPathComponent
         let state: SessionExportState?
         do {
             let existing = try await exportDestination.withAccess { directory -> URL? in
