@@ -23,7 +23,7 @@
     │   ├── audio-gaps.jsonl
     │   └── chunk-000000.f32le ...     0 始まりの連番
     └── derived/
-        └── diarization-input.caf     確定処理の話者分離入力
+        └── diarization-input.caf     発話区間のある確定処理の話者分離入力
 ```
 
 - 録音では処理タイムライン自体が保存音声です。入力の全 channel を平均した mono の 32-bit float PCM を保存します。sample rate は録音開始時の形式です。
@@ -101,6 +101,8 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。`speaker.span` の ID はエンジンの raw ID で、表示用の Speaker 番号をイベントへ書き戻しません。
 
 `processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、diarization / scope は span、scene は初期場面を含む転換、contentPriority は分類対象区間を数えます。優先度 run は保留区間があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル確定の失敗を意味しません。
+
+検証済み VAD が 0 区間の確定処理では、segmentation / diarization / ASR / scene / scope の各 run に provenance を持つ開始と、成功・完了 0 件・失敗 0 件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span`、初期場面を含む `scene.changed`、`scope.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。5 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` はすべて新しい run を選択します。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
 
 根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[DiarizationCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DiarizationCoordinator.swift)、[SceneCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneCoordinator.swift)、[ScopeCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ScopeCoordinator.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。
 

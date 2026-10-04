@@ -38,6 +38,8 @@ swift test --package-path app/MacAmbientJev --filter bugHuntMeasure
 
 Linux 音声正規化は入力と出力が同一ファイル（シンボリックリンク解決後を含む）なら、出力先を変更する前に拒否し、原音声を保持する。`tools/linux-audio/tests/test_audio.py` は実 ffmpeg を使う同一パス・symlink の境界と、正常変換・変換失敗時の出力処理を検証する。
 
+`bugHuntEmptyVADDoesNotInvokeFailingDiarization` は 1 秒の合成無音を 2 回確定し、検証済み VAD の空結果が話者分離の準備失敗・推論失敗に依存しないことを確認する。ASR 準備も呼ばれず、原音声の bytes、読み取れる空 transcript、5 段階の provenance と成功 0 件完了、`complete` metadata、終端の無発話表示、復旧対象外の分類を検証する。VAD 自体の失敗と発話ありの推論失敗は `failed` のまま旧公開 run を保持する。これは orchestration の検証であり、実 FluidAudio モデルの無音成功・クラッシュを測った結果ではない。
+
 ### 実 ASR モデルの smoke
 
 Apple Silicon / macOS で、明示的な WAV ファイルを指定する。
@@ -82,7 +84,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
 
 `--low-heat` は import と resume に対応し、ASR 区間処理の pacing と MLX cache 上限を抑える。通常処理と比較する場合は出力先・セッションを分け、本文と処理状態を確認する。短い fixture の成功だけで長時間のメモリ条件やライブ遅延を合格にしない。
 
-開始時の熱状態は nominal/fair を要求する。確定処理中の critical は paused となり、CLI は非 0 で終了する。failed/paused を completed と扱わない。無音が成功することも前提にしない。
+開始時の熱状態は nominal/fair を要求する。確定処理中の ASR 区間処理前に critical を検出すると paused となり、CLI は非 0 で終了する。failed/paused を completed と扱わない。VAD が正常に完了して空結果を返す場合は、音声書き出し・話者分離・ASR 推論なしで空の確定結果を成功として公開する。実モデルでの VAD 成功は合成回帰だけでは保証しない。
 
 ### inspect と resume
 

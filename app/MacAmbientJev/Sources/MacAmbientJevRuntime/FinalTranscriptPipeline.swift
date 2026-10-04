@@ -175,47 +175,73 @@ struct FinalTranscriptPipeline: Sendable {
             ))
         }
 
+        func completeEmptyRun(_ stage: ProcessingStage, _ runID: String) async throws {
+            try await writer.append(EventDraft(
+                eventType: "processing.run.completed",
+                sessionID: sessionID,
+                processingRunID: runID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: stage,
+                    succeeded: true,
+                    completedCount: 0,
+                    failedCount: 0
+                )
+            ))
+        }
+
         await onStatus(UserFacingStatus.detectingSpeech.text)
         try await startRun(.segmentation, segmentationRunID, vadSegmenter.provenance)
         let vadSegments = try await vadSegmenter.segment(reader: reader, runID: segmentationRunID)
         try validateVADSegments(vadSegments, runID: segmentationRunID)
 
-        let diarizationInputURL = layout.derivedDirectory.appending(path: "diarization-input.caf")
-        try ProcessingTimelineAudioExporter(
-            framesPerBuffer: max(1, Int64(checkpoint.sampleRate.rounded()))
-        ).export(reader: reader, to: diarizationInputURL, encoding: .float32)
+        let speakerSpans: [SpeakerSpan]
+        var transcriptEvents: [TranscriptEvent]
+        if vadSegments.isEmpty {
+            try await startRun(.diarization, diarizationRunID, diarization.provenance)
+            try await completeEmptyRun(.diarization, diarizationRunID)
+            speakerSpans = []
+            transcriptEvents = []
+        } else {
+            let diarizationInputURL = layout.derivedDirectory.appending(path: "diarization-input.caf")
+            try ProcessingTimelineAudioExporter(
+                framesPerBuffer: max(1, Int64(checkpoint.sampleRate.rounded()))
+            ).export(reader: reader, to: diarizationInputURL, encoding: .float32)
 
-        await onStatus(UserFacingStatus.preparingDiarization.text)
-        try await startRun(.diarization, diarizationRunID, diarization.provenance)
-        let diarizationCoordinator = DiarizationCoordinator(
-            sessionID: sessionID,
-            runID: diarizationRunID,
-            writer: writer,
-            engine: diarization,
-            materializer: materializer
-        )
-        await onStatus(UserFacingStatus.diarizing.text)
-        let diarizationResult = try await diarizationCoordinator.process(
-            fileURL: diarizationInputURL,
-            canonicalSampleRate: checkpoint.sampleRate,
-            existingEvents: [],
-            activeRuns: ActiveRuns(
-                segmentation: segmentationRunID,
-                asr: asrRunID,
-                diarization: diarizationRunID
+            await onStatus(UserFacingStatus.preparingDiarization.text)
+            try await startRun(.diarization, diarizationRunID, diarization.provenance)
+            let diarizationCoordinator = DiarizationCoordinator(
+                sessionID: sessionID,
+                runID: diarizationRunID,
+                writer: writer,
+                engine: diarization,
+                materializer: materializer
             )
-        )
-        try validateSpeakerSpans(diarizationResult.speakerSpans)
+            await onStatus(UserFacingStatus.diarizing.text)
+            let diarizationResult = try await diarizationCoordinator.process(
+                fileURL: diarizationInputURL,
+                canonicalSampleRate: checkpoint.sampleRate,
+                existingEvents: [],
+                activeRuns: ActiveRuns(
+                    segmentation: segmentationRunID,
+                    asr: asrRunID,
+                    diarization: diarizationRunID
+                )
+            )
+            try validateSpeakerSpans(diarizationResult.speakerSpans)
+            speakerSpans = diarizationResult.speakerSpans
+            transcriptEvents = diarizationResult.events
+        }
 
-        await onStatus(UserFacingStatus.preparingASR.text)
+        if !vadSegments.isEmpty {
+            await onStatus(UserFacingStatus.preparingASR.text)
+        }
         let asrSegments = try SpeakerTurnSegmenter.split(
             vadSegments,
-            speakerSpans: diarizationResult.speakerSpans,
+            speakerSpans: speakerSpans,
             sampleRate: checkpoint.sampleRate
         )
         try validateVADSegments(asrSegments, runID: segmentationRunID)
         try await startRun(.asr, asrRunID, asr.provenance)
-        var transcriptEvents = diarizationResult.events
         var pendingSince: [String: Date] = [:]
         for segment in asrSegments {
             let created = try await writer.append(EventDraft(
@@ -285,40 +311,7 @@ struct FinalTranscriptPipeline: Sendable {
         }
         transcriptEvents = asrResult.events
 
-        await onStatus(UserFacingStatus.analyzingScene.text)
         await onPhase(.postprocessing)
-        try await startRun(.scene, sceneRunID, FinalTranscriptStageSettings.sceneProvenance)
-        let sceneCoordinator = SceneCoordinator(
-            sessionID: sessionID,
-            runID: sceneRunID,
-            writer: writer,
-            materializer: materializer,
-            config: FinalTranscriptStageSettings.sceneConfig,
-            windowSeconds: FinalTranscriptStageSettings.sceneWindowSeconds,
-            hopSeconds: FinalTranscriptStageSettings.sceneHopSeconds
-        )
-        let sceneResult = try await sceneCoordinator.process(
-            speakerSpans: diarizationResult.speakerSpans,
-            totalFrames: checkpoint.committedFrames,
-            sampleRate: checkpoint.sampleRate,
-            existingEvents: transcriptEvents,
-            activeRuns: ActiveRuns(
-                segmentation: segmentationRunID,
-                asr: asrRunID,
-                diarization: diarizationRunID,
-                scene: sceneRunID
-            )
-        )
-
-        await onStatus(UserFacingStatus.analyzingScope.text)
-        try await startRun(.scope, scopeRunID, FinalTranscriptStageSettings.scopeProvenance)
-        let scopeCoordinator = ScopeCoordinator(
-            sessionID: sessionID,
-            runID: scopeRunID,
-            writer: writer,
-            provider: proximityEvidenceProvider,
-            materializer: materializer
-        )
         let activeRuns = ActiveRuns(
             segmentation: segmentationRunID,
             asr: asrRunID,
@@ -326,11 +319,51 @@ struct FinalTranscriptPipeline: Sendable {
             scene: sceneRunID,
             scope: scopeRunID
         )
-        let scopeResult = try await scopeCoordinator.process(
-            existingEvents: sceneResult.events,
-            speakerSpans: diarizationResult.speakerSpans,
-            activeRuns: activeRuns
-        )
+        try await startRun(.scene, sceneRunID, FinalTranscriptStageSettings.sceneProvenance)
+        if vadSegments.isEmpty {
+            try await completeEmptyRun(.scene, sceneRunID)
+            try await startRun(.scope, scopeRunID, FinalTranscriptStageSettings.scopeProvenance)
+            try await completeEmptyRun(.scope, scopeRunID)
+        } else {
+            await onStatus(UserFacingStatus.analyzingScene.text)
+            let sceneCoordinator = SceneCoordinator(
+                sessionID: sessionID,
+                runID: sceneRunID,
+                writer: writer,
+                materializer: materializer,
+                config: FinalTranscriptStageSettings.sceneConfig,
+                windowSeconds: FinalTranscriptStageSettings.sceneWindowSeconds,
+                hopSeconds: FinalTranscriptStageSettings.sceneHopSeconds
+            )
+            let sceneResult = try await sceneCoordinator.process(
+                speakerSpans: speakerSpans,
+                totalFrames: checkpoint.committedFrames,
+                sampleRate: checkpoint.sampleRate,
+                existingEvents: transcriptEvents,
+                activeRuns: ActiveRuns(
+                    segmentation: segmentationRunID,
+                    asr: asrRunID,
+                    diarization: diarizationRunID,
+                    scene: sceneRunID
+                )
+            )
+
+            await onStatus(UserFacingStatus.analyzingScope.text)
+            try await startRun(.scope, scopeRunID, FinalTranscriptStageSettings.scopeProvenance)
+            let scopeCoordinator = ScopeCoordinator(
+                sessionID: sessionID,
+                runID: scopeRunID,
+                writer: writer,
+                provider: proximityEvidenceProvider,
+                materializer: materializer
+            )
+            let scopeResult = try await scopeCoordinator.process(
+                existingEvents: sceneResult.events,
+                speakerSpans: speakerSpans,
+                activeRuns: activeRuns
+            )
+            transcriptEvents = scopeResult.events
+        }
 
         try validatePersistedRuns(
             segmentationRunID: segmentationRunID,
@@ -347,7 +380,7 @@ struct FinalTranscriptPipeline: Sendable {
         return .completed(FinalTranscriptPipelineResult(
             activeRuns: activeRuns,
             materializedSegments: materializer.materialize(
-                events: scopeResult.events,
+                events: transcriptEvents,
                 activeRuns: activeRuns
             ),
             completedCount: asrResult.completedCount,

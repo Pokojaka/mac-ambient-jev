@@ -1268,8 +1268,25 @@ func finalizationUsesFinalTextAndOnlyReusesIdenticalLiveDecisions(changed: Bool)
     }
 }
 
-@Test("BUG #21: an empty VAD result completes even when speech-only inference cannot run")
-func bugHuntEmptyVADDoesNotInvokeFailingDiarization() async throws {
+private struct PreparationRejectingDiarizer: DiarizationEngine {
+    let provenance = RunProvenance(engine: "unavailable-diarizer", model: nil, version: "test", configuration: [:])
+    let log: FinalizationCallLog
+
+    func prepare() async throws {
+        await log.append("prepare-diarization")
+        throw FakeFinalizationError.expected
+    }
+
+    func unload() async {}
+
+    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+        await log.append("diarize")
+        throw FakeFinalizationError.expected
+    }
+}
+
+@Test("Validated empty VAD completes without speech inference", arguments: [false, true])
+func bugHuntEmptyVADDoesNotInvokeFailingDiarization(preparationFails: Bool) async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(
         samples: Array(repeating: 0, count: 16_000), sessionID: sessionID
@@ -1279,21 +1296,128 @@ func bugHuntEmptyVADDoesNotInvokeFailingDiarization() async throws {
         .appending(path: checkpoint.chunkFiles[0])
     let audioBefore = try Data(contentsOf: chunkURL)
     let log = FinalizationCallLog()
+    let asr = PreparationFailingASR()
+    let diarizer: any DiarizationEngine
+    if preparationFails {
+        diarizer = PreparationRejectingDiarizer(log: log)
+    } else {
+        diarizer = FakeFinalDiarizer(spans: [], log: log, shouldFail: true)
+    }
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: PreparationFailingASR(),
-            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: true),
+            asr: asr,
+            diarization: diarizer,
             finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
         ),
         contentPriority: .disabled
     )
+    let statuses = FinalizationStatusRecorder()
+    var previousRuns: ActiveRuns?
+    for attempt in 1...2 {
+        let result = await processFinal(
+            processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+            statuses: statuses, states: FinalizationStateRecorder(),
+            phases: FinalizationCallLog()
+        )
+        #expect(result.disposition == .completed)
+        #expect(result.noSpeech)
+        #expect(result.metrics == .zero)
+        #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
+        let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+        #expect(metadata.finalizationAttempt?.state == .complete)
+        #expect(metadata.pendingContentPrioritySegmentIDs == [])
+        let runs = try #require(metadata.activeRuns)
+        #expect(runs != previousRuns)
+        previousRuns = runs
+        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL))
+        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
+        #expect(TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
+            events: events, activeRuns: runs
+        ).isEmpty)
+        #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID) == nil)
+        let objects = try eventObjects(sessionURL)
+        let stageRuns: [(ProcessingStage, String?, RunProvenance)] = [
+            (.segmentation, runs.segmentation, FakeFinalVAD(segments: [], log: log).provenance),
+            (.diarization, runs.diarization, diarizer.provenance),
+            (.asr, runs.asr, asr.provenance),
+            (.scene, runs.scene, FinalTranscriptStageSettings.sceneProvenance),
+            (.scope, runs.scope, FinalTranscriptStageSettings.scopeProvenance)
+        ]
+        for (stage, run, expectedProvenance) in stageRuns {
+            let runID = try #require(run)
+            let starts = objects.filter {
+                $0["event_type"] as? String == "processing.run.started"
+                    && $0["processing_run_id"] as? String == runID
+            }
+            #expect(starts.count == 1)
+            let startedPayload = try #require(starts.first?["payload"] as? [String: Any])
+            #expect(startedPayload["stage"] as? String == stage.rawValue)
+            let provenance = try #require(startedPayload["provenance"] as? [String: Any])
+            #expect(try JSONDecoder().decode(RunProvenance.self, from: JSONSerialization.data(
+                withJSONObject: provenance
+            )) == expectedProvenance)
+            let completions = objects.filter {
+                $0["event_type"] as? String == "processing.run.completed"
+                    && $0["processing_run_id"] as? String == runID
+            }
+            #expect(completions.count == 1)
+            let payload = try #require(completions.first?["payload"] as? [String: Any])
+            #expect(payload["stage"] as? String == stage.rawValue)
+            #expect(payload["succeeded"] as? Bool == true)
+            #expect(payload["completed_count"] as? Int == 0)
+            #expect(payload["failed_count"] as? Int == 0)
+        }
+        #expect(objects.allSatisfy {
+            ["processing.run.started", "processing.run.completed"].contains($0["event_type"] as? String)
+        })
+        #expect(await log.snapshot() == Array(repeating: "vad", count: attempt))
+        #expect(await asr.prepareCallCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: SessionLayout(sessionURL: sessionURL)
+            .derivedDirectory.appending(path: "diarization-input.caf").path))
+        #expect(try Data(contentsOf: chunkURL) == audioBefore)
+    }
+}
+
+private struct ThrowingFinalVAD: FinalTranscriptVADSegmenter {
+    let provenance = RunProvenance(engine: "failing-vad", model: nil, version: "test", configuration: [:])
+
+    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
+        throw FakeFinalizationError.expected
+    }
+}
+
+@Test
+func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(
+        samples: Array(repeating: 0, count: 16_000), sessionID: sessionID
+    )
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let previous = try savePreviousRuns(sessionURL: sessionURL)
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: PreparationFailingASR(),
+            diarization: PreparationRejectingDiarizer(log: log),
+            finalTranscriptVAD: ThrowingFinalVAD()
+        ),
+        contentPriority: .disabled
+    )
+    let statuses = FinalizationStatusRecorder()
     let result = await processFinal(
         processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(),
-        phases: FinalizationCallLog()
+        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
-    #expect(result.disposition == .completed)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
-    #expect(try Data(contentsOf: chunkURL) == audioBefore)
+    #expect(result.disposition == .failed)
+    #expect(!result.noSpeech)
+    #expect(result.metrics == nil)
+    let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(metadata.finalizationAttempt?.state == .failed)
+    #expect(metadata.activeRuns == previous)
+    #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
+    #expect(try eventObjects(sessionURL).allSatisfy {
+        $0["event_type"] as? String != "processing.run.completed"
+    })
 }
