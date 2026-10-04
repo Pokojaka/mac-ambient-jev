@@ -33,8 +33,9 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
         SegmentReference(segmentationRunID: "seg", segmentID: "seg_000002", startFrame: 8_000, endFrame: 16_000)
     ]
     state.liveASRQueues[sessionID] = segments.map {
-        AppState.LiveASRBatch(segments: [$0], checkpoint: testCheckpoint())
+        AppState.LiveASRBatch(segments: [$0])
     }
+    state.liveASRLatestCheckpoints[sessionID] = testCheckpoint()
     state.startLiveASRDrainIfIdle(sessionID: sessionID)
 
     try await Task.sleep(for: .milliseconds(1_500))
@@ -55,6 +56,121 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
             == NativeSessionProcessorError.liveASRSessionNotStarted.localizedDescription
     )
     #expect(state.liveASRQueues[sessionID]?.isEmpty == true)
+}
+
+@MainActor
+@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint")
+func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let capture = FakeAppCaptureEngine()
+    let asr = ThermalQueueASR()
+    let state = AppState(
+        paths: paths, captureEngine: capture, microphoneAccess: { false },
+        pausesProcessing: false, userDefaults: defaults,
+        engines: SessionProcessingEngines(
+            asr: asr, diarization: UnusedThermalQueueDiarizer(),
+            finalTranscriptVAD: EmptyThermalQueueFinalVAD()
+        ),
+        makeLiveVADSession: idleLiveVADFactory()
+    )
+    let sessionID = UUID()
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .recording(.systemAudio), createdAt: Date()
+    )
+    let writer = try DurableAudioWriter(
+        directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
+        sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 0.5
+    )
+    state.selectSavedSession(sessionID: sessionID)
+    state.markRecordingStarted(sessionID: sessionID)
+    let pressure = ThermalPressureSource(.critical)
+    state.readLiveThermalPressure = { pressure.value }
+    _ = try await state.sessionProcessor.startLiveTranscription(
+        sessionID: sessionID, segmentationRunID: "thermal", sampleRate: 16_000
+    )
+    let expectedInputs = [Float(0.125), 0.25, 0.375].map {
+        ASRAudioInput(samples: Array(repeating: $0, count: 8_000), sampleRate: 16_000)
+    }
+    for (index, input) in expectedInputs.enumerated() {
+        try await writer.append(samples: input.samples)
+        let checkpoint = await writer.committedSnapshot()
+        await state.enqueueLiveASR(
+            sessionID: sessionID,
+            segments: [SegmentReference(
+                segmentationRunID: "thermal", segmentID: "row_\(index)",
+                startFrame: Int64(index) * 8_000, endFrame: Int64(index + 1) * 8_000
+            )],
+            checkpoint: checkpoint
+        )
+    }
+    let latest = try await writer.finish()
+    let deadline = ContinuousClock.now + .seconds(5)
+    while state.processingStatusText != UserFacingStatus.liveTranscriptionThermalSuspended.text,
+          ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(state.processingStatusText == UserFacingStatus.liveTranscriptionThermalSuspended.text)
+    #expect(await asr.inputs() == [])
+    #expect(state.liveASRQueues[sessionID]?.flatMap(\.segments).map(\.segmentID)
+        == ["row_0", "row_1", "row_2"])
+    #expect(state.liveASRLatestCheckpoints == [sessionID: latest])
+
+    pressure.value = .fair
+    await state.waitForLiveASRDrain(sessionID: sessionID)
+    #expect(await asr.inputs() == expectedInputs)
+    #expect(state.liveASRFailures[sessionID] == nil)
+    #expect(state.liveASRQueues[sessionID]?.isEmpty == true)
+    #expect(state.liveASRLatestCheckpoints == [sessionID: latest])
+
+    capture.stopResult = cleanStopResult(latest)
+    await state.stopRecording()
+    await state.processingTask?.value
+    await state.modelPreparationTask?.value
+    await state.idleReleaseTask?.value
+    #expect(state.recordingPhase == .idle)
+    #expect(state.liveASRQueues.isEmpty)
+    #expect(state.liveASRLatestCheckpoints.isEmpty)
+    #expect(state.liveASRTasks.isEmpty)
+    #expect(await asr.inputs() == expectedInputs)
+}
+
+private actor ThermalQueueASR: ASREngine {
+    nonisolated let provenance = RunProvenance(
+        engine: "thermal-queue-asr", model: nil, version: "test", configuration: [:]
+    )
+    private var recordedInputs: [ASRAudioInput] = []
+    func prepare() async throws {}
+    func unload() async {}
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        recordedInputs.append(input)
+        // Empty text keeps this synthetic queue scenario independent of external classification.
+        return ASRResult(text: "", detectedLanguage: "ja")
+    }
+    func inputs() -> [ASRAudioInput] { recordedInputs }
+}
+
+private struct EmptyThermalQueueFinalVAD: FinalTranscriptVADSegmenter {
+    let provenance = RunProvenance(
+        engine: "thermal-queue-vad", model: nil, version: "test", configuration: [:]
+    )
+    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
+        []
+    }
+}
+
+private struct UnusedThermalQueueDiarizer: DiarizationEngine {
+    let provenance = RunProvenance(
+        engine: "thermal-queue-diarizer", model: nil, version: "test", configuration: [:]
+    )
+    func prepare() async throws { throw UnexpectedDiarization.called }
+    func unload() async {}
+    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+        throw UnexpectedDiarization.called
+    }
+    private enum UnexpectedDiarization: Error { case called }
 }
 
 @MainActor

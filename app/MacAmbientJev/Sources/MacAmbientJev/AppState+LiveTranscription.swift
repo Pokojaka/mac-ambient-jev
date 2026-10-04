@@ -142,9 +142,8 @@ extension AppState {
             return
         }
 
-        liveASRQueues[sessionID, default: []].append(
-            LiveASRBatch(segments: segments, checkpoint: checkpoint)
-        )
+        liveASRLatestCheckpoints[sessionID] = checkpoint
+        liveASRQueues[sessionID, default: []].append(LiveASRBatch(segments: segments))
         startLiveASRDrainIfIdle(sessionID: sessionID)
     }
 
@@ -182,6 +181,9 @@ extension AppState {
             guard liveASRFailures[sessionID] == nil,
                   var queue = liveASRQueues[sessionID],
                   !queue.isEmpty else { break }
+            guard let checkpoint = liveASRLatestCheckpoints[sessionID] else {
+                preconditionFailure("Queued live ASR segments require a committed checkpoint")
+            }
             let batch = queue.removeFirst()
             liveASRQueues[sessionID] = queue
 
@@ -209,7 +211,7 @@ extension AppState {
                 _ = try await sessionProcessor.processLiveSegments(
                     sessionID: sessionID,
                     segments: batch.segments,
-                    checkpoint: batch.checkpoint,
+                    checkpoint: checkpoint,
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
@@ -285,6 +287,7 @@ extension AppState {
 
     func cleanupLiveASRState(sessionID: UUID) {
         liveASRQueues[sessionID] = nil
+        liveASRLatestCheckpoints[sessionID] = nil
         liveASRTasks[sessionID] = nil
         liveASRFailures[sessionID] = nil
         liveContentPriorityStatus[sessionID] = nil

@@ -180,7 +180,6 @@ final class AppState: ObservableObject {
 
     struct LiveASRBatch {
         let segments: [SegmentReference]
-        let checkpoint: AudioCheckpoint
     }
 
     @Published var statusText = UserFacingStatus.idle.text
@@ -236,6 +235,7 @@ final class AppState: ObservableObject {
     var liveVADFailureText: String?
 
     var liveASRQueues: [UUID: [LiveASRBatch]] = [:]
+    var liveASRLatestCheckpoints: [UUID: AudioCheckpoint] = [:]
     var liveASRTasks: [UUID: Task<Void, Never>] = [:]
     var liveASRFailures: [UUID: String] = [:]
     var liveContentPriorityStatus: [UUID: String] = [:]
