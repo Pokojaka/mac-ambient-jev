@@ -162,6 +162,113 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
 }
 
 @Test
+func liveASRProgressPreservesRowsAcrossRegistrationAndRefreshesPriorityRuns() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let first = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+    let second = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        startFrame: 4_000, endFrame: 8_000
+    )
+    let recognized = try await fixture.session.process(
+        segments: [first], checkpoint: fixture.checkpoint
+    )
+    let registered = try await fixture.session.register(segments: [first, second, second])
+    #expect(registered.materializedSegments == recognized.materializedSegments)
+    #expect(registered.completedCount == 1)
+    #expect(registered.failedCount == 0)
+    #expect(registered.pendingCount == 1)
+    #expect(try await fixture.session.register(segments: [first, second]) == registered)
+
+    let classified = await fixture.session.applyContentPriority(event: .contentPriority(
+        seq: 100, runID: "priority_a", segmentID: first.segmentID, priority: .lowPriority
+    ))
+    #expect(classified.progress.materializedSegments.map(\.contentPriority) == [.lowPriority])
+    let revised = await fixture.session.applyContentPriority(event: .contentPriority(
+        seq: 101, runID: "priority_a", segmentID: first.segmentID, priority: .primary
+    ))
+    #expect(revised.progress.materializedSegments.map(\.contentPriority) == [.primary])
+    #expect(classified.progress.materializedSegments.map(\.contentPriority) == [.lowPriority])
+
+    // A new active run on a pending row also removes assignments from the old run.
+    let switched = await fixture.session.applyContentPriority(event: .contentPriority(
+        seq: 102, runID: "priority_b", segmentID: second.segmentID, priority: .lowPriority
+    ))
+    #expect(switched.activeRuns.contentPriority == "priority_b")
+    #expect(switched.progress.materializedSegments.map(\.contentPriority) == [nil])
+    #expect(switched.progress.pendingCount == 1)
+    #expect(try await fixture.session.register(segments: [second]) == switched.progress)
+
+    let completed = try await fixture.session.process(
+        segments: [second], checkpoint: fixture.checkpoint
+    )
+    #expect(completed.materializedSegments.map(\.text) == ["segment-1", "segment-2"])
+    #expect(completed.materializedSegments.map(\.contentPriority) == [nil, .lowPriority])
+    #expect(completed.completedCount == 2)
+    #expect(completed.failedCount == 0)
+    #expect(completed.pendingCount == 0)
+    #expect(await fixture.session.snapshot().progress == completed)
+    let finished = try await fixture.session.finish()
+    #expect(finished.succeeded)
+    #expect(finished.materializedSegments == completed.materializedSegments)
+    #expect(finished.completedCount == 2)
+    #expect(finished.failedCount == 0)
+    #expect(finished.pendingCount == 0)
+    #expect(registered.materializedSegments == recognized.materializedSegments)
+}
+
+@Test(arguments: [false, true])
+func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let first = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        startFrame: 0, endFrame: 4_000
+    )
+    let second = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        startFrame: 4_000, endFrame: 8_000
+    )
+    _ = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
+    if completing {
+        _ = try await fixture.session.register(segments: [second])
+    }
+    let before = await fixture.session.snapshot()
+    let eventsURL = fixture.root.appending(path: "events.jsonl")
+    let backupURL = fixture.root.appending(path: "events.backup")
+    try FileManager.default.moveItem(at: eventsURL, to: backupURL)
+    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    await #expect(throws: (any Error).self) {
+        if completing {
+            _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
+        } else {
+            _ = try await fixture.session.register(segments: [second])
+        }
+    }
+    #expect(await fixture.session.snapshot() == before)
+    try FileManager.default.removeItem(at: eventsURL)
+    try FileManager.default.moveItem(at: backupURL, to: eventsURL)
+    let registered = try await fixture.session.register(segments: [second])
+    #expect(registered.completedCount == 1)
+    #expect(registered.failedCount == 0)
+    #expect(registered.pendingCount == 1)
+    #expect(registered.materializedSegments == before.progress.materializedSegments)
+    let completed = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
+    #expect(completed.materializedSegments.map(\.text) == [
+        "segment-1", completing ? "segment-3" : "segment-2"
+    ])
+    #expect(completed.completedCount == 2)
+    #expect(completed.failedCount == 0)
+    #expect(completed.pendingCount == 0)
+    let finished = try await fixture.session.finish()
+    #expect(finished.succeeded)
+    #expect(finished.materializedSegments == completed.materializedSegments)
+}
+
+@Test
 func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -328,11 +435,16 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
     )
     #expect(progress.completedCount == 1)
     #expect(progress.failedCount == 1)
+    #expect(progress.pendingCount == 0)
+    #expect(progress.materializedSegments.map(\.text) == ["segment-1"])
+    #expect(try await fixture.session.register(segments: segments) == progress)
 
     let completion = try await fixture.session.finish()
     #expect(!completion.succeeded)
     #expect(completion.completedCount == 1)
     #expect(completion.failedCount == 1)
+    #expect(completion.pendingCount == 0)
+    #expect(completion.materializedSegments == progress.materializedSegments)
 }
 
 @Test
@@ -352,6 +464,11 @@ func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async thro
     await #expect(throws: (any Error).self) {
         try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
     }
+    let pending = await fixture.session.snapshot().progress
+    #expect(pending.completedCount == 0)
+    #expect(pending.failedCount == 0)
+    #expect(pending.pendingCount == 1)
+    #expect(pending.materializedSegments.isEmpty)
     try FileManager.default.removeItem(at: eventsURL)
     try FileManager.default.moveItem(at: backupURL, to: eventsURL)
 
@@ -456,6 +573,11 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     async let first = fixture.session.register(segments: [segment])
     async let second = fixture.session.register(segments: [segment])
     _ = try await (first, second)
+    let progress = await fixture.session.snapshot().progress
+    #expect(progress.pendingCount == 1)
+    #expect(progress.completedCount == 0)
+    #expect(progress.failedCount == 0)
+    #expect(progress.materializedSegments.isEmpty)
 
     let log = try String(
         contentsOf: fixture.root.appending(path: "events.jsonl"),
@@ -466,9 +588,9 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     #expect(createdCount == 1)
 }
 
-/// Measures the redundant registration performed before processing an already registered batch.
+/// Measures duplicate pending registration without inference or recognized-row updates.
 /// Five-second event cadence; uses pending references, not hours of allocated audio.
-@Test("Measure live progress rebuild cost at 10-minute, 1-hour and 4-hour event equivalents")
+@Test("Measure live registration cost at 10-minute, 1-hour and 4-hour event equivalents")
 func bugHuntMeasureLiveRegistrationCost() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

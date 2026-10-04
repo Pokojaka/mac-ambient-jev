@@ -64,6 +64,8 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 ライブ VAD は閉じた発話区間を渡し、連続発話は最大 14 秒で分割します。分割の端数 continuation も保持します。長い発話は区間が閉じるまで初表示が遅れます。ライブ中は話者分離を行わず、結果は暫定です。
 
+`LiveASRSession` はセッション内で materialized 行の配列を保持します。`segment.created` の保存と ID による重複登録排除だけでは認識済み行を再構築しません。待ち件数は durable 登録済み ID 数から ASR 完了・失敗が durable になった ID 数を引き、集合差を作らずに求めます。`process` は同じ登録処理を使いますが、登録だけの中間 progress は作りません。行は `asr.completed` の保存後、または durable な優先度イベントの適用・active content-priority run の変更時に `TranscriptMaterializer` で更新します。snapshot と completion もこの配列を使い、保存に失敗したイベントは行・件数に反映しません。オフラインの materialization とアプリのライブキュー所有はこのキャッシュとは独立です。
+
 非空のライブ ASR 本文は `LiveContentPrioritySession` の独立キューへ渡し、判定が届くまで（Jev 無効・失敗・保留・停止を除く）その行と時間順で後続の行を表示しません。`JevEnrichmentCoordinator` のバッチ停止規則を使い、保存した優先度イベントを進行中の ASR イベントへ追加します。Jev の待機・失敗は ASR drain に伝播しません。録音停止時に外部分類を取り消し、確定処理は開始時点で保存済みのライブ判定だけを本文の完全一致で再利用します。[ライブ](live.md)・[Jev](jev.md)
 
 根拠: [TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioBlockRing.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[AudioCaptureDrain.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioCaptureDrain.swift)、[DurableAudioWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[Segmentation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。

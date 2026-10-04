@@ -75,6 +75,7 @@ public actor LiveASRSession {
     private let materializer: TranscriptMaterializer
 
     private var transcriptEvents: [TranscriptEvent] = []
+    private var materializedSegments: [MaterializedTranscriptSegment] = []
     private var contentPriorityRunID: String?
     private var registeredSegmentIDs: Set<String> = []
     private var registeringSegmentIDs: Set<String> = []
@@ -118,6 +119,12 @@ public actor LiveASRSession {
         beginWork()
         defer { endWork() }
 
+        try await registerPendingSegments(segments)
+        return currentProgress()
+    }
+
+    private func registerPendingSegments(_ segments: [SegmentReference]) async throws {
+
         for segment in segments
         where !registeredSegmentIDs.contains(segment.segmentID)
             && !registeringSegmentIDs.contains(segment.segmentID) {
@@ -142,8 +149,6 @@ public actor LiveASRSession {
             ))
             registeredSegmentIDs.insert(segment.segmentID)
         }
-
-        return currentProgress()
     }
 
     @discardableResult
@@ -158,7 +163,7 @@ public actor LiveASRSession {
         beginWork()
         defer { endWork() }
 
-        _ = try await register(segments: segments)
+        try await registerPendingSegments(segments)
         guard !finalized else {
             return currentProgress()
         }
@@ -226,6 +231,7 @@ public actor LiveASRSession {
             ))
             completedCount += 1
             finishedSegmentIDs.insert(segment.segmentID)
+            refreshMaterializedSegments()
             if let onRecognized {
                 await onRecognized(segment.segmentID, snapshot())
             }
@@ -253,6 +259,7 @@ public actor LiveASRSession {
         }
         transcriptEvents.append(event)
         contentPriorityRunID = runID
+        refreshMaterializedSegments()
         return snapshot()
     }
 
@@ -275,8 +282,7 @@ public actor LiveASRSession {
                 }
             }
 
-            let pendingCount =
-                registeredSegmentIDs.subtracting(finishedSegmentIDs).count
+            let pendingCount = currentPendingCount
             _ = try await writer.append(EventDraft(
                 eventType: "processing.run.completed",
                 sessionID: sessionID,
@@ -348,16 +354,24 @@ public actor LiveASRSession {
         )
     }
 
+    // Finished IDs are a subset of durably registered IDs, including failed ASR.
+    private var currentPendingCount: Int {
+        registeredSegmentIDs.count - finishedSegmentIDs.count
+    }
+
+    private func refreshMaterializedSegments() {
+        materializedSegments = materializer.materialize(
+            events: transcriptEvents,
+            activeRuns: currentActiveRuns()
+        )
+    }
+
     private func currentProgress() -> LiveASRProgress {
         LiveASRProgress(
-            materializedSegments: materializer.materialize(
-                events: transcriptEvents,
-                activeRuns: currentActiveRuns()
-            ),
+            materializedSegments: materializedSegments,
             completedCount: completedCount,
             failedCount: failedCount,
-            pendingCount:
-                registeredSegmentIDs.subtracting(finishedSegmentIDs).count
+            pendingCount: currentPendingCount
         )
     }
 
