@@ -375,6 +375,9 @@ extension AppState {
             let candidates = scan.candidates
                 .filter { $0.manifest.sessionID != recordingSessionID }
                 .filter { maintenanceFailures[$0.manifest.sessionID] == nil }
+                .filter { candidate in
+                    !pendingProcessing.contains { $0.sessionID == candidate.manifest.sessionID }
+                }
 
             if !candidates.isEmpty {
                 processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"

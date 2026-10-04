@@ -156,6 +156,12 @@ extension AppState {
 
     func export(_ session: SavedSession) async {
         guard sessionExports[session.sessionID] != .exporting else { return }
+        if isMaintainingStorage, case .recordedPCM = session.audioSource {
+            let message = "保存済み録音の音声を整理しています。整理が終わってから書き出してください"
+            sessionExports[session.sessionID] = .failed(message)
+            processingStatusText = "書き出せませんでした: \(message)"
+            return
+        }
         sessionExports[session.sessionID] = .exporting
         do {
             let folder = try await exportDestination.withAccess { directory in

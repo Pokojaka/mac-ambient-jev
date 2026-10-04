@@ -274,6 +274,7 @@ final class AppState: ObservableObject {
         }
 
         if !pausesProcessing {
+            isMaintainingStorage = true
             Task { [weak self] in
                 await self?.recoverPendingSessions()
             }

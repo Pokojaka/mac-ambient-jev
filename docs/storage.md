@@ -90,7 +90,7 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 ### 起動時の保存整理
 
-アプリは起動時に、録音中のセッションを除く全セッションの保存整理を、キューへ何も入れる前に 1 件ずつ最後まで実行します。状態は「保存済み録音の音声を整理しています（n件）」です。`recordingPCM` で変換が必要なものと、`recordingFLAC` で PCM が残るものは変換（収束）、それ以外で一時ファイルが残るものは削除です。音声ソースは使う時点で `storage.json` から決めるため、整理後の再走査はありません。整理中は処理キューを開始せず、その間の要求は整理後に順に処理します。整理に失敗したセッションはその起動では復旧対象にせず、フォルダー名を付けて「保存済み録音の音声を整理できなかったセッションが n 件あります: …」と報告します。復旧できないセッションの報告と合わせるときは、復旧できない報告を先にして「。」でつなぎます。
+アプリは起動時に、録音中のセッションを除く全セッションの保存整理を、キューへ何も入れる前に 1 件ずつ最後まで実行します。状態は「保存済み録音の音声を整理しています（n件）」です。`recordingPCM` で変換が必要なものと、`recordingFLAC` で PCM が残るものは変換（収束）、それ以外で一時ファイルが残るものは削除です。音声ソースは使う時点で `storage.json` から決めるため、整理後の再走査はありません。整理中は処理キューを開始せず、その間の要求は整理後に順に処理します。整理中に要求されたセッションは、その起動の復旧対象から外します。整理に失敗したセッションはその起動では復旧対象にせず、フォルダー名を付けて「保存済み録音の音声を整理できなかったセッションが n 件あります: …」と報告します。復旧できないセッションの報告と合わせるときは、復旧できない報告を先にして「。」でつなぎます。
 
 どの時点で中断しても、再実行は `storage.json` を見て同じ終状態に収束します。`recordingPCM` のまま `recording.flac` が残っていれば、PCM と完全一致する場合だけ採用し、不一致や破損なら削除して PCM から作り直します。`recordingFLAC` では FLAC を全復号して検証し、失敗すれば PCM に触れずエラーにします。`importedOriginal` は変換対象外です。
 
@@ -272,7 +272,7 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 読取時には snapshot、chunk index、連続する公開済み chunk を合わせて最新の checkpoint を復元します。snapshot 更新前にクラッシュしても、末尾に完全な連番 chunk があれば取り込みます。各 chunk のサイズ・channel 幅・記録フレーム数を検証し、不一致・欠損は明示エラーにします。gap は実際の durable 範囲まで切り詰め、音声の公開前に残った gap 全体を有効とはみなしません。音声用 JSONL の commit として採用するのは LF 終端の行です。
 
-`ProcessingTimeline` の型は `version`（1）、`sampleRate`、`channelCount`、`sampleFormat` を持ち、frame からミリ秒への変換を定義します。独立した timeline JSON ファイルは保存せず、永続音声の自己記述情報は checkpoint にあります。保存済みセッションとエンジン入力は非 canonical 形式を拒否します。表示時刻は frame × 1000 / 16000 の小数部を 0 方向に切り捨てます。イベントの source frame は保存タイムラインの座標であり、入力デバイスや original の frame 座標ではありません。VAD・ASR・話者分離で再度 mono 化や SRC は行いません。
+`ProcessingTimeline` の型は `version`（1）、`sampleRate`、`channelCount`、`sampleFormat` を持ち、frame からミリ秒への変換を定義します。独立した timeline JSON ファイルは保存せず、永続音声の自己記述情報は、`recordingPCM` と import の処理タイムラインでは checkpoint に、`recordingFLAC` では `storage.json` の `timeline` にあります。保存済みセッションとエンジン入力は非 canonical 形式を拒否します。表示時刻は frame × 1000 / 16000 の小数部を 0 方向に切り捨てます。イベントの source frame は保存タイムラインの座標であり、入力デバイスや original の frame 座標ではありません。VAD・ASR・話者分離で再度 mono 化や SRC は行いません。
 
 根拠: [DurableAudioWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[ProcessingTimeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimeline.swift)、[ProcessingTimelineReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineReader.swift)、[AudioBlockRing.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[LiveTranscriptionCadence.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)。
 

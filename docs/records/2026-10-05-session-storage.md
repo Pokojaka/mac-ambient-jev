@@ -28,7 +28,7 @@ import の構築直後は CAF 生成中の peak ではない。source fixture �
 
 ## 測定値（16 kHz・16-bit FLAC 保存後、コミット aa90100）
 
-内部音声を 16 kHz mono float32 PCM にし、確定した録音を 16-bit FLAC へ変換して PCM を削除する実装で、同じコマンドを二回実行した。session bytes は二回で一致した。
+内部音声を 16 kHz mono float32 PCM にし、確定した録音を 16-bit FLAC へ変換して PCM を削除する実装で、同じコマンドを二回実行した。session・export の全ての bytes が二回で一致した。
 
 | 対象 | 時点 | 600 秒の bytes | 内訳 |
 | --- | --- | ---: | --- |
