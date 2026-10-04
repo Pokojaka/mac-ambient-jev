@@ -10,6 +10,7 @@ public enum FLACTimelineReaderError: LocalizedError, Equatable {
     case decodedFrameCountMismatch(expected: Int64, decoded: Int64)
     case decodeFailed(frame: Int64, reason: String)
     case sampleMismatch(frame: Int64)
+    case paddingNotSilent(frame: Int64)
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ public enum FLACTimelineReaderError: LocalizedError, Equatable {
             "保存済み FLAC 音声をフレーム \(frame) で復号できません: \(reason)"
         case .sampleMismatch(let frame):
             "FLAC 音声のフレーム \(frame) が元の PCM の 16-bit 量子化値と一致しません"
+        case .paddingNotSilent(let frame):
+            "FLAC 音声の録音末尾の埋めフレーム \(frame) が無音ではありません"
         }
     }
 }
@@ -58,8 +61,9 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
               let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: Self.framesPerRead) else {
             throw FLACTimelineReaderError.notCanonicalFLAC16
         }
-        guard file.length == info.committedFrames else {
-            throw FLACTimelineReaderError.lengthMismatch(expected: info.committedFrames, actual: file.length)
+        let storedFrames = RecordingFLAC.storedFrames(committedFrames: info.committedFrames)
+        guard file.length == storedFrames else {
+            throw FLACTimelineReaderError.lengthMismatch(expected: storedFrames, actual: file.length)
         }
         self.url = url
         self.info = info
@@ -103,29 +107,35 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
     private func decodeAll(expected source: (any TimelineAudioReading)?) throws {
         lock.lock()
         defer { lock.unlock() }
+        let committedFrames = info.committedFrames
+        let storedFrames = RecordingFLAC.storedFrames(committedFrames: committedFrames)
         file.framePosition = 0
         var decoded: Int64 = 0
         while true {
             let samples = try readBuffer(frameCount: Self.framesPerRead, at: decoded)
             if samples.isEmpty { break }
-            if let source {
-                guard decoded + Int64(samples.count) <= info.committedFrames else {
-                    throw FLACTimelineReaderError.decodedFrameCountMismatch(
-                        expected: info.committedFrames, decoded: decoded + Int64(samples.count)
-                    )
-                }
-                let reference = try source.readSamples(frameRange: decoded..<(decoded + Int64(samples.count)))
-                for (offset, sample) in samples.enumerated() {
-                    guard let quantized = ProcessingTimelineAudioExporter.quantize16(reference[offset]),
-                          sample == Float(quantized) / 32768 else {
+            guard decoded + Int64(samples.count) <= storedFrames else {
+                throw FLACTimelineReaderError.decodedFrameCountMismatch(
+                    expected: storedFrames, decoded: decoded + Int64(samples.count)
+                )
+            }
+            let recordedCount = Int(max(0, min(Int64(samples.count), committedFrames - decoded)))
+            if let source, recordedCount > 0 {
+                let reference = try source.readSamples(frameRange: decoded..<(decoded + Int64(recordedCount)))
+                for offset in 0..<recordedCount {
+                    guard let quantized = RecordingFLAC.quantize16(reference[offset]),
+                          samples[offset] == Float(quantized) / 32768 else {
                         throw FLACTimelineReaderError.sampleMismatch(frame: decoded + Int64(offset))
                     }
                 }
             }
+            for offset in recordedCount..<samples.count where samples[offset] != 0 {
+                throw FLACTimelineReaderError.paddingNotSilent(frame: decoded + Int64(offset))
+            }
             decoded += Int64(samples.count)
         }
-        guard decoded == info.committedFrames else {
-            throw FLACTimelineReaderError.decodedFrameCountMismatch(expected: info.committedFrames, decoded: decoded)
+        guard decoded == storedFrames else {
+            throw FLACTimelineReaderError.decodedFrameCountMismatch(expected: storedFrames, decoded: decoded)
         }
     }
 

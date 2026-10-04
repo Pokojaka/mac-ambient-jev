@@ -48,6 +48,20 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 - import の処理タイムラインは **16,000 Hz・mono・32-bit float PCM** の派生物です。保存済み original を bounded buffer で読み、全 channel の平均後に連続 SRC を行います。`processSession` は確定処理のたびに処理タイムラインを削除して original から作り直します。original の bytes は変更しません。予期しない EOF・不正 PCM・変換失敗は明示エラーです。
 - `derived` の CAF は処理用の派生音声です。録音の書き出し音声は `recording.flac` のコピー、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
 
+### 録音の FLAC 化
+
+確定処理が文字起こしを公開した後、`RecordingAudioCompactor` が `recordingPCM` の録音を `recording.flac`（16 kHz・mono・16-bit FLAC）へ変換し、PCM を削除します。符号化は ExtAudioFile で、FLAC のブロックは 4,096 フレーム固定です。Apple の FLAC エンコーダは 1 ブロック分を書くまで音声を出力しないため、4,096 フレーム未満の録音は末尾を 0 で 4,096 フレームまで埋めます。`storage.json` の `committedFrames` が録音の長さで、読み出しはその範囲だけを返し、検証は埋めたフレームが全て 0 であることも確認します。16-bit 化は float を `[-1, 1]` に clamp し、32768 倍して四捨五入した Int16 です。非有限値は変換エラーです。
+
+1. processing ディレクトリの checkpoint と PCM を検証します。長さ 0 の録音は変換対象にならず `recordingPCM` のままです（`audioSource` が nil で、変換は予定されません）。
+2. 古い `recording.flac.partial` を削除し、`recording.flac.partial` へ FLAC を書いて synchronize します。
+3. partial を復号し、全 sample が PCM の 16-bit 量子化と完全に一致し、長さが PCM と一致することを確認します。
+4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
+5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
+
+符号化は ExtAudioFile で、ブロックは 4,096 フレーム固定です。Apple の FLAC エンコーダは 1 ブロック分を書くまで音声を出力しないため、4,096 フレーム未満の録音は末尾を 0 で 4,096 フレームまで埋めます。`storage.json` の `committedFrames` が録音の長さで、読み出しはその範囲だけです。検証は埋めたフレームが全て 0 であることも確かめます。長さ 0 の録音は変換対象にならず `recordingPCM` のままです。
+
+どの時点で中断しても、再実行は `storage.json` を見て同じ終状態に収束します。`recordingPCM` のまま `recording.flac` が残っていれば、PCM と完全一致する場合だけ採用し、不一致や破損なら削除して PCM から作り直します。`recordingFLAC` では FLAC を全復号して検証し、失敗すれば PCM に触れずエラーにします。`importedOriginal` は変換対象外です。
+
 根拠: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[SessionLayout.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)、[AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioCaptureEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。
 
 ## session.json

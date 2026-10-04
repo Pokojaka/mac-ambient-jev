@@ -680,8 +680,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
             directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
             checkpoint: checkpoint
         ),
-        to: originalURL,
-        encoding: .float32CAF
+        to: originalURL
     )
     let sessionID = UUID()
     _ = try SessionBootstrapper(fileManager: .default).createSession(

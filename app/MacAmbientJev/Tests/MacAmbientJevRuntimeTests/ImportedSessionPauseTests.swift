@@ -66,8 +66,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
     try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint),
-        to: sourceURL,
-        encoding: .float32CAF
+        to: sourceURL
     )
 
     let asr = PausedImportASR()

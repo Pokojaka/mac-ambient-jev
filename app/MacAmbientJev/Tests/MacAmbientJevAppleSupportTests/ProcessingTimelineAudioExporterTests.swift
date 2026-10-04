@@ -22,7 +22,7 @@ import Testing
     let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     do {
         try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000)
-            .export(reader: reader, to: destination, encoding: .float32CAF)
+            .export(reader: reader, to: destination)
         Issue.record("Missing chunk should fail export")
     } catch {}
     #expect(try Data(contentsOf: destination) == previous)

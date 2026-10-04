@@ -69,7 +69,7 @@ func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() a
 
     try ProcessingTimelineAudioExporter(
         framesPerBuffer: 5
-    ).export(reader: reader, to: output, encoding: .float32CAF)
+    ).export(reader: reader, to: output)
 
     let file = try AVAudioFile(forReading: output)
     #expect(file.length == 24)

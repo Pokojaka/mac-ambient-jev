@@ -66,7 +66,7 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
     let decoded = UnsafeBufferPointer(start: try #require(buffer.floatChannelData)[0], count: Int(buffer.frameLength))
     #expect(decoded.count == samples.count)
     for (index, sample) in samples.enumerated() {
-        #expect(decoded[index] == Float(ProcessingTimelineAudioExporter.quantize16(sample)!) / 32_768)
+        #expect(decoded[index] == Float(RecordingFLAC.quantize16(sample)!) / 32_768)
     }
 }
 
@@ -220,8 +220,7 @@ struct ExportFixture {
         let checkpoint = try await writer.finish()
         if compacted {
             let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
-            try ProcessingTimelineAudioExporter(framesPerBuffer: 16_000)
-                .write(reader: pcm, to: layout.recordingFLACURL, encoding: .flac16)
+            try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACURL)
             try SessionAudioStorageStore(layout: layout).save(.recordingFLAC(pcm.info))
             try FileManager.default.removeItem(at: layout.processingDirectory)
         }
