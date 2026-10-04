@@ -1,22 +1,12 @@
 import Foundation
 import FluidAudio
 import MacAmbientJevCore
-import MacAmbientJevPlatformAudio
 
 enum FluidVADTimelineProcessorError: LocalizedError {
-    case invalidSourceFormat
-    case missingChannelData
-    case incompatibleCheckpoint
     case checkpointMovedBackward
 
     var errorDescription: String? {
         switch self {
-        case .invalidSourceFormat:
-            "VAD用の音声形式を作成できません"
-        case .missingChannelData:
-            "VAD用のPCMバッファを作成できません"
-        case .incompatibleCheckpoint:
-            "録音中に音声形式が変更されたため、ライブVADを継続できません"
         case .checkpointMovedBackward:
             "録音の確定位置が巻き戻ったため、ライブVADを継続できません"
         }
@@ -32,7 +22,6 @@ actor FluidVADTimelineProcessor {
     private let initialCheckpoint: AudioCheckpoint
     private let engine: any VADChunkSegmenting
     private let sourceFramesPerRead: Int64
-    private let resampler: VADResampler?
 
     private var sourceStartFrame: Int64 = 0
     private var pending16k: [Float] = []
@@ -53,14 +42,7 @@ actor FluidVADTimelineProcessor {
         self.directory = reader.directory
         self.initialCheckpoint = checkpoint
         self.engine = engine
-        self.sourceFramesPerRead = max(
-            1,
-            Int64((checkpoint.sampleRate * Self.sourceReadSeconds).rounded())
-        )
-        self.resampler = VADResampler(
-            sampleRate: checkpoint.sampleRate,
-            channelCount: checkpoint.channelCount
-        )
+        self.sourceFramesPerRead = Int64((CanonicalAudio.sampleRate * Self.sourceReadSeconds).rounded())
     }
 
     func segmentAll() async throws -> [SegmentReference] {
@@ -78,15 +60,10 @@ actor FluidVADTimelineProcessor {
         checkpoint: AudioCheckpoint
     ) async throws -> [SegmentReference] {
         guard !finished else { return [] }
-        guard checkpoint.sampleRate == initialCheckpoint.sampleRate,
-              checkpoint.channelCount == initialCheckpoint.channelCount else {
-            throw FluidVADTimelineProcessorError.incompatibleCheckpoint
-        }
+        try CanonicalAudio.validate(sampleRate: checkpoint.sampleRate, channelCount: checkpoint.channelCount,
+                                    sampleFormat: checkpoint.sampleFormat)
         guard checkpoint.committedFrames >= sourceStartFrame else {
             throw FluidVADTimelineProcessorError.checkpointMovedBackward
-        }
-        guard let resampler else {
-            throw FluidVADTimelineProcessorError.invalidSourceFormat
         }
         knownGaps = checkpoint.gapEvents
         try await drainFullVADChunks()
@@ -101,21 +78,9 @@ actor FluidVADTimelineProcessor {
                 checkpoint.committedFrames,
                 sourceStartFrame + sourceFramesPerRead
             )
-            let interleaved = try reader.readSamples(
+            pending16k.append(contentsOf: try reader.readSamples(
                 frameRange: sourceStartFrame..<sourceEndFrame
-            )
-            do {
-                pending16k.append(
-                    contentsOf: try resampler.resample(
-                        interleaved: interleaved,
-                        frameCount: Int(sourceEndFrame - sourceStartFrame)
-                    )
-                )
-            } catch VADResamplerError.invalidSourceFormat {
-                throw FluidVADTimelineProcessorError.invalidSourceFormat
-            } catch VADResamplerError.missingChannelData {
-                throw FluidVADTimelineProcessorError.missingChannelData
-            }
+            ))
             sourceStartFrame = sourceEndFrame
             try await drainFullVADChunks()
         }

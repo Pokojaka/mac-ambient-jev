@@ -38,8 +38,8 @@ func catalogKeepsCorruptSessionMetadataVisibleAsAnErrorRow() throws {
 }
 
 
-@Test(arguments: [0.0, -1.0, Double.nan, Double.infinity, -Double.infinity])
-func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
+@Test(arguments: [0.0, -1.0, Double.nan, Double.infinity, -Double.infinity, 48_000.0])
+func catalogRejectsNoncanonicalCheckpointSampleRate(_ sampleRate: Double) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -71,8 +71,8 @@ func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
     #expect(SavedSessionSummary.readable(row).canReprocess == false)
 }
 
-@Test(arguments: [16_000.0, 48_000.0])
-func catalogReportsDurationFromCheckpointSampleRate(_ sampleRate: Double) throws {
+@Test
+func catalogReportsDurationFromCanonicalCheckpoint() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -83,7 +83,7 @@ func catalogReportsDurationFromCheckpointSampleRate(_ sampleRate: Double) throws
     let checkpoint = session.appending(path: "audio/processing/\(DurableAudioWriter.checkpointFilename)")
     try JSONEncoder().encode(AudioCheckpoint(
         committedFrames: 1,
-        sampleRate: sampleRate,
+        sampleRate: CanonicalAudio.sampleRate,
         channelCount: 1,
         sampleFormat: .float32LE,
         chunkFiles: ["chunk-000000.f32le"],
@@ -93,7 +93,7 @@ func catalogReportsDurationFromCheckpointSampleRate(_ sampleRate: Double) throws
 
     let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
     #expect(summary.canReprocess)
-    #expect(try readable(summary).duration == .seconds(1 / sampleRate))
+    #expect(try readable(summary).duration == .seconds(1 / CanonicalAudio.sampleRate))
 }
 
 @Test
@@ -110,7 +110,7 @@ func catalogIncludesChunksCommittedAfterLastJSONCheckpoint() throws {
         .write(to: processing.appending(path: "chunk-000001.f32le"))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
-    #expect(row.duration == .seconds(2.0 / 48_000))
+    #expect(row.duration == .seconds(2.0 / CanonicalAudio.sampleRate))
 }
 
 @Test(arguments: [
@@ -279,7 +279,7 @@ private func writeCatalogSession(
         try Data().write(to: processing.appending(path: DurableAudioWriter.gapEventsFilename))
         try JSONEncoder().encode(AudioCheckpoint(
             committedFrames: 1,
-            sampleRate: 48_000,
+            sampleRate: CanonicalAudio.sampleRate,
             channelCount: 1,
             sampleFormat: .float32LE,
             chunkFiles: [filename],

@@ -157,8 +157,7 @@ import Testing
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let valid = try create(root: root, id: id, date: date, source: .recording(.microphone))
-        let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: valid).processingDirectory,
-            sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: valid).processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
         try await writer.append(samples: [0.25, 0.5])
         _ = try await writer.finish()
         var invalidURLs: [URL] = []

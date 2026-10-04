@@ -1,7 +1,6 @@
 import Foundation
 
 public enum DurableAudioWriterError: LocalizedError, Equatable {
-    case invalidChannelSampleCount
     case incompatibleCheckpoint
     case corruptChunk(String)
     case checkpointFrameCountMismatch
@@ -10,8 +9,6 @@ public enum DurableAudioWriterError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidChannelSampleCount:
-            "入力された音声のチャンネル構成が録音開始時と一致しません"
         case .incompatibleCheckpoint:
             "保存済み音声の索引が録音の形式と一致しません"
         case .corruptChunk(let filename):
@@ -106,12 +103,10 @@ extension AudioCheckpoint {
         let snapshot = try JSONDecoder().decode(
             AudioCheckpoint.self, from: Data(contentsOf: checkpointURL)
         )
-        guard snapshot.sampleFormat == .float32LE,
+        guard snapshot.sampleFormat == CanonicalAudio.sampleFormat,
               snapshot.hasPlainUniqueChunkFiles,
-              snapshot.channelCount > 0,
-              snapshot.channelCount <= Int.max / MemoryLayout<Float>.size,
-              snapshot.sampleRate.isFinite,
-              snapshot.sampleRate > 0,
+              snapshot.channelCount == CanonicalAudio.channelCount,
+              snapshot.sampleRate == CanonicalAudio.sampleRate,
               snapshot.chunkFrameCounts.count == snapshot.chunkFiles.count,
               snapshot.chunkFrameCounts.allSatisfy({ (1...Int(Int32.max)).contains($0) }) else {
             throw DurableAudioWriterError.incompatibleCheckpoint
@@ -296,8 +291,6 @@ public actor DurableAudioWriter {
     public static let gapEventsFilename = "audio-gaps.jsonl"
 
     public let directory: URL
-    public let sampleRate: Double
-    public let channelCount: Int
     public let chunkDurationSeconds: Double
 
     public static let chunkIndexFilename = "audio-chunks.jsonl"
@@ -309,23 +302,14 @@ public actor DurableAudioWriter {
     private var gapEvents: [AudioGapEvent]
     private var nextChunkIndex: Int
 
-    public init(
-        directory: URL,
-        sampleRate: Double,
-        channelCount: Int,
-        chunkDurationSeconds: Double
-    ) throws {
-        precondition(sampleRate > 0)
-        precondition(channelCount > 0)
+    public init(directory: URL, chunkDurationSeconds: Double) throws {
         precondition(chunkDurationSeconds > 0)
 
         self.directory = directory
-        self.sampleRate = sampleRate
-        self.channelCount = channelCount
         self.chunkDurationSeconds = chunkDurationSeconds
         self.framesPerChunk = max(
             1,
-            Int((sampleRate * chunkDurationSeconds).rounded(.down))
+            Int((CanonicalAudio.sampleRate * chunkDurationSeconds).rounded(.down))
         )
 
         try FileManager.default.createDirectory(
@@ -335,12 +319,6 @@ public actor DurableAudioWriter {
 
         let checkpointURL = directory.appending(path: Self.checkpointFilename)
         let checkpoint = try AudioCheckpoint.loadRecovered(from: directory)
-        if let checkpoint {
-            guard checkpoint.sampleRate == sampleRate,
-                  checkpoint.channelCount == channelCount else {
-                throw DurableAudioWriterError.incompatibleCheckpoint
-            }
-        }
         self.committedFrames = checkpoint?.committedFrames ?? 0
         self.chunkFiles = checkpoint?.chunkFiles ?? []
         self.chunkFrameCounts = checkpoint?.chunkFrameCounts ?? []
@@ -354,9 +332,9 @@ public actor DurableAudioWriter {
         // Initialization is a checkpoint boundary, including recovery of orphan chunks.
         let initialCheckpoint = AudioCheckpoint(
             committedFrames: committedFrames,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            sampleFormat: .float32LE,
+            sampleRate: CanonicalAudio.sampleRate,
+            channelCount: CanonicalAudio.channelCount,
+            sampleFormat: CanonicalAudio.sampleFormat,
             chunkFiles: chunkFiles,
             chunkFrameCounts: chunkFrameCounts,
             gapEvents: gapEvents
@@ -366,11 +344,8 @@ public actor DurableAudioWriter {
     }
 
     public func append(samples: [Float]) throws {
-        guard samples.count % channelCount == 0 else {
-            throw DurableAudioWriterError.invalidChannelSampleCount
-        }
-
-        let samplesPerChunk = framesPerChunk * channelCount
+        guard samples.allSatisfy(\.isFinite) else { throw CanonicalAudioError.invalidSamples }
+        let samplesPerChunk = framesPerChunk
         var offset = 0
         while offset < samples.count {
             // A previous failed write leaves a full chunk pending for retry.
@@ -438,7 +413,7 @@ public actor DurableAudioWriter {
             try chunk.synchronize()
             try chunk.close()
         }
-        let frames = sampleCount / channelCount
+        let frames = sampleCount
         var line = try JSONEncoder().encode(AudioChunkCommit(index: nextChunkIndex, frames: frames))
         line.append(0x0A)
         try appendSynchronized(line, to: Self.chunkIndexFilename)
@@ -462,9 +437,9 @@ public actor DurableAudioWriter {
     private func currentCheckpoint() -> AudioCheckpoint {
         AudioCheckpoint(
             committedFrames: committedFrames,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            sampleFormat: .float32LE,
+            sampleRate: CanonicalAudio.sampleRate,
+            channelCount: CanonicalAudio.channelCount,
+            sampleFormat: CanonicalAudio.sampleFormat,
             chunkFiles: chunkFiles,
             chunkFrameCounts: chunkFrameCounts,
             gapEvents: AudioCheckpoint.committedGaps(gapEvents, through: committedFrames)

@@ -40,9 +40,9 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
         └── diarization-input.caf     発話区間のある確定処理の話者分離入力
 ```
 
-- 録音では処理タイムライン自体が保存音声です。入力の全 channel を平均した mono の 32-bit float PCM を保存します。sample rate は録音開始時の形式です。
+- 録音では処理タイムライン自体が保存音声です。入力の全 channel を平均し、連続 SRC を通した **16,000 Hz・mono・32-bit float PCM** を保存します。
 - import では元ファイルを無再圧縮コピーした `original` または original に元の拡張子を付けたファイルが保存音声です。audio 直下の該当する通常ファイルは **ちょうど 1 つ**必要です。0 個または複数個ならエラーです。元の外部ファイルを再処理の入力にはしません。
-- import の処理タイムラインは派生物で、元ファイルの sample rate と channel 数を保持した interleaved float PCM です。`processImportedSession` は確定処理のたびに処理タイムラインを削除し、保存済み original から作り直します。そのため処理タイムラインが壊れていても、original が無傷なら再処理できます。
+- import の処理タイムラインは **16,000 Hz・mono・32-bit float PCM** の派生物です。保存済み original を bounded buffer で読み、全 channel の平均後に連続 SRC を行います。`processImportedSession` は確定処理のたびに処理タイムラインを削除して original から作り直します。original の bytes は変更しません。予期しない EOF・不正 PCM・変換失敗は明示エラーです。
 - `derived` の CAF は処理用の派生音声です。録音の書き出し音声は 24-bit FLAC、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
 
 根拠: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[SessionLayout.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)、[AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioCaptureEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。
@@ -203,8 +203,8 @@ active_runs の全フィールドは optional String の `segmentation`、`asr`�
 | キー | 型 | 意味 |
 | --- | --- | --- |
 | `committedFrames` | Int64 | 完全に公開された音声のフレーム数 |
-| `sampleRate` | Double | 正の有限 sample rate、Hz |
-| `channelCount` | Int | 正の channel 数。録音は 1、import は元の channel 数 |
+| `sampleRate` | Double | `16000` |
+| `channelCount` | Int | `1` |
 | `sampleFormat` | String | `float32LE` |
 | `chunkFiles` | String 配列 | タイムライン順の chunk basename。重複・空・`.`・`..`・`/` を含む名前は不正 |
 | `chunkFrameCounts` | Int 配列 | chunkFiles と同じ長さ。各値は 1〜Int32.max。合計が committedFrames に一致 |
@@ -214,16 +214,16 @@ gapEvents の object は `startFrame`: Int64（0 以上）、`frameCount`: Int64
 
 ### 音声用 JSONL と chunk
 
-- `audio-chunks.jsonl`: 1 行が `{"index":0,"frames":24000}` のような commit object。index は 0 始まりの chunk 番号、frames はそのファイルのフレーム数です。
-- `audio-gaps.jsonl`: 1 行が `{"startFrame":0,"frameCount":480,"reason":"missingCallback"}` のような gap object。checkpoint の gapEvents と同じ型で、snake_case ではありません。
-- chunk の basename は chunk- に 6 桁の index と .f32le を付けたものです。ヘッダーのない little-endian Float32 を channel-interleaved で保存し、期待バイト数は frames × channelCount × 4 です。
+- `audio-chunks.jsonl`: 1 行が `{"index":0,"frames":8000}` のような commit object。index は 0 始まりの chunk 番号、frames は canonical フレーム数です。
+- `audio-gaps.jsonl`: 1 行が `{"startFrame":0,"frameCount":160,"reason":"missingCallback"}` のような canonical 座標の gap object。checkpoint の gapEvents と同じ型で、snake_case ではありません。
+- chunk の basename は chunk- に 6 桁の index と .f32le を付けたものです。ヘッダーのない little-endian mono Float32 を保存し、期待バイト数は frames × 4 です。
 - 録音の通常 chunk 長は 0.5 秒、import は 5 秒です。checkpoint / finish ではメモリ上の端数 chunk も flush するため、すべての chunk が同じ長さとは限りません。
 
 chunk を atomic write して synchronize した後、その index を append / synchronize します。gap は補填無音を chunk に入れる前にログへ同期します。checkpoint は atomic write の snapshot です。メモリ上の未 flush 音声は committedFrames に含めません。
 
 読取時には snapshot、chunk index、連続する公開済み chunk を合わせて最新の checkpoint を復元します。snapshot 更新前にクラッシュしても、末尾に完全な連番 chunk があれば取り込みます。各 chunk のサイズ・channel 幅・記録フレーム数を検証し、不一致・欠損は明示エラーにします。gap は実際の durable 範囲まで切り詰め、音声の公開前に残った gap 全体を有効とはみなしません。音声用 JSONL の commit として採用するのは LF 終端の行です。
 
-`ProcessingTimeline` の型は `version`（1）、`sampleRate`、`channelCount`、`sampleFormat` を持ち、frame からミリ秒への変換を定義します。独立した timeline JSON ファイルを保存する方式ではなく、永続音声の自己記述情報は checkpoint にあります。表示時刻は frame × 1000 / sampleRate の小数部を 0 方向に切り捨てます。ASR / VAD 用の mono 化や resampling をしても、イベントの source frame は保存タイムラインの座標です。
+`ProcessingTimeline` の型は `version`（1）、`sampleRate`、`channelCount`、`sampleFormat` を持ち、frame からミリ秒への変換を定義します。独立した timeline JSON ファイルは保存せず、永続音声の自己記述情報は checkpoint にあります。保存済みセッションとエンジン入力は非 canonical 形式を拒否します。表示時刻は frame × 1000 / 16000 の小数部を 0 方向に切り捨てます。イベントの source frame は保存タイムラインの座標であり、入力デバイスや original の frame 座標ではありません。VAD・ASR・話者分離で再度 mono 化や SRC は行いません。
 
 根拠: [DurableAudioWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[ProcessingTimeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimeline.swift)、[ProcessingTimelineReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineReader.swift)、[AudioBlockRing.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[LiveTranscriptionCadence.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)。
 

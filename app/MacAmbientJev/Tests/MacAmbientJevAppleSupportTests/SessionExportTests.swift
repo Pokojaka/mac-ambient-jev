@@ -198,12 +198,7 @@ struct ExportFixture {
     ) async throws -> SavedSession {
         let id = UUID()
         let session = try writeManifest(id: id, source: .recording(.microphone))
-        let writer = try DurableAudioWriter(
-            directory: session.appending(path: "audio/processing", directoryHint: .isDirectory),
-            sampleRate: fixtureSampleRate,
-            channelCount: 1,
-            chunkDurationSeconds: 0.5
-        )
+        let writer = try DurableAudioWriter(directory: session.appending(path: "audio/processing", directoryHint: .isDirectory), chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate)
         try await writer.append(samples: samples)
         _ = try await writer.finish()
         try await writeTranscript(sessionID: id, session: session, activeRuns: activeRuns)
@@ -222,12 +217,7 @@ struct ExportFixture {
         let ext = URL(fileURLWithPath: originalFilename).pathExtension
         try originalBytes.write(to: audio.appending(path: "original.\(ext)"))
         if withDerivedTimeline {
-            let writer = try DurableAudioWriter(
-                directory: audio.appending(path: "processing", directoryHint: .isDirectory),
-                sampleRate: fixtureSampleRate,
-                channelCount: 1,
-                chunkDurationSeconds: 0.5
-            )
+            let writer = try DurableAudioWriter(directory: audio.appending(path: "processing", directoryHint: .isDirectory), chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate)
             try await writer.append(samples: Array(repeating: 0.25, count: 1_600))
             _ = try await writer.finish()
         }

@@ -153,6 +153,8 @@ struct FinalTranscriptPipeline: Sendable {
         onPhase: @escaping @Sendable (RunPhase) async -> Void,
         asrMetrics: inout ASRBatchMetrics?
     ) async throws -> FinalTranscriptPipelineOutcome {
+        try CanonicalAudio.validate(sampleRate: checkpoint.sampleRate, channelCount: checkpoint.channelCount,
+                                    sampleFormat: checkpoint.sampleFormat)
         let layout = SessionLayout(sessionURL: sessionURL)
         let reader = ProcessingTimelineReader(
             directory: layout.processingDirectory,

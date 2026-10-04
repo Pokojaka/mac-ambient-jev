@@ -121,15 +121,10 @@ func durableAudioCommitsWhileASRIsStalled() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let processing = root.appending(path: "audio/processing")
-    let processingWriter = try DurableAudioWriter(
-        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let processingWriter = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await processingWriter.append(samples: Array(repeating: 0.25, count: 10))
     let checkpoint = try await processingWriter.finish()
-    let captureWriter = try DurableAudioWriter(
-        directory: root.appending(path: "audio/capture"),
-        sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let captureWriter = try DurableAudioWriter(directory: root.appending(path: "audio/capture"), chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     let asr = StalledPipelineASR()
     let coordinator = try makeCoordinator(
         root: root, processing: processing, checkpoint: checkpoint, asr: asr,
@@ -166,13 +161,8 @@ func lowHeatRestsAfterPersistedCompletionOnlyBetweenSegments() async throws {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let audioDirectory = root.appending(path: "audio/processing", directoryHint: .isDirectory)
-        let audioWriter = try DurableAudioWriter(
-            directory: audioDirectory,
-            sampleRate: 10,
-            channelCount: 1,
-            chunkDurationSeconds: 1
-        )
-        try await audioWriter.append(samples: Array(repeating: 0.25, count: 30))
+        let audioWriter = try DurableAudioWriter(directory: audioDirectory, chunkDurationSeconds: 1)
+        try await audioWriter.append(samples: Array(repeating: 0.25, count: 48_000))
         let checkpoint = try await audioWriter.finish()
         let probe = PacingProbe()
         let eventsURL = root.appending(path: "events.jsonl")
@@ -186,7 +176,7 @@ func lowHeatRestsAfterPersistedCompletionOnlyBetweenSegments() async throws {
             shouldPause: neverPause
         )
 
-        let input = segments([("seg_0", 0, 10), ("seg_1", 10, 20), ("seg_2", 20, 30)])
+        let input = segments([("seg_0", 0, 16_000), ("seg_1", 16_000, 32_000), ("seg_2", 32_000, 48_000)])
         let result = try await coordinator.run(
             segments: input, pendingSince: pendingNow(input), existingEvents: []
         )
@@ -213,9 +203,7 @@ func criticalThermalPauseStopsBeforeRemainingSegmentsWithoutCompletingTheRun() a
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let audioDirectory = root.appending(path: "audio/processing")
-    let writer = try DurableAudioWriter(
-        directory: audioDirectory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: audioDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: Array(repeating: 0.25, count: 20))
     let checkpoint = try await writer.finish()
     let eventsURL = root.appending(path: "events.jsonl")
@@ -242,9 +230,7 @@ func coordinatorRejectsSegmentWithoutPendingTime() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let audioDirectory = root.appending(path: "audio/processing")
-    let writer = try DurableAudioWriter(
-        directory: audioDirectory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: audioDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: Array(repeating: 0.25, count: 20))
     let checkpoint = try await writer.finish()
     let coordinator = try makeCoordinator(
@@ -266,9 +252,7 @@ func coordinatorPersistsCompletedResultAndCompletesTheRun() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let audioDirectory = root.appending(path: "audio/processing", directoryHint: .isDirectory)
-    let audioWriter = try DurableAudioWriter(
-        directory: audioDirectory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let audioWriter = try DurableAudioWriter(directory: audioDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await audioWriter.append(samples: Array(repeating: 0.25, count: 10))
     let checkpoint = try await audioWriter.finish()
     let coordinator = try makeCoordinator(
@@ -292,9 +276,7 @@ func coordinatorReportsRecognitionFailuresByKind() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let audioDirectory = root.appending(path: "audio/processing", directoryHint: .isDirectory)
-    let audioWriter = try DurableAudioWriter(
-        directory: audioDirectory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let audioWriter = try DurableAudioWriter(directory: audioDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await audioWriter.append(samples: Array(repeating: 0.25, count: 10))
     let checkpoint = try await audioWriter.finish()
     let coordinator = try makeCoordinator(
@@ -445,9 +427,7 @@ func asrEventsPersistRecognitionOutcomeAndFailureKind() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let processing = root.appending(path: "audio/processing")
-    let audioWriter = try DurableAudioWriter(
-        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let audioWriter = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await audioWriter.append(samples: Array(repeating: 0.25, count: 30))
     let checkpoint = try await audioWriter.finish()
     let coordinator = try makeCoordinator(
@@ -479,9 +459,7 @@ func asrPreparationFailureIsPersistedAsEngineUnavailable() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let processing = root.appending(path: "audio/processing")
-    let audioWriter = try DurableAudioWriter(
-        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let audioWriter = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await audioWriter.append(samples: Array(repeating: 0.25, count: 10))
     let checkpoint = try await audioWriter.finish()
     let coordinator = try makeCoordinator(
@@ -507,9 +485,7 @@ func unwritableEventLogFailsTheRunAsAPersistenceFailure() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let processing = root.appending(path: "audio/processing")
-    let audioWriter = try DurableAudioWriter(
-        directory: processing, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let audioWriter = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await audioWriter.append(samples: Array(repeating: 0.25, count: 10))
     let checkpoint = try await audioWriter.finish()
     let coordinator = try makeCoordinator(

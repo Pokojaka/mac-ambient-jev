@@ -33,12 +33,7 @@ private func makeProximityFixture(thirdSpeakerSilent: Bool = false) async throws
 
     let sampleRate = 16_000.0
     let frames = 16_000
-    let writer = try DurableAudioWriter(
-        directory: root,
-        sampleRate: sampleRate,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
 
     try await writer.append(samples: sineWave(
         frequency: 3_000,

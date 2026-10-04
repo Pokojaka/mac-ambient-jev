@@ -90,12 +90,7 @@ private func makeLiveASRFixture(
         withIntermediateDirectories: true
     )
 
-    let writer = try DurableAudioWriter(
-        directory: root,
-        sampleRate: 16_000,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     try await writer.append(
         samples: Array(repeating: Float(0.1), count: 16_000)
     )
@@ -308,10 +303,7 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(
-        directory: root, sampleRate: 16_000, channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()
@@ -505,10 +497,7 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(
-        directory: root, sampleRate: 16_000, channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()

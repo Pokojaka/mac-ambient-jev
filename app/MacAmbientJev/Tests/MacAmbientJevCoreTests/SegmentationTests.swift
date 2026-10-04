@@ -91,12 +91,6 @@ func segmentationAssemblerKeepsShortSplitTailAtEndOfInput() {
 }
 
 @Test
-func vadFrameMapperMaps16kSamplesOntoCanonicalTimeline() {
-    let mapper = VADFrameMapper(canonicalSampleRate: 48_000)
-    #expect(mapper.canonicalFrame(forVADSample: 16_000) == 48_000)
-}
-
-@Test
 func segmentationAssemblerFlushesActiveSpeechAtEndOfInput() {
     var assembler = SegmentationAssembler(
         segmentationRunID: "seg_run_01",

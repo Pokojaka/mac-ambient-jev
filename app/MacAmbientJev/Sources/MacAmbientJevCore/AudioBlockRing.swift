@@ -64,12 +64,11 @@ public final class AudioBlockRing: @unchecked Sendable {
     /// Callers should use similarly small slots to avoid excessive allocation.
     public static func capacityForDuration(
         sampleRate: Double,
-        blockFrameCapacity: Int,
-        channelCount: Int
+        blockFrameCapacity: Int
     ) -> Int {
         precondition(sampleRate > 0 && sampleRate.isFinite)
-        precondition(channelCount > 0 && blockFrameCapacity >= channelCount)
-        let framesPerCallback = min(blockFrameCapacity / channelCount, 512)
+        precondition(blockFrameCapacity > 0)
+        let framesPerCallback = min(blockFrameCapacity, 512)
         precondition(framesPerCallback > 0)
         let requiredFrames = (sampleRate * minimumBufferedSeconds).rounded(.up)
         precondition(requiredFrames < Double(Int.max))
@@ -126,7 +125,6 @@ public final class AudioBlockRing: @unchecked Sendable {
         startFrame: Int64
     ) -> Bool {
         guard channelCount > 0, frameCount >= 0,
-              channelCount <= blockSampleCapacity,
               !channelCount.multipliedReportingOverflow(by: frameCount).overflow,
               !startFrame.addingReportingOverflow(Int64(frameCount)).overflow else {
             recordOverflow()
@@ -143,7 +141,7 @@ public final class AudioBlockRing: @unchecked Sendable {
         producerRawEndFrame = max(producerRawEndFrame, startFrame + Int64(frameCount))
         producerEndFrame = max(producerEndFrame, end)
         guard first < end else { return true }
-        let framesPerBlock = blockSampleCapacity / channelCount
+        let framesPerBlock = blockSampleCapacity
         var offset = Int(first - normalizedStart)
         while offset < frameCount {
             guard let slot = reserveProducerSlot() else {
@@ -153,12 +151,13 @@ public final class AudioBlockRing: @unchecked Sendable {
             let count = min(framesPerBlock, frameCount - offset)
             let destination = storage.advanced(by: slot * blockSampleCapacity)
             for frame in 0..<count {
-                let base = frame * channelCount
+                var sum: Float = 0
                 for channel in 0..<channelCount {
-                    destination[base + channel] = channelData[channel][offset + frame]
+                    sum += channelData[channel][offset + frame]
                 }
+                destination[frame] = sum / Float(channelCount)
             }
-            publish(slot: slot, startFrame: normalizedStart + Int64(offset), frameCount: Int64(count), sampleCount: count * channelCount, gap: nil)
+            publish(slot: slot, startFrame: normalizedStart + Int64(offset), frameCount: Int64(count), sampleCount: count, gap: nil)
             offset += count
         }
         return true

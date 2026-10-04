@@ -80,15 +80,3 @@ public struct SegmentationAssembler: Sendable {
         )
     }
 }
-
-public struct VADFrameMapper: Sendable, Equatable {
-    public let canonicalSampleRate: Double
-
-    public init(canonicalSampleRate: Double) {
-        self.canonicalSampleRate = canonicalSampleRate
-    }
-
-    public func canonicalFrame(forVADSample sample: Int) -> Int64 {
-        Int64((Double(sample) * canonicalSampleRate / 16_000.0).rounded())
-    }
-}

@@ -3,6 +3,7 @@ import Dispatch
 import Darwin
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
 import MacAmbientJevRuntime
 
 enum ReplayError: LocalizedError {
@@ -220,8 +221,6 @@ struct MeasureLiveLatencyCommand {
 
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
-            sampleRate: target.sampleRate,
-            channelCount: Int(target.channelCount),
             chunkDurationSeconds: LiveTranscriptionCadence.durableChunkDurationSeconds
         )
         var checkpoint = try await writer.checkpoint()
@@ -237,7 +236,7 @@ struct MeasureLiveLatencyCommand {
         _ = try await processor.startLiveTranscription(
             sessionID: sessionID,
             segmentationRunID: segmentationRunID,
-            sampleRate: target.sampleRate
+            sampleRate: CanonicalAudio.sampleRate
         )
         let vadSession = try await LiveVADSession.make(
             processingDirectory: processingDirectory,
@@ -326,7 +325,7 @@ struct MeasureLiveLatencyCommand {
                 await collector.recordFinalUpdate(segments, state: state)
             }
         )
-        let collected = await collector.results(sampleRate: target.sampleRate)
+        let collected = await collector.results(sampleRate: CanonicalAudio.sampleRate)
         let latencies = collected.records.map { $0.firstUpdateSeconds - $0.endSpeechSeconds }.sorted()
         let finalSegmentByID = Dictionary(uniqueKeysWithValues: collected.finalSegments.map { ($0.segmentID, $0) })
         let finalSpeakerLabels = speakerLabels(for: collected.finalSegments)
@@ -388,9 +387,11 @@ struct MeasureLiveLatencyCommand {
             "source_duration_seconds": sourceDuration,
             "source_sample_rate_hz": sourceFormat.sampleRate,
             "source_channels": Int(sourceFormat.channelCount),
-            "processing_sample_rate_hz": target.sampleRate,
-            "processing_channels": Int(target.channelCount),
-            "processing_format_source": targetFormatSource(options: options),
+            "processing_sample_rate_hz": CanonicalAudio.sampleRate,
+            "processing_channels": CanonicalAudio.channelCount,
+            "replay_input_sample_rate_hz": target.sampleRate,
+            "replay_input_channels": Int(target.channelCount),
+            "replay_input_format_source": targetFormatSource(options: options),
             "microphone_capture_started": false,
             "frame_count": checkpoint.committedFrames,
             "timeline_duration_seconds": Double(checkpoint.committedFrames) / checkpoint.sampleRate,
@@ -467,15 +468,19 @@ struct MeasureLiveLatencyCommand {
         })
     }
 
-    private static func feedAudio(
+    static func feedAudio(
         _ sourceURL: URL,
         sourceFormat: AVAudioFormat,
         targetFormat: AVAudioFormat,
         into writer: DurableAudioWriter
     ) async throws -> AudioCheckpoint {
         let audioFile = try AVAudioFile(forReading: sourceURL, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let ingress = try CanonicalAudioResampler(sampleRate: targetFormat.sampleRate)
         let converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
         let sourceCapacity = AVAudioFrameCount(max(1, Int((sourceFormat.sampleRate * 0.5).rounded())))
+        let needsConversion = sourceFormat.sampleRate != targetFormat.sampleRate
+            || sourceFormat.channelCount != targetFormat.channelCount
+        if needsConversion, converter == nil { throw ReplayError.invalidFormat }
         guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: sourceCapacity) else {
             throw ReplayError.invalidFormat
         }
@@ -489,10 +494,8 @@ struct MeasureLiveLatencyCommand {
             let requested = AVAudioFrameCount(min(Int64(sourceCapacity), audioFile.length - audioFile.framePosition))
             sourceBuffer.frameLength = 0
             try audioFile.read(into: sourceBuffer, frameCount: requested)
-            guard sourceBuffer.frameLength > 0 else { break }
+            guard sourceBuffer.frameLength == requested else { throw AudioFileTimelineBuilderError.unexpectedEOF }
             let converted: AVAudioPCMBuffer
-            let needsConversion = sourceFormat.sampleRate != targetFormat.sampleRate
-                || sourceFormat.channelCount != targetFormat.channelCount
             if let converter, needsConversion {
                 outputBuffer.frameLength = 0
                 var supplied = false
@@ -517,11 +520,12 @@ struct MeasureLiveLatencyCommand {
             try await appendPaced(
                 converted,
                 targetFormat: targetFormat,
+                ingress: ingress,
                 into: writer
             )
         }
 
-        if let converter {
+        if let converter, needsConversion {
             while true {
                 outputBuffer.frameLength = 0
                 var conversionError: NSError?
@@ -535,31 +539,39 @@ struct MeasureLiveLatencyCommand {
                     try await appendPaced(
                         outputBuffer,
                         targetFormat: targetFormat,
+                        ingress: ingress,
                         into: writer
                     )
                 }
-                if status == .endOfStream || outputBuffer.frameLength == 0 { break }
+                if status == .endOfStream { break }
+                guard outputBuffer.frameLength > 0 else { throw ReplayError.invalidFormat }
             }
         }
+        try await writer.append(samples: ingress.finish())
         return try await writer.finish()
     }
 
     private static func appendPaced(
         _ buffer: AVAudioPCMBuffer,
         targetFormat: AVAudioFormat,
+        ingress: CanonicalAudioResampler,
         into writer: DurableAudioWriter
     ) async throws {
         guard let channels = buffer.floatChannelData else { throw ReplayError.invalidFormat }
         let frameCount = Int(buffer.frameLength)
-        var interleaved = Array(repeating: Float.zero, count: frameCount * Int(targetFormat.channelCount))
+        var mono = Array(repeating: Float.zero, count: frameCount)
         for frame in 0..<frameCount {
+            var sum: Float = 0
             for channel in 0..<Int(targetFormat.channelCount) {
-                interleaved[frame * Int(targetFormat.channelCount) + channel] = channels[channel][frame]
+                let sample = channels[channel][frame]
+                guard sample.isFinite else { throw CanonicalAudioError.invalidSamples }
+                sum += sample
             }
+            mono[frame] = sum / Float(targetFormat.channelCount)
         }
         let duration = Double(frameCount) / targetFormat.sampleRate
         try await Task.sleep(for: .nanoseconds(UInt64((duration * 1_000_000_000).rounded())))
-        try await writer.append(samples: interleaved)
+        try await writer.append(samples: ingress.convert(mono: mono))
     }
 }
 

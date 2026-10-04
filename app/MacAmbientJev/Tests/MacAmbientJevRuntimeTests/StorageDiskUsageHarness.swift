@@ -14,6 +14,8 @@ private struct StorageHarnessVAD: FinalTranscriptVADSegmenter {
 
     func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
         try reader.validateChunkFiles()
+        try CanonicalAudio.validate(sampleRate: reader.checkpoint.sampleRate, channelCount: reader.checkpoint.channelCount,
+                                    sampleFormat: reader.checkpoint.sampleFormat)
         return [SegmentReference(
             segmentationRunID: runID, segmentID: "synthetic-speech",
             startFrame: 0, endFrame: Int64(reader.checkpoint.sampleRate)
@@ -28,7 +30,9 @@ private struct StorageHarnessDiarizer: DiarizationEngine {
 
     func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
         let file = try AVAudioFile(forReading: fileURL)
-        guard file.processingFormat.sampleRate == canonicalSampleRate, file.length > 0 else {
+        guard canonicalSampleRate == CanonicalAudio.sampleRate,
+              file.processingFormat.sampleRate == canonicalSampleRate,
+              file.processingFormat.channelCount == CanonicalAudio.channelCount, file.length > 0 else {
             throw StorageHarnessError.invalidAudio
         }
         return [SpeakerSpan(
@@ -43,7 +47,9 @@ private struct StorageHarnessASR: ASREngine {
     func prepare() async throws {}
     func unload() async {}
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
-        guard input.samples.count == input.sampleRate else { throw StorageHarnessError.invalidAudio }
+        guard input.sampleRate == Int(CanonicalAudio.sampleRate), input.samples.count == input.sampleRate else {
+            throw StorageHarnessError.invalidAudio
+        }
         return ASRResult(text: "保存容量の合成計測", detectedLanguage: "ja")
     }
 }
@@ -105,10 +111,11 @@ func storageDiskUsageHarness() async throws {
         paths: paths, sessionID: recordingID, source: .recording(.systemAudio),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
-    let writer = try DurableAudioWriter(
-        directory: SessionLayout(sessionURL: recordingURL).processingDirectory,
-        sampleRate: 48_000, channelCount: 1, chunkDurationSeconds: 0.5
-    )
+    let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: recordingURL).processingDirectory,
+        chunkDurationSeconds: 0.5)
+    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 512, sampleRate: sourceFormat.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer,
+        converter: try CanonicalAudioResampler(sampleRate: sourceFormat.sampleRate))
     // Deterministic amplitude-modulated, low-pass noise; not a human speech corpus.
     var randomState: UInt64 = 0x501_16_48
     var filtered: Float = 0
@@ -125,10 +132,21 @@ func storageDiskUsageHarness() async throws {
             mono[frame] = sample * 0.9
         }
         try sourceFile.write(from: buffer)
-        try await writer.append(samples: mono)
+        for offset in stride(from: 0, to: mono.count, by: 512) {
+            let count = min(512, mono.count - offset)
+            let accepted = mono.withUnsafeMutableBufferPointer { samples in
+                var channel = samples.baseAddress!.advanced(by: offset)
+                return withUnsafePointer(to: &channel) {
+                    ring.pushPlanarFloat32(channelData: $0, channelCount: 1,
+                        frameCount: count, startFrame: Int64(second * 48_000 + offset))
+                }
+            }
+            guard accepted else { throw StorageHarnessError.invalidAudio }
+            _ = try await drain.drainAvailable()
+        }
     }
     sourceFile.close()
-    let checkpoint = try await writer.finish()
+    let checkpoint = try await drain.finish()
     let recordingDuring = try storageHarnessBytes(recordingURL)
     let processor = NativeSessionProcessor(
         paths: paths,

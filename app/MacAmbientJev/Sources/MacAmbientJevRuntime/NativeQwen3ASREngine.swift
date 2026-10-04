@@ -73,6 +73,9 @@ actor NativeQwen3ASREngine: ASREngine {
     }
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        guard input.sampleRate == Int(CanonicalAudio.sampleRate) else {
+            throw CanonicalAudioError.noncanonicalFormat
+        }
         guard let model else {
             throw NativeQwen3ASREngineError.notPrepared
         }
@@ -84,7 +87,7 @@ actor NativeQwen3ASREngine: ASREngine {
         state = .transcribing(segmentID: "")
         let text = model.transcribe(
             audio: input.samples,
-            sampleRate: input.sampleRate,
+            sampleRate: Int(CanonicalAudio.sampleRate),
             language: Self.language
         )
         state = .ready

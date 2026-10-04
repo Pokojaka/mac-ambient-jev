@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
 import IOKit.audio
 import Synchronization
 
@@ -444,7 +445,7 @@ public final class AudioCaptureEngine {
             callbackQueue: run.callbackQueue, tap: tapBackend, sink: sink,
             ring: ring, drain: drain, drainTask: task, sessionID: sessionID,
             timeline: ProcessingTimeline(
-                sampleRate: sampleRate, channelCount: 1, sampleFormat: .float32LE
+                sampleRate: CanonicalAudio.sampleRate, channelCount: CanonicalAudio.channelCount, sampleFormat: CanonicalAudio.sampleFormat
             )
         )
         if let captureSession, let device {
@@ -551,24 +552,22 @@ public final class AudioCaptureEngine {
             throw AudioCaptureEngineError.invalidInputFormat
         }
         try CaptureDiskPolicy.checkStart(
-            diskSpace: diskSpace, directory: paths.sessionsRoot,
-            sampleRate: sampleRate, channelCount: 1
+            diskSpace: diskSpace, directory: paths.sessionsRoot
         )
         let sessionURL = try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
         let processingDirectory = SessionLayout(sessionURL: sessionURL).processingDirectory
         let writer = try DurableAudioWriter(
-            directory: processingDirectory, sampleRate: sampleRate,
-            channelCount: 1, chunkDurationSeconds: chunkDurationSeconds
+            directory: processingDirectory, chunkDurationSeconds: chunkDurationSeconds
         )
         let slotSamples = min(bufferFrameCount, 512)
         let ring = AudioBlockRing(
             capacity: max(ringCapacity, AudioBlockRing.capacityForDuration(
-                sampleRate: sampleRate, blockFrameCapacity: slotSamples, channelCount: 1
+                sampleRate: sampleRate, blockFrameCapacity: slotSamples
             )),
             blockFrameCapacity: slotSamples, sampleRate: sampleRate
         )
-        let drain = AudioCaptureDrain(ring: ring, writer: writer)
+        let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: sampleRate))
         let sink = TimestampedMonoSink(
             ring: ring, frameCapacity: bufferFrameCount, clock: clock,
             meter: input == nil ? nil : RawInputMeter(channelCount: inputChannels, sampleRate: sampleRate)

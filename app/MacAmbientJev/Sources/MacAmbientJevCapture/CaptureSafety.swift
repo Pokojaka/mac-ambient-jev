@@ -127,16 +127,15 @@ struct CaptureDiskPolicy: Sendable {
     static let marginBytes: Int64 = 256_000_000
     static let stopFloorBytes: Int64 = 128_000_000
 
-    static func requiredStartBytes(sampleRate: Double, channelCount: Int) -> Int64 {
-        Int64((sampleRate * Double(channelCount) * 4 * Double(sessionSeconds)).rounded(.up))
-            + marginBytes
-    }
-    static func mayStart(availableBytes: Int64, sampleRate: Double, channelCount: Int) -> Bool {
-        availableBytes >= requiredStartBytes(sampleRate: sampleRate, channelCount: channelCount)
+    static let requiredStartBytes = Int64(
+        (CanonicalAudio.sampleRate * Double(CanonicalAudio.channelCount) * 4 * Double(sessionSeconds)).rounded(.up)
+    ) + marginBytes
+
+    static func mayStart(availableBytes: Int64) -> Bool {
+        availableBytes >= requiredStartBytes
     }
     static func checkStart(
-        diskSpace: any CaptureDiskSpaceProviding, directory: URL,
-        sampleRate: Double, channelCount: Int
+        diskSpace: any CaptureDiskSpaceProviding, directory: URL
     ) throws {
         let available: Int64?
         do {
@@ -147,10 +146,10 @@ struct CaptureDiskPolicy: Sendable {
         guard let available else {
             throw AudioCaptureEngineError.diskSpaceUnavailable("ボリュームが空き容量を報告しませんでした")
         }
-        guard mayStart(availableBytes: available, sampleRate: sampleRate, channelCount: channelCount)
+        guard mayStart(availableBytes: available)
         else {
             throw AudioCaptureEngineError.insufficientDiskSpace(
-                requiredStartBytes(sampleRate: sampleRate, channelCount: channelCount)
+                requiredStartBytes
             )
         }
     }

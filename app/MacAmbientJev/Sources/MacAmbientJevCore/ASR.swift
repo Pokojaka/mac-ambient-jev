@@ -79,35 +79,15 @@ public struct ASRAudioLoader: Sendable {
     }
 
     public func load(segment: SegmentReference) throws -> ASRAudioInput {
+        try CanonicalAudio.validate(sampleRate: reader.checkpoint.sampleRate,
+                                    channelCount: reader.checkpoint.channelCount,
+                                    sampleFormat: reader.checkpoint.sampleFormat)
         guard segment.startFrame <= segment.endFrame else {
             throw ProcessingTimelineReaderError.invalidFrameRange
         }
-        let interleaved = try reader.readSamples(
-            frameRange: segment.startFrame..<segment.endFrame
-        )
-        let channels = reader.checkpoint.channelCount
-        let mono: [Float]
-
-        if channels == 1 {
-            mono = interleaved
-        } else {
-            let frameCount = interleaved.count / channels
-            var result = Array(repeating: Float.zero, count: frameCount)
-
-            for frame in 0..<frameCount {
-                let base = frame * channels
-                var sum: Float = 0
-                for channel in 0..<channels {
-                    sum += interleaved[base + channel]
-                }
-                result[frame] = sum / Float(channels)
-            }
-            mono = result
-        }
-
         return ASRAudioInput(
-            samples: mono,
-            sampleRate: Int(reader.checkpoint.sampleRate.rounded())
+            samples: try reader.readSamples(frameRange: segment.startFrame..<segment.endFrame),
+            sampleRate: Int(CanonicalAudio.sampleRate)
         )
     }
 }

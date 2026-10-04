@@ -16,6 +16,7 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
 
     private let modelDirectory: URL
     private var manager: OfflineDiarizerManager?
+    private let config = OfflineDiarizerConfig.default
 
     init(paths: AppPaths) {
         self.modelDirectory = paths.modelsRoot.appending(
@@ -39,7 +40,11 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
             at: modelDirectory,
             withIntermediateDirectories: true
         )
-        let loading = OfflineDiarizerManager()
+        try config.validate()
+        guard Double(config.segmentation.sampleRate) == CanonicalAudio.sampleRate else {
+            throw CanonicalAudioError.noncanonicalFormat
+        }
+        let loading = OfflineDiarizerManager(config: config)
         try await loading.prepareModels(directory: modelDirectory)
         manager = loading
         return loading
@@ -49,8 +54,12 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         fileURL: URL,
         canonicalSampleRate: Double
     ) async throws -> [SpeakerSpan] {
+        guard canonicalSampleRate == CanonicalAudio.sampleRate else { throw CanonicalAudioError.noncanonicalFormat }
+        let started = Date()
+        let source = try CanonicalCAFAudioSource(fileURL: fileURL)
+        let loadingSeconds = Date().timeIntervalSince(started)
         let manager = try await preparedManager()
-        let result = try await manager.process(fileURL)
+        let result = try await manager.process(audioSource: source, audioLoadingSeconds: loadingSeconds, progressCallback: nil)
         let mapper = SpeakerSpanMapper(
             sampleRate: canonicalSampleRate
         )

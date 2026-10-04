@@ -22,14 +22,13 @@ macOS 以外でも定義されるターゲットには外部 Swift パッケー�
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevAppleSupport` | library | Keychain、AVFoundation によるファイルデコード・音声変換、保存済み文字起こし読取と書き出し。Core に依存 |
+| `MacAmbientJevAppleSupport` | library | Keychain、AVFoundation による bounded ファイルデコードと stateful canonical SRC、保存済み文字起こし読取と書き出し。Core に依存 |
 | `MacAmbientJevCapture` | library | マイク・システム音声入力、Core Audio tap、権限、入力音量制御、タイムスタンプ付き mono 入力と録音寿命管理。Core と AppleSupport に依存 |
-| `MacAmbientJevPlatformAudio` | target | `VADResampler` による AVFoundation と FluidAudio の入力変換。FluidAudio に依存。独立した library product はない |
-| `MacAmbientJevRuntime` | library | FluidAudio VAD・offline diarization、Qwen3-ASR、ライブ認識、共通確定処理、近接度の音響 evidence。Core、AppleSupport、PlatformAudio、FluidAudio、Qwen3ASR に依存 |
+| `MacAmbientJevRuntime` | library | FluidAudio VAD・offline diarization、Qwen3-ASR、ライブ認識、共通確定処理、近接度の音響 evidence。Core、AppleSupport、FluidAudio、Qwen3ASR、MLX に依存 |
 | `MacAmbientJev` | executable | SwiftUI 画面、`AppState`、録音・処理キュー・設定・保存済みセッション操作。Core、AppleSupport、Capture、Runtime に依存 |
 | `MacAmbientJevCaptureSystemAudio` | executable | システム音声のキャプチャと確定処理。Core、Capture、Runtime、MLX に依存 |
 | `MacAmbientJevProcessRecording` | executable | ファイル処理、セッションの inspect と resume、JSON と計測の出力。Core、AppleSupport、Runtime、MLX に依存 |
-| `MacAmbientJevMeasureLiveLatency` | executable | 音声ファイルの再生速度に合わせたライブ処理の遅延計測。Core と Runtime に依存 |
+| `MacAmbientJevMeasureLiveLatency` | executable | 音声ファイルの再生速度に合わせたライブ処理の遅延計測。Core、AppleSupport、Runtime に依存 |
 
 macOS 限定の test target は `MacAmbientJevProcessRecordingTests`、`MacAmbientJevMeasureLiveLatencyTests`、`MacAmbientJevAppTests`、`MacAmbientJevCaptureTests`、`MacAmbientJevCaptureSystemAudioTests`、`MacAmbientJevAppleSupportTests`、`MacAmbientJevRuntimeTests` です。
 
@@ -39,9 +38,9 @@ macOS の外部依存は FluidAudio 0.15.8、speech-swift の revision `c4c2fabb
 
 Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI の import を禁止しています。Foundation、Synchronization による保存・同期や、FoundationNetworking を使う Jev 通信は Core に置かれます。**portable は「純粋関数だけ」「ネットワークを一切使わない」という意味ではありません。**
 
-実推論は Core の `ASREngine` と `DiarizationEngine` に対する Runtime の実装です。確定 VAD の `FinalTranscriptVADSegmenter` は Runtime の protocol です。Apple の音声変換は AppleSupport / PlatformAudio、入力装置や権限は Capture、SwiftUI の状態は App に分離します。Linux のモデル runner は [tools/linux-audio](../tools/linux-audio) にあり、Swift アプリの Runtime 依存には入りません。
+実推論は Core の `ASREngine` と `DiarizationEngine` に対する Runtime の実装です。確定 VAD の `FinalTranscriptVADSegmenter` は Runtime の protocol です。Core の drain は Foundation-only の `CanonicalAudioConverting` を受け取り、stateful AVAudioConverter adapter は AppleSupport に置きます。入力装置や権限は Capture、SwiftUI の状態は App に分離します。Linux のモデル runner は [tools/linux-audio](../tools/linux-audio) にあり、Swift アプリの Runtime 依存には入りません。
 
-根拠: [ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)、[Diarization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Diarization.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[VADResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevPlatformAudio/VADResampler.swift)、[JevClient.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)。
+根拠: [CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)、[Diarization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Diarization.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)、[JevClient.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)。
 
 ## 録音とライブ表示のデータフロー
 
@@ -49,7 +48,8 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 マイク / システム音声
   → TimestampedMonoSink（全入力 channel の平均）
   → AudioBlockRing
-  → AudioCaptureDrain → DurableAudioWriter → 保存済み PCM chunk / checkpoint
+  → AudioCaptureDrain（連続 SRC → 16 kHz mono float32）
+  → DurableAudioWriter → 保存済み PCM chunk / checkpoint
                                               ↓
                                       LiveVADSession
                                               ↓ 閉じた VAD 区間
@@ -72,7 +72,7 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 ## ファイル入力と共通確定処理
 
-ファイル入力では `AudioImporter` が元ファイルをセッション内に無再圧縮コピーします。`AudioFileTimelineBuilder` はデコードした元の sample rate / channel 数の float PCM を処理タイムラインに保存します。録音の保存音声は mono ですが、import の元ファイルと処理タイムラインは入力の channel 数を保持します。ASR 入力を読む際に必要なら全 channel を平均して mono にします。
+ファイル入力では `AudioImporter` が元ファイルをセッション内に無再圧縮コピーします。`AudioFileTimelineBuilder` は bounded buffer で original を読み、全 channel の平均後に連続 SRC して 16 kHz mono float32 の処理タイムラインを保存します。original の bytes は保持します。録音・import の VAD、ASR、話者分離は canonical 入力を直接消費し、処理段階で SRC や downmix は行いません。
 
 録音停止、ライブ失敗後の保存音声、import、利用者による再処理、クラッシュ復旧、CLI resume は、`NativeSessionProcessor` の共通確定処理を使います。
 

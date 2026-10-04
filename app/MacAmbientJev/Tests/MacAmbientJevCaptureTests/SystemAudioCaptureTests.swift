@@ -448,7 +448,7 @@ func timestampedSilentPacketAfterSignal() throws {
 
 @MainActor
 private final class FakeTap: SystemAudioTapProviding {
-    var sampleRate: Double = 1_000
+    var sampleRate: Double = CanonicalAudio.sampleRate
     var starts = 0
     var stops = 0
     var shouldFail = false
@@ -795,5 +795,34 @@ func tapWriterFlushFailureReleasesResources() async throws {
         #expect(!engine.isRecording)
         #expect(tap.stops == 1)
         #expect(power.releases == 1)
+    }
+}
+
+@MainActor
+@Test(arguments: [48_000.0, 44_100.0, 16_000.0])
+func captureStartReservesStoredPCMNotDeviceRate(rate: Double) async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    for bytes: Int64 in [601_600_000, 601_599_999] {
+        let tap = FakeTap()
+        tap.sampleRate = rate
+        let engine = AudioCaptureEngine(paths: paths, power: FakeCapturePower(),
+            diskSpace: AvailableDisk(bytes: bytes), tapFactory: { tap },
+            systemAudioPermission: AuthorizedSystemAudioPermission(), outputProcesses: NoExternalOutput(),
+            micInputVolumeFactory: MicVolumeFactoryProbe().make)
+        let session = try createTapSession(paths: paths)
+        do {
+            try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+                onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
+            #expect(bytes == 601_600_000)
+            let result = try await engine.stop()
+            #expect(result.checkpoint.sampleRate == CanonicalAudio.sampleRate)
+            #expect(result.checkpoint.channelCount == CanonicalAudio.channelCount)
+        } catch AudioCaptureEngineError.insufficientDiskSpace(let required) {
+            #expect(bytes == 601_599_999)
+            #expect(required == 601_600_000)
+            #expect(tap.starts == 0)
+        }
     }
 }

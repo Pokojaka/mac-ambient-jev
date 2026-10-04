@@ -5,7 +5,7 @@ import Testing
 @Test func failedPartialChunkFlushPreservesAudioForRetry() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: [1, 2, 3])
 
     let blockedChunk = root.appending(path: "chunk-000000.f32le")
@@ -72,7 +72,7 @@ import Testing
 @Test func reopeningRejectsTruncatedIndexedChunkBeforeAppending() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let first = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let first = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await first.append(samples: Array(repeating: 1, count: 10))
     let chunk = root.appending(path: "chunk-000000.f32le")
     let handle = try FileHandle(forWritingTo: chunk)
@@ -80,14 +80,14 @@ import Testing
     try handle.close()
 
     #expect(throws: DurableAudioWriterError.corruptChunk("chunk-000000.f32le")) {
-        _ = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+        _ = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     }
 }
 
 @Test func tornChunkIndexTailDoesNotHideAudioOrCorruptNextAppend() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: Array(repeating: 1, count: 10))
     let index = root.appending(path: DurableAudioWriter.chunkIndexFilename)
     let handle = try FileHandle(forWritingTo: index)
@@ -97,7 +97,7 @@ import Testing
 
     let recovered = try #require(try AudioCheckpoint.loadRecovered(from: root))
     #expect(recovered.committedFrames == 10)
-    let reopened = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let reopened = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await reopened.append(samples: Array(repeating: 2, count: 10))
     let checkpoint = try await reopened.finish()
     #expect(checkpoint.committedFrames == 20)
@@ -109,7 +109,7 @@ import Testing
 @Test func recoveredGapLogExcludesAudioLostWithAnUncommittedTail() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: Array(repeating: 1, count: 10))
     try await writer.recordGap(startFrame: 10, frameCount: 12, reason: .missingCallback)
     try await writer.append(samples: Array(repeating: 0, count: 10))
@@ -127,7 +127,7 @@ import Testing
     #expect(try await writer.checkpoint().gapEvents == recovered.gapEvents)
     #expect(try AudioCheckpoint.loadRecovered(from: root) == recovered)
 
-    let reopened = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let reopened = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await reopened.append(samples: Array(repeating: 2, count: 10))
     let final = try await reopened.finish()
     #expect(final.gapEvents == recovered.gapEvents)
@@ -139,12 +139,12 @@ import Testing
 @Test func recoveryDropsGapLoggedBeforeAnyReplacementAudioCommitted() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.recordGap(startFrame: 0, frameCount: 3, reason: .invalidBuffer)
     #expect(await writer.committedSnapshot().gapEvents.isEmpty)
     try await writer.append(samples: [0, 0, 0])
     #expect(try AudioCheckpoint.loadRecovered(from: root)?.gapEvents == [])
-    let reopened = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let reopened = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await reopened.append(samples: Array(repeating: 7, count: 10))
     let final = try await reopened.finish()
     #expect(final.gapEvents.isEmpty)
@@ -156,22 +156,22 @@ import Testing
 @Test func largeAppendCommitsEveryChunkWithoutRewritingTheSnapshot() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 2, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     let checkpointURL = root.appending(path: DurableAudioWriter.checkpointFilename)
     let initialSnapshot = try Data(contentsOf: checkpointURL)
-    let samples = (0..<2_010).map(Float.init)
+    let samples = (0..<1_005).map(Float.init)
     try await writer.append(samples: samples)
     #expect(try Data(contentsOf: checkpointURL) == initialSnapshot)
     let recovered = try #require(try AudioCheckpoint.loadRecovered(from: root))
     #expect(recovered.committedFrames == 1_000)
     #expect(recovered.chunkFrameCounts == Array(repeating: 10, count: 100))
     #expect(try ProcessingTimelineReader(directory: root, checkpoint: recovered)
-        .readSamples(frameRange: 995..<1_000) == Array(samples[1_990..<2_000]))
+        .readSamples(frameRange: 995..<1_000) == Array(samples[995..<1_000]))
     let final = try await writer.finish()
     #expect(final.committedFrames == 1_005)
     #expect(final.chunkFrameCounts == Array(repeating: 10, count: 100) + [5])
     #expect(try ProcessingTimelineReader(directory: root, checkpoint: final)
-        .readSamples(frameRange: 1_000..<1_005) == Array(samples[2_000..<2_010]))
+        .readSamples(frameRange: 1_000..<1_005) == Array(samples[1_000..<1_005]))
     #expect(try AudioCheckpoint.loadRecovered(from: root) == final)
 }
 
@@ -231,8 +231,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 20)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     let samples = (1...20).map(Float.init)
     #expect(pushMono(samples, at: 0, into: ring))
 
@@ -251,7 +251,8 @@ import Testing
         .readSamples(frameRange: 0..<10) == Array(samples[..<10]))
 
     try FileManager.default.removeItem(at: blockedChunk)
-    #expect(try await drain.drainAvailable() == 1)
+    // The block was converted before the failed append; the retry resends only its output.
+    #expect(try await drain.drainAvailable() == 0)
     let final = try await drain.finish()
     #expect(final.committedFrames == 20)
     #expect(final.chunkFrameCounts == [10, 10])
@@ -264,8 +265,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 4.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(try await drain.drainAvailable() == 1)
     #expect(pushMono([9, 10], at: 9, into: ring))
@@ -299,8 +300,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 4)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 4.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
 
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(!pushMono([3, 4, 5], at: 2, into: ring))
@@ -333,8 +334,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
 
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(pushMono([5, 6], at: 4, into: ring))
@@ -350,17 +351,17 @@ import Testing
     ])
 }
 
-@Test func subMillisecondPTSJitterIsContinuousButLongerGapIsPreserved() async throws {
+@Test func singleFramePTSJitterIsContinuousButLongerGapIsPreserved() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 3, blockFrameCapacity: 2, sampleRate: 1_000)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 1_000, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let ring = AudioBlockRing(capacity: 3, blockFrameCapacity: 2, sampleRate: CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1000.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
-    #expect(pushMono([3], at: 3, into: ring)) // 1 ms jitter: not a dropout.
-    #expect(pushMono([7], at: 6, into: ring)) // 2 ms gap since the last raw callback end.
+    #expect(pushMono([3], at: 3, into: ring)) // One-frame rounding difference is tolerated.
+    #expect(pushMono([7], at: 6, into: ring)) // Two missing source frames.
     #expect(ring.dropoutCount == 1)
-    ring.finish(tailFrame: 8) // The stop clock's 1 ms rounding difference is also jitter.
+    ring.finish(tailFrame: 8) // One-frame stop-clock rounding difference.
     #expect(ring.dropoutCount == 1)
     let checkpoint = try await drain.finish()
     #expect(try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
@@ -373,9 +374,9 @@ import Testing
 @Test func repeatedSmallPTSLossesPreserveAccumulatedMissingFrames() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2, sampleRate: 1_000)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 1_000, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2, sampleRate: CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1000.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
 
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(pushMono([3, 4], at: 3, into: ring))
@@ -392,12 +393,12 @@ import Testing
     #expect(checkpoint.gapEvents.reduce(Int64(0)) { $0 + $1.frameCount } == 3)
 }
 
-@Test func twentyFramePTSLossesAtFortyEightKilohertzKeepEveryCallbackAtItsPTS() async throws {
+@Test func twentyFramePTSLossesKeepEveryCallbackAtItsPTS() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2, sampleRate: 48_000)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 48_000, channelCount: 1, chunkDurationSeconds: 5)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2, sampleRate: CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 15)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(pushMono([3, 4], at: 22, into: ring))
     #expect(pushMono([5, 6], at: 44, into: ring))
@@ -421,9 +422,9 @@ import Testing
 @Test func stopAfterOneFramePTSJitterDoesNotAppendFalseTailSilence() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2, sampleRate: 1_000)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 1_000, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2, sampleRate: CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1000.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(pushMono([3], at: 3, into: ring))
     ring.finish(tailFrame: 4) // Last raw PTS end is one frame after normalized end.
@@ -439,8 +440,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 4)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 4.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2, 3, 4], at: 0, into: ring))
     #expect(try await drain.drainAvailable() == 1)
     #expect(pushMono([7], at: 6, into: ring))
@@ -456,11 +457,11 @@ import Testing
 @Test func resumedWriterOffsetsNewCaptureGapsAfterExistingChunks() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let previous = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let previous = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await previous.append(samples: Array(repeating: 9, count: 10))
-    let resumed = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let resumed = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
-    let drain = AudioCaptureDrain(ring: ring, writer: resumed)
+    let drain = AudioCaptureDrain(ring: ring, writer: resumed, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(pushMono([5], at: 4, into: ring))
     ring.finish(tailFrame: 6)
@@ -478,8 +479,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
 
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(!pushMono([5, 6], at: 4, into: ring))
@@ -502,8 +503,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
 
     #expect(pushMono([1, 2], at: 0, into: ring))
     ring.noteMissing(startFrame: 2, frameCount: 2) // Full ring: no marker slot.
@@ -524,8 +525,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     ring.noteMissing(startFrame: 0, frameCount: 2)
     ring.finish(tailFrame: 2)
     let checkpoint = try await drain.finish()
@@ -540,8 +541,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     ring.finish(tailFrame: 4)
     let checkpoint = try await drain.finish()
     #expect(ring.dropoutCount == 1)
@@ -555,9 +556,9 @@ import Testing
 @Test func oversizedPlanarCallbackSplitsWithoutDroppingFrames() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 3, blockFrameCapacity: 4)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 2, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let ring = AudioBlockRing(capacity: 3, blockFrameCapacity: 2)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     var left: [Float] = [1, 2, 3, 4, 5]
     var right: [Float] = [10, 20, 30, 40, 50]
     let accepted = left.withUnsafeMutableBufferPointer { l in
@@ -574,7 +575,7 @@ import Testing
     ring.finish(tailFrame: 5)
     let checkpoint = try await drain.finish()
     #expect(try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
-        .readSamples(frameRange: 0..<5) == [1, 10, 2, 20, 3, 30, 4, 40, 5, 50])
+        .readSamples(frameRange: 0..<5) == [5.5, 11, 16.5, 22, 27.5])
     #expect(checkpoint.gapEvents.isEmpty)
 }
 
@@ -582,8 +583,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(!pushMono([1, 2, 3, 4, 5], at: 0, into: ring))
     ring.finish(tailFrame: 5)
     let checkpoint = try await drain.finish()
@@ -598,8 +599,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([99, 98, 1, 2], at: -2, into: ring))
     #expect(pushMono([77, 3, 4], at: 1, into: ring))
     ring.finish(tailFrame: 4)
@@ -611,16 +612,16 @@ import Testing
 
 @Test func ringDurationCapacityUsesDeviceFramesNotInterleavedSamples() {
     let slots = AudioBlockRing.capacityForDuration(
-        sampleRate: 48_000, blockFrameCapacity: 1_024, channelCount: 2)
+        sampleRate: 48_000, blockFrameCapacity: 512)
     #expect(slots == 938)
-    #expect(slots * (1_024 / 2) >= 48_000 * 10)
+    #expect(slots * 512 >= 48_000 * 10)
 }
 
 @Test func tenSecondRingHandlesFiveHundredTwelveFrameCallbacksAtFortyEightKilohertz() {
     let callbackFrames = 512
     let callbackCount = 938 // ceil(48_000 * 10 / 512)
     let slots = AudioBlockRing.capacityForDuration(
-        sampleRate: 48_000, blockFrameCapacity: 16_384, channelCount: 1)
+        sampleRate: 48_000, blockFrameCapacity: 16_384)
     // A configured maximum callback size does not guarantee callbacks arrive that large.
     let ring = AudioBlockRing(capacity: slots, blockFrameCapacity: callbackFrames)
     var samples = [Float](repeating: 1, count: callbackFrames)
@@ -650,8 +651,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
     var dummy: [Float] = [99]
     let emptyAccepted = dummy.withUnsafeMutableBufferPointer { samples in
@@ -676,8 +677,8 @@ import Testing
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 2)
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
     #expect(!pushMono([3, 4], at: 2, into: ring))
     #expect(try await drain.drainAvailable() == 1)
@@ -725,7 +726,7 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
 @Test func drainFinishCannotOvertakeAnAwaitingWriterAppend() async throws {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
     let writer = GatedCaptureWriter()
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
 
     let draining = Task { try await drain.drainAvailable() }
@@ -751,7 +752,7 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
 @Test func drainSnapshotCannotPassAnAwaitingWriterAppend() async throws {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
     let writer = GatedCaptureWriter()
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
     #expect(pushMono([1, 2], at: 0, into: ring))
 
     let draining = Task { try await drain.drainAvailable() }
@@ -768,7 +769,6 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
 }
 
 private actor GatedCaptureWriter: AudioCaptureWriting {
-    let channelCount = 1
     private var samples: [Float] = []
     private var gaps: [AudioGapEvent] = []
     private var firstAppendWaiting = false
@@ -806,8 +806,8 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     func committedSnapshot() -> AudioCheckpoint {
         AudioCheckpoint(
                         committedFrames: Int64(samples.count),
-                        sampleRate: 10,
-                        channelCount: channelCount,
+                        sampleRate: CanonicalAudio.sampleRate,
+                        channelCount: CanonicalAudio.channelCount,
                         sampleFormat: .float32LE,
                         chunkFiles: [],
                         chunkFrameCounts: [],
@@ -826,8 +826,8 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
 @Test func partialReadsMatchTheSameRangeOfAFullRead() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 2, chunkDurationSeconds: 1)
-    let samples = (0..<26).map(Float.init)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 4.0 / CanonicalAudio.sampleRate)
+    let samples = (0..<13).map(Float.init)
     try await writer.append(samples: samples)
     let checkpoint = try await writer.finish()
     #expect(checkpoint.chunkFrameCounts == [4, 4, 4, 1])
@@ -836,14 +836,14 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     #expect(full == samples)
     for range: Range<Int64> in [0..<1, 3..<5, 1..<12, 4..<8, 11..<13, 12..<13, 6..<6] {
         #expect(try reader.readSamples(frameRange: range)
-            == Array(full[Int(range.lowerBound) * 2..<Int(range.upperBound) * 2]))
+            == Array(full[Int(range.lowerBound)..<Int(range.upperBound)]))
     }
 }
 
 @Test func partialReadStillRejectsAChunkWhoseSizeDiffersFromItsIndex() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 4, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 4.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: (0..<8).map(Float.init))
     let checkpoint = try await writer.finish()
     let handle = try FileHandle(forWritingTo: root.appending(path: "chunk-000001.f32le"))
@@ -862,17 +862,10 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     }
 }
 
-@Test func storageErrorsDescribeTheirCauseAndKeepTheChunkName() async throws {
-    #expect(ProcessingTimelineReaderError.corruptChunk("chunk-000003.f32le").localizedDescription
-        == "保存済み音声の断片 chunk-000003.f32le が壊れています")
-    #expect(DurableAudioWriterError.corruptChunk("chunk-000003.f32le").localizedDescription
-        == "保存済み音声の断片 chunk-000003.f32le が壊れています")
-    #expect(DurableAudioWriterError.invalidChannelSampleCount.localizedDescription
-        == "入力された音声のチャンネル構成が録音開始時と一致しません")
-
+@Test func storageErrorKeepsTheFailedChunkName() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 2, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 2.0 / CanonicalAudio.sampleRate)
     try FileManager.default.createDirectory(
         at: root.appending(path: "chunk-000000.f32le"), withIntermediateDirectories: false
     )
@@ -881,6 +874,5 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
         Issue.record("A chunk path occupied by a directory must not be written")
     } catch {
         #expect(error as? DurableAudioWriterError == .writeFailed("chunk-000000.f32le"))
-        #expect(error.localizedDescription == "chunk-000000.f32le を書き込めませんでした")
     }
 }

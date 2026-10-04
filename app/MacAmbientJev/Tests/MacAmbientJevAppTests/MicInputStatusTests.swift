@@ -3,6 +3,7 @@ import Synchronization
 import Testing
 @testable import MacAmbientJev
 @testable import MacAmbientJevCapture
+import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevRuntime
 
@@ -137,16 +138,13 @@ private final class InputFreeMicCaptureEngine: AppCaptureEngine {
             throw AudioCaptureEngineError.micInputVolumeNotConfigured
         }
         self.configuration = nil
-        let writer = try DurableAudioWriter(
-            directory: root.appending(path: "capture-\(sessionID.uuidString)"),
-            sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: root.appending(path: "capture-\(sessionID.uuidString)"), chunkDurationSeconds: 1)
         let ring = AudioBlockRing(capacity: 16, blockFrameCapacity: 512, sampleRate: 16_000)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: clock,
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
         engine.installCapture(
             session: nil, output: nil, receiver: nil, callbackQueue: nil, tap: nil, sink: sink,
-            ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer), drainTask: nil,
+            ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate)), drainTask: nil,
             sessionID: sessionID,
             timeline: ProcessingTimeline(sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE)
         )

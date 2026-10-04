@@ -50,10 +50,6 @@ private func alternating(_ amplitude: Float, count: Int) -> [Float] {
     (0..<count).map { $0.isMultiple(of: 2) ? amplitude : -amplitude }
 }
 
-private func sine(amplitude: Float, frequency: Double, sampleRate: Double, count: Int) -> [Float] {
-    (0..<count).map { Float(Double(amplitude) * sin(2 * .pi * frequency * Double($0) / sampleRate)) }
-}
-
 private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
 }
@@ -146,9 +142,7 @@ struct MicSpeechLevelTests {
     func liveSessionDeliversEachChunkLevelExactlyOnce() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(
-            directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
         try await writer.append(samples: alternating(0.01, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let vad = ScriptedProbabilityVAD(measures: true) { _ in 0.9 }
@@ -184,9 +178,7 @@ struct MicSpeechLevelTests {
     func rejectedChunksBetweenSpeechAreNotReported() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(
-            directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
         try await writer.append(samples: alternating(0.2, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(
@@ -201,9 +193,7 @@ struct MicSpeechLevelTests {
     func chunkFailureNeitherDropsNorDuplicatesLevels() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(
-            directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
         try await writer.append(samples: alternating(0.01, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(
@@ -223,9 +213,7 @@ struct MicSpeechLevelTests {
     func windowTouchingReplacementSilenceIsExcluded() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(
-            directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
         try await writer.append(samples: alternating(0.01, count: 6_000))
         try await writer.recordGap(startFrame: 6_000, frameCount: 1_000, reason: .missingCallback)
         try await writer.append(samples: Array(repeating: 0, count: 1_000))
@@ -244,9 +232,7 @@ struct MicSpeechLevelTests {
     func disabledMeasurementDeliversNoLevels() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(
-            directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
         try await writer.append(samples: alternating(0.01, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let vad = ScriptedProbabilityVAD(measures: false) { _ in 0.9 }
@@ -265,32 +251,4 @@ struct MicSpeechLevelTests {
         #expect(await vad.measuredSampleCount == 0)
     }
 
-    /// The durable timeline reaches the VAD through the production resampler. Interior windows
-    /// avoid converter start-up and flush transients; 1% in mean square (~0.04 dB) bounds the
-    /// converter's passband ripple at 440 Hz, far below the policy's multi-dB thresholds.
-    @Test(arguments: [16_000.0, 96_000.0])
-    func resampledToneKeepsItsMeanSquare(sampleRate: Double) async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(
-            directory: root, sampleRate: sampleRate, channelCount: 1, chunkDurationSeconds: 1
-        )
-        let amplitude: Float = 0.02
-        try await writer.append(samples: sine(
-            amplitude: amplitude, frequency: 440, sampleRate: sampleRate, count: Int(sampleRate * 2)
-        ))
-        let checkpoint = await writer.committedSnapshot()
-        let processor = FluidVADTimelineProcessor(
-            reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-            engine: ScriptedProbabilityVAD(measures: true) { _ in 0.9 }
-        )
-        _ = try await processor.processAvailable(checkpoint: checkpoint)
-        let levels = await processor.takeMicSpeechLevels()
-        #expect(levels.count == 7)
-        let expected = Double(amplitude * amplitude) / 2
-        for window in levels.dropFirst().dropLast() {
-            let meanSquare = try #require(window.speechMeanSquare)
-            #expect(abs(meanSquare - expected) / expected < 0.01, "window \(window.startSeconds): \(meanSquare)")
-        }
-    }
 }

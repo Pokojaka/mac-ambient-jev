@@ -72,6 +72,8 @@ public struct SessionLayout: Sendable, Equatable {
                   checkpoint.committedFrames > 0 else {
                 return nil
             }
+            try CanonicalAudio.validate(sampleRate: checkpoint.sampleRate, channelCount: checkpoint.channelCount,
+                                        sampleFormat: checkpoint.sampleFormat)
             try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
                 .validateChunkFiles()
             return .recordedTimeline(checkpoint)

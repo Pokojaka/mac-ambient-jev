@@ -81,10 +81,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
-    let writer = try DurableAudioWriter(
-        directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
-        sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 0.5
-    )
+    let writer = try DurableAudioWriter(directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory), chunkDurationSeconds: 0.5)
     state.showNewSession(sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let pressure = ThermalPressureSource(.critical)

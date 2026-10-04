@@ -87,15 +87,10 @@ targets += [
         dependencies: ["MacAmbientJevCore", "MacAmbientJevAppleSupport"]
     ),
     .target(
-        name: "MacAmbientJevPlatformAudio",
-        dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
-    ),
-    .target(
         name: "MacAmbientJevRuntime",
         dependencies: [
             "MacAmbientJevCore",
             "MacAmbientJevAppleSupport",
-            "MacAmbientJevPlatformAudio",
             .product(name: "FluidAudio", package: "FluidAudio"),
             .product(name: "Qwen3ASR", package: "speech-swift"),
             .product(name: "MLX", package: "mlx-swift")
@@ -132,6 +127,7 @@ targets += [
         name: "MacAmbientJevMeasureLiveLatency",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime"
         ]
     ),
@@ -145,7 +141,7 @@ targets += [
     ),
     .testTarget(
         name: "MacAmbientJevAppTests",
-        dependencies: ["MacAmbientJev", "MacAmbientJevCore", "MacAmbientJevCapture"]
+        dependencies: ["MacAmbientJev", "MacAmbientJevCore", "MacAmbientJevCapture", "MacAmbientJevAppleSupport"]
     ),
     .testTarget(
         name: "MacAmbientJevCaptureTests",

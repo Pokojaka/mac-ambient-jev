@@ -87,12 +87,9 @@ private struct LiveFixture {
             paths: paths, sessionID: sessionID, source: .recording(.microphone),
             createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
         )
-        let audioWriter = try DurableAudioWriter(
-            directory: sessionURL
-                .appending(path: "audio", directoryHint: .isDirectory)
-                .appending(path: "processing", directoryHint: .isDirectory),
-            sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let audioWriter = try DurableAudioWriter(directory: sessionURL
+            .appending(path: "audio", directoryHint: .isDirectory)
+            .appending(path: "processing", directoryHint: .isDirectory), chunkDurationSeconds: 1)
         try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 16_000))
         checkpoint = await audioWriter.committedSnapshot()
         processor = NativeSessionProcessor(

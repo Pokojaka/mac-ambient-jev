@@ -44,12 +44,7 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(
-        directory: root,
-        sampleRate: 16_000,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     let runID = "seg_live_test"
     let vad = EmittingLiveVAD(runID: runID)
 
@@ -105,12 +100,7 @@ func liveVADSessionFinishIsIdempotent() async throws {
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(
-        directory: root,
-        sampleRate: 16_000,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     try await writer.append(
         samples: Array(repeating: Float(0.1), count: 16_000)
     )

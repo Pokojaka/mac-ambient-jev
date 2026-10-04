@@ -30,12 +30,7 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(
-        directory: root,
-        sampleRate: 16_000,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     let vad = RecordingVADChunkSegmenter()
 
     try await writer.append(
@@ -111,7 +106,7 @@ private actor FailingOnceVADChunkSegmenter: VADChunkSegmenting {
 func vadProcessorRetryAfterChunkErrorNeitherReplaysAudioNorDropsSegments() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let vad = FailingOnceVADChunkSegmenter()

@@ -60,12 +60,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
         .appending(path: "processing", directoryHint: .isDirectory)
-    let writer = try DurableAudioWriter(
-        directory: processingDirectory,
-        sampleRate: 16_000,
-        channelCount: 1,
-        chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1)
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let sourceURL = sessionURL.appending(path: "audio/original.caf")

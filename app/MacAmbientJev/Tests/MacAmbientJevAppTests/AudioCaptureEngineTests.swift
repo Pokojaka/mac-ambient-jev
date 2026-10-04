@@ -3,6 +3,7 @@ import CoreMedia
 import Synchronization
 import Testing
 @testable import MacAmbientJevCapture
+import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 
 @Test
@@ -62,10 +63,8 @@ func stopResultReportsTimelineLoss() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2)
-        let writer = try DurableAudioWriter(
-            directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-        )
-        let drain = AudioCaptureDrain(ring: ring, writer: writer)
+        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+        let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate))
         #expect(pushRingMono([1, 2], at: 0, into: ring))
         var sample: Float = 5
         withUnsafeMutablePointer(to: &sample) { pointer in
@@ -112,10 +111,7 @@ private struct MeasuredDiskSpace: CaptureDiskSpaceProviding {
 @Test("disk capacity query errors reject recording startup")
 func diskCapacityQueryFailureRejectsStart() {
     #expect {
-        try CaptureDiskPolicy.checkStart(
-            diskSpace: UnavailableDiskSpace(), directory: FileManager.default.temporaryDirectory,
-            sampleRate: 48_000, channelCount: 1
-        )
+        try CaptureDiskPolicy.checkStart(diskSpace: UnavailableDiskSpace(), directory: FileManager.default.temporaryDirectory)
     } throws: { error in
         guard case AudioCaptureEngineError.diskSpaceUnavailable = error else { return false }
         return true
@@ -124,26 +120,17 @@ func diskCapacityQueryFailureRejectsStart() {
 
 @Test("unknown or insufficient capacity rejects startup; measured sufficient capacity starts")
 func diskCapacityCheckPreservesMeasuredThreshold() throws {
-    let required = CaptureDiskPolicy.requiredStartBytes(sampleRate: 48_000, channelCount: 1)
+    let required = CaptureDiskPolicy.requiredStartBytes
     let directory = FileManager.default.temporaryDirectory
     #expect {
-        try CaptureDiskPolicy.checkStart(
-            diskSpace: MeasuredDiskSpace(bytes: nil), directory: directory,
-            sampleRate: 48_000, channelCount: 1
-        )
+        try CaptureDiskPolicy.checkStart(diskSpace: MeasuredDiskSpace(bytes: nil), directory: directory)
     } throws: { error in
         guard case AudioCaptureEngineError.diskSpaceUnavailable = error else { return false }
         return true
     }
-    try CaptureDiskPolicy.checkStart(
-        diskSpace: MeasuredDiskSpace(bytes: required), directory: directory,
-        sampleRate: 48_000, channelCount: 1
-    )
+    try CaptureDiskPolicy.checkStart(diskSpace: MeasuredDiskSpace(bytes: required), directory: directory)
     do {
-        try CaptureDiskPolicy.checkStart(
-            diskSpace: MeasuredDiskSpace(bytes: required - 1), directory: directory,
-            sampleRate: 48_000, channelCount: 1
-        )
+        try CaptureDiskPolicy.checkStart(diskSpace: MeasuredDiskSpace(bytes: required - 1), directory: directory)
         Issue.record("Measured low capacity must reject recording startup")
     } catch AudioCaptureEngineError.insufficientDiskSpace(let requested) {
         #expect(requested == required)
@@ -372,15 +359,14 @@ private func drainMainActor() async {
                                         clock: ManualClock(seconds: 10),
                                         micInputVolumeFactory: { factoryCalls += 1; return volume })
         let directory = root.appending(path: "capture", directoryHint: .isDirectory)
-        let writer = try DurableAudioWriter(directory: directory, sampleRate: 16_000,
-                                            channelCount: 1, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1)
         let ring = AudioBlockRing(capacity: 16, blockFrameCapacity: 512, sampleRate: 16_000)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: ManualClock(seconds: 10),
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
         let sessionID = UUID()
         engine.installCapture(
             session: nil, output: nil, receiver: nil, callbackQueue: nil, tap: nil, sink: sink,
-            ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer), drainTask: nil,
+            ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate)), drainTask: nil,
             sessionID: sessionID,
             timeline: ProcessingTimeline(sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE)
         )
@@ -422,15 +408,14 @@ private func drainMainActor() async {
         let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 512,
                                         clock: ManualClock(seconds: 10),
                                         micInputVolumeFactory: { factoryCalls += 1; return RecordingMicVolume() })
-        let writer = try DurableAudioWriter(directory: root.appending(path: "capture"), sampleRate: 16_000,
-                                            channelCount: 1, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root.appending(path: "capture"), chunkDurationSeconds: 1)
         let ring = AudioBlockRing(capacity: 16, blockFrameCapacity: 512, sampleRate: 16_000)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: ManualClock(seconds: 10),
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
         let sessionID = UUID()
         engine.installCapture(
             session: nil, output: nil, receiver: nil, callbackQueue: nil, tap: nil, sink: sink,
-            ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer), drainTask: nil,
+            ring: ring, drain: AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate)), drainTask: nil,
             sessionID: sessionID,
             timeline: ProcessingTimeline(sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE)
         )

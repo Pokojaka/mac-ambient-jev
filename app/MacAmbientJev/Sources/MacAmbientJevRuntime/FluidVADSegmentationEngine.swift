@@ -54,7 +54,6 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     private let manager: VadManager
     private var streamState: VadStreamState
     private var assembler: SegmentationAssembler
-    private let frameMapper: VADFrameMapper
     private let segmentationConfig: VadSegmentationConfig
     private let measureMicInputLevels: Bool
 
@@ -63,6 +62,10 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         canonicalSampleRate: Double,
         measureMicInputLevels: Bool
     ) async throws -> FluidVADSegmentationEngine {
+        guard canonicalSampleRate == CanonicalAudio.sampleRate,
+              Double(VadManager.sampleRate) == CanonicalAudio.sampleRate else {
+            throw CanonicalAudioError.noncanonicalFormat
+        }
         let manager = try await VadManager()
         return FluidVADSegmentationEngine(
             manager: manager,
@@ -81,7 +84,6 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         self.manager = manager
         self.measureMicInputLevels = measureMicInputLevels
         self.streamState = VadStreamState.initial()
-        self.frameMapper = VADFrameMapper(canonicalSampleRate: canonicalSampleRate)
         self.assembler = SegmentationAssembler(
             segmentationRunID: segmentationRunID,
             preRollFrames: Int64((Self.preRollSeconds * canonicalSampleRate).rounded()),
@@ -112,7 +114,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
         var emitted: [SegmentReference] = []
 
         if let event = result.event {
-            let frame = frameMapper.canonicalFrame(forVADSample: event.sampleIndex)
+            let frame = Int64(event.sampleIndex)
 
             switch event.kind {
             case .speechStart:
@@ -122,7 +124,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
             }
         }
 
-        let currentFrame = frameMapper.canonicalFrame(forVADSample: streamState.processedSamples)
+        let currentFrame = Int64(streamState.processedSamples)
         if let split = assembler.splitIfNeeded(atFrame: currentFrame) {
             emitted.append(split)
         }

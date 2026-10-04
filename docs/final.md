@@ -20,6 +20,10 @@
 
 読み込み音声の確定処理は、毎回既存の処理タイムラインを削除し、保存済み original からゼロから作り直してから始まります。
 
+エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は区間の canonical samples を変更せず Qwen に 16000 を渡します。20 ms 未満の ASR 入力を推論しない規則は変わりません。source frame は original や device ではなく保存タイムラインの座標です。
+
+話者分離は既存の canonical CAF と FluidAudio の OfflineDiarizerConfig.segmentation.sampleRate を検証し、`OfflineDiarizerManager.process(audioSource:audioLoadingSeconds:progressCallback:)` を呼びます。`CanonicalCAFAudioSource` が lock 付きの bounded random read を行い、SRC や別の whole-audio raw PCM temporary file は作りません。発話のある確定処理の CAF 自体は derived 内に保存します。
+
 VAD、ASR、話者分離、場面、音響範囲には新しい run ID を付け、各段階の `processing.run.started` に、その実行の engine、model、version、configuration を保存します。以前の run の来歴を新しい実行へ引き継ぎません。
 
 検証済み VAD 結果が 0 区間なら、話者分離用の音声を書き出さず、話者分離と ASR のモデル準備・推論、場面・音響範囲の判定、Jev 分類を実行しません。5 段階すべてに provenance を持つ開始と `succeeded: true`、`completed_count: 0`、`failed_count: 0` の完了を保存し、同じ公開前検証を通して空の確定文字起こしを `complete` として公開します。これは処理対象がないことの完了であり、推論した話者 span や場面を作りません。ASR 計測値はすべて 0、終端表示は「発話区間は検出されませんでした」です。保存音声は変更しません。

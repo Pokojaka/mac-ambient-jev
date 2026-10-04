@@ -11,41 +11,21 @@ func asrEngineFailureIsRepresentedInsideASRState() {
 @Test
 func asrInputFlagsPersistedFourMillisecondSegmentButNotTwentyMilliseconds() {
     let fourMilliseconds = ASRAudioInput(
-        samples: Array(repeating: 0, count: 192),
-        sampleRate: 48_000
+        samples: Array(repeating: 0, count: 64),
+        sampleRate: 16_000
     )
     let justShort = ASRAudioInput(
-        samples: Array(repeating: 0, count: 959),
-        sampleRate: 48_000
+        samples: Array(repeating: 0, count: 319),
+        sampleRate: 16_000
     )
     let twentyMilliseconds = ASRAudioInput(
-        samples: Array(repeating: 0, count: 960),
-        sampleRate: 48_000
+        samples: Array(repeating: 0, count: 320),
+        sampleRate: 16_000
     )
 
     #expect(fourMilliseconds.isShorterThanMinimumASRDuration)
     #expect(justShort.isShorterThanMinimumASRDuration)
     #expect(!twentyMilliseconds.isShorterThanMinimumASRDuration)
-}
-
-@Test
-func asrMinimumDurationUsesInputSampleRate() {
-    let justShort = ASRAudioInput(
-        samples: Array(repeating: 0, count: 881),
-        sampleRate: 44_100
-    )
-    let twentyMilliseconds = ASRAudioInput(
-        samples: Array(repeating: 0, count: 882),
-        sampleRate: 44_100
-    )
-    let sixteenKilohertzTwentyMilliseconds = ASRAudioInput(
-        samples: Array(repeating: 0, count: 320),
-        sampleRate: 16_000
-    )
-
-    #expect(justShort.isShorterThanMinimumASRDuration)
-    #expect(!twentyMilliseconds.isShorterThanMinimumASRDuration)
-    #expect(!sixteenKilohertzTwentyMilliseconds.isShorterThanMinimumASRDuration)
 }
 
 @Test
@@ -65,17 +45,12 @@ func modelStoreUsesManagedModelsDirectory() {
 }
 
 @Test
-func asrAudioLoaderReadsSegmentFromDiskAndDownmixesStereo() async throws {
+func asrAudioLoaderReadsCanonicalSegmentWithoutChangingSamples() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(
-        directory: root,
-        sampleRate: 10,
-        channelCount: 2,
-        chunkDurationSeconds: 1
-    )
-    try await writer.append(samples: [1, 3, 2, 4, 5, 7])
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    try await writer.append(samples: [2, 3, 6])
     let checkpoint = try await writer.finish()
 
     let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
@@ -90,14 +65,14 @@ func asrAudioLoaderReadsSegmentFromDiskAndDownmixesStereo() async throws {
     let input = try loader.load(segment: segment)
 
     #expect(input.samples == [2, 3, 6])
-    #expect(input.sampleRate == 10)
+    #expect(input.sampleRate == 16_000)
 }
 
 @Test
 func asrAudioLoaderRejectsReversedSegmentRange() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     try await writer.append(samples: [1, 2, 3])
     let checkpoint = try await writer.finish()
     let loader = ASRAudioLoader(reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint))

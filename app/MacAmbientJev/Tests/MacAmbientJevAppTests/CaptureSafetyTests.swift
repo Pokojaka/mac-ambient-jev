@@ -6,6 +6,7 @@ import Synchronization
 import Testing
 @testable import MacAmbientJevCapture
 @testable import MacAmbientJev
+import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 
 @MainActor
@@ -31,14 +32,12 @@ func recordingPowerLifetimePairsEveryExit() async throws {
             preconditionFailure("Input-free teardown never binds a microphone volume control")
         })
         let directory = root.appending(path: "capture", directoryHint: .isDirectory)
-        let writer = try DurableAudioWriter(
-            directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-        )
+        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
         let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 10)
         let receiver = AudioCaptureReceiver(
             ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, clock: SystemCaptureClock(), frameCapacity: 16_384, meter: nil
         )
-        let drain = AudioCaptureDrain(ring: ring, writer: writer)
+        let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate))
         #expect(engine.power.begin())
         engine.installCapture(
             session: AVCaptureSession(), output: AVCaptureAudioDataOutput(),
@@ -95,14 +94,12 @@ func writerFailureReturnsHealthyPrefix() async throws {
         preconditionFailure("Input-free teardown never binds a microphone volume control")
     })
     let directory = root.appending(path: "capture", directoryHint: .isDirectory)
-    let writer = try DurableAudioWriter(
-        directory: directory, sampleRate: 10, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 10)
     let receiver = AudioCaptureReceiver(
         ring: ring, sampleRate: 10, channelCount: 1, onFormatChange: {}, clock: SystemCaptureClock(), frameCapacity: 16_384, meter: nil
     )
-    let drain = AudioCaptureDrain(ring: ring, writer: writer)
+    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate))
     #expect(engine.power.begin())
     engine.installCapture(
         session: nil, output: nil, receiver: receiver, callbackQueue: nil,
@@ -247,16 +244,12 @@ func recordingDiskAndSilenceMonitor() {
     #expect(dropouts == [1, 2, 2, 3])
 }
 
-@Test("90-minute mono 48-kHz start allowance exceeds one GB and scales by channels")
-func deviceRateDiskRequirement() {
-    let mono = CaptureDiskPolicy.requiredStartBytes(sampleRate: 48_000, channelCount: 1)
-    #expect(mono == 1_292_800_000)
-    #expect(CaptureDiskPolicy.requiredStartBytes(sampleRate: 48_000, channelCount: 2)
-        == 2_329_600_000)
-    #expect(!CaptureDiskPolicy.mayStart(
-        availableBytes: 1_000_000_000, sampleRate: 48_000, channelCount: 1))
-    #expect(CaptureDiskPolicy.mayStart(
-        availableBytes: mono, sampleRate: 48_000, channelCount: 1))
+@Test("90-minute canonical PCM reservation accepts equality and rejects one byte less")
+func canonicalDiskRequirement() {
+    let required = CaptureDiskPolicy.requiredStartBytes
+    #expect(required == 601_600_000)
+    #expect(!CaptureDiskPolicy.mayStart(availableBytes: required - 1))
+    #expect(CaptureDiskPolicy.mayStart(availableBytes: required))
     #expect(!CaptureDiskPolicy.mustStop(
         availableBytes: CaptureDiskPolicy.stopFloorBytes))
     #expect(CaptureDiskPolicy.mustStop(

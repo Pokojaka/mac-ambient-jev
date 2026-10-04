@@ -4,7 +4,7 @@ import Testing
 
 private let recoveryCheckpoint = AudioCheckpoint(
     committedFrames: 100,
-    sampleRate: 100,
+    sampleRate: CanonicalAudio.sampleRate,
     channelCount: 1,
     sampleFormat: .float32LE,
     chunkFiles: ["chunk-000000.f32le"],
@@ -301,7 +301,7 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
     try FileManager.default.createDirectory(at: processingURL, withIntermediateDirectories: true)
     let checkpoint = AudioCheckpoint(
         committedFrames: 48_000,
-        sampleRate: 48_000,
+        sampleRate: CanonicalAudio.sampleRate,
         channelCount: 1,
         sampleFormat: .float32LE,
         chunkFiles: ["chunk-000000.f32le"],
@@ -324,7 +324,7 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
 
     #expect(scan.candidates.first?.source == .recordedTimeline(AudioCheckpoint(
         committedFrames: 96_000,
-        sampleRate: 48_000,
+        sampleRate: CanonicalAudio.sampleRate,
         channelCount: 1,
         sampleFormat: .float32LE,
         chunkFiles: ["chunk-000000.f32le", "chunk-000001.f32le"],
@@ -356,8 +356,8 @@ func inspectReadsOnlyRequestedSessionAndLeavesItsLogUntouched() throws {
 @Test
 func recoveryUsesIntactOriginalWhenImportCheckpointIsUnusable() throws {
     let checkpoints = [
-        AudioCheckpoint(committedFrames: 100, sampleRate: 100, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["missing.f32le"], chunkFrameCounts: [100], gapEvents: []),
-        AudioCheckpoint(committedFrames: 1, sampleRate: 100, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["../../../secret"], chunkFrameCounts: [1], gapEvents: []),
+        AudioCheckpoint(committedFrames: 100, sampleRate: CanonicalAudio.sampleRate, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["missing.f32le"], chunkFrameCounts: [100], gapEvents: []),
+        AudioCheckpoint(committedFrames: 1, sampleRate: CanonicalAudio.sampleRate, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["../../../secret"], chunkFrameCounts: [1], gapEvents: []),
     ]
     for checkpoint in checkpoints {
         let root = temporaryRoot()

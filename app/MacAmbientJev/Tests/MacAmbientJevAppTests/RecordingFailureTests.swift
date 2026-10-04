@@ -169,9 +169,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let sessionID = try #require(startedSessionID)
     let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
     let directory = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
-    let writer = try DurableAudioWriter(
-        directory: directory, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
-    )
+    let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1)
     try await writer.append(samples: Array(repeating: 0.25, count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let message = AudioCaptureEngineError.writerFailure(
@@ -281,10 +279,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
             let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
             startedSessionURL = sessionURL
             let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
-            let writer = try DurableAudioWriter(
-                directory: directory, sampleRate: 16_000, channelCount: 1,
-                chunkDurationSeconds: 1
-            )
+            let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1)
             if hasGap {
                 try await writer.recordGap(startFrame: 0, frameCount: 16_000, reason: .missingCallback)
                 try await writer.append(samples: Array(repeating: 0, count: 16_000))

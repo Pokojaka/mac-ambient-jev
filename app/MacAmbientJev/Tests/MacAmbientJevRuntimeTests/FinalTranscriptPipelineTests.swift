@@ -156,8 +156,6 @@ private func finalizationFixture(
         .appending(path: "processing", directoryHint: .isDirectory)
     let writer = try DurableAudioWriter(
         directory: processingDirectory,
-        sampleRate: 16_000,
-        channelCount: 1,
         chunkDurationSeconds: 1
     )
     try await writer.append(samples: samples ?? Array(repeating: 0.1, count: frames))
