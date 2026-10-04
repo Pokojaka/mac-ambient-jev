@@ -6,12 +6,12 @@ import Testing
 
 private struct PausedImportVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         [SegmentReference(
             segmentationRunID: runID,
             segmentID: "spoken",
             startFrame: 0,
-            endFrame: reader.checkpoint.committedFrames
+            endFrame: reader.info.committedFrames
         )]
     }
 }
@@ -65,9 +65,9 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let checkpoint = await writer.committedSnapshot()
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
     try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
-        reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint),
+        reader: try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint),
         to: sourceURL,
-        encoding: .float32
+        encoding: .float32CAF
     )
 
     let asr = PausedImportASR()
@@ -80,9 +80,9 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
         ),
         contentPriority: .disabled
     )
-    let paused = await processor.processImportedSession(
+    let paused = await processor.processSession(
         sessionID: sessionID,
-        originalURL: sourceURL,
+        source: .importedOriginal(sourceURL, timeline: nil),
         pacingMode: .normal,
         shouldPause: { true },
         onPhase: { _ in },
@@ -99,16 +99,16 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     #expect(pausedMetadata?.activeRuns == nil)
     #expect(pausedMetadata?.finalizationAttempt?.state == .paused)
 
-    let candidate = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID)
+    let candidate = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery
     #expect(candidate?.action == .finalize)
-    guard case .importedOriginal(let originalURL) = candidate?.source else {
+    guard case .importedOriginal(let originalURL, _) = candidate?.source else {
         Issue.record("a paused import resumes from its original")
         return
     }
 
-    let resumed = await processor.processImportedSession(
+    let resumed = await processor.processSession(
         sessionID: sessionID,
-        originalURL: originalURL,
+        source: .importedOriginal(originalURL, timeline: nil),
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { _ in },
@@ -122,5 +122,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let completed = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     #expect(completed?.finalizationAttempt?.state == .complete)
     #expect(completed?.activeRuns?.scope != nil)
-    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID) == nil)
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
+    #expect(try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL)).load()
+        == .importedOriginal(TimelineAudioInfo(committedFrames: 16_000, gapEvents: [])))
 }

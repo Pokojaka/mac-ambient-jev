@@ -39,6 +39,7 @@ private func writeRecoveryManifest(
         try FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
         try Data([0, 1, 2, 3]).write(to: audioURL.appending(path: "original.wav"))
     }
+    try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL)).save(.initial(for: source))
 }
 
 private func writeRecoveryCheckpoint(_ checkpoint: AudioCheckpoint, to sessionURL: URL) throws {
@@ -156,7 +157,7 @@ func recordingThatCrashedBeforeStopIsFinalizedFromItsTimeline() async throws {
     #expect(scan.failures.isEmpty)
     #expect(scan.candidates.count == 1)
     #expect(scan.candidates.first?.action == .finalize)
-    #expect(scan.candidates.first?.source == .recordedTimeline(recoveryCheckpoint))
+    #expect(scan.candidates.first?.source == .recordedPCM(recoveryCheckpoint))
 }
 
 @Test
@@ -167,10 +168,10 @@ func unprocessedImportIsFinalizedFromItsOriginal() throws {
     let url = try recoveryURL(id: id, source: .imported(originalFilename: "fixture.wav"), root: root)
     try writeRecoveryManifest(sessionID: id, source: .imported(originalFilename: "fixture.wav"), to: url)
 
-    let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id))
+    let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
 
     #expect(candidate.action == .finalize)
-    guard case .importedOriginal(let original) = candidate.source else {
+    guard case .importedOriginal(let original, _) = candidate.source else {
         Issue.record("an import recovers from its original")
         return
     }
@@ -186,7 +187,7 @@ func recordingWithoutCapturedAudioHasNothingToRecover() throws {
     try writeRecoveryManifest(sessionID: id, source: .recording(.microphone),
         to: recoveryURL(id: id, source: .recording(.microphone), root: root))
 
-    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id) == nil)
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
 }
 
 @Test(arguments: [FinalizationAttempt.State.running, .paused])
@@ -197,7 +198,7 @@ func interruptedOrPausedFinalizationIsFinalizedAgain(state: FinalizationAttempt.
     let url = try writeRecording(id: id, root: root)
     try saveMetadata(url, attempt: state, activeRuns: publishedRuns, pending: [])
 
-    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
+    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
 
     #expect(candidate?.action == .finalize)
 }
@@ -223,11 +224,18 @@ func failedAndCompletedFinalizationsWaitForTheUser() throws {
     let failedID = UUID()
     try saveMetadata(try writeRecording(id: failedID, root: root), attempt: .failed, activeRuns: nil, pending: [])
     let completeID = UUID()
-    try saveMetadata(try writeRecording(id: completeID, root: root), attempt: .complete, activeRuns: publishedRuns, pending: [])
+    let completeURL = try writeRecording(id: completeID, root: root)
+    try saveMetadata(completeURL, attempt: .complete, activeRuns: publishedRuns, pending: [])
 
     let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
 
-    #expect(scan == SessionRecoveryScan(candidates: [], failures: []))
+    #expect(scan == SessionRecoveryScan(
+        candidates: [],
+        maintenance: [SessionMaintenanceCandidate(
+            sessionID: completeID, sessionURL: completeURL, maintenance: .compactRecording
+        )],
+        failures: []
+    ))
 }
 
 @Test
@@ -241,7 +249,7 @@ func completedFinalizationRetriesOnlyItsPendingClassifications() async throws {
     try await appendPriority(runID: "priority_active", segmentID: "seg_000002", sessionID: id, writer: writer)
     try saveMetadata(url, attempt: .complete, activeRuns: publishedRuns, pending: ["seg_000002"])
 
-    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
+    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
 
     #expect(candidate?.action == .retryContentPriority(segmentIDs: ["seg_000002"]))
 }
@@ -258,7 +266,7 @@ func interruptedClassificationRetryReclassifiesEveryPublishedSegment() async thr
     try await appendPriority(runID: "priority_unpublished", segmentID: "seg_000002", sessionID: id, writer: writer)
     try saveMetadata(url, attempt: .complete, activeRuns: publishedRuns, pending: ["seg_000002"])
 
-    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
+    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
 
     #expect(candidate?.action == .retryContentPriority(segmentIDs: ["seg_000001", "seg_000002"]))
 }
@@ -322,7 +330,7 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
 
     let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
 
-    #expect(scan.candidates.first?.source == .recordedTimeline(AudioCheckpoint(
+    #expect(scan.candidates.first?.source == .recordedPCM(AudioCheckpoint(
         committedFrames: 96_000,
         sampleRate: CanonicalAudio.sampleRate,
         channelCount: 1,
@@ -348,7 +356,7 @@ func inspectReadsOnlyRequestedSessionAndLeavesItsLogUntouched() throws {
     try FileManager.default.createDirectory(at: otherURL, withIntermediateDirectories: true)
     try Data("invalid manifest".utf8).write(to: otherURL.appending(path: "session.json"))
 
-    let result = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
+    let result = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID).recovery
     #expect(result?.manifest.sessionID == sessionID)
     #expect(try Data(contentsOf: eventsURL) == original)
 }
@@ -370,8 +378,8 @@ func recoveryUsesIntactOriginalWhenImportCheckpointIsUnusable() throws {
         try JSONEncoder().encode(checkpoint).write(to: processing.appending(path: DurableAudioWriter.checkpointFilename))
         try Data(count: 4).write(to: root.appending(path: "secret"))
 
-        let source = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)?.source
-        guard case .importedOriginal(let original) = source else {
+        let source = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.source
+        guard case .importedOriginal(let original, _) = source else {
             Issue.record("intact original must be chosen: \(String(describing: source))")
             continue
         }

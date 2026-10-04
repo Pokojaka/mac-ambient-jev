@@ -5,7 +5,6 @@ import MacAmbientJevAppleSupport
 enum NativeSessionProcessorError: LocalizedError {
     case liveASRSessionNotStarted
     case transcriptNotPublished
-    case processingTimelineMissing
 
     var errorDescription: String? {
         switch self {
@@ -13,8 +12,6 @@ enum NativeSessionProcessorError: LocalizedError {
             "録音中の文字起こしセッションが開始されていません"
         case .transcriptNotPublished:
             "確定済みの文字起こし run がありません"
-        case .processingTimelineMissing:
-            "処理用タイムラインのチェックポイントがありません"
         }
     }
 }
@@ -369,16 +366,17 @@ public actor NativeSessionProcessor {
             onPhase: onPhase,
             onStatus: onStatus,
             onUpdate: onUpdate,
-            timeline: { _ in checkpoint }
+            source: .recordedPCM(checkpoint)
         )
     }
 
-    /// Rebuilds every run from the saved processing timeline and publishes the
-    /// new run set only after all stages have completed.
+    /// Rebuilds every run from the session's stored audio and publishes the
+    /// new run set only after all stages have completed. An import first has its
+    /// canonical timeline rebuilt from the original file.
     @discardableResult
-    public func processFinalTranscript(
+    public func processSession(
         sessionID: UUID,
-        checkpoint: AudioCheckpoint,
+        source: SessionAudioSource,
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
@@ -395,42 +393,31 @@ public actor NativeSessionProcessor {
             onPhase: onPhase,
             onStatus: onStatus,
             onUpdate: onUpdate,
-            timeline: { _ in checkpoint }
+            source: source
         )
     }
 
-    /// Rebuilds the processing timeline from the imported original, then finalizes it.
-    @discardableResult
-    public func processImportedSession(
-        sessionID: UUID,
-        originalURL: URL,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping PauseCheck,
-        onPhase: @escaping PhaseHandler,
-        metadataPolicy: UnreadableMetadataPolicy,
-        onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
-    ) async -> SessionProcessingResult {
-        return await finalize(
-            sessionID: sessionID,
-            provisional: [],
-            metadataPolicy: metadataPolicy,
-            pacingMode: pacingMode,
-            shouldPause: shouldPause,
-            onPhase: onPhase,
-            onStatus: onStatus,
-            onUpdate: onUpdate,
-            timeline: { sessionLayout in
-                await onStatus(UserFacingStatus.convertingTimeline.text)
-                return try await AudioFileTimelineBuilder()
-                    .build(from: originalURL, into: sessionLayout.processingDirectory)
-            }
-        )
+    /// An import is read only through the timeline built for this run, which finalization removes.
+    private static func openAudio(
+        _ source: SessionAudioSource,
+        layout: SessionLayout,
+        onStatus: StatusHandler
+    ) async throws -> any TimelineAudioReading {
+        guard case .importedOriginal(let originalURL, _) = source else {
+            return try SessionAudioReaders.open(source, layout: layout)
+        }
+        try SessionTransientAudio.remove(layout: layout, source: .imported(originalFilename: originalURL.lastPathComponent))
+        await onStatus(UserFacingStatus.convertingTimeline.text)
+        let checkpoint = try await AudioFileTimelineBuilder()
+            .build(from: originalURL, into: layout.processingDirectory)
+        let reader = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
+        try reader.validateAudio()
+        try SessionAudioStorageStore(layout: layout).save(.importedOriginal(reader.info))
+        return reader
     }
 
     public func retryContentPrioritySession(
         sessionID: UUID,
-        checkpoint: AudioCheckpoint,
         segmentIDs: [String],
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
@@ -452,7 +439,7 @@ public actor NativeSessionProcessor {
             }
 
             let events = try loadTranscriptEvents(sessionLayout: sessionLayout, activeRuns: activeRuns)
-            let materializer = TranscriptMaterializer(sampleRate: checkpoint.sampleRate)
+            let materializer = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
             let visible = materializer.materialize(
                 events: events,
                 activeRuns: activeRuns
@@ -508,7 +495,7 @@ public actor NativeSessionProcessor {
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler,
-        timeline: @Sendable (SessionLayout) async throws -> AudioCheckpoint
+        source: SessionAudioSource
     ) async -> SessionProcessingResult {
         await stopLiveContentPriority(sessionID: sessionID)
         let sessionLayout: SessionLayout
@@ -550,22 +537,17 @@ public actor NativeSessionProcessor {
 
         await onPhase(.preparing)
         let outcome: FinalTranscriptPipelineOutcome
-        let checkpoint: AudioCheckpoint
+        let audio: any TimelineAudioReading
         do {
-            checkpoint = try await timeline(sessionLayout)
+            audio = try await Self.openAudio(source, layout: sessionLayout, onStatus: onStatus)
             outcome = try await FinalTranscriptPipeline(
                 sessionID: sessionID,
                 sessionURL: sessionLayout.sessionURL,
-                checkpoint: checkpoint,
+                audio: audio,
                 asr: asr,
                 diarization: diarization,
                 vadSegmenter: finalTranscriptVAD,
-                proximityEvidenceProvider: TimelineProximityEvidenceProvider(
-                    reader: ProcessingTimelineReader(
-                        directory: sessionLayout.processingDirectory,
-                        checkpoint: checkpoint
-                    )
-                )
+                proximityEvidenceProvider: TimelineProximityEvidenceProvider(reader: audio)
             ).process(
                 onStatus: onStatus,
                 pacingMode: pacingMode,
@@ -638,7 +620,6 @@ public actor NativeSessionProcessor {
                 final,
                 sessionID: sessionID,
                 sessionLayout: sessionLayout,
-                checkpoint: checkpoint,
                 reusableDecisions: reusableDecisions,
                 liveDecisionReadFailure: liveDecisionReadFailure,
                 onPhase: onPhase,
@@ -653,7 +634,6 @@ public actor NativeSessionProcessor {
         _ final: FinalTranscriptPipelineResult,
         sessionID: UUID,
         sessionLayout: SessionLayout,
-        checkpoint: AudioCheckpoint,
         reusableDecisions: [String: ContentPriorityEventPayload],
         liveDecisionReadFailure: String?,
         onPhase: PhaseHandler,
@@ -671,7 +651,6 @@ public actor NativeSessionProcessor {
                 let outcome = await runJevEnrichmentIfAvailable(
                     sessionID: sessionID,
                     sessionLayout: sessionLayout,
-                    checkpoint: checkpoint,
                     existingEvents: events,
                     activeRuns: final.activeRuns,
                     segments: final.materializedSegments,
@@ -761,12 +740,7 @@ public actor NativeSessionProcessor {
             return (provisional, unpublishedKind, nil)
         }
         do {
-            guard let checkpoint = try AudioCheckpoint.loadRecovered(
-                from: sessionLayout.processingDirectory
-            ) else {
-                throw NativeSessionProcessorError.processingTimelineMissing
-            }
-            let segments = TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
+            let segments = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate).materialize(
                 events: try loadTranscriptEvents(sessionLayout: sessionLayout, activeRuns: activeRuns),
                 activeRuns: activeRuns
             ).filter(\.hasRecognizedText)
@@ -822,7 +796,6 @@ public actor NativeSessionProcessor {
     private func runJevEnrichmentIfAvailable(
         sessionID: UUID,
         sessionLayout: SessionLayout,
-        checkpoint: AudioCheckpoint,
         existingEvents: [TranscriptEvent],
         activeRuns: ActiveRuns,
         segments: [MaterializedTranscriptSegment],
@@ -875,7 +848,7 @@ public actor NativeSessionProcessor {
                 writer: writer,
                 decisions: decisions,
                 materializer: TranscriptMaterializer(
-                    sampleRate: checkpoint.sampleRate
+                    sampleRate: CanonicalAudio.sampleRate
                 )
             )
             result = try await coordinator.process(

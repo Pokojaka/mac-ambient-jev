@@ -66,10 +66,10 @@ private struct ObservingVAD: FinalTranscriptVADSegmenter {
     let log: EngineInputLog
     let provenance = engineInputProvenance
 
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
-        let checkpoint = reader.checkpoint
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        let info = reader.info
         log.state.withLock {
-            $0.vad.append("\(checkpoint.sampleRate)/\(checkpoint.channelCount)/\(checkpoint.sampleFormat)")
+            $0.vad.append("\(info.sampleRate)/\(info.channelCount)/\(CanonicalAudio.sampleFormat)")
         }
         return [SegmentReference(segmentationRunID: runID, segmentID: "probe", startFrame: 0, endFrame: 16_000)]
     }
@@ -157,8 +157,8 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
     ring.finish(tailFrame: Int64(device.count))
     let recorded = try await drain.finish()
     #expect(recorded.committedFrames == 32_000)
-    let recordingResult = await processor.processFinalTranscript(
-        sessionID: recordingID, checkpoint: recorded, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+    let recordingResult = await processor.processSession(
+        sessionID: recordingID, source: .recordedPCM(recorded), pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in })
     #expect(recordingResult.disposition == .completed)
 
@@ -170,8 +170,8 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
         createdAt: Date(timeIntervalSince1970: 1_700_000_001), timeZone: TimeZone(secondsFromGMT: 0)!)
     let original = try AudioImporter().importFile(source, into: importURL).originalURL
     let originalBytes = try Data(contentsOf: original)
-    let importResult = await processor.processImportedSession(
-        sessionID: importID, originalURL: original, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+    let importResult = await processor.processSession(
+        sessionID: importID, source: .importedOriginal(original, timeline: nil), pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in })
     #expect(importResult.disposition == .completed)
     #expect(try Data(contentsOf: original) == originalBytes)

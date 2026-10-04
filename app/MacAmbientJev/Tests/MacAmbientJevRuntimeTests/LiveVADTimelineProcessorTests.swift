@@ -38,17 +38,9 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
     )
     let firstCheckpoint = await writer.committedSnapshot()
 
-    let processor = FluidVADTimelineProcessor(
-        reader: ProcessingTimelineReader(
-            directory: root,
-            checkpoint: firstCheckpoint
-        ),
-        engine: vad
-    )
+    let processor = FluidVADTimelineProcessor(engine: vad)
 
-    _ = try await processor.processAvailable(
-        checkpoint: firstCheckpoint
-    )
+    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: firstCheckpoint))
     #expect(await vad.recordedChunkSizes() == [
         4_096,
         4_096,
@@ -56,9 +48,7 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
     ])
 
     // Polling the same durable boundary must not re-feed audio.
-    _ = try await processor.processAvailable(
-        checkpoint: firstCheckpoint
-    )
+    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: firstCheckpoint))
     #expect(await vad.recordedChunkSizes().count == 3)
 
     try await writer.append(
@@ -66,14 +56,10 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
     )
     let secondCheckpoint = await writer.committedSnapshot()
 
-    _ = try await processor.processAvailable(
-        checkpoint: secondCheckpoint
-    )
+    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: secondCheckpoint))
     #expect(await vad.recordedChunkSizes().count == 7)
 
-    _ = try await processor.finish(
-        checkpoint: secondCheckpoint
-    )
+    _ = try await processor.finish(reader: try ProcessingTimelineReader(directory: root, checkpoint: secondCheckpoint))
 
     let sizes = await vad.recordedChunkSizes()
     #expect(sizes.count == 8)
@@ -110,15 +96,12 @@ func vadProcessorRetryAfterChunkErrorNeitherReplaysAudioNorDropsSegments() async
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let vad = FailingOnceVADChunkSegmenter()
-    let processor = FluidVADTimelineProcessor(
-        reader: ProcessingTimelineReader(directory: root, checkpoint: checkpoint),
-        engine: vad
-    )
+    let processor = FluidVADTimelineProcessor(engine: vad)
     await #expect(throws: InjectedVADFailure.secondChunk) {
-        try await processor.processAvailable(checkpoint: checkpoint)
+        try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
     }
-    var emitted = try await processor.processAvailable(checkpoint: checkpoint)
-    emitted += try await processor.finish(checkpoint: checkpoint)
+    var emitted = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+    emitted += try await processor.finish(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
     #expect(await vad.acceptedFrameCount() == 16_000)
     #expect(emitted.map(\.segmentID) == ["before-failure"])
 }

@@ -37,14 +37,39 @@ public struct SessionRecoveryFailure: Sendable, Equatable {
     }
 }
 
+/// A session whose stored audio needs maintenance, independent of transcript recovery.
+public struct SessionMaintenanceCandidate: Sendable, Equatable {
+    public let sessionID: UUID
+    public let sessionURL: URL
+    public let maintenance: SessionStorageMaintenance
+
+    public init(sessionID: UUID, sessionURL: URL, maintenance: SessionStorageMaintenance) {
+        self.sessionID = sessionID
+        self.sessionURL = sessionURL
+        self.maintenance = maintenance
+    }
+}
+
 public struct SessionRecoveryScan: Sendable, Equatable {
     public let candidates: [RecoverableSession]
+    public let maintenance: [SessionMaintenanceCandidate]
     public let failures: [SessionRecoveryFailure]
 
-    public init(candidates: [RecoverableSession], failures: [SessionRecoveryFailure]) {
+    public init(
+        candidates: [RecoverableSession],
+        maintenance: [SessionMaintenanceCandidate],
+        failures: [SessionRecoveryFailure]
+    ) {
         self.candidates = candidates
+        self.maintenance = maintenance
         self.failures = failures
     }
+}
+
+/// What one session needs: transcript recovery and storage maintenance are reported separately.
+public struct SessionInspection: Sendable, Equatable {
+    public let recovery: RecoverableSession?
+    public let maintenance: SessionStorageMaintenance?
 }
 
 public enum SessionRecoveryScannerError: Error, LocalizedError, Equatable {
@@ -68,21 +93,27 @@ public struct SessionRecoveryScanner: Sendable {
         self.sessionsRoot = sessionsRoot
     }
 
-    public func inspect(sessionID: UUID) throws -> RecoverableSession? {
+    /// Read-only.
+    public func inspect(sessionID: UUID) throws -> SessionInspection {
         let layout = SessionLayout(sessionURL: try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: sessionsRoot, sessionID: sessionID))
-        return try candidate(layout: layout)
+        let manifest = try decodeManifest(at: layout.manifestURL)
+        return SessionInspection(
+            recovery: try candidate(layout: layout, manifest: manifest),
+            maintenance: try SessionStorageMaintenance.required(layout: layout, manifest: manifest)
+        )
     }
 
     public func pendingSessions() throws -> SessionRecoveryScan {
         guard FileManager.default.fileExists(atPath: sessionsRoot.path) else {
-            return SessionRecoveryScan(candidates: [], failures: [])
+            return SessionRecoveryScan(candidates: [], maintenance: [], failures: [])
         }
 
         let entries = try SessionDirectoryInventory.read(sessionsRoot: sessionsRoot, fileManager: .default)
         let duplicates = SessionDirectoryInventory.duplicateFolders(in: entries)
 
         var candidates: [RecoverableSession] = []
+        var maintenance: [SessionMaintenanceCandidate] = []
         var failures: [SessionRecoveryFailure] = []
         for entry in entries {
             let sessionURL = entry.url
@@ -92,8 +123,15 @@ public struct SessionRecoveryScanner: Sendable {
                 if let folders = duplicates[manifest.sessionID] {
                     throw SessionDirectoryLookupError.multipleMatches(sessionID: manifest.sessionID, folders: folders)
                 }
-                if let candidate = try candidate(layout: layout, manifest: manifest) {
-                    candidates.append(candidate)
+                let recovery = try candidate(layout: layout, manifest: manifest)
+                let required = try SessionStorageMaintenance.required(layout: layout, manifest: manifest)
+                if let recovery {
+                    candidates.append(recovery)
+                }
+                if let required {
+                    maintenance.append(SessionMaintenanceCandidate(
+                        sessionID: manifest.sessionID, sessionURL: sessionURL, maintenance: required
+                    ))
                 }
             } catch {
                 failures.append(SessionRecoveryFailure(
@@ -104,12 +142,9 @@ public struct SessionRecoveryScanner: Sendable {
         }
         return SessionRecoveryScan(
             candidates: candidates.sorted { $0.manifest.createdAt < $1.manifest.createdAt },
+            maintenance: maintenance.sorted { $0.sessionURL.lastPathComponent < $1.sessionURL.lastPathComponent },
             failures: failures.sorted { $0.sessionURL.lastPathComponent < $1.sessionURL.lastPathComponent }
         )
-    }
-
-    private func candidate(layout: SessionLayout) throws -> RecoverableSession? {
-        try candidate(layout: layout, manifest: decodeManifest(at: layout.manifestURL))
     }
 
     private func candidate(layout: SessionLayout, manifest: SessionManifest) throws -> RecoverableSession? {

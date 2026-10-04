@@ -49,7 +49,7 @@ for module in ("asr.qwen3_asr", "diarization.nemotron3", "common.voicevox_cli"):
 RUNTIME_BASENAMES = frozenset({
     "session.json", "events.jsonl", "processing_metadata.json", "checkpoint.json",
     "audio-chunks.jsonl", "audio-gaps.jsonl", "transcript.txt", "segments.json",
-    "audio.wav", "audio.m4a", "audio.flac", "run.json", "engine-metrics.json",
+    "audio.wav", "audio.m4a", "audio.flac", "storage.json", "recording.flac", "run.json", "engine-metrics.json",
     "memory.jsonl", "thermal.jsonl", "reference-verbatim.txt", "reference-content.txt",
     "speaker-reference.json", "fixture.json", "scenario.json", "qwen3-asr.json",
     "nemotron3.json", "diarization-evaluation.json", "nemotron3-current.json",

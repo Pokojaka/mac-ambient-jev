@@ -91,7 +91,7 @@ extension AppState {
                 }
 
                 enqueueProcessing(
-                    try contentPriorityRetry(
+                    contentPriorityRetry(
                         for: candidate,
                         segmentIDs: segmentIDs
                     )
@@ -162,7 +162,7 @@ extension AppState {
             enqueueProcessing(
                 .finalize(
                     sessionID: sessionID,
-                    source: .importedOriginal(imported.originalURL),
+                    source: .importedOriginal(imported.originalURL, timeline: nil),
                     metadataPolicy: .reject
                 )
             )
@@ -268,31 +268,16 @@ extension AppState {
             let finalization: SessionProcessingResult?
             switch request {
             case .finalize(let sessionID, let source, let metadataPolicy):
-                let result: SessionProcessingResult
-                switch source {
-                case .recordedTimeline(let checkpoint):
-                    result = await sessionProcessor.processFinalTranscript(
-                        sessionID: sessionID,
-                        checkpoint: checkpoint,
-                        pacingMode: .normal,
-                        shouldPause: shouldPause,
-                        onPhase: { _ in },
-                        metadataPolicy: metadataPolicy,
-                        onStatus: statusHandler,
-                        onUpdate: updateHandler
-                    )
-                case .importedOriginal(let originalURL):
-                    result = await sessionProcessor.processImportedSession(
-                        sessionID: sessionID,
-                        originalURL: originalURL,
-                        pacingMode: .normal,
-                        shouldPause: shouldPause,
-                        onPhase: { _ in },
-                        metadataPolicy: metadataPolicy,
-                        onStatus: statusHandler,
-                        onUpdate: updateHandler
-                    )
-                }
+                let result = await sessionProcessor.processSession(
+                    sessionID: sessionID,
+                    source: source,
+                    pacingMode: .normal,
+                    shouldPause: shouldPause,
+                    onPhase: { _ in },
+                    metadataPolicy: metadataPolicy,
+                    onStatus: statusHandler,
+                    onUpdate: updateHandler
+                )
                 if result.disposition == .paused {
                     holdForHeat(request)
                 } else {
@@ -325,19 +310,17 @@ extension AppState {
                     // The live session has ended; resuming finalizes the saved recording.
                     holdForHeat(.finalize(
                         sessionID: sessionID,
-                        source: .recordedTimeline(checkpoint),
+                        source: .recordedPCM(checkpoint),
                         metadataPolicy: .reject
                     ))
                 }
                 finalization = result
             case .retryContentPriority(
                 let sessionID,
-                let checkpoint,
                 let segmentIDs
             ):
                 await sessionProcessor.retryContentPrioritySession(
                     sessionID: sessionID,
-                    checkpoint: checkpoint,
                     segmentIDs: segmentIDs,
                     onStatus: statusHandler,
                     onUpdate: updateHandler
@@ -392,7 +375,7 @@ extension AppState {
                 switch candidate.action {
                 case .retryContentPriority(let segmentIDs):
                     enqueueProcessing(
-                        try contentPriorityRetry(
+                        contentPriorityRetry(
                             for: candidate,
                             segmentIDs: segmentIDs
                         )
@@ -428,16 +411,9 @@ extension AppState {
     func contentPriorityRetry(
         for candidate: RecoverableSession,
         segmentIDs: [String]
-    ) throws -> PendingProcessing {
-        let layout = SessionLayout(sessionURL: candidate.sessionURL)
-        guard let checkpoint = try AudioCheckpoint.loadRecovered(
-            from: layout.processingDirectory
-        ) else {
-            throw SessionRecoveryScannerError.missingAudio
-        }
-        return .retryContentPriority(
+    ) -> PendingProcessing {
+        .retryContentPriority(
             sessionID: candidate.manifest.sessionID,
-            checkpoint: checkpoint,
             segmentIDs: segmentIDs
         )
     }

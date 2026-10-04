@@ -154,7 +154,7 @@ private struct EmptyThermalQueueFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(
         engine: "thermal-queue-vad", model: nil, version: "test", configuration: [:]
     )
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         []
     }
 }

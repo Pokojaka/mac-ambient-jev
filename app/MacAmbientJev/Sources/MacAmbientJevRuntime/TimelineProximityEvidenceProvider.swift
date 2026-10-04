@@ -29,13 +29,13 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
     private static let minimumSampleSeconds = 0.35
     private static let minimumSignalRMS = 1e-5
 
-    private let reader: ProcessingTimelineReader
+    private let reader: any TimelineAudioReading
 
     private var profiles: [String: SpeakerAcousticProfile]?
     private var sessionLevelMedian: Double?
     private var sessionSpectralMedian: Double?
 
-    init(reader: ProcessingTimelineReader) {
+    init(reader: any TimelineAudioReading) {
         self.reader = reader
     }
 
@@ -115,7 +115,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
     }
 
     private func buildProfiles(speakerSpans: [SpeakerSpan]) throws {
-        let sampleRate = reader.checkpoint.sampleRate
+        let sampleRate = reader.info.sampleRate
         let minimumFrames = Int64(
             (Self.minimumSampleSeconds * sampleRate).rounded(.up)
         )
@@ -131,7 +131,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
                 .compactMap { span -> Range<Int64>? in
                     let start = max(0, span.startFrame)
                     let end = min(
-                        reader.checkpoint.committedFrames,
+                        reader.info.committedFrames,
                         span.endFrame
                     )
                     guard end - start >= minimumFrames else {
@@ -250,7 +250,7 @@ actor TimelineProximityEvidenceProvider: ProximityEvidenceProvider {
     private func acousticFeatures(
         interleaved: [Float]
     ) -> SpeakerAcousticProfile? {
-        let channelCount = reader.checkpoint.channelCount
+        let channelCount = reader.info.channelCount
         guard channelCount > 0,
               !interleaved.isEmpty else {
             return nil

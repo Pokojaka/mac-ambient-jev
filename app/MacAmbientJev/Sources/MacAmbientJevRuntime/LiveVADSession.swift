@@ -29,6 +29,7 @@ public struct LiveVADProgress: Sendable, Equatable {
 public actor LiveVADSession {
     public nonisolated let segmentationRunID: String
 
+    private let processingDirectory: URL
     private let processor: FluidVADTimelineProcessor
     private var segmentCount = 0
     private var lastCommittedFrames: Int64
@@ -45,26 +46,22 @@ public actor LiveVADSession {
             canonicalSampleRate: initialCheckpoint.sampleRate,
             measureMicInputLevels: measureMicInputLevels
         )
-        let reader = ProcessingTimelineReader(
-            directory: processingDirectory,
-            checkpoint: initialCheckpoint
-        )
         return LiveVADSession(
             segmentationRunID: segmentationRunID,
-            processor: FluidVADTimelineProcessor(
-                reader: reader,
-                engine: engine
-            ),
+            processingDirectory: processingDirectory,
+            processor: FluidVADTimelineProcessor(engine: engine),
             initialCommittedFrames: initialCheckpoint.committedFrames
         )
     }
 
     init(
         segmentationRunID: String,
+        processingDirectory: URL,
         processor: FluidVADTimelineProcessor,
         initialCommittedFrames: Int64
     ) {
         self.segmentationRunID = segmentationRunID
+        self.processingDirectory = processingDirectory
         self.processor = processor
         self.lastCommittedFrames = initialCommittedFrames
     }
@@ -83,7 +80,7 @@ public actor LiveVADSession {
         }
 
         let emitted = try await processor.processAvailable(
-            checkpoint: checkpoint
+            reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
         )
         segmentCount += emitted.count
         lastCommittedFrames = checkpoint.committedFrames
@@ -109,7 +106,9 @@ public actor LiveVADSession {
             )
         }
 
-        let emitted = try await processor.finish(checkpoint: checkpoint)
+        let emitted = try await processor.finish(
+            reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
+        )
         segmentCount += emitted.count
         lastCommittedFrames = checkpoint.committedFrames
         isFinished = true

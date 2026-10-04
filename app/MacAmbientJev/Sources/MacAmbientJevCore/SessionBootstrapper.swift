@@ -42,6 +42,8 @@ public struct SessionBootstrapper {
             to: sessionURL.appending(path: "session.json"),
             options: .atomic
         )
+        try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL))
+            .save(.initial(for: source))
         _ = try SessionWriter(sessionURL: sessionURL)
 
         return sessionURL

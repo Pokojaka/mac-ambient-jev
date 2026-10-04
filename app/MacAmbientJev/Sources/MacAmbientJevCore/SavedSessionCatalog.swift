@@ -40,9 +40,10 @@ public enum SavedSessionAudio: Sendable, Equatable {
 
 public enum SavedSessionDuration: Sendable, Equatable {
     case seconds(Double)
-    /// No audio timeline to measure: no recorded audio, or an import whose timeline has not been built.
+    /// No audio timeline to measure: no recorded audio, unusable audio, or an import whose
+    /// timeline has not been built.
     case unknown
-    /// The timeline checkpoint exists but cannot be read.
+    /// The stored timeline coordinates are invalid.
     case unreadable(String)
 }
 
@@ -211,7 +212,7 @@ public struct SavedSessionCatalog {
                     sessionURL: layout.sessionURL,
                     createdAt: manifest.createdAt,
                     source: manifest.source,
-                    duration: duration(layout: layout, manifest: manifest, audio: audio),
+                    duration: duration(audio: audio),
                     audio: audio,
                     hasActiveTranscript: false,
                     processingStatus: processingStatus
@@ -226,7 +227,7 @@ public struct SavedSessionCatalog {
             sessionURL: layout.sessionURL,
             createdAt: manifest.createdAt,
             source: manifest.source,
-            duration: duration(layout: layout, manifest: manifest, audio: audio),
+            duration: duration(audio: audio),
             audio: audio,
             hasActiveTranscript: hasActiveTranscript,
             processingStatus: processingStatus
@@ -244,25 +245,14 @@ public struct SavedSessionCatalog {
         }
     }
 
-    private func duration(
-        layout: SessionLayout,
-        manifest: SessionManifest,
-        audio: SavedSessionAudio
-    ) -> SavedSessionDuration {
-        let checkpoint: AudioCheckpoint?
-        switch manifest.source {
-        case .recording:
-            guard case .available(.recordedTimeline(let recorded)) = audio else { return .unknown }
-            checkpoint = recorded
-        case .imported:
-            do {
-                checkpoint = try AudioCheckpoint.loadRecovered(from: layout.processingDirectory)
-            } catch {
-                return .unreadable("音声の長さを読めません: \(error.localizedDescription)")
-            }
+    private func duration(audio: SavedSessionAudio) -> SavedSessionDuration {
+        guard case .available(let source) = audio else { return .unknown }
+        do {
+            guard let timeline = try source.timeline else { return .unknown }
+            return .seconds(timeline.durationSeconds)
+        } catch {
+            return .unreadable("音声の長さを読めません: \(error.localizedDescription)")
         }
-        guard let checkpoint else { return .unknown }
-        return .seconds(Double(checkpoint.committedFrames) / checkpoint.sampleRate)
     }
 
     private func status(

@@ -89,7 +89,7 @@ private func makeCoordinator(
         asrRunID: "asr",
         writer: try SessionWriter(sessionURL: root),
         asr: asr,
-        loader: ASRAudioLoader(reader: ProcessingTimelineReader(
+        loader: ASRAudioLoader(reader: try ProcessingTimelineReader(
             directory: processing, checkpoint: checkpoint
         )),
         pacingMode: pacingMode,

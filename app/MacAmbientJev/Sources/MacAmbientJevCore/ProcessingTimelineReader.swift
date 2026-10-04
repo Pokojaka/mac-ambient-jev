@@ -23,13 +23,16 @@ public enum ProcessingTimelineReaderError: LocalizedError, Equatable {
     }
 }
 
-public struct ProcessingTimelineReader: Sendable {
+/// Reads the durable PCM chunks of a recording or an import timeline.
+public struct ProcessingTimelineReader: TimelineAudioReading {
     public let directory: URL
     public let checkpoint: AudioCheckpoint
+    public let info: TimelineAudioInfo
 
-    public init(directory: URL, checkpoint: AudioCheckpoint) {
+    public init(directory: URL, checkpoint: AudioCheckpoint) throws {
         self.directory = directory
         self.checkpoint = checkpoint
+        self.info = try checkpoint.info
     }
 
     private var bytesPerFrame: Int {
@@ -77,7 +80,7 @@ public struct ProcessingTimelineReader: Sendable {
         return output
     }
 
-    public func validateChunkFiles() throws {
+    public func validateAudio() throws {
         try validateIndex()
         for (index, filename) in checkpoint.chunkFiles.enumerated() {
             let size = try chunkFileSize(filename)
@@ -88,10 +91,9 @@ public struct ProcessingTimelineReader: Sendable {
     }
 
     private func validateIndex() throws {
-        guard checkpoint.sampleFormat == .float32LE,
-              (1...Int(Int16.max)).contains(checkpoint.channelCount),
-              checkpoint.sampleRate.isFinite,
-              checkpoint.sampleRate > 0 else {
+        guard checkpoint.sampleFormat == CanonicalAudio.sampleFormat,
+              checkpoint.channelCount == CanonicalAudio.channelCount,
+              checkpoint.sampleRate == CanonicalAudio.sampleRate else {
             throw ProcessingTimelineReaderError.invalidFormat
         }
         let frameCounts = checkpoint.chunkFrameCounts

@@ -183,14 +183,14 @@ import Testing
     try [Float(9)].withUnsafeBytes { Data($0) }.write(to: root.appending(path: filename))
     let checkpoint = AudioCheckpoint(
         committedFrames: 2,
-        sampleRate: 1,
+        sampleRate: 16_000,
         channelCount: 1,
         sampleFormat: .float32LE,
         chunkFiles: [filename, filename],
         chunkFrameCounts: [1, 1],
         gapEvents: []
     )
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
         _ = try reader.readSamples(frameRange: 0..<2)
     }
@@ -215,7 +215,7 @@ import Testing
     try [Float(7)].withUnsafeBytes { Data($0) }.write(to: root.appending(path: "secret"))
     let checkpoint = AudioCheckpoint(
         committedFrames: 1,
-        sampleRate: 10,
+        sampleRate: 16_000,
         channelCount: 1,
         sampleFormat: .float32LE,
         chunkFiles: ["../../secret"],
@@ -311,7 +311,7 @@ import Testing
 
     #expect(ring.overflowCount == 1)
     #expect(checkpoint.committedFrames == 6)
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(try reader.readSamples(frameRange: 0..<6) == [1, 2, 0, 0, 0, 6])
 }
 
@@ -831,7 +831,7 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     try await writer.append(samples: samples)
     let checkpoint = try await writer.finish()
     #expect(checkpoint.chunkFrameCounts == [4, 4, 4, 1])
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     let full = try reader.readSamples(frameRange: 0..<13)
     #expect(full == samples)
     for range: Range<Int64> in [0..<1, 3..<5, 1..<12, 4..<8, 11..<13, 12..<13, 6..<6] {
@@ -849,14 +849,14 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     let handle = try FileHandle(forWritingTo: root.appending(path: "chunk-000001.f32le"))
     try handle.truncate(atOffset: 12)
     try handle.close()
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(try reader.readSamples(frameRange: 0..<4) == [0, 1, 2, 3])
     #expect(throws: ProcessingTimelineReaderError.corruptChunk("chunk-000001.f32le")) {
         _ = try reader.readSamples(frameRange: 4..<5)
     }
     #expect(throws: ProcessingTimelineReaderError.unreadableChunk("chunk-000002.f32le")) {
         _ = try ProcessingTimelineReader(directory: root, checkpoint: AudioCheckpoint(
-            committedFrames: 1, sampleRate: 4, channelCount: 1, sampleFormat: .float32LE,
+            committedFrames: 1, sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE,
             chunkFiles: ["chunk-000002.f32le"], chunkFrameCounts: [1], gapEvents: []
         )).readSamples(frameRange: 0..<1)
     }

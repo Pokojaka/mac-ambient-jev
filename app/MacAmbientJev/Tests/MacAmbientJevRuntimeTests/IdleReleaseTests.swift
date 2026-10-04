@@ -35,7 +35,7 @@ private actor CountingDiarizer: DiarizationEngine {
 
 private struct UnusedVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] { [] }
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
 }
 
 private func makeProcessor(asr: CountingASR, diarizer: CountingDiarizer) -> NativeSessionProcessor {

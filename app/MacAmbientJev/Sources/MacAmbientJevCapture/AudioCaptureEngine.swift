@@ -798,7 +798,7 @@ public final class AudioCaptureEngine {
             checkpoint = await drain.durableCheckpoint()
         }
         let gaps = await drain.gapStatistics()
-        guard checkpoint.hasCapturedAudio else {
+        guard try checkpoint.info.hasCapturedAudio else {
             if let writerFailureCause {
                 throw AudioCaptureEngineError.writerFailure(writerFailureCause)
             }

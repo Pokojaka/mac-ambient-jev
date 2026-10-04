@@ -149,7 +149,6 @@ final class AppState: ObservableObject {
         )
         case retryContentPriority(
             sessionID: UUID,
-            checkpoint: AudioCheckpoint,
             segmentIDs: [String]
         )
 
@@ -157,7 +156,7 @@ final class AppState: ObservableObject {
             switch self {
             case .finishLive(let sessionID, _),
                  .finalize(let sessionID, _, _),
-                 .retryContentPriority(let sessionID, _, _):
+                 .retryContentPriority(let sessionID, _):
                 sessionID
             }
         }

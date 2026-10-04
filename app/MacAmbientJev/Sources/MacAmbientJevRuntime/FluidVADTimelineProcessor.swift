@@ -15,11 +15,9 @@ enum FluidVADTimelineProcessorError: LocalizedError {
 
 /// Incrementally consumes the durable processing timeline.
 ///
-/// The cursor advances only to `checkpoint.committedFrames`, so callers can poll
-/// this actor while capture continues. Re-supplying the same checkpoint is a no-op.
+/// The cursor advances only to the supplied reader's `info.committedFrames`, so callers can
+/// poll this actor while capture continues. Re-supplying the same extent is a no-op.
 actor FluidVADTimelineProcessor {
-    private let directory: URL
-    private let initialCheckpoint: AudioCheckpoint
     private let engine: any VADChunkSegmenting
     private let sourceFramesPerRead: Int64
 
@@ -34,48 +32,32 @@ actor FluidVADTimelineProcessor {
     /// Seconds of source audio read from the timeline per VAD step.
     static let sourceReadSeconds = 1.0
 
-    init(
-        reader: ProcessingTimelineReader,
-        engine: any VADChunkSegmenting
-    ) {
-        let checkpoint = reader.checkpoint
-        self.directory = reader.directory
-        self.initialCheckpoint = checkpoint
+    init(engine: any VADChunkSegmenting) {
         self.engine = engine
         self.sourceFramesPerRead = Int64((CanonicalAudio.sampleRate * Self.sourceReadSeconds).rounded())
     }
 
-    func segmentAll() async throws -> [SegmentReference] {
-        var emitted = try await processAvailable(
-            checkpoint: initialCheckpoint
-        )
-        emitted.append(contentsOf: try await finish(
-            checkpoint: initialCheckpoint
-        ))
+    func segmentAll(reader: any TimelineAudioReading) async throws -> [SegmentReference] {
+        var emitted = try await processAvailable(reader: reader)
+        emitted.append(contentsOf: try await finish(reader: reader))
         return emitted
     }
 
     /// Processes only frames that became durable since the previous call.
     func processAvailable(
-        checkpoint: AudioCheckpoint
+        reader: any TimelineAudioReading
     ) async throws -> [SegmentReference] {
         guard !finished else { return [] }
-        try CanonicalAudio.validate(sampleRate: checkpoint.sampleRate, channelCount: checkpoint.channelCount,
-                                    sampleFormat: checkpoint.sampleFormat)
-        guard checkpoint.committedFrames >= sourceStartFrame else {
+        let info = reader.info
+        guard info.committedFrames >= sourceStartFrame else {
             throw FluidVADTimelineProcessorError.checkpointMovedBackward
         }
-        knownGaps = checkpoint.gapEvents
+        knownGaps = info.gapEvents
         try await drainFullVADChunks()
 
-        let reader = ProcessingTimelineReader(
-            directory: directory,
-            checkpoint: checkpoint
-        )
-
-        while sourceStartFrame < checkpoint.committedFrames {
+        while sourceStartFrame < info.committedFrames {
             let sourceEndFrame = min(
-                checkpoint.committedFrames,
+                info.committedFrames,
                 sourceStartFrame + sourceFramesPerRead
             )
             pending16k.append(contentsOf: try reader.readSamples(
@@ -90,11 +72,11 @@ actor FluidVADTimelineProcessor {
 
     /// Consumes the final durable tail and closes any open VAD segment.
     func finish(
-        checkpoint: AudioCheckpoint
+        reader: any TimelineAudioReading
     ) async throws -> [SegmentReference] {
         guard !finished else { return [] }
 
-        undelivered = try await processAvailable(checkpoint: checkpoint)
+        undelivered = try await processAvailable(reader: reader)
 
         if pendingOffset < pending16k.count {
             let finalChunk = Array(pending16k[pendingOffset...])
@@ -105,7 +87,7 @@ actor FluidVADTimelineProcessor {
         pendingOffset = 0
         undelivered.append(
             contentsOf: await engine.finish(
-                totalCanonicalFrames: checkpoint.committedFrames
+                totalCanonicalFrames: reader.info.committedFrames
             )
         )
         finished = true
@@ -142,7 +124,7 @@ actor FluidVADTimelineProcessor {
 
     /// Replacement silence is not captured speech; a window touching it is dropped whole.
     private func intersectsKnownGap(_ level: MicLevelWindow) -> Bool {
-        let sampleRate = initialCheckpoint.sampleRate
+        let sampleRate = CanonicalAudio.sampleRate
         return knownGaps.contains { gap in
             let gapStart = Double(gap.startFrame) / sampleRate
             let gapEnd = Double(gap.startFrame + gap.frameCount) / sampleRate

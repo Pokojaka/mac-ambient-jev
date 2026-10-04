@@ -55,6 +55,7 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
 
     let flac = try AVAudioFile(forReading: folder.appending(path: "audio.flac"))
     #expect(flac.fileFormat.settings[AVFormatIDKey] as? UInt32 == kAudioFormatFLAC)
+    #expect(try Data(contentsOf: folder.appending(path: "audio.flac")) == Data(contentsOf: SessionLayout(sessionURL: session.sessionURL).recordingFLACURL))
     #expect(flac.length == Int64(samples.count))
     #expect(flac.processingFormat.sampleRate == fixtureSampleRate)
     let buffer = try #require(AVAudioPCMBuffer(
@@ -65,7 +66,20 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
     let decoded = UnsafeBufferPointer(start: try #require(buffer.floatChannelData)[0], count: Int(buffer.frameLength))
     let maxError = zip(samples, decoded).map { abs($0 - $1) }.max() ?? .infinity
     #expect(decoded.count == samples.count)
-    #expect(maxError <= 1.0 / Float(1 << 23))
+    #expect(maxError <= 1.0 / 32_768)
+}
+
+@Test
+func exportRefusesARecordingThatIsNotYetFLAC() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession(compacted: false)
+
+    #expect(throws: SessionExportError.recordingNotCompacted) {
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
+    }
+    let exported = try? FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path)
+    #expect(exported?.isEmpty ?? true)
 }
 
 @Test
@@ -87,8 +101,8 @@ func reexportReplacesTheSameFolder() async throws {
     #expect(try String(contentsOf: second.appending(path: "transcript.txt"), encoding: .utf8).hasPrefix("[00:00] Speaker 1: こんにちは"))
 }
 
-@Test(arguments: [false, true])
-func exporterCopiesImportedOriginalByteForByte(withDerivedTimeline: Bool) async throws {
+@Test
+func exporterCopiesImportedOriginalByteForByte() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
     let wav = fixture.root.appending(path: "source.wav")
@@ -107,7 +121,7 @@ func exporterCopiesImportedOriginalByteForByte(withDerivedTimeline: Bool) async 
     }
     let original = try Data(contentsOf: wav)
     let session = try await fixture.writeImportedSession(
-        originalFilename: "定例会議.wav", originalBytes: original, withDerivedTimeline: withDerivedTimeline
+        originalFilename: "定例会議.wav", originalBytes: original
     )
 
     let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
@@ -140,8 +154,7 @@ func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
     let original = try Data(contentsOf: wav)
     let session = try await fixture.writeImportedSession(
         originalFilename: String(repeating: "a", count: 300) + ".wav",
-        originalBytes: original,
-        withDerivedTimeline: false
+        originalBytes: original
     )
 
     let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
@@ -194,21 +207,29 @@ struct ExportFixture {
 
     func writeLiveSession(
         samples: [Float] = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 },
-        activeRuns: ActiveRuns = completeRuns
+        activeRuns: ActiveRuns = completeRuns,
+        compacted: Bool = true
     ) async throws -> SavedSession {
         let id = UUID()
         let session = try writeManifest(id: id, source: .recording(.microphone))
-        let writer = try DurableAudioWriter(directory: session.appending(path: "audio/processing", directoryHint: .isDirectory), chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate)
+        let layout = SessionLayout(sessionURL: session)
+        let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate)
         try await writer.append(samples: samples)
-        _ = try await writer.finish()
+        let checkpoint = try await writer.finish()
+        if compacted {
+            let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
+            try ProcessingTimelineAudioExporter(framesPerBuffer: 16_000)
+                .write(reader: pcm, to: layout.recordingFLACURL, encoding: .flac16)
+            try SessionAudioStorageStore(layout: layout).save(.recordingFLAC(pcm.info))
+            try FileManager.default.removeItem(at: layout.processingDirectory)
+        }
         try await writeTranscript(sessionID: id, session: session, activeRuns: activeRuns)
         return try readable(id)
     }
 
     func writeImportedSession(
         originalFilename: String,
-        originalBytes: Data,
-        withDerivedTimeline: Bool
+        originalBytes: Data
     ) async throws -> SavedSession {
         let id = UUID()
         let session = try writeManifest(id: id, source: .imported(originalFilename: originalFilename))
@@ -216,11 +237,8 @@ struct ExportFixture {
         try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
         let ext = URL(fileURLWithPath: originalFilename).pathExtension
         try originalBytes.write(to: audio.appending(path: "original.\(ext)"))
-        if withDerivedTimeline {
-            let writer = try DurableAudioWriter(directory: audio.appending(path: "processing", directoryHint: .isDirectory), chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate)
-            try await writer.append(samples: Array(repeating: 0.25, count: 1_600))
-            _ = try await writer.finish()
-        }
+        try SessionAudioStorageStore(layout: SessionLayout(sessionURL: session))
+            .save(.importedOriginal(TimelineAudioInfo(committedFrames: 1_600, gapEvents: [])))
         try await writeTranscript(sessionID: id, session: session, activeRuns: Self.completeRuns)
         return try readable(id)
     }

@@ -261,9 +261,9 @@ struct ProcessRecordingCommand {
 
         print("処理を開始します: \(audioURL.path)")
 
-        let processing = await processor.processImportedSession(
+        let processing = await processor.processSession(
             sessionID: sessionID,
-            originalURL: imported.originalURL,
+            source: .importedOriginal(imported.originalURL, timeline: nil),
             pacingMode: pacingMode,
             shouldPause: pauseCheck(monitor),
             onPhase: { phase in await monitor?.setPhase(phase) },
@@ -307,7 +307,7 @@ struct ProcessRecordingCommand {
     static func inspect(sessionID: UUID, root: URL) throws {
         let action: String
         do {
-            switch try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)?.action {
+            switch try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID).recovery?.action {
             case .finalize: action = "finalize"
             case .retryContentPriority: action = "retryContentPriority"
             case nil: action = "none"
@@ -344,7 +344,7 @@ struct ProcessRecordingCommand {
         monitor: RunMonitor?
     ) async throws -> SessionProcessingResult {
         let sessionURL = try resolveResumeSession(sessionID: sessionID, root: root, outputURL: outputURL)
-        let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
+        let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID).recovery
         try checkStart(pacingMode: pacingMode)
 
         let defaults = try AppPaths.systemDefault(fileManager: .default)
@@ -366,21 +366,10 @@ struct ProcessRecordingCommand {
         switch (candidate?.action, candidate?.source) {
         case (.retryContentPriority?, _):
             throw ProcessRecordingError.invalidSession("この復旧 action は CLI の対象外です")
-        case (.finalize?, .recordedTimeline(let checkpoint)?):
-            result = await processor.processFinalTranscript(
+        case (.finalize?, let source?):
+            result = await processor.processSession(
                 sessionID: sessionID,
-                checkpoint: checkpoint,
-                pacingMode: pacingMode,
-                shouldPause: pauseCheck(monitor),
-                onPhase: onPhase,
-                metadataPolicy: .reject,
-                onStatus: onStatus,
-                onUpdate: onUpdate
-            )
-        case (.finalize?, .importedOriginal(let originalURL)?):
-            result = await processor.processImportedSession(
-                sessionID: sessionID,
-                originalURL: originalURL,
+                source: source,
                 pacingMode: pacingMode,
                 shouldPause: pauseCheck(monitor),
                 onPhase: onPhase,
@@ -413,10 +402,6 @@ struct ProcessRecordingCommand {
         guard let runs = metadata?.activeRuns, runs.scope != nil else {
             throw ProcessRecordingError.processingFailed("音響範囲整理の run が完了していません")
         }
-        let processingDirectory = sessionURL.appending(path: "audio/processing")
-        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory) else {
-            throw ProcessRecordingError.processingFailed("録音チェックポイントがありません")
-        }
         let recovered = try SessionRecovery.recoverJSONL(
             Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
         )
@@ -424,7 +409,7 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.processingFailed("イベントログの末尾が不完全です")
         }
         let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-        let segments = TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
+        let segments = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate).materialize(
             events: events, activeRuns: runs
         ).filter(\.hasRecognizedText)
         try FileManager.default.createDirectory(

@@ -52,15 +52,10 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
         samples: Array(repeating: Float(0.1), count: 16_000)
     )
     let firstCheckpoint = await writer.committedSnapshot()
-    let processor = FluidVADTimelineProcessor(
-        reader: ProcessingTimelineReader(
-            directory: root,
-            checkpoint: firstCheckpoint
-        ),
-        engine: vad
-    )
+    let processor = FluidVADTimelineProcessor(engine: vad)
     let session = LiveVADSession(
         segmentationRunID: runID,
+        processingDirectory: root,
         processor: processor,
         initialCommittedFrames: firstCheckpoint.committedFrames
     )
@@ -109,13 +104,8 @@ func liveVADSessionFinishIsIdempotent() async throws {
     let runID = "seg_live_test"
     let session = LiveVADSession(
         segmentationRunID: runID,
-        processor: FluidVADTimelineProcessor(
-            reader: ProcessingTimelineReader(
-                directory: root,
-                checkpoint: checkpoint
-            ),
-            engine: EmittingLiveVAD(runID: runID)
-        ),
+        processingDirectory: root,
+        processor: FluidVADTimelineProcessor(engine: EmittingLiveVAD(runID: runID)),
         initialCommittedFrames: checkpoint.committedFrames
     )
 

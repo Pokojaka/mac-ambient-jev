@@ -6,7 +6,7 @@ import MacAmbientJevAppleSupport
 public protocol FinalTranscriptVADSegmenter: Sendable {
     var provenance: RunProvenance { get }
     func segment(
-        reader: ProcessingTimelineReader,
+        reader: any TimelineAudioReading,
         runID: String
     ) async throws -> [SegmentReference]
 }
@@ -29,18 +29,15 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
     }
 
     func segment(
-        reader: ProcessingTimelineReader,
+        reader: any TimelineAudioReading,
         runID: String
     ) async throws -> [SegmentReference] {
         let engine = try await FluidVADSegmentationEngine.make(
             segmentationRunID: runID,
-            canonicalSampleRate: reader.checkpoint.sampleRate,
+            canonicalSampleRate: reader.info.sampleRate,
             measureMicInputLevels: false
         )
-        return try await FluidVADTimelineProcessor(
-            reader: reader,
-            engine: engine
-        ).segmentAll()
+        return try await FluidVADTimelineProcessor(engine: engine).segmentAll(reader: reader)
     }
 }
 
@@ -116,7 +113,7 @@ enum FinalTranscriptPipelineError: LocalizedError {
 struct FinalTranscriptPipeline: Sendable {
     let sessionID: UUID
     let sessionURL: URL
-    let checkpoint: AudioCheckpoint
+    let audio: any TimelineAudioReading
     let asr: any ASREngine
     let diarization: any DiarizationEngine
     let vadSegmenter: any FinalTranscriptVADSegmenter
@@ -153,14 +150,9 @@ struct FinalTranscriptPipeline: Sendable {
         onPhase: @escaping @Sendable (RunPhase) async -> Void,
         asrMetrics: inout ASRBatchMetrics?
     ) async throws -> FinalTranscriptPipelineOutcome {
-        try CanonicalAudio.validate(sampleRate: checkpoint.sampleRate, channelCount: checkpoint.channelCount,
-                                    sampleFormat: checkpoint.sampleFormat)
+        let info = audio.info
         let layout = SessionLayout(sessionURL: sessionURL)
-        let reader = ProcessingTimelineReader(
-            directory: layout.processingDirectory,
-            checkpoint: checkpoint
-        )
-        let materializer = TranscriptMaterializer(sampleRate: checkpoint.sampleRate)
+        let materializer = TranscriptMaterializer(sampleRate: info.sampleRate)
         let writer = try SessionWriter(sessionURL: sessionURL)
         let segmentationRunID = "seg_final_\(UUID().uuidString.lowercased())"
         let asrRunID = "asr_final_\(UUID().uuidString.lowercased())"
@@ -193,7 +185,7 @@ struct FinalTranscriptPipeline: Sendable {
 
         await onStatus(UserFacingStatus.detectingSpeech.text)
         try await startRun(.segmentation, segmentationRunID, vadSegmenter.provenance)
-        let vadSegments = try await vadSegmenter.segment(reader: reader, runID: segmentationRunID)
+        let vadSegments = try await vadSegmenter.segment(reader: audio, runID: segmentationRunID)
         try validateVADSegments(vadSegments, runID: segmentationRunID)
 
         let speakerSpans: [SpeakerSpan]
@@ -204,10 +196,10 @@ struct FinalTranscriptPipeline: Sendable {
             speakerSpans = []
             transcriptEvents = []
         } else {
-            let diarizationInputURL = layout.derivedDirectory.appending(path: "diarization-input.caf")
+            let diarizationInputURL = layout.diarizationInputURL
             try ProcessingTimelineAudioExporter(
-                framesPerBuffer: max(1, Int64(checkpoint.sampleRate.rounded()))
-            ).export(reader: reader, to: diarizationInputURL, encoding: .float32)
+                framesPerBuffer: max(1, Int64(info.sampleRate.rounded()))
+            ).export(reader: audio, to: diarizationInputURL, encoding: .float32CAF)
 
             await onStatus(UserFacingStatus.preparingDiarization.text)
             try await startRun(.diarization, diarizationRunID, diarization.provenance)
@@ -221,7 +213,7 @@ struct FinalTranscriptPipeline: Sendable {
             await onStatus(UserFacingStatus.diarizing.text)
             let diarizationResult = try await diarizationCoordinator.process(
                 fileURL: diarizationInputURL,
-                canonicalSampleRate: checkpoint.sampleRate,
+                canonicalSampleRate: info.sampleRate,
                 existingEvents: [],
                 activeRuns: ActiveRuns(
                     segmentation: segmentationRunID,
@@ -240,7 +232,7 @@ struct FinalTranscriptPipeline: Sendable {
         let asrSegments = try SpeakerTurnSegmenter.split(
             vadSegments,
             speakerSpans: speakerSpans,
-            sampleRate: checkpoint.sampleRate
+            sampleRate: info.sampleRate
         )
         try validateVADSegments(asrSegments, runID: segmentationRunID)
         try await startRun(.asr, asrRunID, asr.provenance)
@@ -291,7 +283,7 @@ struct FinalTranscriptPipeline: Sendable {
             asrRunID: asrRunID,
             writer: writer,
             asr: asr,
-            loader: ASRAudioLoader(reader: reader),
+            loader: ASRAudioLoader(reader: audio),
             pacingMode: pacingMode,
             sleep: { try await Task.sleep(for: $0) },
             shouldPause: shouldPause
@@ -339,8 +331,8 @@ struct FinalTranscriptPipeline: Sendable {
             )
             let sceneResult = try await sceneCoordinator.process(
                 speakerSpans: speakerSpans,
-                totalFrames: checkpoint.committedFrames,
-                sampleRate: checkpoint.sampleRate,
+                totalFrames: info.committedFrames,
+                sampleRate: info.sampleRate,
                 existingEvents: transcriptEvents,
                 activeRuns: ActiveRuns(
                     segmentation: segmentationRunID,
@@ -401,7 +393,7 @@ struct FinalTranscriptPipeline: Sendable {
                   ids.insert(segment.segmentID).inserted,
                   segment.startFrame >= 0,
                   segment.startFrame < segment.endFrame,
-                  segment.endFrame <= checkpoint.committedFrames else {
+                  segment.endFrame <= audio.info.committedFrames else {
                 throw FinalTranscriptPipelineError.invalidVADRange(segment.segmentID)
             }
         }
@@ -411,12 +403,12 @@ struct FinalTranscriptPipeline: Sendable {
         for span in spans {
             guard span.startFrame >= 0,
                   span.startFrame < span.endFrame,
-                  span.endFrame <= checkpoint.committedFrames else {
+                  span.endFrame <= audio.info.committedFrames else {
                 throw FinalTranscriptPipelineError.invalidSpeakerSpan(
                     speakerID: span.speakerID,
                     startFrame: span.startFrame,
                     endFrame: span.endFrame,
-                    totalFrames: checkpoint.committedFrames
+                    totalFrames: audio.info.committedFrames
                 )
             }
         }

@@ -72,16 +72,13 @@ public struct ModelStore: Sendable {
 }
 
 public struct ASRAudioLoader: Sendable {
-    public let reader: ProcessingTimelineReader
+    public let reader: any TimelineAudioReading
 
-    public init(reader: ProcessingTimelineReader) {
+    public init(reader: any TimelineAudioReading) {
         self.reader = reader
     }
 
     public func load(segment: SegmentReference) throws -> ASRAudioInput {
-        try CanonicalAudio.validate(sampleRate: reader.checkpoint.sampleRate,
-                                    channelCount: reader.checkpoint.channelCount,
-                                    sampleFormat: reader.checkpoint.sampleFormat)
         guard segment.startFrame <= segment.endFrame else {
             throw ProcessingTimelineReaderError.invalidFrameRange
         }

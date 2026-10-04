@@ -36,7 +36,7 @@ private struct NoopDiarizer: DiarizationEngine {
 
 private struct NoopVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] { [] }
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
 }
 
 @MainActor
@@ -76,7 +76,7 @@ func releasesWhenQueueDrains() async throws {
     // The session does not exist, so the finalization fails; the queue still drains.
     state.enqueueProcessing(.finalize(
         sessionID: UUID(),
-        source: .importedOriginal(root.appending(path: "missing.caf")),
+        source: .importedOriginal(root.appending(path: "missing.caf"), timeline: nil),
         metadataPolicy: .reject
     ))
     try await waitUntil { await asr.unloadCount == 1 }
@@ -103,14 +103,14 @@ func noReleaseWhileBusy() async throws {
 
     state.recordingPhase = .idle
     state.thermallyHeldProcessing = [.finalize(
-        sessionID: UUID(), source: .importedOriginal(root), metadataPolicy: .reject
+        sessionID: UUID(), source: .importedOriginal(root, timeline: nil), metadataPolicy: .reject
     )]
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
     state.thermallyHeldProcessing = []
     state.pendingProcessing = [.finalize(
-        sessionID: UUID(), source: .importedOriginal(root), metadataPolicy: .reject
+        sessionID: UUID(), source: .importedOriginal(root, timeline: nil), metadataPolicy: .reject
     )]
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)

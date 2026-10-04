@@ -28,8 +28,25 @@ public struct SessionLayout: Sendable, Equatable {
         audioDirectory.appending(path: "processing", directoryHint: .isDirectory)
     }
 
+    /// Exists only while a finalization runs; it holds the diarization input CAF.
     public var derivedDirectory: URL {
         audioDirectory.appending(path: "derived", directoryHint: .isDirectory)
+    }
+
+    public var diarizationInputURL: URL {
+        derivedDirectory.appending(path: "diarization-input.caf")
+    }
+
+    public var audioStorageURL: URL {
+        audioDirectory.appending(path: "storage.json")
+    }
+
+    public var recordingFLACURL: URL {
+        audioDirectory.appending(path: "recording.flac")
+    }
+
+    public var recordingFLACPartialURL: URL {
+        audioDirectory.appending(path: ".recording.flac.partial")
     }
 
     /// The imported source file: exactly one regular file named `original` or `original.*` in `audio/`.
@@ -63,36 +80,60 @@ public struct SessionLayout: Sendable, Equatable {
         }
     }
 
-    /// The session's source audio, chosen only by how the session was created.
-    /// Returns nil for a recording that captured no audio.
+    /// The session's source audio, chosen by the authoritative `audio/storage.json` state.
+    /// Returns nil for a recording that captured no audio. Structural checks only: a FLAC
+    /// recording must still be decoded and verified before its samples are used.
     public func audioSource(for manifest: SessionManifest) throws -> SessionAudioSource? {
-        switch manifest.source {
-        case .recording:
+        let storage = try SessionAudioStorageStore(layout: self).load()
+        try storage.validate(for: manifest.source)
+        switch storage {
+        case .recordingPCM:
             guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory),
                   checkpoint.committedFrames > 0 else {
                 return nil
             }
-            try CanonicalAudio.validate(sampleRate: checkpoint.sampleRate, channelCount: checkpoint.channelCount,
-                                        sampleFormat: checkpoint.sampleFormat)
-            try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
-                .validateChunkFiles()
-            return .recordedTimeline(checkpoint)
-        case .imported:
-            return .importedOriginal(try importedOriginalURL())
+            try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint).validateAudio()
+            return .recordedPCM(checkpoint)
+        case .recordingFLAC(let info):
+            guard info.committedFrames > 0 else { throw SessionAudioSourceError.emptyRecordingFLAC }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: recordingFLACURL.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                throw SessionAudioSourceError.recordingFLACMissing
+            }
+            return .recordedFLAC(info)
+        case .importedOriginal(let info):
+            return .importedOriginal(try importedOriginalURL(), timeline: info)
         }
     }
 }
 
 public enum SessionAudioSource: Sendable, Equatable {
-    /// A recording: the processing timeline is the source audio.
-    case recordedTimeline(AudioCheckpoint)
+    /// A recording whose durable PCM chunks are still authoritative.
+    case recordedPCM(AudioCheckpoint)
+    /// A finalized recording stored as `audio/recording.flac`.
+    case recordedFLAC(TimelineAudioInfo)
     /// An import: the original file is the source audio; its timeline is rebuilt on every run.
-    case importedOriginal(URL)
+    /// `timeline` is the canonical info of the latest build, nil before the first one.
+    case importedOriginal(URL, timeline: TimelineAudioInfo?)
+
+    /// The canonical timeline, when one is known.
+    public var timeline: TimelineAudioInfo? {
+        get throws {
+            switch self {
+            case .recordedPCM(let checkpoint): try checkpoint.info
+            case .recordedFLAC(let info): info
+            case .importedOriginal(_, let timeline): timeline
+            }
+        }
+    }
 }
 
 public enum SessionAudioSourceError: Error, LocalizedError, Equatable {
     case importedOriginalMissing
     case multipleImportedOriginals([String])
+    case recordingFLACMissing
+    case emptyRecordingFLAC
 
     public var errorDescription: String? {
         switch self {
@@ -100,6 +141,10 @@ public enum SessionAudioSourceError: Error, LocalizedError, Equatable {
             "取り込んだ元の音声ファイルがありません"
         case .multipleImportedOriginals(let names):
             "取り込んだ元の音声ファイルが複数あります: \(names.joined(separator: ", "))"
+        case .recordingFLACMissing:
+            "保存状態は FLAC ですが audio/recording.flac がありません"
+        case .emptyRecordingFLAC:
+            "保存状態の FLAC 録音の長さが 0 です"
         }
     }
 }

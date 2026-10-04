@@ -182,7 +182,7 @@ public actor LiveASRSession {
         }
 
         let loader = ASRAudioLoader(
-            reader: ProcessingTimelineReader(
+            reader: try ProcessingTimelineReader(
                 directory: processingDirectory,
                 checkpoint: checkpoint
             )

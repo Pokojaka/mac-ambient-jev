@@ -151,7 +151,7 @@ extension AppState {
                 let keepSession: Bool
                 do {
                     let checkpoint = try AudioCheckpoint.loadRecovered(from: processing)
-                    keepSession = checkpoint?.hasCapturedAudio ?? false
+                    keepSession = try checkpoint?.info.hasCapturedAudio ?? false
                 } catch {
                     // Damaged durable data must remain available for recovery/diagnosis.
                     keepSession = true
@@ -297,7 +297,7 @@ extension AppState {
                 enqueueProcessing(
                     .finalize(
                         sessionID: sessionID,
-                        source: .recordedTimeline(checkpoint),
+                        source: .recordedPCM(checkpoint),
                         metadataPolicy: .reject
                     )
                 )
@@ -349,7 +349,7 @@ extension AppState {
         enqueueProcessing(
             .finalize(
                 sessionID: sessionID,
-                source: .recordedTimeline(checkpoint),
+                source: .recordedPCM(checkpoint),
                 metadataPolicy: .reject
             )
         )

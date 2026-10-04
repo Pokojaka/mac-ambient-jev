@@ -6,9 +6,9 @@ public enum SessionExportLayout {
 
     public static func audioFilename(for source: SessionAudioSource) -> String {
         switch source {
-        case .recordedTimeline:
+        case .recordedPCM, .recordedFLAC:
             return "audio.flac"
-        case .importedOriginal(let originalURL):
+        case .importedOriginal(let originalURL, _):
             let ext = originalURL.pathExtension
             return ext.isEmpty ? "audio" : "audio.\(ext)"
         }
@@ -60,6 +60,7 @@ public enum TranscriptTextRenderer {
 
 public enum SessionExportError: Error, LocalizedError, Equatable {
     case audioUnavailable
+    case recordingNotCompacted
     case transcriptCorrupted(String)
     case noTranscript
     case stagingNotRemoved(path: String, exportFailure: String, cleanupFailure: String)
@@ -68,6 +69,8 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
         switch self {
         case .audioUnavailable:
             "保存済み音声を使えないため書き出せません"
+        case .recordingNotCompacted:
+            "録音の FLAC 化が終わっていないため書き出せません。確定処理をやり直してください"
         case .transcriptCorrupted(let reason):
             "文字起こしデータが破損しているため書き出せません: \(reason)"
         case .noTranscript:
@@ -115,18 +118,12 @@ public struct SessionExporter: Sendable {
             )
             let audioURL = staging.appending(path: SessionExportLayout.audioFilename(for: audioSource))
             switch audioSource {
-            case .recordedTimeline(let checkpoint):
-                try ProcessingTimelineAudioExporter(
-                    framesPerBuffer: max(1, Int64(checkpoint.sampleRate * 10))
-                ).export(
-                    reader: ProcessingTimelineReader(
-                        directory: layout.processingDirectory,
-                        checkpoint: checkpoint
-                    ),
-                    to: audioURL,
-                    encoding: .flac24
-                )
-            case .importedOriginal(let originalURL):
+            case .recordedPCM:
+                throw SessionExportError.recordingNotCompacted
+            case .recordedFLAC(let info):
+                try FLACTimelineReader(url: layout.recordingFLACURL, info: info).validateAudio()
+                try fileManager.copyItem(at: layout.recordingFLACURL, to: audioURL)
+            case .importedOriginal(let originalURL, _):
                 try fileManager.copyItem(at: originalURL, to: audioURL)
             }
 

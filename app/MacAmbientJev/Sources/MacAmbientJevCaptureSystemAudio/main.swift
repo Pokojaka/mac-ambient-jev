@@ -220,9 +220,9 @@ struct CaptureSystemAudioCommand {
             let processor = NativeSessionProcessor(
                 paths: paths, engines: .production(paths: paths), contentPriority: .disabled
             )
-            let processing = await processor.processFinalTranscript(
+            let processing = await processor.processSession(
                 sessionID: sessionID,
-                checkpoint: result.checkpoint,
+                source: .recordedPCM(result.checkpoint),
                 pacingMode: .normal,
                 shouldPause: { ProcessInfo.processInfo.thermalState == .critical },
                 onPhase: { _ in },

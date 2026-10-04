@@ -86,7 +86,7 @@ import Testing
     try await writer.append(samples: (0..<25).map(Float.init))
     let checkpoint = try await writer.finish()
 
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     let samples = try reader.readSamples(frameRange: 8..<13)
 
     #expect(samples == [8, 9, 10, 11, 12])
@@ -130,7 +130,7 @@ import Testing
     let checkpoint = try await drain.finish()
 
     #expect(checkpoint.committedFrames == 6)
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(try reader.readSamples(frameRange: 0..<6) == [1, 2, 3, 4, 5, 6])
 }
 
@@ -240,7 +240,7 @@ func durableWriterResumesFromPersistedCheckpointWithoutOverwritingChunks() async
     ])
     #expect(checkpoint.chunkFrameCounts == [10, 10])
 
-    let reader = ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
     #expect(try reader.readSamples(frameRange: 0..<20) == (
         Array(repeating: Float(1), count: 10)
         + Array(repeating: Float(2), count: 10)
@@ -288,7 +288,7 @@ func timelineReaderUsesExactIndexForVariableLengthChunks() async throws {
 
     #expect(checkpoint.chunkFrameCounts == [5, 10, 5])
 
-    let reader = ProcessingTimelineReader(
+    let reader = try ProcessingTimelineReader(
         directory: root,
         checkpoint: checkpoint
     )

@@ -12,13 +12,12 @@ private let storageHarnessProvenance = RunProvenance(
 private struct StorageHarnessVAD: FinalTranscriptVADSegmenter {
     let provenance = storageHarnessProvenance
 
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
-        try reader.validateChunkFiles()
-        try CanonicalAudio.validate(sampleRate: reader.checkpoint.sampleRate, channelCount: reader.checkpoint.channelCount,
-                                    sampleFormat: reader.checkpoint.sampleFormat)
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        try CanonicalAudio.validate(sampleRate: reader.info.sampleRate, channelCount: reader.info.channelCount,
+                                    sampleFormat: CanonicalAudio.sampleFormat)
         return [SegmentReference(
             segmentationRunID: runID, segmentID: "synthetic-speech",
-            startFrame: 0, endFrame: Int64(reader.checkpoint.sampleRate)
+            startFrame: 0, endFrame: Int64(reader.info.sampleRate)
         )]
     }
 }
@@ -156,8 +155,8 @@ func storageDiskUsageHarness() async throws {
         ),
         contentPriority: .disabled
     )
-    let recordingResult = await processor.processFinalTranscript(
-        sessionID: recordingID, checkpoint: checkpoint, pacingMode: .normal,
+    let recordingResult = await processor.processSession(
+        sessionID: recordingID, source: .recordedPCM(checkpoint), pacingMode: .normal,
         shouldPause: { false }, onPhase: { _ in }, metadataPolicy: .reject,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )
@@ -177,8 +176,8 @@ func storageDiskUsageHarness() async throws {
         from: original, into: SessionLayout(sessionURL: importURL).processingDirectory
     )
     let importDuring = try storageHarnessBytes(importURL)
-    let importResult = await processor.processImportedSession(
-        sessionID: importID, originalURL: original, pacingMode: .normal,
+    let importResult = await processor.processSession(
+        sessionID: importID, source: .importedOriginal(original, timeline: nil), pacingMode: .normal,
         shouldPause: { false }, onPhase: { _ in }, metadataPolicy: .reject,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )

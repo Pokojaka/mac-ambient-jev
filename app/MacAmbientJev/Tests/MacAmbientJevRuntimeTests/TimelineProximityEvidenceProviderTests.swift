@@ -80,7 +80,7 @@ private func makeProximityFixture(thirdSpeakerSilent: Bool = false) async throws
 
     return (
         root,
-        ProcessingTimelineReader(
+        try ProcessingTimelineReader(
             directory: root,
             checkpoint: checkpoint
         ),

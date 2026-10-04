@@ -142,15 +142,16 @@ func catalogUsesTheSavedImportedOriginalWhenTimelineIsAbsent() throws {
     #expect(row.source == .imported(originalFilename: "lecture.wav"))
     #expect(row.duration == .unknown)
     #expect(summary.canReprocess)
-    guard case .available(.importedOriginal(let original)) = row.audio else {
+    guard case .available(.importedOriginal(let original, let timeline)) = row.audio else {
         Issue.record("expected the imported original, got \(row.audio)")
         return
     }
     #expect(original.lastPathComponent == "original.wav")
+    #expect(timeline == nil)
 }
 
 @Test
-func importedOriginalStaysReprocessableAndReportsUnreadableDurationWhenCheckpointIsCorrupt() throws {
+func importedSessionReportsTheDurationOfItsLatestTimelineBuild() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
@@ -158,20 +159,49 @@ func importedOriginalStaysReprocessableAndReportsUnreadableDurationWhenCheckpoin
         id: id, createdAt: 1_700_000_000, source: .imported(originalFilename: "lecture.wav"),
         root: root, includeAudio: false
     )
-    let audio = session.appending(path: "audio", directoryHint: .isDirectory)
-    let processing = audio.appending(path: "processing", directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: processing, withIntermediateDirectories: true)
-    try Data([1, 2, 3]).write(to: audio.appending(path: "original.wav"))
-    try Data("{broken".utf8).write(
-        to: processing.appending(path: DurableAudioWriter.checkpointFilename)
+    try Data([1, 2, 3]).write(to: session.appending(path: "audio/original.wav"))
+    try SessionAudioStorageStore(layout: SessionLayout(sessionURL: session))
+        .save(.importedOriginal(TimelineAudioInfo(committedFrames: 32_000, gapEvents: [])))
+
+    let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
+
+    #expect(row.duration == .seconds(2))
+}
+
+@Test
+func flacRecordingReportsItsStoredDurationWithoutReadingPCM() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let session = try writeCatalogSession(
+        id: UUID(), createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: false
     )
+    let layout = SessionLayout(sessionURL: session)
+    try SessionAudioStorageStore(layout: layout)
+        .save(.recordingFLAC(TimelineAudioInfo(committedFrames: 48_000, gapEvents: [])))
+    try Data([0]).write(to: layout.recordingFLACURL)
 
     let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
+
+    #expect(try readable(summary).duration == .seconds(3))
     #expect(summary.canReprocess)
-    guard case .unreadable = try readable(summary).duration else {
-        Issue.record("expected an unreadable duration")
+}
+
+@Test
+func unreadableStorageStateMakesTheSessionAudioUnreadable() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let session = try writeCatalogSession(
+        id: UUID(), createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
+    )
+    try Data("{broken".utf8).write(to: SessionLayout(sessionURL: session).audioStorageURL)
+
+    let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
+
+    guard case .unreadable = try readable(summary).audio else {
+        Issue.record("expected unreadable audio")
         return
     }
+    #expect(!summary.canReprocess)
 }
 
 @Test
@@ -192,7 +222,7 @@ func corruptProcessingMetadataIsReportedButIntactAudioStaysReprocessable() throw
     }
     #expect(!row.hasActiveTranscript)
     #expect(summary.canReprocess)
-    guard case .available(.recordedTimeline) = row.audio else {
+    guard case .available(.recordedPCM) = row.audio else {
         Issue.record("expected the recorded timeline, got \(row.audio)")
         return
     }

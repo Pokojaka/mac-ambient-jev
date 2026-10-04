@@ -54,7 +54,7 @@ private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
     let segments: [SegmentReference]
     let log: FinalizationCallLog
 
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         await log.append("vad")
         return segments.map {
             SegmentReference(
@@ -187,9 +187,9 @@ private func processFinal(
     states: FinalizationStateRecorder,
     phases: FinalizationCallLog
 ) async -> SessionProcessingResult {
-    await processor.processFinalTranscript(
+    await processor.processSession(
         sessionID: sessionID,
-        checkpoint: checkpoint,
+        source: .recordedPCM(checkpoint),
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
@@ -662,7 +662,6 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     let retryStatuses = FinalizationStatusRecorder()
     await processor.retryContentPrioritySession(
         sessionID: sessionID,
-        checkpoint: checkpoint,
         segmentIDs: pending,
         onStatus: { await retryStatuses.append($0) },
         onUpdate: { _, _ in }
@@ -677,12 +676,12 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     defer { try? FileManager.default.removeItem(at: sourceSessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let originalURL = sourceSessionURL.appending(path: "original.caf")
     try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
-        reader: ProcessingTimelineReader(
+        reader: try ProcessingTimelineReader(
             directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
             checkpoint: checkpoint
         ),
         to: originalURL,
-        encoding: .float32
+        encoding: .float32CAF
     )
     let sessionID = UUID()
     _ = try SessionBootstrapper(fileManager: .default).createSession(
@@ -710,9 +709,9 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         contentPriority: .disabled
     )
 
-    let result = await processor.processImportedSession(
+    let result = await processor.processSession(
         sessionID: sessionID,
-        originalURL: originalURL,
+        source: .importedOriginal(originalURL, timeline: nil),
         pacingMode: .lowHeat,
         shouldPause: {
             await log.append("pause")
@@ -796,7 +795,9 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
     let pipeline = FinalTranscriptPipeline(
         sessionID: sessionID,
         sessionURL: sessionURL,
-        checkpoint: checkpoint,
+        audio: try ProcessingTimelineReader(
+            directory: SessionLayout(sessionURL: sessionURL).processingDirectory, checkpoint: checkpoint
+        ),
         asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
         diarization: FakeFinalDiarizer(
             spans: [
@@ -870,7 +871,9 @@ func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async th
     let pipeline = FinalTranscriptPipeline(
         sessionID: sessionID,
         sessionURL: sessionURL,
-        checkpoint: checkpoint,
+        audio: try ProcessingTimelineReader(
+            directory: SessionLayout(sessionURL: sessionURL).processingDirectory, checkpoint: checkpoint
+        ),
         asr: FakeFinalASR(log: log, values: ["置き換えない"]),
         diarization: FakeFinalDiarizer(
             spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
@@ -975,9 +978,9 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
         payload: EmptyPayload()
     ))
     let scanner = SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
-    let candidate = try #require(try scanner.inspect(sessionID: sessionID))
+    let candidate = try #require(try scanner.inspect(sessionID: sessionID).recovery)
     #expect(candidate.action == .finalize)
-    guard case .recordedTimeline(let recovered) = candidate.source else {
+    guard case .recordedPCM(let recovered) = candidate.source else {
         Issue.record("a recording recovers from its timeline")
         return
     }
@@ -1013,7 +1016,7 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     #expect(runs.diarization?.hasPrefix("diar_final_") == true)
     #expect(runs.scene?.hasPrefix("scene_final_") == true)
     #expect(runs.scope?.hasPrefix("scope_final_") == true)
-    #expect(try scanner.inspect(sessionID: sessionID) == nil)
+    #expect(try scanner.inspect(sessionID: sessionID).recovery == nil)
 }
 
 @Test(arguments: [Int64(-1), Int64(16_001)])
@@ -1333,7 +1336,7 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
         #expect(TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
             events: events, activeRuns: runs
         ).isEmpty)
-        #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID) == nil)
+        #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
         let objects = try eventObjects(sessionURL)
         let stageRuns: [(ProcessingStage, String?, RunProvenance)] = [
             (.segmentation, runs.segmentation, FakeFinalVAD(segments: [], log: log).provenance),
@@ -1380,7 +1383,7 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
 private struct ThrowingFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "failing-vad", model: nil, version: "test", configuration: [:])
 
-    func segment(reader: ProcessingTimelineReader, runID: String) async throws -> [SegmentReference] {
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         throw FakeFinalizationError.expected
     }
 }
@@ -1451,8 +1454,8 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     #expect(result.disposition == .failed)
     #expect(!result.noSpeech)
     #expect(result.metrics == nil)
-    let imported = await processor.processImportedSession(
-        sessionID: absent, originalURL: sessionURL.appending(path: "missing.wav"),
+    let imported = await processor.processSession(
+        sessionID: absent, source: .importedOriginal(sessionURL.appending(path: "missing.wav"), timeline: nil),
         pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )

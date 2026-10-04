@@ -61,7 +61,7 @@ func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() a
     try await writer.append(samples: (0..<24).map { Float($0) / 24 })
     let checkpoint = try await writer.finish()
 
-    let reader = ProcessingTimelineReader(
+    let reader = try ProcessingTimelineReader(
         directory: processing,
         checkpoint: checkpoint
     )
@@ -69,7 +69,7 @@ func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() a
 
     try ProcessingTimelineAudioExporter(
         framesPerBuffer: 5
-    ).export(reader: reader, to: output, encoding: .float32)
+    ).export(reader: reader, to: output, encoding: .float32CAF)
 
     let file = try AVAudioFile(forReading: output)
     #expect(file.length == 24)
