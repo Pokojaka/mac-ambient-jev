@@ -64,9 +64,10 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
     ))
     try flac.read(into: buffer)
     let decoded = UnsafeBufferPointer(start: try #require(buffer.floatChannelData)[0], count: Int(buffer.frameLength))
-    let maxError = zip(samples, decoded).map { abs($0 - $1) }.max() ?? .infinity
     #expect(decoded.count == samples.count)
-    #expect(maxError <= 1.0 / 32_768)
+    for (index, sample) in samples.enumerated() {
+        #expect(decoded[index] == Float(ProcessingTimelineAudioExporter.quantize16(sample)!) / 32_768)
+    }
 }
 
 @Test
@@ -78,8 +79,9 @@ func exportRefusesARecordingThatIsNotYetFLAC() async throws {
     #expect(throws: SessionExportError.recordingNotCompacted) {
         try SessionExporter().export(session: session, to: fixture.exportRoot)
     }
-    let exported = try? FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path)
-    #expect(exported?.isEmpty ?? true)
+    if FileManager.default.fileExists(atPath: fixture.exportRoot.path) {
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path).isEmpty)
+    }
 }
 
 @Test

@@ -406,7 +406,6 @@ public actor NativeSessionProcessor {
         guard case .importedOriginal(let originalURL, _) = source else {
             return try SessionAudioReaders.open(source, layout: layout)
         }
-        try SessionTransientAudio.remove(layout: layout, source: .imported(originalFilename: originalURL.lastPathComponent))
         await onStatus(UserFacingStatus.convertingTimeline.text)
         let checkpoint = try await AudioFileTimelineBuilder()
             .build(from: originalURL, into: layout.processingDirectory)
