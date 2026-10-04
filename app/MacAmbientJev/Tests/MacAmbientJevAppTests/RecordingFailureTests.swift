@@ -315,7 +315,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
 }
 
 @MainActor
-@Test("BUG #23: recording and release errors must both remain visible",
+@Test("recording and release errors must both remain visible",
       arguments: ["writer", "input", "throw"])
 func bugHuntRecordingPreservesBothFailures(kind: String) async throws {
     let (root, paths) = temporaryRecordingPaths()

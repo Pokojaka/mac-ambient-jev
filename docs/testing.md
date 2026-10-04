@@ -25,14 +25,14 @@ python3 scripts/check_doc_references.py
 
 `scripts/check_doc_references.py` は `README.md`、`AGENTS.md`、docs 配下の Markdown（records を除く）のリポジトリパス、script、既知 CLI の flag、Swift 型の参照を検査する。
 
-### 合成イベントによる不具合再現とライブ滞留計測
+### 合成イベントによる回帰検証とライブ滞留計測
 
 ```bash
 swift test --package-path app/MacAmbientJev --filter bugHunt
 swift test --package-path app/MacAmbientJev --filter bugHuntMeasure
 ```
 
-`bugHunt` の correctness test は既知の不具合を期待する正常動作の assertion で再現するため、現行コードでは失敗する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、参照数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
+`bugHunt` correctness test は録音障害と停止時の資源解放障害など、修正済み境界の回帰を合成イベントで検証する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、参照数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
 
 Linux 音声正規化は入力と出力が同一ファイル（シンボリックリンク解決後を含む）なら、出力先を変更する前に拒否し、原音声を保持する。`tools/linux-audio/tests/test_audio.py` は実 ffmpeg を使う同一パス・symlink の境界と、正常変換・変換失敗時の出力処理を検証する。
 

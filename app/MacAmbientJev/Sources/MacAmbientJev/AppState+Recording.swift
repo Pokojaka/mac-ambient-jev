@@ -219,11 +219,18 @@ extension AppState {
             let checkpoint = result.checkpoint
             dropoutCount = result.dropoutCount
             if let writerFailure = result.writerFailure {
+                let message = Self.combinedFailureMessage(
+                    writerFailure, result.systemAudioReleaseFailure
+                ) ?? writerFailure
                 await finishAfterWriterFailure(
-                    sessionID: sessionID, checkpoint: checkpoint, message: writerFailure
+                    sessionID: sessionID, checkpoint: checkpoint, message: message
                 )
                 return
             }
+
+            let stopFailureMessage = Self.combinedFailureMessage(
+                failureMessage, result.systemAudioReleaseFailure
+            )
 
             if let liveVADSession {
                 do {
@@ -253,28 +260,28 @@ extension AppState {
             isMicrophoneSilent = false
             recordingPhase = .idle
 
-            if failureMessage == nil {
-                if let releaseFailure = result.systemAudioReleaseFailure {
-                    setCaptureStatus("録音は保存しましたが、\(releaseFailure)", tone: .warning)
-                } else if result.didOverflow {
-                    setCaptureStatus(
-                        "録音は保存しましたが、一部の音声が欠落した可能性があります。",
-                        tone: .warning
-                    )
-                } else if let liveVADFailureText {
-                    setCaptureStatus(
-                        "録音を保存しました。発話検出を後で再実行します: \(liveVADFailureText)",
-                        tone: .warning
-                    )
-                } else {
-                    let segmentSuffix = liveVADSegmentCount > 0
-                        ? "・発話 \(liveVADSegmentCount)区間"
-                        : ""
-                    setCaptureStatus(
-                        "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
-                        tone: .neutral
-                    )
-                }
+            if let stopFailureMessage {
+                setCaptureStatus(stopFailureMessage, tone: .error)
+            } else if let resultReleaseFailure = result.systemAudioReleaseFailure {
+                setCaptureStatus("録音は保存しましたが、\(resultReleaseFailure)", tone: .warning)
+            } else if result.didOverflow {
+                setCaptureStatus(
+                    "録音は保存しましたが、一部の音声が欠落した可能性があります。",
+                    tone: .warning
+                )
+            } else if let liveVADFailureText {
+                setCaptureStatus(
+                    "録音を保存しました。発話検出を後で再実行します: \(liveVADFailureText)",
+                    tone: .warning
+                )
+            } else {
+                let segmentSuffix = liveVADSegmentCount > 0
+                    ? "・発話 \(liveVADSegmentCount)区間"
+                    : ""
+                setCaptureStatus(
+                    "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
+                    tone: .neutral
+                )
             }
 
             if liveVADFailureText == nil {
@@ -315,8 +322,10 @@ extension AppState {
             captureWarningText = nil
             isMicrophoneSilent = false
             recordingPhase = .idle
-            if failureMessage == nil {
-                setCaptureStatus(error.localizedDescription, tone: .error)
+            if let stopFailureMessage = Self.combinedFailureMessage(
+                failureMessage, error.localizedDescription
+            ) {
+                setCaptureStatus(stopFailureMessage, tone: .error)
             }
             if failureMessage != nil { refreshSavedSessions() }
             releaseIdleResourcesIfIdle()
@@ -347,6 +356,16 @@ extension AppState {
             )
         )
         refreshSavedSessions()
+    }
+
+    private static func combinedFailureMessage(
+        _ primary: String?, _ additional: String?
+    ) -> String? {
+        let messages = [primary, additional].compactMap { $0 }.filter { !$0.isEmpty }
+        guard !messages.isEmpty else { return nil }
+        return messages.reduce(into: [String]()) { unique, message in
+            if !unique.contains(message) { unique.append(message) }
+        }.joined(separator: "。")
     }
 
     func reportMicSpeechMonitoringUnavailable(sessionID: UUID) {
