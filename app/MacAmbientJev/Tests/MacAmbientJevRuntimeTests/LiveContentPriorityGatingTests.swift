@@ -84,7 +84,8 @@ private struct LiveFixture {
             sessionsRootOverride: nil
         )
         sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
-            paths: paths, sessionID: sessionID, source: .recording(.microphone), createdAt: Date()
+            paths: paths, sessionID: sessionID, source: .recording(.microphone),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
         )
         let audioWriter = try DurableAudioWriter(
             directory: sessionURL

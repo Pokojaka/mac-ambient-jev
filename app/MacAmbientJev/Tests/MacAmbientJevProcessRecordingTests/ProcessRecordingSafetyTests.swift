@@ -89,25 +89,61 @@ func resumeOutputCannotResolveInsideTheRecoveredSession() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
-    let session = root.appending(path: id.uuidString, directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+    let sessionsRoot = root.appending(path: "sessions", directoryHint: .isDirectory)
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: sessionsRoot)
+    let session = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: id, source: .recording(.systemAudio),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
     let alias = root.appending(path: "alias")
     try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: session)
 
     for output in [
         session.appending(path: "events.jsonl").path,
         alias.appending(path: "session.json").path,
-        root.appending(path: id.uuidString.lowercased()).appending(path: "processing_metadata.json").path,
+        sessionsRoot.appending(path: session.lastPathComponent.uppercased()).appending(path: "processing_metadata.json").path,
     ] {
+        _ = try ProcessRecordingCommand.parseInput(
+            ["--resume-session", id.uuidString, "--sessions-root", sessionsRoot.path, output],
+            measured: false
+        )
         #expect(throws: ProcessRecordingError.self) {
-            _ = try ProcessRecordingCommand.parseInput(
-                ["--resume-session", id.uuidString, "--sessions-root", root.path, output],
-                measured: false
+            _ = try ProcessRecordingCommand.resolveResumeSession(
+                sessionID: id, root: sessionsRoot, outputURL: URL(fileURLWithPath: output)
             )
         }
     }
-    _ = try ProcessRecordingCommand.parseInput(
-        ["--resume-session", id.uuidString, "--sessions-root", root.path, root.appending(path: "segments.json").path],
-        measured: false
+    #expect(try ProcessRecordingCommand.resolveResumeSession(
+        sessionID: id, root: sessionsRoot, outputURL: root.appending(path: "segments.json")
+    ) == session)
+}
+
+@Test
+func diskInspectUsesManifestIdentityAndRejectsMissingOrAmbiguousSessions() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let first = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: id, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
+    // A valid empty recording emits action "none" without constructing an engine.
+    try ProcessRecordingCommand.inspect(sessionID: id, root: root)
+    let absent = UUID()
+    #expect(throws: SessionDirectoryLookupError.notFound(absent)) {
+        try ProcessRecordingCommand.inspect(sessionID: absent, root: root)
+    }
+    let second = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: id, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_001), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    #expect(throws: SessionDirectoryLookupError.multipleMatches(sessionID: id, folders: [first, second])) {
+        try ProcessRecordingCommand.inspect(sessionID: id, root: root)
+    }
+    #expect(throws: SessionDirectoryLookupError.multipleMatches(sessionID: id, folders: [first, second])) {
+        _ = try ProcessRecordingCommand.resolveResumeSession(
+            sessionID: id, root: root, outputURL: root.deletingLastPathComponent().appending(path: "segments.json")
+        )
+    }
 }

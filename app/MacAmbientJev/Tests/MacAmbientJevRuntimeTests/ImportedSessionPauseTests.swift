@@ -55,7 +55,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
         paths: paths,
         sessionID: sessionID,
         source: .imported(originalFilename: "fixture.wav"),
-        createdAt: Date()
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)

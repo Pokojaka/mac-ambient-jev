@@ -158,13 +158,6 @@ struct ProcessRecordingCommand {
             } else {
                 guard arguments.count == 1 else { throw ProcessRecordingError.invalidArguments }
                 let output = URL(fileURLWithPath: arguments[0]).standardizedFileURL
-                let sessionPath = root.appending(path: id.uuidString)
-                    .resolvingSymlinksInPath().pathComponents.map { $0.lowercased() }
-                let outputPath = output.deletingLastPathComponent().resolvingSymlinksInPath()
-                    .appending(path: output.lastPathComponent).pathComponents.map { $0.lowercased() }
-                guard !outputPath.starts(with: sessionPath) else {
-                    throw ProcessRecordingError.invalidArguments
-                }
                 return .resume(sessionID: id, root: root, output: output, pacing: pacingMode)
             }
         }
@@ -190,7 +183,6 @@ struct ProcessRecordingCommand {
             try inspect(sessionID: id, root: root)
             return .completed(metrics: nil, noSpeech: false)
         case .resume(let id, let root, let output, let pacingMode):
-            try checkStart(pacingMode: pacingMode)
             return try await resume(
                 sessionID: id, root: root, outputURL: output,
                 pacingMode: pacingMode, monitor: monitor
@@ -231,7 +223,7 @@ struct ProcessRecordingCommand {
             paths: paths,
             sessionID: sessionID,
             source: .imported(originalFilename: audioURL.lastPathComponent),
-            createdAt: Date()
+            createdAt: Date(), timeZone: .current
         )
         print("session_id: \(sessionID.uuidString)")
 
@@ -304,12 +296,7 @@ struct ProcessRecordingCommand {
         return processing
     }
 
-    private static func inspect(sessionID: UUID, root: URL) throws {
-        guard FileManager.default.fileExists(
-            atPath: root.appending(path: sessionID.uuidString).appending(path: "session.json").path
-        ) else {
-            throw ProcessRecordingError.invalidSession("指定されたセッションが見つかりません")
-        }
+    static func inspect(sessionID: UUID, root: URL) throws {
         let action: String
         do {
             switch try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)?.action {
@@ -328,6 +315,19 @@ struct ProcessRecordingCommand {
         print(String(decoding: data, as: UTF8.self))
     }
 
+    static func resolveResumeSession(sessionID: UUID, root: URL, outputURL: URL) throws -> URL {
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: root, sessionID: sessionID)
+        let sessionPath = sessionURL.resolvingSymlinksInPath().pathComponents.map { $0.lowercased() }
+        let outputPath = outputURL.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appending(path: outputURL.lastPathComponent).resolvingSymlinksInPath()
+            .pathComponents.map { $0.lowercased() }
+        guard !outputPath.starts(with: sessionPath) else {
+            throw ProcessRecordingError.invalidArguments
+        }
+        return sessionURL
+    }
+
     private static func resume(
         sessionID: UUID,
         root: URL,
@@ -335,11 +335,9 @@ struct ProcessRecordingCommand {
         pacingMode: ASRPacingMode,
         monitor: RunMonitor?
     ) async throws -> SessionProcessingResult {
-        let sessionURL = SessionLayout(sessionsRoot: root, sessionID: sessionID).sessionURL
-        guard FileManager.default.fileExists(atPath: SessionLayout(sessionURL: sessionURL).manifestURL.path) else {
-            throw ProcessRecordingError.invalidSession("指定されたセッションが見つかりません")
-        }
+        let sessionURL = try resolveResumeSession(sessionID: sessionID, root: root, outputURL: outputURL)
         let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
+        try checkStart(pacingMode: pacingMode)
 
         let defaults = try AppPaths.systemDefault(fileManager: .default)
         let paths = AppPaths(

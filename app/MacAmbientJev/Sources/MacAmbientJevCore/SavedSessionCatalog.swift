@@ -66,6 +66,7 @@ public struct SavedSessionReprocessGate: Sendable {
 /// A saved session whose manifest is readable.
 public struct SavedSession: Sendable, Equatable, Identifiable {
     public let sessionID: UUID
+    public let sessionURL: URL
     public let createdAt: Date
     public let source: SessionSource
     public let duration: SavedSessionDuration
@@ -82,6 +83,7 @@ public struct SavedSession: Sendable, Equatable, Identifiable {
 
     public init(
         sessionID: UUID,
+        sessionURL: URL,
         createdAt: Date,
         source: SessionSource,
         duration: SavedSessionDuration,
@@ -90,6 +92,7 @@ public struct SavedSession: Sendable, Equatable, Identifiable {
         processingStatus: SavedSessionProcessingStatus
     ) {
         self.sessionID = sessionID
+        self.sessionURL = sessionURL
         self.createdAt = createdAt
         self.source = source
         self.duration = duration
@@ -99,20 +102,27 @@ public struct SavedSession: Sendable, Equatable, Identifiable {
     }
 }
 
-/// One row of the saved-session list. Only a session whose manifest cannot be read,
-/// or whose manifest names another session, is unreadable as a whole.
+/// One folder in the saved-session list. Invalid names, unreadable manifests,
+/// and ambiguous manifest identities remain individually addressable by URL.
 public enum SavedSessionSummary: Sendable, Equatable, Identifiable {
     case readable(SavedSession)
-    case unreadable(sessionID: UUID, reason: String)
+    case unreadable(sessionURL: URL, sessionID: UUID?, reason: String)
 
-    public var sessionID: UUID {
+    public var sessionID: UUID? {
         switch self {
         case .readable(let session): session.sessionID
-        case .unreadable(let sessionID, _): sessionID
+        case .unreadable(_, let sessionID, _): sessionID
         }
     }
 
-    public var id: UUID { sessionID }
+    public var sessionURL: URL {
+        switch self {
+        case .readable(let session): session.sessionURL
+        case .unreadable(let sessionURL, _, _): sessionURL
+        }
+    }
+
+    public var id: URL { sessionURL }
 
     public var audioSource: SessionAudioSource? {
         guard case .readable(let session) = self else { return nil }
@@ -136,18 +146,24 @@ public struct SavedSessionCatalog {
             return []
         }
 
-        let urls = try fileManager.contentsOfDirectory(
-            at: sessionsRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-        var summaries: [SavedSessionSummary] = []
-        for url in urls {
-            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
-                  let folderID = UUID(uuidString: url.lastPathComponent) else {
-                continue
+        let entries = try SessionDirectoryInventory.read(sessionsRoot: sessionsRoot, fileManager: fileManager)
+        let duplicates = SessionDirectoryInventory.duplicateFolders(in: entries)
+        var summaries = entries.map { entry -> SavedSessionSummary in
+            let manifest: SessionManifest
+            do {
+                manifest = try entry.manifest.get()
+            } catch {
+                return .unreadable(sessionURL: entry.url, sessionID: nil, reason: error.localizedDescription)
             }
-            summaries.append(summary(layout: SessionLayout(sessionURL: url), folderID: folderID))
+            do {
+                if let folders = duplicates[manifest.sessionID] {
+                    throw SessionDirectoryLookupError.multipleMatches(sessionID: manifest.sessionID, folders: folders)
+                }
+                try SessionFolderName.validate(entry.url.lastPathComponent, manifest: manifest)
+            } catch {
+                return .unreadable(sessionURL: entry.url, sessionID: manifest.sessionID, reason: error.localizedDescription)
+            }
+            return summary(layout: SessionLayout(sessionURL: entry.url), manifest: manifest)
         }
 
         summaries.sort { lhs, rhs in
@@ -159,27 +175,13 @@ public struct SavedSessionCatalog {
             case (.unreadable, .readable):
                 return false
             default:
-                return lhs.sessionID.uuidString < rhs.sessionID.uuidString
+                return lhs.sessionURL.lastPathComponent < rhs.sessionURL.lastPathComponent
             }
         }
         return summaries
     }
 
-    private func summary(layout: SessionLayout, folderID: UUID) -> SavedSessionSummary {
-        let manifest: SessionManifest
-        do {
-            manifest = try decodeManifest(at: layout.manifestURL)
-        } catch is DecodingError {
-            return .unreadable(sessionID: folderID, reason: "セッション情報が壊れています")
-        } catch {
-            return .unreadable(sessionID: folderID, reason: error.localizedDescription)
-        }
-        guard manifest.sessionID == folderID else {
-            return .unreadable(
-                sessionID: folderID,
-                reason: "保存セッションの ID がフォルダー名と一致しません"
-            )
-        }
+    private func summary(layout: SessionLayout, manifest: SessionManifest) -> SavedSessionSummary {
 
         let audio = self.audio(layout: layout, manifest: manifest)
         let metadata: ProcessingMetadata?
@@ -206,6 +208,7 @@ public struct SavedSessionCatalog {
                 processingStatus = .corrupted(error.localizedDescription)
                 return .readable(SavedSession(
                     sessionID: manifest.sessionID,
+                    sessionURL: layout.sessionURL,
                     createdAt: manifest.createdAt,
                     source: manifest.source,
                     duration: duration(layout: layout, manifest: manifest, audio: audio),
@@ -220,6 +223,7 @@ public struct SavedSessionCatalog {
 
         return .readable(SavedSession(
             sessionID: manifest.sessionID,
+            sessionURL: layout.sessionURL,
             createdAt: manifest.createdAt,
             source: manifest.source,
             duration: duration(layout: layout, manifest: manifest, audio: audio),
@@ -259,12 +263,6 @@ public struct SavedSessionCatalog {
         }
         guard let checkpoint else { return .unknown }
         return .seconds(Double(checkpoint.committedFrames) / checkpoint.sampleRate)
-    }
-
-    private func decodeManifest(at url: URL) throws -> SessionManifest {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(SessionManifest.self, from: Data(contentsOf: url))
     }
 
     private func status(

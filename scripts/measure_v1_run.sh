@@ -62,7 +62,7 @@ set -e
 finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 python3 - "$repo" "$run_dir" "$id" "$run_id" "$audio" "$resume" "$root" "$output" "$started" "$finished" "$exit_code" "$available_bytes" "${args[@]}" <<'PY'
-import datetime, hashlib, json, pathlib, platform, re, statistics, subprocess, sys, shutil
+import datetime, hashlib, json, pathlib, platform, re, statistics, subprocess, sys, shutil, uuid
 repo, folder, recording, run, audio, resume, root, output, started, finished, exit_code, disk_before, *args = sys.argv[1:]
 folder = pathlib.Path(folder)
 def command(*argv):
@@ -128,17 +128,34 @@ if len(asr_timed) >= 96 and (asr_timed[-1][0] - asr_timed[0][0]).total_seconds()
         if int(exit_code) == 0 and peak is not None:
             memory_verdict = 'VERIFIED' if growth <= 512 and peak <= 12 * 1024**3 else 'FAILED'
 if growth is None: reason['memory_growth_mb'] = 'two nonoverlapping five-minute ASR windows with 48 samples each are required'
+def session_directory(sessions_root, session_id):
+    identity = uuid.UUID(session_id)
+    matches = []
+    for directory in sorted(sessions_root.iterdir()):
+        if not directory.is_dir(): continue
+        try:
+            manifest = json.loads((directory / 'session.json').read_text())
+            if not isinstance(manifest, dict) or not isinstance(manifest.get('session_id'), str): continue
+            decoded_id = uuid.UUID(manifest['session_id'])
+        except (OSError, ValueError):
+            continue
+        if decoded_id == identity: matches.append(directory)
+    if len(matches) != 1:
+        fail(f'session {identity} has {len(matches)} matching folders: {[p.name for p in matches]}')
+    return matches[0]
 events = None
 session = resume
 if resume:
-    events = pathlib.Path(root) / resume / 'events.jsonl'
-    original = list((pathlib.Path(root) / resume / 'audio').glob('original.*'))
+    directory = session_directory(pathlib.Path(root), resume)
+    events = directory / 'events.jsonl'
+    original = list((directory / 'audio').glob('original.*'))
     if original: audio = str(original[0])
 else:
     match = re.search(r'session_id: ([A-F0-9-]+)', (folder / 'stdout.log').read_text())
     if match:
         session = match.group(1)
-        events = pathlib.Path.home() / 'Library/Application Support/mac-ambient-jev/sessions' / session / 'events.jsonl'
+        directory = session_directory(pathlib.Path.home() / 'Library/Application Support/mac-ambient-jev/sessions', session)
+        events = directory / 'events.jsonl'
 duration = None
 if audio:
     probe = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',audio], capture_output=True, text=True)

@@ -8,13 +8,6 @@ public struct SessionLayout: Sendable, Equatable {
         self.sessionURL = sessionURL
     }
 
-    public init(sessionsRoot: URL, sessionID: UUID) {
-        self.sessionURL = sessionsRoot.appending(
-            path: sessionID.uuidString,
-            directoryHint: .isDirectory
-        )
-    }
-
     public var manifestURL: URL {
         sessionURL.appending(path: "session.json")
     }

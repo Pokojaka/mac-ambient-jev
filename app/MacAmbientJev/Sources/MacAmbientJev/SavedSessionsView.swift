@@ -3,14 +3,14 @@ import SwiftUI
 
 struct SavedSessionsView: View {
     let sessions: [SavedSessionSummary]
-    let selectedSessionID: UUID?
+    let selectedSessionURL: URL?
     let isUnavailableForReprocess: Bool
     let isSelectionUnavailable: Bool
     let queuedSessionIDs: Set<UUID>
     let sessionExports: [UUID: AppState.SessionExportState]
     let hasExportDestination: Bool
     let onRefresh: () -> Void
-    let onSelect: (UUID) -> Void
+    let onSelect: (URL) -> Void
     let onReprocess: (UUID) -> Void
     let onExport: (UUID) -> Void
     let onRevealExport: (UUID) -> Void
@@ -20,7 +20,7 @@ struct SavedSessionsView: View {
             List(selection: selectedBinding) {
                 ForEach(sessions) { session in
                     sessionRow(session)
-                        .tag(session.sessionID)
+                        .tag(session.sessionURL)
                 }
             }
             .disabled(isSelectionUnavailable)
@@ -35,7 +35,7 @@ struct SavedSessionsView: View {
                 }
             }
         } detail: {
-            if let session = sessions.first(where: { $0.sessionID == selectedSessionID }) {
+            if let session = sessions.first(where: { $0.sessionURL == selectedSessionURL }) {
                 detail(for: session)
             } else {
                 ContentUnavailableView(
@@ -48,9 +48,9 @@ struct SavedSessionsView: View {
         .frame(minWidth: 760, minHeight: 460)
     }
 
-    private var selectedBinding: Binding<UUID?> {
+    private var selectedBinding: Binding<URL?> {
         Binding(
-            get: { selectedSessionID },
+            get: { selectedSessionURL },
             set: { value in
                 guard !isSelectionUnavailable, let value else { return }
                 onSelect(value)
@@ -73,10 +73,10 @@ struct SavedSessionsView: View {
                         .font(.caption)
                         .foregroundStyle(hasProblem(session) ? Color.red : Color.secondary)
                         .lineLimit(2)
-                case .unreadable(let sessionID, let reason):
+                case .unreadable(let sessionURL, _, let reason):
                     Text("日時を読み取れません")
                         .font(.headline)
-                    Text(sessionID.uuidString.prefix(8))
+                    Text(sessionURL.lastPathComponent)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                     Text("読み込みエラー: \(reason)")
@@ -87,23 +87,23 @@ struct SavedSessionsView: View {
             }
             Spacer(minLength: 4)
             Button {
-                onReprocess(summary.sessionID)
+                if case .readable(let session) = summary { onReprocess(session.sessionID) }
             } label: {
-                if queuedSessionIDs.contains(summary.sessionID) {
+                if isQueued(summary) {
                     ProgressView().controlSize(.small)
                 } else {
                     Text("再処理")
                 }
             }
             .controlSize(.small)
-            .disabled(isUnavailableForReprocess || !summary.canReprocess || queuedSessionIDs.contains(summary.sessionID))
+            .disabled(isUnavailableForReprocess || !summary.canReprocess || isQueued(summary))
             .help(reprocessHelp(summary))
         }
         .padding(.vertical, AppSpacing.xs)
         .contentShape(Rectangle())
         .onTapGesture {
             guard !isSelectionUnavailable else { return }
-            onSelect(summary.sessionID)
+            onSelect(summary.sessionURL)
         }
     }
 
@@ -113,11 +113,15 @@ struct SavedSessionsView: View {
             switch summary {
             case .readable(let session):
                 readableDetail(session)
-            case .unreadable(let sessionID, let reason):
+            case .unreadable(let sessionURL, let sessionID, let reason):
                 Text("日時を読み取れません")
                     .font(.title2.weight(.semibold))
-                LabeledContent("セッション ID", value: sessionID.uuidString)
+                LabeledContent("フォルダ", value: sessionURL.lastPathComponent)
                     .textSelection(.enabled)
+                if let sessionID {
+                    LabeledContent("セッション ID", value: sessionID.uuidString)
+                        .textSelection(.enabled)
+                }
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
@@ -268,11 +272,16 @@ struct SavedSessionsView: View {
         }
     }
 
+    private func isQueued(_ summary: SavedSessionSummary) -> Bool {
+        guard case .readable(let session) = summary else { return false }
+        return queuedSessionIDs.contains(session.sessionID)
+    }
+
     private func reprocessHelp(_ summary: SavedSessionSummary) -> String {
         if isUnavailableForReprocess { return "録音または読み込みが終わってから再処理できます" }
-        if queuedSessionIDs.contains(summary.sessionID) { return "この録音は処理待ち、または処理中です" }
+        if isQueued(summary) { return "この録音は処理待ち、または処理中です" }
         switch summary {
-        case .unreadable(_, let reason):
+        case .unreadable(_, _, let reason):
             return reason
         case .readable(let session):
             switch session.audio {

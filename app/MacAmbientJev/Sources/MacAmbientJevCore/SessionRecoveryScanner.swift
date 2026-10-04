@@ -48,14 +48,11 @@ public struct SessionRecoveryScan: Sendable, Equatable {
 }
 
 public enum SessionRecoveryScannerError: Error, LocalizedError, Equatable {
-    case sessionIDMismatch
     case missingAudio
     case unreadableManifest(String)
 
     public var errorDescription: String? {
         switch self {
-        case .sessionIDMismatch:
-            "セッションフォルダ名とセッション情報の ID が一致しません"
         case .missingAudio:
             "確定処理が途中のセッションに音声がありません"
         case .unreadableManifest(let reason):
@@ -72,8 +69,8 @@ public struct SessionRecoveryScanner: Sendable {
     }
 
     public func inspect(sessionID: UUID) throws -> RecoverableSession? {
-        let layout = SessionLayout(sessionsRoot: sessionsRoot, sessionID: sessionID)
-        guard FileManager.default.fileExists(atPath: layout.manifestURL.path) else { return nil }
+        let layout = SessionLayout(sessionURL: try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: sessionsRoot, sessionID: sessionID))
         return try candidate(layout: layout)
     }
 
@@ -82,22 +79,20 @@ public struct SessionRecoveryScanner: Sendable {
             return SessionRecoveryScan(candidates: [], failures: [])
         }
 
-        let sessionURLs = try FileManager.default.contentsOfDirectory(
-            at: sessionsRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
+        let entries = try SessionDirectoryInventory.read(sessionsRoot: sessionsRoot, fileManager: .default)
+        let duplicates = SessionDirectoryInventory.duplicateFolders(in: entries)
 
         var candidates: [RecoverableSession] = []
         var failures: [SessionRecoveryFailure] = []
-        for sessionURL in sessionURLs {
+        for entry in entries {
+            let sessionURL = entry.url
             let layout = SessionLayout(sessionURL: sessionURL)
             do {
-                guard try sessionURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
-                      FileManager.default.fileExists(atPath: layout.manifestURL.path) else {
-                    continue
+                let manifest = try entry.manifest.get()
+                if let folders = duplicates[manifest.sessionID] {
+                    throw SessionDirectoryLookupError.multipleMatches(sessionID: manifest.sessionID, folders: folders)
                 }
-                if let candidate = try candidate(layout: layout) {
+                if let candidate = try candidate(layout: layout, manifest: manifest) {
                     candidates.append(candidate)
                 }
             } catch {
@@ -114,10 +109,11 @@ public struct SessionRecoveryScanner: Sendable {
     }
 
     private func candidate(layout: SessionLayout) throws -> RecoverableSession? {
-        let manifest = try decodeManifest(at: layout.manifestURL)
-        guard UUID(uuidString: layout.sessionURL.lastPathComponent) == manifest.sessionID else {
-            throw SessionRecoveryScannerError.sessionIDMismatch
-        }
+        try candidate(layout: layout, manifest: decodeManifest(at: layout.manifestURL))
+    }
+
+    private func candidate(layout: SessionLayout, manifest: SessionManifest) throws -> RecoverableSession? {
+        try SessionFolderName.validate(layout.sessionURL.lastPathComponent, manifest: manifest)
         let metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()
 
         let action: RecoverableProcessingAction

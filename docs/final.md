@@ -70,6 +70,8 @@ Jev の保留再試行は別の action で、ローカル必須段階をやり�
 
 読めないセッションは理由付きで報告します。自動復旧は読めない `processing_metadata.json` を上書きしません。アプリの保存済み一覧で利用者が明示的に「再処理」を選ぶ場合だけ、読めない処理 metadata を置き換えられます。派生結果が「破損」でも保存音声が利用可能なら再処理できます。原音声や録音タイムラインまで壊れている場合、metadata を置き換えても音声の問題は解消しません。
 
+復旧 scanner は非表示・manifest 欠損を含む root 直下の全ディレクトリを調べ、保存フォルダー名と manifest を検証します。同じ完全 UUID が複数フォルダーにある場合は全て復旧失敗として報告し、自動処理へ投入しません。詳細は [保存形式](storage.md) を参照してください。
+
 ### CLI の復旧インターフェース
 
 実行 target は `MacAmbientJevProcessRecording` です。セッション UUID を SESSION_ID、セッション保存ルートを SESSIONS_ROOT、セッション内部とは異なる出力先を SEGMENTS_OUTPUT に設定して使います。
@@ -83,6 +85,8 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
 ```
 
 `--inspect-session` の JSON action は `finalize`、`retryContentPriority`、`none`、`unrecoverable` です。音声欠損は `unrecoverable`、その他の読取不整合はエラーになります。`--resume-session` は録音・読み込みの `finalize` に対応しますが、CLI は Jev を無効にするため `retryContentPriority` を再開しません。通常処理・再開とも `--low-heat` で ASR 区間の間に 2 秒の待機を入れられます。
+
+ID は manifest の完全 UUID から実フォルダー URL に解決します。不在・複数一致・フォルダー名の不整合はエラーで、`none` は存在する正常セッションの action がない場合に限ります。resume は実行時に実フォルダーを解決して出力先を検査し、symlink と大文字小文字の違いを考慮してセッション内部への出力を production engine の処理前に拒否します。
 
 ## 話者 turn の境界
 

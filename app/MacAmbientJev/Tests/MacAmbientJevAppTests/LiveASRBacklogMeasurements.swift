@@ -19,7 +19,8 @@ func measureLatestCheckpointRetentionDuringThermalStall() async throws {
     )
     let sessionID = UUID()
     _ = try SessionBootstrapper(fileManager: .default).createSession(
-        paths: paths, sessionID: sessionID, source: .recording(.systemAudio), createdAt: Date()
+        paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     state.markRecordingStarted(sessionID: sessionID)
     state.readLiveThermalPressure = { .critical }

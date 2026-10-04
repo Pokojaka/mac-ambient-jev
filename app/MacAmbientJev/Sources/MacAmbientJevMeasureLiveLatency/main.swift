@@ -196,13 +196,18 @@ struct MeasureLiveLatencyCommand {
         let sourceDuration = Double(sourceFile.length) / sourceFormat.sampleRate
 
         let sessionID = UUID()
-        let sessionsRoot = URL(fileURLWithPath: "/private/tmp/mac-ambient-jev-live-latency", isDirectory: true)
-            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-        let sessionDirectory = sessionsRoot.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-        let processingDirectory = sessionDirectory
-            .appending(path: "audio", directoryHint: .isDirectory)
-            .appending(path: "processing", directoryHint: .isDirectory)
-        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let sessionsRoot = fileManager.temporaryDirectory
+            .appending(path: "mac-ambient-jev-live-latency-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let replayPaths = AppPaths(
+            applicationSupportURL: paths.applicationSupportURL,
+            cacheURL: paths.cacheURL,
+            sessionsRootOverride: sessionsRoot
+        )
+        let sessionDirectory = try SessionBootstrapper(fileManager: fileManager).createSession(
+            paths: replayPaths, sessionID: sessionID, source: .recording(.systemAudio),
+            createdAt: Date(), timeZone: .current
+        )
+        let processingDirectory = SessionLayout(sessionURL: sessionDirectory).processingDirectory
 
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
@@ -212,11 +217,7 @@ struct MeasureLiveLatencyCommand {
         )
         var checkpoint = try await writer.checkpoint()
         let processor = NativeSessionProcessor(
-            paths: AppPaths(
-                applicationSupportURL: paths.applicationSupportURL,
-                cacheURL: paths.cacheURL,
-                sessionsRootOverride: sessionsRoot
-            ),
+            paths: replayPaths,
             engines: .production(paths: paths),
             contentPriority: .disabled
         )

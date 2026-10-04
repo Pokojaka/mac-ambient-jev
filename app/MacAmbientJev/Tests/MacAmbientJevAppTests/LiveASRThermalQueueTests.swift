@@ -23,7 +23,7 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
         pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
     )
     let sessionID = UUID()
-    state.selectSavedSession(sessionID: sessionID)
+    state.showNewSession(sessionID)
     state.markRecordingStarted(sessionID: sessionID)
 
     let pressure = ThermalPressureSource(.critical)
@@ -78,13 +78,14 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
     )
     let sessionID = UUID()
     let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
-        paths: paths, sessionID: sessionID, source: .recording(.systemAudio), createdAt: Date()
+        paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let writer = try DurableAudioWriter(
         directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
         sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 0.5
     )
-    state.selectSavedSession(sessionID: sessionID)
+    state.showNewSession(sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let pressure = ThermalPressureSource(.critical)
     state.readLiveThermalPressure = { pressure.value }

@@ -90,9 +90,11 @@ CAPTURE_PID=""
 
 python3 -I - "$SUMMARY" "$WAV" "$DURATION" "$SESSIONS_ROOT" <<'PY'
 import array
+import datetime
 import json
 import math
 import pathlib
+import re
 import sys
 import uuid
 import wave
@@ -104,8 +106,13 @@ assert summary.get('permission') in ('authorized', 'granted-now'), summary
 session_id = summary['session_id']
 assert isinstance(session_id, str) and str(uuid.UUID(session_id)) == session_id.lower(), summary
 session = pathlib.Path(summary['path']).resolve()
-expected = pathlib.Path(sys.argv[4]).resolve() / session_id
-assert session == expected, (session, expected)
+assert session.parent == pathlib.Path(sys.argv[4]).resolve(), session
+manifest = json.loads((session / 'session.json').read_text())
+assert uuid.UUID(manifest['session_id']) == uuid.UUID(session_id), manifest
+assert manifest['source_kind'] == 'recording' and manifest['capture_source'] == 'systemAudio', manifest
+assert re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}_録音_[0-9a-f]{8}', session.name), session
+datetime.datetime.strptime(session.name[:19], '%Y-%m-%d_%H-%M-%S')
+assert session.name[-8:] == session_id[:8].lower(), session
 rate = summary['sample_rate']
 frames = summary['frames_written']
 assert type(rate) in (int, float) and math.isfinite(rate) and rate > 0, summary

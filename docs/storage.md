@@ -6,12 +6,26 @@
 
 ## 保存場所とセッションフォルダー
 
-標準の保存先はユーザーの Application Support 以下の mac-ambient-jev です。その下の sessions に UUID 名のセッション、models にモデルを置きます。キャッシュはユーザーの Caches 以下の mac-ambient-jev にあります。`AppPaths` は sessions の root を上書きできます。App の設定は UserDefaults / AppStorage、Jev API キーは Keychain にあり、セッション JSON のフィールドではありません。
+標準の保存先はユーザーの Application Support 以下の mac-ambient-jev です。その下の sessions にセッション、models にモデルを置きます。キャッシュはユーザーの Caches 以下の mac-ambient-jev にあります。`AppPaths` は sessions の root を上書きできます。App の設定は UserDefaults / AppStorage、Jev API キーは Keychain にあり、セッション JSON のフィールドではありません。
+
+フォルダー名は `YYYY-MM-DD_HH-mm-ss_<stem>_<UUID先頭8桁の小文字hex>` です。作成時に一度取得した日時を、明示した time zone のローカル時刻として Gregorian calendar・`en_US_POSIX` で表します。年は ASCII 4 桁（0001–9999）。アプリと CLI は `.current` を渡します。マイク・システム音声の録音は stem が `録音`、読み込みは元ファイル名の最後の拡張子を除いた stem です。
+
+stem の `/` と `:` は `-`、先頭の `.` は `-` に置換します。固定部分は UTF-8 29 byte、stem は Swift Character の境界で 226 byte 以下に切り詰め、全体を 255 byte 以下にします。合成文字は分割せず、manifest の元ファイル名は正規化・変更しません。NUL、空の stem、最初の Character が上限に入らない名前、形式で表せない日時は明示エラーです。同名の既存フォルダーは上書きしません。名前の辞書順は作成時に記録したローカル時刻順であり、DST や time zone の変更をまたぐ UTC 順ではありません。
+
+セッション identity は `session.json` の **完全な UUID** です。`SessionLayout` は実際の `sessionURL` だけを受け取り、ID から URL を生成しません。`SessionDirectoryLocator` は root 直下の全ディレクトリの manifest を読み、完全な UUID の一致を数えます。0 件は `notFound`、複数件は名前順のフォルダー一覧付き `multipleMatches`、1 件は名前の検証後に URL を返します。無関係な壊れた manifest は identity を提供しません。一致した manifest のフォルダー名が不正なら、その検証エラーを返します。
+
+lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指定された root URL の表記を保ちます。作成時に返した URL と、同じ root から取得した行・lookup の URL は同じ identity として扱えます。
+
+読み取りでは固定 19 byte の日時と最後の `_` に続く小文字 ASCII hex 8 桁を解析し、日時の Gregorian 妥当性、manifest UUID の接頭辞、同じ規則で算出した source stem を検証します。日時の妥当性は読み取り時のローカル time zone に依存しません。フォルダーの日時と `created_at` は比較せず、読み取り時に作成日時や ID から名前・URL を再計算したり、フォルダーを改名したりしません。
+
+一覧と復旧は非表示を含む全直下ディレクトリを対象とし、通常ファイルは対象外です。manifest の欠損・破損、名前の不正、UUID 接頭辞・source stem の不一致はフォルダーごとのエラーとして表示し、健全な他のセッションは処理を続けます。同じ完全 UUID の複数フォルダーは全て読み込みエラー・復旧失敗とし、二重に処理しません。保存済み一覧の行 identity と選択は URL。壊れた manifest に UUID を捏造せず、読み取れた UUID だけを保持します。正常行の再処理・書き出し操作は UUID を使います。
+
+根拠: [SessionFolderName.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFolderName.swift)、[SessionDirectoryLocator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionDirectoryLocator.swift)、[SavedSessionCatalog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SavedSessionCatalog.swift)。
 
 セッションの構成は次のとおりです。これは生成されるファイル配置であり、リポジトリ内のファイルではありません。
 
 ```text
-セッション UUID のフォルダー/
+2023-11-15_07-13-20_録音_0123abcd/
 ├── session.json
 ├── events.jsonl
 ├── processing_metadata.json          処理開始後
@@ -39,7 +53,7 @@
 
 | キー | 型 | 条件・意味 |
 | --- | --- | --- |
-| `session_id` | UUID 文字列 | 必須。セッションフォルダー名の UUID と一致する |
+| `session_id` | UUID 文字列 | 必須。完全なセッション identity。先頭 8 桁を小文字にした値がフォルダー名の末尾と一致する |
 | `created_at` | ISO 8601 文字列 | 必須。セッション作成時刻。import では読み込み時刻 |
 | `source_kind` | String | 必須。`recording` または `imported` |
 | `capture_source` | String | recording で必須。`microphone` または `systemAudio`。import の書き込みでは出力しない |

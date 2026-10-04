@@ -149,7 +149,7 @@ private func finalizationFixture(
         paths: paths,
         sessionID: sessionID,
         source: .recording(.microphone),
-        createdAt: Date()
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
@@ -689,7 +689,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     let sessionID = UUID()
     _ = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths, sessionID: sessionID, source: .imported(originalFilename: "fixture.wav"),
-        createdAt: Date()
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
@@ -1144,7 +1144,7 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
 
     let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
     #expect(scan.candidates.isEmpty)
-    #expect(scan.failures.map(\.sessionURL.lastPathComponent) == [sessionID.uuidString])
+    #expect(scan.failures.map(\.sessionURL) == [sessionURL])
 
     let rejected = await processFinal(
         processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
@@ -1420,4 +1420,47 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     #expect(try eventObjects(sessionURL).allSatisfy {
         $0["event_type"] as? String != "processing.run.completed"
     })
+}
+
+@Test func processorLookupFailuresDoNotPublishEmptyTranscriptsOrRunEngines() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: []),
+            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
+            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+        ),
+        contentPriority: .disabled
+    )
+    let absent = UUID()
+    do {
+        _ = try await processor.startLiveTranscription(sessionID: absent, segmentationRunID: "live", sampleRate: 16_000)
+        Issue.record("missing identity must fail")
+    } catch {
+        #expect(error as? SessionDirectoryLookupError == .notFound(absent))
+    }
+    let duplicate = paths.sessionsRoot.appending(path: "malformed")
+    try FileManager.default.copyItem(at: sessionURL, to: duplicate)
+    let originalLog = try Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(result.disposition == .failed)
+    #expect(!result.noSpeech)
+    #expect(result.metrics == nil)
+    let imported = await processor.processImportedSession(
+        sessionID: absent, originalURL: sessionURL.appending(path: "missing.wav"),
+        pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    #expect(imported.disposition == .failed)
+    #expect(!imported.noSpeech)
+    #expect(await log.snapshot().isEmpty)
+    #expect(try Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL) == originalLog)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load() == nil)
 }

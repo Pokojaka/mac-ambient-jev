@@ -195,7 +195,7 @@ final class AppState: ObservableObject {
     @Published var processingState: ProcessingState = .idle
     @Published var processingStatusText: String?
     @Published var savedSessions: [SavedSessionSummary] = []
-    @Published var selectedSavedSessionID: UUID?
+    @Published var selectedSavedSessionURL: URL?
     @Published var exportDirectoryPath: String?
     @Published var exportDestinationMessage: String?
     @Published var sessionExports: [UUID: SessionExportState] = [:]

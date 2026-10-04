@@ -49,15 +49,22 @@ private struct GateOutput: SystemAudioOutputProcessProviding {
 }
 
 @MainActor
-private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @escaping () -> Void) -> AudioCaptureEngine {
+private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @escaping () -> Void) throws -> (AudioCaptureEngine, UUID, URL) {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    return AudioCaptureEngine(
-        paths: AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root),
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let sessionID = UUID()
+    try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    let engine = AudioCaptureEngine(
+        paths: paths,
         bufferFrameCount: 8, diskSpace: GateDisk(),
         tapFactory: { creations(); return tap }, systemAudioPermission: permission,
         outputProcesses: GateOutput(),
         micInputVolumeFactory: { preconditionFailure("System audio never binds a microphone volume control") }
     )
+    return (engine, sessionID, root)
 }
 
 @MainActor
@@ -66,9 +73,10 @@ func deniedSystemAudioGate() async throws {
     let tap = GateTap()
     let permission = GatePermission(.denied, answer: false)
     var creations = 0
-    let engine = gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    defer { try? FileManager.default.removeItem(at: root) }
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Denied permission started capture")
     } catch SystemAudioTapError.permissionDenied {
@@ -83,8 +91,9 @@ func grantedAfterDeniedPreflightSystemAudioGate() async throws {
     let tap = GateTap()
     let permission = GatePermission(.denied, answer: true)
     var creations = 0
-    let engine = gateEngine(permission, tap: tap) { creations += 1 }
-    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     #expect(await permission.requests == 1)
     #expect(creations == 1 && tap.starts == 1 && engine.isRecording)
@@ -99,9 +108,10 @@ func grantedSystemAudioGate() async throws {
     let permission = GatePermission(.notDetermined, answer: nil)
     var creations = 0
     var waiting = false
-    let engine = gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    defer { try? FileManager.default.removeItem(at: root) }
     let task = Task {
-        try await engine.start(sessionID: UUID(), source: .systemAudio,
+        try await engine.start(sessionID: sessionID, source: .systemAudio,
                                onFailure: { _ in }, onWarning: { _ in },
                                onPermissionWaiting: { waiting = true }, onDropouts: { _ in }, onSilenceChanged: { _ in })
     }
@@ -123,8 +133,9 @@ func deniedAfterPromptSystemAudioGate() async throws {
     let tap = GateTap()
     let permission = GatePermission(.notDetermined, answer: nil)
     var creations = 0
-    let engine = gateEngine(permission, tap: tap) { creations += 1 }
-    let task = Task { try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    defer { try? FileManager.default.removeItem(at: root) }
+    let task = Task { try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in }) }
     while await permission.requests == 0 { await Task.yield() }
     await permission.resolve(false)
@@ -142,9 +153,10 @@ func unverifiableSystemAudioGate() async throws {
     let tap = GateTap()
     let permission = GatePermission(nil, answer: nil)
     var creations = 0
-    let engine = gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    defer { try? FileManager.default.removeItem(at: root) }
     await #expect(throws: SystemAudioPermissionError.unverifiable) {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     }
     #expect(creations == 0 && tap.starts == 0 && !engine.isRecording)
@@ -159,8 +171,9 @@ func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async 
     let tap = GateTap()
     let permission = GatePermission(status, answer: nil)
     var creations = 0
-    let engine = gateEngine(permission, tap: tap) { creations += 1 }
-    let task = Task { try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    defer { try? FileManager.default.removeItem(at: root) }
+    let task = Task { try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in }) }
     while await permission.requests == 0 { await Task.yield() }
     engine.cancelStarting()

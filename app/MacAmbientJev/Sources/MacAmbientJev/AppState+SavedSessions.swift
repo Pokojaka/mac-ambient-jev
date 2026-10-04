@@ -21,25 +21,36 @@ extension AppState {
     }
 
     func selectSavedSession(sessionID: UUID) {
+        do {
+            let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+                .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+            selectSavedSession(sessionURL: sessionURL)
+        } catch {
+            transcriptViewModel.setStatus("保存済み録音を選択できませんでした: \(error.localizedDescription)")
+        }
+    }
+
+    func selectSavedSession(sessionURL: URL) {
         guard SavedSessionSelectionPolicy.canSelect(
             isRecording: recordingPhase != .idle
         ) else {
             return
         }
-        selectedSavedSessionID = sessionID
-        displayedSessionID = sessionID
+        selectedSavedSessionURL = sessionURL
+        let summary = savedSessions.first(where: { $0.sessionURL == sessionURL })
+        displayedSessionID = summary?.sessionID
         transcriptViewModel.update(segments: [])
         transcriptViewModel.setDisplayState(.empty)
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
-        guard let audioSource = savedSessions
-            .first(where: { $0.sessionID == sessionID })?.audioSource else {
+        guard case .readable(let session) = summary,
+              let audioSource = session.audioSource else {
             transcriptViewModel.setStatus("保存済み音声を使えないため、文字起こしを表示できません")
             return
         }
         do {
             switch try SavedTranscriptLoader.load(
-                sessionURL: SessionLayout(sessionsRoot: paths.sessionsRoot, sessionID: sessionID).sessionURL,
+                sessionURL: sessionURL,
                 audioSource: audioSource
             ) {
             case .unavailable:
@@ -50,7 +61,7 @@ extension AppState {
                 transcriptViewModel.setStatus(
                     segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
                 )
-                Task { await probeExistingExport(sessionID: sessionID) }
+                Task { await probeExistingExport(sessionID: session.sessionID) }
             }
         } catch {
             transcriptViewModel.setStatus(
@@ -104,7 +115,8 @@ extension AppState {
     }
 
     func readableSavedSession(_ sessionID: UUID) -> SavedSession? {
-        guard case .readable(let session) = savedSessions.first(where: { $0.sessionID == sessionID }) else {
+        let matches = savedSessions.filter { $0.sessionID == sessionID }
+        guard matches.count == 1, case .readable(let session) = matches[0] else {
             return nil
         }
         return session

@@ -44,7 +44,7 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
     )
-    state.selectSavedSession(sessionID: sessionID)
+    state.showNewSession(sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let handler = state.liveUpdateHandler(sessionID: sessionID)
     let barrier = BlockedLiveUpdate()

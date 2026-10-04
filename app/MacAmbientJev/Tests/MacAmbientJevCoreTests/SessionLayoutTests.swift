@@ -9,7 +9,11 @@ private func makeSession(source: SessionSource) throws -> (SessionLayout, Sessio
         createdAt: Date(timeIntervalSince1970: 1_700_000_000),
         source: source
     )
-    let layout = SessionLayout(sessionsRoot: root, sessionID: manifest.sessionID)
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let layout = SessionLayout(sessionURL: try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: manifest.sessionID, source: source,
+        createdAt: manifest.createdAt, timeZone: TimeZone(secondsFromGMT: 0)!
+    ))
     try FileManager.default.createDirectory(at: layout.audioDirectory, withIntermediateDirectories: true)
     return (layout, manifest)
 }

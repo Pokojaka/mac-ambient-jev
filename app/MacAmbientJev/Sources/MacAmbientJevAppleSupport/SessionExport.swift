@@ -121,7 +121,7 @@ public struct SessionExporter: Sendable {
             throw SessionExportError.transcriptCorrupted(reason)
         }
 
-        let layout = SessionLayout(sessionsRoot: sessionsRoot, sessionID: session.sessionID)
+        let layout = SessionLayout(sessionURL: session.sessionURL)
         guard case .segments(let segments) = try SavedTranscriptLoader.load(
             sessionURL: layout.sessionURL,
             audioSource: audioSource

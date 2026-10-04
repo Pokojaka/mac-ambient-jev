@@ -69,16 +69,12 @@ extension AppState {
         }
 
         let sessionID = UUID()
-        let sessionURL = paths.sessionsRoot
-            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+        var createdSessionURL: URL?
 
         recordingSessionID = sessionID
         do {
-            try prepareSession(
-                sessionID: sessionID,
-                sessionURL: sessionURL,
-                source: .recording(captureSource)
-            )
+            let sessionURL = try prepareSession(sessionID: sessionID, source: .recording(captureSource))
+            createdSessionURL = sessionURL
             if captureSource == .microphone {
                 micInputSessionID = sessionID
                 captureEngine.configureMicInputVolume(
@@ -149,24 +145,26 @@ extension AppState {
             endMicInputSession()
             captureWarningText = nil
             isMicrophoneSilent = false
-            let processing = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
-            let keepSession: Bool
-            do {
-                let checkpoint = try AudioCheckpoint.loadRecovered(from: processing)
-                keepSession = checkpoint?.hasCapturedAudio ?? false
-            } catch {
-                // Damaged durable data must remain available for recovery/diagnosis.
-                keepSession = true
-            }
             var removalFailure: String?
-            if keepSession {
-                refreshSavedSessions()
-            } else {
+            if let sessionURL = createdSessionURL {
+                let processing = SessionLayout(sessionURL: sessionURL).processingDirectory
+                let keepSession: Bool
                 do {
-                    try FileManager.default.removeItem(at: sessionURL)
+                    let checkpoint = try AudioCheckpoint.loadRecovered(from: processing)
+                    keepSession = checkpoint?.hasCapturedAudio ?? false
                 } catch {
-                    removalFailure = "空の録音フォルダを削除できませんでした: \(error.localizedDescription)"
+                    // Damaged durable data must remain available for recovery/diagnosis.
+                    keepSession = true
+                }
+                if keepSession {
                     refreshSavedSessions()
+                } else {
+                    do {
+                        try FileManager.default.removeItem(at: sessionURL)
+                    } catch {
+                        removalFailure = "空の録音フォルダを削除できませんでした: \(error.localizedDescription)"
+                        refreshSavedSessions()
+                    }
                 }
             }
             recordingSessionID = nil
@@ -399,19 +397,14 @@ extension AppState {
         }
     }
 
-    func prepareSession(
-        sessionID: UUID,
-        sessionURL: URL,
-        source: SessionSource
-    ) throws {
-        let createdURL = try SessionBootstrapper(fileManager: .default).createSession(
+    func prepareSession(sessionID: UUID, source: SessionSource) throws -> URL {
+        let createdAt = Date()
+        return try SessionBootstrapper(fileManager: .default).createSession(
             paths: paths,
             sessionID: sessionID,
             source: source,
-            createdAt: Date()
-        )
-        precondition(
-            createdURL.standardizedFileURL == sessionURL.standardizedFileURL
+            createdAt: createdAt,
+            timeZone: .current
         )
     }
 
@@ -420,7 +413,7 @@ extension AppState {
     }
 
     func showNewSession(_ sessionID: UUID) {
-        selectedSavedSessionID = nil
+        selectedSavedSessionURL = nil
         displayedSessionID = sessionID
         transcriptViewModel.update(segments: [])
     }

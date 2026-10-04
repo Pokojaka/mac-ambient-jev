@@ -167,7 +167,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     )
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
-    let sessionURL = paths.sessionsRoot.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+    let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
     let directory = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
     let writer = try DurableAudioWriter(
         directory: directory, sampleRate: 16_000, channelCount: 1, chunkDurationSeconds: 1
@@ -275,11 +275,12 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
     for (hasGap, containsCapture) in [(true, false), (false, true), (true, true)] {
         let engine = FakeAppCaptureEngine()
         var startedSessionID: UUID?
+        var startedSessionURL: URL?
         engine.onStart = { sessionID in
             startedSessionID = sessionID
-            let directory = paths.sessionsRoot
-                .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-                .appending(path: "audio/processing", directoryHint: .isDirectory)
+            let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+            startedSessionURL = sessionURL
+            let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
             let writer = try DurableAudioWriter(
                 directory: directory, sampleRate: 16_000, channelCount: 1,
                 chunkDurationSeconds: 1
@@ -303,7 +304,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
-        let sessionURL = paths.sessionsRoot.appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+        let sessionURL = try #require(startedSessionURL)
         #expect(FileManager.default.fileExists(atPath: sessionURL.path) == containsCapture)
         #expect(engine.starts == 1)
         #expect(state.recordingPhase == .idle)

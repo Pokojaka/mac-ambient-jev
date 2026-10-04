@@ -188,7 +188,7 @@ struct CaptureSystemAudioCommand {
         let sessionID = UUID()
         let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
             paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
-            createdAt: Date()
+            createdAt: Date(), timeZone: .current
         )
         let failures = CaptureFailureLog()
         let engine = AudioCaptureEngine(paths: paths)

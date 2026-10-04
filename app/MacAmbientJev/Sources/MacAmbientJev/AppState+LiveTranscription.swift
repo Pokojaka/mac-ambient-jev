@@ -24,10 +24,9 @@ extension AppState {
     func startLiveVAD(sessionID: UUID) async throws {
         let checkpoint = try await captureEngine.committedCheckpoint()
         guard isCurrentRecording(sessionID) else { return }
-        let directory = paths.sessionsRoot
-            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
-            .appending(path: "audio", directoryHint: .isDirectory)
-            .appending(path: "processing", directoryHint: .isDirectory)
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
 
         liveVADFailureText = nil
         liveVADSegmentCount = 0

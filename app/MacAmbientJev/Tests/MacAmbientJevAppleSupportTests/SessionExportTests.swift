@@ -46,6 +46,7 @@ func exportFolderNameUsesDateStemAndSessionPrefix() {
     func session(_ source: SessionSource) -> SavedSession {
         SavedSession(
             sessionID: id,
+            sessionURL: URL(fileURLWithPath: "/fixtures/session"),
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             source: source,
             duration: .unknown,
@@ -175,7 +176,7 @@ struct ExportFixture {
     }
 
     func sessionURL(_ session: SavedSession) -> URL {
-        sessionsRoot.appending(path: session.sessionID.uuidString, directoryHint: .isDirectory)
+        session.sessionURL
     }
 
     func writeLiveSession(
@@ -236,16 +237,11 @@ struct ExportFixture {
         id: UUID,
         source: SessionSource
     ) throws -> URL {
-        let session = sessionsRoot.appending(path: id.uuidString, directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(SessionManifest(
-            sessionID: id,
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            source: source
-        )).write(to: session.appending(path: "session.json"), options: .atomic)
-        return session
+        let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: sessionsRoot)
+        return try SessionBootstrapper(fileManager: .default).createSession(
+            paths: paths, sessionID: id, source: source,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+        )
     }
 
     private func writeTranscript(

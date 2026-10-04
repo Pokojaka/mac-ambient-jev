@@ -21,7 +21,7 @@ func sessionBootstrapperCreatesManifestAndEventLog() throws {
         paths: paths,
         sessionID: sessionID,
         source: .imported(originalFilename: "lecture.m4a"),
-        createdAt: Date()
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
 
     #expect(

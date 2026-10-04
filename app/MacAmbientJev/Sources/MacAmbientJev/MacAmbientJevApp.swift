@@ -314,14 +314,14 @@ private struct SavedSessionsWindow: View {
     var body: some View {
         SavedSessionsView(
             sessions: appState.savedSessions,
-            selectedSessionID: appState.selectedSavedSessionID,
+            selectedSessionURL: appState.selectedSavedSessionURL,
             isUnavailableForReprocess: appState.recordingPhase != .idle,
             isSelectionUnavailable: appState.recordingPhase != .idle,
             queuedSessionIDs: appState.queuedFinalizationSessionIDs,
             sessionExports: appState.sessionExports,
             hasExportDestination: appState.exportDirectoryPath != nil,
             onRefresh: appState.refreshSavedSessions,
-            onSelect: appState.selectSavedSession(sessionID:),
+            onSelect: appState.selectSavedSession(sessionURL:),
             onReprocess: appState.reprocess(sessionID:),
             onExport: { sessionID in
                 Task { await appState.exportSavedSession(sessionID: sessionID) }

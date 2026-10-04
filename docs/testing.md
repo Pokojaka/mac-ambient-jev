@@ -107,7 +107,11 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
 
 ID は UUID、root は必須。inspect は位置引数・`--keep-session`・`--low-heat`・計測引数を受け付けず、指定対象の action を JSON で出す。action は `finalize`、`retryContentPriority`、`none`、音声が復旧できない場合の `unrecoverable`。読めない metadata 等の別のエラーは失敗として報告する。
 
+UUID は manifest の完全 ID です。root 直下の manifest を検索して実フォルダーを解決し、不在・複数一致・名前の検証不整合は明示エラーにします。`none` は存在する正常セッションに復旧 action がない場合だけです。
+
 resume は音声ファイルではなく対象 UUID と、セッション外の出力先を一つ指定する。録音・import の両方が対象で、finalize は共通確定処理を全量実行する。pending ASR だけを再投入する経路ではない。CLI は `retryContentPriority` を拒否する。action がない場合は公開済みの結果を書き出すため、resume が常に再処理を始めるわけではない。確定処理の失敗・一時停止では直前の正常な active run を保持する。
+
+引数 parser は構文だけを検査します。resume の出力先 containment は実行時に実フォルダーを解決した後、symlink 解決・大文字小文字の同一視を保って検査します。実セッション内への出力は拒否し、lookup と containment の失敗は production engine の構築・処理より前に返します。
 
 ### 不正入力の smoke
 
@@ -141,6 +145,8 @@ Linux runner の全音声一つの ASR artifact には `MacAmbientJevEvaluateASR
 ## ファイル処理の長時間計測
 
 `scripts/measure_v1_run.sh` は release CLI を使い、音声 import または保存済みセッションの resume を一回計測する。事前に release product を build する。必要空き容量は 4 GiB 以上。
+
+計測後の event log は manifest の完全 UUID を検索して実フォルダーから読みます。ID 不在・複数一致は計測レポート作成のエラーです。システム音声検証スクリプトも summary の実 path、manifest identity、保存フォルダー名を検査します。
 
 ```bash
 swift build --package-path app/MacAmbientJev -c release \

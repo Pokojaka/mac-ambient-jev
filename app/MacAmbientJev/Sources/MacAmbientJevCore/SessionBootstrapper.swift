@@ -12,10 +12,13 @@ public struct SessionBootstrapper {
         paths: AppPaths,
         sessionID: UUID,
         source: SessionSource,
-        createdAt: Date
+        createdAt: Date,
+        timeZone: TimeZone
     ) throws -> URL {
         let sessionURL = paths.sessionsRoot.appending(
-            path: sessionID.uuidString,
+            path: try SessionFolderName.make(
+                createdAt: createdAt, sessionID: sessionID, source: source, timeZone: timeZone
+            ),
             directoryHint: .isDirectory
         )
         let manifest = SessionManifest(
@@ -28,6 +31,9 @@ public struct SessionBootstrapper {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.dateEncodingStrategy = .iso8601
 
+        guard !fileManager.fileExists(atPath: sessionURL.path) else {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: sessionURL.path])
+        }
         try fileManager.createDirectory(
             at: sessionURL,
             withIntermediateDirectories: true

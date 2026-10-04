@@ -554,8 +554,9 @@ public final class AudioCaptureEngine {
             diskSpace: diskSpace, directory: paths.sessionsRoot,
             sampleRate: sampleRate, channelCount: 1
         )
-        let processingDirectory = SessionLayout(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
-            .processingDirectory
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let processingDirectory = SessionLayout(sessionURL: sessionURL).processingDirectory
         let writer = try DurableAudioWriter(
             directory: processingDirectory, sampleRate: sampleRate,
             channelCount: 1, chunkDurationSeconds: chunkDurationSeconds

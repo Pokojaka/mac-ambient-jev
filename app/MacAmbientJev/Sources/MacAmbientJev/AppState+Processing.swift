@@ -15,8 +15,7 @@ extension AppState {
               !finalizationGate.sessionIDs.contains(sessionID),
               currentlyProcessingSessionID != sessionID,
               !pendingProcessing.contains(where: { $0.sessionID == sessionID }),
-              let session = savedSessions.first(where: { $0.sessionID == sessionID }),
-              session.canReprocess,
+              let session = readableSavedSession(sessionID),
               let source = session.audioSource else {
             return
         }
@@ -141,15 +140,14 @@ extension AppState {
         }
 
         let sessionID = UUID()
-        let sessionURL = paths.sessionsRoot
-            .appending(path: sessionID.uuidString, directoryHint: .isDirectory)
+        var createdSessionURL: URL?
 
         do {
-            try prepareSession(
+            let sessionURL = try prepareSession(
                 sessionID: sessionID,
-                sessionURL: sessionURL,
                 source: .imported(originalFilename: sourceURL.lastPathComponent)
             )
+            createdSessionURL = sessionURL
             let imported = try AudioImporter().importFile(
                 sourceURL,
                 into: sessionURL
@@ -170,7 +168,7 @@ extension AppState {
             )
         } catch {
             var message = "音声ファイルを読み込めませんでした: \(error.localizedDescription)"
-            if FileManager.default.fileExists(atPath: sessionURL.path) {
+            if let sessionURL = createdSessionURL {
                 do {
                     try FileManager.default.removeItem(at: sessionURL)
                 } catch let cleanupError {

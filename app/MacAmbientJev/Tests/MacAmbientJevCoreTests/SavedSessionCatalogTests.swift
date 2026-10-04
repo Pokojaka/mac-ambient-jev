@@ -25,41 +25,18 @@ func catalogKeepsCorruptSessionMetadataVisibleAsAnErrorRow() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let id = UUID()
-    let session = root.appending(path: id.uuidString, directoryHint: .isDirectory)
+    let session = root.appending(path: "broken", directoryHint: .isDirectory)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
     try Data("{broken".utf8).write(to: session.appending(path: "session.json"))
 
     let row = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
 
-    #expect(row == .unreadable(sessionID: id, reason: "セッション情報が壊れています"))
+    #expect(row.sessionURL == session)
+    #expect(row.sessionID == nil)
+    guard case .unreadable = row else { Issue.record("expected unreadable manifest"); return }
     #expect(row.canReprocess == false)
 }
 
-@Test
-func catalogShowsJapaneseMessageForDecodingFailureButPreservesOtherErrors() throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let brokenID = UUID()
-    let broken = root.appending(path: brokenID.uuidString, directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
-    try Data("{broken".utf8).write(to: broken.appending(path: "session.json"))
-
-    let mismatchID = UUID()
-    let mismatch = try writeCatalogSession(
-        id: mismatchID, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: false
-    )
-    let manifest = try Data(contentsOf: mismatch.appending(path: "session.json"))
-    let other = root.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
-    try manifest.write(to: other.appending(path: "session.json"))
-
-    let rows = try SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root)
-    let otherID = try #require(UUID(uuidString: other.lastPathComponent))
-    #expect(rows.contains(.unreadable(sessionID: brokenID, reason: "セッション情報が壊れています")))
-    #expect(rows.contains(.unreadable(sessionID: otherID, reason: "保存セッションの ID がフォルダー名と一致しません")))
-}
 
 @Test(arguments: [0.0, -1.0, Double.nan, Double.infinity, -Double.infinity])
 func catalogRejectsInvalidCheckpointSampleRate(_ sampleRate: Double) throws {
@@ -288,17 +265,11 @@ private func writeCatalogSession(
     root: URL,
     includeAudio: Bool
 ) throws -> URL {
-    let session = root.appending(path: id.uuidString, directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
-    try Data().write(to: session.appending(path: "events.jsonl"))
-    let encoder = JSONEncoder()
-    encoder.keyEncodingStrategy = .convertToSnakeCase
-    encoder.dateEncodingStrategy = .iso8601
-    try encoder.encode(SessionManifest(
-        sessionID: id,
-        createdAt: Date(timeIntervalSince1970: createdAt),
-        source: source
-    )).write(to: session.appending(path: "session.json"), options: .atomic)
+    let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
+    let session = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: id, source: source,
+        createdAt: Date(timeIntervalSince1970: createdAt), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
     if includeAudio {
         let processing = session.appending(path: "audio/processing", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: processing, withIntermediateDirectories: true)

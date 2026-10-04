@@ -542,6 +542,15 @@ private final class TrapMicVolume: MicInputVolumeControlling {
     }
 }
 
+private func createTapSession(paths: AppPaths) throws -> UUID {
+    let id = UUID()
+    try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: id, source: .recording(.systemAudio),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    return id
+}
+
 @MainActor
 @Test("A fake process tap records through durable mono chunks and pairs cleanup with power")
 func fakeTapEngineLifecycle() async throws {
@@ -560,7 +569,7 @@ func fakeTapEngineLifecycle() async throws {
     engine.configureMicInputVolume(automaticAdjustmentEnabled: true) { _, _ in
         Issue.record("System audio reported a microphone input status")
     }
-    let session = UUID()
+    let session = try createTapSession(paths: paths)
     try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     #expect(engine.isRecording && engine.activeSessionID == session)
@@ -589,7 +598,8 @@ func fakeTapRefusedReleaseIsReported() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: MicVolumeFactoryProbe().make)
-    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+    let session = try createTapSession(paths: paths)
+    try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let result = try await engine.stop()
     #expect(result.checkpoint.committedFrames == 4)
@@ -613,7 +623,8 @@ func fakeTapSilentStartupAndStop() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
-    try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+    let session = try createTapSession(paths: paths)
+    try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let result = try await engine.stop()
     #expect(micVolumes.calls == 0)
@@ -638,7 +649,7 @@ func fakeTapGapUsesSharedDrain() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
-    let sessionID = UUID()
+    let sessionID = try createTapSession(paths: paths)
     try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
     let result = try await engine.stop()
@@ -646,8 +657,8 @@ func fakeTapGapUsesSharedDrain() async throws {
     #expect(result.checkpoint.committedFrames == 10)
     #expect(result.didOverflow && result.dropoutCount == 1)
     #expect(result.gapCount == 1 && result.totalGapFrames == 2)
-    let directory = root.appending(path: sessionID.uuidString)
-        .appending(path: "audio/processing")
+    let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: root, sessionID: sessionID)
+    let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
     let samples = try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint)
         .readSamples(frameRange: 0..<10)
     #expect(samples == [0.25, -0.25, 0.5, -0.5, 0, 0, 0.25, -0.25, 0.5, -0.5])
@@ -668,8 +679,9 @@ func fakeTapStartFailureReleasesResources() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
+    let session = try createTapSession(paths: paths)
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Expected denial")
     } catch {
@@ -744,8 +756,9 @@ func tapStartCancellation() async throws {
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
     tap.onStarted = { engine.cancelStarting() }
+    let session = try createTapSession(paths: paths)
     do {
-        try await engine.start(sessionID: UUID(), source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
+        try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
         Issue.record("Expected cancellation")
     } catch AudioCaptureEngineError.cancelled {
@@ -769,11 +782,11 @@ func tapWriterFlushFailureReleasesResources() async throws {
                                     systemAudioPermission: AuthorizedSystemAudioPermission(),
                                     outputProcesses: NoExternalOutput(),
                                     micInputVolumeFactory: micVolumes.make)
-    let session = UUID()
+    let session = try createTapSession(paths: paths)
     try await engine.start(sessionID: session, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
-    let processing = root.appending(path: session.uuidString)
-        .appending(path: "audio").appending(path: "processing")
+    let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: root, sessionID: session)
+    let processing = SessionLayout(sessionURL: sessionURL).processingDirectory
     try FileManager.default.removeItem(at: processing)
     do {
         _ = try await engine.stop()
