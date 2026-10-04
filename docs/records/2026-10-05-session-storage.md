@@ -9,9 +9,9 @@
 - microphone・system audio・GUI・実モデル・権限要求なし。
 - bytes は session/export 内の通常ファイルの論理長の合計。metadata を含み、filesystem の割当容量ではない。
 
-## 測定値
+## 測定値（ベースライン、コミット ed5d874）
 
-現行の device-rate PCM 保存と 24-bit FLAC export で、同じコマンドを二回実行して同じ bytes を得た。
+当時の device-rate PCM 保存と 24-bit FLAC export で、同じコマンドを二回実行して同じ bytes を得た。
 
 | 対象 | 時点 | 600 秒の bytes |
 | --- | --- | ---: |
@@ -25,6 +25,28 @@
 import の構築直後は CAF 生成中の peak ではない。source fixture は session 外にあり、session bytes には含めない。noise の圧縮率は人声の容量・認識精度の測定ではない。
 
 再実行のレポート: `/private/tmp/mac-ambient-jev-storage-measure/storage-3bsyeesp/disk-usage.json`。初回: `/private/tmp/mac-ambient-jev-storage-measure/storage-lvfs_sx7/disk-usage.json`。いずれも実ファイル・session・export を保持。
+
+## 測定値（16 kHz・16-bit FLAC 保存後、コミット aa90100）
+
+内部音声を 16 kHz mono float32 PCM にし、確定した録音を 16-bit FLAC へ変換して PCM を削除する実装で、同じコマンドを二回実行した。session bytes は二回で一致した。
+
+| 対象 | 時点 | 600 秒の bytes | 内訳 |
+| --- | --- | ---: | --- |
+| 録音 session | 録音終了・確定前 | 38,465,201 | PCM 9,600,000 フレーム × 4 byte = 38,400,000 と metadata・索引 65,201 |
+| 録音 session | 確定後 | 12,605,358 | `recording.flac` 12,598,092 と metadata 7,266 |
+| 録音 export | transcript と FLAC | 12,598,139 | `recording.flac` の無変換コピーと transcript 47 |
+| import session | original コピーと処理 timeline 構築直後 | 268,811,048 | original 230,404,096、処理 timeline 38,400,000、metadata |
+| import session | 確定後 | 230,411,376 | original 230,404,096 と metadata 7,280 |
+| import export | transcript と original | 230,404,143 | original 230,404,096 と transcript 47 |
+
+数値の確認。
+
+- 生の 16-bit mono 16 kHz は 32,000 B/s で、600 秒は 19,200,000 bytes。FLAC は 12,598,092 bytes でこれ以下（約 65.6%）。録音 session の確定後に processing ディレクトリ、derived ディレクトリ、partial はない。残るのは session.json、processing_metadata.json、events.jsonl、`recording.flac`、`storage.json` だけ。
+- 1 時間あたりに換算すると 75.6 MB で、生の 16-bit の上限 115.2 MB/h より小さい。fixture は低域 noise で、人声の録音ではない。製品の目安（音声で 1 時間 60〜80 MB、600 秒で 10〜13.3 MB）をこの値で達成したとは主張しない。
+- import の確定後は original のコピーに metadata 7,280 bytes を足した大きさで、import の処理 timeline は削除されている。構築直後の 268,811,048 は original と処理 timeline の合計で、確定中の peak ではない。
+- ベースラインの録音確定後 230,478,679 に対して 12,605,358、録音 export は 66,362,348 に対して 12,598,139。
+
+レポート: `/private/tmp/mac-ambient-jev-storage-measure/storage-u0biqe39/disk-usage.json`（初回）、`/private/tmp/mac-ambient-jev-storage-measure/storage-aiwww3we/disk-usage.json`（再実行）。いずれも実ファイル・session・export を保持。この測定は 16-bit FLAC の符号化と復号検証を実行している。
 
 ## SDK API の根拠
 
