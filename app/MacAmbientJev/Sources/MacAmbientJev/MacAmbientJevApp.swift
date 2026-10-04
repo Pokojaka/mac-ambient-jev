@@ -27,11 +27,15 @@ struct MacAmbientJevApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        Window("MacAmbientJev", id: "main") {
             ContentView()
                 .environmentObject(appState)
         }
         .defaultSize(width: 900, height: 620)
+        .defaultLaunchBehavior(.presented)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
 
         Window("保存済み録音", id: SavedSessionsWindow.id) {
             SavedSessionsWindow()
