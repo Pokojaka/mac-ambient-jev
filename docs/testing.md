@@ -49,6 +49,18 @@ Linux 音声正規化は入力と出力が同一ファイル（シンボリッ�
 
 `validatedEmptyVADCompletesWithoutSpeechInference` は 1 秒の合成無音を 2 回確定し、検証済み VAD の空結果が話者分離の準備失敗・推論失敗に依存しないことを確認する。ASR 準備も呼ばれず、原音声の bytes、読み取れる空 transcript、5 段階の provenance と成功 0 件完了、`complete` metadata、終端の無発話表示、復旧対象外の分類を検証する。VAD 自体の失敗と発話ありの推論失敗は `failed` のまま旧公開 run を保持する。これは orchestration の検証であり、実 FluidAudio モデルの無音成功・クラッシュを測った結果ではない。
 
+### セッション保存容量の合成計測
+
+```bash
+python3 scripts/measure_session_storage.py --sessions-root /private/tmp/mac-ambient-jev-storage-measure --seconds 600
+```
+
+明示した scratch root に実行ごとの新規ディレクトリを作り、録音・import の保存、共通確定処理、書き出しを順次実行する。root は GUI の sandbox 内と CLI の非 sandbox の実データ・cache 領域、およびその祖先・子孫を指定できない。マイク、システム音声、GUI、実モデル、権限要求を使わない。Swift test はこの計測一つだけを実行し、通常の suite では無効にする。
+
+fixture は 48 kHz stereo float32 CAF の再現可能な低域 noise。録音はチャンネル平均した mono を durable writer に渡し、import は original のコピーから処理タイムラインを作る。VAD・話者分離・ASR の injected engine は最初の 1 秒を一発話として返すが、音声全体の保存・CAF 生成・export は実装を実行する。これは保存容量の計測であり、音声認識精度・実キャプチャ・人声の圧縮率の根拠ではない。
+
+`disk-usage.json` は録音終了時の session 全体、確定後の session 全体、import の処理タイムライン構築直後、各 export フォルダーの bytes を報告する。bytes は metadata を含む通常ファイルの論理長の合計で、filesystem の割当容量ではない。import の構築直後は original とタイムラインだけを含む snapshot で、確定中の CAF 生成時の peak ではない。600 秒を一時間へ換算するときは 6 倍する。fixture・session・export・レポートは調査用に保持し、削除は利用者が行う。
+
 ### 実 ASR モデルの smoke
 
 Apple Silicon / macOS で、明示的な WAV ファイルを指定する。

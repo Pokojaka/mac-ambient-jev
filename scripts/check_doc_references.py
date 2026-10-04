@@ -55,7 +55,7 @@ RUNTIME_BASENAMES = frozenset({
     "nemotron3.json", "diarization-evaluation.json", "nemotron3-current.json",
     "asr-evaluation-verbatim.json", "asr-evaluation-content.json",
     "qwen3-asr-verbatim-current.json", "qwen3-asr-content-current.json",
-    "stdout.log", "stderr.log", "source-snapshot.tar.gz",
+    "stdout.log", "stderr.log", "source-snapshot.tar.gz", "disk-usage.json",
 })
 # Apple SDK の型・property wrapper・framework。repo 型は追加しない。
 APPLE_IDENTIFIERS = frozenset({
