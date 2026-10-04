@@ -326,5 +326,6 @@ private struct SavedSessionsWindow: View {
                 Task { await appState.revealExport(sessionID: sessionID) }
             }
         )
+        .onAppear(perform: appState.refreshSavedSessions)
     }
 }
