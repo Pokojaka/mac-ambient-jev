@@ -96,7 +96,8 @@ private struct ContentView: View {
                     Text("マイク").tag(CaptureSource.microphone)
                     Text("システム音声").tag(CaptureSource.systemAudio)
                 }
-                .fixedSize()
+                .pickerStyle(.segmented)
+                .help("録音元")
                 .disabled(appState.recordingPhase != .idle)
 
                 Button {
