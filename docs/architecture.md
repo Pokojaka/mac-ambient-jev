@@ -49,7 +49,7 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
   → TimestampedMonoSink（全入力 channel の平均）
   → AudioBlockRing
   → AudioCaptureDrain（連続 SRC → 16 kHz mono float32）
-  → DurableAudioWriter → 保存済み PCM chunk / checkpoint
+  → DurableAudioWriter → 保存済み PCM chunk / checkpoint（確定後は 16-bit FLAC へ変換）
                                               ↓
                                       LiveVADSession
                                               ↓ 閉じた VAD 区間

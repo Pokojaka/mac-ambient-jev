@@ -42,6 +42,34 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
         └── diarization-input.caf     発話区間のある確定処理の話者分離入力
 ```
 
+### storage.json
+
+`storage.json` は `.sortedKeys` で書く JSON で、セッション作成時に初期状態を書きます。次の 4 つがエンコーダーの出力そのままです（[SessionAudioStorageFormatTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/SessionAudioStorageFormatTests.swift) が同じ bytes を検証します）。`timeline` の中身は `TimelineAudioInfo` で、`committedFrames` が録音の長さ（フレーム数）、`gapEvents` が欠落記録です。`sampleRate` は 16000、`channelCount` は 1 に固定です。
+
+```json
+{"state":"recordingPCM"}
+```
+
+```json
+{"state":"recordingFLAC","timeline":{"channelCount":1,"committedFrames":9600000,"gapEvents":[{"frameCount":8000,"reason":"overflow","startFrame":160000}],"sampleRate":16000}}
+```
+
+```json
+{"state":"importedOriginal","timeline":null}
+```
+
+```json
+{"state":"importedOriginal","timeline":{"channelCount":1,"committedFrames":9600000,"gapEvents":[{"frameCount":8000,"reason":"overflow","startFrame":160000}],"sampleRate":16000}}
+```
+
+状態ごとの audio ディレクトリの中身は次のとおりです。確定処理の終了後は、derived ディレクトリと import の processing ディレクトリは残りません。
+
+| 状態 | 作られる時 | audio ディレクトリの中身 |
+| --- | --- | --- |
+| `recordingPCM` | 録音セッションの作成時から FLAC 化まで | `storage.json`、processing ディレクトリ（PCM chunk）。確定処理の間だけ derived ディレクトリ |
+| `recordingFLAC` | FLAC 化の完了時 | `storage.json`、`recording.flac` |
+| `importedOriginal` | import セッションの作成時から | `storage.json`、`original*`。確定処理の間だけ processing ディレクトリ（処理タイムライン）と derived ディレクトリ |
+
 - `storage.json` が保存音声の形を決める唯一の権威で、3 状態のどれかです。`recordingPCM` は processing ディレクトリの PCM chunk が録音です。`recordingFLAC` は `timeline`（長さと欠落記録）を持ち、`recording.flac` が録音です。`importedOriginal` は `timeline`（直近の処理タイムライン構築の長さと欠落記録。構築前は null）を持ち、original が元です。ファイルの欠落・破損・セッションの作成方法との不一致はセッションごとのエラーで、推測で補いません。状態が `recordingFLAC` なら PCM が残っていても読まず、FLAC が欠落または復号できなければエラーです。
 - 録音は `recordingPCM` の間、処理タイムライン自体が保存音声です。入力の全 channel を平均し、連続 SRC を通した **16,000 Hz・mono・32-bit float PCM** を保存します。
 - import では元ファイルを無再圧縮コピーした `original` または original に元の拡張子を付けたファイルが保存音声です。audio 直下の該当する通常ファイルは **ちょうど 1 つ**必要です。0 個または複数個ならエラーです。元の外部ファイルを再処理の入力にはしません。
