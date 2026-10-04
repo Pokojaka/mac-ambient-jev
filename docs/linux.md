@@ -162,6 +162,8 @@ python3 tools/linux-audio/prepare_fixture.py "$CORPUS_MANIFEST" \
 
 生成物は mono PCM16 / 16 kHz の `audio.wav`、`reference-verbatim.txt`、`reference-content.txt`、`speaker-reference.json`、`fixture.json`。CSJ 転記は UTF-8 で読む。
 
+音声正規化 `normalize_to_wav` は source と destination に異なるファイルを要求する。同一ファイルへ解決されるパス（シンボリックリンクを含む）は、出力先を変更する前に ValueError で拒否する。成功時は mono PCM16 / 16 kHz WAV を出力する。
+
 `tools/linux-audio/common/csj.py` の parser は番号・秒単位 start-end・英字話者名を持つ header と、surface と katakana を `&` で区切る本文を読む。空行と `%` コメントを無視する。`(F ...)` filler、`(D ...)` 言い直し断片、`(? ...)` 不確かな聞き取りを入れ子で扱う。verbatim は全注釈の中の語を残し、content は F だけを除く。header の `<笑>`・`<雑音>` 等は非言語区間で、本文・ASR 参照文・話者 reference に含めない。未知の書式、本文のない speech、非言語区間の本文、不正時刻は明示エラー。
 
 既存 cache の SHA-256 不一致は直ちに失敗し、暗黙の再取得で上書きしない。新規 download も hash を検証してから公開する。外部音声は Git に入れず、利用条件と音声・参照文の対応を確認してローカルで準備する。`tools/corpora/public-ja-candidates-v1.json` は CSJ、RWCP、青空文庫/LibriVox の候補一覧であり、prepare 用の hash 固定済み resource manifest ではない。

@@ -34,7 +34,7 @@ swift test --package-path app/MacAmbientJev --filter bugHuntMeasure
 
 `bugHunt` の correctness test は既知の不具合を期待する正常動作の assertion で再現するため、現行コードでは失敗する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、参照数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
 
-Linux 音声正規化の同一入出力による原音声削除は、`tools/linux-audio/tests/test_audio.py` にある。`tools/linux-audio` を作業ディレクトリにして `uv run --python 3.12 --with pytest python -m pytest -q -k bug_hunt` で再現する。実 ffmpeg を使い、現行コードでは二つのケースが失敗する。実行結果と制約は [測定記録](records/2026-10-04-bug-hunt.md) にある。
+Linux 音声正規化は入力と出力が同一ファイル（シンボリックリンク解決後を含む）なら、出力先を変更する前に拒否し、原音声を保持する。`tools/linux-audio/tests/test_audio.py` は実 ffmpeg を使う同一パス・symlink の境界と、正常変換・変換失敗時の出力処理を検証する。
 
 ### 実 ASR モデルの smoke
 

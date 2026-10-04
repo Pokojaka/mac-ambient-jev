@@ -21,6 +21,8 @@ def normalize_to_wav(
 ) -> pathlib.Path:
     if not source.is_file():
         raise FileNotFoundError(source)
+    if source.resolve() == destination.resolve():
+        raise ValueError("source and destination must be different files")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.unlink(missing_ok=True)
