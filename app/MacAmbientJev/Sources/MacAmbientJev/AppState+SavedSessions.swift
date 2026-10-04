@@ -106,6 +106,46 @@ extension AppState {
         }
     }
 
+    func revealSessionsRoot() {
+        do {
+            NSWorkspace.shared.activateFileViewerSelecting([try existingSessionsRoot()])
+            exportDestinationMessage = nil
+        } catch {
+            exportDestinationMessage = error.localizedDescription
+        }
+    }
+
+    func revealSessionFolder(sessionURL: URL) {
+        do {
+            NSWorkspace.shared.activateFileViewerSelecting([try existingSessionFolder(sessionURL)])
+        } catch {
+            processingStatusText = error.localizedDescription
+        }
+    }
+
+    func existingSessionsRoot() throws -> URL {
+        try Self.existingDirectory(paths.sessionsRoot, missing: .sessionsRootMissing)
+    }
+
+    func existingSessionFolder(_ sessionURL: URL) throws -> URL {
+        guard let summary = savedSessions.first(where: { $0.sessionURL == sessionURL }) else {
+            throw SessionFolderRevealError.notInCatalog(sessionURL.lastPathComponent)
+        }
+        return try Self.existingDirectory(
+            summary.sessionURL,
+            missing: .sessionFolderMissing(summary.sessionURL.lastPathComponent)
+        )
+    }
+
+    private static func existingDirectory(_ url: URL, missing: SessionFolderRevealError) throws -> URL {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw missing
+        }
+        return url
+    }
+
     func exportSavedSession(sessionID: UUID) async {
         guard exportDirectoryPath != nil || chooseExportDirectory(),
               let session = readableSavedSession(sessionID) else {
@@ -203,6 +243,23 @@ extension AppState {
         }
         if let state, sessionExports[sessionID] == nil {
             sessionExports[sessionID] = state
+        }
+    }
+}
+
+enum SessionFolderRevealError: Error, LocalizedError, Equatable {
+    case sessionsRootMissing
+    case sessionFolderMissing(String)
+    case notInCatalog(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .sessionsRootMissing:
+            "録音データのフォルダがまだありません"
+        case .sessionFolderMissing(let name):
+            "録音データのフォルダ「\(name)」が見つかりません"
+        case .notInCatalog(let name):
+            "保存済み録音の一覧にないフォルダ「\(name)」は Finder で表示できません"
         }
     }
 }

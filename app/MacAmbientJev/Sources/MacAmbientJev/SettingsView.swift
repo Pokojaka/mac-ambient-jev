@@ -48,6 +48,18 @@ struct SettingsView: View {
             }
 
             Section("保存先") {
+                LabeledContent("録音データ") {
+                    Text(appState.paths.sessionsRoot.path)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+
+                Button("Finderで表示") {
+                    appState.revealSessionsRoot()
+                }
+
                 LabeledContent("書き出し先") {
                     Text(appState.exportDirectoryPath ?? "未設定")
                         .foregroundStyle(.secondary)

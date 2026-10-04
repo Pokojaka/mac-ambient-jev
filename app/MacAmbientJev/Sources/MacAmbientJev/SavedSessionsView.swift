@@ -14,6 +14,7 @@ struct SavedSessionsView: View {
     let onReprocess: (UUID) -> Void
     let onExport: (UUID) -> Void
     let onRevealExport: (UUID) -> Void
+    let onRevealSessionFolder: (URL) -> Void
 
     var body: some View {
         NavigationSplitView {
@@ -125,6 +126,7 @@ struct SavedSessionsView: View {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+                revealSessionFolderButton(sessionURL)
             }
             Spacer()
         }
@@ -157,6 +159,7 @@ struct SavedSessionsView: View {
                 .foregroundStyle(.secondary)
         }
         exportControls(for: session)
+        revealSessionFolderButton(session.sessionURL)
         switch session.audio {
         case .available:
             if case .corrupted(let reason) = session.processingStatus {
@@ -194,7 +197,7 @@ struct SavedSessionsView: View {
                 Button {
                     onRevealExport(session.sessionID)
                 } label: {
-                    Label("Finderで表示", systemImage: "folder")
+                    Label("書き出し先を Finder で表示", systemImage: "folder")
                 }
                 .help("書き出したフォルダを Finder で表示")
             }
@@ -217,6 +220,15 @@ struct SavedSessionsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func revealSessionFolderButton(_ sessionURL: URL) -> some View {
+        Button {
+            onRevealSessionFolder(sessionURL)
+        } label: {
+            Label("録音データを Finder で表示", systemImage: "externaldrive")
+        }
+        .help("アプリ内に保存している、この録音のフォルダを Finder で表示")
     }
 
     private func exportUnavailableReason(_ session: SavedSession) -> String? {

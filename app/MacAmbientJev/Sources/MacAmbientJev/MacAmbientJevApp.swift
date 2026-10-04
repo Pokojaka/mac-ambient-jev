@@ -328,7 +328,8 @@ private struct SavedSessionsWindow: View {
             },
             onRevealExport: { sessionID in
                 Task { await appState.revealExport(sessionID: sessionID) }
-            }
+            },
+            onRevealSessionFolder: appState.revealSessionFolder(sessionURL:)
         )
         .onAppear(perform: appState.refreshSavedSessions)
     }
