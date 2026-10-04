@@ -50,6 +50,8 @@ VAD の失敗・不正な区間、発話がある場合の話者分離・ASR の
 
 熱状態が critical を下回ると、アプリは保留した要求をキューの先頭に戻して自動再開します。利用者が文字起こし処理を一時停止している場合は再開しません。再開は未完了の ASR 区間だけを続けるのではなく、新しい attempt と run で確定処理全体を実行します。進行中のモデル推論を途中で強制中断するものでも、VAD・話者分離・場面・音響範囲の各処理に区間ごとの熱中断を設けるものでもありません。
 
+`MacAmbientJevProcessRecording` の file import、`--inspect-session`、`--resume-session` の全てで `--sessions-root DIRECTORY` は必須です。CLI は保存場所を暗黙に選ばず、root を検証してからセッション検索・作成・モデル処理を始めます。
+
 CLI は開始時の熱状態が nominal / fair 以外なら開始を拒否します。処理中の critical では `paused` を保存して非 0 終了します。冷却後、`--resume-session` で再開できます。CLI のプロセスが冷却を待って自動再開するわけではありません。
 
 ## 復旧と明示的な再処理

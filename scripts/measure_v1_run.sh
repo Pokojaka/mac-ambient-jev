@@ -25,7 +25,7 @@ done
 if [[ -n "$resume" ]]; then
   [[ -z "$audio" && -n "$root" ]] || { echo "resume requires --sessions-root and no --audio" >&2; exit 2; }
 else
-  [[ -n "$audio" && -z "$root" && "$keep_session" == 1 ]] || { echo "import requires --audio and --keep-session" >&2; exit 2; }
+  [[ -n "$audio" && -n "$root" && "$keep_session" == 1 ]] || { echo "import requires --audio, --sessions-root, and --keep-session" >&2; exit 2; }
 fi
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,7 +49,7 @@ args=(--run-id "$run_id" --metrics-output "$run_dir/engine-metrics.json" --therm
 if [[ -n "$resume" ]]; then
   args+=(--resume-session "$resume" --sessions-root "$root")
 else
-  args+=(--keep-session "$audio")
+  args+=(--sessions-root "$root" --keep-session "$audio")
 fi
 if (( low_heat )); then args+=(--low-heat); fi
 args+=("$output")
@@ -198,7 +198,7 @@ else:
     match = re.search(r'^session_id: (\S+)\s*$', (folder / 'stdout.log').read_text(), re.MULTILINE)
     if match:
         session = match.group(1)
-        directory = session_directory(pathlib.Path.home() / 'Library/Application Support/mac-ambient-jev/sessions', session)
+        directory = session_directory(pathlib.Path(root), session)
 if directory:
     events = directory / 'events.jsonl'
     originals = sorted(p for p in (directory / 'audio').glob('*')

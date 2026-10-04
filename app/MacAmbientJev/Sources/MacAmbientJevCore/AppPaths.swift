@@ -11,6 +11,46 @@ public enum AppPathsError: Error, LocalizedError, Equatable {
     }
 }
 
+public enum SessionsRootPolicy {
+    public enum Error: Swift.Error, LocalizedError, Equatable {
+        case unsafeRoot
+
+        public var errorDescription: String? {
+            "Sessions root must be a directory outside protected application data and cache roots."
+        }
+    }
+
+    public static func validated(
+        _ root: URL,
+        protectedRoots: [URL],
+        fileManager: FileManager
+    ) throws -> URL {
+        func resolve(_ url: URL) -> URL {
+            var ancestor = url.standardizedFileURL
+            var missing: [String] = []
+            while !fileManager.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+                missing.append(ancestor.lastPathComponent)
+                ancestor.deleteLastPathComponent()
+            }
+            var resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL
+            for component in missing.reversed() { resolved.appendPathComponent(component) }
+            return resolved.standardizedFileURL
+        }
+        let selected = resolve(root)
+        for protected in protectedRoots {
+            let a = selected.pathComponents.map { $0.lowercased() }
+            let b = resolve(protected).pathComponents.map { $0.lowercased() }
+            guard !a.starts(with: b), !b.starts(with: a) else { throw Error.unsafeRoot }
+        }
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: selected.path, isDirectory: &isDirectory),
+           !isDirectory.boolValue {
+            throw Error.unsafeRoot
+        }
+        return selected
+    }
+}
+
 public struct AppPaths: Sendable {
     public let applicationSupportURL: URL
     public let cacheURL: URL
@@ -60,5 +100,15 @@ public struct AppPaths: Sendable {
     public var cachesRoot: URL {
         cacheURL
             .appending(path: "mac-ambient-jev", directoryHint: .isDirectory)
+    }
+    public var protectedSessionsRoots: [URL] {
+        let container = applicationSupportURL.deletingLastPathComponent()
+            .appending(path: "Containers/app.mac-ambient-jev/Data/Library")
+        return [
+            root,
+            cachesRoot,
+            container.appending(path: "Application Support/mac-ambient-jev"),
+            container.appending(path: "Caches/mac-ambient-jev")
+        ]
     }
 }

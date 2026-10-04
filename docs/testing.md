@@ -76,7 +76,7 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 ## 共通 Swift の検証
 
-`app/MacAmbientJev/Package.swift` は Linux でも Core と三つの評価 CLI を定義し、macOS 専用の依存・capture・runtime・app target は macOS でだけ追加する。
+`MacAmbientJevEvaluateSession`, `MacAmbientJevEvaluateASR`, and `MacAmbientJevEvaluateDiarization` consume explicit artifact files only; none locate or create saved sessions, so these artifact-only modes do not require `--sessions-root`. Every mode of the capture, file-processing, and live-latency CLIs requires an explicit root that rejects protected app data/cache roots, their ancestors/descendants, and symlink aliases.
 
 ```bash
 swift build --package-path app/MacAmbientJev --product MacAmbientJevEvaluateSession
@@ -93,14 +93,13 @@ bash scripts/verify_portable.sh
 
 ```bash
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
-  "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
+  --sessions-root "$SESSIONS_ROOT" "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
 ```
-
 出力先を省略すると音声と同じディレクトリに `segments.json` を作る。明示的な出力先は入力音声と異なるものにする。シンボリックリンクを解決して同一になる入力・出力は拒否する。通常は処理用セッションを終了時に削除する。調査・復旧・計測に必要な場合だけ `--keep-session` を付ける。
 
 ```bash
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
-  --keep-session --low-heat "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
+  --sessions-root "$SESSIONS_ROOT" --keep-session --low-heat "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
 ```
 
 `--low-heat` は import と resume に対応し、ASR 区間処理の pacing と MLX cache 上限を抑える。通常処理と比較する場合は出力先・セッションを分け、本文と処理状態を確認する。短い fixture の成功だけで長時間のメモリ条件やライブ遅延を合格にしない。
@@ -170,11 +169,12 @@ swift build --package-path app/MacAmbientJev -c release \
 bash scripts/measure_v1_run.sh \
   --id lecture-ja \
   --audio "$AUDIO_FILE" \
+  --sessions-root "$SESSIONS_ROOT" \
   --keep-session --low-heat \
   --output "$SEGMENTS_OUTPUT"
 ```
 
-import は `--audio` と `--keep-session` が必須で、`--sessions-root` は指定しない。resume は `--resume-session` と `--sessions-root` が必須で、`--audio` は指定しない。
+import と resume の両方で `--sessions-root` が必須です。import は `--audio` と `--keep-session` を指定し、resume は `--resume-session` を指定して `--audio` を省略します。
 
 ```bash
 bash scripts/measure_v1_run.sh \

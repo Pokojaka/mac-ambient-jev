@@ -27,6 +27,7 @@
 - 話者 span が負または音声範囲外なら明示エラー。話者間の gap は中点で分割し、独立した UNKNOWN gap 行は作らない。[確定処理](final.md)
 - 確定処理の来歴は run ごとに実際のエンジン・モデル・version・設定を保存し、再処理時に古い run の来歴を流用しない。ライブの認識完了イベントは実エンジンとモデルを保存する。永続 timeline は sample rate・channels・encoding を自ら記述する。[保存形式](storage.md)
 - セッション保存フォルダーは作成時のローカル日時・録音または元ファイル名 stem・UUID 小文字先頭 8 桁。identity は manifest の完全 UUID、読み取りは実 URL と明示検証を使い、名前を再計算しない。欠損・不正・重複 ID はフォルダーごとのエラーとして残し、保存済み一覧は URL で選択する。[保存形式](storage.md)
+- セッション root の既定値を使うのは GUI のみ。セッションを作成・検索する CLI は各モードで安全性検証済みの `--sessions-root` を必須とする。artifact-only 評価 CLI は保存済みセッションを検索しないため root を要求しない。[保存形式](storage.md)・[検証](testing.md)
 - 場面判定は音響のみ。手がかりのない冒頭は講義。Jev はアプリで優先度分類にだけ使い、CLI では無効。[Jev](jev.md)
 - 近接度は音響範囲の判定専用で、話者ごとの固定 profile とする。[Jev](jev.md)
 - Jev の 401/403 はバッチを止めて「API キーの修正が必要」を伝える。利用量が不明な成功は token 数不明として数える。[Jev](jev.md)

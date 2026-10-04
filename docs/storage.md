@@ -6,7 +6,7 @@
 
 ## 保存場所とセッションフォルダー
 
-GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。sandbox 外で動作する CLI の `AppPaths.systemDefault` によるセッション保存先は `~/Library/Application Support/mac-ambient-jev/sessions` です。各 Application Support の mac-ambient-jev 以下に sessions と models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。`AppPaths` は sessions の root を上書きできます。App の設定は UserDefaults / AppStorage、Jev API キーは Keychain にあり、セッション JSON のフィールドではありません。
+GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。全てのセッション CLI は各モードで `--sessions-root DIRECTORY` を必須とし、CLI が既定保存先を選ぶことはありません。非 sandbox の `~/Library/Application Support/mac-ambient-jev/sessions` とその cache、および sandbox 側の app data/cache は CLI の保護対象です。明示 root はこれらの領域と祖先・子孫関係にならず、symlink 経由でも重ならない必要があります。各 Application Support の mac-ambient-jev 以下に sessions と models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。`AppPaths` は sessions の root を上書きできます。App の設定は UserDefaults / AppStorage、Jev API キーは Keychain にあり、セッション JSON のフィールドではありません。
 
 フォルダー名は `YYYY-MM-DD_HH-mm-ss_<stem>_<UUID先頭8桁の小文字hex>` です。作成時に一度取得した日時を、明示した time zone のローカル時刻として Gregorian calendar・`en_US_POSIX` で表します。年は ASCII 4 桁（0001–9999）。アプリと CLI は `.current` を渡します。マイク・システム音声の録音は stem が `録音`、読み込みは元ファイル名の最後の拡張子を除いた stem です。
 

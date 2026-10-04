@@ -63,10 +63,10 @@ Jev の失敗は録音保存やライブ ASR を停止しません。401 / 403 �
 
 `scripts/measure_live_latency.sh` は既存音声を原速で durable timeline へ供給し、ライブ VAD と ASR の更新を計測します。マイク録音や GUI の起動は行いません。Qwen3-ASR と VAD のキャッシュ済みモデルが必要です。
 
-入力音声の絶対パスをシェル変数 AUDIO_FILE に設定して実行します。
+入力音声と明示 root の絶対パスを設定して実行する。`--match-default-input` は検証時に指定しない。
 
 ```bash
-bash scripts/measure_live_latency.sh "$AUDIO_FILE"
+bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FILE"
 ```
 
 指標は「VAD 区間の終了フレームの時刻 → 最初の非空の表示データ更新」です。14 秒分割区間では分割位置が起点です。発話開始からの時間、マイク機器の入力遅延、SwiftUI の描画完了時間は測りません。また、この CLI はアプリの熱制御付きライブキューとは異なり、VAD から ASR を直接呼びます。

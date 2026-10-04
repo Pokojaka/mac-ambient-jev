@@ -44,7 +44,7 @@ private actor ProcessingResultCollector {
 }
 
 enum RecordingInput {
-    case importFile(audio: URL, output: URL, keepSession: Bool, pacing: ASRPacingMode)
+    case importFile(audio: URL, output: URL, root: URL, keepSession: Bool, pacing: ASRPacingMode)
     case inspect(sessionID: UUID, root: URL)
     case resume(sessionID: UUID, root: URL, output: URL, pacing: ASRPacingMode)
 }
@@ -60,6 +60,15 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.invalidArguments
         }
         let input = invocation.input
+        let root: URL
+        switch input {
+        case .importFile(_, _, let value, _, _), .inspect(_, let value), .resume(_, let value, _, _):
+            root = value
+        }
+        let defaults = try AppPaths.systemDefault(fileManager: .default)
+        _ = try SessionsRootPolicy.validated(
+            root, protectedRoots: defaults.protectedSessionsRoots, fileManager: .default
+        )
         let monitor = try invocation.measurement.map { measurement in
             try RunMonitor(
                 runID: measurement.runID,
@@ -139,17 +148,17 @@ struct ProcessRecordingCommand {
         let resumeID = try removeOption("--resume-session", from: &arguments)
         let inspectID = try removeOption("--inspect-session", from: &arguments)
         let rootPath = try removeOption("--sessions-root", from: &arguments)
+        guard let rootPath, !rootPath.isEmpty else { throw ProcessRecordingError.invalidArguments }
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
         guard !arguments.contains(where: { $0.hasPrefix("--") }) else {
             throw ProcessRecordingError.invalidArguments
         }
         if resumeID != nil || inspectID != nil {
-            guard let rootPath,
-                  (resumeID == nil) != (inspectID == nil),
+            guard (resumeID == nil) != (inspectID == nil),
                   !keepSession,
                   let id = UUID(uuidString: resumeID ?? inspectID ?? "") else {
                 throw ProcessRecordingError.invalidArguments
             }
-            let root = URL(fileURLWithPath: rootPath).standardizedFileURL
             if inspectID != nil {
                 guard !measured, pacingMode == .normal, arguments.isEmpty else {
                     throw ProcessRecordingError.invalidArguments
@@ -161,7 +170,6 @@ struct ProcessRecordingCommand {
                 return .resume(sessionID: id, root: root, output: output, pacing: pacingMode)
             }
         }
-        guard rootPath == nil else { throw ProcessRecordingError.invalidArguments }
         guard arguments.count == 1 || arguments.count == 2 else {
             throw ProcessRecordingError.invalidArguments
         }
@@ -174,7 +182,8 @@ struct ProcessRecordingCommand {
             == outputURL.resolvingSymlinksInPath().standardizedFileURL {
             throw ProcessRecordingError.invalidArguments
         }
-        return .importFile(audio: audioURL, output: outputURL, keepSession: keepSession, pacing: pacingMode)
+        return .importFile(audio: audioURL, output: outputURL, root: root,
+                           keepSession: keepSession, pacing: pacingMode)
     }
 
     private static func execute(input: RecordingInput, monitor: RunMonitor?) async throws -> SessionProcessingResult {
@@ -183,16 +192,12 @@ struct ProcessRecordingCommand {
             try inspect(sessionID: id, root: root)
             return .completed(metrics: nil, noSpeech: false)
         case .resume(let id, let root, let output, let pacingMode):
-            return try await resume(
-                sessionID: id, root: root, outputURL: output,
-                pacingMode: pacingMode, monitor: monitor
-            )
-        case .importFile(let audioURL, let outputURL, let keepSession, let pacingMode):
+            return try await resume(sessionID: id, root: root, outputURL: output,
+                                    pacingMode: pacingMode, monitor: monitor)
+        case .importFile(let audioURL, let outputURL, let root, let keepSession, let pacingMode):
             try checkStart(pacingMode: pacingMode)
-            return try await importFile(
-                audioURL: audioURL, outputURL: outputURL,
-                keepSession: keepSession, pacingMode: pacingMode, monitor: monitor
-            )
+            return try await importFile(audioURL: audioURL, outputURL: outputURL, root: root,
+                                        keepSession: keepSession, pacingMode: pacingMode, monitor: monitor)
         }
     }
 
@@ -209,6 +214,7 @@ struct ProcessRecordingCommand {
     private static func importFile(
         audioURL: URL,
         outputURL: URL,
+        root: URL,
         keepSession: Bool,
         pacingMode: ASRPacingMode,
         monitor: RunMonitor?
@@ -217,7 +223,9 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.audioFileNotFound(audioURL.path)
         }
 
-        let paths = try AppPaths.systemDefault(fileManager: .default)
+        let defaults = try AppPaths.systemDefault(fileManager: .default)
+        let paths = AppPaths(applicationSupportURL: defaults.applicationSupportURL,
+                             cacheURL: defaults.cacheURL, sessionsRootOverride: root)
         let sessionID = UUID()
         let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
             paths: paths,
@@ -454,7 +462,7 @@ struct ProcessRecordingCommand {
         FileHandle.standardError.write(Data(
             """
             使い方:
-              MacAmbientJevProcessRecording [--keep-session] [--low-heat] <audio-file> [segments.json]
+              MacAmbientJevProcessRecording --sessions-root <path> [--keep-session] [--low-heat] <audio-file> [segments.json]
               MacAmbientJevProcessRecording --inspect-session <UUID> --sessions-root <path>
               MacAmbientJevProcessRecording --resume-session <UUID> --sessions-root <path> [--low-heat] <segments.json>
               UUID は session.json の完全 ID。保存 root 直下の実フォルダーを検索します。

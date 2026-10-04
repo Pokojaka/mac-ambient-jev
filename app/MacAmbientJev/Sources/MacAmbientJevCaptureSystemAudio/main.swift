@@ -73,17 +73,12 @@ struct CaptureSystemAudioOptions {
         }
         guard let duration, let root else { throw CaptureSystemAudioError.usage }
 
-        // Reject aliases as well as lexical paths. Both nesting inside app data and
-        // an ancestor of app data would allow this tool to modify production files.
-        let selected = resolvedRoot(root)
-        let appData = resolvedRoot(appPaths.root)
-        let cacheData = resolvedRoot(appPaths.cachesRoot)
-        guard !overlaps(selected, appData), !overlaps(selected, cacheData) else {
-            throw CaptureSystemAudioError.unsafeSessionsRoot
-        }
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: selected.path, isDirectory: &isDirectory),
-           !isDirectory.boolValue {
+        let selected: URL
+        do {
+            selected = try SessionsRootPolicy.validated(
+                root, protectedRoots: appPaths.protectedSessionsRoots, fileManager: .default
+            )
+        } catch {
             throw CaptureSystemAudioError.unsafeSessionsRoot
         }
         return CaptureSystemAudioOptions(
@@ -92,27 +87,6 @@ struct CaptureSystemAudioOptions {
         )
     }
 
-    /// Foundation cannot resolve a symlink when a new session subdirectory
-    /// after it does not exist yet; resolve the closest existing ancestor.
-    private static func resolvedRoot(_ root: URL) -> URL {
-        var ancestor = root
-        var missing: [String] = []
-        while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
-            missing.append(ancestor.lastPathComponent)
-            ancestor.deleteLastPathComponent()
-        }
-        var resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL
-        for component in missing.reversed() {
-            resolved.appendPathComponent(component)
-        }
-        return resolved.standardizedFileURL
-    }
-
-    private static func overlaps(_ first: URL, _ second: URL) -> Bool {
-        let a = first.pathComponents.map { $0.lowercased() }
-        let b = second.pathComponents.map { $0.lowercased() }
-        return a.starts(with: b) || b.starts(with: a)
-    }
 }
 
 private struct CaptureSummary: Encodable {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -lt 1 ]]; then
-  printf 'usage: %s [--sample-rate HZ] [--channels COUNT] [--match-default-input] <existing-audio-file>\n' "$0" >&2
+if [[ "$#" -lt 3 || "$1" != "--sessions-root" || -z "$2" ]]; then
+  printf 'usage: %s --sessions-root DIRECTORY [--sample-rate HZ] [--channels COUNT] [--match-default-input] <existing-audio-file>\n' "$0" >&2
   exit 2
 fi
 

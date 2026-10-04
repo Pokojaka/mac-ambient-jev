@@ -2,7 +2,6 @@
 """Exercise shell scripts' actual artifact Python without processing or capture."""
 import ast
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -34,9 +33,6 @@ class ArtifactTests(unittest.TestCase):
         self.sessions.mkdir()
         self.log = self.root / "stdout.log"
         self.log.write_text("")
-        default_root = self.root / "Library/Application Support/mac-ambient-jev/sessions"
-        default_root.parent.mkdir(parents=True)
-        default_root.symlink_to(self.sessions, target_is_directory=True)
 
     def session(self, name=NAME, **changes):
         folder = self.sessions / name
@@ -59,9 +55,7 @@ class ArtifactTests(unittest.TestCase):
         code += f"folder=pathlib.Path({str(self.root)!r}); exit_code='7'; root={str(self.sessions)!r}; resume={resume!r}; audio=''\n"
         code += ast.unparse(ast.Module(body=nodes, type_ignores=[]))
         code += "\nprint(json.dumps({'directory':str(directory) if directory else None,'events':str(events) if events else None,'audio':audio}))\n"
-        environment = os.environ.copy()
-        environment["HOME"] = str(self.root)
-        return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=environment)
+        return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     def capture(self, folder, identity=IDENTITY):
         summary = self.root / "summary.json"

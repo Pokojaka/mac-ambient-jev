@@ -15,7 +15,7 @@ enum ReplayError: LocalizedError {
         switch self {
         case .usage:
             """
-            usage: MacAmbientJevMeasureLiveLatency [--sample-rate HZ] [--channels COUNT] [--match-default-input] <existing-audio-file>
+            usage: MacAmbientJevMeasureLiveLatency --sessions-root DIRECTORY [--sample-rate HZ] [--channels COUNT] [--match-default-input] <existing-audio-file>
               Default: preserve the file's processing sample rate and channel count.
               --match-default-input: read the default input device's activeFormat only; no capture starts.
             """
@@ -28,17 +28,26 @@ enum ReplayError: LocalizedError {
 
 struct Options {
     let sourceURL: URL
+    let sessionsRoot: URL
     var sampleRate: Double?
     var channelCount: Int?
     var matchDefaultInput = false
-
     static func parse(_ arguments: [String]) throws -> Options {
-        var result = Options(sourceURL: URL(fileURLWithPath: "/"))
+        var result = Options(sourceURL: URL(fileURLWithPath: "/"),
+                             sessionsRoot: URL(fileURLWithPath: "/"))
         var positional: [String] = []
+        var root: String?
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
             switch argument {
+            case "--sessions-root":
+                guard root == nil, index + 1 < arguments.count,
+                      !arguments[index + 1].isEmpty, !arguments[index + 1].hasPrefix("-") else {
+                    throw ReplayError.usage
+                }
+                root = arguments[index + 1]
+                index += 1
             case "--sample-rate":
                 index += 1
                 guard index < arguments.count, let value = Double(arguments[index]),
@@ -63,16 +72,14 @@ struct Options {
             }
             index += 1
         }
-        guard positional.count == 1,
+        guard let root, positional.count == 1,
               !(result.matchDefaultInput && (result.sampleRate != nil || result.channelCount != nil)) else {
             throw ReplayError.usage
         }
-        result = Options(
-            sourceURL: URL(fileURLWithPath: positional[0]).standardizedFileURL,
-            sampleRate: result.sampleRate,
-            channelCount: result.channelCount,
-            matchDefaultInput: result.matchDefaultInput
-        )
+        result = Options(sourceURL: URL(fileURLWithPath: positional[0]).standardizedFileURL,
+                         sessionsRoot: URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL,
+                         sampleRate: result.sampleRate, channelCount: result.channelCount,
+                         matchDefaultInput: result.matchDefaultInput)
         return result
     }
 }
@@ -172,6 +179,10 @@ struct MeasureLiveLatencyCommand {
     private static func run() async throws {
         let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
         let paths = try AppPaths.systemDefault(fileManager: .default)
+        let sessionsRoot = try SessionsRootPolicy.validated(
+            options.sessionsRoot, protectedRoots: paths.protectedSessionsRoots,
+            fileManager: .default
+        )
         let fileManager = FileManager.default
         let qwenDirectory = ModelStore(paths: paths).qwen3ASRCacheRoot
         guard fileManager.fileExists(atPath: qwenDirectory.appending(path: "model.safetensors").path) else {
@@ -196,8 +207,6 @@ struct MeasureLiveLatencyCommand {
         let sourceDuration = Double(sourceFile.length) / sourceFormat.sampleRate
 
         let sessionID = UUID()
-        let sessionsRoot = fileManager.temporaryDirectory
-            .appending(path: "mac-ambient-jev-live-latency-\(UUID().uuidString)", directoryHint: .isDirectory)
         let replayPaths = AppPaths(
             applicationSupportURL: paths.applicationSupportURL,
             cacheURL: paths.cacheURL,
@@ -406,7 +415,7 @@ struct MeasureLiveLatencyCommand {
         let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
         do {
-            try fileManager.removeItem(at: sessionsRoot)
+            try fileManager.removeItem(at: sessionDirectory)
         } catch {
             FileHandle.standardError.write(
                 Data("一時セッションを削除できませんでした: \(error.localizedDescription)\n".utf8)

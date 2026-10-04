@@ -25,12 +25,14 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
         ["--resume-session", session_id, "--resume-session", session_id, "--sessions-root", str(sessions), str(output)],
         ["--resume-session", session_id, "--sessions-root", str(sessions), "--keep-session", str(output)],
         ["--resume-session", "--sessions-root", str(sessions), str(output)],
-        ["--unexpected", "audio.wav", str(output)],
-        ["--low-heat", "--low-heat", "audio.wav", str(output)],
-        ["--run-id", "incomplete", "--metrics-output", str(metrics), "audio.wav", str(output)],
+        ["--sessions-root", str(sessions), "--unexpected", "audio.wav", str(output)],
+        ["--sessions-root", str(sessions), "--low-heat", "--low-heat", "audio.wav", str(output)],
+        ["--sessions-root", str(sessions), "--run-id", "incomplete", "--metrics-output", str(metrics), "audio.wav", str(output)],
         ["--run-id", "inspect", "--metrics-output", str(metrics),
          "--thermal-output", str(thermal), "--memory-output", str(memory),
          "--inspect-session", session_id, "--sessions-root", str(sessions)],
+        ["--inspect-session", session_id],
+        ["--inspect-session", session_id, "--sessions-root", str(pathlib.Path.home() / "Library/Application Support/mac-ambient-jev")],
     ]
     for arguments in invalid:
         result = subprocess.run([str(binary), *arguments], capture_output=True)
