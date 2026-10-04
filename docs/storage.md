@@ -54,11 +54,9 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 1. processing ディレクトリの checkpoint と PCM を検証します。長さ 0 の録音は変換対象にならず `recordingPCM` のままです（`audioSource` が nil で、変換は予定されません）。
 2. 古い `recording.flac.partial` を削除し、`recording.flac.partial` へ FLAC を書いて synchronize します。
-3. partial を復号し、全 sample が PCM の 16-bit 量子化と完全に一致し、長さが PCM と一致することを確認します。
+3. partial を復号し、全 sample が PCM の 16-bit 量子化と完全に一致し、復号した長さが max(録音の長さ, 4,096) フレームで、埋めたフレームが全て 0 であることを確認します。
 4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
 5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
-
-符号化は ExtAudioFile で、ブロックは 4,096 フレーム固定です。Apple の FLAC エンコーダは 1 ブロック分を書くまで音声を出力しないため、4,096 フレーム未満の録音は末尾を 0 で 4,096 フレームまで埋めます。`storage.json` の `committedFrames` が録音の長さで、読み出しはその範囲だけです。検証は埋めたフレームが全て 0 であることも確かめます。長さ 0 の録音は変換対象にならず `recordingPCM` のままです。
 
 どの時点で中断しても、再実行は `storage.json` を見て同じ終状態に収束します。`recordingPCM` のまま `recording.flac` が残っていれば、PCM と完全一致する場合だけ採用し、不一致や破損なら削除して PCM から作り直します。`recordingFLAC` では FLAC を全復号して検証し、失敗すれば PCM に触れずエラーにします。`importedOriginal` は変換対象外です。
 

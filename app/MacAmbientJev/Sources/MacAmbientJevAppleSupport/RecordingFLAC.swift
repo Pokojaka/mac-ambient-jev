@@ -59,7 +59,7 @@ public enum RecordingFLAC {
             "ExtAudioFileCreateWithURL"
         )
         guard let file else {
-            throw RecordingFLACError.audioToolbox(operation: "ExtAudioFileCreateWithURL", status: kAudio_ParamError)
+            throw RecordingFLACError.audioToolbox(operation: "ExtAudioFileCreateWithURL returned no file", status: noErr)
         }
         do {
             var client = AudioStreamBasicDescription(

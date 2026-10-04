@@ -278,12 +278,12 @@ func aHalfDeletedPCMDirectoryUnderFLACStateIsFinishedOff() async throws {
     try expectConverged(layout, info: info, samples: recordedSamples)
 }
 
-enum Damage: CaseIterable {
+private enum Damage: CaseIterable {
     case truncated, extraFrames, missing, garbage
 }
 
 @Test(arguments: Damage.allCases)
-func anInvalidFLACUnderFLACStateFailsWithoutTouchingPCM(damage: Damage) async throws {
+private func anInvalidFLACUnderFLACStateFailsWithoutTouchingPCM(damage: Damage) async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
     let checkpoint = try await recordPCM(layout)
