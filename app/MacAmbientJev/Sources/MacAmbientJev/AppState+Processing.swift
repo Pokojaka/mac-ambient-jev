@@ -410,12 +410,11 @@ extension AppState {
                 }
             }
 
-            if let firstFailure = scan.failures.first {
-                processingStatusText =
-                    "復旧できないセッションがあります（\(scan.failures.count)件）: \(firstFailure.message)"
-                transcriptViewModel.setStatus(
-                    "復旧できないセッションがあります（\(scan.failures.count)件）"
-                )
+            if !scan.failures.isEmpty {
+                let message =
+                    "復旧できないセッションが\(scan.failures.count)件あります。詳細は「保存済み録音」で確認できます"
+                if candidates.isEmpty { processingState = .partialFailure(message) }
+                processingStatusText = message
             }
         } catch {
             processingState = .partialFailure(error.localizedDescription)
