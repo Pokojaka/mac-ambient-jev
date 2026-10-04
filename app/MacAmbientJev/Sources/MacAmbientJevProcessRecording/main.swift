@@ -457,6 +457,8 @@ struct ProcessRecordingCommand {
               MacAmbientJevProcessRecording [--keep-session] [--low-heat] <audio-file> [segments.json]
               MacAmbientJevProcessRecording --inspect-session <UUID> --sessions-root <path>
               MacAmbientJevProcessRecording --resume-session <UUID> --sessions-root <path> [--low-heat] <segments.json>
+              UUID は session.json の完全 ID。保存 root 直下の実フォルダーを検索します。
+              resume の出力先は解決したセッションフォルダーの外に指定してください。
 
             計測時は import または resume に --run-id、--metrics-output、
             --thermal-output、--memory-output を全て指定してください。

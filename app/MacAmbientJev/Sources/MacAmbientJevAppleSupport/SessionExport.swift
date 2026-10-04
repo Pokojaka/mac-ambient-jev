@@ -83,6 +83,7 @@ public struct SessionExporter: Sendable {
 
     /// Writes into a hidden sibling first so an interrupted export never leaves
     /// a half-written folder under the final name.
+    @discardableResult
     public func export(session: SavedSession, to directory: URL) throws -> URL {
         guard let audioSource = session.audioSource else { throw SessionExportError.audioUnavailable }
         if case .corrupted(let reason) = session.processingStatus {

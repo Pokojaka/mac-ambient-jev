@@ -6,6 +6,7 @@ PACKAGE="$ROOT/app/MacAmbientJev"
 
 python3 "$ROOT/scripts/test_doc_references.py"
 python3 "$ROOT/scripts/check_doc_references.py" "$ROOT"
+python3 "$ROOT/scripts/test_session_artifacts.py"
 
 if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
   : "${ASR_SMOKE_AUDIO:?RUN_MODEL_TESTS=1 requires ASR_SMOKE_AUDIO to name an absolute WAV file}"

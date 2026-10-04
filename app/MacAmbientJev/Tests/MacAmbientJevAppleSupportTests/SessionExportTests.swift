@@ -123,9 +123,24 @@ func exporterCopiesImportedOriginalByteForByte(withDerivedTimeline: Bool) async 
 func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
+    let wav = fixture.root.appending(path: "boundary.wav")
+    do {
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: fixtureSampleRate, channels: 1))
+        let file = try AVAudioFile(forWriting: wav, settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: fixtureSampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+        ])
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_600))
+        buffer.frameLength = 1_600
+        try file.write(from: buffer)
+        file.close()
+    }
+    let original = try Data(contentsOf: wav)
     let session = try await fixture.writeImportedSession(
         originalFilename: String(repeating: "a", count: 300) + ".wav",
-        originalBytes: Data("fixture-audio".utf8),
+        originalBytes: original,
         withDerivedTimeline: false
     )
 
@@ -133,7 +148,7 @@ func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
 
     #expect(folder.lastPathComponent == session.sessionURL.lastPathComponent)
     #expect(folder.lastPathComponent.utf8.count == 255)
-    #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == Data("fixture-audio".utf8))
+    #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == original)
     #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
         == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path)

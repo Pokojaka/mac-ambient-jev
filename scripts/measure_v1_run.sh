@@ -62,7 +62,7 @@ set -e
 finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 python3 - "$repo" "$run_dir" "$id" "$run_id" "$audio" "$resume" "$root" "$output" "$started" "$finished" "$exit_code" "$available_bytes" "${args[@]}" <<'PY'
-import datetime, hashlib, json, pathlib, platform, re, statistics, subprocess, sys, shutil, uuid
+import datetime, hashlib, json, pathlib, platform, re, statistics, subprocess, sys, shutil, unicodedata, uuid
 repo, folder, recording, run, audio, resume, root, output, started, finished, exit_code, disk_before, *args = sys.argv[1:]
 folder = pathlib.Path(folder)
 def command(*argv):
@@ -129,9 +129,15 @@ if len(asr_timed) >= 96 and (asr_timed[-1][0] - asr_timed[0][0]).total_seconds()
             memory_verdict = 'VERIFIED' if growth <= 512 and peak <= 12 * 1024**3 else 'FAILED'
 if growth is None: reason['memory_growth_mb'] = 'two nonoverlapping five-minute ASR windows with 48 samples each are required'
 def session_directory(sessions_root, session_id):
-    identity = uuid.UUID(session_id)
+    try:
+        if not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', session_id):
+            raise ValueError('expected a full UUID')
+        identity = uuid.UUID(session_id)
+        directories = sorted(sessions_root.iterdir())
+    except (OSError, ValueError) as error:
+        fail(f'cannot discover session {session_id}: {error}')
     matches = []
-    for directory in sorted(sessions_root.iterdir()):
+    for directory in directories:
         if not directory.is_dir(): continue
         try:
             manifest = json.loads((directory / 'session.json').read_text())
@@ -139,23 +145,66 @@ def session_directory(sessions_root, session_id):
             decoded_id = uuid.UUID(manifest['session_id'])
         except (OSError, ValueError):
             continue
-        if decoded_id == identity: matches.append(directory)
+        if decoded_id == identity: matches.append((directory, manifest))
     if len(matches) != 1:
-        fail(f'session {identity} has {len(matches)} matching folders: {[p.name for p in matches]}')
-    return matches[0]
+        fail(f'session {identity} has {len(matches)} matching folders: {[p.name for p, _ in matches]}')
+    directory, manifest = matches[0]
+    try:
+        name = directory.name
+        if len(name.encode('utf-8')) > 255 or '\0' in name or '/' in name or ':' in name:
+            raise ValueError('illegal folder name or UTF-8 byte limit')
+        parsed = re.fullmatch(r'([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})_(.+)_([0-9a-f]{8})', name)
+        if not parsed: raise ValueError('invalid folder grammar')
+        timestamp, stem, suffix = parsed.groups()
+        datetime.datetime.strptime(timestamp, '%Y-%m-%d_%H-%M-%S')
+        if suffix != str(identity)[:8]: raise ValueError('UUID suffix mismatch')
+        if manifest['source_kind'] == 'recording':
+            if manifest['capture_source'] not in ('microphone', 'systemAudio'):
+                raise ValueError('invalid capture source')
+            original_stem = '録音'
+        elif manifest['source_kind'] == 'imported':
+            filename = manifest['original_filename']
+            if not isinstance(filename, str) or not filename or '\0' in filename:
+                raise ValueError('invalid original filename')
+            dot = filename.rfind('.')
+            original_stem = filename[:dot] if dot > 0 else filename
+        else:
+            raise ValueError('invalid source kind')
+        sanitized = original_stem.replace('/', '-').replace(':', '-')
+        if sanitized.startswith('.'): sanitized = '-' + sanitized[1:]
+        # Extended grapheme clusters preserve Swift Character truncation boundaries.
+        try:
+            import regex
+        except ImportError as error:
+            fail(f'folder validation requires the Python regex package: {error}')
+        expected = ''
+        byte_count = 0
+        for character in regex.findall(r'\X', sanitized):
+            size = len(character.encode('utf-8'))
+            if byte_count + size > 226: break
+            expected += character
+            byte_count += size
+        if not expected or unicodedata.normalize('NFC', stem) != unicodedata.normalize('NFC', expected):
+            raise ValueError('source stem mismatch')
+    except (KeyError, TypeError, ValueError) as error:
+        fail(f'invalid matching session folder {directory}: {error}')
+    return directory
 events = None
+directory = None
 session = resume
 if resume:
     directory = session_directory(pathlib.Path(root), resume)
-    events = directory / 'events.jsonl'
-    original = list((directory / 'audio').glob('original.*'))
-    if original: audio = str(original[0])
 else:
-    match = re.search(r'session_id: ([A-F0-9-]+)', (folder / 'stdout.log').read_text())
+    match = re.search(r'^session_id: (\S+)\s*$', (folder / 'stdout.log').read_text(), re.MULTILINE)
     if match:
         session = match.group(1)
         directory = session_directory(pathlib.Path.home() / 'Library/Application Support/mac-ambient-jev/sessions', session)
-        events = directory / 'events.jsonl'
+if directory:
+    events = directory / 'events.jsonl'
+    originals = sorted(p for p in (directory / 'audio').glob('*')
+                       if p.is_file() and (p.name == 'original' or p.name.startswith('original.')))
+    if len(originals) > 1: fail(f'session {session} has multiple original audio files: {[p.name for p in originals]}')
+    if originals: audio = str(originals[0])
 duration = None
 if audio:
     probe = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',audio], capture_output=True, text=True)
@@ -172,7 +221,7 @@ if events and events.exists():
     except ValueError as error: reason['event_log'] = str(error)
 else:
     reason['event_log'] = 'no session event log was found'
-session_dir = events.parent if events else None
+session_dir = directory
 metadata = session_dir / 'processing_metadata.json' if session_dir else None
 checkpoint = session_dir / 'audio/processing/checkpoint.json' if session_dir else None
 active_runs = {}

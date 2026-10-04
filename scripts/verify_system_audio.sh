@@ -105,14 +105,19 @@ assert summary.get('errors') == [], summary
 assert summary.get('permission') in ('authorized', 'granted-now'), summary
 session_id = summary['session_id']
 assert isinstance(session_id, str) and str(uuid.UUID(session_id)) == session_id.lower(), summary
-session = pathlib.Path(summary['path']).resolve()
-assert session.parent == pathlib.Path(sys.argv[4]).resolve(), session
+session_path = pathlib.Path(summary['path'])
+assert session_path.is_absolute(), session_path
+session = session_path.resolve()
+assert session.is_dir() and session.parent == pathlib.Path(sys.argv[4]).resolve(), session
 manifest = json.loads((session / 'session.json').read_text())
+assert isinstance(manifest, dict), manifest
+assert isinstance(manifest['session_id'], str) and str(uuid.UUID(manifest['session_id'])) == manifest['session_id'].lower(), manifest
 assert uuid.UUID(manifest['session_id']) == uuid.UUID(session_id), manifest
 assert manifest['source_kind'] == 'recording' and manifest['capture_source'] == 'systemAudio', manifest
+assert len(session.name.encode('utf-8')) <= 255, session
 assert re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}_録音_[0-9a-f]{8}', session.name), session
 datetime.datetime.strptime(session.name[:19], '%Y-%m-%d_%H-%M-%S')
-assert session.name[-8:] == session_id[:8].lower(), session
+assert session.name[-8:] == str(uuid.UUID(session_id))[:8], session
 rate = summary['sample_rate']
 frames = summary['frames_written']
 assert type(rate) in (int, float) and math.isfinite(rate) and rate > 0, summary

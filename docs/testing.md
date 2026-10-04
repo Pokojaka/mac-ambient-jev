@@ -14,9 +14,10 @@ python3 scripts/check_doc_references.py
 `verify_v1.sh` は次を行う。
 
 1. ドキュメント参照 checker の自己テストと参照検査を実行する。
+   `scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。Python の `regex` package が必要。
 2. SwiftPM の依存を解決し、package を build する。
 3. `RUN_MODEL_TESTS` を外して通常の Swift test を実行する。
-4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力を拒否することを確認する。
+4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、named folder の inspect、resume 出力先の containment を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
 6. モデル検証を指定した場合は Runtime test bundle を実行する。
 7. `scripts/build_app.sh` で app bundle を作り、MLX Metal shader library と、利用者が選んだファイルへの read/write・app-scope bookmark entitlement を確認する。
@@ -115,7 +116,7 @@ resume は音声ファイルではなく対象 UUID と、セッション外の�
 
 ### 不正入力の smoke
 
-`scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行する。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認する。実モデルの正常推論とは別の検査である。
+`scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行する。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認する。さらに実 named folder で inspect の正常・不在・完全 UUID の重複・同じ先頭 8 桁の別 ID・名前/日時/suffix/stem の不整合を検証し、実セッション内（symlink・大文字小文字の違いを含む）への resume 出力を拒否して原ファイルが変わらないことを確認する。実モデルの正常推論とは別の検査である。
 
 ## セッションの CER と場面振動数
 
@@ -146,7 +147,9 @@ Linux runner の全音声一つの ASR artifact には `MacAmbientJevEvaluateASR
 
 `scripts/measure_v1_run.sh` は release CLI を使い、音声 import または保存済みセッションの resume を一回計測する。事前に release product を build する。必要空き容量は 4 GiB 以上。
 
-計測後の event log は manifest の完全 UUID を検索して実フォルダーから読みます。ID 不在・複数一致は計測レポート作成のエラーです。システム音声検証スクリプトも summary の実 path、manifest identity、保存フォルダー名を検査します。
+計測後は root 直下の manifest の完全 UUID を正規化して検索し、ちょうど一つの実フォルダーを解決します。ID 不在・複数一致・一致したフォルダーの名前/日時/suffix/source stem の不整合は明示エラーです。stem の Swift Character 境界での切り詰めを検査するため、実行する `python3` に `regex` package が必要です（`python3 -m pip install regex`）。日時は `created_at` から再計算しません。events、metadata、checkpoint、original は同じ解決済みフォルダーから読み、original が複数なら失敗します。import がセッション作成前に失敗して stdout に ID がない場合は、セッションの欠測理由を残します。ID がある場合は lookup の失敗を欠測扱いにしません。
+
+`scripts/test_session_artifacts.py` は shell script 内の実 artifact Python を抽出して合成セッションで実行し、成功・不在・重複・不正 suffix/stem・合成文字の切り詰め・original の重複を検査します。capture summary の実 path が指定 root 直下であること、完全 UUID、systemAudio source、録音フォルダー名も検査します。capture/playback 部分は実行せず、実音声・権限・GUI の検証根拠にはなりません。単独実行は `python3 scripts/test_session_artifacts.py` です。
 
 ```bash
 swift build --package-path app/MacAmbientJev -c release \
