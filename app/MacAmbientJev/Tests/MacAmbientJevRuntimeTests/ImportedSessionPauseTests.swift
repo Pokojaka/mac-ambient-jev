@@ -81,7 +81,6 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     )
     let paused = await processor.processSession(
         sessionID: sessionID,
-        source: .importedOriginal(sourceURL, timeline: nil),
         pacingMode: .normal,
         shouldPause: { true },
         onPhase: { _ in },
@@ -100,14 +99,14 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery
     #expect(candidate?.action == .finalize)
-    guard case .importedOriginal(let originalURL, _) = candidate?.source else {
+    guard let candidate,
+          case .importedOriginal = try SessionLayout(sessionURL: sessionURL).audioSource(for: candidate.manifest) else {
         Issue.record("a paused import resumes from its original")
         return
     }
 
     let resumed = await processor.processSession(
         sessionID: sessionID,
-        source: .importedOriginal(originalURL, timeline: nil),
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { _ in },

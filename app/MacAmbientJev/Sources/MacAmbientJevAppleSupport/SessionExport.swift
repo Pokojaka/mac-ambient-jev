@@ -88,12 +88,14 @@ public struct SessionExporter: Sendable {
     /// a half-written folder under the final name.
     @discardableResult
     public func export(session: SavedSession, to directory: URL) throws -> URL {
-        guard let audioSource = session.audioSource else { throw SessionExportError.audioUnavailable }
         if case .corrupted(let reason) = session.processingStatus {
             throw SessionExportError.transcriptCorrupted(reason)
         }
 
         let layout = SessionLayout(sessionURL: session.sessionURL)
+        guard let audioSource = try layout.audioSource(for: layout.loadManifest()) else {
+            throw SessionExportError.audioUnavailable
+        }
         guard case .segments(let segments) = try SavedTranscriptLoader.load(
             sessionURL: layout.sessionURL,
             audioSource: audioSource

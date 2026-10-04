@@ -5,6 +5,7 @@ import MacAmbientJevAppleSupport
 enum NativeSessionProcessorError: LocalizedError {
     case liveASRSessionNotStarted
     case transcriptNotPublished
+    case storedAudioMissing
 
     var errorDescription: String? {
         switch self {
@@ -12,8 +13,17 @@ enum NativeSessionProcessorError: LocalizedError {
             "録音中の文字起こしセッションが開始されていません"
         case .transcriptNotPublished:
             "確定済みの文字起こし run がありません"
+        case .storedAudioMissing:
+            "保存済みの音声がありません"
         }
     }
+}
+
+/// Where a finalization gets its audio: the checkpoint of a recording that just finished, or
+/// whatever `storage.json` names at the moment finalization begins.
+private enum FinalizationAudio {
+    case live(AudioCheckpoint)
+    case stored
 }
 
 private struct JevEnrichmentOutcome: Sendable {
@@ -366,7 +376,7 @@ public actor NativeSessionProcessor {
             onPhase: onPhase,
             onStatus: onStatus,
             onUpdate: onUpdate,
-            source: .recordedPCM(checkpoint)
+            audio: .live(checkpoint)
         )
     }
 
@@ -376,7 +386,6 @@ public actor NativeSessionProcessor {
     @discardableResult
     public func processSession(
         sessionID: UUID,
-        source: SessionAudioSource,
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
@@ -393,7 +402,7 @@ public actor NativeSessionProcessor {
             onPhase: onPhase,
             onStatus: onStatus,
             onUpdate: onUpdate,
-            source: source
+            audio: .stored
         )
     }
 
@@ -497,7 +506,7 @@ public actor NativeSessionProcessor {
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler,
-        source: SessionAudioSource
+        audio: FinalizationAudio
     ) async -> SessionProcessingResult {
         await stopLiveContentPriority(sessionID: sessionID)
         let sessionLayout: SessionLayout
@@ -507,6 +516,25 @@ public actor NativeSessionProcessor {
             manifest = try sessionLayout.loadManifest()
         } catch {
             return await startFailure(error, provisional: provisional, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate)
+        }
+        let source: SessionAudioSource
+        switch audio {
+        case .live(let checkpoint):
+            source = .recordedPCM(checkpoint)
+        case .stored:
+            do {
+                guard let stored = try sessionLayout.audioSource(for: manifest) else {
+                    throw NativeSessionProcessorError.storedAudioMissing
+                }
+                source = stored
+            } catch {
+                let failed = await startFailure(
+                    error, provisional: provisional, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
+                )
+                return await closeStorage(
+                    failed, layout: sessionLayout, manifest: manifest, compactsRecording: false, onStatus: onStatus
+                )
+            }
         }
         let attemptID = "finalize_\(UUID().uuidString.lowercased())"
         let previous: ProcessingMetadata?
@@ -518,7 +546,7 @@ public actor NativeSessionProcessor {
                 error, provisional: provisional, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
             )
             return await closeStorage(
-                failed, layout: sessionLayout, manifest: manifest, source: source, onStatus: onStatus
+                failed, layout: sessionLayout, manifest: manifest, compactsRecording: false, onStatus: onStatus
             )
         }
         let result = await runAttempt(
@@ -534,8 +562,14 @@ public actor NativeSessionProcessor {
             onUpdate: onUpdate,
             source: source
         )
+        let compactsRecording: Bool
+        if case .recordedPCM = source {
+            compactsRecording = true
+        } else {
+            compactsRecording = false
+        }
         return await closeStorage(
-            result, layout: sessionLayout, manifest: manifest, source: source, onStatus: onStatus
+            result, layout: sessionLayout, manifest: manifest, compactsRecording: compactsRecording, onStatus: onStatus
         )
     }
 
@@ -561,11 +595,11 @@ public actor NativeSessionProcessor {
         _ attempt: SessionProcessingResult,
         layout: SessionLayout,
         manifest: SessionManifest,
-        source: SessionAudioSource,
+        compactsRecording: Bool,
         onStatus: StatusHandler
     ) async -> SessionProcessingResult {
         var result = attempt
-        if result.disposition == .completed, case .recordedPCM = source {
+        if result.disposition == .completed, compactsRecording {
             do {
                 _ = try await Task.detached {
                     try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
@@ -586,11 +620,13 @@ public actor NativeSessionProcessor {
                 message = "文字起こしは保存しましたが、\(cleanup)"
                 result = .failed(message: message, metrics: result.metrics, retained: .finalized)
             case .failed:
-                message = "\(result.message ?? "")。\(cleanup)"
+                guard let runMessage = result.message else {
+                    preconditionFailure("a failed result always has a message")
+                }
+                message = "\(runMessage)。\(cleanup)"
                 result = .failed(message: message, metrics: result.metrics, retained: result.retainedTranscript)
             case .paused:
                 message = cleanup
-                result = .failed(message: message, metrics: result.metrics, retained: result.retainedTranscript)
             }
             await onStatus(message)
         }

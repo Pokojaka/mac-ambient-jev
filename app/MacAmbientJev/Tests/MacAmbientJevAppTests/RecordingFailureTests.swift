@@ -193,12 +193,11 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
     #expect(engine.stopped == 1)
     #expect(state.pendingProcessing.count == 1)
-    guard case .finalize(let queuedSession, .recordedPCM(let queuedCheckpoint), .reject)?
-            = state.pendingProcessing.first else {
+    guard case .finalize(let queuedSession, .reject)? = state.pendingProcessing.first else {
         Issue.record("Expected the healthy prefix to be queued for finalization")
         return
     }
-    #expect(queuedSession == sessionID && queuedCheckpoint == checkpoint)
+    #expect(queuedSession == sessionID)
 
     #expect(state.recordingPhase == .idle)
     #expect(!state.isRecording)

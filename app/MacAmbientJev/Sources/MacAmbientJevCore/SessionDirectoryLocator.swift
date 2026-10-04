@@ -50,16 +50,12 @@ struct SessionDirectoryInventory {
         // Foundation's URL enumeration can rewrite /var to /private/var on macOS.
         let names = try fileManager.contentsOfDirectory(atPath: sessionsRoot.path)
         var entries: [Self] = []
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         for name in names.sorted() {
             let url = sessionsRoot.appending(path: name, directoryHint: .isDirectory)
             guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
             let manifest: Result<SessionManifest, Error>
             do {
-                manifest = .success(try decoder.decode(
-                    SessionManifest.self, from: Data(contentsOf: SessionLayout(sessionURL: url).manifestURL)
-                ))
+                manifest = .success(try SessionLayout(sessionURL: url).loadManifest())
             } catch {
                 manifest = .failure(error)
             }

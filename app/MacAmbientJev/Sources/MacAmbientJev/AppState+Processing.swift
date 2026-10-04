@@ -16,12 +16,12 @@ extension AppState {
               currentlyProcessingSessionID != sessionID,
               !pendingProcessing.contains(where: { $0.sessionID == sessionID }),
               let session = readableSavedSession(sessionID),
-              let source = session.audioSource else {
+              session.audioSource != nil else {
             return
         }
         selectSavedSession(sessionID: sessionID)
         guard finalizationGate.claim(sessionID) else { return }
-        enqueueProcessing(.finalize(sessionID: sessionID, source: source, metadataPolicy: .replace))
+        enqueueProcessing(.finalize(sessionID: sessionID, metadataPolicy: .replace))
     }
 
     func prepareASRModel() {
@@ -162,7 +162,6 @@ extension AppState {
             enqueueProcessing(
                 .finalize(
                     sessionID: sessionID,
-                    source: .importedOriginal(imported.originalURL, timeline: nil),
                     metadataPolicy: .reject
                 )
             )
@@ -190,7 +189,7 @@ extension AppState {
         }
 
         pendingProcessing.append(request)
-        guard !pausesProcessing else { return }
+        guard !pausesProcessing, !isMaintainingStorage else { return }
 
         if processingTask != nil {
             processingState = .backlogged
@@ -199,6 +198,11 @@ extension AppState {
             return
         }
 
+        startDrainIfIdle()
+    }
+
+    private func startDrainIfIdle() {
+        guard processingTask == nil, !isMaintainingStorage else { return }
         processingTask = Task { [weak self] in
             await self?.drainProcessingQueue()
         }
@@ -221,10 +225,7 @@ extension AppState {
         pendingProcessing.insert(contentsOf: thermallyHeldProcessing, at: 0)
         thermallyHeldProcessing = []
         prepareASRModel()
-        guard processingTask == nil else { return }
-        processingTask = Task { [weak self] in
-            await self?.drainProcessingQueue()
-        }
+        startDrainIfIdle()
     }
 
     func drainProcessingQueue() async {
@@ -267,10 +268,9 @@ extension AppState {
 
             let finalization: SessionProcessingResult?
             switch request {
-            case .finalize(let sessionID, let source, let metadataPolicy):
+            case .finalize(let sessionID, let metadataPolicy):
                 let result = await sessionProcessor.processSession(
                     sessionID: sessionID,
-                    source: source,
                     pacingMode: .normal,
                     shouldPause: shouldPause,
                     onPhase: { _ in },
@@ -284,6 +284,7 @@ extension AppState {
                     finalizationGate.release(sessionID)
                 }
                 refreshSavedSessions()
+                reportFailedFinalization(result)
                 finalization = result
             case .finishLive(let sessionID, let checkpoint):
                 await waitForLiveASRDrain(sessionID: sessionID)
@@ -310,10 +311,10 @@ extension AppState {
                     // The live session has ended; resuming finalizes the saved recording.
                     holdForHeat(.finalize(
                         sessionID: sessionID,
-                        source: .recordedPCM(checkpoint),
                         metadataPolicy: .reject
                     ))
                 }
+                reportFailedFinalization(result)
                 finalization = result
             case .retryContentPriority(
                 let sessionID,
@@ -357,10 +358,11 @@ extension AppState {
     }
 
     func recoverPendingSessions() async {
+        isMaintainingStorage = true
         do {
-            let recoveryScan = try await SessionStorageMaintainer.maintainThenScan(
-                scanner: SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot),
-                excluding: recordingSessionID,
+            let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+            let maintenanceFailures = await SessionStorageMaintainer.maintain(
+                scan.maintenance.filter { $0.sessionID != recordingSessionID },
                 willMaintain: { count in
                     await MainActor.run {
                         let status = "保存済み録音の音声を整理しています（\(count)件）"
@@ -369,8 +371,7 @@ extension AppState {
                     }
                 }
             )
-            let scan = recoveryScan.scan
-            let maintenanceFailures = recoveryScan.maintenanceFailures
+            isMaintainingStorage = false
             let candidates = scan.candidates
                 .filter { $0.manifest.sessionID != recordingSessionID }
                 .filter { maintenanceFailures[$0.manifest.sessionID] == nil }
@@ -395,33 +396,50 @@ extension AppState {
                     enqueueProcessing(
                         .finalize(
                             sessionID: candidate.manifest.sessionID,
-                            source: candidate.source,
                             metadataPolicy: .reject
                         )
                     )
                 }
             }
+            if !pendingProcessing.isEmpty {
+                startDrainIfIdle()
+            }
 
+            var sentences: [String] = []
             if !scan.failures.isEmpty {
-                let message =
+                sentences.append(
                     "復旧できないセッションが\(scan.failures.count)件あります。詳細は「保存済み録音」で確認できます"
-                if candidates.isEmpty { processingState = .partialFailure(message) }
-                processingStatusText = message
+                )
             }
             if !maintenanceFailures.isEmpty {
                 let details = maintenanceFailures.values.sorted().joined(separator: " / ")
-                let message = "保存済み録音の音声を整理できなかったセッションが\(maintenanceFailures.count)件あります: \(details)"
-                if candidates.isEmpty && scan.failures.isEmpty { processingState = .partialFailure(message) }
+                sentences.append(
+                    "保存済み録音の音声を整理できなかったセッションが\(maintenanceFailures.count)件あります: \(details)"
+                )
+            }
+            if !sentences.isEmpty {
+                let message = sentences.joined(separator: "。")
+                if candidates.isEmpty { processingState = .partialFailure(message) }
                 processingStatusText = message
             }
         } catch {
+            isMaintainingStorage = false
             processingState = .partialFailure(error.localizedDescription)
             processingStatusText =
                 "未完了セッションを復旧できませんでした: \(error.localizedDescription)"
             transcriptViewModel.setStatus(
                 "未完了セッションを復旧できませんでした"
             )
+            if !pendingProcessing.isEmpty {
+                startDrainIfIdle()
+            }
         }
+    }
+
+    /// A completed run that compaction or cleanup then failed is a failure the user must see.
+    private func reportFailedFinalization(_ result: SessionProcessingResult) {
+        guard result.disposition == .failed, let message = result.message else { return }
+        processingState = .partialFailure(message)
     }
 
     /// Jev retries reuse the timeline the published runs were computed against.

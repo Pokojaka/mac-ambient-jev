@@ -264,7 +264,6 @@ struct ProcessRecordingCommand {
 
         let processing = await processor.processSession(
             sessionID: sessionID,
-            source: .importedOriginal(imported.originalURL, timeline: nil),
             pacingMode: pacingMode,
             shouldPause: pauseCheck(monitor),
             onPhase: { phase in await monitor?.setPhase(phase) },
@@ -374,13 +373,12 @@ struct ProcessRecordingCommand {
         let onStatus: NativeSessionProcessor.StatusHandler = { message in print(message) }
         let onPhase: NativeSessionProcessor.PhaseHandler = { phase in await monitor?.setPhase(phase) }
         let result: SessionProcessingResult?
-        switch (candidate?.action, candidate?.source) {
-        case (.retryContentPriority?, _):
+        switch candidate?.action {
+        case .retryContentPriority?:
             throw ProcessRecordingError.invalidSession("この復旧 action は CLI の対象外です")
-        case (.finalize?, let source?):
+        case .finalize?:
             result = await processor.processSession(
                 sessionID: sessionID,
-                source: source,
                 pacingMode: pacingMode,
                 shouldPause: pauseCheck(monitor),
                 onPhase: onPhase,
@@ -388,7 +386,7 @@ struct ProcessRecordingCommand {
                 onStatus: onStatus,
                 onUpdate: onUpdate
             )
-        case (nil, _), (.finalize?, nil):
+        case nil:
             result = nil
         }
         if let result, result.disposition != .completed { return result }

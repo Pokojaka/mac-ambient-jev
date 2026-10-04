@@ -187,11 +187,8 @@ private func processFinal(
     states: FinalizationStateRecorder,
     phases: FinalizationCallLog
 ) async throws -> SessionProcessingResult {
-    let layout = SessionLayout(sessionURL: sessionURL)
-    let source = try #require(try layout.audioSource(for: layout.loadManifest()))
     return await processor.processSession(
         sessionID: sessionID,
-        source: source,
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
@@ -676,18 +673,18 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     let sourceSessionID = UUID()
     let (paths, sourceSessionURL, checkpoint) = try await finalizationFixture(sessionID: sourceSessionID)
     defer { try? FileManager.default.removeItem(at: sourceSessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let originalURL = sourceSessionURL.appending(path: "original.caf")
+    let sessionID = UUID()
+    let importURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .imported(originalFilename: "fixture.wav"),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    let originalURL = importURL.appending(path: "audio/original.caf")
     try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: try ProcessingTimelineReader(
             directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
             checkpoint: checkpoint
         ),
         to: originalURL
-    )
-    let sessionID = UUID()
-    _ = try SessionBootstrapper(fileManager: .default).createSession(
-        paths: paths, sessionID: sessionID, source: .imported(originalFilename: "fixture.wav"),
-        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
@@ -712,7 +709,6 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
 
     let result = await processor.processSession(
         sessionID: sessionID,
-        source: .importedOriginal(originalURL, timeline: nil),
         pacingMode: .lowHeat,
         shouldPause: {
             await log.append("pause")
@@ -987,7 +983,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     let scanner = SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
     let candidate = try #require(try scanner.inspect(sessionID: sessionID).recovery)
     #expect(candidate.action == .finalize)
-    guard case .recordedPCM(let recovered) = candidate.source else {
+    guard case .recordedPCM(let recovered) = try SessionLayout(sessionURL: sessionURL)
+        .audioSource(for: candidate.manifest) else {
         Issue.record("a recording recovers from its timeline")
         return
     }
@@ -1462,7 +1459,7 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     #expect(!result.noSpeech)
     #expect(result.metrics == nil)
     let imported = await processor.processSession(
-        sessionID: absent, source: .importedOriginal(sessionURL.appending(path: "missing.wav"), timeline: nil),
+        sessionID: absent,
         pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )

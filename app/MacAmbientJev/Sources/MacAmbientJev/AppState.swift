@@ -142,11 +142,7 @@ final class AppState: ObservableObject {
 
     enum PendingProcessing {
         case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
-        case finalize(
-            sessionID: UUID,
-            source: SessionAudioSource,
-            metadataPolicy: UnreadableMetadataPolicy
-        )
+        case finalize(sessionID: UUID, metadataPolicy: UnreadableMetadataPolicy)
         case retryContentPriority(
             sessionID: UUID,
             segmentIDs: [String]
@@ -155,7 +151,7 @@ final class AppState: ObservableObject {
         var sessionID: UUID {
             switch self {
             case .finishLive(let sessionID, _),
-                 .finalize(let sessionID, _, _),
+                 .finalize(let sessionID, _),
                  .retryContentPriority(let sessionID, _):
                 sessionID
             }
@@ -224,6 +220,8 @@ final class AppState: ObservableObject {
     var currentlyProcessingSessionID: UUID?
     var finalizationGate = SavedSessionReprocessGate()
     var processingTask: Task<Void, Never>?
+    /// True while launch maintenance may compact recordings; the processing queue does not start.
+    var isMaintainingStorage = false
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?

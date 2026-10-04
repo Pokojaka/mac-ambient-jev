@@ -163,7 +163,6 @@ private struct Fixture {
     ) async throws -> (SessionProcessingResult, UpdateRecorder) {
         let result = await processor.processSession(
             sessionID: sessionID,
-            source: try source(),
             pacingMode: .normal,
             shouldPause: { shouldPause },
             onPhase: { _ in },
@@ -388,11 +387,13 @@ func reprocessingAfterCompactionProducesTheSameTranscriptFromTheFLAC() async thr
         return
     }
     #expect(!exists(fixture.layout.processingDirectory))
+    let flacBytes = try Data(contentsOf: fixture.layout.recordingFLACURL)
 
     let (second, secondUpdates) = try await fixture.process(processor)
 
     #expect(second.disposition == .completed)
     #expect(transcript(await secondUpdates.last) == pcmTranscript)
+    #expect(try Data(contentsOf: fixture.layout.recordingFLACURL) == flacBytes)
     #expect(!exists(fixture.layout.processingDirectory))
     expectNoTransients(fixture)
 }
@@ -421,4 +422,43 @@ func aFailedReprocessKeepsThePublishedTranscriptAndTheFLAC() async throws {
     #expect(try SessionAudioStorageStore(layout: fixture.layout).load() == storageBefore)
     #expect(!exists(fixture.layout.processingDirectory))
     expectNoTransients(fixture)
+}
+
+@Test
+func aCleanupFailureDuringAPauseStaysPausedAndReportsTheCleanupError() async throws {
+    let fixture = try await makeFixture(.recording, samples: speechSamples)
+    defer { fixture.cleanUp() }
+    let partial = fixture.layout.recordingFLACPartialURL
+    try Data("stale".utf8).write(to: partial)
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: partial.path)
+    defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
+
+    let (result, recorder) = try await fixture.process(
+        fixture.processor(engines(for: .paused, observations: EngineObservations())), shouldPause: true
+    )
+
+    #expect(result.disposition == .paused)
+    #expect(await recorder.statuses.contains { $0.hasPrefix("音声の一時ファイルを削除できませんでした: ") })
+    let attempt = try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.finalizationAttempt
+    #expect(attempt?.state == .paused)
+}
+
+@Test
+func aSessionCompactedByMaintenanceFinalizesFromTheFLACWithoutAStaleSource() async throws {
+    let fixture = try await makeFixture(.recording, samples: speechSamples)
+    defer { fixture.cleanUp() }
+    guard case .recordedPCM = try fixture.source() else {
+        Issue.record("a fresh recording is PCM")
+        return
+    }
+    try SessionStorageMaintainer.run(.compactRecording, layout: fixture.layout, manifest: fixture.manifest())
+    #expect(!exists(fixture.layout.processingDirectory))
+
+    let (result, updates) = try await fixture.process(
+        fixture.processor(engines(for: .success, observations: EngineObservations()))
+    )
+
+    #expect(result.disposition == .completed)
+    #expect(transcript(await updates.last).count == 2)
+    #expect(exists(fixture.layout.recordingFLACURL))
 }

@@ -222,7 +222,6 @@ struct CaptureSystemAudioCommand {
             )
             let processing = await processor.processSession(
                 sessionID: sessionID,
-                source: .recordedPCM(result.checkpoint),
                 pacingMode: .normal,
                 shouldPause: { ProcessInfo.processInfo.thermalState == .critical },
                 onPhase: { _ in },

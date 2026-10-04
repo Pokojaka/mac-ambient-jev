@@ -157,7 +157,9 @@ func recordingThatCrashedBeforeStopIsFinalizedFromItsTimeline() async throws {
     #expect(scan.failures.isEmpty)
     #expect(scan.candidates.count == 1)
     #expect(scan.candidates.first?.action == .finalize)
-    #expect(scan.candidates.first?.source == .recordedPCM(recoveryCheckpoint))
+    let first = try #require(scan.candidates.first)
+    #expect(try SessionLayout(sessionURL: first.sessionURL).audioSource(for: first.manifest)
+        == .recordedPCM(recoveryCheckpoint))
 }
 
 @Test
@@ -171,7 +173,8 @@ func unprocessedImportIsFinalizedFromItsOriginal() throws {
     let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
 
     #expect(candidate.action == .finalize)
-    guard case .importedOriginal(let original, _) = candidate.source else {
+    guard case .importedOriginal(let original, _) = try SessionLayout(sessionURL: url)
+        .audioSource(for: candidate.manifest) else {
         Issue.record("an import recovers from its original")
         return
     }
@@ -330,7 +333,8 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
 
     let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
 
-    #expect(scan.candidates.first?.source == .recordedPCM(AudioCheckpoint(
+    let recovered = try #require(scan.candidates.first)
+    #expect(try SessionLayout(sessionURL: recovered.sessionURL).audioSource(for: recovered.manifest) == .recordedPCM(AudioCheckpoint(
         committedFrames: 96_000,
         sampleRate: CanonicalAudio.sampleRate,
         channelCount: 1,
@@ -378,7 +382,8 @@ func recoveryUsesIntactOriginalWhenImportCheckpointIsUnusable() throws {
         try JSONEncoder().encode(checkpoint).write(to: processing.appending(path: DurableAudioWriter.checkpointFilename))
         try Data(count: 4).write(to: root.appending(path: "secret"))
 
-        let source = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.source
+        let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
+        let source = try SessionLayout(sessionURL: url).audioSource(for: candidate.manifest)
         guard case .importedOriginal(let original, _) = source else {
             Issue.record("intact original must be chosen: \(String(describing: source))")
             continue

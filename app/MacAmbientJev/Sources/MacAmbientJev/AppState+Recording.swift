@@ -297,7 +297,6 @@ extension AppState {
                 enqueueProcessing(
                     .finalize(
                         sessionID: sessionID,
-                        source: .recordedPCM(checkpoint),
                         metadataPolicy: .reject
                     )
                 )
@@ -349,7 +348,6 @@ extension AppState {
         enqueueProcessing(
             .finalize(
                 sessionID: sessionID,
-                source: .recordedPCM(checkpoint),
                 metadataPolicy: .reject
             )
         )

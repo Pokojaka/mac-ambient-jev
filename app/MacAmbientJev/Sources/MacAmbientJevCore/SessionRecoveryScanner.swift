@@ -10,18 +10,15 @@ public enum RecoverableProcessingAction: Sendable, Equatable {
 public struct RecoverableSession: Sendable, Equatable {
     public let manifest: SessionManifest
     public let sessionURL: URL
-    public let source: SessionAudioSource
     public let action: RecoverableProcessingAction
 
     public init(
         manifest: SessionManifest,
         sessionURL: URL,
-        source: SessionAudioSource,
         action: RecoverableProcessingAction
     ) {
         self.manifest = manifest
         self.sessionURL = sessionURL
-        self.source = source
         self.action = action
     }
 }
@@ -158,13 +155,12 @@ public struct SessionRecoveryScanner: Sendable {
         case nil:
             // A recording that crashed before it stopped, or an import never processed.
             guard metadata?.activeRuns == nil,
-                  let source = try layout.audioSource(for: manifest) else {
+                  try layout.audioSource(for: manifest) != nil else {
                 return nil
             }
             return RecoverableSession(
                 manifest: manifest,
                 sessionURL: layout.sessionURL,
-                source: source,
                 action: .finalize
             )
         case .failed:
@@ -181,13 +177,12 @@ public struct SessionRecoveryScanner: Sendable {
             ))
         }
 
-        guard let source = try layout.audioSource(for: manifest) else {
+        guard try layout.audioSource(for: manifest) != nil else {
             throw SessionRecoveryScannerError.missingAudio
         }
         return RecoverableSession(
             manifest: manifest,
             sessionURL: layout.sessionURL,
-            source: source,
             action: action
         )
     }

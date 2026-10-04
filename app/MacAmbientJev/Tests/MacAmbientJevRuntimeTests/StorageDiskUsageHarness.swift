@@ -156,7 +156,7 @@ func storageDiskUsageHarness() async throws {
         contentPriority: .disabled
     )
     let recordingResult = await processor.processSession(
-        sessionID: recordingID, source: .recordedPCM(checkpoint), pacingMode: .normal,
+        sessionID: recordingID, pacingMode: .normal,
         shouldPause: { false }, onPhase: { _ in }, metadataPolicy: .reject,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )
@@ -177,7 +177,7 @@ func storageDiskUsageHarness() async throws {
     )
     let importDuring = try storageHarnessBytes(importURL)
     let importResult = await processor.processSession(
-        sessionID: importID, source: .importedOriginal(original, timeline: nil), pacingMode: .normal,
+        sessionID: importID, pacingMode: .normal,
         shouldPause: { false }, onPhase: { _ in }, metadataPolicy: .reject,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )

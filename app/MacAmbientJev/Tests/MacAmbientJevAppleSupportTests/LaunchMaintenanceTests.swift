@@ -36,7 +36,7 @@ private func publishedRecording(_ paths: AppPaths, second: Int, attempt: Finaliz
 private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
 @Test
-func launchMaintenanceConvergesBeforeTheRescanAndSkipsWhatItCouldNotMaintain() async throws {
+func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root.appending(path: "sessions"))
     let recordingNow = try makeSession(paths, source: .recording(.microphone), second: 9)
@@ -62,18 +62,14 @@ func launchMaintenanceConvergesBeforeTheRescanAndSkipsWhatItCouldNotMaintain() a
         try? FileManager.default.removeItem(at: root)
     }
 
-    let scanner = SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
-    let stale = try scanner.pendingSessions()
-    let staleSource = try #require(stale.candidates.first { $0.sessionURL == reprocessing.sessionURL }?.source)
-    guard case .recordedPCM = staleSource else {
-        Issue.record("before maintenance the paused reprocess points at PCM")
-        return
-    }
+    let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+    let recordingNowID = try recordingNow.loadManifest().sessionID
+    #expect(Set(scan.maintenance.map(\.sessionURL)).contains(recordingNow.sessionURL))
 
     let announced = Mutex(0)
-    let recordingNowID = try recordingNow.loadManifest().sessionID
-    let maintained = try await SessionStorageMaintainer.maintainThenScan(
-        scanner: scanner, excluding: recordingNowID, willMaintain: { count in announced.withLock { $0 = count } }
+    let failures = await SessionStorageMaintainer.maintain(
+        scan.maintenance.filter { $0.sessionID != recordingNowID },
+        willMaintain: { count in announced.withLock { $0 = count } }
     )
 
     #expect(announced.withLock { $0 } == 5)
@@ -94,12 +90,7 @@ func launchMaintenanceConvergesBeforeTheRescanAndSkipsWhatItCouldNotMaintain() a
         return
     }
     #expect(exists(unwritable.processingDirectory))
-    #expect(Array(maintained.maintenanceFailures.keys) == [try unwritable.loadManifest().sessionID])
-
-    let freshSource = try #require(maintained.scan.candidates.first { $0.sessionURL == reprocessing.sessionURL }?.source)
-    guard case .recordedFLAC = freshSource else {
-        Issue.record("the rescan points the reprocess at the FLAC, not at deleted PCM")
-        return
-    }
-    #expect(Set(maintained.scan.maintenance.map(\.sessionURL)) == [unwritable.sessionURL, recordingNow.sessionURL])
+    #expect(Array(failures.keys) == [try unwritable.loadManifest().sessionID])
+    let failure = try #require(failures.values.first)
+    #expect(failure.hasPrefix(unwritable.sessionURL.lastPathComponent + ": "))
 }
