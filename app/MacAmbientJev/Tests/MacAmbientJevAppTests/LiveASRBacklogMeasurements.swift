@@ -7,7 +7,7 @@ import MacAmbientJevRuntime
 /// Five-second utterance cadence; no capture, model load, or audio-file allocation.
 @MainActor
 @Test("Measure live backlog at 10-minute, 1-hour and 4-hour event equivalents")
-func bugHuntMeasureThermalBacklogGrowth() async throws {
+func measureLatestCheckpointRetentionDuringThermalStall() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
     let (defaults, suiteName) = try temporaryDefaults()

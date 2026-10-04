@@ -1286,7 +1286,7 @@ private struct PreparationRejectingDiarizer: DiarizationEngine {
 }
 
 @Test("Validated empty VAD completes without speech inference", arguments: [false, true])
-func bugHuntEmptyVADDoesNotInvokeFailingDiarization(preparationFails: Bool) async throws {
+func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(
         samples: Array(repeating: 0, count: 16_000), sessionID: sessionID

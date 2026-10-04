@@ -317,7 +317,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
 @MainActor
 @Test("recording and release errors must both remain visible",
       arguments: ["writer", "input", "throw"])
-func bugHuntRecordingPreservesBothFailures(kind: String) async throws {
+func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
     let (defaults, suiteName) = try temporaryDefaults()
@@ -333,7 +333,7 @@ func bugHuntRecordingPreservesBothFailures(kind: String) async throws {
     )
     if kind == "throw" {
         engine.stopError = NSError(
-            domain: "BugHunt", code: 1, userInfo: [NSLocalizedDescriptionKey: release]
+            domain: "RecordingReleaseFailure", code: 1, userInfo: [NSLocalizedDescriptionKey: release]
         )
     }
     let state = AppState(

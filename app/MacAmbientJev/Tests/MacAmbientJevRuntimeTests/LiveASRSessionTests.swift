@@ -591,7 +591,7 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
 /// Measures duplicate pending registration without inference or recognized-row updates.
 /// Five-second event cadence; uses pending references, not hours of allocated audio.
 @Test("Measure live registration cost at 10-minute, 1-hour and 4-hour event equivalents")
-func bugHuntMeasureLiveRegistrationCost() async throws {
+func measureLiveRegistrationCost() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     var previous = 0
@@ -617,7 +617,7 @@ func bugHuntMeasureLiveRegistrationCost() async throws {
             #expect(pending == count)
         }
         let median = samples.sorted()[3]
-        print("BUG_HUNT registration equivalent_seconds=\(count * 5) pending=\(count) median_us=\(median)")
+        print("LIVE_ASR registration equivalent_seconds=\(count * 5) pending=\(count) median_us=\(median)")
         previous = count
     }
 }
