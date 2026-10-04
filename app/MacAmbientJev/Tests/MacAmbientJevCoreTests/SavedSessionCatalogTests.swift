@@ -368,3 +368,38 @@ private func readable(_ summary: SavedSessionSummary) throws -> SavedSession {
 private enum SavedSessionTestError: Error {
     case unreadable(SavedSessionSummary)
 }
+
+@Test("BUG #20: corrupted event logs must not advertise an exportable transcript",
+      arguments: ["malformed", "missing", "directory"])
+func bugHuntCatalogRejectsUnreadableEventLog(kind: String) throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let session = try writeCatalogSession(
+        id: UUID(), createdAt: 1_700_000_000, source: .recording(.systemAudio),
+        root: root, includeAudio: true
+    )
+    try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
+        finalizationAttempt: FinalizationAttempt(attemptID: "final", state: .complete, failureReason: nil),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
+        pendingContentPrioritySegmentIDs: []
+    ))
+    let eventsURL = session.appending(path: "events.jsonl")
+    if kind == "malformed" {
+        try Data("{broken\n".utf8).write(to: eventsURL)
+    } else if kind == "directory" {
+        try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    }
+    let metadataBefore = try Data(contentsOf: session.appending(path: "processing_metadata.json"))
+    let manifestBefore = try Data(contentsOf: session.appending(path: "session.json"))
+
+    let summary = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
+    let row = try readable(summary)
+    #expect(!row.hasActiveTranscript)
+    guard case .corrupted = row.processingStatus else {
+        Issue.record("BUG #20: \(kind) events.jsonl advertised as \(row.processingStatus)")
+        return
+    }
+    #expect(summary.canReprocess)
+    #expect(try Data(contentsOf: session.appending(path: "processing_metadata.json")) == metadataBefore)
+    #expect(try Data(contentsOf: session.appending(path: "session.json")) == manifestBefore)
+}

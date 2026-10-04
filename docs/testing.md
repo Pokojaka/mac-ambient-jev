@@ -25,6 +25,17 @@ python3 scripts/check_doc_references.py
 
 `scripts/check_doc_references.py` は `README.md`、`AGENTS.md`、docs 配下の Markdown（records を除く）のリポジトリパス、script、既知 CLI の flag、Swift 型の参照を検査する。
 
+### 合成イベントによる不具合再現とライブ滞留計測
+
+```bash
+swift test --package-path app/MacAmbientJev --filter bugHunt
+swift test --package-path app/MacAmbientJev --filter bugHuntMeasure
+```
+
+`bugHunt` の correctness test は既知の不具合を期待する正常動作の assertion で再現するため、現行コードでは失敗する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、参照数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
+
+Linux 音声正規化の同一入出力による原音声削除は、`tools/linux-audio/tests/test_audio.py` にある。`tools/linux-audio` を作業ディレクトリにして `uv run --python 3.12 --with pytest python -m pytest -q -k bug_hunt` で再現する。実 ffmpeg を使い、現行コードでは二つのケースが失敗する。実行結果と制約は [測定記録](records/2026-10-04-bug-hunt.md) にある。
+
 ### 実 ASR モデルの smoke
 
 Apple Silicon / macOS で、明示的な WAV ファイルを指定する。

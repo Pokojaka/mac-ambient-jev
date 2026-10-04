@@ -1267,3 +1267,33 @@ func finalizationUsesFinalTextAndOnlyReusesIdenticalLiveDecisions(changed: Bool)
         #expect(source["source_segment_id"] as? String == "live_row")
     }
 }
+
+@Test("BUG #21: an empty VAD result completes even when speech-only inference cannot run")
+func bugHuntEmptyVADDoesNotInvokeFailingDiarization() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, checkpoint) = try await finalizationFixture(
+        samples: Array(repeating: 0, count: 16_000), sessionID: sessionID
+    )
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let chunkURL = SessionLayout(sessionURL: sessionURL).processingDirectory
+        .appending(path: checkpoint.chunkFiles[0])
+    let audioBefore = try Data(contentsOf: chunkURL)
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: PreparationFailingASR(),
+            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: true),
+            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+        ),
+        contentPriority: .disabled
+    )
+    let result = await processFinal(
+        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(),
+        phases: FinalizationCallLog()
+    )
+    #expect(result.disposition == .completed)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try Data(contentsOf: chunkURL) == audioBefore)
+}

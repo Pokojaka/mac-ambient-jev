@@ -62,3 +62,26 @@ def test_normalize_failure_removes_stale_output(
 
     assert not output.exists()
     assert [path.name for path in tmp_path.iterdir()] == ["source.wav"]
+
+
+@pytest.mark.parametrize("source_alias", [False, True])
+def test_bug_hunt_normalization_rejects_its_own_source_without_deleting_audio(
+    tmp_path, source_alias,
+):
+    original = tmp_path / "original.wav"
+    make_wav(original)
+    before = original.read_bytes()
+    source = original
+    if source_alias:
+        source = tmp_path / "source-link.wav"
+        source.symlink_to(original)
+
+    error = None
+    try:
+        normalize_to_wav(source, original)
+    except Exception as caught:
+        error = caught
+
+    assert original.exists(), "normalization deleted its source audio before ffmpeg opened it"
+    assert original.read_bytes() == before
+    assert isinstance(error, ValueError), f"expected an input/output identity error, got {error!r}"

@@ -313,3 +313,41 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         #expect(state.pendingProcessing.isEmpty)
     }
 }
+
+@MainActor
+@Test("BUG #23: recording and release errors must both remain visible",
+      arguments: ["writer", "input", "throw"])
+func bugHuntRecordingPreservesBothFailures(kind: String) async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let engine = FakeAppCaptureEngine()
+    let original = kind == "writer" ? "writer disk failure" : "input disconnected"
+    let release = "system audio tap destroy failed"
+    engine.stopResult = AudioCaptureStopResult(
+        checkpoint: testCheckpoint(), didOverflow: false, dropoutCount: 0, gapCount: 0,
+        totalGapFrames: 0, sleepAssertionHeld: true,
+        writerFailure: kind == "writer" ? original : nil,
+        systemAudioReleaseFailure: release
+    )
+    if kind == "throw" {
+        engine.stopError = NSError(
+            domain: "BugHunt", code: 1, userInfo: [NSLocalizedDescriptionKey: release]
+        )
+    }
+    let state = AppState(
+        paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
+        userDefaults: defaults, engines: .production(paths: paths),
+        makeLiveVADSession: idleLiveVADFactory()
+    )
+    let sessionID = UUID()
+    state.markRecordingStarted(sessionID: sessionID)
+    let stopping = try #require(state.captureDidFail(sessionID: sessionID, message: original))
+    await stopping.value
+    #expect(state.recordingPhase == .idle)
+    #expect(state.statusTone == .error)
+    #expect(state.statusText.contains(original))
+    #expect(state.statusText.contains(release))
+    if kind != "throw" { #expect(state.pendingProcessing.count == 1) }
+}

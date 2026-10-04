@@ -465,3 +465,37 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
         .filter { $0.contains("\"segment.created\"") }.count
     #expect(createdCount == 1)
 }
+
+/// Measures the redundant registration performed before processing an already registered batch.
+/// Five-second event cadence; uses pending references, not hours of allocated audio.
+@Test("Measure live progress rebuild cost at 10-minute, 1-hour and 4-hour event equivalents")
+func bugHuntMeasureLiveRegistrationCost() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    var previous = 0
+    for count in [120, 720, 2_880] {
+        let segments = (previous..<count).map { index in
+            SegmentReference(
+                segmentationRunID: "seg_live_test", segmentID: "row_\(index)",
+                startFrame: Int64(index) * 80_000, endFrame: Int64(index + 1) * 80_000
+            )
+        }
+        _ = try await fixture.session.register(segments: segments)
+        let repeated = try #require(segments.last)
+        var samples: [Double] = []
+        for _ in 0..<7 {
+            let start = ContinuousClock.now
+            var pending = 0
+            for _ in 0..<100 {
+                pending = try await fixture.session.register(segments: [repeated]).pendingCount
+            }
+            let duration = start.duration(to: .now).components
+            samples.append((Double(duration.seconds) * 1_000_000
+                + Double(duration.attoseconds) / 1_000_000_000_000) / 100)
+            #expect(pending == count)
+        }
+        let median = samples.sorted()[3]
+        print("BUG_HUNT registration equivalent_seconds=\(count * 5) pending=\(count) median_us=\(median)")
+        previous = count
+    }
+}
