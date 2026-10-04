@@ -24,6 +24,7 @@ struct SavedSessionsView: View {
                 }
             }
             .disabled(isSelectionUnavailable)
+            .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 420)
             .navigationTitle("保存済み録音")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -72,9 +73,12 @@ struct SavedSessionsView: View {
                         .font(.caption)
                         .foregroundStyle(hasProblem(session) ? Color.red : Color.secondary)
                         .lineLimit(2)
-                case .unreadable(_, let reason):
+                case .unreadable(let sessionID, let reason):
                     Text("日時を読み取れません")
                         .font(.headline)
+                    Text(sessionID.uuidString.prefix(8))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
                     Text("読み込みエラー: \(reason)")
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -109,9 +113,11 @@ struct SavedSessionsView: View {
             switch summary {
             case .readable(let session):
                 readableDetail(session)
-            case .unreadable(_, let reason):
+            case .unreadable(let sessionID, let reason):
                 Text("日時を読み取れません")
                     .font(.title2.weight(.semibold))
+                LabeledContent("セッション ID", value: sessionID.uuidString)
+                    .textSelection(.enabled)
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
