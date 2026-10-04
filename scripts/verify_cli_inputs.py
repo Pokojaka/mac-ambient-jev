@@ -57,7 +57,9 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
     }
     (session / "session.json").write_text(json.dumps(manifest))
     (session / "events.jsonl").write_text("")
-    before = {p.name: p.read_bytes() for p in session.iterdir()}
+    (session / "audio").mkdir()
+    (session / "audio" / "storage.json").write_text(json.dumps({"state": "recordingPCM"}))
+    before = {str(p.relative_to(session)): p.read_bytes() for p in session.rglob("*") if p.is_file()}
     valid = inspect(session_id.lower())
     assert valid.returncode == 0, valid.stderr
     assert json.loads(valid.stdout) == {"session_id": session_id, "action": "none"}, valid.stdout
@@ -80,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
             capture_output=True, text=True,
         )
         assert result.returncode != 0 and not result.stdout.strip(), result
-        assert {p.name: p.read_bytes() for p in session.iterdir()} == before
+        assert {str(p.relative_to(session)): p.read_bytes() for p in session.rglob("*") if p.is_file()} == before
     alias.unlink()
 
     duplicate = sessions / "2024-03-01_00-00-01_録音_31ac3491"
@@ -97,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
         rejected = inspect(session_id)
         assert rejected.returncode != 0 and not rejected.stdout.strip(), rejected
         malformed.rename(session)
-    assert {p.name: p.read_bytes() for p in session.iterdir()} == before
+    assert {str(p.relative_to(session)): p.read_bytes() for p in session.rglob("*") if p.is_file()} == before
     assert not output.exists() and not metrics.exists() and not thermal.exists() and not memory.exists()
 
 print(f"CLI rejected {len(invalid)} invalid input forms without writing files")
