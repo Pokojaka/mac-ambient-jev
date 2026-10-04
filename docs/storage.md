@@ -213,7 +213,9 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 ## 読取・復旧と公開ビュー
 
-イベント JSONL では、末尾の LF 未終端かつ不正な JSON 行だけを無視・切り詰められます。途中の不正行、LF 終端の不正行は破損として扱います。完全な JSON の最終行に LF がない場合、SessionWriter は LF を足して保持します。イベント番号がある行では正の整数であることを検証します。
+イベント JSONL では、末尾の LF 未終端かつ不正な JSON 行だけを復旧時に無視・切り詰められます。途中の不正行、LF 終端の不正行は破損として扱います。完全な JSON の最終行に LF がない場合、SessionWriter は LF を足して保持します。イベント番号がある行では正の整数であることを検証します。
+
+保存済みセッション一覧は active ASR run がある場合、イベントログを変更せずに読み込み、JSONL と active transcript event payload を検証します。ログが欠損・不正、または不完全な末尾を含む場合は派生結果を破損として表示し、公開 transcript を持たない扱いにします。active transcript がない未処理セッションではログを要求しません。
 
 `EventLogTranscriptReader` は全行の header を読み、必要な既知イベントの run ID を要求します。非 active run や未知のイベント種別の payload は解釈せず、active run の必要フィールドの欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。`JevRetryAnalyzer` は全 run の優先度 assigned を読み、保留状態を分析します。
 

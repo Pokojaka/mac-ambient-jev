@@ -290,6 +290,7 @@ private func writeCatalogSession(
 ) throws -> URL {
     let session = root.appending(path: id.uuidString, directoryHint: .isDirectory)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+    try Data().write(to: session.appending(path: "events.jsonl"))
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
     encoder.dateEncodingStrategy = .iso8601
@@ -369,9 +370,9 @@ private enum SavedSessionTestError: Error {
     case unreadable(SavedSessionSummary)
 }
 
-@Test("BUG #20: corrupted event logs must not advertise an exportable transcript",
+@Test("Unreadable event logs cannot advertise an exportable transcript",
       arguments: ["malformed", "missing", "directory"])
-func bugHuntCatalogRejectsUnreadableEventLog(kind: String) throws {
+func catalogRejectsUnreadableEventLog(kind: String) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let session = try writeCatalogSession(
@@ -387,7 +388,10 @@ func bugHuntCatalogRejectsUnreadableEventLog(kind: String) throws {
     if kind == "malformed" {
         try Data("{broken\n".utf8).write(to: eventsURL)
     } else if kind == "directory" {
+        try FileManager.default.removeItem(at: eventsURL)
         try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    } else {
+        try FileManager.default.removeItem(at: eventsURL)
     }
     let metadataBefore = try Data(contentsOf: session.appending(path: "processing_metadata.json"))
     let manifestBefore = try Data(contentsOf: session.appending(path: "session.json"))
@@ -396,7 +400,7 @@ func bugHuntCatalogRejectsUnreadableEventLog(kind: String) throws {
     let row = try readable(summary)
     #expect(!row.hasActiveTranscript)
     guard case .corrupted = row.processingStatus else {
-        Issue.record("BUG #20: \(kind) events.jsonl advertised as \(row.processingStatus)")
+        Issue.record("Expected corrupted derived results, got \(row.processingStatus)")
         return
     }
     #expect(summary.canReprocess)

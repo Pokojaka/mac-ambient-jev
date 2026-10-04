@@ -183,7 +183,7 @@ public struct SavedSessionCatalog {
 
         let audio = self.audio(layout: layout, manifest: manifest)
         let metadata: ProcessingMetadata?
-        let processingStatus: SavedSessionProcessingStatus
+        var processingStatus: SavedSessionProcessingStatus
         do {
             metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()
             processingStatus = status(for: metadata)
@@ -192,13 +192,39 @@ public struct SavedSessionCatalog {
             processingStatus = .corrupted(error.localizedDescription)
         }
 
+        let hasActiveTranscript: Bool
+        if let activeRuns = metadata?.activeRuns, activeRuns.asr != nil {
+            do {
+                let data = try Data(contentsOf: layout.eventsURL)
+                let recovered = try SessionRecovery.recoverJSONL(data)
+                guard !recovered.droppedIncompleteTail else {
+                    throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
+                }
+                _ = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
+                hasActiveTranscript = true
+            } catch {
+                processingStatus = .corrupted(error.localizedDescription)
+                return .readable(SavedSession(
+                    sessionID: manifest.sessionID,
+                    createdAt: manifest.createdAt,
+                    source: manifest.source,
+                    duration: duration(layout: layout, manifest: manifest, audio: audio),
+                    audio: audio,
+                    hasActiveTranscript: false,
+                    processingStatus: processingStatus
+                ))
+            }
+        } else {
+            hasActiveTranscript = false
+        }
+
         return .readable(SavedSession(
             sessionID: manifest.sessionID,
             createdAt: manifest.createdAt,
             source: manifest.source,
             duration: duration(layout: layout, manifest: manifest, audio: audio),
             audio: audio,
-            hasActiveTranscript: metadata?.activeRuns?.asr != nil,
+            hasActiveTranscript: hasActiveTranscript,
             processingStatus: processingStatus
         ))
     }
