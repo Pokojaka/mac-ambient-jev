@@ -84,6 +84,69 @@ func exportRefusesARecordingThatIsNotYetFLAC() async throws {
     }
 }
 
+private func fileBytes(in directory: URL) throws -> [String: Data] {
+    var result: [String: Data] = [:]
+    for name in try FileManager.default.subpathsOfDirectory(atPath: directory.path).sorted() {
+        let url = directory.appending(path: name)
+        if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+            result[name] = try Data(contentsOf: url)
+        }
+    }
+    return result
+}
+
+@Test
+func exportKeepsTheSessionsInternalAudioUnchanged() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let layout = SessionLayout(sessionURL: session.sessionURL)
+    let flacBefore = try Data(contentsOf: layout.recordingFLACURL)
+    let storageBefore = try Data(contentsOf: layout.audioStorageURL)
+
+    try SessionExporter().export(session: session, to: fixture.exportRoot)
+
+    #expect(try Data(contentsOf: layout.recordingFLACURL) == flacBefore)
+    #expect(try Data(contentsOf: layout.audioStorageURL) == storageBefore)
+    #expect(!FileManager.default.fileExists(atPath: layout.processingDirectory.path))
+}
+
+@Test
+func exportOfACorruptRecordingFailsAndKeepsThePriorExport() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let layout = SessionLayout(sessionURL: session.sessionURL)
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    let priorBytes = try fileBytes(in: prior)
+
+    let flac = try Data(contentsOf: layout.recordingFLACURL)
+    try flac.prefix(flac.count / 2).write(to: layout.recordingFLACURL)
+
+    #expect(throws: FLACTimelineReaderError.self) {
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
+    }
+    #expect(try fileBytes(in: prior) == priorBytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [prior.lastPathComponent])
+}
+
+@Test
+func exportUsesTheStoredFormEvenWhenTheCatalogRowPredatesCompaction() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession(compacted: false)
+    guard case .recordedPCM = session.audioSource else {
+        Issue.record("the catalog row was read while the recording was PCM")
+        return
+    }
+    let layout = SessionLayout(sessionURL: session.sessionURL)
+    _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
+
+    let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
+
+    #expect(try Data(contentsOf: folder.appending(path: "audio.flac")) == Data(contentsOf: layout.recordingFLACURL))
+}
+
 @Test
 func reexportReplacesTheSameFolder() async throws {
     let fixture = try ExportFixture()
@@ -131,6 +194,10 @@ func exporterCopiesImportedOriginalByteForByte() async throws {
     #expect(folder.lastPathComponent == session.sessionURL.lastPathComponent)
     #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == original)
     #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == ["audio.wav", "transcript.txt"])
+    let layout = SessionLayout(sessionURL: session.sessionURL)
+    #expect(try Data(contentsOf: layout.audioDirectory.appending(path: "original.wav")) == original)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: layout.audioDirectory.path).sorted()
+        == ["original.wav", "storage.json"])
     #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
         == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
 }
