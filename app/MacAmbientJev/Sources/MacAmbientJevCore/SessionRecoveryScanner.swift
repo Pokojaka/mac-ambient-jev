@@ -97,7 +97,7 @@ public struct SessionRecoveryScanner: Sendable {
     public func inspect(sessionID: UUID) throws -> SessionInspection {
         let layout = SessionLayout(sessionURL: try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: sessionsRoot, sessionID: sessionID))
-        let manifest = try decodeManifest(at: layout.manifestURL)
+        let manifest = try layout.loadManifest()
         return SessionInspection(
             recovery: try candidate(layout: layout, manifest: manifest),
             maintenance: try SessionStorageMaintenance.required(layout: layout, manifest: manifest)
@@ -212,16 +212,5 @@ public struct SessionRecoveryScanner: Sendable {
                       event.segmentationRunID == activeRuns.segmentation else { return nil }
                 return event.segmentID
             }
-    }
-
-    private func decodeManifest(at url: URL) throws -> SessionManifest {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        do {
-            return try decoder.decode(SessionManifest.self, from: data)
-        } catch let error as DecodingError {
-            throw SessionRecoveryScannerError.unreadableManifest(String(describing: error))
-        }
     }
 }

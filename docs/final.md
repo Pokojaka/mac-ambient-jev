@@ -46,6 +46,8 @@ VAD の失敗・不正な区間、発話がある場合の話者分離・ASR の
 
 失敗・一時停止では、以前の正常な確定結果があればその表示を保持します。初回録音で確定結果がなければ、終了処理が得たライブ暫定結果を保持します。保持できる結果がなければ文字は表示しません。以前の結果自体が読めない場合は、その読取失敗も明示します。失敗状態の保存まで失敗した場合も元の原因と併記します。
 
+全ての結果（開始失敗を含む）で、確定処理は終了時に一度だけ一時音声（話者分離入力の CAF、import の処理タイムライン、FLAC の partial）を削除します。成功した録音は続けて `recording.flac` へ変換します。変換・削除の失敗は成功でも結果を失敗とし、公開済みの文字起こしの保持を明示します。詳細は [保存形式](storage.md) を参照してください。
+
 途中失敗・一時停止でも、ASR 段階で得た計測値を処理結果に残します。ASR 開始前の失敗では ASR 計測値はありません。
 
 ## 発熱による一時停止と再開
@@ -90,7 +92,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --resume-session "$SESSION_ID" --sessions-root "$SESSIONS_ROOT" "$SEGMENTS_OUTPUT"
 ```
 
-`--inspect-session` の JSON action は `finalize`、`retryContentPriority`、`none`、`unrecoverable` です。音声欠損は `unrecoverable`、その他の読取不整合はエラーになります。`--resume-session` は録音・読み込みの `finalize` に対応しますが、CLI は Jev を無効にするため `retryContentPriority` を再開しません。通常処理・再開とも `--low-heat` で ASR 区間の間に 2 秒の待機を入れられます。
+`--inspect-session` の JSON は `action` に加え `maintenance`（`compactRecording`、`removeTransients`、`null`）を出し、読み取り専用です。`--resume-session` は先に保存整理を実行し、再度走査した結果の action に従います。`--inspect-session` の JSON action は `finalize`、`retryContentPriority`、`none`、`unrecoverable` です。音声欠損は `unrecoverable`、その他の読取不整合はエラーになります。`--resume-session` は録音・読み込みの `finalize` に対応しますが、CLI は Jev を無効にするため `retryContentPriority` を再開しません。通常処理・再開とも `--low-heat` で ASR 区間の間に 2 秒の待機を入れられます。
 
 ID は manifest の完全 UUID から実フォルダー URL に解決します。不在・複数一致・フォルダー名の不整合はエラーで、`none` は存在する正常セッションの action がない場合に限ります。resume は実行時に実フォルダーを解決して出力先を検査し、symlink と大文字小文字の違いを考慮してセッション内部への出力を production engine の処理前に拒否します。
 

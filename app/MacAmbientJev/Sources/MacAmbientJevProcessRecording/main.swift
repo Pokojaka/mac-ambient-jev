@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevRuntime
 import MLX
@@ -306,18 +307,23 @@ struct ProcessRecordingCommand {
 
     static func inspect(sessionID: UUID, root: URL) throws {
         let action: String
+        var maintenance: Any = NSNull()
         do {
-            switch try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID).recovery?.action {
+            let inspection = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
+            switch inspection.recovery?.action {
             case .finalize: action = "finalize"
             case .retryContentPriority: action = "retryContentPriority"
             case nil: action = "none"
+            }
+            if let required = inspection.maintenance {
+                maintenance = required.rawValue
             }
         } catch SessionRecoveryScannerError.missingAudio,
                 SessionAudioSourceError.importedOriginalMissing {
             action = "unrecoverable"
         }
         let data = try JSONSerialization.data(
-            withJSONObject: ["session_id": sessionID.uuidString, "action": action],
+            withJSONObject: ["session_id": sessionID.uuidString, "action": action, "maintenance": maintenance],
             options: [.sortedKeys]
         )
         print(String(decoding: data, as: UTF8.self))
@@ -344,7 +350,12 @@ struct ProcessRecordingCommand {
         monitor: RunMonitor?
     ) async throws -> SessionProcessingResult {
         let sessionURL = try resolveResumeSession(sessionID: sessionID, root: root, outputURL: outputURL)
-        let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID).recovery
+        let scanner = SessionRecoveryScanner(sessionsRoot: root)
+        if let maintenance = try scanner.inspect(sessionID: sessionID).maintenance {
+            let layout = SessionLayout(sessionURL: sessionURL)
+            try SessionStorageMaintainer.run(maintenance, layout: layout, manifest: try layout.loadManifest())
+        }
+        let candidate = try scanner.inspect(sessionID: sessionID).recovery
         try checkStart(pacingMode: pacingMode)
 
         let defaults = try AppPaths.systemDefault(fileManager: .default)

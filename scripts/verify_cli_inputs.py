@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
     before = {str(p.relative_to(session)): p.read_bytes() for p in session.rglob("*") if p.is_file()}
     valid = inspect(session_id.lower())
     assert valid.returncode == 0, valid.stderr
-    assert json.loads(valid.stdout) == {"session_id": session_id, "action": "none"}, valid.stdout
+    assert json.loads(valid.stdout) == {"session_id": session_id, "action": "none", "maintenance": None}, valid.stdout
     # Another full ID with the same prefix must not become a match.
     collision = sessions / "2024-03-01_00-00-00_録音_31ac3491"
     collision.mkdir()

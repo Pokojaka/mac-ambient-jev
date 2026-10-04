@@ -121,11 +121,11 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --low-heat "$SEGMENTS_OUTPUT"
 ```
 
-ID は UUID、root は必須。inspect は位置引数・`--keep-session`・`--low-heat`・計測引数を受け付けず、指定対象の action を JSON で出す。action は `finalize`、`retryContentPriority`、`none`、音声が復旧できない場合の `unrecoverable`。読めない metadata 等の別のエラーは失敗として報告する。
+ID は UUID、root は必須。inspect は位置引数・`--keep-session`・`--low-heat`・計測引数を受け付けず、指定対象の action と保存整理 `maintenance`（`compactRecording`、`removeTransients`、`null`）を JSON で出す。action は `finalize`、`retryContentPriority`、`none`、音声が復旧できない場合の `unrecoverable`。読めない metadata 等の別のエラーは失敗として報告する。
 
 UUID は manifest の完全 ID です。root 直下の manifest を検索して実フォルダーを解決し、不在・複数一致・名前の検証不整合は明示エラーにします。`none` は存在する正常セッションに復旧 action がない場合だけです。
 
-resume は音声ファイルではなく対象 UUID と、セッション外の出力先を一つ指定する。録音・import の両方が対象で、finalize は共通確定処理を全量実行する。pending ASR だけを再投入する経路ではない。CLI は `retryContentPriority` を拒否する。action がない場合は公開済みの結果を書き出すため、resume が常に再処理を始めるわけではない。確定処理の失敗・一時停止では直前の正常な active run を保持する。
+resume は先にそのセッションの保存整理（FLAC 変換または一時音声の削除）を実行し、再走査した action で動く。resume は音声ファイルではなく対象 UUID と、セッション外の出力先を一つ指定する。録音・import の両方が対象で、finalize は共通確定処理を全量実行する。pending ASR だけを再投入する経路ではない。CLI は `retryContentPriority` を拒否する。action がない場合は公開済みの結果を書き出すため、resume が常に再処理を始めるわけではない。確定処理の失敗・一時停止では直前の正常な active run を保持する。
 
 引数 parser は構文だけを検査します。resume の出力先 containment は実行時に実フォルダーを解決した後、symlink 解決・大文字小文字の同一視を保って検査します。実セッション内への出力は拒否し、lookup と containment の失敗は production engine の構築・処理より前に返します。
 
@@ -215,6 +215,10 @@ bash scripts/measure_live_latency.sh --sample-rate 48000 --channels 1 "$AUDIO_FI
 `MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初の非空更新までを計測する。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
 
 Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間、または最長 14 秒分割が表示単位であり、長い発話は初表示まで待つ。測るのは非空更新までで、実画面描画、マイク入力の実時間、全発話の精度を保証する指標ではない。
+
+### 保存整理のテスト
+
+Runtime の保存整理テストは、確定処理の全結果（成功・発話なし・VAD／話者分離／ASR の失敗・話者分離中のキャンセル・一時停止）と録音・import の組で、話者分離入力 CAF と import の処理タイムラインが残らないこと、開始失敗でも古い一時ファイルが消えること、削除失敗・変換失敗のメッセージ、変換後の再処理が PCM 由来と同じ文字起こしを返し FLAC を変えないこと、失敗した再処理が公開結果と FLAC を保つことを、音声から結果を導く fake engine で確認する。AppleSupport の起動時整理テストは起動時の整理が収束し、整理後の再走査が削除済み PCM を指さず、整理に失敗したセッションと録音中のセッションを除外することを確認する。
 
 ## Linux Python の単体テストと suite
 

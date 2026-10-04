@@ -110,3 +110,37 @@ public enum SessionStorageMaintainer {
         try SessionTransientAudio.remove(layout: layout, source: manifest.source)
     }
 }
+
+/// What launch recovery acts on after storage maintenance: a scan taken after maintenance, so no
+/// candidate points at audio that maintenance replaced, and the sessions whose maintenance failed.
+public struct MaintainedRecoveryScan: Sendable {
+    public let scan: SessionRecoveryScan
+    public let maintenanceFailures: [UUID: String]
+}
+
+extension SessionStorageMaintainer {
+    /// Runs every session's storage maintenance to completion, one after another, then scans again.
+    /// `excluding` is a session being recorded; it is not touched. `willMaintain` receives the count first.
+    public static func maintainThenScan(
+        scanner: SessionRecoveryScanner,
+        excluding: UUID?,
+        willMaintain: @Sendable (Int) async -> Void
+    ) async throws -> MaintainedRecoveryScan {
+        let first = try scanner.pendingSessions()
+        let items = first.maintenance.filter { $0.sessionID != excluding }
+        guard !items.isEmpty else {
+            return MaintainedRecoveryScan(scan: first, maintenanceFailures: [:])
+        }
+        await willMaintain(items.count)
+        var failures: [UUID: String] = [:]
+        for item in items {
+            do {
+                let layout = SessionLayout(sessionURL: item.sessionURL)
+                try run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
+            } catch {
+                failures[item.sessionID] = error.localizedDescription
+            }
+        }
+        return MaintainedRecoveryScan(scan: try scanner.pendingSessions(), maintenanceFailures: failures)
+    }
+}

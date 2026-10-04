@@ -181,15 +181,17 @@ private func savePreviousRuns(sessionURL: URL) throws -> ActiveRuns {
 private func processFinal(
     _ processor: NativeSessionProcessor,
     sessionID: UUID,
-    checkpoint: AudioCheckpoint,
+    sessionURL: URL,
     metadataPolicy: UnreadableMetadataPolicy,
     statuses: FinalizationStatusRecorder,
     states: FinalizationStateRecorder,
     phases: FinalizationCallLog
-) async -> SessionProcessingResult {
-    await processor.processSession(
+) async throws -> SessionProcessingResult {
+    let layout = SessionLayout(sessionURL: sessionURL)
+    let source = try #require(try layout.audioSource(for: layout.loadManifest()))
+    return await processor.processSession(
         sessionID: sessionID,
-        source: .recordedPCM(checkpoint),
+        source: source,
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
@@ -234,8 +236,8 @@ func finalTranscriptPipelineSplitsVADSegmentsAtSpeakerChangesBeforeASR() async t
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -306,8 +308,8 @@ func finalTranscriptPipelinePassesOverlappingSpeakerSpansInOneASRCall() async th
         contentPriority: .disabled
     )
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -351,8 +353,8 @@ func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async 
         contentPriority: .disabled
     )
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -396,8 +398,8 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
         })
     )
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -433,8 +435,8 @@ func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched(diarization
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -508,8 +510,8 @@ func finalTranscriptPipelineReportsNoSpeechAsTerminalStatus() async throws {
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -540,8 +542,8 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -597,8 +599,8 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: states, phases: FinalizationCallLog()
     )
 
@@ -648,8 +650,8 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     )
     let statuses = FinalizationStatusRecorder()
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -750,8 +752,8 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
         contentPriority: .disabled
     )
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: log
     )
 
@@ -794,8 +796,11 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
     let pipeline = FinalTranscriptPipeline(
         sessionID: sessionID,
         sessionURL: sessionURL,
-        audio: try ProcessingTimelineReader(
-            directory: SessionLayout(sessionURL: sessionURL).processingDirectory, checkpoint: checkpoint
+        audio: try SessionAudioReaders.open(
+            try #require(try SessionLayout(sessionURL: sessionURL).audioSource(
+                for: SessionLayout(sessionURL: sessionURL).loadManifest()
+            )),
+            layout: SessionLayout(sessionURL: sessionURL)
         ),
         asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
         diarization: FakeFinalDiarizer(
@@ -858,8 +863,8 @@ func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async th
         ),
         contentPriority: .disabled
     )
-    let first = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let first = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(first.disposition == .completed)
@@ -870,8 +875,11 @@ func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async th
     let pipeline = FinalTranscriptPipeline(
         sessionID: sessionID,
         sessionURL: sessionURL,
-        audio: try ProcessingTimelineReader(
-            directory: SessionLayout(sessionURL: sessionURL).processingDirectory, checkpoint: checkpoint
+        audio: try SessionAudioReaders.open(
+            try #require(try SessionLayout(sessionURL: sessionURL).audioSource(
+                for: SessionLayout(sessionURL: sessionURL).loadManifest()
+            )),
+            layout: SessionLayout(sessionURL: sessionURL)
         ),
         asr: FakeFinalASR(log: log, values: ["置き換えない"]),
         diarization: FakeFinalDiarizer(
@@ -915,8 +923,8 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
         ),
         contentPriority: .disabled
     )
-    _ = await processFinal(
-        succeeding, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    _ = try await processFinal(
+        succeeding, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     let published = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
@@ -931,8 +939,8 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
         contentPriority: .disabled
     )
     let states = FinalizationStateRecorder()
-    let result = await processFinal(
-        failing, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        failing, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: states, phases: FinalizationCallLog()
     )
 
@@ -1002,8 +1010,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
         ),
         contentPriority: .disabled
     )
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: recovered, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -1040,8 +1048,8 @@ func speakerSpanOutsideTheRecordingFailsExplicitly(boundary: Int64) async throws
         contentPriority: .disabled
     )
 
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
 
@@ -1081,8 +1089,8 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
     )
     var startedRunsByAttempt: [[String: String]] = []
     for _ in 0..<2 {
-        let result = await processFinal(
-            processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        let result = try await processFinal(
+            processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
             statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
         )
         #expect(result.disposition == .completed)
@@ -1146,16 +1154,16 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
     #expect(scan.candidates.isEmpty)
     #expect(scan.failures.map(\.sessionURL) == [sessionURL])
 
-    let rejected = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let rejected = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(rejected.disposition == .failed)
     #expect(try Data(contentsOf: metadataURL) == broken)
     #expect(await log.snapshot().isEmpty)
 
-    let replaced = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .replace,
+    let replaced = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .replace,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(replaced.disposition == .completed)
@@ -1292,9 +1300,6 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
         samples: Array(repeating: 0, count: 16_000), sessionID: sessionID
     )
     defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
-    let chunkURL = SessionLayout(sessionURL: sessionURL).processingDirectory
-        .appending(path: checkpoint.chunkFiles[0])
-    let audioBefore = try Data(contentsOf: chunkURL)
     let log = FinalizationCallLog()
     let asr = PreparationFailingASR()
     let diarizer: any DiarizationEngine
@@ -1314,9 +1319,10 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
     )
     let statuses = FinalizationStatusRecorder()
     var previousRuns: ActiveRuns?
+    var storedFLAC: Data?
     for attempt in 1...2 {
-        let result = await processFinal(
-            processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+        let result = try await processFinal(
+            processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
             statuses: statuses, states: FinalizationStateRecorder(),
             phases: FinalizationCallLog()
         )
@@ -1375,7 +1381,9 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
         #expect(await asr.prepareCallCount == 0)
         #expect(!FileManager.default.fileExists(atPath: SessionLayout(sessionURL: sessionURL)
             .derivedDirectory.appending(path: "diarization-input.caf").path))
-        #expect(try Data(contentsOf: chunkURL) == audioBefore)
+        let flac = try Data(contentsOf: SessionLayout(sessionURL: sessionURL).recordingFLACURL)
+        #expect(storedFLAC == nil || flac == storedFLAC)
+        storedFLAC = flac
     }
 }
 
@@ -1406,8 +1414,8 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
         contentPriority: .disabled
     )
     let statuses = FinalizationStatusRecorder()
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(result.disposition == .failed)
@@ -1446,8 +1454,8 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     let duplicate = paths.sessionsRoot.appending(path: "malformed")
     try FileManager.default.copyItem(at: sessionURL, to: duplicate)
     let originalLog = try Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)
-    let result = await processFinal(
-        processor, sessionID: sessionID, checkpoint: checkpoint, metadataPolicy: .reject,
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(result.disposition == .failed)

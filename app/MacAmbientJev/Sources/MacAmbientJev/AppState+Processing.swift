@@ -358,11 +358,22 @@ extension AppState {
 
     func recoverPendingSessions() async {
         do {
-            let scan = try SessionRecoveryScanner(
-                sessionsRoot: paths.sessionsRoot
-            ).pendingSessions()
+            let recoveryScan = try await SessionStorageMaintainer.maintainThenScan(
+                scanner: SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot),
+                excluding: recordingSessionID,
+                willMaintain: { count in
+                    await MainActor.run {
+                        let status = "保存済み録音の音声を整理しています（\(count)件）"
+                        self.processingStatusText = status
+                        self.transcriptViewModel.setStatus(status)
+                    }
+                }
+            )
+            let scan = recoveryScan.scan
+            let maintenanceFailures = recoveryScan.maintenanceFailures
             let candidates = scan.candidates
                 .filter { $0.manifest.sessionID != recordingSessionID }
+                .filter { maintenanceFailures[$0.manifest.sessionID] == nil }
 
             if !candidates.isEmpty {
                 processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"
@@ -395,6 +406,12 @@ extension AppState {
                 let message =
                     "復旧できないセッションが\(scan.failures.count)件あります。詳細は「保存済み録音」で確認できます"
                 if candidates.isEmpty { processingState = .partialFailure(message) }
+                processingStatusText = message
+            }
+            if !maintenanceFailures.isEmpty {
+                let details = maintenanceFailures.values.sorted().joined(separator: " / ")
+                let message = "保存済み録音の音声を整理できなかったセッションが\(maintenanceFailures.count)件あります: \(details)"
+                if candidates.isEmpty && scan.failures.isEmpty { processingState = .partialFailure(message) }
                 processingStatusText = message
             }
         } catch {

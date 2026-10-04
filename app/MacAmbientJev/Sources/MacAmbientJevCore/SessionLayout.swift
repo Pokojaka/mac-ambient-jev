@@ -12,6 +12,17 @@ public struct SessionLayout: Sendable, Equatable {
         sessionURL.appending(path: "session.json")
     }
 
+    public func loadManifest() throws -> SessionManifest {
+        let data = try Data(contentsOf: manifestURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            return try decoder.decode(SessionManifest.self, from: data)
+        } catch let error as DecodingError {
+            throw SessionRecoveryScannerError.unreadableManifest(String(describing: error))
+        }
+    }
+
     public var eventsURL: URL {
         sessionURL.appending(path: "events.jsonl")
     }

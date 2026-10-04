@@ -485,6 +485,9 @@ public actor NativeSessionProcessor {
 
     // MARK: - Finalization
 
+    /// Runs one finalization attempt, then converges the session's audio storage: a completed
+    /// recording is compacted to FLAC, and the attempt's transient audio is removed on every
+    /// outcome. A failure of either step is reported in the result.
     private func finalize(
         sessionID: UUID,
         provisional: [MaterializedTranscriptSegment],
@@ -498,24 +501,116 @@ public actor NativeSessionProcessor {
     ) async -> SessionProcessingResult {
         await stopLiveContentPriority(sessionID: sessionID)
         let sessionLayout: SessionLayout
-        let metadataStore: ProcessingMetadataStore
+        let manifest: SessionManifest
+        do {
+            sessionLayout = try layout(for: sessionID)
+            manifest = try sessionLayout.loadManifest()
+        } catch {
+            return await startFailure(error, provisional: provisional, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate)
+        }
         let attemptID = "finalize_\(UUID().uuidString.lowercased())"
         let previous: ProcessingMetadata?
         do {
-            sessionLayout = try layout(for: sessionID)
-            metadataStore = ProcessingMetadataStore(sessionURL: sessionLayout.sessionURL)
-            previous = try metadataStore.beginFinalization(attemptID: attemptID, policy: metadataPolicy)
+            previous = try ProcessingMetadataStore(sessionURL: sessionLayout.sessionURL)
+                .beginFinalization(attemptID: attemptID, policy: metadataPolicy)
         } catch {
-            let message = "確定処理を開始できませんでした: \(error.localizedDescription)"
-            await onPhase(.complete)
-            await onStatus(message)
-            await onUpdate(provisional, .partialFailure(message))
-            return .failed(
-                message: message,
-                metrics: nil,
-                retained: provisional.isEmpty ? .nothing : .provisional
+            let failed = await startFailure(
+                error, provisional: provisional, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
+            )
+            return await closeStorage(
+                failed, layout: sessionLayout, manifest: manifest, source: source, onStatus: onStatus
             )
         }
+        let result = await runAttempt(
+            sessionID: sessionID,
+            sessionLayout: sessionLayout,
+            attemptID: attemptID,
+            previous: previous,
+            provisional: provisional,
+            pacingMode: pacingMode,
+            shouldPause: shouldPause,
+            onPhase: onPhase,
+            onStatus: onStatus,
+            onUpdate: onUpdate,
+            source: source
+        )
+        return await closeStorage(
+            result, layout: sessionLayout, manifest: manifest, source: source, onStatus: onStatus
+        )
+    }
+
+    private func startFailure(
+        _ error: Error,
+        provisional: [MaterializedTranscriptSegment],
+        onPhase: PhaseHandler,
+        onStatus: StatusHandler,
+        onUpdate: UpdateHandler
+    ) async -> SessionProcessingResult {
+        let message = "確定処理を開始できませんでした: \(error.localizedDescription)"
+        await onPhase(.complete)
+        await onStatus(message)
+        await onUpdate(provisional, .partialFailure(message))
+        return .failed(
+            message: message,
+            metrics: nil,
+            retained: provisional.isEmpty ? .nothing : .provisional
+        )
+    }
+
+    private func closeStorage(
+        _ attempt: SessionProcessingResult,
+        layout: SessionLayout,
+        manifest: SessionManifest,
+        source: SessionAudioSource,
+        onStatus: StatusHandler
+    ) async -> SessionProcessingResult {
+        var result = attempt
+        if result.disposition == .completed, case .recordedPCM = source {
+            do {
+                _ = try await Task.detached {
+                    try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
+                }.value
+            } catch {
+                let message = "文字起こしは保存しましたが、録音を FLAC にできませんでした: \(error.localizedDescription)"
+                await onStatus(message)
+                result = .failed(message: message, metrics: result.metrics, retained: .finalized)
+            }
+        }
+        do {
+            try SessionTransientAudio.remove(layout: layout, source: manifest.source)
+        } catch {
+            let cleanup = "音声の一時ファイルを削除できませんでした: \(error.localizedDescription)"
+            let message: String
+            switch result.disposition {
+            case .completed:
+                message = "文字起こしは保存しましたが、\(cleanup)"
+                result = .failed(message: message, metrics: result.metrics, retained: .finalized)
+            case .failed:
+                message = "\(result.message ?? "")。\(cleanup)"
+                result = .failed(message: message, metrics: result.metrics, retained: result.retainedTranscript)
+            case .paused:
+                message = cleanup
+                result = .failed(message: message, metrics: result.metrics, retained: result.retainedTranscript)
+            }
+            await onStatus(message)
+        }
+        return result
+    }
+
+    private func runAttempt(
+        sessionID: UUID,
+        sessionLayout: SessionLayout,
+        attemptID: String,
+        previous: ProcessingMetadata?,
+        provisional: [MaterializedTranscriptSegment],
+        pacingMode: ASRPacingMode,
+        shouldPause: @escaping PauseCheck,
+        onPhase: @escaping PhaseHandler,
+        onStatus: @escaping StatusHandler,
+        onUpdate: @escaping UpdateHandler,
+        source: SessionAudioSource
+    ) async -> SessionProcessingResult {
+        let metadataStore = ProcessingMetadataStore(sessionURL: sessionLayout.sessionURL)
 
         // Freeze durable live decisions before any final recognition. In-flight live
         // requests never become a dependency of finalization.
