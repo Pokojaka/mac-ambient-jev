@@ -28,7 +28,10 @@ extension AppState {
     func prepareASRModel() {
         guard modelPreparationTask == nil, modelPreparation != .ready else { return }
         modelPreparation = .preparing(0)
+        // A release requested after this point waits for this load, so only an earlier release is awaited here.
+        let earlierRelease = idleReleaseTask
         modelPreparationTask = Task { [weak self] in
+            await earlierRelease?.value
             guard let self else { return }
             do {
                 try await sessionProcessor.prepareASR { [weak self] progress, _ in
@@ -43,6 +46,35 @@ extension AppState {
                 modelPreparation = .failed(error.localizedDescription)
             }
             modelPreparationTask = nil
+        }
+    }
+
+    /// True when nothing uses the models: no recording, live transcription, queued, held, or running processing.
+    var isIdleForRelease: Bool {
+        recordingPhase == .idle
+            && pendingProcessing.isEmpty
+            && thermallyHeldProcessing.isEmpty
+            && processingTask == nil
+            && currentlyProcessingSessionID == nil
+            && finalizationGate.sessionIDs.isEmpty
+            && liveASRTasks.isEmpty
+            && liveASRQueues.values.allSatisfy(\.isEmpty)
+    }
+
+    /// Releases the ASR and diarization models and the MLX cache once the app is idle. Model loads, live recognition,
+    /// and finalization wait for a release in progress; the engines load their models again when next used.
+    func releaseIdleResourcesIfIdle() {
+        guard isIdleForRelease, idleReleaseTask == nil else { return }
+        // A load requested after this point waits for the release, so only an earlier load is awaited here.
+        let earlierPreparation = modelPreparationTask
+        idleReleaseTask = Task { [weak self] in
+            await earlierPreparation?.value
+            guard let self else { return }
+            if isIdleForRelease {
+                modelPreparation = .idle
+                await sessionProcessor.releaseIdleResources()
+            }
+            idleReleaseTask = nil
         }
     }
 
@@ -198,6 +230,7 @@ extension AppState {
     }
 
     func drainProcessingQueue() async {
+        await idleReleaseTask?.value
         while !pendingProcessing.isEmpty {
             let request = pendingProcessing.removeFirst()
             if request.finalizesTranscript, Self.isThermallyCritical {
@@ -339,6 +372,7 @@ extension AppState {
             processingState = .complete
         }
         processingTask = nil
+        releaseIdleResourcesIfIdle()
     }
 
     func recoverPendingSessions() async {

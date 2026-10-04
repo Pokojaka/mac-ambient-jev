@@ -227,6 +227,7 @@ final class AppState: ObservableObject {
     var finalizationGate = SavedSessionReprocessGate()
     var processingTask: Task<Void, Never>?
     var modelPreparationTask: Task<Void, Never>?
+    var idleReleaseTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
 
     var liveVADSession: (any LiveVADProcessing)?
@@ -246,6 +247,7 @@ final class AppState: ObservableObject {
         microphoneAccess: @escaping @MainActor () async -> Bool,
         pausesProcessing: Bool,
         userDefaults: UserDefaults,
+        engines: SessionProcessingEngines,
         makeLiveVADSession: @escaping LiveVADFactory
     ) {
         let jevUsageCounter = JevUsageCounter()
@@ -260,7 +262,7 @@ final class AppState: ObservableObject {
         self.makeLiveVADSession = makeLiveVADSession
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
-            engines: .production(paths: paths),
+            engines: engines,
             contentPriority: .jev(
                 NativeSessionProcessor.storedCredentialJevFactory(usageCounter: jevUsageCounter)
             )

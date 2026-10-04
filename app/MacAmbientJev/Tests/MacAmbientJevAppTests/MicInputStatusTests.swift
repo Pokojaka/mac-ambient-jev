@@ -209,7 +209,7 @@ private func makeState(
 ) -> AppState {
     AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, makeLiveVADSession: makeLiveVADSession
+        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: makeLiveVADSession
     )
 }
 

@@ -74,6 +74,7 @@ private struct FakeFinalDiarizer: DiarizationEngine {
     let shouldFail: Bool
 
     func prepare() async throws {}
+    func unload() async {}
 
     func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
         await log.append("diarize")

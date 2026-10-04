@@ -183,6 +183,13 @@ public actor NativeSessionProcessor {
         try await asr.prepare(onProgress: onProgress)
     }
 
+    /// Unloads the ASR and diarization models; unloading the ASR model also clears the MLX buffer cache. Call only while
+    /// no recording, live transcription, or finalization is running. `prepareASR` loads again.
+    public func releaseIdleResources() async {
+        await asr.unload()
+        await diarization.unload()
+    }
+
     @discardableResult
     public func startLiveTranscription(
         sessionID: UUID,

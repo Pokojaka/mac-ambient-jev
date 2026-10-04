@@ -21,6 +21,7 @@ struct MacAmbientJevApp: App {
             microphoneAccess: AppState.requestSystemMicrophoneAccess,
             pausesProcessing: false,
             userDefaults: .standard,
+            engines: .production(paths: paths),
             makeLiveVADSession: AppState.makeFluidLiveVADSession
         ))
     }

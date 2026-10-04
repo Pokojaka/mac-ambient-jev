@@ -170,6 +170,7 @@ extension AppState {
     }
 
     func drainLiveASRQueue(sessionID: UUID) async {
+        await idleReleaseTask?.value
         while liveASRFailures[sessionID] == nil,
               liveASRQueues[sessionID]?.isEmpty == false {
             do {

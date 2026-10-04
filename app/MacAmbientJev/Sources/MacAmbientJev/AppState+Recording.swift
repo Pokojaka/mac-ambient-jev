@@ -179,6 +179,7 @@ extension AppState {
                     tone: .error
                 )
             }
+            releaseIdleResourcesIfIdle()
         }
     }
 
@@ -318,6 +319,7 @@ extension AppState {
                 setCaptureStatus(error.localizedDescription, tone: .error)
             }
             if failureMessage != nil { refreshSavedSessions() }
+            releaseIdleResourcesIfIdle()
         }
     }
 

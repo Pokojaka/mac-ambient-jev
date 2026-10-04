@@ -42,7 +42,7 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
-        pausesProcessing: false, userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
+        pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
     )
     state.selectSavedSession(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)

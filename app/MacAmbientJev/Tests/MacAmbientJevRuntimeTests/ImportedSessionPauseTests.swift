@@ -19,6 +19,7 @@ private struct PausedImportVAD: FinalTranscriptVADSegmenter {
 private struct PausedImportDiarizer: DiarizationEngine {
     let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
+    func unload() async {}
 
     func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
         [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)]

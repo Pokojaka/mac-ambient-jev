@@ -163,7 +163,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, makeLiveVADSession: idleLiveVADFactory()
+        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
     )
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
@@ -231,7 +231,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            makeLiveVADSession: { _, _, _ in vad }
+            engines: .production(paths: paths), makeLiveVADSession: { _, _, _ in vad }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -299,7 +299,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            makeLiveVADSession: idleLiveVADFactory()
+            engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)

@@ -323,6 +323,7 @@ func coordinatorReportsRecognitionFailuresByKind() async throws {
 private actor SuccessfulDiarizationEngine: DiarizationEngine {
     nonisolated let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
+    func unload() async {}
 
     func diarize(
         fileURL: URL,

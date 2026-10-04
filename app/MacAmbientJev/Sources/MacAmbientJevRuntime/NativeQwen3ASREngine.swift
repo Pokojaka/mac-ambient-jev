@@ -1,3 +1,4 @@
+import MLX
 import MacAmbientJevCore
 @preconcurrency import Qwen3ASR
 
@@ -92,8 +93,10 @@ actor NativeQwen3ASREngine: ASREngine {
     }
 
     func unload() async {
-        model?.unload()
-        model = nil
+        guard let model else { return }
+        model.unload()
+        self.model = nil
+        Memory.clearCache()
         state = .stopped
     }
 }

@@ -14,12 +14,10 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         )
     }
 
-    private let manager: OfflineDiarizerManager
     private let modelDirectory: URL
-    private var prepared = false
+    private var manager: OfflineDiarizerManager?
 
     init(paths: AppPaths) {
-        self.manager = OfflineDiarizerManager()
         self.modelDirectory = paths.modelsRoot.appending(
             path: "fluidaudio-offline-diarizer",
             directoryHint: .isDirectory
@@ -27,22 +25,31 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
     }
 
     func prepare() async throws {
-        guard !prepared else { return }
+        _ = try await preparedManager()
+    }
+
+    func unload() async {
+        manager = nil
+    }
+
+    private func preparedManager() async throws -> OfflineDiarizerManager {
+        if let manager { return manager }
 
         try FileManager.default.createDirectory(
             at: modelDirectory,
             withIntermediateDirectories: true
         )
-        try await manager.prepareModels(directory: modelDirectory)
-        prepared = true
+        let loading = OfflineDiarizerManager()
+        try await loading.prepareModels(directory: modelDirectory)
+        manager = loading
+        return loading
     }
 
     func diarize(
         fileURL: URL,
         canonicalSampleRate: Double
     ) async throws -> [SpeakerSpan] {
-        try await prepare()
-
+        let manager = try await preparedManager()
         let result = try await manager.process(fileURL)
         let mapper = SpeakerSpanMapper(
             sampleRate: canonicalSampleRate

@@ -31,4 +31,6 @@ public protocol DiarizationEngine: Sendable {
         fileURL: URL,
         canonicalSampleRate: Double
     ) async throws -> [SpeakerSpan]
+    /// Releases the loaded models; `prepare()` loads them again.
+    func unload() async
 }
