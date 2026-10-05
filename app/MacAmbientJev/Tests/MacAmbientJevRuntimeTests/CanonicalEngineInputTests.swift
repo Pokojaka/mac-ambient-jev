@@ -146,7 +146,10 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
         chunkDurationSeconds: 0.5)
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 512, sampleRate: 48_000)
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: 48_000))
-    var device = (0..<96_000).map { Float(0.3 * sin(2 * .pi * 440 * Double($0) / 48_000)) }
+    var device = (0..<96_000).map { (frame: Int) -> Float in
+        let phase = 2 * Double.pi * 440 * Double(frame) / 48_000
+        return Float(0.3 * sin(phase))
+    }
     var offset = 0
     while offset < device.count {
         let count = min(offset % 3 == 0 ? 512 : 301, device.count - offset)
