@@ -40,8 +40,11 @@ done
 
 bash "$ROOT/scripts/app_info_plist.sh" > "$CONTENTS/Info.plist"
 
-if command -v codesign >/dev/null 2>&1; then
-  codesign     --force     --sign -     --entitlements "$PACKAGE/Entitlements/MacAmbientJev.entitlements"     "$APP"
+SIGNING_IDENTITY="MacAmbientJev Local Signing"
+if ! security find-certificate -c "$SIGNING_IDENTITY" >/dev/null 2>&1; then
+  echo "Code signing certificate \"$SIGNING_IDENTITY\" is not in the keychain. Create it as described in README.md." >&2
+  exit 1
 fi
+codesign --force --sign "$SIGNING_IDENTITY" --entitlements "$PACKAGE/Entitlements/MacAmbientJev.entitlements" "$APP"
 
 echo "$APP"
