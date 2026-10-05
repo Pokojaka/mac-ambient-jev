@@ -13,10 +13,10 @@ concurrency:
 
 jobs:
   verify-v1:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install artifact validation dependency
@@ -27,5 +27,24 @@ jobs:
           python3 scripts/check_doc_references.py
       - name: Swift version
         run: swift --version
+      - name: Create the local signing certificate
+        run: |
+          WORK="$RUNNER_TEMP/signing"
+          KEYCHAIN="$WORK/signing.keychain-db"
+          mkdir -p "$WORK"
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj "/CN=MacAmbientJev Local Signing" \
+            -addext "basicConstraints=critical,CA:false" \
+            -addext "keyUsage=critical,digitalSignature" \
+            -addext "extendedKeyUsage=critical,codeSigning" \
+            -keyout "$WORK/key.pem" -out "$WORK/cert.pem"
+          /usr/bin/openssl pkcs12 -export -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
+            -out "$WORK/identity.p12" -passout pass:ci
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          security import "$WORK/identity.p12" -k "$KEYCHAIN" -P ci -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
       - name: Verify V1
         run: bash scripts/verify_v1.sh
