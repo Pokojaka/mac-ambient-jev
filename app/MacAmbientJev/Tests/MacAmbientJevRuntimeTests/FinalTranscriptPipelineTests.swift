@@ -715,7 +715,11 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
 }
 
 private struct RejectedKeyDecisionProvider: DecisionProvider {
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.httpStatus(401)
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         throw JevClientError.httpStatus(401)
     }
 }
@@ -1272,10 +1276,19 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
 private actor LiveCarryOverProvider: DecisionProvider {
     private var texts: [String] = []
 
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
-        texts.append(text)
-        return ContentPriorityDecision(
-            priority: .lowPriority, confidence: 0.95, model: "counting-jev", inputTokens: 3
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        texts.append(contentsOf: targets.map(\.text))
+        let decision = try ContentPriorityDecision(
+            priority: .lowPriority, confidence: 0.95,
+            probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95]
+        )
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
+            metadata: try JevResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
         )
     }
 

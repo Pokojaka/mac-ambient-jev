@@ -43,19 +43,20 @@ private func fiveSegmentEvents() -> [TranscriptEvent] {
     return events
 }
 
-@Test
-func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws {
+@Test(arguments: [429, 500, 503])
+func unavailableHTTPBatchStopsRequestingAndKeepsTextPrimaryAndPending(status: Int) async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
-    let transport = CountingStatusTransport(status: 429, body: "{\"error\":\"rate\"}")
+    let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unavailable\"}")
+    let counter = JevUsageCounter()
     let coordinator = JevEnrichmentCoordinator(
         sessionID: UUID(),
-        runID: "priority-429",
+        runID: "priority-\(status)",
         writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(
             provider: JevClient(apiKey: "sk-secret-123", transport: transport),
-            usageCounter: JevUsageCounter()
+            usageCounter: counter
         ),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
@@ -69,6 +70,14 @@ func rateLimitedBatchStopsRequestingAndKeepsTextPrimaryAndPending() async throws
     #expect(calls == 1)
     #expect(timeout == 15)
     #expect(result.stopReason == .providerUnavailable)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.successCount == 0)
+    #expect(snapshot.failureCount == 1)
+    #expect(snapshot.retryPendingCount == 5)
+    #expect(snapshot.reportedInputTokens == 0)
+    #expect(snapshot.priorityRequests.failureCount == 1)
+    #expect(snapshot.boundaryRequests.sendCount == 0)
 }
 
 private func pendingRetrySegmentIDs(root: URL) throws -> [String] {
@@ -113,6 +122,9 @@ func rejectedAPIKeyStopsTheBatchAndKeepsEverySegmentPending(status: Int) async t
     let snapshot = await counter.snapshot()
     #expect(snapshot.sendCount == 1)
     #expect(snapshot.failureCount == 1)
+    #expect(snapshot.successCount == 0)
+    #expect(snapshot.priorityRequests.failureCount == 1)
+    #expect(snapshot.boundaryRequests.sendCount == 0)
     #expect(snapshot.retryPendingCount == 5)
 }
 
@@ -144,11 +156,11 @@ func requestSpecificFailureKeepsSendingTheRemainingSegments() async throws {
 func jevErrorsDoNotExposeAPIKeyOrProviderText() async throws {
     let key = "sk-secret-LEAKCHECK"
     for (status, body) in [(401, "{\"error\":\"bad key \(key)\"}"), (200, "not json \(key)"),
-                           (200, "{\"answers\":{\"content_priority\":{\"type\":\"choice\",\"choice\":\"\(key)\",\"confidence\":1}}}")] {
+                           (200, "{\"model\":\"jev-test\",\"usage\":{},\"answers\":{\"p0001\":{\"type\":\"choice\",\"choice\":\"\(key)\",\"confidence\":1,\"probabilities\":{\"PRIMARY\":1,\"LOW_PRIORITY\":0}}}}")] {
         let transport = CountingStatusTransport(status: status, body: body)
         let client = JevClient(apiKey: key, transport: transport)
         do {
-            _ = try await client.classifyPriority(text: "えー")
+            _ = try await client.classifyPriorities([PriorityTextTarget(key: "u0001", text: "えー")])
             Issue.record("expected failure for status \(status)")
         } catch {
             let rendered = "\(error) \(error.localizedDescription) \(String(reflecting: error))"

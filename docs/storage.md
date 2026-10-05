@@ -176,7 +176,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 `decision` は種類を表すキーを 1 つ持つ object です。
 
 ```json
-{"classified":{"confidence":0.95,"model":"jev-latest","input_tokens":12}}
+{"classified":{"confidence":0.95,"model":"jev-1.13.0","input_tokens":12}}
 ```
 
 ```json
@@ -187,7 +187,9 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 {"carried_over":{"source_run_id":"priority_live_example","source_segmentation_run_id":"seg_live_example","source_segment_id":"live_000001"}}
 ```
 
-数値とモデル名は形を示す例です。classified の `confidence` は必須、`model` と `input_tokens` は optional です。`needs_retry` は retry_pending の場合にだけ true で、priority は必ず primary です。carried_over は確定本文と一致したライブ判定の再利用、または再試行で送信しない区間に適用し、引き継ぎ元の run・segmentation run・segment ID をすべて残します。ライブの再利用は前後の空白・改行の trim 後の完全一致に限り、同一本文ではイベント順で最新の classified 判定を使います。Jev の LOW_PRIORITY 応答は confidence が 0.90 以上の場合だけ `lowPriority` として公開します。低 confidence の応答でも classified の来歴自体は保存します。
+数値とモデル名は形を示す例です。classified の `confidence` と実応答の `model` は必須、`input_tokens` は optional です。現在の本番consumerは一行一対象batchであり、一リクエストのmetadataからmodelと入力tokenを一つの `content_priority.assigned` に保存します。複数対象輸送の結果を行イベントへ展開してtokenを複製する経路はありません。輸送の `JevResponseMetadata` は入力・出力tokenを保持しますが、この行イベントは入力tokenだけを保存します。未報告の入力tokenは省略し、0を合成しません。usageはリクエストごとに一回加算し、保存済みイベントの読取やcarryでは加算しません。
+
+`needs_retry` は retry_pending の場合にだけ true で、priority は必ず primary です。carried_over は確定本文と一致したライブ判定の再利用、または再試行で送信しない区間に適用し、引き継ぎ元の run・segmentation run・segment ID をすべて残します。ライブの再利用は前後の空白・改行の trim 後の完全一致に限り、同一本文ではイベント順で最新の classified 判定を使います。Jev の LOW_PRIORITY 応答は confidence が 0.90 以上の場合だけ `lowPriority` として公開します。低 confidence の応答でも classified の来歴自体は保存します。
 
 根拠: [JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JevDecision.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)。
 
@@ -211,7 +213,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default |
 | scene | `acoustic-scene-state-machine` / model なし / `1` | `window_seconds` = `20.0`、`hop_seconds` = `1.0`、`discussion_candidate_observations` = `8`、`discussion_confirm_observations` = `12`、`lecture_candidate_observations` = `10`、`lecture_confirm_observations` = `15` |
 | scope | `proximity-scope-classifier` / model なし / `1` | `evidence` = `timeline-level-and-spectral` |
-| contentPriority | `jev` / run の model なし / `1` | `endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`minimum_demotion_confidence` = `0.9`。応答モデルは区間の classified に保存 |
+| contentPriority | `jev` / run の model なし / `2` | `endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`minimum_demotion_confidence` = `0.9`、`prompt_revision` = `2`、`maximum_targets` = `40`、`request_target_count` = `1`、`text_policy` = `raw-segment`。応答モデルは各行の classified に保存 |
 
 Jev provenance は実際に優先度 run を始める場合に保存します。ライブ優先度 run は configuration に `mode: live` を加え、暫定判定を逐次保存します。録音停止で取り消す run は完了イベントなしでも保存済み classified 判定を保持します。ライブ run は metadata の active_runs に選ばず、確定処理は独立した content priority run を完了・選択します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ ASR run に出すわけではありません。
 

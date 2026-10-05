@@ -58,12 +58,27 @@ private actor Latch {
 private struct ScriptedProvider: DecisionProvider {
     let latch: Latch?
     let failure: JevClientError?
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         await latch?.pass()
         if let failure { throw failure }
-        return ContentPriorityDecision(
-            priority: text == "発話1" ? .lowPriority : .primary,
-            confidence: 0.95, model: "scripted", inputTokens: 1
+        let decisions = try targets.map { target in
+            let isLowPriority = target.text == "発話1"
+            return (target.key, try ContentPriorityDecision(
+                priority: isLowPriority ? .lowPriority : .primary,
+                confidence: 0.95,
+                probabilities: [
+                    "PRIMARY": isLowPriority ? 0.05 : 0.95,
+                    "LOW_PRIORITY": isLowPriority ? 0.95 : 0.05
+                ]
+            ))
+        }
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: decisions),
+            metadata: try JevResponseMetadata(model: "scripted", inputTokens: 1, outputTokens: nil)
         )
     }
 }

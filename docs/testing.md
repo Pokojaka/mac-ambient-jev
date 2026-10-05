@@ -28,6 +28,20 @@ python3 scripts/check_doc_references.py
 
 `scripts/check_doc_references.py` は `README.md`、`AGENTS.md`、docs 配下の Markdown（records を除く）のリポジトリパス、script、既知 CLI の flag、Swift 型の参照を検査する。
 
+### Jevの型付きAPI契約
+
+```bash
+swift build --package-path app/MacAmbientJev
+swift test --package-path app/MacAmbientJev --filter 'JevDecisionTests|JevEnrichmentCoordinatorTests|JevFailureHandlingTests|LiveContentPriorityGatingTests|LiveJevRecordingTests|FinalTranscriptPipelineTests'
+swift test --package-path app/MacAmbientJev --filter JevTransportContractTests
+```
+
+[JevTransportContractTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevTransportContractTests.swift) は実 `JevClient` にHTTPTransportを注入し、複数Noul候補と継続の一HTTP送信、終端のnext省略、原文のCharacter／UTF-16座標、候補印衝突、次原文60 Character上限、source IDや不要本文の非送信、40対象Choiceと回答key対応を検証します。空・重複・本文なし・41対象を送信前に拒否し、missing answer、余分な回答、type mismatch、unknown choice、確率／confidenceの範囲外・非有限値、不正model／usage／tokenで部分結果を公開しないことを確認します。未報告tokenと既知の0 tokenは区別します。Noul採用は0.5直前・同値・直後、LOW採用はconfidence 0.90を境に検証します。
+
+計数・consumerの回帰検証はpurpose別の実request計数と合計、保留行identity、401／403／429／5xxの停止と未送信保留、cancelのattempt-only、通信成功後の保存失敗、低confidence応答・metadata保持を対象にします。接続確認や実APIの品質を合成応答で証明したとは扱いません。
+
+実行smokeは一時harnessで実JevClient→注入HTTPTransport→Noul decodeの候補確率・continuationを出力し、同clientの40対象Choice→ContentPriorityPolicy→usage snapshotを観測します。40判定でもHTTP・success・入力tokenが一request分であること、不正Noulでは結果が得られないことを確認します。現在の保存enrichment経路も一対象で通し、一つのassignedへ実応答modelと入力tokenを保存することを再読込で確認します。harnessは検証後に除去します。このsmokeは外部APIの精度・GUI・録音権限を検証しません。
+
 ### 合成イベントによる回帰検証とライブ滞留計測
 
 ```bash

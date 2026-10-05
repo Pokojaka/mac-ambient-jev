@@ -3,7 +3,7 @@ import Foundation
 public struct ContentPriorityEventPayload: Codable, Sendable, Equatable {
     public enum Decision: Codable, Sendable, Equatable {
         /// Jev classified the segment in this run.
-        case classified(confidence: Double, model: String?, inputTokens: Int?)
+        case classified(confidence: Double, model: String, inputTokens: Int?)
         /// The segment stays primary until a later run classifies it.
         case retryPending
         /// This run did not resend the segment and keeps the priority that
@@ -182,13 +182,13 @@ public actor JevEnrichmentCoordinator {
                 ) ?? .failed(stopsBatch: nil) {
                 case .cancelled:
                     throw CancellationError()
-                case .classified(let decision, let visiblePriority):
+                case .classified(let decision, let metadata, let visiblePriority):
                     payload = ContentPriorityEventPayload(
                         priority: visiblePriority,
                         decision: .classified(
                             confidence: decision.confidence,
-                            model: decision.model,
-                            inputTokens: decision.inputTokens
+                            model: metadata.model,
+                            inputTokens: metadata.inputTokens
                         )
                     )
                 case .failed(let batchStopReason):

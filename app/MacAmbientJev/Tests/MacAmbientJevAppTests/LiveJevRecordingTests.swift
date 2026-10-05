@@ -43,11 +43,21 @@ private actor RecordingJev: DecisionProvider {
     private(set) var texts: [String] = []
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
-        texts.append(text)
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        texts.append(contentsOf: targets.map(\.text))
         if !released { await withCheckedContinuation { waiters.append($0) } }
-        return ContentPriorityDecision(priority: .lowPriority, confidence: 0.95,
-                                       model: "recording-test", inputTokens: 7)
+        let decision = try ContentPriorityDecision(
+            priority: .lowPriority, confidence: 0.95,
+            probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95]
+        )
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
+            metadata: try JevResponseMetadata(model: "recording-test", inputTokens: 7, outputTokens: nil)
+        )
     }
     func release() {
         released = true

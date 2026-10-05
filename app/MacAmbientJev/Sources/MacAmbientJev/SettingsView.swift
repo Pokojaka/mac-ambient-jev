@@ -274,9 +274,16 @@ struct SettingsView: View {
                 statusMessage = "APIキーが保存されていません"
                 return
             }
-            let decision = try await JevClient(apiKey: key, transport: URLSessionJevHTTPTransport(session: .shared)).classifyPriority(
-                text: "これは接続確認のためのテスト文です。"
-            )
+            let response = try await JevClient(
+                apiKey: key,
+                transport: URLSessionJevHTTPTransport(session: .shared)
+            ).classifyPriorities([
+                PriorityTextTarget(key: "u0001", text: "これは接続確認のためのテスト文です。")
+            ])
+            guard response.decisions.count == 1,
+                  let decision = response.decisions["u0001"] else {
+                throw JevClientError.unexpectedAnswers
+            }
             statusIsError = false
             statusMessage = "Jev から応答を受信しました（\(decision.priority == .primary ? "通常表示" : "低優先度")）"
         } catch {

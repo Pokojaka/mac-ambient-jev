@@ -1,28 +1,5 @@
 import Foundation
 
-public struct ContentPriorityDecision: Sendable, Equatable {
-    public let priority: ContentPriority
-    public let confidence: Double
-    public let model: String?
-    public let inputTokens: Int?
-
-    public init(
-        priority: ContentPriority,
-        confidence: Double,
-        model: String?,
-        inputTokens: Int?
-    ) {
-        self.priority = priority
-        self.confidence = confidence
-        self.model = model
-        self.inputTokens = inputTokens
-    }
-}
-
-public protocol DecisionProvider: Sendable {
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision
-}
-
 /// Why a batch stops sending the remaining segments to Jev.
 public enum JevBatchStopReason: Sendable, Equatable {
     case providerUnavailable
@@ -44,7 +21,7 @@ public enum JevBatchStopReason: Sendable, Equatable {
 }
 
 public enum PriorityClassification: Sendable, Equatable {
-    case classified(ContentPriorityDecision, visiblePriority: ContentPriority)
+    case classified(ContentPriorityDecision, metadata: JevResponseMetadata, visiblePriority: ContentPriority)
     /// The segment stays primary and pending. A non-nil reason means the
     /// remaining segments of the batch must not be sent.
     case failed(stopsBatch: JevBatchStopReason?)
@@ -81,25 +58,39 @@ public actor JevDecisionCoordinator {
         segmentID: String,
         sessionID: UUID
     ) async -> PriorityClassification {
-        await usageCounter.recordAttempt()
+        await usageCounter.recordAttempt(purpose: .priority)
 
         do {
-            let decision = try await provider.classifyPriority(text: text)
+            let key = "u0001"
+            let response = try await provider.classifyPriorities([
+                PriorityTextTarget(key: key, text: text)
+            ])
             try Task.checkCancellation()
+            guard let decision = response.decisions[key] else {
+                throw JevClientError.missingAnswer
+            }
+            guard response.decisions.count == 1 else {
+                throw JevClientError.unexpectedAnswers
+            }
             await usageCounter.recordSuccess(
+                purpose: .priority,
+                inputTokens: response.metadata.inputTokens
+            )
+            await usageCounter.clearDeferred(
                 sessionID: sessionID,
-                segmentID: segmentID,
-                inputTokens: decision.inputTokens
+                segmentIDs: [segmentID]
             )
             return .classified(
                 decision,
+                metadata: response.metadata,
                 visiblePriority: ContentPriorityPolicy.visiblePriority(for: decision)
             )
         } catch {
             if Task.isCancelled || error is CancellationError {
                 return .cancelled
             }
-            await usageCounter.recordFailure(
+            await usageCounter.recordFailure(purpose: .priority)
+            await usageCounter.recordDeferred(
                 sessionID: sessionID,
                 segmentID: segmentID
             )

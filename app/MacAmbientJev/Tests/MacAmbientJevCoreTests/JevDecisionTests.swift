@@ -1,12 +1,13 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 import Testing
 @testable import MacAmbientJevCore
 
 private struct FailingDecisionProvider: DecisionProvider {
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw URLError(.notConnectedToInternet)
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         throw URLError(.notConnectedToInternet)
     }
 }
@@ -37,95 +38,36 @@ func httpStatusSelectsTheBatchStopReason(status: Int, reason: JevBatchStopReason
 @Test
 func requestSpecificFailuresDoNotStopTheBatch() {
     #expect(JevBatchStopReason(error: JevClientError.httpStatus(400)) == nil)
-    #expect(JevBatchStopReason(error: JevClientError.missingAnswer("content_priority")) == nil)
-    #expect(JevBatchStopReason(error: JevClientError.invalidChoice("content_priority")) == nil)
+    #expect(JevBatchStopReason(error: JevClientError.missingAnswer) == nil)
+    #expect(JevBatchStopReason(error: JevClientError.invalidChoice) == nil)
+    #expect(JevBatchStopReason(error: JevClientError.unexpectedAnswers) == nil)
 }
 
-private actor MockJevTransport: JevHTTPTransport {
-    private var request: URLRequest?
-    private let data: Data
-    private let statusCode: Int
-
-    init(json: String, statusCode: Int = 200) {
-        self.data = Data(json.utf8)
-        self.statusCode = statusCode
-    }
-
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        self.request = request
-        let response = HTTPURLResponse(
-            url: try #require(request.url),
-            statusCode: statusCode,
-            httpVersion: nil,
-            headerFields: nil
-        )!
-        return (data, response)
-    }
-
-    func capturedRequest() -> URLRequest? {
-        request
-    }
-}
-
-@Test
-func jevPriorityClientSendsOnlyCurrentUtteranceAndChoiceQuestion() async throws {
-    let transport = MockJevTransport(json: """
-    {
-      "model": "jev-1.13.0",
-      "answers": {
-        "content_priority": {
-          "type": "choice",
-          "choice": "PRIMARY",
-          "confidence": 0.91,
-          "probabilities": {"PRIMARY": 0.91, "LOW_PRIORITY": 0.09}
-        }
-      },
-      "usage": {"input_tokens": 42, "output_tokens": 5}
-    }
-    """)
-
-    let client = JevClient(apiKey: "test-key", transport: transport)
-    let decision = try await client.classifyPriority(text: "公開鍵暗号を説明します")
-
-    #expect(decision.priority == .primary)
-    #expect(decision.model == "jev-1.13.0")
-    #expect(decision.inputTokens == 42)
-
-    let request = try #require(await transport.capturedRequest())
-    #expect(request.url == JevClient.endpoint)
-    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
-
-    let body = try #require(request.httpBody)
-    let decodedBody = try JSONSerialization.jsonObject(with: body)
-    let object = try #require(decodedBody as? [String: Any])
-    #expect(object["state"] as? String == "公開鍵暗号を説明します")
-    #expect(object["audio"] == nil)
-    #expect(object["speaker_embedding"] == nil)
-
-    let questions = try #require(object["questions"] as? [String: Any])
-    let priority = try #require(
-        questions["content_priority"] as? [String: Any]
+private func lowPriority(confidence: Double) throws -> ContentPriorityDecision {
+    try ContentPriorityDecision(
+        priority: .lowPriority,
+        confidence: confidence,
+        probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95]
     )
-    #expect(priority["type"] as? String == "choice")
-}
-
-private func lowPriority(confidence: Double) -> ContentPriorityDecision {
-    ContentPriorityDecision(priority: .lowPriority, confidence: confidence, model: "jev-test", inputTokens: 1)
 }
 
 @Test
-func confidentLowPriorityDemotesAnyUtterance() {
-    #expect(ContentPriorityPolicy.visiblePriority(for: lowPriority(confidence: 0.90)) == .lowPriority)
+func confidentLowPriorityDemotesAnyUtterance() throws {
+    #expect(ContentPriorityPolicy.visiblePriority(for: try lowPriority(confidence: 0.90)) == .lowPriority)
 }
 
 @Test
-func lowPriorityBelowThresholdStaysPrimary() {
-    #expect(ContentPriorityPolicy.visiblePriority(for: lowPriority(confidence: 0.89)) == .primary)
+func lowPriorityBelowThresholdStaysPrimary() throws {
+    #expect(ContentPriorityPolicy.visiblePriority(for: try lowPriority(confidence: 0.89)) == .primary)
 }
 
 @Test
-func confidentPrimaryStaysPrimary() {
-    let decision = ContentPriorityDecision(priority: .primary, confidence: 0.99, model: "jev-test", inputTokens: 1)
+func confidentPrimaryStaysPrimary() throws {
+    let decision = try ContentPriorityDecision(
+        priority: .primary,
+        confidence: 0.99,
+        probabilities: ["PRIMARY": 0.99, "LOW_PRIORITY": 0.01]
+    )
     #expect(ContentPriorityPolicy.visiblePriority(for: decision) == .primary)
 }
 
@@ -133,12 +75,15 @@ private struct LowPriorityDecisionProvider: DecisionProvider {
     let confidence: Double
     let inputTokens: Int
 
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
-        ContentPriorityDecision(
-            priority: .lowPriority,
-            confidence: confidence,
-            model: "jev-test",
-            inputTokens: inputTokens
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        let decision = try lowPriority(confidence: confidence)
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
+            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: inputTokens, outputTokens: nil)
         )
     }
 
@@ -157,35 +102,50 @@ func coordinatorDemotesConfidentNonFillerUtterance() async {
         sessionID: UUID()
     )
 
-    guard case .classified(let decision, let visiblePriority) = result else {
+    guard case .classified(let decision, let metadata, let visiblePriority) = result else {
         Issue.record("expected a classification, got \(result)")
         return
     }
     #expect(visiblePriority == .lowPriority)
-    #expect(decision.inputTokens == 23)
+    #expect(decision.priority == .lowPriority)
+    #expect(metadata.inputTokens == 23)
 }
 
 @Test
-func usageCounterSeparatesUnreportedTokenUsageFromZeroTokens() async {
+func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
     let counter = JevUsageCounter()
     let sessionID = UUID()
 
-    await counter.recordAttempt()
-    await counter.recordSuccess(sessionID: sessionID, segmentID: "a", inputTokens: 42)
-    await counter.recordAttempt()
-    await counter.recordSuccess(sessionID: sessionID, segmentID: "b", inputTokens: 0)
-    await counter.recordAttempt()
-    await counter.recordSuccess(sessionID: sessionID, segmentID: "c", inputTokens: nil)
-    await counter.recordAttempt()
-    await counter.recordFailure(sessionID: sessionID, segmentID: "d")
+    await counter.recordAttempt(purpose: .boundary)
+    await counter.recordSuccess(purpose: .boundary, inputTokens: 42)
+    await counter.recordAttempt(purpose: .priority)
+    await counter.recordSuccess(purpose: .priority, inputTokens: 0)
+    await counter.recordAttempt(purpose: .boundary)
+    await counter.recordSuccess(purpose: .boundary, inputTokens: nil)
+    await counter.recordAttempt(purpose: .priority)
+    await counter.recordFailure(purpose: .priority)
+    #expect(await counter.snapshot().retryPendingCount == 0)
+    await counter.recordDeferred(sessionID: sessionID, segmentID: "d")
+    await counter.recordAttempt(purpose: .priority)
+    await counter.recordSuccess(purpose: .priority, inputTokens: 3)
+    #expect(await counter.snapshot().retryPendingCount == 1)
+    await counter.clearDeferred(sessionID: sessionID, segmentIDs: ["d"])
 
     #expect(await counter.snapshot() == JevUsageSnapshot(
-        sendCount: 4,
-        reportedInputTokens: 42,
-        successCount: 3,
+        sendCount: 5,
+        reportedInputTokens: 45,
+        successCount: 4,
         unreportedTokenSuccessCount: 1,
         failureCount: 1,
-        retryPendingCount: 1
+        retryPendingCount: 0,
+        boundaryRequests: JevRequestUsageSnapshot(
+            sendCount: 2, reportedInputTokens: 42, successCount: 2,
+            unreportedTokenSuccessCount: 1, failureCount: 0
+        ),
+        priorityRequests: JevRequestUsageSnapshot(
+            sendCount: 3, reportedInputTokens: 3, successCount: 2,
+            unreportedTokenSuccessCount: 0, failureCount: 1
+        )
     ))
 }
 
@@ -194,9 +154,20 @@ private actor RecoveringDecisionProvider: DecisionProvider {
 
     func reconnect() { offline = false }
 
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         if offline { throw URLError(.notConnectedToInternet) }
-        return ContentPriorityDecision(priority: .primary, confidence: 1, model: "jev-test", inputTokens: nil)
+        let decision = try ContentPriorityDecision(
+            priority: .primary, confidence: 1,
+            probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]
+        )
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
+            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: nil, outputTokens: nil)
+        )
     }
 
 }
@@ -345,4 +316,81 @@ func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
     #expect(snapshot.sendCount == 4)
     #expect(snapshot.failureCount == 2)
     #expect(snapshot.successCount == 2)
+}
+
+@Test
+func lowConfidenceClassificationRetainsTheActualDecisionAndMetadata() async throws {
+    let coordinator = JevDecisionCoordinator(
+        provider: LowPriorityDecisionProvider(confidence: 0.89, inputTokens: 7),
+        usageCounter: JevUsageCounter()
+    )
+    let result = await coordinator.classify(
+        text: "本文", segmentID: "segment", sessionID: UUID()
+    )
+    guard case .classified(let decision, let metadata, let visiblePriority) = result else {
+        Issue.record("expected a classification, got \(result)")
+        return
+    }
+    #expect(decision.priority == .lowPriority)
+    #expect(decision.confidence == 0.89)
+    #expect(decision.probabilities == ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95])
+    #expect(visiblePriority == .primary)
+    #expect(metadata == (try JevResponseMetadata(model: "jev-test", inputTokens: 7, outputTokens: nil)))
+}
+
+private struct MismatchedPriorityKeysProvider: DecisionProvider {
+    let keys: [String]
+
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        let decision = try lowPriority(confidence: 0.99)
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: keys.map { ($0, decision) }),
+            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 99, outputTokens: nil)
+        )
+    }
+}
+
+@Test(arguments: [[], ["u0002"], ["u0001", "u0002"]] as [[String]])
+func mismatchedProviderKeysFailTheWholeRequestBeforeSuccessAccounting(keys: [String]) async {
+    let counter = JevUsageCounter()
+    let coordinator = JevDecisionCoordinator(
+        provider: MismatchedPriorityKeysProvider(keys: keys), usageCounter: counter
+    )
+    let result = await coordinator.classify(
+        text: "本文", segmentID: "segment", sessionID: UUID()
+    )
+    #expect(result == .failed(stopsBatch: nil))
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.successCount == 0)
+    #expect(snapshot.failureCount == 1)
+    #expect(snapshot.reportedInputTokens == 0)
+    #expect(snapshot.unreportedTokenSuccessCount == 0)
+    #expect(snapshot.retryPendingCount == 1)
+    #expect(snapshot.priorityRequests.failureCount == 1)
+    #expect(snapshot.boundaryRequests.sendCount == 0)
+}
+
+@Test
+func deferredSegmentsRemainIndependentAcrossSessionsAndClearWithoutRequests() async {
+    let counter = JevUsageCounter()
+    let firstSession = UUID()
+    let secondSession = UUID()
+    await counter.recordDeferred(sessionID: firstSession, segmentID: "same")
+    await counter.recordDeferred(sessionID: firstSession, segmentID: "same")
+    await counter.recordDeferred(sessionID: secondSession, segmentID: "same")
+    #expect(await counter.snapshot().retryPendingCount == 2)
+    await counter.clearDeferred(sessionID: firstSession, segmentIDs: ["same"])
+    #expect(await counter.snapshot().retryPendingCount == 1)
+    await counter.clearDeferred(sessionID: secondSession, segmentIDs: ["same"])
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.retryPendingCount == 0)
+    #expect(snapshot.sendCount == 0)
+    #expect(snapshot.successCount == 0)
+    #expect(snapshot.failureCount == 0)
+    #expect(snapshot.reportedInputTokens == 0)
 }

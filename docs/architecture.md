@@ -101,6 +101,12 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 App は `ContentPriorityAccess.jev` を渡します。ファイル処理・システム音声キャプチャ・ライブ遅延計測の CLI は `.disabled` を渡し、Jev を呼びません。初回のローカルモデル取得には通信が必要ですが、ASR と話者分離の推論はローカルです。
 
+外部判定の注入境界は Core の `DecisionProvider` です。`NativeSessionProcessor` の factory と AppState が用意する `JevDecisionCoordinator` は、`JevClient` または注入providerを受け取ります。現在のライブ・確定・再試行consumerは、一行のASR原文を一対象batchとして `classifyPriorities` に渡します。Settingsの接続確認も一対象batchで、固定テスト文だけを送りusageを計数しません。
+
+輸送は型付きNoulと複数Choiceを扱います。Noulは一区間の候補印付きraw textと必要な次原文先頭だけを送り、全候補・継続の確率を一HTTPで返します。候補列挙・マーカー衝突回避・閾値比較はコード、意味判定はJevの責務です。Choiceは最大40個のrequest-local keyと対象本文をstate objectに置き、各質問がそのkeyを直接指定します。全回答とmodel／usageの検証が成功してから結果を公開し、metadataをリクエスト単位で扱います。本番の境界run・節組立てはこの輸送の呼出経路にはありません。
+
+共有source・候補・確率・metadata型は [ClauseTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、HTTPと質問type別decodeは [JevClient.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、request purpose別計数と行保留管理は [JevUsageCounter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevUsageCounter.swift) にあります。計数と保存イベントへの反映を分離し、保存障害を通信failureへ変換しません。
+
 ## 待機中のモデル解放
 
 App は録音・ライブ認識・確定処理の待ち行列・発熱による保留・実行中の確定処理がすべてなくなった時点で `NativeSessionProcessor.releaseIdleResources()` を呼び、Qwen3-ASR と話者分離のモデルを解放し、MLX のバッファキャッシュを空にします。モデル状態は「録音開始時に準備します」に戻ります。解放中に始まったモデル準備・ライブ認識・確定処理は解放の完了を待ちます。次の録音や確定処理ではモデルを読み込み直すため、録音開始直後のライブ表示は読み込みの数秒だけ遅れます。CLI はプロセス終了で解放されるため、この解放を呼びません。

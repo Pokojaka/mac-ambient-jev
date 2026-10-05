@@ -8,7 +8,15 @@ Jev の外部 API を使うのは、録音中と確定後の発話本文の**優
 
 分類対象は、録音中のライブ ASR が保存した非空本文と、公開した確定結果の非空本文です。ライブ表示は、判定が届くまでその行（と時間順で後続の行）を表示せず、保存された判定とともに表示します。Jev 無効・失敗・保留・停止の行は即時に通常行として表示します。音声そのもの、話者 embedding、講義全文、前後の発話、場面や近接度の情報を添えて送りません。背景判定による画面非表示とは別の対象判定なので、非空本文であれば画面から除外する背景発話も分類対象になります。
 
-API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モデル指定は jev-latest、リクエストのタイムアウトは 15 秒です。この URL は外部 API の endpoint であり、リポジトリ内のパスではありません。送信本文を state、質問を content_priority として送り、PRIMARY / LOW_PRIORITY の二択を求めます。応答の model と入力 token 数は判定ごとに保存します。
+API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モデル指定は jev-latest、リクエストのタイムアウトは 15 秒です。この URL は外部 API の endpoint であり、リポジトリ内のパスではありません。現在のアプリは行ごとに一対象の `PriorityTextTarget` を `classifyPriorities` へ渡します。state は `{"u0001":"対象行のASR原文"}`、質問 `p0001` はその key を直接指定し、PRIMARY / LOW_PRIORITY の二択を求めます。他の対象を参考文脈として使う指示はしません。応答の model と入力 token 数は、その一リクエストに対応する一つの行判定へ保存します。
+
+### 型付き輸送
+
+`DecisionProvider` は `assessBoundaries(ClauseBoundaryRequest)` と `classifyPriorities([PriorityTextTarget])` を公開します。優先度輸送は一送信につき最大40対象で、state の request-local key `u0001` 等と質問・応答 key `p0001` 等を対応付け、結果の `decisions` は対象 key で返します。空配列、重複 key、不正な key、空白・改行だけの本文、40対象を超える配列は送信前に拒否します。本文を自動で分割したり、失敗したbatchを一対象ずつ再送したりしません。
+
+境界輸送は、ASR 原文の `、。？！?!` の直後（原文末尾を除く）の候補をコードで列挙し、候補印付き原文を state の `text` に置きます。候補座標は UTF-16 code unit、切れ目は Character 境界です。原文に存在しないマーカーフレームを選び、原文自体は変更しません。後続がある場合だけ `next_text` に次原文の先頭60 Character以内を置き、全 `b0001` 等の候補と `continuation` を一HTTPで問い合わせます。前区間、次区間全文、source ID は送りません。終端は `next_text` と継続質問を省略します。Noul は有限の0..1確率を返し、境界・継続ともコードの採用閾値は厳密な `> 0.5` です。質問のない終端は輸送へ送信できません。現在の本番アプリはこの境界輸送を呼ばず、行単位の優先度分類を行います。
+
+全 requested answer key、質問と一致する type、Choice の二択・両選択肢の probabilities・confidence、非空 model、usage object を検証します。確率と confidence は有限の0..1、token は未報告なら nil、報告された値は非負整数です。不足・余分な回答、型不一致、不正値はリクエスト全体を拒否し、部分結果や架空の0確率を返しません。`ContentPriorityDecision` に応答の選択肢・confidence・probabilities、`JevResponseMetadata` に実応答 model・入力／出力 token を分離します。
 
 ## 優先度の採用と原文保持
 
@@ -49,7 +57,7 @@ API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モ
 
 「設定」→「Jev」で API キーを保存・削除します。キーは macOS Keychain に保存し、設定やセッション JSON、イベントログには保存しません。設定画面を開いたときは、キーの有無を属性だけで確かめるため、キーチェーンの許可は求めません。キー本体を読むのは接続確認と分類のときだけです。Keychain の許可はアプリの署名に結び付くため、app bundle は固定の自己署名証明書で署名します（[README](../README.md) の「ビルドと起動」）。Jev の使用切り替えは優先度分類へのアクセスを止めるもので、録音やローカル認識を停止しません。
 
-「Jev 接続を確認」は「これは接続確認のためのテスト文です。」だけを送り、応答またはエラーを表示します。保存済みキーがない、Jev が停止中、確認実行中なら開始しません。接続確認はセッション分類の usage counter を通りません。
+「Jev 接続を確認」は、一対象batchで「これは接続確認のためのテスト文です。」だけを送り、応答またはエラーを表示します。保存済みキーがない、Jev が停止中、確認実行中なら開始しません。接続確認はセッション分類の usage counter を通りません。エラーには API キー、対象 key、送信本文、応答本文を含めません。
 
 「診断」の Jev 利用状況には次を表示します。
 
@@ -60,7 +68,9 @@ API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モ
 - 失敗件数
 - 再試行待ち件数
 
-token 数がない成功応答を 0 token の既知成功としては扱いません。成功件数と「token 数不明の件数」に数え、報告された入力 token 数だけを合計します。再試行待ちは session ID と segment ID の組で重複なく数え、成功で除きます。送信・成功・失敗の回数と token 合計は実行中の usage counter の値で、保留 ID を保存する metadata とは別です。未送信の保留区間は送信回数や失敗件数を増やしません。
+送信・成功・失敗と入力 token は対象数ではなく provider の実リクエスト単位で計数します。`JevUsageSnapshot` は合計と `boundaryRequests` / `priorityRequests` の内訳を保持し、診断画面は合計を表示します。40判定の成功でも送信・成功は各一回、入力 token は metadata から一回だけ加算します。入力 token 未報告の成功を0 token の既知成功にはせず、成功件数と「token 数不明の件数」に数えます。報告された入力 token だけを合計し、出力 token は輸送metadataに保持します。
+
+再試行待ちは request purpose別計数と独立し、現在の行対象の session ID と segment ID の組で重複なく管理します。対象の分類成功で保留を除き、未送信の保留や保存済み結果の再利用は送信・失敗を増やしません。通信成功後のイベント保存失敗は通信failureに数えません。取り消されたrequestは attemptだけを残し、success・failure・新規保留を加えません。既存の保留は取り消しで消しません。これら実行中のcounterは、保留 ID を保存するmetadataとは別です。
 
 ## 場面判定は音響のみ
 
@@ -100,7 +110,7 @@ scope は `near`、`background`、`unknown` の時間 span として保存しま
 
 ## 実装の根拠
 
-- [Jev request・応答・エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、[優先度閾値・バッチ停止](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[判定イベントと再試行 run](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)
+- [Jev request・応答・エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、[共有型・Noul閾値・batch上限](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[優先度閾値・バッチ停止](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[判定イベントと再試行 run](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)
 - [アプリ／CLI のアクセス境界と保存済みキー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[アプリの構成](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)
 - [設定と接続確認](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)、[Keychain](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/KeychainStore.swift)、[利用計数](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevUsageCounter.swift)、[診断表示](../app/MacAmbientJev/Sources/MacAmbientJev/DiagnosticsView.swift)
 - [場面の観測と記録時刻](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneCoordinator.swift)、[場面特徴と状態機械](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneInference.swift)、[確定処理の場面設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)

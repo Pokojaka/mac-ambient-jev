@@ -4,24 +4,34 @@ import Testing
 
 private struct FixedPriorityProvider: DecisionProvider {
     let decision: ContentPriorityDecision
+    let metadata: JevResponseMetadata
 
-    func classifyPriority(
-        text: String
-    ) async throws -> ContentPriorityDecision {
-        decision
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
+            metadata: metadata
+        )
     }
 }
 
 private struct ThrowingPriorityProvider: DecisionProvider {
-    func classifyPriority(
-        text: String
-    ) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw URLError(.notConnectedToInternet)
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         throw URLError(.notConnectedToInternet)
     }
 }
 
-@Test
-func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
+@Test(arguments: [(0.99, ContentPriority.lowPriority), (0.89, .primary)])
+func jevEnrichmentStoresResponseMetadataWhileApplyingVisibleThreshold(
+    confidence: Double, visiblePriority: ContentPriority
+) async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -32,12 +42,12 @@ func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
         writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(
             provider: FixedPriorityProvider(
-                decision: ContentPriorityDecision(
+                decision: try ContentPriorityDecision(
                     priority: .lowPriority,
-                    confidence: 0.99,
-                    model: "jev-test",
-                    inputTokens: 12
-                )
+                    confidence: confidence,
+                    probabilities: ["PRIMARY": 0.01, "LOW_PRIORITY": 0.99]
+                ),
+                metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 12, outputTokens: 3)
             ),
             usageCounter: JevUsageCounter()
         ),
@@ -71,8 +81,15 @@ func jevEnrichmentDemotesConfidentLowPriorityUtterance() async throws {
     #expect(result.stopReason == nil)
     #expect(
         result.materializedSegments.first?.contentPriority
-            == .lowPriority
+            == visiblePriority
     )
+    let payloads = try persistedPriorityPayloads(root: root)
+    let classified = try #require(
+        (payloads["seg-1"]?["decision"] as? [String: Any])?["classified"] as? [String: Any]
+    )
+    #expect(classified["confidence"] as? Double == confidence)
+    #expect(classified["model"] as? String == "jev-test")
+    #expect(classified["input_tokens"] as? Int == 12)
 }
 
 @Test
@@ -126,15 +143,20 @@ func jevFailureKeepsPrimaryAndRecordsRetryPending() async throws {
 private actor CountingRetryProvider: DecisionProvider {
     private var priorityCalls: [String] = []
 
-    func classifyPriority(
-        text: String
-    ) async throws -> ContentPriorityDecision {
-        priorityCalls.append(text)
-        return ContentPriorityDecision(
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        priorityCalls.append(contentsOf: targets.map(\.text))
+        let decision = try ContentPriorityDecision(
             priority: .primary,
             confidence: 1,
-            model: "jev-test",
-            inputTokens: 4
+            probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]
+        )
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
+            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 4, outputTokens: nil)
         )
     }
 
@@ -380,12 +402,16 @@ func normalizedLiveReuseDoesNotReuseChangedOrPendingText() async throws {
 
 private struct StatusFailurePriorityProvider: DecisionProvider {
     let status: Int
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.httpStatus(status)
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         throw JevClientError.httpStatus(status)
     }
 }
 
-@Test(arguments: [401, 503])
+@Test(arguments: [401, 403, 429, 500, 503])
 func incrementalUnavailableRunStopsLaterRequestsAndCountsAllAssignments(status: Int) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -405,7 +431,10 @@ func incrementalUnavailableRunStopsLaterRequestsAndCountsAllAssignments(status: 
         reusableDecisions: [:], completeRun: true, onAssignment: nil
     )
     #expect(await counter.snapshot().sendCount == 1)
-    let expectedReason: JevBatchStopReason = status == 401 ? .authorizationRejected : .providerUnavailable
+    #expect(await counter.snapshot().successCount == 0)
+    #expect(await counter.snapshot().failureCount == 1)
+    #expect(await counter.snapshot().retryPendingCount == 2)
+    let expectedReason: JevBatchStopReason = status == 401 || status == 403 ? .authorizationRejected : .providerUnavailable
     #expect(first.stopReason == expectedReason)
     #expect(second.stopReason == expectedReason)
     #expect(second.retryPendingSegmentIDs == ["b"])
@@ -418,11 +447,15 @@ func incrementalUnavailableRunStopsLaterRequestsAndCountsAllAssignments(status: 
 }
 
 private actor SuspendedPriorityProvider: DecisionProvider {
-    private var response: CheckedContinuation<ContentPriorityDecision, Never>?
+    private var response: CheckedContinuation<PriorityBatchResponse, Never>?
     private var entered: CheckedContinuation<Void, Never>?
     private var hasEntered = false
 
-    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        throw JevClientError.invalidResponse
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         await withCheckedContinuation { continuation in
             response = continuation
             hasEntered = true
@@ -436,20 +469,30 @@ private actor SuspendedPriorityProvider: DecisionProvider {
         await withCheckedContinuation { entered = $0 }
     }
 
-    func respond() {
-        response?.resume(returning: .init(priority: .lowPriority, confidence: 1, model: nil, inputTokens: nil))
+    func respond() throws {
+        response?.resume(returning: PriorityBatchResponse(
+            decisions: ["u0001": try ContentPriorityDecision(
+                priority: .lowPriority, confidence: 1,
+                probabilities: ["PRIMARY": 0, "LOW_PRIORITY": 1]
+            )],
+            metadata: try JevResponseMetadata(model: "suspended-test", inputTokens: nil, outputTokens: nil)
+        ))
         response = nil
     }
 }
 
-@Test
-func cancellationDoesNotSaveReturnedClassification() async throws {
+@Test(arguments: [false, true])
+func cancellationDoesNotSaveReturnedClassification(hadPending: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let provider = SuspendedPriorityProvider()
     let counter = JevUsageCounter()
+    let sessionID = UUID()
+    if hadPending {
+        await counter.recordDeferred(sessionID: sessionID, segmentID: "a")
+    }
     let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(), runID: "live", writer: try SessionWriter(sessionURL: root),
+        sessionID: sessionID, runID: "live", writer: try SessionWriter(sessionURL: root),
         decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
@@ -462,8 +505,53 @@ func cancellationDoesNotSaveReturnedClassification() async throws {
     }
     await provider.waitUntilEntered()
     task.cancel()
-    await provider.respond()
+    try await provider.respond()
     await #expect(throws: CancellationError.self) { try await task.value }
     #expect(try persistedPriorityPayloads(root: root).isEmpty)
-    #expect(await counter.snapshot().successCount == 0)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.successCount == 0)
+    #expect(snapshot.failureCount == 0)
+    #expect(snapshot.retryPendingCount == (hadPending ? 1 : 0))
+    #expect(snapshot.reportedInputTokens == 0)
+}
+
+@Test
+func persistenceFailureAfterAResponseDoesNotBecomeATransportFailure() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try SessionWriter(sessionURL: root)
+    let eventsURL = root.appending(path: "events.jsonl")
+    try FileManager.default.removeItem(at: eventsURL)
+    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
+    let counter = JevUsageCounter()
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: UUID(), runID: "priority", writer: writer,
+        decisions: JevDecisionCoordinator(
+            provider: FixedPriorityProvider(
+                decision: try ContentPriorityDecision(
+                    priority: .lowPriority, confidence: 0.99,
+                    probabilities: ["PRIMARY": 0.01, "LOW_PRIORITY": 0.99]
+                ),
+                metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 12, outputTokens: nil)
+            ),
+            usageCounter: counter
+        ),
+        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    )
+    await #expect(throws: (any Error).self) {
+        try await coordinator.process(
+            existingEvents: liveReuseEvents([("a", "本文")]),
+            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all,
+            reusableDecisions: [:], completeRun: true, onAssignment: nil
+        )
+    }
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.successCount == 1)
+    #expect(snapshot.failureCount == 0)
+    #expect(snapshot.reportedInputTokens == 12)
+    #expect(snapshot.retryPendingCount == 0)
+    #expect(snapshot.priorityRequests.successCount == 1)
+    #expect(snapshot.priorityRequests.failureCount == 0)
 }

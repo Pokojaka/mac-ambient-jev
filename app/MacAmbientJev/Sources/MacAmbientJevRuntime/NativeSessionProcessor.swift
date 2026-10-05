@@ -900,10 +900,14 @@ public actor NativeSessionProcessor {
     private static let contentPriorityProvenance = RunProvenance(
         engine: "jev",
         model: nil,
-        version: "1",
+        version: JevClient.priorityPromptRevision,
         configuration: [
             "endpoint": JevClient.endpoint.absoluteString,
             "minimum_demotion_confidence": String(ContentPriorityPolicy.minimumDemotionConfidence),
+            "maximum_targets": String(JevPriorityBatchPolicy.maximumTargets),
+            "request_target_count": "1",
+            "prompt_revision": JevClient.priorityPromptRevision,
+            "text_policy": "raw-segment",
         ]
     )
 

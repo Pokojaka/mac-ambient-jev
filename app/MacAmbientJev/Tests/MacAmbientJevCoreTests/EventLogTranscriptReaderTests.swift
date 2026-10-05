@@ -296,7 +296,7 @@ func liveDecisionReuseSelectsLatestClassifiedSourceAcrossSegmentationRuns() thro
             "event_seq": seq, "event_type": "content_priority.assigned", "processing_run_id": run,
             "segmentation_run_id": segmentation, "segment_id": segment,
             "payload": ["priority": pending ? "primary" : "lowPriority", "needs_retry": pending,
-                        "decision": pending ? ["retry_pending": [:]] : ["classified": ["confidence": 0.99]]]
+                        "decision": pending ? ["retry_pending": [:]] : ["classified": ["confidence": 0.99, "model": "jev-test"]]]
         ])
     }
     let lines = try [
