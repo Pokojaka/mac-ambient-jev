@@ -132,7 +132,7 @@ struct LiveTranscriptView: View {
             .buttonStyle(.plain)
             .help("詳細")
             .accessibilityLabel("時刻 \(formatTime(row.startMilliseconds))、詳細を表示")
-            .popover(isPresented: detailPopover(for: row.id)) {
+            .popover(isPresented: detailPopover(for: row.id), arrowEdge: .trailing) {
                 transcriptDetails(row)
                     .padding(AppSpacing.md)
             }
