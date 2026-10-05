@@ -361,17 +361,29 @@ extension AppState {
         isMaintainingStorage = true
         do {
             let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+            let maintenance = scan.maintenance.filter { $0.sessionID != recordingSessionID }
+            let maintenanceStatus = "保存済み録音の音声を整理しています（\(maintenance.count)件）"
+            let previousProcessingStatus = processingStatusText
+            let previousTranscriptStatus = transcriptViewModel.statusText
             let maintenanceFailures = await SessionStorageMaintainer.maintain(
-                scan.maintenance.filter { $0.sessionID != recordingSessionID },
-                willMaintain: { count in
+                maintenance,
+                willMaintain: { _ in
                     await MainActor.run {
-                        let status = "保存済み録音の音声を整理しています（\(count)件）"
-                        self.processingStatusText = status
-                        self.transcriptViewModel.setStatus(status)
+                        self.processingStatusText = maintenanceStatus
+                        self.transcriptViewModel.setStatus(maintenanceStatus)
                     }
                 }
             )
             isMaintainingStorage = false
+            // Only remove our temporary status; recording or processing may have replaced it while awaiting.
+            if !maintenance.isEmpty {
+                if processingStatusText == maintenanceStatus {
+                    processingStatusText = previousProcessingStatus
+                }
+                if transcriptViewModel.statusText == maintenanceStatus {
+                    transcriptViewModel.setStatus(previousTranscriptStatus)
+                }
+            }
             let candidates = scan.candidates
                 .filter { $0.manifest.sessionID != recordingSessionID }
                 .filter { maintenanceFailures[$0.manifest.sessionID] == nil }

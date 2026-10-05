@@ -92,6 +92,8 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 アプリは起動時に、録音中のセッションを除く全セッションの保存整理を、キューへ何も入れる前に 1 件ずつ最後まで実行します。状態は「保存済み録音の音声を整理しています（n件）」です。`recordingPCM` で変換が必要なものと、`recordingFLAC` で PCM が残るものは変換（収束）、それ以外で一時ファイルが残るものは削除です。音声ソースは使う時点で `storage.json` から決めるため、整理後の再走査はありません。整理中は処理キューを開始せず、その間の要求は整理後に順に処理します。整理中に要求されたセッションは、その起動の復旧対象から外します。整理に失敗したセッションはその起動では復旧対象にせず、フォルダー名を付けて「保存済み録音の音声を整理できなかったセッションが n 件あります: …」と報告します。復旧できないセッションの報告と合わせるときは、復旧できない報告を先にして「。」でつなぎます。
 
+整理が終わった時点で、処理状態とライブ文字起こしのヘッダーから整理中の表示を解除します。整理中の表示がまだ残っている欄だけを整理前の状態へ戻し、その間に録音や文字起こし処理が更新した状態は上書きしません。復旧対象がある場合は復旧の表示へ進み、整理に失敗した場合は処理状態に明示エラーを残します。復旧対象がなく整理だけが完了した場合も、整理中の表示は残りません。
+
 どの時点で中断しても、再実行は `storage.json` を見て同じ終状態に収束します。`recordingPCM` のまま `recording.flac` が残っていれば、PCM と完全一致する場合だけ採用し、不一致や破損なら削除して PCM から作り直します。`recordingFLAC` では FLAC を全復号して検証し、失敗すれば PCM に触れずエラーにします。`importedOriginal` は変換対象外です。
 
 根拠: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[SessionLayout.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)、[AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioCaptureEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。
