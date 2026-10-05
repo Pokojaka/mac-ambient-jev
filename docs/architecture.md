@@ -89,7 +89,7 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
   → App で許可された場合だけ Jev 優先度分類
 ```
 
-区間は保存タイムラインの frame index による半開区間です。話者間 gap は中点で分割します。話者 span が負または保存音声範囲外なら明示エラーにします。
+区間は保存タイムラインの frame index による半開区間です。話者間 gap は中点で分割します。FluidAudio adapter だけは実音声内から最終モデル window の padding 内へ延びる終端を EOF に合わせます（[終端の規則](final.md)）。EOF 以降の開始、padding を超える終端は adapter で明示エラーにし、確定パイプラインでも全 span の実音声範囲を厳密に検証します。
 
 確定処理開始時に `finalization_attempt` を running として保存し、処理中のイベントは既存ログへ追記します。全ローカル段階が成功するまでは公開済み `active_runs` を変更しません。失敗・熱による一時停止では直前の正常な結果を維持し、再開は新しい確定 run の全量実行です。原音声は後段の失敗で削除しません。
 

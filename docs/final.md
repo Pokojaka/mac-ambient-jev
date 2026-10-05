@@ -24,6 +24,8 @@
 
 話者分離は既存の canonical CAF と FluidAudio の OfflineDiarizerConfig.segmentation.sampleRate を検証し、`OfflineDiarizerManager.process(audioSource:audioLoadingSeconds:progressCallback:)` を呼びます。`CanonicalCAFAudioSource` が lock 付きの bounded random read を行い、SRC や別の whole-audio raw PCM temporary file は作りません。FluidAudio が末尾で要求する固定長のモデル window には、CAF に存在する sample だけをコピーし、呼び出し元が 0 初期化した残りを変更しません。保存タイムラインの長さ・音声・区間座標には padding を加えず、実ファイルの予期しない EOF・不正 sample はエラーです。発話のある確定処理の CAF 自体は derived 内に保存します。
 
+FluidAudio の話者時刻はゼロ padding を含むモデル window の grid 上の値です。`FluidOfflineDiarizationEngine` は CAF の実 sample 数を使い、`SpeakerSpanMapper` が canonical frame に変換した時点で、実音声内に開始し、最終 window の padding 内で終了する span の終端だけを EOF に合わせます。window 開始位置は `0, samplesPerStep, ... < sampleCount` なので、最終開始位置は `floor((sampleCount - 1) / samplesPerStep) * samplesPerStep`、許容 padding は `max(0, samplesPerWindow - (sampleCount - 最終開始位置))` です。EOF ちょうどで開始する span、padding を超える終端、負の開始位置、逆転・ゼロ長は明示エラーにします。音声自体の長さは変えず、保存イベントには実音声内の span だけを渡します。他の話者分離 engine や下流の確定処理で範囲外 span を切り詰めません。
+
 VAD、ASR、話者分離、場面、音響範囲には新しい run ID を付け、各段階の `processing.run.started` に、その実行の engine、model、version、configuration を保存します。以前の run の来歴を新しい実行へ引き継ぎません。
 
 検証済み VAD 結果が 0 区間なら、話者分離用の音声を書き出さず、話者分離と ASR のモデル準備・推論、場面・音響範囲の判定、Jev 分類を実行しません。5 段階すべてに provenance を持つ開始と `succeeded: true`、`completed_count: 0`、`failed_count: 0` の完了を保存し、同じ公開前検証を通して空の確定文字起こしを `complete` として公開します。これは処理対象がないことの完了であり、推論した話者 span や場面を作りません。ASR 計測値はすべて 0、終端表示は「発話区間は検出されませんでした」です。保存音声は変更しません。
@@ -104,7 +106,7 @@ VAD 区間を話者 turn と同一視しません。一つの VAD 区間内で�
 - 話者 span が接していれば接点、間に空白があれば空白の中点で分割します。中点で二つの子区間へ配分するので、空白部分の音声サンプルは捨てません。独立した UNKNOWN gap 行は作りません。
 - 切断で生じる子区間も各 0.3 秒以上必要です。短い揺れや重なり・入れ子で境界が曖昧な場合は切らず、元の詳細 span を保持します。
 - 子区間は元 VAD 区間を欠落・重複なく覆います。VAD の 14 秒分割後の短い continuation はそのまま保持し、短いからという理由で隣の別話者へ混ぜません。
-- 負の開始位置、逆転・ゼロ長、音声全体の範囲外の話者 span は明示エラーです。範囲内へ黙って切り詰めません。
+- 負の開始位置、逆転・ゼロ長、音声全体の範囲外の話者 span は明示エラーです。FluidAudio adapter が上記の最終 window padding を処理した後も、確定パイプラインは音声範囲を厳密に検証し、範囲内へ黙って切り詰めません。
 
 重なり発話を話者分離したことは、混合音声から各人の声を分離したことを意味しません。本文を文字数比で二人へ配分する処理もありません。
 

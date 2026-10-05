@@ -1,3 +1,4 @@
+import struct FluidAudio.TimedSpeakerSegment
 import Foundation
 import MacAmbientJevAppleSupport
 import Testing
@@ -80,6 +81,29 @@ private struct FakeFinalDiarizer: DiarizationEngine {
         await log.append("diarize")
         guard !shouldFail else { throw FakeFinalizationError.expected }
         return spans
+    }
+}
+
+private struct PaddedWindowFinalDiarizer: DiarizationEngine {
+    let provenance = RunProvenance(engine: "deterministic-fluid-diarizer", model: nil, version: "test", configuration: [:])
+    let startFrame: Int64
+    let endFrame: Int64
+
+    func prepare() async throws {}
+    func unload() async {}
+
+    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+        let source = try CanonicalCAFAudioSource(fileURL: fileURL)
+        return try FluidOfflineDiarizationEngine.mapSegments(
+            [TimedSpeakerSegment(
+                speakerId: "S1", embedding: [],
+                startTimeSeconds: Float(Double(startFrame) / canonicalSampleRate),
+                endTimeSeconds: Float(Double(endFrame) / canonicalSampleRate),
+                qualityScore: 0.9
+            )],
+            sampleCount: source.sampleCount,
+            config: .default
+        )
     }
 }
 
@@ -201,6 +225,84 @@ private func processFinal(
 private func eventObjects(_ sessionURL: URL) throws -> [[String: Any]] {
     try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
         .lines.compactMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+}
+
+@Test
+func finalTranscriptPipelineBoundsFluidPaddingBeforePublishing() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let asr = FakeFinalASR(log: log, values: ["末尾の発話"])
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: PaddedWindowFinalDiarizer(startFrame: 8_000, endFrame: 16_660),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
+        ),
+        contentPriority: .disabled
+    )
+
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+
+    #expect(result.disposition == .completed)
+    let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(metadata.finalizationAttempt?.state == .complete)
+    let rawEvents = try eventObjects(sessionURL)
+    let speakerEvent = try #require(rawEvents.first { $0["event_type"] as? String == "speaker.span" })
+    #expect(speakerEvent["source_start_frame"] as? Int64 == 8_000)
+    #expect(speakerEvent["source_end_frame"] as? Int64 == 16_000)
+    #expect(await asr.recordedAudioFrameCounts() == [16_000])
+    let storage = try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL)).load()
+    guard case .recordingFLAC(let info) = storage else {
+        Issue.record("Finalization did not compact the recording")
+        return
+    }
+    #expect(info.committedFrames == 16_000)
+}
+
+@Test(arguments: [(Int64(16_000), Int64(16_660)), (Int64(16_001), Int64(16_660)), (Int64(8_000), Int64(160_001))])
+func finalTranscriptPipelineRejectsFluidSpansOutsideFinalPadding(startFrame: Int64, endFrame: Int64) async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+    let previousRuns = try savePreviousRuns(sessionURL: sessionURL)
+    let log = FinalizationCallLog()
+    let asr = FakeFinalASR(log: log, values: ["使われない"])
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: asr,
+            diarization: PaddedWindowFinalDiarizer(startFrame: startFrame, endFrame: endFrame),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
+        ),
+        contentPriority: .disabled
+    )
+
+    let result = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+
+    #expect(result.disposition == .failed)
+    #expect(result.message?.contains(FinalTranscriptPipelineError.invalidSpeakerSpan(
+        speakerID: "S1", startFrame: startFrame, endFrame: endFrame, totalFrames: 16_000
+    ).localizedDescription) == true)
+    let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(metadata.finalizationAttempt?.state == .failed)
+    #expect(metadata.activeRuns == previousRuns)
+    #expect(await asr.recordedAudioFrameCounts() == [])
+    #expect(try eventObjects(sessionURL).contains { $0["event_type"] as? String == "speaker.span" } == false)
 }
 
 @Test

@@ -60,20 +60,58 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         let loadingSeconds = Date().timeIntervalSince(started)
         let manager = try await preparedManager()
         let result = try await manager.process(audioSource: source, audioLoadingSeconds: loadingSeconds, progressCallback: nil)
-        let mapper = SpeakerSpanMapper(
-            sampleRate: canonicalSampleRate
+        return try Self.mapSegments(
+            result.segments,
+            sampleCount: source.sampleCount,
+            config: config
         )
+    }
 
-        return result.segments
+    static func mapSegments(
+        _ segments: [TimedSpeakerSegment],
+        sampleCount: Int,
+        config: OfflineDiarizerConfig
+    ) throws -> [SpeakerSpan] {
+        let mapper = SpeakerSpanMapper(
+            sampleRate: Double(config.segmentation.sampleRate)
+        )
+        let totalFrames = Int64(sampleCount)
+        // FluidAudio schedules windows at every step strictly before EOF, including
+        // overlapping tail windows even when the audio length is a window multiple.
+        let finalWindowStart = sampleCount > 0
+            ? ((sampleCount - 1) / config.samplesPerStep) * config.samplesPerStep
+            : 0
+        let paddingFrames = sampleCount > 0
+            ? Int64(max(0, config.samplesPerWindow - (sampleCount - finalWindowStart)))
+            : 0
+
+        return try segments
             .map { segment in
-                mapper.map(
+                let span = mapper.map(
                     speakerID: segment.speakerId,
                     startSeconds: Double(segment.startTimeSeconds),
                     endSeconds: Double(segment.endTimeSeconds),
                     confidence: Double(segment.qualityScore)
                 )
+                guard span.startFrame >= 0,
+                      span.startFrame < totalFrames,
+                      span.endFrame > span.startFrame,
+                      span.endFrame <= totalFrames || span.endFrame - totalFrames <= paddingFrames else {
+                    throw FinalTranscriptPipelineError.invalidSpeakerSpan(
+                        speakerID: span.speakerID,
+                        startFrame: span.startFrame,
+                        endFrame: span.endFrame,
+                        totalFrames: totalFrames
+                    )
+                }
+                guard span.endFrame > totalFrames else { return span }
+                return SpeakerSpan(
+                    speakerID: span.speakerID,
+                    startFrame: span.startFrame,
+                    endFrame: totalFrames,
+                    confidence: span.confidence
+                )
             }
-            .filter { $0.endFrame > $0.startFrame }
             .sorted {
                 if $0.startFrame == $1.startFrame {
                     return $0.endFrame < $1.endFrame
