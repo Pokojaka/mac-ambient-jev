@@ -82,7 +82,7 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 1. processing ディレクトリの checkpoint と PCM を検証します。長さ 0 の録音は変換対象にならず `recordingPCM` のままです（`audioSource` が nil で、変換は予定されません）。
 2. 古い `recording.flac.partial` を削除し、`recording.flac.partial` へ FLAC を書いて synchronize します。
-3. partial を復号し、全 sample が PCM の 16-bit 量子化と完全に一致し、復号した長さが max(録音の長さ, 4,096) フレームで、埋めたフレームが全て 0 であることを確認します。
+3. partial のコンテナ長が max(録音の長さ, 4,096) フレームと一致することを確認し、その長さの全フレームを復号します。各読み取りは最大 8,192 フレームかつ残りフレーム数以下とし、要求したフレーム数が正確に返ることを必須とします。既知の末尾では読み取りを行わず、OS の EOF 通知には依存しません。全 sample が PCM の 16-bit 量子化と完全に一致し、埋めたフレームが全て 0 であることも確認します。途中の短い読み取りや復号失敗はエラーです。
 4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
 5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
 

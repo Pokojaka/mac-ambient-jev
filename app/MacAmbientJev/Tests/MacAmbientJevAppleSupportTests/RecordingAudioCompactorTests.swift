@@ -317,7 +317,28 @@ private func anInvalidFLACUnderFLACStateFailsWithoutTouchingPCM(damage: Damage) 
     #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingFLAC(info))
 }
 
-@Test(arguments: [1, 9, 191, 4_095, 4_096, 4_097, 8_193])
+@Test(arguments: [4_095, 8_191, 8_192, 8_193, 16_384, 1_272_955], [false, true])
+func fullFLACValidationStopsAtTheStoredEnd(frames: Int, comparePCM: Bool) async throws {
+    let layout = try makeLayout()
+    defer { cleanUp(layout) }
+    let samples = (0..<frames).map { sin(Float($0) * 0.013) * 0.8 }
+    let checkpoint = try await recordPCM(layout, samples: samples)
+    let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
+    try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACPartialURL)
+    let reader = try FLACTimelineReader(url: layout.recordingFLACPartialURL, info: pcm.info)
+
+    if comparePCM {
+        try reader.validateAudio(against: pcm)
+    } else {
+        try reader.validateAudio()
+    }
+
+    #expect(try reader.readSamples(frameRange: 0..<pcm.info.committedFrames) == quantized(samples))
+    #expect(try reader.readSamples(frameRange: (Int64(frames) - 1)..<Int64(frames)) == quantized([samples[frames - 1]]))
+    #expect(try reader.readSamples(frameRange: Int64(frames)..<Int64(frames)) == [])
+}
+
+@Test(arguments: [1, 9, 191, 4_095, 4_096, 4_097, 8_191, 8_192, 8_193, 16_384, 1_272_955])
 func aRecordingOfAnyLengthRoundTripsAndShortOnesArePaddedWithSilence(frames: Int) async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }

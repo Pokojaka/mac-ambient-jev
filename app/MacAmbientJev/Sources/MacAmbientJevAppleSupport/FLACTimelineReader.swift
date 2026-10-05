@@ -33,13 +33,11 @@ public enum FLACTimelineReaderError: LocalizedError, Equatable {
 }
 
 /// Bounded reads of `audio/recording.flac`. Opening checks the container format and length;
-/// `validateAudio` decodes every frame to end of stream.
+/// `validateAudio` decodes exactly that many stored frames, including silent padding.
 public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable {
     public let url: URL
     public let info: TimelineAudioInfo
     private static let framesPerRead: AVAudioFrameCount = 8_192
-    /// `eofErr` from MacTypes.h.
-    private static let endOfFileStatus = -39
     private let file: AVAudioFile
     private let buffer: AVAudioPCMBuffer
     private let lock = NSLock()
@@ -83,18 +81,13 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         while output.count < frameRange.count {
             let requested = min(Int(Self.framesPerRead), frameRange.count - output.count)
             let read = try readBuffer(frameCount: AVAudioFrameCount(requested), at: frameRange.lowerBound + Int64(output.count))
-            guard read.count == requested else {
-                throw FLACTimelineReaderError.decodedFrameCountMismatch(
-                    expected: info.committedFrames, decoded: frameRange.lowerBound + Int64(output.count + read.count)
-                )
-            }
             output.append(contentsOf: read)
         }
         return output
     }
 
-    /// Decodes the whole stream from frame 0 to the decoder's end of stream, counting the frames
-    /// actually returned rather than trusting the container length.
+    /// Decodes every stored frame within the validated container length, requiring each read
+    /// to return exactly the requested frames without probing EOF.
     public func validateAudio() throws {
         try decodeAll(expected: nil)
     }
@@ -111,14 +104,9 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         let storedFrames = RecordingFLAC.storedFrames(committedFrames: committedFrames)
         file.framePosition = 0
         var decoded: Int64 = 0
-        while true {
-            let samples = try readBuffer(frameCount: Self.framesPerRead, at: decoded)
-            if samples.isEmpty { break }
-            guard decoded + Int64(samples.count) <= storedFrames else {
-                throw FLACTimelineReaderError.decodedFrameCountMismatch(
-                    expected: storedFrames, decoded: decoded + Int64(samples.count)
-                )
-            }
+        while decoded < storedFrames {
+            let requested = AVAudioFrameCount(min(Int64(Self.framesPerRead), storedFrames - decoded))
+            let samples = try readBuffer(frameCount: requested, at: decoded)
             let recordedCount = Int(max(0, min(Int64(samples.count), committedFrames - decoded)))
             if let source, recordedCount > 0 {
                 let reference = try source.readSamples(frameRange: decoded..<(decoded + Int64(recordedCount)))
@@ -134,21 +122,20 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
             }
             decoded += Int64(samples.count)
         }
-        guard decoded == storedFrames else {
-            throw FLACTimelineReaderError.decodedFrameCountMismatch(expected: storedFrames, decoded: decoded)
-        }
     }
 
-    /// An empty result is end of stream. The decoder signals it either with zero frames or with
-    /// `eofErr` once the position reaches the end.
+    /// Every request is within the known stored length; short reads are corruption, not EOF.
     private func readBuffer(frameCount: AVAudioFrameCount, at frame: Int64) throws -> [Float] {
         buffer.frameLength = 0
         do {
             try file.read(into: buffer, frameCount: frameCount)
-        } catch let error as NSError where error.domain == NSOSStatusErrorDomain && error.code == Self.endOfFileStatus {
-            return []
         } catch {
             throw FLACTimelineReaderError.decodeFailed(frame: frame, reason: error.localizedDescription)
+        }
+        guard buffer.frameLength == frameCount else {
+            throw FLACTimelineReaderError.decodedFrameCountMismatch(
+                expected: file.length, decoded: frame + Int64(buffer.frameLength)
+            )
         }
         guard let channel = buffer.floatChannelData?[0] else {
             throw FLACTimelineReaderError.decodeFailed(frame: frame, reason: "no channel data")
