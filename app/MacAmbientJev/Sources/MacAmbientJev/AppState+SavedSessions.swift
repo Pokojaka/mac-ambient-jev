@@ -39,7 +39,12 @@ extension AppState {
         selectedSavedSessionURL = sessionURL
         let summary = savedSessions.first(where: { $0.sessionURL == sessionURL })
         displayedSessionID = summary?.sessionID
-        transcriptViewModel.update(segments: [])
+        do {
+            try transcriptViewModel.update(segments: [])
+        } catch {
+            transcriptViewModel.setStatus("文字起こし表示を初期化できませんでした: \(error.localizedDescription)")
+            return
+        }
         transcriptViewModel.setDisplayState(.empty)
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
@@ -56,7 +61,7 @@ extension AppState {
             case .unavailable:
                 transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
             case .segments(let segments):
-                transcriptViewModel.update(segments: segments)
+                try transcriptViewModel.update(segments: segments)
                 transcriptViewModel.setDisplayState(.finalized)
                 transcriptViewModel.setStatus(
                     segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"

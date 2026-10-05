@@ -28,7 +28,7 @@ func materializerUsesOnlySelectedASRRun() {
 }
 
 @Test
-func materializerKeepsEmptyFinalTurnAndShortRecognizedSpeech() {
+func materializerKeepsEmptyFinalTurnAndShortRecognizedSpeech() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "full",
                         startFrame: 0, endFrame: 672_000),
@@ -48,13 +48,26 @@ func materializerKeepsEmptyFinalTurnAndShortRecognizedSpeech() {
     )
     #expect(segments.map(\.segmentID) == ["full", "tail", "short"])
     #expect(segments.first(where: { $0.segmentID == "tail" })?.text == "")
-    let rows = LiveTranscriptProjection().rows(for: segments)
+    let rows = try LiveTranscriptProjection().rows(for: segments)
     #expect(rows.map(\.segmentID) == ["full", "short"])
     #expect(rows.last?.text == "短い発話")
 }
 
 @Test
-func liveProjectionHidesEmptyTextButShowsEverythingSpoken() {
+func liveProjectionCleansDisplayWithoutChangingMaterializedASRText() throws {
+    let raw = "えー、今日は公開鍵暗号を説明します。"
+    let segment = MaterializedTranscriptSegment(
+        segmentID: "raw", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
+        scene: .lecture, speakers: [], scopeSpans: [], contentPriority: .primary, isDiarized: false
+    )
+    let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
+    #expect(segment.text == raw)
+    #expect(row.text == "今日は公開鍵暗号を説明します。")
+    #expect(row.textFragments.map(\.text).joined() == row.text)
+}
+
+@Test
+func liveProjectionHidesEmptyTextButShowsEverythingSpoken() throws {
     let texts = [
         "",
         " \n\t",
@@ -62,6 +75,7 @@ func liveProjectionHidesEmptyTextButShowsEverythingSpoken() {
         "「聞き取れませんでした。」",
         "『認識できませんでした』",
         "えー",
+        " えー、\n",
         "うん"
     ]
     let segments = texts.enumerated().map { index, text in
@@ -72,7 +86,8 @@ func liveProjectionHidesEmptyTextButShowsEverythingSpoken() {
         )
     }
 
-    #expect(LiveTranscriptProjection().rows(for: segments).map(\.text) == Array(texts.dropFirst(2)))
+    let rows = try LiveTranscriptProjection().rows(for: segments)
+    #expect(rows.map(\.text) == ["聞き取れませんでした", "「聞き取れませんでした。」", "『認識できませんでした』", "うん"])
 }
 
 @Test
@@ -247,12 +262,12 @@ func materializerMarksSegmentsDiarizedOnlyWhenADiarizationRunIsActive() throws {
     #expect(!live.isDiarized)
     #expect(final.isDiarized)
     #expect(final.speakers.isEmpty)
-    #expect(LiveTranscriptProjection().rows(for: [live]).map(\.displaySpeakerLabels) == [[]])
-    #expect(LiveTranscriptProjection().rows(for: [final]).map(\.displaySpeakerLabels) == [["UNKNOWN"]])
+    #expect(try LiveTranscriptProjection().rows(for: [live]).map(\.displaySpeakerLabels) == [[]])
+    #expect(try LiveTranscriptProjection().rows(for: [final]).map(\.displaySpeakerLabels) == [["UNKNOWN"]])
 }
 
 @Test
-func liveProjectionHidesOnlyBackgroundOnlyDiscussionSegments() {
+func liveProjectionHidesOnlyBackgroundOnlyDiscussionSegments() throws {
     let backgroundOnly = MaterializedTranscriptSegment(
         segmentID: "bg",
         startMilliseconds: 0,
@@ -291,7 +306,7 @@ func liveProjectionHidesOnlyBackgroundOnlyDiscussionSegments() {
         isDiarized: false
     )
 
-    let rows = LiveTranscriptProjection().rows(for: [backgroundOnly, mixed])
+    let rows = try LiveTranscriptProjection().rows(for: [backgroundOnly, mixed])
     #expect(rows.map(\.segmentID) == ["mixed"])
 }
 

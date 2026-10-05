@@ -114,7 +114,7 @@ func appRecordingHoldsLiveRowsUntilJevDecision() async throws {
     }) { state in
         var publishedPriorities: [[Bool]] = []
         let observation = state.transcriptViewModel.$rows.sink { rows in
-            publishedPriorities.append(rows.map(\.isLowPriority))
+            publishedPriorities.append(rows.map(\.shouldCollapseRow))
         }
         defer { observation.cancel() }
         let deadline = ContinuousClock.now + .seconds(5)
@@ -136,7 +136,7 @@ func appRecordingHoldsLiveRowsUntilJevDecision() async throws {
         }
         #expect(await provider.texts == ["録音の発話1", "録音の発話2"])
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
-        #expect(state.transcriptViewModel.rows.map(\.isLowPriority) == [true, true])
+        #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [true, true])
         #expect(publishedPriorities.allSatisfy { $0.allSatisfy { $0 } })
         let usage = await state.jevUsageCounter.snapshot()
         #expect(usage.sendCount == 2)
@@ -162,7 +162,7 @@ func appRecordingShowsJevFactoryFailureReason() async throws {
         #expect(state.isRecording)
         #expect(state.liveASRFailures[sessionID] == nil)
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
-        #expect(state.transcriptViewModel.rows.allSatisfy { !$0.isLowPriority })
+        #expect(state.transcriptViewModel.rows.allSatisfy { !$0.shouldCollapseRow })
         #expect(state.processingStatusText?.contains(description) == true)
         #expect(state.transcriptViewModel.statusText.contains(description))
         #expect(state.liveContentPriorityStatus[sessionID]?.contains(description) == true)

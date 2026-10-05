@@ -413,7 +413,11 @@ extension AppState {
     func showNewSession(_ sessionID: UUID) {
         selectedSavedSessionURL = nil
         displayedSessionID = sessionID
-        transcriptViewModel.update(segments: [])
+        do {
+            try transcriptViewModel.update(segments: [])
+        } catch {
+            transcriptViewModel.setStatus("文字起こし表示を初期化できませんでした: \(error.localizedDescription)")
+        }
     }
 
     func terminateCapture() {

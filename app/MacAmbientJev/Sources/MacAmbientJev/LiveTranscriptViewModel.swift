@@ -19,8 +19,8 @@ final class LiveTranscriptViewModel: ObservableObject {
     @Published private(set) var autoFollowEnabled = true
 
     private let projection = LiveTranscriptProjection()
-    func update(segments: [MaterializedTranscriptSegment]) {
-        rows = projection.rows(for: segments)
+    func update(segments: [MaterializedTranscriptSegment]) throws {
+        rows = try projection.rows(for: segments)
     }
 
     func setStatus(_ text: String) {

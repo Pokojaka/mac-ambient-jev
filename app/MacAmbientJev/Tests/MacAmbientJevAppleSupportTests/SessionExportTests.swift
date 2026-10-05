@@ -39,6 +39,31 @@ func savedTranscriptLoaderMaterializesActiveRuns() async throws {
     #expect(segments.map(\.startMilliseconds) == [0, 65_000, 70_000])
 }
 
+@Test
+func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let raw = "えー、今日は公開鍵暗号を説明します。"
+    let session = try await fixture.writeLiveSession(firstText: raw)
+    let layout = SessionLayout(sessionURL: session.sessionURL)
+    let eventsBefore = try Data(contentsOf: layout.eventsURL)
+    let transcript = try SavedTranscriptLoader.load(
+        sessionURL: session.sessionURL,
+        audioSource: try #require(session.audioSource)
+    )
+    guard case .segments(let segments) = transcript else {
+        Issue.record("expected saved transcript segments")
+        return
+    }
+
+    #expect(segments.first?.text == raw)
+    let rows = try LiveTranscriptProjection().rows(for: segments)
+    #expect(rows.first?.text == "今日は公開鍵暗号を説明します。")
+    #expect(try TranscriptTextRenderer.render(segments)
+        == "[00:00] Speaker 1: 今日は公開鍵暗号を説明します。\n[01:05] Speaker 2: 今日の議題です\n")
+    #expect(try Data(contentsOf: layout.eventsURL) == eventsBefore)
+}
+
 
 @Test
 func exporterWritesReadableTranscriptAndFlacAudio() async throws {
@@ -277,7 +302,8 @@ struct ExportFixture {
     func writeLiveSession(
         samples: [Float] = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 },
         activeRuns: ActiveRuns = completeRuns,
-        compacted: Bool = true
+        compacted: Bool = true,
+        firstText: String = "こんにちは"
     ) async throws -> SavedSession {
         let id = UUID()
         let session = try writeManifest(id: id, source: .recording(.microphone))
@@ -291,7 +317,7 @@ struct ExportFixture {
             try SessionAudioStorageStore(layout: layout).save(.recordingFLAC(pcm.info))
             try FileManager.default.removeItem(at: layout.processingDirectory)
         }
-        try await writeTranscript(sessionID: id, session: session, activeRuns: activeRuns)
+        try await writeTranscript(sessionID: id, session: session, activeRuns: activeRuns, firstText: firstText)
         return try readable(id)
     }
 
@@ -336,11 +362,12 @@ struct ExportFixture {
     private func writeTranscript(
         sessionID: UUID,
         session: URL,
-        activeRuns: ActiveRuns
+        activeRuns: ActiveRuns,
+        firstText: String = "こんにちは"
     ) async throws {
         let writer = try SessionWriter(sessionURL: session)
         let segments: [(id: String, start: Int64, end: Int64, text: String, speaker: String)] = [
-            ("seg-1", 0, 16_000, "こんにちは", "speaker-a"),
+            ("seg-1", 0, 16_000, firstText, "speaker-a"),
             ("seg-2", 65 * 16_000, 67 * 16_000, "今日の議題です", "speaker-b"),
             ("seg-3", 70 * 16_000, 71 * 16_000, "  ", "speaker-a"),
         ]
@@ -433,16 +460,18 @@ func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
             speakers: [("A", 2_000, 3_000)], scene: .discussion, scopes: [.background]
         ),
         segment(
-            "low", startMilliseconds: 3_000, text: "えーと", speakers: [("B", 3_000, 4_000)],
+            "low", startMilliseconds: 3_000, text: "えーと、低優先度本文", speakers: [("B", 3_000, 4_000)],
             priority: .lowPriority
         ),
+        segment("filler-only", startMilliseconds: 4_000, text: "えー、", speakers: [("A", 4_000, 5_000)]),
     ]
 
-    let rows = LiveTranscriptProjection().rows(for: segments)
+    let rows = try LiveTranscriptProjection().rows(for: segments)
     let lines = try TranscriptTextRenderer.render(segments).split(separator: "\n", omittingEmptySubsequences: false)
 
     #expect(rows.map(\.segmentID) == ["kept", "low"])
-    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:03] Speaker 2: えーと", ""])
+    #expect(rows.map(\.text) == ["残る発話", "低優先度本文"])
+    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:03] Speaker 2: 低優先度本文", ""])
 }
 
 @Test

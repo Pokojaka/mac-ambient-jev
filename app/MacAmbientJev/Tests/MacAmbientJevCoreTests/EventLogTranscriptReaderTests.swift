@@ -192,7 +192,7 @@ func eventLogTranscriptReaderRejectsAMalformedActiveRunEvent() throws {
     ]
 
     #expect(throws: EventLogTranscriptReaderError.malformedEvent(eventSeq: 2, eventType: "asr.completed")) {
-        try EventLogTranscriptReader().events(
+        _ = try EventLogTranscriptReader().events(
             lines: lines,
             activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
         )
@@ -240,7 +240,7 @@ func eventLogTranscriptReaderRejectsAnOutcomeThatContradictsTheText() throws {
     ]
 
     #expect(throws: EventLogTranscriptReaderError.asrOutcomeMismatch(eventSeq: 1)) {
-        try EventLogTranscriptReader().events(
+        _ = try EventLogTranscriptReader().events(
             lines: lines,
             activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
         )
@@ -252,10 +252,10 @@ func eventLogReadersRejectALineWithoutEnvelope() throws {
     let lines = [try eventLine(["event_type": "segment.created"])]
 
     #expect(throws: EventLogTranscriptReaderError.unreadableLine(index: 0)) {
-        try EventLogTranscriptReader().events(lines: lines, activeRuns: ActiveRuns(segmentation: "seg"))
+        _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: ActiveRuns(segmentation: "seg"))
     }
     #expect(throws: EventLogTranscriptReaderError.unreadableLine(index: 0)) {
-        try JevRetryAnalyzer().contentPriorityState(lines: lines)
+        _ = try JevRetryAnalyzer().contentPriorityState(lines: lines)
     }
 }
 
@@ -270,7 +270,7 @@ func jevRetryAnalyzerRejectsAnAssignmentWithoutRetryFlag() throws {
     ]
 
     #expect(throws: EventLogTranscriptReaderError.malformedEvent(eventSeq: 7, eventType: "content_priority.assigned")) {
-        try JevRetryAnalyzer().contentPriorityState(lines: lines)
+        _ = try JevRetryAnalyzer().contentPriorityState(lines: lines)
     }
 }
 

@@ -385,71 +385,54 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
     public let speakers: [MaterializedSpeakerSpan]
     public let displaySpeakerLabels: [String]
     public let scopeSpans: [MaterializedScopeSpan]
-    public let isLowPriority: Bool
+    public let shouldCollapseRow: Bool
 
-    public init(
-        segmentID: String,
-        startMilliseconds: Int64,
-        endMilliseconds: Int64,
-        text: String,
-        scene: SceneState,
-        speakers: [MaterializedSpeakerSpan],
-        displaySpeakerLabels: [String],
-        scopeSpans: [MaterializedScopeSpan],
-        isLowPriority: Bool
-    ) {
+    public init(segmentID: String, startMilliseconds: Int64, endMilliseconds: Int64, text: String,
+                scene: SceneState, speakers: [MaterializedSpeakerSpan], displaySpeakerLabels: [String],
+                scopeSpans: [MaterializedScopeSpan], priority: ContentPriority?) throws {
+        let projected = try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: text)
+        let range = try TextUTF16Range(start: 0, end: projected.sourceUTF16Length)
+        let presentation = try TranscriptPriorityPresentationPolicy().present(
+            text: projected,
+            slices: [TranscriptPrioritySlice(sourceRange: range, priority: priority, needsRetry: false)],
+            hasUnresolvedBoundary: false, hasUnavailableDecision: false
+        )
         self.segmentID = segmentID
         self.startMilliseconds = startMilliseconds
         self.endMilliseconds = endMilliseconds
-        self.text = text
-        self.textFragments = FillerTextSpanDetector().fragments(in: text)
+        self.text = presentation.text
+        self.textFragments = presentation.fragments
         self.scene = scene
         self.speakers = speakers
         self.displaySpeakerLabels = displaySpeakerLabels
         self.scopeSpans = scopeSpans
-        self.isLowPriority = isLowPriority
+        self.shouldCollapseRow = presentation.shouldCollapseRow
     }
 }
 
-/// The single rule for which segments a reader sees, used by the screen and by `transcript.txt`:
-/// segments with recognized text, except discussion segments whose scope spans are all background.
-/// Diarized segments carry speaker headings; segments without a diarization run carry none.
+/// Shared screen and transcript.txt projection.
 public struct LiveTranscriptProjection: Sendable {
     public init() {}
-
-    public func rows(
-        for segments: [MaterializedTranscriptSegment]
-    ) -> [LiveTranscriptRow] {
-        let allSpeakerSpans = segments.flatMap(\.speakers).map { span in
-            SpeakerSpan(
-                speakerID: span.id,
-                startFrame: span.startMilliseconds,
-                endFrame: span.endMilliseconds,
-                confidence: span.confidence
-            )
+    public func rows(for segments: [MaterializedTranscriptSegment]) throws -> [LiveTranscriptRow] {
+        let allSpeakerSpans = segments.flatMap(\.speakers).map {
+            SpeakerSpan(speakerID: $0.id, startFrame: $0.startMilliseconds, endFrame: $0.endMilliseconds, confidence: $0.confidence)
         }
         let labels = SpeakerDisplayMapper.makeLabels(spans: allSpeakerSpans)
-
-        return segments.compactMap { segment in
-            let isBackgroundOnly = segment.scene == .discussion
-                && !segment.scopeSpans.isEmpty
+        var rows: [LiveTranscriptRow] = []
+        for segment in segments {
+            let isBackgroundOnly = segment.scene == .discussion && !segment.scopeSpans.isEmpty
                 && segment.scopeSpans.allSatisfy { $0.scope == .background }
-
-            guard !isBackgroundOnly, segment.hasRecognizedText else { return nil }
-
-            return LiveTranscriptRow(
-                segmentID: segment.segmentID,
-                startMilliseconds: segment.startMilliseconds,
-                endMilliseconds: segment.endMilliseconds,
-                text: segment.text,
-                scene: segment.scene,
+            guard !isBackgroundOnly else { continue }
+            let row = try LiveTranscriptRow(
+                segmentID: segment.segmentID, startMilliseconds: segment.startMilliseconds,
+                endMilliseconds: segment.endMilliseconds, text: segment.text, scene: segment.scene,
                 speakers: segment.speakers,
-                displaySpeakerLabels: segment.isDiarized
-                    ? SpeakerDisplayMapper.turnLabels(for: segment, labels: labels)
-                    : [],
-                scopeSpans: segment.scopeSpans,
-                isLowPriority: segment.contentPriority == .lowPriority
+                displaySpeakerLabels: segment.isDiarized ? SpeakerDisplayMapper.turnLabels(for: segment, labels: labels) : [],
+                scopeSpans: segment.scopeSpans, priority: segment.contentPriority
             )
+            guard row.text.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else { continue }
+            rows.append(row)
         }
+        return rows
     }
 }

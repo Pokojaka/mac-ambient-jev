@@ -103,7 +103,7 @@ func liveProjectionSummarizesMultipleSpeakersAndKeepsUnknownLabel() throws {
     ]
 
     let projection = LiveTranscriptProjection()
-    let finalRows = projection.rows(for: segments)
+    let finalRows = try projection.rows(for: segments)
     #expect(finalRows[0].speakers.map(\.id) == ["S1", "S2"])
     #expect(finalRows[0].displaySpeakerLabels == ["Speaker 1", "Speaker 2"])
     #expect(finalRows[1].displaySpeakerLabels == ["UNKNOWN"])
@@ -127,7 +127,7 @@ func materializerKeepsEmptyASRResultForShortFinalTurn() throws {
 }
 
 @Test
-func projectionShowsNoSpeakerHeadingBeforeDiarization() {
+func projectionShowsNoSpeakerHeadingBeforeDiarization() throws {
     let segments = [
         MaterializedTranscriptSegment(
             segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
@@ -136,13 +136,13 @@ func projectionShowsNoSpeakerHeadingBeforeDiarization() {
         )
     ]
 
-    let rows = LiveTranscriptProjection().rows(for: segments)
+    let rows = try LiveTranscriptProjection().rows(for: segments)
 
     #expect(rows.map(\.displaySpeakerLabels) == [[]])
 }
 
 @Test
-func projectionShowsUnknownForDiarizedResultWithoutAnySpeakerSpan() {
+func projectionShowsUnknownForDiarizedResultWithoutAnySpeakerSpan() throws {
     let segments = [
         MaterializedTranscriptSegment(
             segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
@@ -151,7 +151,7 @@ func projectionShowsUnknownForDiarizedResultWithoutAnySpeakerSpan() {
         )
     ]
 
-    let rows = LiveTranscriptProjection().rows(for: segments)
+    let rows = try LiveTranscriptProjection().rows(for: segments)
 
     #expect(rows.map(\.displaySpeakerLabels) == [["UNKNOWN"]])
 }

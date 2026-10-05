@@ -89,6 +89,8 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 ## 共通 Swift の検証
 
+フィラーの回帰検証は UTF-16 座標、Unicode Character の境界、単語内部の類似文字列、後続本文と接続した先頭フィラー、隣接する句読点、フィラーだけの行、画面 projection と `transcript.txt` の本文一致を扱う。materializer は ASR の原文を保持する。`savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport` は保存済み ASR イベントを `SavedTranscriptLoader` で読み、原文の保持と画面・テキストの除去済み本文、イベントの不変性を確認する。保存済みセッションの smoke は入力 `えー、今日は公開鍵暗号を説明します。` を使い、`SavedTranscriptLoader` → 共通 projection → `SessionExporter` の実際の `transcript.txt` 書き込み・再読込を通して本文が `今日は公開鍵暗号を説明します。` となり、イベントが原文のままであることを確認する。GUI の選択コピーとアクセシビリティ読み上げは別途、画面上で検証する。
+
 `MacAmbientJevEvaluateSession`, `MacAmbientJevEvaluateASR`, and `MacAmbientJevEvaluateDiarization` consume explicit artifact files only; none locate or create saved sessions, so these artifact-only modes do not require `--sessions-root`. Every mode of the capture, file-processing, and live-latency CLIs requires an explicit root that rejects protected app data/cache roots, their ancestors/descendants, and symlink aliases.
 
 ```bash

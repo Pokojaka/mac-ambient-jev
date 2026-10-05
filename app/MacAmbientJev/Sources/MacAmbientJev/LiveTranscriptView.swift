@@ -144,7 +144,7 @@ struct LiveTranscriptView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if row.isLowPriority {
+                if row.shouldCollapseRow {
                     DisclosureGroup(isExpanded: lowPriorityExpansion(for: row.id)) {
                         transcriptText(row)
                             .font(.body)
@@ -153,9 +153,9 @@ struct LiveTranscriptView: View {
                     } label: {
                         Label(Self.lowPriorityCollapsedTitle, systemImage: "arrow.down.circle")
                             .foregroundStyle(.secondary)
-                            .help("意味分類により優先度が低いと判定された発話です")
+                            .help("優先度が低い本文です")
                     }
-                    .accessibilityHint("原文を表示または閉じます")
+                    .accessibilityHint("除去後の本文を表示または閉じます")
                 } else {
                     transcriptText(row)
                         .font(.body)
@@ -191,11 +191,8 @@ struct LiveTranscriptView: View {
 
     private func transcriptText(_ row: LiveTranscriptRow) -> Text {
         row.textFragments.reduce(Text("")) { result, fragment in
-            let piece = Text(fragment.text)
-            if fragment.isFiller {
-                return result + piece.foregroundColor(.secondary)
-            }
-            return result + piece.foregroundColor(.primary)
+            let color: Color = fragment.style == .lowPriority ? .secondary : .primary
+            return result + Text(fragment.text).foregroundColor(color)
         }
     }
 

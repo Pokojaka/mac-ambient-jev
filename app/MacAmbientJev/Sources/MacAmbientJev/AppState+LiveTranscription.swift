@@ -160,9 +160,16 @@ extension AppState {
                       self.displayedSessionID == sessionID,
                       self.recordingSessionID == sessionID,
                       self.recordingPhase == .recording else { return }
-                self.processingState = state
-                self.transcriptViewModel.update(segments: segments)
-                self.transcriptViewModel.setDisplayState(.live)
+                do {
+                    try self.transcriptViewModel.update(segments: segments)
+                    self.processingState = state
+                    self.transcriptViewModel.setDisplayState(.live)
+                } catch {
+                    let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
+                    self.processingState = .partialFailure(message)
+                    self.processingStatusText = message
+                    self.transcriptViewModel.setStatus(message)
+                }
             }
         }
     }

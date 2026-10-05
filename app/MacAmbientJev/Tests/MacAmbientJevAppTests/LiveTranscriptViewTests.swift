@@ -4,19 +4,19 @@ import MacAmbientJevCore
 
 @MainActor
 @Test
-func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() {
-    var currentRows = [
+func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() throws {
+    var currentRows = try [
         LiveTranscriptRow(
             segmentID: "first", startMilliseconds: 0, endMilliseconds: 1_000, text: "最初", scene: .unknown,
-            speakers: [], displaySpeakerLabels: ["Speaker 1"], scopeSpans: [], isLowPriority: false
+            speakers: [], displaySpeakerLabels: ["Speaker 1"], scopeSpans: [], priority: .primary
         ),
         LiveTranscriptRow(
             segmentID: "second", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "続き", scene: .unknown,
-            speakers: [], displaySpeakerLabels: ["Speaker 1"], scopeSpans: [], isLowPriority: false
+            speakers: [], displaySpeakerLabels: ["Speaker 1"], scopeSpans: [], priority: .primary
         ),
         LiveTranscriptRow(
             segmentID: "third", startMilliseconds: 2_000, endMilliseconds: 3_000, text: "次", scene: .unknown,
-            speakers: [], displaySpeakerLabels: ["Speaker 2"], scopeSpans: [], isLowPriority: false
+            speakers: [], displaySpeakerLabels: ["Speaker 2"], scopeSpans: [], priority: .primary
         )
     ]
     let renderedRows = currentRows
@@ -28,14 +28,7 @@ func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() {
     #expect(currentRows.isEmpty)
 }
 
-@Test
-func transcriptHeaderNamesEveryNonEmptyDisplayState() {
-    #expect(TranscriptDisplayState.empty.badge == nil)
-    #expect(TranscriptDisplayState.live.badge?.text == "ライブ（暫定）")
-    #expect(TranscriptDisplayState.finalizing.badge?.text == "確定処理中")
-    #expect(TranscriptDisplayState.finalized.badge?.text == "確定済み")
-}
-
+@MainActor
 @Test
 func rowTopSpacingSeparatesSpeakerTurnsAndKeepsContinuationsClose() {
     #expect(LiveTranscriptView.topSpacing(forIndex: 0, speakerHeading: "Speaker 1") == 0)

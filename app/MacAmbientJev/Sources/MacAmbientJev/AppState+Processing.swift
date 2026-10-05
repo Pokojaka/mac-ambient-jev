@@ -253,10 +253,17 @@ extension AppState {
             let updateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
                 await MainActor.run {
                     guard let self, self.displayedSessionID == requestSessionID else { return }
-                    self.processingState = state
-                    self.transcriptViewModel.update(segments: segments)
-                    if state == .complete {
-                        self.transcriptViewModel.setDisplayState(.finalized)
+                    do {
+                        try self.transcriptViewModel.update(segments: segments)
+                        self.processingState = state
+                        if state == .complete {
+                            self.transcriptViewModel.setDisplayState(.finalized)
+                        }
+                    } catch {
+                        let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
+                        self.processingState = .partialFailure(message)
+                        self.processingStatusText = message
+                        self.transcriptViewModel.setStatus(message)
                     }
                 }
             }

@@ -19,9 +19,9 @@ API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モ
 | PRIMARY | `primary` |
 | 未分類・通信失敗 | `primary` として表示し、必要な分類を保留 |
 
-0.90 以上の LOW_PRIORITY は、内容や特定のフィラー語との一致にかかわらず、すべて低優先度として採用します。画面は行を「低優先度の発話」に折り畳み、展開すると原文を読めます。優先度分類は本文の削除・改変ではなく、`transcript.txt` にも低優先度の原文を通常行として含めます。
+0.90 以上の LOW_PRIORITY は、内容や特定のフィラー語との一致にかかわらず採用します。画面はフィラー除去後の可視本文を淡色にし、未解決・保留がなく全ての可視 slice が LOW の行だけ折り畳みます。除去後に空になった行は表示しません。`transcript.txt` は LOW 本文を保持しますが、フィラーは除去します。フィラー除去は表示とテキスト書き出しだけに適用し、ASR の原文、イベント、CLI の JSON と Jev へ送る本文は変更しません。
 
-本文中の局所フィラーを淡い色にするローカル表示は、Jev による行全体の優先度分類とは独立しています。局所フィラーを含むことだけで行全体を折り畳みません。
+表示方針は [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) に集約しています。現在の Jev 判定は行単位のままで、原文全文を一つの slice として表示方針へ渡します。局所フィラーの検出は原文全体に一回だけ適用します。既存の9語・左右境界・先頭付着例外と直後の句読点を除去対象とし、それ以外の空白・改行・句読点は整形せず保持します。
 
 ## 通信失敗と再試行
 

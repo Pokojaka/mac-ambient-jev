@@ -270,7 +270,8 @@ func scopeAndDisplayAgreeOnOutOfOrderSceneTransitions() async throws {
     #expect(segment.scene == .discussion)
     #expect(result.scopeSpans.map(\.scope) == [.background])
     #expect(segment.scopeSpans.map(\.scope) == [.background])
-    #expect(LiveTranscriptProjection().rows(for: result.materializedSegments).isEmpty)
+    let rows = try LiveTranscriptProjection().rows(for: result.materializedSegments)
+    #expect(rows.isEmpty)
 }
 
 @Test

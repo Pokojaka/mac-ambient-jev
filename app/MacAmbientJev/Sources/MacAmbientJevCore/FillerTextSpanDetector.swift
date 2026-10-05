@@ -1,100 +1,53 @@
 import Foundation
 
-public struct TranscriptTextFragment: Sendable, Equatable {
-    public let text: String
-    public let isFiller: Bool
-
-    public init(text: String, isFiller: Bool) {
-        self.text = text
-        self.isFiller = isFiller
-    }
-}
 
 public struct FillerTextSpanDetector: Sendable {
     private static let fillerPhrases = [
         "えーと", "ええと", "えっと", "うーん", "えー", "ええ", "あー", "ああ", "んー"
     ]
     private static let attachableLeadingFillers: Set<String> = ["えー", "あー", "えっと"]
-    private static let separators = CharacterSet.whitespacesAndNewlines
-        .union(.punctuationCharacters)
-    private static let openingPunctuationCategories: Set<Unicode.GeneralCategory> = [
-        .openPunctuation, .initialPunctuation
-    ]
+    private static let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+    private static let openingPunctuationCategories: Set<Unicode.GeneralCategory> = [.openPunctuation, .initialPunctuation]
     private static let ambiguousQuotes: Set<Unicode.Scalar> = ["\"", "'", "＂", "＇"]
 
     public init() {}
 
-    public func fragments(in text: String) -> [TranscriptTextFragment] {
+    public func ranges(in text: String) throws -> [TextUTF16Range] {
         guard !text.isEmpty else { return [] }
-
-        var fragments: [TranscriptTextFragment] = []
-        var fragmentStart = text.startIndex
+        var result: [TextUTF16Range] = []
+        var sourceOffset = 0
         var searchIndex = text.startIndex
-
+        var isLeadingWhitespace = true
         while searchIndex < text.endIndex {
             guard isBoundary(before: searchIndex, in: text),
-                  let fillerRange = fillerRange(
-                    at: searchIndex,
-                    in: text,
-                    allowAttachedLeading: isUtteranceLeading(searchIndex, in: text)
-                  ) else {
+                  let phraseRange = fillerRange(at: searchIndex, in: text,
+                                                allowAttachedLeading: isLeadingWhitespace) else {
+                if !text[searchIndex].unicodeScalars.allSatisfy(CharacterSet.whitespacesAndNewlines.contains) {
+                    isLeadingWhitespace = false
+                }
+                sourceOffset += text[searchIndex].utf16.count
                 searchIndex = text.index(after: searchIndex)
                 continue
             }
-
-            var fillerEnd = fillerRange.upperBound
-            while fillerEnd < text.endIndex,
-                  isTrailingPunctuation(text[fillerEnd]) {
+            var fillerEnd = phraseRange.upperBound
+            while fillerEnd < text.endIndex, isTrailingPunctuation(text[fillerEnd]) {
                 fillerEnd = text.index(after: fillerEnd)
             }
-
-            if fragmentStart < searchIndex {
-                fragments.append(TranscriptTextFragment(
-                    text: String(text[fragmentStart..<searchIndex]),
-                    isFiller: false
-                ))
-            }
-            fragments.append(TranscriptTextFragment(
-                text: String(text[searchIndex..<fillerEnd]),
-                isFiller: true
-            ))
-            fragmentStart = fillerEnd
+            let start = sourceOffset
+            sourceOffset += text[searchIndex..<fillerEnd].utf16.count
+            isLeadingWhitespace = false
+            result.append(try TextUTF16Range(start: start, end: sourceOffset))
             searchIndex = fillerEnd
         }
-
-        if fragmentStart < text.endIndex {
-            fragments.append(TranscriptTextFragment(
-                text: String(text[fragmentStart..<text.endIndex]),
-                isFiller: false
-            ))
-        }
-
-        if fragments.isEmpty {
-            return [TranscriptTextFragment(text: text, isFiller: false)]
-        }
-        return fragments
+        return result
     }
 
-    private func fillerRange(
-        at index: String.Index,
-        in text: String,
-        allowAttachedLeading: Bool
-    ) -> Range<String.Index>? {
+    private func fillerRange(at index: String.Index, in text: String, allowAttachedLeading: Bool) -> Range<String.Index>? {
         for phrase in Self.fillerPhrases {
-            guard let range = text.range(
-                of: phrase,
-                options: [.anchored],
-                range: index..<text.endIndex
-            ) else {
-                continue
-            }
-
+            guard let range = text.range(of: phrase, options: [.anchored], range: index..<text.endIndex) else { continue }
             guard isBoundary(at: range.upperBound, in: text)
-                    || (allowAttachedLeading
-                        && Self.attachableLeadingFillers.contains(phrase)
-                        && !isKana(at: range.upperBound, in: text)) else {
-                continue
-            }
+                    || (allowAttachedLeading && Self.attachableLeadingFillers.contains(phrase)
+                        && !isKana(at: range.upperBound, in: text)) else { continue }
             return range
         }
         return nil
@@ -104,33 +57,22 @@ public struct FillerTextSpanDetector: Sendable {
         guard index > text.startIndex else { return true }
         return isSeparator(text[text.index(before: index)])
     }
-
-    private func isUtteranceLeading(_ index: String.Index, in text: String) -> Bool {
-        text[..<index].unicodeScalars.allSatisfy(CharacterSet.whitespacesAndNewlines.contains)
-    }
-
     private func isKana(at index: String.Index, in text: String) -> Bool {
         guard index < text.endIndex else { return false }
-        return text[index].unicodeScalars.contains { scalar in
-            (0x3040...0x30FF).contains(scalar.value)
-                || (0x31F0...0x31FF).contains(scalar.value)
-        }
+        return text[index].unicodeScalars.contains { (0x3040...0x30FF).contains($0.value) || (0x31F0...0x31FF).contains($0.value) }
     }
-
     private func isBoundary(at index: String.Index, in text: String) -> Bool {
         guard index < text.endIndex else { return true }
         return isSeparator(text[index])
     }
-
     private func isSeparator(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy(Self.separators.contains)
     }
-
     private func isTrailingPunctuation(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy { scalar in
-            CharacterSet.punctuationCharacters.contains(scalar)
-                && !Self.openingPunctuationCategories.contains(scalar.properties.generalCategory)
-                && !Self.ambiguousQuotes.contains(scalar)
+        character.unicodeScalars.allSatisfy {
+            CharacterSet.punctuationCharacters.contains($0)
+                && !Self.openingPunctuationCategories.contains($0.properties.generalCategory)
+                && !Self.ambiguousQuotes.contains($0)
         }
     }
 }

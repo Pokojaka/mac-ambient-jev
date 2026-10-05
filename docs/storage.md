@@ -298,6 +298,6 @@ chunk を atomic write して synchronize した後、その index を append / 
 | `scope_spans` | object 配列。各 object は `start_ms` / `end_ms`: Int64、`scope`: AcousticScope raw value、`confidence`: Double |
 | `content_priority` | optional String。`primary` / `lowPriority` |
 
-空本文区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。テキスト書き出し `transcript.txt` は画面と同じ発話を選び、討論場面で全 scope が背景の行を除外します。低優先度の発話は通常行として含めます。話者ラベルは 80% 以上を占める 1 人、満たさなければ複数人の併記、分離済みで割当なしなら UNKNOWN です。本文中の改行は空白にして 1 行 1 発話を保ちます。
+原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。`segments.json.text` とイベント中の ASR 本文は原文のままです。フィラー除去範囲と原文の UTF-16 座標への写像は表示用の内部情報で、保存 schema と公開 JSON には追加しません。テキスト書き出し `transcript.txt` は画面と同じ発話を選び、共通表示 projection により検出済みフィラーを除いた本文を使います。LOW 本文は保持し、フィラーだけで空になった行は除外します。討論場面で全 scope が背景の行も除外します。原文を使う公開 JSON はこれらの行を保持します。話者ラベルは 80% 以上を占める 1 人、満たさなければ併記します。
 
 根拠: [SessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecovery.swift)、[EventLogTranscriptReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)、[Materialization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)、[ファイル処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)。

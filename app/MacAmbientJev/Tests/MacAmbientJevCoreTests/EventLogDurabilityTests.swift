@@ -62,5 +62,6 @@ import Testing
     let data = try Data(contentsOf: eventsURL)
     #expect(appended.eventSeq == 2)
     #expect(data.starts(with: Data(first.utf8)))
-    #expect(try SessionRecovery.recoverJSONL(data).lines.count == 2)
+    let recovered = try SessionRecovery.recoverJSONL(data)
+    #expect(recovered.lines.count == 2)
 }

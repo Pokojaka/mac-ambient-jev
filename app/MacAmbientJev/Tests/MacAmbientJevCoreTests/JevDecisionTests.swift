@@ -96,9 +96,8 @@ func jevPriorityClientSendsOnlyCurrentUtteranceAndChoiceQuestion() async throws 
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
 
     let body = try #require(request.httpBody)
-    let object = try #require(
-        JSONSerialization.jsonObject(with: body) as? [String: Any]
-    )
+    let decodedBody = try JSONSerialization.jsonObject(with: body)
+    let object = try #require(decodedBody as? [String: Any])
     #expect(object["state"] as? String == "公開鍵暗号を説明します")
     #expect(object["audio"] == nil)
     #expect(object["speaker_embedding"] == nil)
