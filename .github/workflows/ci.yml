@@ -27,6 +27,8 @@ jobs:
           python3 scripts/check_doc_references.py
       - name: Swift version
         run: swift --version
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Create the local signing certificate
         run: |
           WORK="$RUNNER_TEMP/signing"
