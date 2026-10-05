@@ -342,13 +342,14 @@ func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
 }
 
 private func liveReuseEvents(_ texts: [(String, String)]) -> [TranscriptEvent] {
-    texts.enumerated().flatMap { index, entry in
-        [
-            .segmentCreated(seq: UInt64(index * 2 + 1), segmentationRunID: "seg",
-                            segmentID: entry.0, startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000)),
-            .asrCompleted(seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
-                          segmentID: entry.0, text: entry.1, detectedLanguage: nil)
-        ]
+    texts.enumerated().flatMap { (index: Int, entry: (String, String)) -> [TranscriptEvent] in
+        let created = TranscriptEvent.segmentCreated(
+            seq: UInt64(index * 2 + 1), segmentationRunID: "seg", segmentID: entry.0,
+            startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000))
+        let completed = TranscriptEvent.asrCompleted(
+            seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
+            segmentID: entry.0, text: entry.1, detectedLanguage: nil)
+        return [created, completed]
     }
 }
 
