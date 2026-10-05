@@ -148,7 +148,7 @@ extension AppState {
                 source: .imported(originalFilename: sourceURL.lastPathComponent)
             )
             createdSessionURL = sessionURL
-            let imported = try AudioImporter().importFile(
+            _ = try AudioImporter().importFile(
                 sourceURL,
                 into: sessionURL
             )
