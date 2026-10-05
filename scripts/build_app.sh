@@ -12,9 +12,9 @@ CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
-swift build   --package-path "$PACKAGE"   -c release   --product MacAmbientJev
+swift build --package-path "$PACKAGE" --build-system swiftbuild -c release --product MacAmbientJev
 
-BIN_DIR="$(swift build   --package-path "$PACKAGE"   -c release   --show-bin-path)"
+BIN_DIR="$(swift build --package-path "$PACKAGE" --build-system swiftbuild -c release --show-bin-path)"
 
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"

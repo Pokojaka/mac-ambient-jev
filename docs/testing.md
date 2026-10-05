@@ -20,7 +20,7 @@ python3 scripts/check_doc_references.py
 4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、named folder の inspect、resume 出力先の containment を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
 6. モデル検証を指定した場合は Runtime test bundle を実行する。
-7. `scripts/build_app.sh` で app bundle を作り、MLX Metal shader library と、利用者が選んだファイルへの read/write・app-scope bookmark entitlement を確認する。
+7. `scripts/build_app.sh` で app bundle を作り（MLX の Metal shader library は Swift Build backend だけが作るため `--build-system swiftbuild` を指定する）、MLX Metal shader library と、利用者が選んだファイルへの read/write・app-scope bookmark entitlement を確認する。
 
 アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` の macos-26 job も通常の `verify_v1.sh` を実行する。この job は MLX の Metal shader library を build するため Xcode の Metal toolchain を `xcodebuild -downloadComponent MetalToolchain` で入れ、実行ごとに「MacAmbientJev Local Signing」という自己署名のコード署名証明書を一時 keychain に作り、`scripts/build_app.sh` の署名に使う。
 
