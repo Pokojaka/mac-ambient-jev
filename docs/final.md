@@ -22,7 +22,7 @@
 
 エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は区間の canonical samples を変更せず Qwen に 16000 を渡します。20 ms 未満の ASR 入力を推論しない規則は変わりません。source frame は original や device ではなく保存タイムラインの座標です。
 
-話者分離は既存の canonical CAF と FluidAudio の OfflineDiarizerConfig.segmentation.sampleRate を検証し、`OfflineDiarizerManager.process(audioSource:audioLoadingSeconds:progressCallback:)` を呼びます。`CanonicalCAFAudioSource` が lock 付きの bounded random read を行い、SRC や別の whole-audio raw PCM temporary file は作りません。発話のある確定処理の CAF 自体は derived 内に保存します。
+話者分離は既存の canonical CAF と FluidAudio の OfflineDiarizerConfig.segmentation.sampleRate を検証し、`OfflineDiarizerManager.process(audioSource:audioLoadingSeconds:progressCallback:)` を呼びます。`CanonicalCAFAudioSource` が lock 付きの bounded random read を行い、SRC や別の whole-audio raw PCM temporary file は作りません。FluidAudio が末尾で要求する固定長のモデル window には、CAF に存在する sample だけをコピーし、呼び出し元が 0 初期化した残りを変更しません。保存タイムラインの長さ・音声・区間座標には padding を加えず、実ファイルの予期しない EOF・不正 sample はエラーです。発話のある確定処理の CAF 自体は derived 内に保存します。
 
 VAD、ASR、話者分離、場面、音響範囲には新しい run ID を付け、各段階の `processing.run.started` に、その実行の engine、model、version、configuration を保存します。以前の run の来歴を新しい実行へ引き継ぎません。
 

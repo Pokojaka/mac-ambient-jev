@@ -27,15 +27,19 @@ final class CanonicalCAFAudioSource: AudioSampleSource, @unchecked Sendable {
     }
 
     func copySamples(into destination: UnsafeMutablePointer<Float>, offset: Int, count: Int) throws {
-        guard offset >= 0, count >= 0, offset <= sampleCount, count <= sampleCount - offset else {
+        guard offset >= 0, count >= 0 else {
             throw ProcessingTimelineReaderError.invalidFrameRange
         }
+        // FluidAudio requests full embedding windows into a pre-zeroed destination at EOF.
+        // Copy only recorded samples; the caller owns the untouched window padding.
+        guard count > 0, offset < sampleCount else { return }
+        let available = min(count, sampleCount - offset)
         lock.lock()
         defer { lock.unlock() }
         file.framePosition = Int64(offset)
         var copied = 0
-        while copied < count {
-            let requested = min(8192, count - copied)
+        while copied < available {
+            let requested = min(8192, available - copied)
             buffer.frameLength = 0
             try file.read(into: buffer, frameCount: AVAudioFrameCount(requested))
             guard buffer.frameLength == requested, let channels = buffer.floatChannelData else {

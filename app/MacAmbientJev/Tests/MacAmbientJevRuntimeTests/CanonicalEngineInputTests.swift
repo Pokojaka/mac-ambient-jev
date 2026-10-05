@@ -25,16 +25,22 @@ func canonicalCAFAudioSourceReadsBoundedRandomRangesWithoutAudioCopies() throws 
     let originalSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
     let source = try CanonicalCAFAudioSource(fileURL: url)
     #expect(source.sampleCount == 128000)
-    for (offset, count) in [(8203, 20017), (127993, 7), (0, 320), (503, 8192)] {
+    for (offset, count) in [(8203, 20017), (127993, 20017), (128000, 320), (128003, 320), (0, 320), (503, 8192)] {
         let destination = UnsafeMutablePointer<Float>.allocate(capacity: count)
         defer { destination.deallocate() }
+        destination.initialize(repeating: -2, count: count)
         try source.copySamples(into: destination, offset: offset, count: count)
-        for index in 0..<count { #expect(destination[index] == Float((offset + index) % 997) / 997) }
+        let available = max(0, min(count, source.sampleCount - offset))
+        for index in 0..<available { #expect(destination[index] == Float((offset + index) % 997) / 997) }
+        for index in available..<count { #expect(destination[index] == -2) }
     }
     let destination = UnsafeMutablePointer<Float>.allocate(capacity: 1)
     defer { destination.deallocate() }
     #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
-        try source.copySamples(into: destination, offset: source.sampleCount, count: 1)
+        try source.copySamples(into: destination, offset: -1, count: 1)
+    }
+    #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
+        try source.copySamples(into: destination, offset: 0, count: -1)
     }
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["canonical.caf"])
     #expect(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize == originalSize)
