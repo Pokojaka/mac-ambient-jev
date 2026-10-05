@@ -173,6 +173,30 @@ func liveRowsAppearImmediatelyWhenJevIsOffOrFails(jevOff: Bool) async throws {
 }
 
 @Test
+func liveFactoryFailureShowsItsReasonAndReleasesRowsNormally() async throws {
+    let failure = NSError(
+        domain: "LiveContentPriorityGatingTests",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "synthetic credential read failure"]
+    )
+    let fixture = try await LiveFixture(contentPriority: .jev({ throw failure }))
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let recorder = RowRecorder()
+
+    try await fixture.run(recorder)
+    try await recorder.waitForRows(2)
+    let rows = await recorder.latest
+    #expect(rows.map(\.segmentID) == ["seg_1", "seg_2"])
+    #expect(rows.map(\.text) == ["発話1", "発話2"])
+    #expect(rows.map(\.contentPriority) == [nil, nil])
+    #expect(await recorder.statuses.contains {
+        $0.hasPrefix(UserFacingStatus.jevDeferred.text)
+            && $0.contains(failure.localizedDescription)
+    })
+    #expect(!(try fixture.eventTypes().contains("content_priority.assigned")))
+}
+
+@Test
 func liveAuthorizationFailureShowsStatusAndRowsAppearNormally() async throws {
     let access: ContentPriorityAccess = .jev({ JevDecisionCoordinator(
         provider: ScriptedProvider(latch: nil, failure: .httpStatus(401)),

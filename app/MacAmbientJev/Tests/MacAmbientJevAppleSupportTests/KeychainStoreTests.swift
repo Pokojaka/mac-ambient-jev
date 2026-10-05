@@ -2,7 +2,10 @@ import Foundation
 import Testing
 @testable import MacAmbientJevAppleSupport
 
-@Test
+@Test(.enabled(
+    if: ProcessInfo.processInfo.environment["RUN_KEYCHAIN_TESTS"] == "1",
+    "Set RUN_KEYCHAIN_TESTS=1 to run the real-Keychain integration test."
+))
 func keychainStoreRoundTripsAndDeletesValue() throws {
     let service = "mac-ambient-jev-tests-\(UUID().uuidString)"
     let account = "jev-api-key"

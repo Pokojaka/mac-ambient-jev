@@ -118,7 +118,10 @@ public actor LiveContentPrioritySession {
             }
             available = decisions
         } catch {
-            await reportPending(work: work)
+            await report(
+                "\(UserFacingStatus.jevDeferred.text)。意味分類器を初期化できませんでした: \(error.localizedDescription)",
+                work: work
+            )
             return
         }
 

@@ -245,7 +245,9 @@ final class AppState: ObservableObject {
         pausesProcessing: Bool,
         userDefaults: UserDefaults,
         engines: SessionProcessingEngines,
-        makeLiveVADSession: @escaping LiveVADFactory
+        makeLiveVADSession: @escaping LiveVADFactory,
+        makeJevDecisions: @Sendable (JevUsageCounter) -> NativeSessionProcessor.JevDecisionCoordinatorFactory
+            = NativeSessionProcessor.storedCredentialJevFactory
     ) {
         let jevUsageCounter = JevUsageCounter()
 
@@ -261,7 +263,7 @@ final class AppState: ObservableObject {
             paths: paths,
             engines: engines,
             contentPriority: .jev(
-                NativeSessionProcessor.storedCredentialJevFactory(usageCounter: jevUsageCounter)
+                makeJevDecisions(jevUsageCounter)
             )
         )
         self.exportDirectoryPath = exportDestination.path

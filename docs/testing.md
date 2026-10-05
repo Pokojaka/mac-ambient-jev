@@ -24,6 +24,8 @@ python3 scripts/check_doc_references.py
 
 アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` の macos-15 job も通常の `verify_v1.sh` を実行する。
 
+通常の Swift test は実 Keychain にアクセスしません。`keychainStoreRoundTripsAndDeletesValue` は `RUN_KEYCHAIN_TESTS=1` を明示した場合だけ実行する integration test で、専用のランダム service 名でテスト値を保存・削除します。アプリの Jev API キーは使いません。実 Keychain へのアクセスを許可しない検証では、この環境変数を設定しません。ライブ Jev regression は注入した分類器 factory を使います。
+
 `scripts/check_doc_references.py` は `README.md`、`AGENTS.md`、docs 配下の Markdown（records を除く）のリポジトリパス、script、既知 CLI の flag、Swift 型の参照を検査する。
 
 ### 合成イベントによる回帰検証とライブ滞留計測
@@ -33,6 +35,7 @@ swift test --package-path app/MacAmbientJev --filter 'catalogRejectsUnreadableEv
 swift test --package-path app/MacAmbientJev --filter measureLiveRegistrationCost
 swift test --package-path app/MacAmbientJev --filter measureLatestCheckpointRetentionDuringThermalStall
 swift test --package-path app/MacAmbientJev --filter 'liveASR|liveRows|liveAuthorization|stoppingRecordingCancels'
+swift test --package-path app/MacAmbientJev --filter 'appRecordingHoldsLiveRowsUntilJevDecision|appRecordingShowsJevFactoryFailureReason|liveFactoryFailureShowsItsReasonAndReleasesRowsNormally'
 ```
 
 correctness test は読み取れないイベントログ、検証済み VAD の空結果、録音障害と停止時の資源解放障害、冷却後のライブ認識再開の境界を合成イベントで検証する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照・checkpoint・chunk 一覧の項目数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、保持数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
@@ -42,6 +45,8 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 `measureLatestCheckpointRetentionDuringThermalStall` は実 `AppState` の区間登録・enqueue と強制 critical を使い、一発話につき 5 秒の合成 chunk 一覧項目を追加する（音声ファイルは作らない）。120・720・2880 発話で checkpoint の保持数はセッションあたり 1 件、保持 chunk 項目数は最新 checkpoint の 120・720・2880 件だけとなる。区間参照は全件保持する。`coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState` は保存済み合成 PCM と injected ASR を使い、critical 中の認識停止、最新 checkpoint の保持、冷却後の全区間の一度だけの順次認識、録音停止後のキュー・checkpoint 解放を確認する。計測 harness は時間の assertion を置かない。
 
 ライブ ASR regression は認識後の新規 pending 登録・重複 ID、ASR 完了・失敗、同一 run の優先度変更と active run 切替、登録・完了・失敗・終了イベントの保存障害、並行登録・終了を検証します。取得済み行配列は後の認識や優先度更新で変わりません。Jev 待機行の非表示と時間順、分類無効・失敗・停止時の扱いも合成 provider で検証します。
+
+`appRecordingHoldsLiveRowsUntilJevDecision` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、Jev queue、画面用 projection を通します。capture・VAD・ASR・Jev は合成入力に置き換え、Jev 応答を止めている間の行非表示、応答後の最初から低優先度の表示、送信・成功件数を確認します。`appRecordingShowsJevFactoryFailureReason` と `liveFactoryFailureShowsItsReasonAndReleasesRowsNormally` は分類器生成時の合成エラーを使い、理由がアプリの状態表示に残ること、未分類の通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
 
 保存済みセッション catalog は active ASR run のイベントログ・payload を読み取り専用で検証し、欠損・不正・不完全な末尾を持つログを破損として表示する。合成 catalog regression は malformed / missing / directory の各ケースで非 exportable 状態、再処理可否、manifest と metadata の不変性を確認する。
 

@@ -1,0 +1,170 @@
+import Combine
+import Foundation
+import Testing
+@testable import MacAmbientJev
+import MacAmbientJevCore
+@testable import MacAmbientJevRuntime
+
+private actor RecordingASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "recording-test", model: nil, version: "test", configuration: [:])
+    private var count = 0
+    func prepare() async throws {}
+    func unload() async {}
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        count += 1
+        return ASRResult(text: "録音の発話\(count)", detectedLanguage: "ja")
+    }
+}
+
+private struct RecordingFinalVAD: FinalTranscriptVADSegmenter {
+    let provenance = RunProvenance(engine: "recording-test-vad", model: nil, version: "test", configuration: [:])
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
+}
+
+private actor RecordingVAD: LiveVADProcessing {
+    nonisolated let segmentationRunID = "recording-vad"
+    private var emitted = false
+    func processAvailable(checkpoint: AudioCheckpoint) -> LiveVADProgress {
+        let segments = emitted ? [] : [
+            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "row_1", startFrame: 0, endFrame: 4_000),
+            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "row_2", startFrame: 4_000, endFrame: 8_000),
+        ]
+        emitted = true
+        return LiveVADProgress(emittedSegments: segments, totalSegmentCount: 2,
+                               committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
+    }
+    func finish(checkpoint: AudioCheckpoint) -> LiveVADProgress {
+        LiveVADProgress(emittedSegments: [], totalSegmentCount: 2,
+                        committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
+    }
+}
+
+private actor RecordingJev: DecisionProvider {
+    private(set) var texts: [String] = []
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func classifyPriority(text: String) async throws -> ContentPriorityDecision {
+        texts.append(text)
+        if !released { await withCheckedContinuation { waiters.append($0) } }
+        return ContentPriorityDecision(priority: .lowPriority, confidence: 0.95,
+                                       model: "recording-test", inputTokens: 7)
+    }
+    func release() {
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
+
+@MainActor
+private func withLiveJevRecording(
+    makeDecisions: @escaping @Sendable (JevUsageCounter) -> NativeSessionProcessor.JevDecisionCoordinatorFactory,
+    body: (AppState) async throws -> Void
+) async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let capture = FakeAppCaptureEngine()
+    capture.onStart = { sessionID in
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: sessionURL).processingDirectory,
+                                            chunkDurationSeconds: 0.5)
+        try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
+        capture.stopResult = cleanStopResult(try await writer.finish())
+    }
+    let state = AppState(
+        paths: paths, captureEngine: capture, microphoneAccess: { true }, pausesProcessing: false,
+        userDefaults: defaults,
+        engines: SessionProcessingEngines(asr: RecordingASR(),
+            diarization: FluidOfflineDiarizationEngine(paths: paths),
+            finalTranscriptVAD: RecordingFinalVAD()),
+        makeLiveVADSession: { _, _, _ in RecordingVAD() }, makeJevDecisions: makeDecisions
+    )
+    state.readLiveThermalPressure = { .nominal }
+    let maintenanceDeadline = ContinuousClock.now + .seconds(5)
+    while state.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try #require(!state.isMaintainingStorage)
+    await state.startRecording()
+    do {
+        try #require(state.recordingPhase == .recording)
+        try await body(state)
+    } catch {
+        await state.stopRecording()
+        await state.processingTask?.value
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+        throw error
+    }
+    await state.stopRecording()
+    await state.processingTask?.value
+    await state.modelPreparationTask?.value
+    await state.idleReleaseTask?.value
+}
+
+@MainActor
+@Test("AppState recording sends live ASR text to Jev and never shows an undecided row")
+func appRecordingHoldsLiveRowsUntilJevDecision() async throws {
+    let provider = RecordingJev()
+    try await withLiveJevRecording(makeDecisions: { counter in
+        { JevDecisionCoordinator(provider: provider, usageCounter: counter) }
+    }) { state in
+        var publishedPriorities: [[Bool]] = []
+        let observation = state.transcriptViewModel.$rows.sink { rows in
+            publishedPriorities.append(rows.map(\.isLowPriority))
+        }
+        defer { observation.cancel() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await provider.texts.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await provider.texts == ["録音の発話1"])
+        #expect(await state.jevUsageCounter.snapshot().sendCount == 1)
+        let sessionID = try #require(state.recordingSessionID)
+        await state.waitForLiveASRDrain(sessionID: sessionID)
+        #expect(state.liveASRFailures[sessionID] == nil)
+        #expect(state.transcriptViewModel.rows.isEmpty)
+        #expect(state.processingStatusText == UserFacingStatus.classifyingWithJev.text)
+
+        await provider.release()
+        let decisionDeadline = ContinuousClock.now + .seconds(5)
+        while state.transcriptViewModel.rows.count != 2, ContinuousClock.now < decisionDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await provider.texts == ["録音の発話1", "録音の発話2"])
+        #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
+        #expect(state.transcriptViewModel.rows.map(\.isLowPriority) == [true, true])
+        #expect(publishedPriorities.allSatisfy { $0.allSatisfy { $0 } })
+        let usage = await state.jevUsageCounter.snapshot()
+        #expect(usage.sendCount == 2)
+        #expect(usage.successCount == 2)
+        #expect(usage.reportedInputTokens == 14)
+    }
+}
+
+@MainActor
+@Test("AppState keeps the classifier factory error visible while live ASR continues")
+func appRecordingShowsJevFactoryFailureReason() async throws {
+    let description = "Synthetic credential read denied (no Keychain access)"
+    try await withLiveJevRecording(makeDecisions: { _ in
+        { throw NSError(domain: "LiveJevRecordingTest", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: description]) }
+    }) { state in
+        let deadline = ContinuousClock.now + .seconds(5)
+        while state.transcriptViewModel.rows.count != 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let sessionID = try #require(state.recordingSessionID)
+        await state.waitForLiveASRDrain(sessionID: sessionID)
+        #expect(state.isRecording)
+        #expect(state.liveASRFailures[sessionID] == nil)
+        #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
+        #expect(state.transcriptViewModel.rows.allSatisfy { !$0.isLowPriority })
+        #expect(state.processingStatusText?.contains(description) == true)
+        #expect(state.transcriptViewModel.statusText.contains(description))
+        #expect(state.liveContentPriorityStatus[sessionID]?.contains(description) == true)
+    }
+}
