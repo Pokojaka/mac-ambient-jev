@@ -48,7 +48,5 @@ jobs:
           security import "$WORK/identity.p12" -k "$KEYCHAIN" -P ci -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-      - name: Build the release app product with two jobs
-        run: swift build --package-path app/MacAmbientJev --build-system swiftbuild -c release --product MacAmbientJev -j 2
       - name: Verify V1
         run: bash scripts/verify_v1.sh
