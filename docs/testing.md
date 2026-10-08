@@ -22,7 +22,7 @@ python3 scripts/check_doc_references.py
 6. モデル検証を指定した場合は Runtime test bundle を実行する。
 7. `scripts/build_app.sh` で app bundle を作り（MLX の Metal shader library は Swift Build backend だけが作るため、このスクリプトは `swift build` を Swift Build backend で実行する）、MLX Metal shader library と、利用者が選んだファイルへの read/write・app-scope bookmark entitlement を確認する。
 
-アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` の macos-26 job も通常の `verify_v1.sh` を実行する。この job は MLX の Metal shader library を build するため Xcode の Metal toolchain を `xcodebuild -downloadComponent MetalToolchain` で入れ、実行ごとに「MacAmbientJev Local Signing」という自己署名のコード署名証明書を一時 keychain に作り、`scripts/build_app.sh` の署名に使う。
+アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` の macos-26 job も通常の `verify_v1.sh` を実行する。この job は MLX の Metal shader library を build するため Xcode の Metal toolchain を `xcodebuild -downloadComponent MetalToolchain` で入れ、runner のメモリで release の C++ コンパイルが落ちないよう、`verify_v1.sh` の前に app の release product を並列 2 本で build しておき、実行ごとに「MacAmbientJev Local Signing」という自己署名のコード署名証明書を一時 keychain に作り、`scripts/build_app.sh` の署名に使う。
 
 通常の Swift test は実 Keychain にアクセスしません。`keychainStoreRoundTripsAndDeletesValue` は `RUN_KEYCHAIN_TESTS=1` を明示した場合だけ実行する integration test で、専用のランダム service 名でテスト値を保存・削除します。アプリの Jev API キーは使いません。実 Keychain へのアクセスを許可しない検証では、この環境変数を設定しません。ライブ Jev regression は注入した分類器 factory を使います。
 
