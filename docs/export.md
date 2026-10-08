@@ -51,7 +51,7 @@ YYYY-MM-DD_HH-mm-ss_<stem>_<8 lowercase hex>
 
 ## アプリのウィンドウ
 
-Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙のしおりと橙色の波形・文字の行を組み合わせたデザイン。元画像は `app/MacAmbientJev/Assets/AppIcon.png`。16・32・128・256・512 pt の標準解像度と Retina 用の画像を収めた AppIcon.icns を app bundle の Contents 内の Resources フォルダーに置き、`Info.plist` の CFBundleIconFile で指定する。
+Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙のしおりと橙色の波形・文字の行を組み合わせたデザイン。元画像は `app/MacAmbientJev/Assets/AppIcon.png`。16・32・128・256・512 pt の標準解像度と Retina 用の画像を収めた AppIcon.icns を app bundle の Contents 内の Resources フォルダーに置き、`scripts/app_info_plist.sh` が生成する Info.plist の CFBundleIconFile で指定する。
 
 メインウィンドウ「MacAmbientJev」は単一インスタンスとし、同時に複数は開かない。File メニューの New Window とそのショートカット Command-N は提供しない。
 
