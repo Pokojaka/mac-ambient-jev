@@ -26,6 +26,8 @@ open .build/MacAmbientJev.app
 bash scripts/run_app.sh
 ```
 
+アプリアイコンの元画像は `app/MacAmbientJev/Assets/AppIcon.png`（1024 × 1024 px）。`scripts/build_app.sh` が標準解像度と Retina 用の各サイズから AppIcon.icns を生成し、app bundle に組み込む。元画像が欠けている場合はビルドを停止する。
+
 Jev の API キーは設定画面で入力し、Keychain に保存する。保存先フォルダーと自動書き出しも設定画面で指定する。
 
 ## 検証

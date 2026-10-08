@@ -14,6 +14,8 @@ cat <<'PLIST'
     <string>MacAmbientJev</string>
     <key>CFBundleIdentifier</key>
     <string>app.mac-ambient-jev</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
