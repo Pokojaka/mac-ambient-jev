@@ -166,7 +166,10 @@ func appRecordingShowsJevFactoryFailureReason() async throws {
                         userInfo: [NSLocalizedDescriptionKey: description]) }
     }) { state in
         let deadline = ContinuousClock.now + .seconds(5)
-        while state.transcriptViewModel.rows.count != 2, ContinuousClock.now < deadline {
+        // ASR drain does not wait for Jev. The pending row is published after the factory error status.
+        while (state.transcriptViewModel.rows.count != 2
+               || state.transcriptViewModel.rows.first?.clauseState != .boundaryPending),
+              ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         let sessionID = try #require(state.recordingSessionID)

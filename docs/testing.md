@@ -62,6 +62,8 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 `appRecordingShowsLiveRowsWhileJevWaits` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、Jev queue、画面用 projection を通します。capture・VAD・ASR・Jev は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsJevFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
 
+ライブ ASR drain の完了は、独立して動く Jev キューの完了を保証しません。分類器生成エラーの regression は、2 行の表示と先頭行の `boundaryPending` を同じ 5 秒の期限内で待ちます。この保留行の公開はエラー状態表示の通知後なので、その時点で理由の保持を検証します。待機間隔は 10 ms とし、固定 sleep の延長や失敗後のリトライでは同期しません。
+
 保存済みセッション catalog は active ASR run のイベントログ・payload を読み取り専用で検証し、欠損・不正・不完全な末尾を持つログを破損として表示する。合成 catalog regression は malformed / missing / directory の各ケースで非 exportable 状態、再処理可否、manifest と metadata の不変性を確認する。
 
 Linux 音声正規化は入力と出力が同一ファイル（シンボリックリンク解決後を含む）なら、出力先を変更する前に拒否し、原音声を保持する。`tools/linux-audio/tests/test_audio.py` は実 ffmpeg を使う同一パス・symlink の境界と、正常変換・変換失敗時の出力処理を検証する。
