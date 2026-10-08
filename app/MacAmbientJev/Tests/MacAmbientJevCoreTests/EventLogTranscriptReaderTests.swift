@@ -78,17 +78,6 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
             confidence: 0.95
         )
     ))
-    _ = try await writer.append(EventDraft(
-        eventType: "content_priority.assigned",
-        sessionID: sessionID,
-        processingRunID: "priority-active",
-        segmentID: "seg-1",
-        payload: ContentPriorityEventPayload(
-            priority: .lowPriority,
-            decision: .classified(confidence: 0.99, model: "jev-test", inputTokens: 4)
-        )
-    ))
-
     let recovered = try SessionRecovery.recoverJSONL(
         Data(contentsOf: root.appending(path: "events.jsonl"))
     )
@@ -97,15 +86,14 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
         asr: "asr-active",
         diarization: "diar-active",
         scene: "scene-active",
-        scope: "scope-active",
-        contentPriority: "priority-active"
+        scope: "scope-active"
     )
     let events = try EventLogTranscriptReader().events(
         lines: recovered.lines,
         activeRuns: activeRuns
     )
 
-    let materialized = TranscriptMaterializer(
+    let materialized = try TranscriptMaterializer(
         sampleRate: 1_000
     ).materialize(
         events: events,
@@ -117,63 +105,14 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
     #expect(materialized[0].scene == .discussion)
     #expect(materialized[0].speakers.first?.id == "speaker-1")
     #expect(materialized[0].scopeSpans.first?.scope == .near)
-    #expect(materialized[0].contentPriority == .lowPriority)
-}
-
-@Test
-func jevRetryAnalyzerUsesLatestAssignmentPerSegment() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let sessionID = UUID()
-    let writer = try SessionWriter(sessionURL: root)
-
-    _ = try await writer.append(EventDraft(
-        eventType: "content_priority.assigned",
-        sessionID: sessionID,
-        processingRunID: "priority-1",
-        segmentID: "seg-1",
-        payload: ContentPriorityEventPayload(
-            priority: .primary,
-            decision: .retryPending
-        )
-    ))
-    _ = try await writer.append(EventDraft(
-        eventType: "content_priority.assigned",
-        sessionID: sessionID,
-        processingRunID: "priority-1",
-        segmentID: "seg-2",
-        payload: ContentPriorityEventPayload(
-            priority: .primary,
-            decision: .retryPending
-        )
-    ))
-    _ = try await writer.append(EventDraft(
-        eventType: "content_priority.assigned",
-        sessionID: sessionID,
-        processingRunID: "priority-2",
-        segmentID: "seg-1",
-        payload: ContentPriorityEventPayload(
-            priority: .lowPriority,
-            decision: .classified(confidence: 0.99, model: "jev-test", inputTokens: 3)
-        )
-    ))
-
-    let recovered = try SessionRecovery.recoverJSONL(
-        Data(contentsOf: root.appending(path: "events.jsonl"))
-    )
-    let state = try JevRetryAnalyzer().contentPriorityState(
-        lines: recovered.lines
-    )
-
-    #expect(state.hasAssignments)
-    #expect(state.latestRunID == "priority-2")
-    #expect(state.pendingSegmentIDs == ["seg-2"])
+    #expect(materialized[0].clauseState == .boundaryPending)
 }
 
 private func eventLine(_ object: [String: Any]) throws -> Data {
-    try JSONSerialization.data(withJSONObject: object)
+    var envelope = object
+    envelope["schema_version"] = 2
+    envelope["session_id"] = "0123ABCD-0000-0000-0000-000000000001"
+    return try JSONSerialization.data(withJSONObject: envelope)
 }
 
 @Test
@@ -255,65 +194,381 @@ func eventLogReadersRejectALineWithoutEnvelope() throws {
         _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: ActiveRuns(segmentation: "seg"))
     }
     #expect(throws: EventLogTranscriptReaderError.unreadableLine(index: 0)) {
-        _ = try JevRetryAnalyzer().contentPriorityState(lines: lines)
+        _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: ProcessingMetadata(
+            finalizationAttempt: nil, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
+            pendingClauseBoundarySegments: [], pendingContentPriorityClauses: []
+        ))
+    }
+}
+
+@Test(arguments: [1, nil] as [Int?])
+func readersAndWriterRejectAnyOtherEnvelopeVersion(version: Int?) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var object: [String: Any] = [
+        "event_seq": 1, "event_type": "segment.created", "segmentation_run_id": "seg", "segment_id": "s1",
+        "source_start_frame": 0, "source_end_frame": 100,
+    ]
+    object["schema_version"] = version
+    let line = try JSONSerialization.data(withJSONObject: object)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try (line + Data([0x0A])).write(to: root.appending(path: "events.jsonl"))
+
+    #expect(throws: EventLogSchemaError.unsupportedSchemaVersion(index: 0)) {
+        _ = try EventLogTranscriptReader().events(lines: [line], activeRuns: ActiveRuns(segmentation: "seg"))
+    }
+    #expect(throws: EventLogSchemaError.unsupportedSchemaVersion(index: 0)) {
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: line + Data([0x0A]))
+    }
+    #expect(throws: EventLogSchemaError.unsupportedSchemaVersion(index: 0)) {
+        _ = try SessionWriter(sessionURL: root)
+    }
+}
+
+/// Writes a live ASR run and a live Jev run where every segment is one clause that does not
+/// continue, with the given priority results in order. A nil result is a pending assignment.
+func writeLiveRun(
+    root: URL, sessionID: UUID, texts: [String], results: [(index: Int, priority: ContentPriority?)], complete: Bool
+) async throws {
+    let writer = try SessionWriter(sessionURL: root)
+    let provenance = RunProvenance(engine: "test", model: nil, version: "1", configuration: [:])
+    var sources: [SegmentTextReference] = []
+    for (index, text) in texts.enumerated() {
+        let id = "live\(index)"
+        try await writer.append(EventDraft(eventType: "segment.created", sessionID: sessionID, segmentationRunID: "live_seg",
+                                           segmentID: id, sourceStartFrame: Int64(index * 100), sourceEndFrame: Int64(index * 100 + 90),
+                                           payload: EmptyPayload()))
+        let asr = try await writer.append(EventDraft(eventType: "asr.completed", sessionID: sessionID, processingRunID: "live_asr",
+                                                     segmentationRunID: "live_seg", segmentID: id,
+                                                     payload: ASRCompletedEventPayload(text: text, detectedLanguage: nil, provenance: provenance)))
+        sources.append(try SegmentTextReference(segmentationRunID: "live_seg", segmentID: id, asrRunID: "live_asr", asrEventSeq: asr.eventSeq))
+    }
+    try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID, processingRunID: "boundary_live",
+                                       payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: JevRunProvenance.boundary(mode: "live"))))
+    var assembly = ClauseBoundaryAssembly(boundaryRunID: "boundary_live")
+    var units: [ClauseUnit] = []
+    for (index, source) in sources.enumerated() {
+        let next = index + 1 < texts.count ? try NextSegmentHead(source: sources[index + 1], text: texts[index + 1]) : nil
+        let candidates = try ClauseBoundaryCandidate.candidates(in: texts[index])
+        let assessment = try ClauseBoundaryAssessment(
+            source: source, candidates: candidates,
+            probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, 0.1) }),
+            nextHead: next, continuationProbability: next.map { _ in 0.1 },
+            request: next == nil && candidates.isEmpty ? nil : JevRequestRecord(requestID: "b\(index)", metadata: testMetadata),
+            sourceDecision: next == nil && candidates.isEmpty ? .terminalWithoutQuestions : .assessed
+        )
+        try await writer.append(EventDraft(eventType: ClauseEventType.boundaryAssessed, sessionID: sessionID,
+                                           processingRunID: "boundary_live", payload: assessment))
+        for unit in try assembly.consume(ClauseAssemblyInput(source: source, text: texts[index], state: .assessed(assessment))).closed {
+            try await writer.append(EventDraft(eventType: ClauseEventType.clauseClosed, sessionID: sessionID,
+                                               processingRunID: "boundary_live", payload: unit))
+            units.append(unit)
+        }
+    }
+    try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID, processingRunID: "priority_live",
+                                       payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "live"))))
+    for (order, result) in results.enumerated() {
+        let reference = units[result.index].reference
+        let payload: ContentPriorityAssignedPayload
+        if let priority = result.priority {
+            let decision = try ContentPriorityDecision(priority: priority, confidence: 0.95,
+                                                       probabilities: ["PRIMARY": 0.5, "LOW_PRIORITY": 0.5])
+            payload = try ContentPriorityAssignedPayload(assignments: [ClausePriorityAssignment(
+                reference: reference, priority: priority, needsRetry: false,
+                decision: .classified(requestID: "p\(order)", answerKey: "u0001", response: decision)
+            )], request: JevRequestRecord(requestID: "p\(order)", metadata: testMetadata))
+        } else {
+            payload = try ClausePriorityBatch.pending(references: [reference], reason: .requestFailed, message: "x")
+        }
+        try await writer.append(EventDraft(eventType: ClauseEventType.priorityAssigned, sessionID: sessionID,
+                                           processingRunID: "priority_live", payload: payload))
+    }
+    if complete {
+        for (runID, stage) in [("boundary_live", ProcessingStage.clauseBoundary), ("priority_live", .contentPriority)] {
+            let pendingCount = results.filter { $0.priority == nil }.count
+            let completedCount = stage == .clauseBoundary ? sources.count : results.count - pendingCount
+            try await writer.append(EventDraft(eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
+                                               payload: ProcessingRunCompletedPayload(
+                                                stage: stage, succeeded: true, completedCount: completedCount,
+                                                failedCount: stage == .clauseBoundary ? 0 : pendingCount
+                                               )))
+        }
+    }
+}
+
+@Test(arguments: [false, true])
+func liveReuseKeepsTheLatestClassifiedTextAndIgnoresLaterPendingResults(complete: Bool) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await writeLiveRun(
+        root: root, sessionID: UUID(), texts: ["えー、同じ本文", "同じ本文", "同じ本文", "別の本文"],
+        results: [(0, .lowPriority), (1, .primary), (2, nil), (3, nil)], complete: complete
+    )
+
+    let reused = try EventLogTranscriptReader().liveContentPriorityDecisions(
+        from: try Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+
+    #expect(Array(reused.keys) == [ExactClauseTextKey(text: "同じ本文")])
+    let decision = try requireValue(reused[ExactClauseTextKey(text: "同じ本文")])
+    #expect(decision.visiblePriority == .primary)
+    #expect(decision.sourcePriorityRunID == "priority_live")
+    #expect(decision.sourceClause.boundaryRunID == "boundary_live")
+}
+
+@Test
+func liveReuseRejectsAClauseThatTheSavedBoundariesDoNotProduce() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["一つ"], results: [], complete: false)
+    let asr = try requireValue(try eventObjects(root).first { $0["event_type"] as? String == "asr.completed" })
+    let source = try SegmentTextReference(segmentationRunID: "live_seg", segmentID: "live0", asrRunID: "live_asr",
+                                          asrEventSeq: try requireValue(asr["event_seq"] as? UInt64))
+    let forged = try ClauseUnit(
+        reference: ClauseReference(boundaryRunID: "boundary_live", clauseID: "c\(source.asrEventSeq)_1"),
+        parts: [ClauseSourcePart(source: source, range: TextUTF16Range(start: 1, end: 2))],
+        termination: .streamEnd
+    )
+    try await SessionWriter(sessionURL: root).append(EventDraft(
+        eventType: ClauseEventType.clauseClosed, sessionID: sessionID, processingRunID: "boundary_live", payload: forged
+    ))
+    try await SessionWriter(sessionURL: root).append(EventDraft(
+        eventType: ClauseEventType.priorityAssigned, sessionID: sessionID, processingRunID: "priority_live",
+        payload: try ClausePriorityBatch.pending(references: [forged.reference], reason: .requestFailed, message: "x")
+    ))
+
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(
+            from: try Data(contentsOf: root.appending(path: "events.jsonl"))
+        )
     }
 }
 
 @Test
-func jevRetryAnalyzerRejectsAnAssignmentWithoutRetryFlag() throws {
-    let lines = [
-        try eventLine([
-            "event_seq": 7, "event_type": "content_priority.assigned",
-            "processing_run_id": "priority", "segment_id": "s1",
-            "payload": ["priority": "primary"],
-        ]),
-    ]
+func publishedSnapshotRejectsAPendingListThatContradictsTheLog() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["一。二"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+        throw JevClientError.missingAnswer
+    })
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    var metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
 
-    #expect(throws: EventLogTranscriptReaderError.malformedEvent(eventSeq: 7, eventType: "content_priority.assigned")) {
-        _ = try JevRetryAnalyzer().contentPriorityState(lines: lines)
+    #expect(try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+        == JevRetryTargets(boundarySegments: [], clauses: result.pendingPriorityClauses))
+
+    metadata.pendingContentPriorityClauses = [result.pendingPriorityClauses[0]]
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+    }
+    metadata.pendingContentPriorityClauses = result.pendingPriorityClauses
+    metadata.pendingClauseBoundarySegments = [try source("s01", in: events)]
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
     }
 }
 
 @Test
-func liveDecisionReuseSelectsLatestClassifiedSourceAcrossSegmentationRuns() throws {
-    func started(_ seq: Int, _ run: String, _ stage: String, _ mode: String) throws -> Data {
-        try eventLine([
-            "event_seq": seq, "event_type": "processing.run.started", "processing_run_id": run,
-            "payload": ["stage": stage, "provenance": [
-                "engine": "test", "version": "test", "configuration": ["mode": mode]
-            ]]
-        ])
+func readerRejectsAPublishedClauseRunWhoseClausesDoNotMatchItsBoundaries() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["一。二"], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    #expect(try readPublished(root: root).map(\.clauseState) == [.classified])
+
+    // Moving one raw boundary by a character must not be read as a valid split.
+    let url = root.appending(path: "events.jsonl")
+    let tampered = try String(contentsOf: url, encoding: .utf8)
+        .replacingOccurrences(of: #""range":{"end":2,"start":0}"#, with: #""range":{"end":1,"start":0}"#)
+        .replacingOccurrences(of: #""range":{"start":0,"end":2}"#, with: #""range":{"start":0,"end":1}"#)
+    #expect(tampered != (try String(contentsOf: url, encoding: .utf8)))
+    try tampered.write(to: url, atomically: true, encoding: .utf8)
+
+    #expect(throws: (any Error).self) { try readPublished(root: root) }
+}
+
+@Test
+func malformedUnrelatedRunsDoNotInvalidatePublishedClauseSnapshot() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["一。二"], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let snapshot = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    let url = root.appending(path: "events.jsonl")
+    var bytes = try Data(contentsOf: url)
+    let lastSeq = try #require(try eventObjects(root).last?["event_seq"] as? UInt64)
+    for (offset, type) in ["asr.completed", ClauseEventType.boundaryAssessed, ClauseEventType.priorityAssigned].enumerated() {
+        let corrupted: [String: Any] = [
+            "schema_version": 2, "event_seq": lastSeq + UInt64(offset) + 1, "event_type": type,
+            "session_id": sessionID.uuidString, "processing_run_id": "unpublished",
+            "segmentation_run_id": "unused", "payload": [:]
+        ]
+        bytes.append(try JSONSerialization.data(withJSONObject: corrupted))
+        bytes.append(0x0A)
     }
-    func asr(_ seq: Int, _ run: String, _ segmentation: String, _ segment: String, _ text: String) throws -> Data {
-        try eventLine([
-            "event_seq": seq, "event_type": "asr.completed", "processing_run_id": run,
-            "segmentation_run_id": segmentation, "segment_id": segment,
-            "payload": ["text": text, "outcome": "recognized"]
-        ])
+    try bytes.write(to: url)
+    #expect(try readPublished(root: root) == snapshot.materializedSegments)
+    let metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
+    #expect(try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+        == JevRetryTargets(boundarySegments: [], clauses: []))
+}
+
+@Test(arguments: ["missingCandidate", "insideCharacter", "coverageGap", "unknownSource", "nextHead", "duplicatePriority", "completionCount"])
+func everyClauseConsumerRejectsCorruptDurableSnapshot(kind: String) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["えー、👩🏽‍💻。後", "本文"],
+                           results: [(0, .primary), (1, .lowPriority)], complete: true)
+    var objects = try eventObjects(root)
+    let index = try #require(objects.firstIndex {
+        $0["event_type"] as? String == (kind == "coverageGap" ? ClauseEventType.clauseClosed
+            : kind == "duplicatePriority" ? ClauseEventType.priorityAssigned
+            : kind == "completionCount" ? "processing.run.completed" : ClauseEventType.boundaryAssessed)
+    })
+    var payload = try #require(objects[index]["payload"] as? [String: Any])
+    switch kind {
+    case "missingCandidate":
+        var candidates = try #require(payload["candidates"] as? [[String: Any]])
+        let removed = candidates.removeFirst()
+        var probabilities = try #require(payload["probabilities"] as? [String: Any])
+        probabilities.removeValue(forKey: try #require(removed["id"] as? String))
+        payload["candidates"] = candidates
+        payload["probabilities"] = probabilities
+    case "insideCharacter":
+        var candidates = try #require(payload["candidates"] as? [[String: Any]])
+        candidates[1]["offset_utf16"] = 5
+        payload["candidates"] = candidates
+    case "coverageGap":
+        var parts = try #require(payload["parts"] as? [[String: Any]])
+        var range = try #require(parts[0]["range"] as? [String: Any])
+        range["end"] = 3
+        parts[0]["range"] = range
+        payload["parts"] = parts
+    case "unknownSource":
+        var source = try #require(payload["source"] as? [String: Any])
+        source["asr_event_seq"] = 1
+        payload["source"] = source
+    case "nextHead":
+        var head = try #require(payload["next_head"] as? [String: Any])
+        head["text"] = "異なる本文"
+        payload["next_head"] = head
+    case "duplicatePriority":
+        let assignments = try #require(payload["assignments"] as? [[String: Any]])
+        payload["assignments"] = assignments + assignments
+    default:
+        payload["completed_count"] = 9
     }
-    func assigned(_ seq: Int, _ run: String, _ segmentation: String, _ segment: String, _ pending: Bool) throws -> Data {
-        try eventLine([
-            "event_seq": seq, "event_type": "content_priority.assigned", "processing_run_id": run,
-            "segmentation_run_id": segmentation, "segment_id": segment,
-            "payload": ["priority": pending ? "primary" : "lowPriority", "needs_retry": pending,
-                        "decision": pending ? ["retry_pending": [:]] : ["classified": ["confidence": 0.99, "model": "jev-test"]]]
-        ])
+    objects[index]["payload"] = payload
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let active = ActiveRuns(segmentation: "live_seg", asr: "live_asr",
+                            clauseBoundary: "boundary_live", contentPriority: "priority_live")
+    let metadata = ProcessingMetadata(finalizationAttempt: nil, activeRuns: active,
+                                      pendingClauseBoundarySegments: [], pendingContentPriorityClauses: [])
+    #expect(throws: (any Error).self) {
+        _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: active)
     }
-    let lines = try [
-        started(1, "live-asr", "asr", "live"), started(2, "live-priority", "contentPriority", "live"),
-        started(3, "final-asr", "asr", "final"), started(4, "final-priority", "contentPriority", "final"),
-        asr(5, "live-asr", "first-seg", "same-id", " \n同じ本文 "),
-        assigned(6, "live-priority", "first-seg", "same-id", false),
-        asr(7, "live-asr", "second-seg", "same-id", "同じ本文"),
-        assigned(8, "live-priority", "second-seg", "same-id", false),
-        asr(9, "live-asr", "second-seg", "pending", "未分類"),
-        assigned(10, "live-priority", "second-seg", "pending", true),
-        assigned(11, "live-priority", "second-seg", "same-id", true),
-        asr(12, "final-asr", "final-seg", "same-id", "同じ本文"),
-        assigned(13, "final-priority", "final-seg", "same-id", false)
-    ]
-    let reused = try EventLogTranscriptReader().liveContentPriorityDecisions(lines: Array(lines.reversed()))
-    #expect(reused == ["同じ本文": .init(priority: .lowPriority, decision: .carriedOver(
-        sourceRunID: "live-priority", sourceSegmentationRunID: "second-seg", sourceSegmentID: "same-id"
-    ))])
+    #expect(throws: (any Error).self) {
+        _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+    }
+    let data = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
+    #expect(throws: (any Error).self) {
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: data)
+    }
+}
+
+@Test
+func appendRejectsMissingSchema2ClauseFieldsWithoutChangingTheLog() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try SessionWriter(sessionURL: root)
+    await #expect(throws: EventLogTranscriptReaderError.self) {
+        try await writer.append(EventDraft(eventType: ClauseEventType.priorityAssigned, sessionID: UUID(),
+                                           processingRunID: "priority", payload: EmptyPayload()))
+    }
+    let url = root.appending(path: "events.jsonl")
+    #expect(try Data(contentsOf: url).isEmpty)
+    let original = try eventLine(["event_seq": 1, "event_type": ClauseEventType.priorityAssigned,
+                                  "processing_run_id": "priority", "payload": [:]]) + Data([0x0A])
+    try original.write(to: url)
+    #expect(throws: EventLogTranscriptReaderError.self) { _ = try SessionWriter(sessionURL: root) }
+    #expect(try Data(contentsOf: url) == original)
+}
+
+@Test
+func liveReuseRejectsUnfinishedFinalRunAsACarryOrigin() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["本文"], results: [(0, .primary)], complete: false)
+    var objects = try eventObjects(root)
+    let index = try #require(objects.firstIndex { $0["event_type"] as? String == "processing.run.started" })
+    var payload = try #require(objects[index]["payload"] as? [String: Any])
+    var provenance = try #require(payload["provenance"] as? [String: Any])
+    var configuration = try #require(provenance["configuration"] as? [String: Any])
+    configuration["mode"] = "final"
+    provenance["configuration"] = configuration
+    payload["provenance"] = provenance
+    objects[index]["payload"] = payload
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let data = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: data)
+    }
+}
+
+@Test
+func liveReuseDoesNotInventAStreamEndForAnUnassessedSuccessor() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["先頭", "続き"], results: [], complete: false)
+    var objects = try eventObjects(root)
+    let assessmentIndex = try #require(objects.firstIndex { $0["event_type"] as? String == ClauseEventType.boundaryAssessed })
+    var payload = try #require(objects[assessmentIndex]["payload"] as? [String: Any])
+    payload["continuation_probability"] = 0.9
+    objects[assessmentIndex]["payload"] = payload
+    let sourceObject = try #require(payload["source"] as? [String: Any])
+    let source = try JSONDecoder().decode(SegmentTextReference.self, from: JSONSerialization.data(withJSONObject: sourceObject))
+    let forged = try ClauseUnit(reference: ClauseReference(boundaryRunID: "boundary_live", clauseID: "c\(source.asrEventSeq)_0"),
+                                parts: [ClauseSourcePart(source: source, range: TextUTF16Range(start: 0, end: 2))],
+                                termination: .streamEnd)
+    let clauseIndex = try #require(objects.firstIndex { $0["event_type"] as? String == ClauseEventType.clauseClosed })
+    objects[clauseIndex]["payload"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(forged))
+    let cutoff = objects[clauseIndex]["event_seq"] as! UInt64
+    objects = objects.filter { ($0["event_seq"] as! UInt64) <= cutoff || $0["event_type"] as? String == "processing.run.started" }
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let decoded = try EventLogLine.decode(lines)
+    let log = try ClauseEventLog(lines: decoded)
+    #expect(throws: EventLogTranscriptReaderError.self) { _ = try log.boundaryRun("boundary_live") }
+}
+
+@Test(arguments: [ProcessingStage.segmentation, .asr, .diarization, .scene, .scope])
+func readersRejectUnknownLocalPointersInsteadOfInventingAnEmptyTranscript(stage: ProcessingStage) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    _ = try await writeTranscript([], root: root, sessionID: UUID())
+    let lines = try eventLines(root)
+    #expect(try EventLogTranscriptReader().events(lines: lines, activeRuns: transcriptRuns).isEmpty)
+    let invalid = ActiveRuns(
+        segmentation: stage == .segmentation ? "missing" : "seg",
+        asr: stage == .asr ? "missing" : "asr",
+        diarization: stage == .diarization ? "missing" : "diar",
+        scene: stage == .scene ? "missing" : "scene",
+        scope: stage == .scope ? "missing" : "scope"
+    )
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: invalid)
+    }
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try JevRetryAnalyzer().retryTargets(
+            lines: lines, metadata: ProcessingMetadata(finalizationAttempt: nil, activeRuns: invalid,
+                                                       pendingClauseBoundarySegments: [], pendingContentPriorityClauses: [])
+        )
+    }
 }

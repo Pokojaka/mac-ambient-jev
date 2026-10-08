@@ -4,7 +4,8 @@ import Foundation
 /// from the session's source audio.
 public enum RecoverableProcessingAction: Sendable, Equatable {
     case finalize
-    case retryContentPriority(segmentIDs: [String])
+    /// Requests again the pending Jev results of the published snapshot.
+    case retryContentPriority(boundarySegments: [SegmentTextReference], clauses: [ClauseReference])
 }
 
 public struct RecoverableSession: Sendable, Equatable {
@@ -166,15 +167,18 @@ public struct SessionRecoveryScanner: Sendable {
         case .failed:
             return nil
         case .complete:
-            guard let metadata, let activeRuns = metadata.activeRuns,
-                  !metadata.pendingContentPrioritySegmentIDs.isEmpty else {
-                return nil
+            guard let metadata, let activeRuns = metadata.activeRuns else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "完了した処理状態に公開 run がありません")
             }
-            action = .retryContentPriority(segmentIDs: try contentPrioritySegmentIDs(
-                layout: layout,
-                activeRuns: activeRuns,
-                pendingSegmentIDs: metadata.pendingContentPrioritySegmentIDs
-            ))
+            let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
+            guard !recovered.droppedIncompleteTail else {
+                throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
+            }
+            let lines = recovered.lines
+            let targets = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+            let unpublished = try JevRetryAnalyzer().hasUnpublishedJevRun(lines: lines, activeRuns: activeRuns)
+            guard !targets.boundarySegments.isEmpty || !targets.clauses.isEmpty || unpublished else { return nil }
+            action = .retryContentPriority(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
         }
 
         guard try layout.audioSource(for: manifest) != nil else {
@@ -185,27 +189,5 @@ public struct SessionRecoveryScanner: Sendable {
             sessionURL: layout.sessionURL,
             action: action
         )
-    }
-
-    /// A content-priority run newer than the selected one means a retry was
-    /// interrupted before it was published; its partial result is not adopted,
-    /// so every segment of the published segmentation is classified again.
-    private func contentPrioritySegmentIDs(
-        layout: SessionLayout,
-        activeRuns: ActiveRuns,
-        pendingSegmentIDs: [String]
-    ) throws -> [String] {
-        let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL)).lines
-        let jevState = try JevRetryAnalyzer().contentPriorityState(lines: lines)
-        guard jevState.hasAssignments, jevState.latestRunID != activeRuns.contentPriority else {
-            return pendingSegmentIDs
-        }
-        return try EventLogTranscriptReader()
-            .events(lines: lines, activeRuns: activeRuns)
-            .compactMap { event in
-                guard case .segmentCreated = event.kind,
-                      event.segmentationRunID == activeRuns.segmentation else { return nil }
-                return event.segmentID
-            }
     }
 }

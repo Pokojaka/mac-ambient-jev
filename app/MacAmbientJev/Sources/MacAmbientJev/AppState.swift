@@ -145,14 +145,15 @@ final class AppState: ObservableObject {
         case finalize(sessionID: UUID, metadataPolicy: UnreadableMetadataPolicy)
         case retryContentPriority(
             sessionID: UUID,
-            segmentIDs: [String]
+            boundarySegments: [SegmentTextReference],
+            clauses: [ClauseReference]
         )
 
         var sessionID: UUID {
             switch self {
             case .finishLive(let sessionID, _),
                  .finalize(let sessionID, _),
-                 .retryContentPriority(let sessionID, _):
+                 .retryContentPriority(let sessionID, _, _):
                 sessionID
             }
         }
@@ -263,7 +264,8 @@ final class AppState: ObservableObject {
             paths: paths,
             engines: engines,
             contentPriority: .jev(
-                makeJevDecisions(jevUsageCounter)
+                makeJevDecisions(jevUsageCounter),
+                usageCounter: jevUsageCounter
             )
         )
         self.exportDirectoryPath = exportDestination.path

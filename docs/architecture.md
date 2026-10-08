@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-Mac Ambient Jev は、保存音声を基にローカルで文字起こしを作る Swift アプリです。音声保存と推論を分離し、認識・話者分離・場面・音響範囲・優先度の結果をイベントとして保持します。画面や書き出しは、公開済み run のイベントから組み立てます。保存形式の詳細は [storage.md](storage.md) を参照してください。
+Mac Ambient Jev は、保存音声を基にローカルで文字起こしを作る Swift アプリです。音声保存と推論を分離し、認識・話者分離・場面・音響範囲・節の境界・優先度の結果をイベントとして保持します。画面や書き出しは、公開済み run のイベントから組み立てます。保存形式の詳細は [storage.md](storage.md) を参照してください。
 
 ## パッケージとモジュール
 
@@ -64,9 +64,9 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 ライブ VAD は閉じた発話区間を渡し、連続発話は最大 14 秒で分割します。分割の端数 continuation も保持します。長い発話は区間が閉じるまで初表示が遅れます。ライブ中は話者分離を行わず、結果は暫定です。
 
-`LiveASRSession` はセッション内で materialized 行の配列を保持します。`segment.created` の保存と ID による重複登録排除だけでは認識済み行を再構築しません。待ち件数は durable 登録済み ID 数から ASR 完了・失敗が durable になった ID 数を引き、集合差を作らずに求めます。`process` は同じ登録処理を使いますが、登録だけの中間 progress は作りません。行は `asr.completed` の保存後、または durable な優先度イベントの適用・active content-priority run の変更時に `TranscriptMaterializer` で更新します。snapshot と completion もこの配列を使い、保存に失敗したイベントは行・件数に反映しません。オフラインの materialization とアプリのライブキュー所有はこのキャッシュとは独立です。
+`LiveASRSession` はセッション内で materialized 行の配列を保持します。`segment.created` の保存と ID による重複登録排除だけでは認識済み行を再構築しません。待ち件数は durable 登録済み ID 数から ASR 完了・失敗が durable になった ID 数を引き、集合差を作らずに求めます。`process` は同じ登録処理を使いますが、登録だけの中間 progress は作りません。行は `asr.completed` / `asr.failed` の保存後、または durable な Jev 節イベントの適用時に `TranscriptMaterializer` で更新します。ライブの境界判定 run と優先度 run はライブセッションの開始時に決まり、そのセッションの active run として扱います。snapshot と completion もこの配列を使い、保存に失敗したイベントは行・件数に反映しません。オフラインの materialization とアプリのライブキュー所有はこのキャッシュとは独立です。
 
-非空のライブ ASR 本文は `LiveContentPrioritySession` の独立キューへ渡し、判定が届くまで（Jev 無効・失敗・保留・停止を除く）その行と時間順で後続の行を表示しません。`JevEnrichmentCoordinator` のバッチ停止規則を使い、保存した優先度イベントを進行中の ASR イベントへ追加します。Jev の待機・失敗は ASR drain に伝播しません。録音停止時に外部分類を取り消し、確定処理は開始時点で保存済みのライブ判定だけを本文の完全一致で再利用します。[ライブ](live.md)・[Jev](jev.md)
+ライブ ASR の結果は保存直後に通常色で表示し、区間の順序と結果（空・失敗を含む）を `LiveContentPrioritySession` の独立キューへ渡します。キューは次区間の保存を待って一区間一回の境界判定を送り、`ClauseBoundaryAssembly` で閉じた節を保存してから 40 節までの batch で優先度を判定します。保存した節イベントだけを進行中の ASR イベントへ追加します。Jev の待機・失敗は ASR drain に伝播しません。録音停止ではテキスト列の終端をキューに伝え、確定処理は開始時点で保存済みのライブ判定を固定してからキューを取り消し、節本文の完全一致で再利用します。[ライブ](live.md)・[Jev](jev.md)
 
 根拠: [TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioBlockRing.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[AudioCaptureDrain.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioCaptureDrain.swift)、[DurableAudioWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[Segmentation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。
 
@@ -85,27 +85,28 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
   → 音響による場面判定
   → 音響範囲判定
   → ローカル全段階の成功を検証
-  → active_runs を一括公開
-  → App で許可された場合だけ Jev 優先度分類
+  → active_runs と全区間の境界保留を一括公開
+  → App で許可された場合だけ Jev 境界判定 → 節の組み立て → Jev 優先度判定
+  → 境界判定 run・優先度 run・両保留を一括公開
 ```
 
 区間は保存タイムラインの frame index による半開区間です。話者間 gap は中点で分割します。FluidAudio adapter だけは実音声内から最終モデル window の padding 内へ延びる終端を EOF に合わせます（[終端の規則](final.md)）。EOF 以降の開始、padding を超える終端は adapter で明示エラーにし、確定パイプラインでも全 span の実音声範囲を厳密に検証します。
 
-確定処理開始時に `finalization_attempt` を running として保存し、処理中のイベントは既存ログへ追記します。全ローカル段階が成功するまでは公開済み `active_runs` を変更しません。失敗・熱による一時停止では直前の正常な結果を維持し、再開は新しい確定 run の全量実行です。原音声は後段の失敗で削除しません。
+確定処理開始時に `finalization_attempt` を running として保存し、処理中のイベントは既存ログへ追記します。全ローカル段階が成功するまでは公開済み `active_runs` を変更しません。ローカルの公開と Jev の公開はそれぞれ一回の metadata write で、Jev の snapshot の保存に失敗しても公開済みのローカル結果を保持します。失敗・熱による一時停止では直前の正常な結果を維持し、再開は新しい確定 run の全量実行です。原音声は後段の失敗で削除しません。
 
 根拠: [AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[SpeakerTurnSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerTurnSegmenter.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)。
 
 ## ローカル処理と外部通信
 
-場面判定は話者の音響的活動だけを使い、手がかりのない冒頭を lecture とします。近接度は音響範囲専用の evidence であり、場面判定には使いません。Jev は認識済みテキストの優先度分類にだけ使い、音声・話者 embedding は送りません。Jev が利用できなくてもローカルの確定結果を公開し、未分類の発話は保留して PRIMARY 相当で残します。
+場面判定は話者の音響的活動だけを使い、手がかりのない冒頭を lecture とします。近接度は音響範囲専用の evidence であり、場面判定には使いません。Jev は認識済みテキストの節の境界判定と優先度判定にだけ使い、音声・話者 embedding は送りません。Jev が利用できなくてもローカルの確定結果を公開し、未判定の発話は分割しない通常行として保留します。
 
 App は `ContentPriorityAccess.jev` を渡します。ファイル処理・システム音声キャプチャ・ライブ遅延計測の CLI は `.disabled` を渡し、Jev を呼びません。初回のローカルモデル取得には通信が必要ですが、ASR と話者分離の推論はローカルです。
 
-外部判定の注入境界は Core の `DecisionProvider` です。`NativeSessionProcessor` の factory と AppState が用意する `JevDecisionCoordinator` は、`JevClient` または注入providerを受け取ります。現在のライブ・確定・再試行consumerは、一行のASR原文を一対象batchとして `classifyPriorities` に渡します。Settingsの接続確認も一対象batchで、固定テスト文だけを送りusageを計数しません。
+外部判定の注入境界は Core の `DecisionProvider` です。`NativeSessionProcessor` の factory と AppState が用意する `JevDecisionCoordinator` は、`JevClient` または注入 provider を受け取り、HTTP リクエストごとに一回計数します。`ContentPriorityAccess.jev` は factory と共有の `JevUsageCounter` を持ち、provider がなくても保留の計数を更新します。Settings の接続確認は一対象の Choice で、固定テスト文だけを送り usage を計数しません。
 
-輸送は型付きNoulと複数Choiceを扱います。Noulは一区間の候補印付きraw textと必要な次原文先頭だけを送り、全候補・継続の確率を一HTTPで返します。候補列挙・マーカー衝突回避・閾値比較はコード、意味判定はJevの責務です。Choiceは最大40個のrequest-local keyと対象本文をstate objectに置き、各質問がそのkeyを直接指定します。全回答とmodel／usageの検証が成功してから結果を公開し、metadataをリクエスト単位で扱います。本番の境界run・節組立てはこの輸送の呼出経路にはありません。
+輸送は型付きNoulと複数Choiceを扱います。Noul は一区間の候補印付き raw text と必要な次原文先頭だけを送り、全候補・継続の確率を一 HTTP で返します。候補列挙・マーカー衝突回避・閾値比較・節の組み立てはコード、意味判定は Jev の責務です。Choice は最大40個の request-local key とフィラー除去後の節本文を state object に置き、各質問がその key を直接指定します。全回答と model／usage の検証が成功してから結果を保存し、metadata をリクエスト単位で一回だけ保存します。確定と再試行の snapshot は `JevEnrichmentCoordinator`、ライブは `LiveContentPrioritySession` が作り、どちらも `ClauseBoundaryAssembly` と同じ保存 payload（[ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)）を使います。保存結果は `EventLogTranscriptReader` の共通 decoder が組み立て直して検証します。
 
-共有source・候補・確率・metadata型は [ClauseTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、HTTPと質問type別decodeは [JevClient.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、request purpose別計数と行保留管理は [JevUsageCounter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevUsageCounter.swift) にあります。計数と保存イベントへの反映を分離し、保存障害を通信failureへ変換しません。
+共有source・候補・確率・metadata型は [ClauseTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、HTTPと質問type別decodeは [JevClient.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、request purpose 別計数と区間・節の保留管理は [JevUsageCounter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevUsageCounter.swift) にあります。計数と保存イベントへの反映を分離し、保存障害を通信failureへ変換しません。
 
 ## 待機中のモデル解放
 

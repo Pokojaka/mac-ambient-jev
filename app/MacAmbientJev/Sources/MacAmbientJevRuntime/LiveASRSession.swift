@@ -20,15 +20,38 @@ public struct LiveASRProgress: Sendable, Equatable {
     }
 }
 
+/// One registered live segment and what its ASR produced so far.
+public struct LiveASRSegmentStatus: Sendable, Equatable {
+    public enum Outcome: Sendable, Equatable {
+        case pending
+        /// The text may be empty: an empty result ends the text stream for boundary requests.
+        case recognized(SegmentTextReference, String)
+        case failed
+    }
+
+    public let segmentID: String
+    public let startFrame: Int64
+    public let outcome: Outcome
+
+    public init(segmentID: String, startFrame: Int64, outcome: Outcome) {
+        self.segmentID = segmentID
+        self.startFrame = startFrame
+        self.outcome = outcome
+    }
+}
+
 public struct LiveASRSnapshot: Sendable, Equatable {
     public let events: [TranscriptEvent]
     public let activeRuns: ActiveRuns
     public let progress: LiveASRProgress
+    /// Every registered segment in time order.
+    public let segments: [LiveASRSegmentStatus]
 
-    public init(events: [TranscriptEvent], activeRuns: ActiveRuns, progress: LiveASRProgress) {
+    public init(events: [TranscriptEvent], activeRuns: ActiveRuns, progress: LiveASRProgress, segments: [LiveASRSegmentStatus]) {
         self.events = events
         self.activeRuns = activeRuns
         self.progress = progress
+        self.segments = segments
     }
 }
 
@@ -58,6 +81,14 @@ public struct LiveASRCompletion: Sendable, Equatable {
     }
 }
 
+public enum LiveASRSessionError: LocalizedError {
+    case foreignClauseEvent
+
+    public var errorDescription: String? {
+        "ライブ文字起こしと別の Jev 判定を表示しようとしました"
+    }
+}
+
 /// Incremental ASR run used while recording.
 ///
 /// Detection and transcription are intentionally separate. register first
@@ -74,15 +105,21 @@ public actor LiveASRSession {
     private let asr: any ASREngine
     private let materializer: TranscriptMaterializer
 
+    private let clauseBoundaryRunID: String?
+    private let contentPriorityRunID: String?
     private var transcriptEvents: [TranscriptEvent] = []
     private var materializedSegments: [MaterializedTranscriptSegment] = []
-    private var contentPriorityRunID: String?
+    private var segmentStatuses: [LiveASRSegmentStatus] = []
+    private var segmentStatusIndex: [String: Int] = [:]
     private var registeredSegmentIDs: Set<String> = []
     private var registeringSegmentIDs: Set<String> = []
     private var finishedSegmentIDs: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
     private var prepared = false
+    private var runStarted = false
+    private var startingRun = false
+    private var runStartWaiters: [CheckedContinuation<Void, any Error>] = []
     private var finalized = false
     private var completedFinish: LiveASRCompletion?
     private var finishing = false
@@ -97,11 +134,15 @@ public actor LiveASRSession {
         processingDirectory: URL,
         writer: SessionWriter,
         asr: any ASREngine,
-        sampleRate: Double
+        sampleRate: Double,
+        clauseBoundaryRunID: String?,
+        contentPriorityRunID: String?
     ) {
         self.sessionID = sessionID
         self.segmentationRunID = segmentationRunID
         self.asrRunID = asrRunID
+        self.clauseBoundaryRunID = clauseBoundaryRunID
+        self.contentPriorityRunID = contentPriorityRunID
         self.processingDirectory = processingDirectory
         self.writer = writer
         self.asr = asr
@@ -148,6 +189,7 @@ public actor LiveASRSession {
                 endFrame: segment.endFrame
             ))
             registeredSegmentIDs.insert(segment.segmentID)
+            setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
         }
     }
 
@@ -155,7 +197,7 @@ public actor LiveASRSession {
     public func process(
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
-        onRecognized: (@Sendable (String, LiveASRSnapshot) async -> Void)? = nil
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
     ) async throws -> LiveASRProgress {
         guard !finalized else {
             return currentProgress()
@@ -176,6 +218,8 @@ public actor LiveASRSession {
             return currentProgress()
         }
 
+        try await ensureRunStarted()
+
         if !prepared {
             try await asr.prepare()
             prepared = true
@@ -195,7 +239,8 @@ public actor LiveASRSession {
             do {
                 input = try loader.load(segment: segment)
             } catch {
-                try await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
+                let failed = try await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
+                await onSegmentFinished?(failed, snapshot())
                 continue
             }
 
@@ -203,7 +248,8 @@ public actor LiveASRSession {
             do {
                 result = try await asr.transcribe(input)
             } catch {
-                try await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
+                let failed = try await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
+                await onSegmentFinished?(failed, snapshot())
                 continue
             }
 
@@ -221,20 +267,27 @@ public actor LiveASRSession {
                     provenance: asr.provenance
                 )
             ))
-            transcriptEvents.append(.asrCompleted(
+            let event = TranscriptEvent.asrCompleted(
                 seq: completed.eventSeq,
                 runID: asrRunID,
                 segmentationRunID: segmentationRunID,
                 segmentID: segment.segmentID,
                 text: result.text,
                 detectedLanguage: result.detectedLanguage
-            ))
+            )
+            transcriptEvents.append(event)
             completedCount += 1
             finishedSegmentIDs.insert(segment.segmentID)
-            refreshMaterializedSegments()
-            if let onRecognized {
-                await onRecognized(segment.segmentID, snapshot())
+            guard let source = try event.asrSource() else {
+                preconditionFailure("an asr.completed event always has a text reference")
             }
+            let status = LiveASRSegmentStatus(
+                segmentID: segment.segmentID, startFrame: segment.startFrame,
+                outcome: .recognized(source, result.text)
+            )
+            setStatus(status)
+            try refreshMaterializedSegments()
+            await onSegmentFinished?(status, snapshot())
         }
 
         return currentProgress()
@@ -244,22 +297,33 @@ public actor LiveASRSession {
         LiveASRSnapshot(
             events: transcriptEvents,
             activeRuns: currentActiveRuns(),
-            progress: currentProgress()
+            progress: currentProgress(),
+            segments: segmentStatuses
         )
     }
 
-    /// Merges a durable assignment without discarding ASR rows recognized while Jev was working.
+    /// Merges durable Jev clause events of this session's live runs without discarding ASR
+    /// rows recognized while Jev was working.
     @discardableResult
-    public func applyContentPriority(event: TranscriptEvent) -> LiveASRSnapshot {
-        guard case .contentPriority = event.kind,
-              let runID = event.processingRunID,
-              let segmentID = event.segmentID,
-              registeredSegmentIDs.contains(segmentID) else {
-            return snapshot()
+    public func applyClauseEvents(_ events: [TranscriptEvent]) throws -> LiveASRSnapshot {
+        for event in events {
+            switch event.kind {
+            case .clauseBoundaryAssessed, .clauseBoundaryPending, .clauseClosed:
+                guard let clauseBoundaryRunID, event.processingRunID == clauseBoundaryRunID else {
+                    throw LiveASRSessionError.foreignClauseEvent
+                }
+            case .contentPriorityAssigned:
+                guard let contentPriorityRunID, event.processingRunID == contentPriorityRunID else {
+                    throw LiveASRSessionError.foreignClauseEvent
+                }
+            default:
+                throw LiveASRSessionError.foreignClauseEvent
+            }
         }
-        transcriptEvents.append(event)
-        contentPriorityRunID = runID
-        refreshMaterializedSegments()
+        let mergedEvents = transcriptEvents + events
+        let mergedSegments = try materializer.materialize(events: mergedEvents, activeRuns: currentActiveRuns())
+        transcriptEvents = mergedEvents
+        materializedSegments = mergedSegments
         return snapshot()
     }
 
@@ -282,6 +346,7 @@ public actor LiveASRSession {
                 }
             }
 
+            try await ensureRunStarted()
             let pendingCount = currentPendingCount
             _ = try await writer.append(EventDraft(
                 eventType: "processing.run.completed",
@@ -311,12 +376,38 @@ public actor LiveASRSession {
         }
     }
 
+    private func ensureRunStarted() async throws {
+        guard !runStarted else { return }
+        if startingRun {
+            try await withCheckedThrowingContinuation { runStartWaiters.append($0) }
+            return
+        }
+        startingRun = true
+        do {
+            _ = try await writer.append(EventDraft(
+                eventType: "processing.run.started", sessionID: sessionID, processingRunID: asrRunID,
+                payload: ProcessingRunStartedPayload(stage: .asr, provenance: asr.provenance)
+            ))
+            runStarted = true
+            startingRun = false
+            let waiters = runStartWaiters
+            runStartWaiters = []
+            waiters.forEach { $0.resume() }
+        } catch {
+            startingRun = false
+            let waiters = runStartWaiters
+            runStartWaiters = []
+            waiters.forEach { $0.resume(throwing: error) }
+            throw error
+        }
+    }
+
     /// A segment counts as finished only once its failure is durable; an unwritable log stops the live run.
     private func appendFailure(
         segment: SegmentReference,
         kind: ASRFailureKind,
         error: any Error
-    ) async throws {
+    ) async throws -> LiveASRSegmentStatus {
         _ = try await writer.append(EventDraft(
             eventType: "asr.failed",
             sessionID: sessionID,
@@ -332,6 +423,9 @@ public actor LiveASRSession {
         ))
         failedCount += 1
         finishedSegmentIDs.insert(segment.segmentID)
+        let status = LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .failed)
+        setStatus(status)
+        return status
     }
 
     private func beginWork() {
@@ -350,8 +444,24 @@ public actor LiveASRSession {
         ActiveRuns(
             segmentation: segmentationRunID,
             asr: asrRunID,
+            clauseBoundary: clauseBoundaryRunID,
             contentPriority: contentPriorityRunID
         )
+    }
+
+    private func setStatus(_ status: LiveASRSegmentStatus) {
+        if let index = segmentStatusIndex[status.segmentID] {
+            segmentStatuses[index] = status
+            return
+        }
+        // Detection emits segments in time order, so a new segment is normally appended.
+        let index = (segmentStatuses.last.map { $0.startFrame <= status.startFrame } ?? true)
+            ? segmentStatuses.count
+            : segmentStatuses.firstIndex { $0.startFrame > status.startFrame } ?? segmentStatuses.count
+        segmentStatuses.insert(status, at: index)
+        for position in index..<segmentStatuses.count {
+            segmentStatusIndex[segmentStatuses[position].segmentID] = position
+        }
     }
 
     // Finished IDs are a subset of durably registered IDs, including failed ASR.
@@ -359,8 +469,8 @@ public actor LiveASRSession {
         registeredSegmentIDs.count - finishedSegmentIDs.count
     }
 
-    private func refreshMaterializedSegments() {
-        materializedSegments = materializer.materialize(
+    private func refreshMaterializedSegments() throws {
+        materializedSegments = try materializer.materialize(
             events: transcriptEvents,
             activeRuns: currentActiveRuns()
         )

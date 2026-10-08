@@ -1,6 +1,6 @@
 import Foundation
 
-/// Why a batch stops sending the remaining segments to Jev.
+/// Why a batch stops sending the remaining requests to Jev.
 public enum JevBatchStopReason: Sendable, Equatable {
     case providerUnavailable
     case authorizationRejected
@@ -18,13 +18,21 @@ public enum JevBatchStopReason: Sendable, Equatable {
             return nil
         }
     }
+
+    /// The pending reason recorded for targets a stopped batch leaves unsent.
+    public var pendingReason: ClausePendingReason {
+        switch self {
+        case .authorizationRejected: .authorizationRejected
+        case .providerUnavailable: .requestFailed
+        }
+    }
 }
 
-public enum PriorityClassification: Sendable, Equatable {
-    case classified(ContentPriorityDecision, metadata: JevResponseMetadata, visiblePriority: ContentPriority)
-    /// The segment stays primary and pending. A non-nil reason means the
-    /// remaining segments of the batch must not be sent.
-    case failed(stopsBatch: JevBatchStopReason?)
+/// The outcome of one Jev request.
+public enum JevRequestOutcome<Response: Sendable>: Sendable {
+    case answered(Response, JevRequestRecord)
+    /// The request failed. A non-nil reason means the remaining requests must not be sent.
+    case failed(stopsBatch: JevBatchStopReason?, message: String)
     case cancelled
 }
 
@@ -41,6 +49,8 @@ public enum ContentPriorityPolicy {
     }
 }
 
+/// Sends one Jev request at a time and counts each HTTP request once, whatever the number of
+/// questions or targets it carries.
 public actor JevDecisionCoordinator {
     private let provider: any DecisionProvider
     private let usageCounter: JevUsageCounter
@@ -53,65 +63,54 @@ public actor JevDecisionCoordinator {
         self.usageCounter = usageCounter
     }
 
-    public func classify(
-        text: String,
-        segmentID: String,
-        sessionID: UUID
-    ) async -> PriorityClassification {
-        await usageCounter.recordAttempt(purpose: .priority)
-
-        do {
-            let key = "u0001"
-            let response = try await provider.classifyPriorities([
-                PriorityTextTarget(key: key, text: text)
-            ])
-            try Task.checkCancellation()
-            guard let decision = response.decisions[key] else {
-                throw JevClientError.missingAnswer
+    public func assessBoundaries(
+        _ request: ClauseBoundaryRequest
+    ) async -> JevRequestOutcome<ClauseBoundaryResponse> {
+        await send(purpose: .boundary) {
+            let response = try await self.provider.assessBoundaries(request)
+            guard response.probabilities.values.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                  response.continuationProbability.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
+                throw JevClientError.invalidResponse
             }
-            guard response.decisions.count == 1 else {
+            guard Set(response.probabilities.keys) == Set(request.candidates.map(\.id)),
+                  (response.continuationProbability == nil) == (request.next == nil) else {
                 throw JevClientError.unexpectedAnswers
             }
-            await usageCounter.recordSuccess(
-                purpose: .priority,
-                inputTokens: response.metadata.inputTokens
-            )
-            await usageCounter.clearDeferred(
-                sessionID: sessionID,
-                segmentIDs: [segmentID]
-            )
-            return .classified(
-                decision,
-                metadata: response.metadata,
-                visiblePriority: ContentPriorityPolicy.visiblePriority(for: decision)
-            )
+            return (response, response.metadata)
+        }
+    }
+
+    /// `targets` must use the request-local keys `u0001`…; every key must be answered.
+    public func classifyPriorities(
+        _ targets: [PriorityTextTarget]
+    ) async -> JevRequestOutcome<PriorityBatchResponse> {
+        await send(purpose: .priority) {
+            let response = try await self.provider.classifyPriorities(targets)
+            guard Set(response.decisions.keys) == Set(targets.map(\.key)) else {
+                throw JevClientError.unexpectedAnswers
+            }
+            return (response, response.metadata)
+        }
+    }
+
+    private func send<Response: Sendable>(
+        purpose: JevRequestPurpose,
+        _ request: @Sendable () async throws -> (Response, JevResponseMetadata)
+    ) async -> JevRequestOutcome<Response> {
+        await usageCounter.recordAttempt(purpose: purpose)
+        do {
+            let (response, metadata) = try await request()
+            try Task.checkCancellation()
+            await usageCounter.recordSuccess(purpose: purpose, inputTokens: metadata.inputTokens)
+            return .answered(response, try JevRequestRecord(
+                requestID: "jevreq_\(UUID().uuidString.lowercased())", metadata: metadata
+            ))
         } catch {
             if Task.isCancelled || error is CancellationError {
                 return .cancelled
             }
-            await usageCounter.recordFailure(purpose: .priority)
-            await usageCounter.recordDeferred(
-                sessionID: sessionID,
-                segmentID: segmentID
-            )
-            return .failed(stopsBatch: JevBatchStopReason(error: error))
+            await usageCounter.recordFailure(purpose: purpose)
+            return .failed(stopsBatch: JevBatchStopReason(error: error), message: error.localizedDescription)
         }
-    }
-
-    /// Records a segment that was not sent because its batch stopped.
-    public func deferClassification(
-        segmentID: String,
-        sessionID: UUID
-    ) async {
-        await usageCounter.recordDeferred(
-            sessionID: sessionID,
-            segmentID: segmentID
-        )
-    }
-}
-
-extension JevDecisionCoordinator {
-    public func clearDeferred(sessionID: UUID, segmentIDs: Set<String>) async {
-        await usageCounter.clearDeferred(sessionID: sessionID, segmentIDs: segmentIDs)
     }
 }

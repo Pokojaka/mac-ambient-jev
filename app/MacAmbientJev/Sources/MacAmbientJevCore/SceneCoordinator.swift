@@ -142,7 +142,7 @@ public actor SceneCoordinator {
         )
         try selectedRuns.select(stage: .scene, runID: runID)
 
-        let materialized = materializer.materialize(
+        let materialized = try materializer.materialize(
             events: events,
             activeRuns: selectedRuns
         )

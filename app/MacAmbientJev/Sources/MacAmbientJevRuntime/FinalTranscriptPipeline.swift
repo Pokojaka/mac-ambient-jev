@@ -373,7 +373,7 @@ struct FinalTranscriptPipeline: Sendable {
 
         return .completed(FinalTranscriptPipelineResult(
             activeRuns: activeRuns,
-            materializedSegments: materializer.materialize(
+            materializedSegments: try materializer.materialize(
                 events: transcriptEvents,
                 activeRuns: activeRuns
             ),

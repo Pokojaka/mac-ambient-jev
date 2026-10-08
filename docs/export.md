@@ -9,7 +9,9 @@
 
 低優先度の発話は画面では共通の表示方針に従って淡色表示・折り畳みを行うが、書き出しにはフィラー除去済みの LOW 本文を印なしで含める。フィラーだけで空になった行は省く。「聞き取れませんでした」などの文字列だけで発話を除外しない。認識不能は ASR の構造化状態 `outcome: empty` で扱う。イベントには空本文を含む区間が残る。
 
-`SavedTranscriptLoader` は保存済みの active run のイベントを原文のまま materialize し、画面と書き出しがその後に共通 projection を適用する。読み込み・書き出しは ASR イベントを書き換えない。`segments.json` は空本文を除いた原文の公開 JSON であり、フィラーだけの発話や背景のみの発話も含む。画面・テキストと JSON の行集合はこの点で異なる。[保存形式](storage.md)を参照。
+`SavedTranscriptLoader` は保存済み active run のイベントから原文とフィラー除去写像、節の行内 slice を materialize し、画面と書き出しは共通 projection を適用する。読み込み・書き出しは ASR イベントを書き換えない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は除去後本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラーだけの発話（空の `display_text`）や背景のみの発話も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
+
+処理 CLI とキャプチャ CLI も、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に Jev を再実行しない。キャプチャ CLI の `transcriptText` は画面と同じ projection の除去後本文を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の Jev 再試行待ちセッションの resume は外部送信せず、公開済みの raw/display JSON を書き出す。
 
 ## transcript.txt
 

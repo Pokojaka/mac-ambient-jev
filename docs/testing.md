@@ -38,9 +38,9 @@ swift test --package-path app/MacAmbientJev --filter JevTransportContractTests
 
 [JevTransportContractTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevTransportContractTests.swift) は実 `JevClient` にHTTPTransportを注入し、複数Noul候補と継続の一HTTP送信、終端のnext省略、原文のCharacter／UTF-16座標、候補印衝突、次原文60 Character上限、source IDや不要本文の非送信、40対象Choiceと回答key対応を検証します。空・重複・本文なし・41対象を送信前に拒否し、missing answer、余分な回答、type mismatch、unknown choice、確率／confidenceの範囲外・非有限値、不正model／usage／tokenで部分結果を公開しないことを確認します。未報告tokenと既知の0 tokenは区別します。Noul採用は0.5直前・同値・直後、LOW採用はconfidence 0.90を境に検証します。
 
-計数・consumerの回帰検証はpurpose別の実request計数と合計、保留行identity、401／403／429／5xxの停止と未送信保留、cancelのattempt-only、通信成功後の保存失敗、低confidence応答・metadata保持を対象にします。接続確認や実APIの品質を合成応答で証明したとは扱いません。
+計数・consumerの回帰検証は purpose 別の実 request 計数と合計、session + 境界区間／優先度節の保留 identity、401／403／429／5xx の停止と未送信保留、cancel の attempt-only、通信成功後の保存失敗、低 confidence 応答・metadata 保持を対象にします。接続確認や実 API の品質を合成応答で証明したとは扱いません。
 
-実行smokeは一時harnessで実JevClient→注入HTTPTransport→Noul decodeの候補確率・continuationを出力し、同clientの40対象Choice→ContentPriorityPolicy→usage snapshotを観測します。40判定でもHTTP・success・入力tokenが一request分であること、不正Noulでは結果が得られないことを確認します。現在の保存enrichment経路も一対象で通し、一つのassignedへ実応答modelと入力tokenを保存することを再読込で確認します。harnessは検証後に除去します。このsmokeは外部APIの精度・GUI・録音権限を検証しません。
+実行 smoke は一時 harness で実 SessionWriter／NativeSessionProcessor／reader／metadata／export を通します。複数の保存 raw 区間から跨ぎ節と行内別節を作り、混在 Choice、finishInput、確定 ASR の異なる区間配置への byte 完全一致 carry、通信失敗保留、設定と同じ retry API、metadata 再読込、txt 実出力、purpose 別 usage を観測します。Jev.disabled では外部送信0・無分割通常表示・ローカル公開を確認します。raw に残ったフィラーが表示と txt から消えることも確認し、harness は検証後に除去します。この smoke は外部 API の精度・GUI・録音権限を検証しません。
 
 ### 合成イベントによる回帰検証とライブ滞留計測
 
@@ -49,7 +49,7 @@ swift test --package-path app/MacAmbientJev --filter 'catalogRejectsUnreadableEv
 swift test --package-path app/MacAmbientJev --filter measureLiveRegistrationCost
 swift test --package-path app/MacAmbientJev --filter measureLatestCheckpointRetentionDuringThermalStall
 swift test --package-path app/MacAmbientJev --filter 'liveASR|liveRows|liveAuthorization|stoppingRecordingCancels'
-swift test --package-path app/MacAmbientJev --filter 'appRecordingHoldsLiveRowsUntilJevDecision|appRecordingShowsJevFactoryFailureReason|liveFactoryFailureShowsItsReasonAndReleasesRowsNormally'
+swift test --package-path app/MacAmbientJev --filter 'appRecordingShowsLiveRowsWhileJevWaits|appRecordingShowsJevFactoryFailureReason|liveRowsShowAtOnce|nativeTakeover'
 ```
 
 correctness test は読み取れないイベントログ、検証済み VAD の空結果、録音障害と停止時の資源解放障害、冷却後のライブ認識再開の境界を合成イベントで検証する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照・checkpoint・chunk 一覧の項目数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、保持数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
@@ -58,9 +58,9 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 `measureLatestCheckpointRetentionDuringThermalStall` は実 `AppState` の区間登録・enqueue と強制 critical を使い、一発話につき 5 秒の合成 chunk 一覧項目を追加する（音声ファイルは作らない）。120・720・2880 発話で checkpoint の保持数はセッションあたり 1 件、保持 chunk 項目数は最新 checkpoint の 120・720・2880 件だけとなる。区間参照は全件保持する。`coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState` は保存済み合成 PCM と injected ASR を使い、critical 中の認識停止、最新 checkpoint の保持、冷却後の全区間の一度だけの順次認識、録音停止後のキュー・checkpoint 解放を確認する。計測 harness は時間の assertion を置かない。
 
-ライブ ASR regression は認識後の新規 pending 登録・重複 ID、ASR 完了・失敗、同一 run の優先度変更と active run 切替、登録・完了・失敗・終了イベントの保存障害、並行登録・終了を検証します。取得済み行配列は後の認識や優先度更新で変わりません。Jev 待機行の非表示と時間順、分類無効・失敗・停止時の扱いも合成 provider で検証します。
+ライブ ASR regression は認識後の新規 pending 登録・重複 ID、ASR 完了・空本文・失敗の ordered snapshot、同一 run の保存済み節更新と active run 切替、登録・完了・失敗・終了イベントの保存障害、並行登録・終了を検証します。取得済み行配列は後の認識や節更新で変わりません。Jev 待機中も全行が即時表示されること、時間順、無効・失敗・停止、空区間のテキスト列終端、ASR gap 後の未解決先頭を注入 provider で検証します。
 
-`appRecordingHoldsLiveRowsUntilJevDecision` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、Jev queue、画面用 projection を通します。capture・VAD・ASR・Jev は合成入力に置き換え、Jev 応答を止めている間の行非表示、応答後の最初から低優先度の表示、送信・成功件数を確認します。`appRecordingShowsJevFactoryFailureReason` と `liveFactoryFailureShowsItsReasonAndReleasesRowsNormally` は分類器生成時の合成エラーを使い、理由がアプリの状態表示に残ること、未分類の通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
+`appRecordingShowsLiveRowsWhileJevWaits` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、Jev queue、画面用 projection を通します。capture・VAD・ASR・Jev は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsJevFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
 
 保存済みセッション catalog は active ASR run のイベントログ・payload を読み取り専用で検証し、欠損・不正・不完全な末尾を持つログを破損として表示する。合成 catalog regression は malformed / missing / directory の各ケースで非 exportable 状態、再処理可否、manifest と metadata の不変性を確認する。
 
@@ -104,6 +104,16 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 ## 共通 Swift の検証
 
 フィラーの回帰検証は UTF-16 座標、Unicode Character の境界、単語内部の類似文字列、後続本文と接続した先頭フィラー、隣接する句読点、フィラーだけの行、画面 projection と `transcript.txt` の本文一致を扱う。materializer は ASR の原文を保持する。`savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport` は保存済み ASR イベントを `SavedTranscriptLoader` で読み、原文の保持と画面・テキストの除去済み本文、イベントの不変性を確認する。保存済みセッションの smoke は入力 `えー、今日は公開鍵暗号を説明します。` を使い、`SavedTranscriptLoader` → 共通 projection → `SessionExporter` の実際の `transcript.txt` 書き込み・再読込を通して本文が `今日は公開鍵暗号を説明します。` となり、イベントが原文のままであることを確認する。GUI の選択コピーとアクセシビリティ読み上げは別途、画面上で検証する。
+
+節優先度の回帰検証は注入 `DecisionProvider` / `JevHTTPTransport` で決定的に行い、モデル品質の正解とは分ける。厳密な `> 0.5` と LOW 採用 `≥ 0.90`、候補の raw UTF-16 座標、跨ぎ節と終端、40/41節の batch 境界、全回答検証による部分公開の拒否、待機中も本文を表示すること、停止と takeover の遅い応答、保留再試行と公開 snapshot、UTF-8 byte 完全一致の再利用、schema・参照・coverage の破損、実リクエスト単位の token 計数を対象とする。画面 projection と txt は混在 PRIMARY/LOW、全 LOW、待機・保留、フィラーのみを含む実 slice で本文と行集合を確認する。文言・内部配線・コピーした設定値を固定するテストは根拠にしない。
+
+実ファイルの受入 smoke は一時 harness で `NativeSessionProcessor` → `SessionWriter` → 保存再読込 → `SessionExporter` を通す。ライブの `えー、これは` と `コピーと。うん。` から跨ぎ節と混在 PRIMARY/LOW を作り、空 ASR でテキスト列を終端する。final の異なる区間配置 `えー、これはコピーと。` / `うん。新しい本文。` へ byte 完全一致の2節だけを引き継ぎ、追加節の503を保留にして設定と同じ API で優先度だけ再試行する。events と JSON の `text` はフィラーを保持し、画面 projection・JSON の `display_text`・実出力 txt は除去後本文を使い、txt は LOW も含む。注入応答の送信数は境界4・優先度3、失敗1、報告入力 token の合計34、再試行後の両保留0であることを確認する。これらは注入応答の計数であり実 API の性能値ではない。Jev disabled では外部送信0・無分割通常行・ローカル5段公開を確認し、harness と一時セッションは受入後に削除する。
+
+ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した空 ASR・後続本文を保存し、`JevEnrichmentCoordinator` → metadata 公開 → reader/materializer の再読込を通す。前半本文を未解決のまま残し、空 ASR より後の本文だけを一回の Choice で分類し、保存 snapshot と再読込が一致することを確認する。空 ASR の後に新たな gap がある場合に先頭を推測しないことは回帰テストで扱う。
+
+ライブ状態表示の実ファイル smoke は、注入 ASR で2区間を保存し、分類器の生成で資格情報エラーを投げる。`LiveASRSession` と `LiveContentPrioritySession` の実装を通して、ASR 原文と通常表示を維持し、両区間の durable 保留理由と最後の状態表示に同じ失敗原因が残り、境界・優先度の外部送信が0であることを確認する。App の状態への反映は回帰テストで扱い、実 GUI の検証とは分ける。
+
+この節単位 cutover の受入では実 GUI、録音、実 Jev API は実行していない。注入応答の回帰・保存イベントの再読込・txt 書き出しで確認できる範囲と、実画面での折畳み/展開・選択コピー・accessibility、実 API の境界品質・送信時間を区別する。Jev disabled の CLI、build 成功、試作の利用者報告値は実ライブ Jev の検証や性能測定の代わりにしない。
 
 `MacAmbientJevEvaluateSession`, `MacAmbientJevEvaluateASR`, and `MacAmbientJevEvaluateDiarization` consume explicit artifact files only; none locate or create saved sessions, so these artifact-only modes do not require `--sessions-root`. Every mode of the capture, file-processing, and live-latency CLIs requires an explicit root that rejects protected app data/cache roots, their ancestors/descendants, and symlink aliases.
 
@@ -237,7 +247,7 @@ bash scripts/measure_live_latency.sh "$AUDIO_FILE"
 bash scripts/measure_live_latency.sh --sample-rate 48000 --channels 1 "$AUDIO_FILE"
 ```
 
-`MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初の非空更新までを計測する。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
+`MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初のフィラー除去後の非空更新までを計測する。フィラーだけの行は非空更新として数えず、report の本文は除去後本文の空白・句読点を変更しない。Jev は disabled なので次区間待ち・Noul・Choice の時間は測らない。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
 
 Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間、または最長 14 秒分割が表示単位であり、長い発話は初表示まで待つ。測るのは非空更新までで、実画面描画、マイク入力の実時間、全発話の精度を保証する指標ではない。
 

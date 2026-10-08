@@ -5,6 +5,7 @@ import Foundation
 public struct ProcessingRunStartedPayload: Codable, Sendable, Equatable {
     public let stage: ProcessingStage
     public let provenance: RunProvenance
+    private enum CodingKeys: String, CodingKey { case stage, provenance }
 
     public init(stage: ProcessingStage, provenance: RunProvenance) {
         self.stage = stage
@@ -17,6 +18,10 @@ public struct ProcessingRunCompletedPayload: Codable, Sendable, Equatable {
     public let succeeded: Bool
     public let completedCount: Int
     public let failedCount: Int
+    private enum CodingKeys: String, CodingKey {
+        case stage, succeeded
+        case completedCount = "completed_count", failedCount = "failed_count"
+    }
 
     public init(
         stage: ProcessingStage,

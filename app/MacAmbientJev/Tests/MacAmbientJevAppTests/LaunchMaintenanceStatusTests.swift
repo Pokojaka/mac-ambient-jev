@@ -9,23 +9,43 @@ import MacAmbientJevRuntime
 private func launchMaintenanceRecording(
     paths: AppPaths, attempt: FinalizationAttempt.State = .complete
 ) async throws -> SessionLayout {
+    let sessionID = UUID()
     let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
-        paths: paths, sessionID: UUID(), source: .recording(.microphone),
+        paths: paths, sessionID: sessionID, source: .recording(.microphone),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let layout = SessionLayout(sessionURL: sessionURL)
     let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1)
     try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
     _ = try await writer.finish()
+    let runs = ActiveRuns(
+        segmentation: "seg_saved", asr: "asr_saved", diarization: "diar_saved",
+        scene: "scene_saved", scope: "scope_saved"
+    )
+    let eventWriter = try SessionWriter(sessionURL: sessionURL)
+    let provenance = RunProvenance(engine: "launch-maintenance-test", model: nil, version: "test", configuration: [:])
+    for (stage, runID) in [
+        (ProcessingStage.segmentation, runs.segmentation), (.asr, runs.asr),
+        (.diarization, runs.diarization), (.scene, runs.scene), (.scope, runs.scope)
+    ] {
+        _ = try await eventWriter.append(EventDraft(
+            eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
+            payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
+        ))
+        _ = try await eventWriter.append(EventDraft(
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
+            payload: ProcessingRunCompletedPayload(
+                stage: stage, succeeded: true, completedCount: 0, failedCount: 0
+            )
+        ))
+    }
     try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(
             attemptID: "finalize_saved", state: attempt, failureReason: nil
         ),
-        activeRuns: ActiveRuns(
-            segmentation: "seg_saved", asr: "asr_saved", diarization: "diar_saved",
-            scene: "scene_saved", scope: "scope_saved"
-        ),
-        pendingContentPrioritySegmentIDs: []
+        activeRuns: runs,
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
     return layout
 }

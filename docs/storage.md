@@ -1,8 +1,8 @@
 # セッション保存形式
 
-保存音声は再処理の基礎であり、文字起こし・話者・場面・音響範囲・優先度は派生結果です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
+保存音声は再処理の基礎であり、文字起こし・話者・場面・音響範囲・節の境界・優先度は派生結果です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
 
-以下の表は **JSON 上の実際のキーと値**です。イベントと処理 metadata は snake_case のキーを使いますが、checkpoint と音声用 JSONL は camelCase です。String enum の値はキー変換の対象ではなく、`contentPriority`、`lowPriority`、`discussionCandidate` などは camelCase のままです。
+以下の表は **JSON 上の実際のキーと値**です。イベントと処理 metadata は snake_case のキーを使いますが、checkpoint と音声用 JSONL は camelCase です。String enum の値はキー変換の対象ではなく、`clauseBoundary`、`contentPriority`、`lowPriority`、`discussionCandidate` などは camelCase のままです。
 
 ## 保存場所とセッションフォルダー
 
@@ -125,7 +125,7 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 | `event_seq` | UInt64 | 必須。セッション内のイベント番号。新しい append は最後の番号 + 1、最初は 1 |
 | `event_id` | UUID 文字列 | 必須。イベントごとに生成 |
 | `event_type` | String | 必須。下記のイベント種別 |
-| `schema_version` | Int | 必須。writer が出す値は 1 |
+| `schema_version` | Int | 必須。値は `2` だけ。reader は他の値・欠落の行を読まずにエラーにし、`SessionWriter` は既存ログにその行があれば追記しない |
 | `session_id` | UUID 文字列 | 必須。所属セッション |
 | `processing_run_id` | String | optional。処理段階の run ID |
 | `segmentation_run_id` | String | optional。区間が所属する segmentation run ID |
@@ -154,10 +154,12 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `speaker.span` | run、開始・終了範囲 | `speaker_id`: String、`start_frame`: Int64、`end_frame`: Int64、`confidence`: optional Double |
 | `scene.changed` | run、開始フレームのみ | **文字列そのもの**。`unknown`、`lecture`、`discussionCandidate`、`discussion`、`lectureCandidate` |
 | `scope.span` | run、segment、開始・終了範囲 | `start_frame`: Int64、`end_frame`: Int64、`scope`: `near` / `background` / `unknown`、`confidence`: Double |
-| `content_priority.assigned` | run、seg run、segment | `priority`: `primary` / `lowPriority`、`needs_retry`: Bool、`decision`: 下記の object |
-| `content_priority.pending_retry` | run、segment | 空 object `{}` |
+| `clause_boundaries.assessed` | run（境界判定 run） | 下記の境界判定 object |
+| `clause_boundaries.pending` | run（境界判定 run） | `source`: 区間参照、`reason`: 保留理由、`message`: String |
+| `clauses.closed` | run（境界判定 run） | 下記の節 object。複数行にまたがるため envelope の segment は使わない |
+| `content_priority.assigned` | run（優先度 run） | `assignments`: 判定 object の配列、`request`: リクエスト記録または null |
 
-`stage` の raw value は `segmentation`、`asr`、`diarization`、`scene`、`scope`、`contentPriority` です。metadata のキー `content_priority` と、stage の値 `contentPriority` を混同しないでください。
+`stage` の raw value は `segmentation`、`asr`、`diarization`、`scene`、`scope`、`clauseBoundary`、`contentPriority` です。metadata のキー `clause_boundary` / `content_priority` と、stage の値 `clauseBoundary` / `contentPriority` を混同しないでください。
 
 `asr.completed.outcome` は本文の前後の空白・改行を除いた結果が空なら `empty`、それ以外は `recognized` です。`engine` と `model` は認識した実エンジンの provenance から取ります。本番の engine は `qwen3-asr-swift`、外部モデル ID は aufklarer/Qwen3-ASR-1.7B-MLX-8bit です（リポジトリパスではありません）。認識不能を特定の日本語文面との一致で判定しません。
 
@@ -165,33 +167,60 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。`speaker.span` の ID はエンジンの raw ID で、表示用の Speaker 番号をイベントへ書き戻しません。
 
-`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、diarization / scope は span、scene は初期場面を含む転換、contentPriority は分類対象区間を数えます。優先度 run は保留区間があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル確定の失敗を意味しません。
+`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、diarization / scope は span、scene は初期場面を含む転換を数えます。clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文がある節の成立数と保留数を数えます。Jev の run は保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル確定の失敗を意味しません。保存破損や参照の不整合は保留に変換せず、エラーにします。
 
-検証済み VAD が 0 区間の確定処理では、segmentation / diarization / ASR / scene / scope の各 run に provenance を持つ開始と、成功・完了 0 件・失敗 0 件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span`、初期場面を含む `scene.changed`、`scope.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。5 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` はすべて新しい run を選択します。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
+検証済み VAD が 0 区間の確定処理では、segmentation / diarization / ASR / scene / scope の各 run に provenance を持つ開始と、成功・完了 0 件・失敗 0 件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span`、初期場面を含む `scene.changed`、`scope.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。5 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` のローカル5段階だけを新しい run へ切り替え、Jev の pointer は nil、両保留配列は空にします。Jev 送信は0です。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
 
 根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[DiarizationCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DiarizationCoordinator.swift)、[SceneCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneCoordinator.swift)、[ScopeCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ScopeCoordinator.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。
 
-### 優先度判定の来歴
+### Jev の節イベント
 
-`decision` は種類を表すキーを 1 つ持つ object です。
+区間参照（`source`）は `segmentation_run_id`、`segment_id`、`asr_run_id`、`asr_event_seq` を持つ object で、`asr_event_seq` はその区間の `asr.completed` の `event_seq` です。原文の範囲は ASR 原文の UTF-16 code unit の半開区間 `{"start":0,"end":4}` で、両端は Character 境界です。原文は正規化・trim しません。
+
+`clause_boundaries.assessed` の payload:
+
+| キー | 型 | 意味 |
+| --- | --- | --- |
+| `source` | 区間参照 | 判定した区間 |
+| `candidates` | object 配列 | `id`（`b0001` 等）と `offset_utf16`。原文の `、。？！?!` の直後で、原文末尾を除く。候補なしは空配列 |
+| `probabilities` | 候補 ID → Double | 各候補の Noul 確率 |
+| `next_head` | object または null | 実際に送った次区間の `source` と先頭 `text`（60 Character 以内）。終端は null |
+| `continuation_probability` | Double または null | `next_head` があるときだけ値を持つ |
+| `request` | リクエスト記録または null | 今回の実送信だけ。質問0の終端と引き継ぎは null |
+| `source_decision` | object | `{"kind":"assessed"}`、`{"kind":"terminal_without_questions"}`、または `{"kind":"carried_over","source_boundary_run_id":…,"source_event_seq":…}` |
+
+候補なしの判定と通信失敗は区別します。失敗は `clause_boundaries.pending` で、`reason` は `unconfigured`、`stopped`、`initialization_failed`、`authorization_rejected`、`request_failed`、`asr_gap`、`cancelled` のいずれかです。保留に架空の確率や一節の結果は入れません。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭であることを検証し、元のリクエストを再送扱いにしません。
+
+`clauses.closed` の payload:
 
 ```json
-{"classified":{"confidence":0.95,"model":"jev-1.13.0","input_tokens":12}}
+{"reference":{"boundary_run_id":"boundary_example","clause_id":"c12_0"},
+ "parts":[{"source":{"segmentation_run_id":"seg_example","segment_id":"seg_000001","asr_run_id":"asr_example","asr_event_seq":12},"range":{"start":0,"end":3}},
+          {"source":{"segmentation_run_id":"seg_example","segment_id":"seg_000002","asr_run_id":"asr_example","asr_event_seq":15},"range":{"start":0,"end":4}}],
+ "termination":{"kind":"internal_boundary","source":{"segmentation_run_id":"seg_example","segment_id":"seg_000002","asr_run_id":"asr_example","asr_event_seq":15},"candidate_id":"b0001"}}
 ```
+
+節 ID は `c<最初の part の asr_event_seq>_<開始 offset>` で、本文の hash や行内の連番ではありません。parts は時間順で、二つ目以降は区間の先頭から始まります。`termination.kind` は `internal_boundary`（その区間の採用候補）、`not_continued`（継続 no）、`stream_end`（録音停止・最後の区間・空の次区間。文法的な境界ではない）です。節本文は保存せず、原文とフィラー削除範囲から導きます。
+
+`content_priority.assigned` は一回の Choice リクエストの全結果を一イベントに保存し、`request` を一回だけ持ちます。リクエスト記録は `{"request_id":…,"metadata":{"model":…,"input_tokens":…,"output_tokens":…}}` で、未報告の token は省略し0を合成しません。
 
 ```json
-{"retry_pending":{}}
+{"assignments":[
+  {"reference":{"boundary_run_id":"boundary_example","clause_id":"c12_0"},"priority":"lowPriority","needs_retry":false,
+   "decision":{"kind":"classified","request_id":"jevreq_example","answer_key":"u0001",
+               "response":{"priority":"lowPriority","confidence":0.95,"probabilities":{"PRIMARY":0.05,"LOW_PRIORITY":0.95}}}}],
+ "request":{"request_id":"jevreq_example","metadata":{"model":"jev-1.13.0","input_tokens":120}}}
 ```
 
-```json
-{"carried_over":{"source_run_id":"priority_live_example","source_segmentation_run_id":"seg_live_example","source_segment_id":"live_000001"}}
-```
+| `decision.kind` | `priority` | `needs_retry` | その他のキー |
+| --- | --- | --- | --- |
+| `classified` | 表示用の優先度（LOW は confidence ≥ 0.90 のときだけ） | false | `request_id`（同じイベントの request）、`answer_key`、`response` |
+| `retry_pending` | null | true | `reason`、`message` |
+| `carried_over` | 元の値 | `source_needs_retry` と同じ | `source_priority_run_id`、`source_event_seq`、`source_clause`、`source_needs_retry` |
 
-数値とモデル名は形を示す例です。classified の `confidence` と実応答の `model` は必須、`input_tokens` は optional です。現在の本番consumerは一行一対象batchであり、一リクエストのmetadataからmodelと入力tokenを一つの `content_priority.assigned` に保存します。複数対象輸送の結果を行イベントへ展開してtokenを複製する経路はありません。輸送の `JevResponseMetadata` は入力・出力tokenを保持しますが、この行イベントは入力tokenだけを保存します。未報告の入力tokenは省略し、0を合成しません。usageはリクエストごとに一回加算し、保存済みイベントの読取やcarryでは加算しません。
+`request` が null のイベントは、送信のない引き継ぎ・保留だけを含みます。引き継ぎは元 run・イベント・節が実在し、優先度と保留状態、節本文の UTF-8 byte 列が一致することを検証します。保留のまま引き継いだ節は保留のままです。
 
-`needs_retry` は retry_pending の場合にだけ true で、priority は必ず primary です。carried_over は確定本文と一致したライブ判定の再利用、または再試行で送信しない区間に適用し、引き継ぎ元の run・segmentation run・segment ID をすべて残します。ライブの再利用は前後の空白・改行の trim 後の完全一致に限り、同一本文ではイベント順で最新の classified 判定を使います。Jev の LOW_PRIORITY 応答は confidence が 0.90 以上の場合だけ `lowPriority` として公開します。低 confidence の応答でも classified の来歴自体は保存します。
-
-根拠: [JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JevDecision.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)。
+根拠: [ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[ClauseBoundaryAssembly.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)。
 
 ### run の来歴
 
@@ -213,37 +242,39 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default |
 | scene | `acoustic-scene-state-machine` / model なし / `1` | `window_seconds` = `20.0`、`hop_seconds` = `1.0`、`discussion_candidate_observations` = `8`、`discussion_confirm_observations` = `12`、`lecture_candidate_observations` = `10`、`lecture_confirm_observations` = `15` |
 | scope | `proximity-scope-classifier` / model なし / `1` | `evidence` = `timeline-level-and-spectral` |
-| contentPriority | `jev` / run の model なし / `2` | `endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`minimum_demotion_confidence` = `0.9`、`prompt_revision` = `2`、`maximum_targets` = `40`、`request_target_count` = `1`、`text_policy` = `raw-segment`。応答モデルは各行の classified に保存 |
+| clauseBoundary | `jev` / run の model なし / `1` | `mode` = `live` / `final` / `retry`、`endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`candidate_characters` = `、。？！?!`、`boundary_threshold` = `0.5`、`continuation_threshold` = `0.5`、`next_head_character_limit` = `60`、`unit_policy` = `absolute-and-strong`、`text_policy` = `raw-asr`、`filler_projection_revision` = `1` |
+| contentPriority | `jev` / run の model なし / `2` | `mode`、`endpoint`、`minimum_demotion_confidence` = `0.9`、`maximum_targets` = `40`、`prompt_revision` = `2`、`text_policy` = `filler-removed-exact`、`filler_projection_revision` = `1`。応答モデルは各リクエスト記録に保存し、run 全体の単一モデルを推測しない |
 
-Jev provenance は実際に優先度 run を始める場合に保存します。ライブ優先度 run は configuration に `mode: live` を加え、暫定判定を逐次保存します。録音停止で取り消す run は完了イベントなしでも保存済み classified 判定を保持します。ライブ run は metadata の active_runs に選ばず、確定処理は独立した content priority run を完了・選択します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ ASR run に出すわけではありません。
+Jev provenance は実際に Jev の run を始める場合に保存します。ライブの境界判定 run と優先度 run は判定を逐次保存し、テキスト列の終端まで判定すると完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済みの結果を保持します。ライブ run は metadata の active_runs に選ばず、確定処理は独立した境界判定 run と優先度 run を完了・選択します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ ASR run に出すわけではありません。
 
 根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SceneInference.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneInference.swift)。
 
 ## processing_metadata.json
 
-`ProcessingMetadataStore` が snake_case JSON を atomic write します。モデル・version 群はここにはありません。
+`ProcessingMetadataStore` が明示した CodingKey の JSON を atomic write します。モデル・version 群はここにはありません。
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
-| `finalization_attempt` | optional object | 最新の確定処理の状態 |
-| `active_runs` | optional object | 一括公開された現在の run 集合 |
-| `pending_content_priority_segment_i_ds` | String 配列 | Jev 優先度分類の保留区間 ID。**実キーは末尾が `i_ds`** |
+| `finalization_attempt` | object または null | 最新の確定処理の状態 |
+| `active_runs` | object または null | 一括公開された現在の run 集合 |
+| `pending_clause_boundary_segments` | 区間参照の配列 | 必須。公開済み snapshot で境界判定が未成立の区間。時間順 |
+| `pending_content_priority_clauses` | 節参照の配列 | 必須。公開済みの境界判定 run の閉じた非空の節のうち、優先度が未成立の節。原文順 |
 
-`pendingContentPrioritySegmentIDs` に対する Swift `convertToSnakeCase` の結果が `pending_content_priority_segment_i_ds` です。自然な綴りに直したキーではありません。
+保留の配列は重複を許さず、イベントログと一致しない場合（未知の区間・節、別の run、成立済みの対象を含むなど）は読取・再試行の前にエラーにします。境界の保留配列は送信できなかった区間リクエストだけを含み、保留区間に続く未解決の行を重複して加えません。
 
 finalization_attempt の全フィールド:
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
-| `attempt_id` | String | 確定処理の試行 ID。Swift の CodingKey は `attemptId` |
+| `attempt_id` | String | 確定処理の試行 ID |
 | `state` | String | `running` / `paused` / `failed` / `complete` |
-| `failure_reason` | optional String | failed の理由。running / paused / complete では省略 |
+| `failure_reason` | String または null | failed の理由 |
 
-active_runs の全フィールドは optional String の `segmentation`、`asr`、`diarization`、`scene`、`scope`、`content_priority` です。成功判定用の内部集合は JSON に保存しません。
+active_runs の全フィールドは optional String の `segmentation`、`asr`、`diarization`、`scene`、`scope`、`clause_boundary`、`content_priority` です。`clause_boundary` と `content_priority` は任意の外部 Jev 段階で、ローカル必須の5段階ではありません。成功判定用の内部集合は JSON に保存しません。
 
-開始時は旧 active_runs と保留 ID を保持したまま running にします。ローカル全段階が成功したときだけ complete と新しい active_runs を同じ write で保存し、旧保留 ID を空にします。その後の Jev 処理では content_priority run と保留 ID を更新できます。failed / paused は旧公開結果を置き換えません。
+開始時は旧 active_runs と保留を保持したまま running にします。ローカル5段階が全て成功したときだけ、complete、新しい active_runs（Jev の run なし）、全ての非空区間の境界保留を**一回の write** で保存し、優先度の保留を空にします。公開と保留保存の間にクラッシュ窓はありません。その後、Jev が利用可能なら境界判定 run と優先度 run を実行し、両 run の pointer と両保留配列を一回の write で公開します。公開時に active_runs が snapshot の作成元と変わっていれば公開しません。優先度だけの再試行は優先度 run の pointer と保留配列だけを更新します。failed / paused は旧公開結果を置き換えません。
 
-復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動で無限再試行しません。complete で Jev 保留 ID がある場合は優先度再試行の対象です。読めない metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。
+復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動で無限再試行しません。complete で保留配列が空でなければ Jev の再試行対象で、両配列をイベントログで検証した上で、公開済み snapshot から再構築します。未公開の再試行 run の結果は使いません。読めない metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。
 
 根拠: [ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[SessionRecoveryScanner.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)。
 
@@ -284,22 +315,29 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 イベント JSONL では、末尾の LF 未終端かつ不正な JSON 行だけを復旧時に無視・切り詰められます。途中の不正行、LF 終端の不正行は破損として扱います。完全な JSON の最終行に LF がない場合、SessionWriter は LF を足して保持します。イベント番号がある行では正の整数であることを検証します。
 
+イベント header の `event_seq` は正の整数で、ログ順に厳密に増加します。重複・逆転は reader と既存ログへの append の両方で拒否し、破損した番号を並べ替えて補正しません。
+
 保存済みセッション一覧は active ASR run がある場合、イベントログを変更せずに読み込み、JSONL と active transcript event payload を検証します。ログが欠損・不正、または不完全な末尾を含む場合は派生結果を破損として表示し、公開 transcript を持たない扱いにします。active transcript がない未処理セッションではログを要求しません。
 
-`EventLogTranscriptReader` は全行の header を読み、必要な既知イベントの run ID を要求します。非 active run や未知のイベント種別の payload は解釈せず、active run の必要フィールドの欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。`JevRetryAnalyzer` は全 run の優先度 assigned を読み、保留状態を分析します。
+ライブ→確定の固定には `SessionWriter.readDurableLog` を使い、append と同じファイルロックを取って synchronize 完了後のログを読みます。読取は破損末尾を切り詰めずエラーにし、固定後のイベントは再利用対象に追加しません。公開 reader・再試行・catalog は公開 run と参照先の source／carry 元だけを厳密に解釈し、carry 元も再帰的に境界組み立てと優先度整合を検証します。
+
+`EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非 active run や未知のイベント種別の payload は解釈せず、active run の必要フィールドの欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。Jev の節イベントは reader、再試行の分析（`JevRetryAnalyzer`）、ライブ判定の再利用、保存済みセッション一覧が共通の decoder で検証します。保存された境界判定から節を組み立て直し、保存された節と比べます。完了した run は組み立て結果と完全に一致し、全ての非空区間を覆う必要があります。未完了のライブ run は組み立て結果の先頭部分であれば読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーで、読取で Jev を再実行しません。
 
 `TranscriptMaterializer` が公開 run の区間・ASR・話者・場面・音響範囲・優先度を適用します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
 
 | キー | 型 |
 | --- | --- |
 | `segment_id` | String |
+| `source` | 区間参照 |
 | `start_ms`, `end_ms` | Int64 |
-| `text` | String |
+| `text` | String。ASR 原文 |
+| `display_text` | String。フィラー除去後の本文 |
 | `scene` | 上記の SceneState raw value |
 | `speakers` | object 配列。各 object は `id`: String、`start_ms` / `end_ms`: Int64、`confidence`: optional Double |
 | `scope_spans` | object 配列。各 object は `start_ms` / `end_ms`: Int64、`scope`: AcousticScope raw value、`confidence`: Double |
-| `content_priority` | optional String。`primary` / `lowPriority` |
+| `clause_state` | `awaiting_next_segment` / `boundary_pending` / `priority_pending` / `classified` |
+| `clause_slices` | object 配列。各 object は `reference`: 節参照、`source_range`: 原文の範囲、`display_ranges`: `display_text` 上の範囲の配列、`priority`: `primary` / `lowPriority` / null、`needs_retry`: Bool |
 
-原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。`segments.json.text` とイベント中の ASR 本文は原文のままです。フィラー除去範囲と原文の UTF-16 座標への写像は表示用の内部情報で、保存 schema と公開 JSON には追加しません。テキスト書き出し `transcript.txt` は画面と同じ発話を選び、共通表示 projection により検出済みフィラーを除いた本文を使います。LOW 本文は保持し、フィラーだけで空になった行は除外します。討論場面で全 scope が背景の行も除外します。原文を使う公開 JSON はこれらの行を保持します。話者ラベルは 80% 以上を占める 1 人、満たさなければ併記します。
+原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。`segments.json.text` とイベント中の ASR 本文は原文のままで、Linux の CER 評価などはこの原文を読みます。`display_text` は画面と同じフィラー除去後の本文です。区間をまたぐ節の全 parts は各行に複製せず、`clause_slices` の節参照から `clauses.closed` を辿ります。全範囲の境界が未成立の行は `clause_slices` が空で `boundary_pending` です。部分的な未解決範囲がある行も `boundary_pending` ですが、独立して閉じた保存済み節の slice は保持します。フィラーだけで `display_text` が空になった行も、原文があれば JSON に残します。テキスト書き出し `transcript.txt` は画面と同じ発話を選び、共通表示 projection により検出済みフィラーを除いた本文を使います。LOW 本文は保持し、フィラーだけで空になった行は除外します。討論場面で全 scope が背景の行も除外します。原文を使う公開 JSON はこれらの行を保持します。話者ラベルは 80% 以上を占める 1 人、満たさなければ併記します。
 
 根拠: [SessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecovery.swift)、[EventLogTranscriptReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)、[Materialization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)、[ファイル処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)。

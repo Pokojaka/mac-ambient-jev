@@ -210,7 +210,6 @@ extension AppState {
     }
 
     func finishRecording(sessionID: UUID, failureMessage: String?) async {
-        await sessionProcessor.stopLiveContentPriority(sessionID: sessionID)
         do {
             let result = try await captureEngine.stop()
             await stopLiveVADPolling()

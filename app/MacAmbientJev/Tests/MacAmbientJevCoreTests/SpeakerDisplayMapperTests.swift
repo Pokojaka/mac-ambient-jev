@@ -60,20 +60,19 @@ func speakerDisplayMapperKeepsUnmappedSpeakersUnknown() {
 }
 
 @Test
-func speakerDisplayMapperDeduplicatesOtherInMixedTurns() {
+func speakerDisplayMapperDeduplicatesOtherInMixedTurns() throws {
     let spans = (1...9).map { index in
         SpeakerSpan(speakerID: "S\(index)", startFrame: Int64(index),
                     endFrame: Int64(index + 1), confidence: nil)
     }
-    let segment = MaterializedTranscriptSegment(
+    let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
         text: "会話", scene: .unknown,
         speakers: [
             MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 600, confidence: nil, displayLabel: nil),
             MaterializedSpeakerSpan(id: "S8", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil, displayLabel: nil),
             MaterializedSpeakerSpan(id: "S9", startMilliseconds: 700, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
-        ], scopeSpans: [], contentPriority: nil,
-        isDiarized: true
+        ], scopeSpans: [], isDiarized: true
     )
 
     #expect(SpeakerDisplayMapper.turnLabels(
@@ -88,17 +87,15 @@ func liveProjectionSummarizesMultipleSpeakersAndKeepsUnknownLabel() throws {
         MaterializedSpeakerSpan(id: "S2", startMilliseconds: 500, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
     ]
     let segments = [
-        MaterializedTranscriptSegment(
+        try MaterializedTranscriptSegment.fixture(
             segmentID: "overlap", startMilliseconds: 0, endMilliseconds: 1_000,
             text: "重なり", scene: .unknown, speakers: overlappingSpeakers,
-            scopeSpans: [], contentPriority: nil,
-            isDiarized: true
+            scopeSpans: [], isDiarized: true
         ),
-        MaterializedTranscriptSegment(
+        try MaterializedTranscriptSegment.fixture(
             segmentID: "unknown", startMilliseconds: 1_000, endMilliseconds: 2_000,
             text: "不明", scene: .unknown, speakers: [],
-            scopeSpans: [], contentPriority: nil,
-            isDiarized: true
+            scopeSpans: [], isDiarized: true
         )
     ]
 
@@ -117,7 +114,7 @@ func materializerKeepsEmptyASRResultForShortFinalTurn() throws {
     ]
 
     let segment = try #require(
-        TranscriptMaterializer(sampleRate: 48_000).materialize(
+        try TranscriptMaterializer(sampleRate: 48_000).materialize(
             events: events,
             activeRuns: ActiveRuns(segmentation: "final", asr: "asr")
         ).first
@@ -129,10 +126,10 @@ func materializerKeepsEmptyASRResultForShortFinalTurn() throws {
 @Test
 func projectionShowsNoSpeakerHeadingBeforeDiarization() throws {
     let segments = [
-        MaterializedTranscriptSegment(
+        try MaterializedTranscriptSegment.fixture(
             segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
             text: "ライブ", scene: .unknown, speakers: [],
-            scopeSpans: [], contentPriority: nil, isDiarized: false
+            scopeSpans: [], isDiarized: false
         )
     ]
 
@@ -144,10 +141,10 @@ func projectionShowsNoSpeakerHeadingBeforeDiarization() throws {
 @Test
 func projectionShowsUnknownForDiarizedResultWithoutAnySpeakerSpan() throws {
     let segments = [
-        MaterializedTranscriptSegment(
+        try MaterializedTranscriptSegment.fixture(
             segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
             text: "確定", scene: .unknown, speakers: [],
-            scopeSpans: [], contentPriority: nil, isDiarized: true
+            scopeSpans: [], isDiarized: true
         )
     ]
 

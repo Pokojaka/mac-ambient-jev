@@ -48,15 +48,13 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     state.markRecordingStarted(sessionID: sessionID)
     let handler = state.liveUpdateHandler(sessionID: sessionID)
     let barrier = BlockedLiveUpdate()
-    let segment = MaterializedTranscriptSegment(
+    let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "late", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "取り消した音声", scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil,
-        isDiarized: false
+        text: "取り消した音声", scene: .unknown, speakers: [], scopeSpans: [], isDiarized: false
     )
-    let current = MaterializedTranscriptSegment(
+    let current = try MaterializedTranscriptSegment.fixture(
         segmentID: "current", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "録音中の音声", scene: .unknown, speakers: [], scopeSpans: [], contentPriority: nil,
-        isDiarized: false
+        text: "録音中の音声", scene: .unknown, speakers: [], scopeSpans: [], isDiarized: false
     )
     await handler([current], .running)
     let beforeCancellation = state.transcriptViewModel.rows
@@ -78,4 +76,45 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     await pending.value
 
     #expect(state.transcriptViewModel.rows == beforeCancellation)
+}
+
+@MainActor
+@Test
+func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory), sessionsRootOverride: nil
+    )
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let state = AppState(
+        paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
+        pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
+    )
+    let sessionID = UUID()
+    state.showNewSession(sessionID)
+    state.markRecordingStarted(sessionID: sessionID)
+    let liveHandler = state.liveUpdateHandler(sessionID: sessionID)
+    let live = try MaterializedTranscriptSegment.fixture(
+        segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
+        text: "ライブ原文", scene: .unknown, speakers: [], scopeSpans: [], isDiarized: false
+    )
+    await liveHandler([live], .running)
+    #expect(state.transcriptViewModel.rows.map(\.text) == ["ライブ原文"])
+
+    state.recordingSessionID = nil
+    state.recordingPhase = .idle
+    state.currentlyProcessingSessionID = sessionID
+    let final = try MaterializedTranscriptSegment.fixture(
+        segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
+        text: "確定本文", scene: .unknown, speakers: [], scopeSpans: [], isDiarized: true
+    )
+    try state.transcriptViewModel.update(segments: [final])
+    state.transcriptViewModel.setDisplayState(.finalized)
+    let finalizedRows = state.transcriptViewModel.rows
+    await liveHandler([live], .running)
+    #expect(state.transcriptViewModel.rows == finalizedRows)
+    #expect(state.transcriptViewModel.displayState == .finalized)
 }

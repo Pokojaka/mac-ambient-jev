@@ -196,7 +196,7 @@ public struct SavedSessionCatalog {
         }
 
         let hasActiveTranscript: Bool
-        if let activeRuns = metadata?.activeRuns, activeRuns.asr != nil {
+        if let activeRuns = metadata?.activeRuns {
             do {
                 let data = try Data(contentsOf: layout.eventsURL)
                 let recovered = try SessionRecovery.recoverJSONL(data)
@@ -204,7 +204,10 @@ public struct SavedSessionCatalog {
                     throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
                 }
                 _ = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-                hasActiveTranscript = true
+                if let metadata, activeRuns.segmentation != nil || activeRuns.asr != nil {
+                    _ = try JevRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
+                }
+                hasActiveTranscript = activeRuns.asr != nil
             } catch {
                 processingStatus = .corrupted(error.localizedDescription)
                 return .readable(SavedSession(
@@ -264,7 +267,7 @@ public struct SavedSessionCatalog {
         case .paused:
             .paused
         case .complete:
-            metadata?.pendingContentPrioritySegmentIDs.isEmpty == false
+            metadata?.pendingJevTargets.isEmpty == false
                 ? .classificationPending
                 : .complete
         case .failed:

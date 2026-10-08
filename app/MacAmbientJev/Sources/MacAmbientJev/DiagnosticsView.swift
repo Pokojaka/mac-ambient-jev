@@ -9,9 +9,9 @@ struct DiagnosticsView: View {
 
     var body: some View {
         Form {
-            Section("Jev 利用状況") {
+            Section("Jev 利用状況（HTTP リクエスト単位）") {
                 if let snapshot {
-                    LabeledContent("送信回数", value: snapshot.sendCount.formatted())
+                    LabeledContent("送信回数（合計）", value: snapshot.sendCount.formatted())
                     LabeledContent(
                         "入力 token 数（Jev の報告分）",
                         value: snapshot.reportedInputTokens.formatted()
@@ -22,12 +22,23 @@ struct DiagnosticsView: View {
                         value: snapshot.unreportedTokenSuccessCount.formatted()
                     )
                     LabeledContent("失敗件数", value: snapshot.failureCount.formatted())
-                    LabeledContent(
-                        "再試行待ち件数",
-                        value: snapshot.retryPendingCount.formatted()
-                    )
                 } else {
                     ProgressView()
+                }
+            }
+
+            if let snapshot {
+                requestSection("境界判定リクエスト", snapshot.boundaryRequests)
+                requestSection("優先度判定リクエスト", snapshot.priorityRequests)
+                Section("保留") {
+                    LabeledContent(
+                        "境界判定の保留区間",
+                        value: snapshot.pendingBoundarySegmentCount.formatted()
+                    )
+                    LabeledContent(
+                        "優先度判定の保留節",
+                        value: snapshot.pendingPriorityClauseCount.formatted()
+                    )
                 }
             }
 
@@ -52,6 +63,16 @@ struct DiagnosticsView: View {
         .frame(minWidth: 520, minHeight: 300)
         .task {
             await refresh()
+        }
+    }
+
+    private func requestSection(_ title: String, _ usage: JevRequestUsageSnapshot) -> some View {
+        Section(title) {
+            LabeledContent("送信回数", value: usage.sendCount.formatted())
+            LabeledContent("入力 token 数（Jev の報告分）", value: usage.reportedInputTokens.formatted())
+            LabeledContent("成功件数", value: usage.successCount.formatted())
+            LabeledContent("token 数不明の件数", value: usage.unreportedTokenSuccessCount.formatted())
+            LabeledContent("失敗件数", value: usage.failureCount.formatted())
         }
     }
 

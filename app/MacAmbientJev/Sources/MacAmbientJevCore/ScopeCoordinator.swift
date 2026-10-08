@@ -172,7 +172,7 @@ public actor ScopeCoordinator {
         return ScopeBatchResult(
             scopeSpans: resultSpans,
             events: events,
-            materializedSegments: materializer.materialize(
+            materializedSegments: try materializer.materialize(
                 events: events,
                 activeRuns: selectedRuns
             )

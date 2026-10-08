@@ -19,9 +19,13 @@ func networkFailureStopsTheBatchAsProviderUnavailable() async {
         usageCounter: JevUsageCounter()
     )
 
-    let result = await coordinator.classify(text: "えー", segmentID: "seg-1", sessionID: UUID())
+    let result = await coordinator.classifyPriorities([PriorityTextTarget(key: "u0001", text: "えー")])
 
-    #expect(result == .failed(stopsBatch: .providerUnavailable))
+    guard case .failed(let stop, _) = result else {
+        Issue.record("expected a failure, got \(result)")
+        return
+    }
+    #expect(stop == .providerUnavailable)
 }
 
 @Test(arguments: [
@@ -71,50 +75,106 @@ func confidentPrimaryStaysPrimary() throws {
     #expect(ContentPriorityPolicy.visiblePriority(for: decision) == .primary)
 }
 
-private struct LowPriorityDecisionProvider: DecisionProvider {
-    let confidence: Double
-    let inputTokens: Int
-
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        let decision = try lowPriority(confidence: confidence)
-        return PriorityBatchResponse(
-            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: inputTokens, outputTokens: nil)
-        )
-    }
-
+private func boundarySource(_ id: String, _ seq: UInt64) throws -> SegmentTextReference {
+    try SegmentTextReference(segmentationRunID: "seg", segmentID: id, asrRunID: "asr", asrEventSeq: seq)
 }
 
 @Test
-func coordinatorDemotesConfidentNonFillerUtterance() async {
-    let coordinator = JevDecisionCoordinator(
-        provider: LowPriorityDecisionProvider(confidence: 0.90, inputTokens: 23),
-        usageCounter: JevUsageCounter()
+func oneBoundaryRequestCarriesEveryCandidateAndTheContinuationAndCountsOnce() async throws {
+    let counter = JevUsageCounter()
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: ["a"]), priority: lowForBackchannel)
+    let coordinator = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let request = try ClauseBoundaryRequest(
+        source: boundarySource("a", 1), text: "一。二、三。四",
+        next: NextSegmentHead(source: boundarySource("b", 2), text: "次の区間")
     )
 
-    let result = await coordinator.classify(
-        text: "えー、RSAでは公開鍵を使います",
-        segmentID: "seg-1",
-        sessionID: UUID()
-    )
-
-    guard case .classified(let decision, let metadata, let visiblePriority) = result else {
-        Issue.record("expected a classification, got \(result)")
+    guard case .answered(let response, let record) = await coordinator.assessBoundaries(request) else {
+        Issue.record("expected an answer")
         return
     }
-    #expect(visiblePriority == .lowPriority)
-    #expect(decision.priority == .lowPriority)
-    #expect(metadata.inputTokens == 23)
+    #expect(response.probabilities == ["b0001": 0.9, "b0002": 0.1, "b0003": 0.9])
+    #expect(response.continuationProbability == 0.9)
+    #expect(record.metadata == testMetadata)
+    #expect(await provider.boundaryRequests.count == 1)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.boundaryRequests.sendCount == 1)
+    #expect(snapshot.boundaryRequests.successCount == 1)
+    #expect(snapshot.boundaryRequests.reportedInputTokens == 10)
+    #expect(snapshot.priorityRequests.sendCount == 0)
+}
+
+@Test
+func fortyPriorityTargetsAreOneRequestWithOneTokenReport() async throws {
+    let counter = JevUsageCounter()
+    let coordinator = JevDecisionCoordinator(
+        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel),
+        usageCounter: counter
+    )
+    let targets = ClausePriorityBatch.targets(texts: (1...40).map { "節\($0)" })
+
+    guard case .answered(let response, _) = await coordinator.classifyPriorities(targets) else {
+        Issue.record("expected an answer")
+        return
+    }
+    #expect(response.decisions.count == 40)
+    #expect(targets.first?.key == "u0001")
+    #expect(targets.last?.key == "u0040")
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.reportedInputTokens == 10)
+}
+
+private struct MismatchedPriorityKeysProvider: DecisionProvider {
+    let keys: [String]
+
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        ClauseBoundaryResponse(probabilities: [:], continuationProbability: nil, metadata: testMetadata)
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        let decision = try ContentPriorityDecision(priority: .primary, confidence: 0.9, probabilities: ["PRIMARY": 0.9, "LOW_PRIORITY": 0.1])
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: keys.map { ($0, decision) }),
+            metadata: testMetadata
+        )
+    }
+}
+
+@Test(arguments: [[], ["u0001"], ["u0001", "u0002", "u0003"]])
+func mismatchedAnswerKeysFailTheWholeRequestBeforeSuccessAccounting(keys: [String]) async throws {
+    let counter = JevUsageCounter()
+    let coordinator = JevDecisionCoordinator(provider: MismatchedPriorityKeysProvider(keys: keys), usageCounter: counter)
+
+    let result = await coordinator.classifyPriorities(ClausePriorityBatch.targets(texts: ["一", "二"]))
+
+    guard case .failed(let stop, _) = result else {
+        Issue.record("expected a failure")
+        return
+    }
+    #expect(stop == nil)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.successCount == 0)
+    #expect(snapshot.failureCount == 1)
+}
+
+@Test
+func boundaryAnswerMustCoverExactlyTheQuestionsSent() async throws {
+    let counter = JevUsageCounter()
+    let coordinator = JevDecisionCoordinator(provider: MismatchedPriorityKeysProvider(keys: []), usageCounter: counter)
+    let request = try ClauseBoundaryRequest(source: boundarySource("a", 1), text: "一。二", next: nil)
+
+    guard case .failed(nil, _) = await coordinator.assessBoundaries(request) else {
+        Issue.record("a response without the candidate must fail")
+        return
+    }
+    #expect(await counter.snapshot().boundaryRequests.failureCount == 1)
 }
 
 @Test
 func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
     let counter = JevUsageCounter()
-    let sessionID = UUID()
 
     await counter.recordAttempt(purpose: .boundary)
     await counter.recordSuccess(purpose: .boundary, inputTokens: 42)
@@ -124,12 +184,8 @@ func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
     await counter.recordSuccess(purpose: .boundary, inputTokens: nil)
     await counter.recordAttempt(purpose: .priority)
     await counter.recordFailure(purpose: .priority)
-    #expect(await counter.snapshot().retryPendingCount == 0)
-    await counter.recordDeferred(sessionID: sessionID, segmentID: "d")
     await counter.recordAttempt(purpose: .priority)
     await counter.recordSuccess(purpose: .priority, inputTokens: 3)
-    #expect(await counter.snapshot().retryPendingCount == 1)
-    await counter.clearDeferred(sessionID: sessionID, segmentIDs: ["d"])
 
     #expect(await counter.snapshot() == JevUsageSnapshot(
         sendCount: 5,
@@ -137,7 +193,8 @@ func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
         successCount: 4,
         unreportedTokenSuccessCount: 1,
         failureCount: 1,
-        retryPendingCount: 0,
+        pendingBoundarySegmentCount: 0,
+        pendingPriorityClauseCount: 0,
         boundaryRequests: JevRequestUsageSnapshot(
             sendCount: 2, reportedInputTokens: 42, successCount: 2,
             unreportedTokenSuccessCount: 1, failureCount: 0
@@ -149,248 +206,23 @@ func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
     ))
 }
 
-private actor RecoveringDecisionProvider: DecisionProvider {
-    private var offline = true
-
-    func reconnect() { offline = false }
-
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        if offline { throw URLError(.notConnectedToInternet) }
-        let decision = try ContentPriorityDecision(
-            priority: .primary, confidence: 1,
-            probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]
-        )
-        return PriorityBatchResponse(
-            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: nil, outputTokens: nil)
-        )
-    }
-
-}
-
 @Test
-func identicalTextFailuresStayPendingBySegmentAcrossCoordinators() async {
+func pendingTargetsAreKeptPerSessionAndKindAndClearWithoutChangingRequests() async throws {
     let counter = JevUsageCounter()
-    let failing = JevDecisionCoordinator(
-        provider: FailingDecisionProvider(),
-        usageCounter: counter
-    )
-    let text = "同じ重要な発話"
-    let sessionID = UUID()
+    let first = UUID(), second = UUID()
+    let segment = try boundarySource("a", 1)
+    let clause = try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0")
 
-    _ = await failing.classify(text: text, segmentID: "seg-1", sessionID: sessionID)
-    _ = await failing.classify(text: text, segmentID: "seg-2", sessionID: sessionID)
-    _ = await failing.classify(text: text, segmentID: "seg-1", sessionID: sessionID)
-    #expect(await counter.snapshot().retryPendingCount == 2)
+    await counter.recordDeferred(sessionID: first, targets: [.boundary(segment), .priority(clause)])
+    await counter.recordDeferred(sessionID: second, targets: [.boundary(segment)])
+    await counter.recordDeferred(sessionID: first, targets: [.boundary(segment)])
+    var snapshot = await counter.snapshot()
+    #expect(snapshot.pendingBoundarySegmentCount == 2)
+    #expect(snapshot.pendingPriorityClauseCount == 1)
 
-    let recovered = JevDecisionCoordinator(
-        provider: LowPriorityDecisionProvider(confidence: 0.99, inputTokens: 23),
-        usageCounter: counter
-    )
-    _ = await recovered.classify(text: text, segmentID: "seg-1", sessionID: sessionID)
-    #expect(await counter.snapshot().retryPendingCount == 1)
-    _ = await recovered.classify(text: text, segmentID: "seg-2", sessionID: sessionID)
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.retryPendingCount == 0)
-    #expect(snapshot.failureCount == 3)
-    #expect(snapshot.successCount == 2)
-}
-
-private func retryEvents(segmentIDs: [String]) -> [TranscriptEvent] {
-    segmentIDs.enumerated().flatMap { index, segmentID -> [TranscriptEvent] in
-        [
-            .segmentCreated(
-                seq: UInt64(index * 2 + 1),
-                segmentationRunID: "seg",
-                segmentID: segmentID,
-                startFrame: Int64(index) * 1_000,
-                endFrame: Int64(index + 1) * 1_000
-            ),
-            .asrCompleted(
-                seq: UInt64(index * 2 + 2),
-                runID: "asr",
-                segmentationRunID: "seg",
-                segmentID: segmentID,
-                text: "同じ重要な発話",
-                detectedLanguage: nil
-            )
-        ]
-    }
-}
-
-@Test
-func successfulRetryWithFreshCoordinatorClearsPendingUsageCount() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let provider = RecoveringDecisionProvider()
-    let counter = JevUsageCounter()
-    let writer = try SessionWriter(sessionURL: root)
-    let sessionID = UUID()
-    let events = retryEvents(segmentIDs: ["seg-1"])
-    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
-
-    let initial = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-initial",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(existingEvents: events, activeRuns: runs, scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
-    #expect(initial.retryPendingSegmentIDs == ["seg-1"])
-    #expect(await counter.snapshot().retryPendingCount == 1)
-
-    let stillOffline = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-still-offline",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(existingEvents: events, activeRuns: runs, scope: .retry(["seg-1"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
-    #expect(stillOffline.retryPendingSegmentIDs == ["seg-1"])
-    #expect(await counter.snapshot().retryPendingCount == 1)
-
-    await provider.reconnect()
-    let retry = try await JevEnrichmentCoordinator(
-        sessionID: sessionID,
-        runID: "priority-retry",
-        writer: writer,
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    ).process(existingEvents: events, activeRuns: runs, scope: .retry(["seg-1"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
-    #expect(retry.retryPendingSegmentIDs.isEmpty)
-    #expect(await counter.snapshot().retryPendingCount == 0)
-
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.sendCount == 3)
-    #expect(snapshot.failureCount == 2)
-    #expect(snapshot.successCount == 1)
-}
-
-@Test
-func identicalTextSegmentsHaveIndependentRetryBacklogs() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let provider = RecoveringDecisionProvider()
-    let counter = JevUsageCounter()
-    let writer = try SessionWriter(sessionURL: root)
-    let sessionID = UUID()
-
-    func run(
-        _ runID: String,
-        after previous: (runID: String, result: JevEnrichmentBatchResult)?,
-        scope: JevEnrichmentScope
-    ) async throws -> (runID: String, result: JevEnrichmentBatchResult) {
-        let result = try await JevEnrichmentCoordinator(
-            sessionID: sessionID,
-            runID: runID,
-            writer: writer,
-            decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-            materializer: TranscriptMaterializer(sampleRate: 1_000)
-        ).process(existingEvents: previous?.result.events ?? retryEvents(segmentIDs: ["seg-1", "seg-2"]), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", contentPriority: previous?.runID), scope: scope, reusableDecisions: [:], completeRun: true, onAssignment: nil)
-        return (runID, result)
-    }
-
-    let initial = try await run("priority-initial", after: nil, scope: .all)
-    #expect(Set(initial.result.retryPendingSegmentIDs) == ["seg-1", "seg-2"])
-    #expect(await counter.snapshot().retryPendingCount == 2)
-
-    let stillOffline = try await run("priority-still-offline", after: initial, scope: .retry(["seg-1"]))
-    #expect(stillOffline.result.retryPendingSegmentIDs == ["seg-1"])
-    #expect(await counter.snapshot().retryPendingCount == 2)
-
-    await provider.reconnect()
-    let retry = try await run("priority-retry", after: stillOffline, scope: .retry(["seg-1"]))
-    #expect(retry.result.retryPendingSegmentIDs.isEmpty)
-    #expect(await counter.snapshot().retryPendingCount == 1)
-
-    let final = try await run("priority-final", after: retry, scope: .retry(["seg-2"]))
-    #expect(final.result.retryPendingSegmentIDs.isEmpty)
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.retryPendingCount == 0)
-    #expect(snapshot.sendCount == 4)
-    #expect(snapshot.failureCount == 2)
-    #expect(snapshot.successCount == 2)
-}
-
-@Test
-func lowConfidenceClassificationRetainsTheActualDecisionAndMetadata() async throws {
-    let coordinator = JevDecisionCoordinator(
-        provider: LowPriorityDecisionProvider(confidence: 0.89, inputTokens: 7),
-        usageCounter: JevUsageCounter()
-    )
-    let result = await coordinator.classify(
-        text: "本文", segmentID: "segment", sessionID: UUID()
-    )
-    guard case .classified(let decision, let metadata, let visiblePriority) = result else {
-        Issue.record("expected a classification, got \(result)")
-        return
-    }
-    #expect(decision.priority == .lowPriority)
-    #expect(decision.confidence == 0.89)
-    #expect(decision.probabilities == ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95])
-    #expect(visiblePriority == .primary)
-    #expect(metadata == (try JevResponseMetadata(model: "jev-test", inputTokens: 7, outputTokens: nil)))
-}
-
-private struct MismatchedPriorityKeysProvider: DecisionProvider {
-    let keys: [String]
-
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        let decision = try lowPriority(confidence: 0.99)
-        return PriorityBatchResponse(
-            decisions: Dictionary(uniqueKeysWithValues: keys.map { ($0, decision) }),
-            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 99, outputTokens: nil)
-        )
-    }
-}
-
-@Test(arguments: [[], ["u0002"], ["u0001", "u0002"]] as [[String]])
-func mismatchedProviderKeysFailTheWholeRequestBeforeSuccessAccounting(keys: [String]) async {
-    let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(
-        provider: MismatchedPriorityKeysProvider(keys: keys), usageCounter: counter
-    )
-    let result = await coordinator.classify(
-        text: "本文", segmentID: "segment", sessionID: UUID()
-    )
-    #expect(result == .failed(stopsBatch: nil))
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.sendCount == 1)
-    #expect(snapshot.successCount == 0)
-    #expect(snapshot.failureCount == 1)
-    #expect(snapshot.reportedInputTokens == 0)
-    #expect(snapshot.unreportedTokenSuccessCount == 0)
-    #expect(snapshot.retryPendingCount == 1)
-    #expect(snapshot.priorityRequests.failureCount == 1)
-    #expect(snapshot.boundaryRequests.sendCount == 0)
-}
-
-@Test
-func deferredSegmentsRemainIndependentAcrossSessionsAndClearWithoutRequests() async {
-    let counter = JevUsageCounter()
-    let firstSession = UUID()
-    let secondSession = UUID()
-    await counter.recordDeferred(sessionID: firstSession, segmentID: "same")
-    await counter.recordDeferred(sessionID: firstSession, segmentID: "same")
-    await counter.recordDeferred(sessionID: secondSession, segmentID: "same")
-    #expect(await counter.snapshot().retryPendingCount == 2)
-    await counter.clearDeferred(sessionID: firstSession, segmentIDs: ["same"])
-    #expect(await counter.snapshot().retryPendingCount == 1)
-    await counter.clearDeferred(sessionID: secondSession, segmentIDs: ["same"])
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.retryPendingCount == 0)
+    await counter.clearDeferred(sessionID: first, targets: [.boundary(segment), .priority(clause)])
+    snapshot = await counter.snapshot()
+    #expect(snapshot.pendingBoundarySegmentCount == 1)
+    #expect(snapshot.pendingPriorityClauseCount == 0)
     #expect(snapshot.sendCount == 0)
-    #expect(snapshot.successCount == 0)
-    #expect(snapshot.failureCount == 0)
-    #expect(snapshot.reportedInputTokens == 0)
 }

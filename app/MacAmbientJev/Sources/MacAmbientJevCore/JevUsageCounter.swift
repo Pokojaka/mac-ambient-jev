@@ -36,7 +36,10 @@ public struct JevUsageSnapshot: Sendable, Equatable {
     public let successCount: Int
     public let unreportedTokenSuccessCount: Int
     public let failureCount: Int
-    public let retryPendingCount: Int
+    /// Segments whose boundary request is pending.
+    public let pendingBoundarySegmentCount: Int
+    /// Clauses whose priority is pending.
+    public let pendingPriorityClauseCount: Int
     public let boundaryRequests: JevRequestUsageSnapshot
     public let priorityRequests: JevRequestUsageSnapshot
 
@@ -46,7 +49,8 @@ public struct JevUsageSnapshot: Sendable, Equatable {
         successCount: Int,
         unreportedTokenSuccessCount: Int,
         failureCount: Int,
-        retryPendingCount: Int,
+        pendingBoundarySegmentCount: Int,
+        pendingPriorityClauseCount: Int,
         boundaryRequests: JevRequestUsageSnapshot,
         priorityRequests: JevRequestUsageSnapshot
     ) {
@@ -55,7 +59,8 @@ public struct JevUsageSnapshot: Sendable, Equatable {
         self.successCount = successCount
         self.unreportedTokenSuccessCount = unreportedTokenSuccessCount
         self.failureCount = failureCount
-        self.retryPendingCount = retryPendingCount
+        self.pendingBoundarySegmentCount = pendingBoundarySegmentCount
+        self.pendingPriorityClauseCount = pendingPriorityClauseCount
         self.boundaryRequests = boundaryRequests
         self.priorityRequests = priorityRequests
     }
@@ -89,14 +94,14 @@ public actor JevUsageCounter {
         }
     }
 
-    private struct PendingSegment: Hashable {
+    private struct PendingKey: Hashable {
         let sessionID: UUID
-        let segmentID: String
+        let target: JevPendingTarget
     }
 
     private var boundaryRequests = RequestUsage()
     private var priorityRequests = RequestUsage()
-    private var pendingSegments: Set<PendingSegment> = []
+    private var pending: Set<PendingKey> = []
 
     public init() {}
 
@@ -123,14 +128,17 @@ public actor JevUsageCounter {
         }
     }
 
-    public func recordDeferred(sessionID: UUID, segmentID: String) {
-        guard !Task.isCancelled else { return }
-        pendingSegments.insert(PendingSegment(sessionID: sessionID, segmentID: segmentID))
+    /// Records targets whose pending state is durable. Request counts are not changed.
+    public func recordDeferred(sessionID: UUID, targets: Set<JevPendingTarget>) {
+        for target in targets {
+            pending.insert(PendingKey(sessionID: sessionID, target: target))
+        }
     }
 
-    public func clearDeferred(sessionID: UUID, segmentIDs: Set<String>) {
-        for segmentID in segmentIDs {
-            pendingSegments.remove(PendingSegment(sessionID: sessionID, segmentID: segmentID))
+    /// Clears targets a published snapshot resolved or replaced. Request counts are kept.
+    public func clearDeferred(sessionID: UUID, targets: Set<JevPendingTarget>) {
+        for target in targets {
+            pending.remove(PendingKey(sessionID: sessionID, target: target))
         }
     }
 
@@ -141,7 +149,12 @@ public actor JevUsageCounter {
             successCount: boundaryRequests.successCount + priorityRequests.successCount,
             unreportedTokenSuccessCount: boundaryRequests.unreportedTokenSuccessCount + priorityRequests.unreportedTokenSuccessCount,
             failureCount: boundaryRequests.failureCount + priorityRequests.failureCount,
-            retryPendingCount: pendingSegments.count,
+            pendingBoundarySegmentCount: pending.filter {
+                if case .boundary = $0.target { true } else { false }
+            }.count,
+            pendingPriorityClauseCount: pending.filter {
+                if case .priority = $0.target { true } else { false }
+            }.count,
             boundaryRequests: boundaryRequests.snapshot,
             priorityRequests: priorityRequests.snapshot
         )

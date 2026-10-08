@@ -85,7 +85,7 @@ extension AppState {
 
             var queuedCount = 0
             for candidate in candidates {
-                guard case .retryContentPriority(let segmentIDs)
+                guard case .retryContentPriority(let boundarySegments, let clauses)
                         = candidate.action else {
                     continue
                 }
@@ -93,7 +93,8 @@ extension AppState {
                 enqueueProcessing(
                     contentPriorityRetry(
                         for: candidate,
-                        segmentIDs: segmentIDs
+                        boundarySegments: boundarySegments,
+                        clauses: clauses
                     )
                 )
                 queuedCount += 1
@@ -101,16 +102,16 @@ extension AppState {
 
             if queuedCount == 0 {
                 processingStatusText =
-                    "再試行が必要な意味分類はありません"
+                    "再試行が必要な Jev 判定はありません"
                 transcriptViewModel.setStatus(
-                    "再試行が必要な意味分類はありません"
+                    "再試行が必要な Jev 判定はありません"
                 )
             }
         } catch {
             processingStatusText =
-                "保留中の意味分類を確認できませんでした: \(error.localizedDescription)"
+                "保留中の Jev 判定を確認できませんでした: \(error.localizedDescription)"
             transcriptViewModel.setStatus(
-                "保留中の意味分類を確認できませんでした"
+                "保留中の Jev 判定を確認できませんでした"
             )
         }
     }
@@ -325,11 +326,13 @@ extension AppState {
                 finalization = result
             case .retryContentPriority(
                 let sessionID,
-                let segmentIDs
+                let boundarySegments,
+                let clauses
             ):
                 await sessionProcessor.retryContentPrioritySession(
                     sessionID: sessionID,
-                    segmentIDs: segmentIDs,
+                    boundarySegments: boundarySegments,
+                    clauses: clauses,
                     onStatus: statusHandler,
                     onUpdate: updateHandler
                 )
@@ -407,11 +410,12 @@ extension AppState {
 
             for candidate in candidates {
                 switch candidate.action {
-                case .retryContentPriority(let segmentIDs):
+                case .retryContentPriority(let boundarySegments, let clauses):
                     enqueueProcessing(
                         contentPriorityRetry(
                             for: candidate,
-                            segmentIDs: segmentIDs
+                            boundarySegments: boundarySegments,
+                            clauses: clauses
                         )
                     )
                 case .finalize:
@@ -467,11 +471,13 @@ extension AppState {
     /// Jev retries reuse the timeline the published runs were computed against.
     func contentPriorityRetry(
         for candidate: RecoverableSession,
-        segmentIDs: [String]
+        boundarySegments: [SegmentTextReference],
+        clauses: [ClauseReference]
     ) -> PendingProcessing {
         .retryContentPriority(
             sessionID: candidate.manifest.sessionID,
-            segmentIDs: segmentIDs
+            boundarySegments: boundarySegments,
+            clauses: clauses
         )
     }
 }

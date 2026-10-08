@@ -23,133 +23,74 @@ private actor CountingStatusTransport: JevHTTPTransport {
     }
 }
 
-private func fiveSegmentEvents() -> [TranscriptEvent] {
-    var events: [TranscriptEvent] = []
-    var seq: UInt64 = 1
-    for index in 0..<5 {
-        events.append(.segmentCreated(
-            seq: seq, segmentationRunID: "seg", segmentID: "s\(index)",
-            startFrame: Int64(index) * 1_000, endFrame: Int64(index) * 1_000 + 900
-        ))
-        seq += 1
-        events.append(.asrCompleted(
-            seq: seq, runID: "asr", segmentationRunID: "seg",
-            segmentID: "s\(index)",
-            text: "公開鍵の説明その\(index)",
-            detectedLanguage: nil
-        ))
-        seq += 1
-    }
-    return events
-}
+private let fiveSegments = (0..<5).map { "公開鍵の説明その\($0)。続き" }
 
 @Test(arguments: [429, 500, 503])
-func unavailableHTTPBatchStopsRequestingAndKeepsTextPrimaryAndPending(status: Int) async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+func unavailableHTTPBatchStopsRequestingAndKeepsTextUnsplitAndPending(status: Int) async throws {
+    let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(fiveSegments, root: root, sessionID: sessionID))
     let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unavailable\"}")
     let counter = JevUsageCounter()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-\(status)",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(
-            provider: JevClient(apiKey: "sk-secret-123", transport: transport),
-            usageCounter: counter
-        ),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
-    let result = try await coordinator.process(existingEvents: fiveSegmentEvents(), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
-    let calls = await transport.calls
-    let timeout = await transport.lastRequest?.timeoutInterval
 
-    #expect(result.retryPendingSegmentIDs.count == 5)
-    #expect(result.materializedSegments.count == 5)
-    #expect(result.materializedSegments.allSatisfy { $0.contentPriority != .lowPriority })
-    #expect(calls == 1)
-    #expect(timeout == 15)
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID,
+        provider: JevClient(apiKey: "sk-secret-123", transport: transport), scope: .all, counter: counter
+    )
+
+    #expect(await transport.calls == 1)
+    #expect(await transport.lastRequest?.timeoutInterval == 15)
     #expect(result.stopReason == .providerUnavailable)
+    #expect(result.pendingBoundarySegments.count == 5)
+    #expect(result.materializedSegments.allSatisfy { $0.clauseState == .boundaryPending && $0.clauseSlices.isEmpty })
     let snapshot = await counter.snapshot()
     #expect(snapshot.sendCount == 1)
     #expect(snapshot.successCount == 0)
     #expect(snapshot.failureCount == 1)
-    #expect(snapshot.retryPendingCount == 5)
     #expect(snapshot.reportedInputTokens == 0)
-    #expect(snapshot.priorityRequests.failureCount == 1)
-    #expect(snapshot.boundaryRequests.sendCount == 0)
-}
-
-private func pendingRetrySegmentIDs(root: URL) throws -> [String] {
-    let persisted = try SessionRecovery.recoverJSONL(
-        Data(contentsOf: root.appending(path: "events.jsonl"))
-    )
-    return try persisted.lines.compactMap { line -> String? in
-        let event = try JSONSerialization.jsonObject(with: line) as? [String: Any]
-        guard event?["event_type"] as? String == "content_priority.pending_retry" else {
-            return nil
-        }
-        return event?["segment_id"] as? String
-    }
+    #expect(snapshot.boundaryRequests.failureCount == 1)
+    #expect(snapshot.priorityRequests.sendCount == 0)
+    #expect(snapshot.pendingBoundarySegmentCount == 5)
 }
 
 @Test(arguments: [401, 403])
 func rejectedAPIKeyStopsTheBatchAndKeepsEverySegmentPending(status: Int) async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unauthorized\"}")
-    let counter = JevUsageCounter()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-\(status)",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(
-            provider: JevClient(apiKey: "sk-secret-123", transport: transport),
-            usageCounter: counter
-        ),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(fiveSegments, root: root, sessionID: sessionID))
+    let transport = CountingStatusTransport(status: status, body: "{}")
+
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID,
+        provider: JevClient(apiKey: "sk-secret-123", transport: transport), scope: .all
     )
 
-    let result = try await coordinator.process(existingEvents: fiveSegmentEvents(), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
-
-    let allSegmentIDs = Set((0..<5).map { "s\($0)" })
     #expect(await transport.calls == 1)
     #expect(result.stopReason == .authorizationRejected)
-    #expect(Set(result.retryPendingSegmentIDs) == allSegmentIDs)
-    #expect(Set(try pendingRetrySegmentIDs(root: root)) == allSegmentIDs)
-    #expect(result.materializedSegments.allSatisfy { $0.contentPriority == .primary })
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.sendCount == 1)
-    #expect(snapshot.failureCount == 1)
-    #expect(snapshot.successCount == 0)
-    #expect(snapshot.priorityRequests.failureCount == 1)
-    #expect(snapshot.boundaryRequests.sendCount == 0)
-    #expect(snapshot.retryPendingCount == 5)
+    #expect(result.pendingBoundarySegments.count == 5)
+    let reasons = try eventObjects(root).filter { $0["event_type"] as? String == "clause_boundaries.pending" }
+        .compactMap { ($0["payload"] as? [String: Any])?["reason"] as? String }
+    #expect(reasons == Array(repeating: "authorization_rejected", count: 5))
 }
 
 @Test
 func requestSpecificFailureKeepsSendingTheRemainingSegments() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let transport = CountingStatusTransport(status: 400, body: "{\"error\":\"bad request\"}")
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-400",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(
-            provider: JevClient(apiKey: "sk-secret-123", transport: transport),
-            usageCounter: JevUsageCounter()
-        ),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(fiveSegments, root: root, sessionID: sessionID))
+    let transport = CountingStatusTransport(status: 400, body: "{}")
 
-    let result = try await coordinator.process(existingEvents: fiveSegmentEvents(), activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID,
+        provider: JevClient(apiKey: "sk-secret-123", transport: transport), scope: .all
+    )
 
     #expect(await transport.calls == 5)
     #expect(result.stopReason == nil)
-    #expect(result.retryPendingSegmentIDs.count == 5)
+    #expect(result.pendingBoundarySegments.count == 5)
 }
 
 @Test

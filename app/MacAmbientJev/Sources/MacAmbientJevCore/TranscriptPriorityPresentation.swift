@@ -66,13 +66,18 @@ public struct TranscriptPriorityPresentationPolicy: Sendable {
             displayOffset = end
         }
 
+        func hasVisibleText(from start: Int, to end: Int) throws -> Bool {
+            let range = try TextUTF16Range(start: start, end: end)
+            return !ClauseTextComposer.isBlank(String(try range.substring(in: text.text)))
+        }
+
         var runIndex = 0
         var pendingStyle: TranscriptTextStyle?
         var pendingEnd = 0
         var allLow = true
         for slice in slices {
             guard slice.sourceRange.start < slice.sourceRange.end else { continue }
-            let low = slice.priority == .lowPriority && !slice.needsRetry
+            let low = slice.priority == .lowPriority && !slice.needsRetry && !hasUnavailableDecision
             let style: TranscriptTextStyle = low ? .lowPriority : .normal
             while runIndex < text.retainedRuns.count {
                 let run = text.retainedRuns[runIndex]
@@ -81,13 +86,19 @@ public struct TranscriptPriorityPresentationPolicy: Sendable {
                     continue
                 }
                 guard run.sourceRange.start < slice.sourceRange.end else { break }
+                let start = max(slice.sourceRange.start, run.sourceRange.start)
                 let end = min(slice.sourceRange.end, run.sourceRange.end)
                 if let previousStyle = pendingStyle, previousStyle != style {
                     try appendFragment(end: pendingEnd, style: previousStyle)
                 }
                 pendingStyle = style
                 pendingEnd = run.displayRange.start + end - run.sourceRange.start
-                if !low { allLow = false }
+                // Whitespace left between removed fillers is not content that keeps a row open.
+                if !low, try hasVisibleText(
+                    from: run.displayRange.start + start - run.sourceRange.start, to: pendingEnd
+                ) {
+                    allLow = false
+                }
                 if run.sourceRange.end > slice.sourceRange.end { break }
                 runIndex += 1
             }

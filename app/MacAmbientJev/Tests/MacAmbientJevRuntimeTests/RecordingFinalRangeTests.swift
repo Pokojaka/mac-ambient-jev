@@ -122,7 +122,7 @@ func micCaptureStopFinalizesSpeechThroughTheLastPartialDiarizationWindow(sampleR
     let activeRuns = try #require(metadata.activeRuns)
     let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL)).lines
     let events = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
-    let transcript = TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
+    let transcript = try TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
     #expect(transcript.map(\.text) == ["末尾の発話", "末尾の発話"])
     #expect(transcript.map(\.startMilliseconds) == [90_000, 104_000])
     #expect(transcript.map(\.endMilliseconds) == [104_000, 107_250])

@@ -12,9 +12,9 @@ public enum SavedTranscriptLoader {
         audioSource: SessionAudioSource
     ) throws -> SavedTranscript {
         let layout = SessionLayout(sessionURL: sessionURL)
-        guard let activeRuns = try ProcessingMetadataStore(
+        guard let metadata = try ProcessingMetadataStore(
             sessionURL: layout.sessionURL
-        ).load()?.activeRuns, activeRuns.asr != nil else {
+        ).load(), let activeRuns = metadata.activeRuns, activeRuns.asr != nil else {
             return .unavailable
         }
 
@@ -22,13 +22,18 @@ public enum SavedTranscriptLoader {
             return .unavailable
         }
 
-        let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL)).lines
+        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
+        guard !recovered.droppedIncompleteTail else {
+            throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
+        }
+        let lines = recovered.lines
+        _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
         let events = try EventLogTranscriptReader().events(
             lines: lines,
             activeRuns: activeRuns
         )
         return .segments(
-            TranscriptMaterializer(sampleRate: timeline.sampleRate)
+            try TranscriptMaterializer(sampleRate: timeline.sampleRate)
                 .materialize(events: events, activeRuns: activeRuns)
         )
     }

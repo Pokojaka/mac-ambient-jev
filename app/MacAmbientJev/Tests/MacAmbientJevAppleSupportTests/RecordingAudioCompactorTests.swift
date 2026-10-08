@@ -399,9 +399,10 @@ func aRecordingWithoutFramesIsNeverScheduledForCompaction() async throws {
     try ProcessingMetadataStore(sessionURL: layout.sessionURL).save(ProcessingMetadata(
         finalizationAttempt: nil,
         activeRuns: ActiveRuns(
-            segmentation: "seg", asr: "asr", diarization: "diar", scene: "scene", scope: "scope", contentPriority: "priority"
+            segmentation: "seg", asr: "asr", diarization: "diar", scene: "scene", scope: "scope", clauseBoundary: "boundary", contentPriority: "priority"
         ),
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
 
     #expect(try layout.audioSource(for: recordingManifest) == nil)

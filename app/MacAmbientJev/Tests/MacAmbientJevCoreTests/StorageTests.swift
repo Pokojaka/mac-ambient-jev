@@ -2,12 +2,6 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-@Test func unknownScopeAndMissingPriorityRemainRepresentable() {
-    let scope: AcousticScope = .unknown
-    let priority: ContentPriority? = nil
-    #expect(scope == .unknown)
-    #expect(priority == nil)
-}
 
 @Test func sessionWriterAssignsMonotonicEventSequence() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
@@ -73,7 +67,7 @@ import Testing
 
 
 @Test
-func processingMetadataStorePersistsActiveRunsAtomically() throws {
+func processingMetadataStorePersistsSelectedRuns() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -85,7 +79,8 @@ func processingMetadataStorePersistsActiveRunsAtomically() throws {
     let metadata = ProcessingMetadata(
         finalizationAttempt: nil,
         activeRuns: active,
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     )
 
     let store = ProcessingMetadataStore(sessionURL: root)
@@ -94,4 +89,73 @@ func processingMetadataStorePersistsActiveRunsAtomically() throws {
 
     #expect(restored?.activeRuns?.segmentation == "seg_run_03")
     #expect(restored?.activeRuns?.asr == "asr_run_07")
+}
+
+@Test(arguments: ["pending_clause_boundary_segments", "pending_content_priority_clauses"])
+func missingClauseMetadataArraysAreRejectedBeforeReadingOrAppending(key: String) throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    var object: [String: Any] = [
+        "finalization_attempt": NSNull(), "active_runs": NSNull(),
+        "pending_clause_boundary_segments": [], "pending_content_priority_clauses": []
+    ]
+    object.removeValue(forKey: key)
+    let store = ProcessingMetadataStore(sessionURL: root)
+    let original = try JSONSerialization.data(withJSONObject: object)
+    try original.write(to: store.url)
+    #expect(throws: ProcessingMetadataStoreError.self) { _ = try store.load() }
+    #expect(throws: ProcessingMetadataStoreError.self) { _ = try SessionWriter(sessionURL: root) }
+    #expect(try Data(contentsOf: store.url) == original)
+}
+
+@Test(arguments: ["duplicate", "wrongASR", "wrongBoundary", "orphanPriority"])
+func metadataRejectsInvalidAtomicSnapshotAndLeavesPublishedBytesIntact(kind: String) throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = try SegmentTextReference(segmentationRunID: "seg", segmentID: "s", asrRunID: "asr", asrEventSeq: 2)
+    let store = ProcessingMetadataStore(sessionURL: root)
+    let active = ActiveRuns(segmentation: "seg", asr: "asr")
+    try store.save(ProcessingMetadata(
+        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
+        activeRuns: active, pendingClauseBoundarySegments: [source], pendingContentPriorityClauses: []
+    ))
+    let original = try Data(contentsOf: store.url)
+    var invalid = try #require(try store.load())
+    switch kind {
+    case "duplicate": invalid.pendingClauseBoundarySegments = [source, source]
+    case "wrongASR":
+        invalid.pendingClauseBoundarySegments = [
+            try SegmentTextReference(segmentationRunID: "seg", segmentID: "s", asrRunID: "other", asrEventSeq: 2)
+        ]
+    case "wrongBoundary":
+        invalid.activeRuns = active.withJevRuns(clauseBoundary: "boundary", contentPriority: "priority")
+        invalid.pendingContentPriorityClauses = [try ClauseReference(boundaryRunID: "other", clauseID: "c2_0")]
+    default:
+        invalid.activeRuns = active.withJevRuns(clauseBoundary: nil, contentPriority: "priority")
+    }
+    #expect(throws: ProcessingMetadataStoreError.self) { try store.save(invalid) }
+    #expect(try Data(contentsOf: store.url) == original)
+}
+
+@Test
+func staleJevPublicationCannotOverwriteNewLocalRunsOrPendingSources() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let old = ActiveRuns(segmentation: "oldSeg", asr: "oldASR")
+    let current = ActiveRuns(segmentation: "newSeg", asr: "newASR")
+    let source = try SegmentTextReference(segmentationRunID: "newSeg", segmentID: "s", asrRunID: "newASR", asrEventSeq: 8)
+    let store = ProcessingMetadataStore(sessionURL: root)
+    try store.save(ProcessingMetadata(
+        finalizationAttempt: FinalizationAttempt(attemptID: "new", state: .complete, failureReason: nil),
+        activeRuns: current, pendingClauseBoundarySegments: [source], pendingContentPriorityClauses: []
+    ))
+    let original = try Data(contentsOf: store.url)
+    #expect(throws: ProcessingMetadataStoreError.publishedRunsChanged) {
+        try store.publishJevSnapshot(basedOn: old, clauseBoundaryRunID: "staleBoundary", contentPriorityRunID: "stalePriority",
+                                     pendingClauseBoundarySegments: [], pendingContentPriorityClauses: [])
+    }
+    #expect(try Data(contentsOf: store.url) == original)
 }

@@ -158,12 +158,15 @@ extension AppState {
             await MainActor.run {
                 guard let self,
                       self.displayedSessionID == sessionID,
-                      self.recordingSessionID == sessionID,
-                      self.recordingPhase == .recording else { return }
+                      self.recordingSessionID == sessionID
+                        || (self.currentlyProcessingSessionID == sessionID
+                            && self.liveASRTasks[sessionID] != nil) else { return }
                 do {
                     try self.transcriptViewModel.update(segments: segments)
                     self.processingState = state
-                    self.transcriptViewModel.setDisplayState(.live)
+                    self.transcriptViewModel.setDisplayState(
+                        self.recordingPhase == .recording ? .live : .finalizing
+                    )
                 } catch {
                     let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
                     self.processingState = .partialFailure(message)
@@ -199,9 +202,11 @@ extension AppState {
                     guard let self,
                           self.recordingSessionID == sessionID,
                           self.recordingPhase == .recording else { return }
-                    if text == UserFacingStatus.jevAuthorizationRequired.text
-                        || text == UserFacingStatus.jevDeferred.text
-                        || text.hasPrefix("意味分類") {
+                    if text.hasPrefix(UserFacingStatus.jevAuthorizationRequired.text)
+                        || text.hasPrefix(UserFacingStatus.jevDeferred.text)
+                        || text.hasPrefix("意味分類")
+                        || text.hasPrefix("Jev の判定を保存できませんでした")
+                        || text.hasPrefix("ライブの Jev 判定に失敗しました") {
                         self.liveContentPriorityStatus[sessionID] = text
                     }
                     let visibleStatus = self.liveContentPriorityStatus[sessionID] ?? text

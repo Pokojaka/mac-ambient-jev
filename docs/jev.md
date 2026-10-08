@@ -1,76 +1,109 @@
 # Jev・場面・音響範囲
 
-Jev の外部 API を使うのは、録音中と確定後の発話本文の**優先度分類**だけです。録音、VAD、ASR、話者分離、場面判定、近接度・音響範囲判定はローカルで動作します。Jev を利用できなくても録音とローカルの確定結果の公開を継続できます。
+Jev の外部 API を使うのは、発話本文の**節の境界判定**と**節の優先度判定**だけです。録音、VAD、ASR、話者分離、場面判定、近接度・音響範囲判定、フィラー除去はローカルで動作します。Jev を利用できなくても録音、ライブ ASR、ローカルの確定結果の公開を継続します。
+
+## 処理の流れ
+
+1. コードが ASR 原文の `、。？！?!` の直後（原文末尾を除く）を候補として列挙します。
+2. Jev Noul が、各候補が節単位を終える**絶対境界または強境界**か、区間末尾が次区間の先頭へ続くかを判定します。弱境界では切りません。
+3. コードが採用境界（確率 `> 0.5`）と継続（確率 `> 0.5`）から節を組み立てます。節は複数の ASR 区間にまたがることができ、各区間の原文範囲（parts）で表します。
+4. 既存のフィラー検出で原文から削除範囲を求め、節に属する残りの本文を空白を挿入せずに連結します。
+5. Jev Choice が、閉じた節の除去後本文を PRIMARY / LOW_PRIORITY に分類します。
+
+形態素解析、規則エンジン、辞書など別方式の分割器は使いません。候補にない位置では切れず、句点があっても Jev が no なら切れません。この精度の限界を別方式で補いません。
 
 ## Jev に送る内容
 
 アプリは `ContentPriorityAccess.jev` を使い、設定と Keychain の API キーに応じて分類器を用意します。処理 CLI、システム音声キャプチャ CLI、ライブ遅延計測 CLI は `ContentPriorityAccess.disabled` で、Jev へ送信しません。
 
-分類対象は、録音中のライブ ASR が保存した非空本文と、公開した確定結果の非空本文です。ライブ表示は、判定が届くまでその行（と時間順で後続の行）を表示せず、保存された判定とともに表示します。Jev 無効・失敗・保留・停止の行は即時に通常行として表示します。音声そのもの、話者 embedding、講義全文、前後の発話、場面や近接度の情報を添えて送りません。背景判定による画面非表示とは別の対象判定なので、非空本文であれば画面から除外する背景発話も分類対象になります。
+API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モデル指定は jev-latest、リクエストのタイムアウトは 15 秒です。この URL は外部 API の endpoint であり、リポジトリ内のパスではありません。音声、話者 embedding、話者・場面・scope、セッション ID、区間 ID は送りません。
 
-API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モデル指定は jev-latest、リクエストのタイムアウトは 15 秒です。この URL は外部 API の endpoint であり、リポジトリ内のパスではありません。現在のアプリは行ごとに一対象の `PriorityTextTarget` を `classifyPriorities` へ渡します。state は `{"u0001":"対象行のASR原文"}`、質問 `p0001` はその key を直接指定し、PRIMARY / LOW_PRIORITY の二択を求めます。他の対象を参考文脈として使う指示はしません。応答の model と入力 token 数は、その一リクエストに対応する一つの行判定へ保存します。
+### 境界判定（Noul）
 
-### 型付き輸送
+一区間につき一回だけ送信します。state は次の二つだけです。
 
-`DecisionProvider` は `assessBoundaries(ClauseBoundaryRequest)` と `classifyPriorities([PriorityTextTarget])` を公開します。優先度輸送は一送信につき最大40対象で、state の request-local key `u0001` 等と質問・応答 key `p0001` 等を対応付け、結果の `decisions` は対象 key で返します。空配列、重複 key、不正な key、空白・改行だけの本文、40対象を超える配列は送信前に拒否します。本文を自動で分割したり、失敗したbatchを一対象ずつ再送したりしません。
+- `text`: 対象区間の **ASR 原文**（フィラーを含む）に候補印を挿入したもの。印には原文に存在しないマーカーフレームを使い、保存する範囲や本文には混ぜません。
+- `next_text`: 次区間の原文の先頭 60 Character 以内。次区間があるときだけ置きます。
 
-境界輸送は、ASR 原文の `、。？！?!` の直後（原文末尾を除く）の候補をコードで列挙し、候補印付き原文を state の `text` に置きます。候補座標は UTF-16 code unit、切れ目は Character 境界です。原文に存在しないマーカーフレームを選び、原文自体は変更しません。後続がある場合だけ `next_text` に次原文の先頭60 Character以内を置き、全 `b0001` 等の候補と `continuation` を一HTTPで問い合わせます。前区間、次区間全文、source ID は送りません。終端は `next_text` と継続質問を省略します。Noul は有限の0..1確率を返し、境界・継続ともコードの採用閾値は厳密な `> 0.5` です。質問のない終端は輸送へ送信できません。現在の本番アプリはこの境界輸送を呼ばず、行単位の優先度分類を行います。
+全候補の質問 `b0001` 等と継続質問 `continuation` を同じリクエストに入れ、一区間を候補用と継続用の二送信に分けません。候補がなくても次区間があれば継続質問だけを送ります。前区間、次区間の全文は送りません。
 
-全 requested answer key、質問と一致する type、Choice の二択・両選択肢の probabilities・confidence、非空 model、usage object を検証します。確率と confidence は有限の0..1、token は未報告なら nil、報告された値は非負整数です。不足・余分な回答、型不一致、不正値はリクエスト全体を拒否し、部分結果や架空の0確率を返しません。`ContentPriorityDecision` に応答の選択肢・confidence・probabilities、`JevResponseMetadata` に実応答 model・入力／出力 token を分離します。
+次区間は、後続区間の ASR が保存されてから決まります。
 
-## 優先度の採用と原文保持
+| 後続区間 | 扱い |
+| --- | --- |
+| 非空の ASR 結果 | `next_text` に先頭 60 Character を置く |
+| 空の ASR 結果 | テキスト列の終端。`next_text` と継続質問を省く |
+| ASR 失敗（ASR gap） | 送信せず境界判定を保留（`asr_gap`）。gap をまたいで本文を推測しない |
+| なし（録音停止・最後の区間） | テキスト列の終端 |
 
-| Jev の判定 | 表示用の優先度 |
+ASR gap の後に空の ASR 結果が保存された場合も、そこでテキスト列を区切ります。gap より前の未解決本文は保留のまま残し、空結果の後の本文は独立した列として判定します。空結果の後に別の ASR gap があれば、その直後の本文の先頭は再び未解決です。ライブ、確定・再試行、保存済みイベントの再読込で同じ規則を使います。
+
+終端の区間に候補もなければ質問が0なので送信しません。Jev が利用可能な場合に限り、その区間を一つの範囲とする結果（`terminal_without_questions`）を記録します。Jev 不可のときはこの規則で節を作りません。
+
+### 優先度判定（Choice）
+
+閉じた節のうち、フィラー除去後の本文が空白・改行だけでない節だけを送ります。state は `{"u0001": "節本文", ...}` で、質問 `p0001` 等は対応する `u` key を直接指定します。他の key の本文は判定対象外と指示し、文脈や原文を添えません。一送信は最大 40 節で、原文順に並べます。ライブでは一つの境界応答で新しく閉じた節をまとめ、確定と再試行では全境界の後に、最大40節ずつ直列に送ります。40 節が貯まるまで待つことも、batch を一節ずつの送信へ分解することもしません（対象が一節なら一節の batch です）。境界と優先度を一つの送信にまとめることはしません。
+
+### 応答の検証
+
+全 requested answer key、質問と一致する type、Choice の二択・両選択肢の probabilities・confidence、非空 model、usage object を検証します。確率と confidence は有限の 0..1、token は未報告なら nil、報告された値は非負整数です。不足・余分な回答、型不一致、不正値はリクエスト全体を拒否し、部分結果や架空の確率を記録しません。HTTP の並列化、自動再送、同文の cache、失敗した batch の一節ずつの再送はしません。
+
+## 優先度の採用と表示
+
+| Jev の判定 | 節の表示用優先度 |
 | --- | --- |
 | LOW_PRIORITY、confidence ≥ 0.90 | `lowPriority` |
-| LOW_PRIORITY、confidence < 0.90 | `primary` |
+| LOW_PRIORITY、confidence < 0.90 | `primary`（実際の判定は記録する） |
 | PRIMARY | `primary` |
-| 未分類・通信失敗 | `primary` として表示し、必要な分類を保留 |
+| 未分類・保留 | 通常表示 |
 
-0.90 以上の LOW_PRIORITY は、内容や特定のフィラー語との一致にかかわらず採用します。画面はフィラー除去後の可視本文を淡色にし、未解決・保留がなく全ての可視 slice が LOW の行だけ折り畳みます。除去後に空になった行は表示しません。`transcript.txt` は LOW 本文を保持しますが、フィラーは除去します。フィラー除去は表示とテキスト書き出しだけに適用し、ASR の原文、イベント、CLI の JSON と Jev へ送る本文は変更しません。
+表示方針は [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) の一箇所です。行内の節 slice ごとに LOW の節を淡色にし、PRIMARY と LOW の混在はそのまま表示します。行を畳むのは、行の可視本文を覆う全ての非空の節が保存済み LOW で、境界の未解決部分も保留もない行だけです。続き待ち・境界保留・優先度保留の部分がある行は通常表示で、畳みません。区間をまたぐ節は、所属する全ての行の slice に同じ判定を適用します。話者・場面・scope の違いで節の結合を拒否しません。
 
-表示方針は [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) に集約しています。現在の Jev 判定は行単位のままで、原文全文を一つの slice として表示方針へ渡します。局所フィラーの検出は原文全体に一回だけ適用します。既存の9語・左右境界・先頭付着例外と直後の句読点を除去対象とし、それ以外の空白・改行・句読点は整形せず保持します。
+画面、コピー、accessibility、`transcript.txt` はフィラー除去後の本文を使い、LOW の本文も残します。ASR イベントの原文は変更しません。
 
-## 通信失敗と再試行
+## 保留と再試行
 
-| 失敗 | バッチの扱い |
+| 失敗 | 扱い |
 | --- | --- |
-| HTTP 401 / 403 | バッチを停止。残りを送信せず保留し、API キーの修正を求める |
-| HTTP 429 / 5xx、通信エラー、有効な応答を decode できない | バッチを停止。残りを送信せず再試行待ち |
-| その他の失敗 | その区間を保留し、後続区間の分類を続ける |
+| HTTP 401 / 403 | 送信を停止。残りを送信せず保留し、API キーの修正を求める |
+| HTTP 429 / 5xx、通信エラー、有効な応答を decode できない | 送信を停止。残りを送信せず保留 |
+| その他の失敗（回答不足、未対応の選択肢など） | そのリクエストの全対象を保留し、次のリクエストを続ける |
 
-バッチ停止後の区間は送信失敗として再送を繰り返すのではなく、未送信のまま保留します。保留中は primary 表示です。401 / 403 の状態表示は次の文言です。
+境界判定が保留の区間は分割せず、フィラー除去後の行本文を未分類の通常行として表示します。その区間へ続く未解決の節に属する行、ASR gap や保留の直後の区間の先頭も、閉じた節として扱いません。すでに独立して閉じた節の保存結果は保持します。優先度判定だけが保留の節は通常表示で、全 LOW として扱いません。境界の保留を「継続しない」と偽装しません。
 
-> Jev の API キーの修正が必要です。意味分類を保留しました
+401 / 403 の状態表示は「Jev の API キーの修正が必要です。意味分類を保留しました」、その他の保留は「意味分類を後で再試行します」です。分類器の生成や Keychain の読取が例外で失敗した場合は、その理由を添えて「意味分類を後で再試行します。意味分類器を初期化できませんでした: …」と表示し、録音とライブ ASR は継続します。
 
-その他の保留は「意味分類を後で再試行します」です。HTTP 応答に判定キーがない、選択肢が未対応などのエラーは区間単位の保留に該当します。保存エラーは通信エラーとは別に扱い、再試行状態を保存できない場合もその理由を表示します。
+初期化失敗の理由は、後続区間の ASR が保存されて境界・優先度の保留状態が更新されても表示に残します。一般的な再試行メッセージだけで上書きしません。保留イベントにも理由を保存し、実際に送信しなかった処理を外部リクエストとして計数しません。
 
-ライブ分類では、分類器の生成や Keychain の API キー読取が例外で失敗すると、送信前の初期化失敗として「意味分類を後で再試行します。意味分類器を初期化できませんでした: …」に例外の理由を添えて表示します。これは HTTP 401 / 403 の認証拒否や通信失敗によるバッチ停止とは異なり、その行を未分類の通常行として表示し、次の行で分類器の生成を再度試みます。録音保存とライブ ASR は停止しません。
+確定結果の保留は `processing_metadata.json` の `pending_clause_boundary_segments`（境界判定が未成立の区間）と `pending_content_priority_clauses`（優先度が未成立の節）に保存します。設定の「保留中の判定を再試行」で再実行でき、Jev が有効な状態で API キーを保存したときも再試行を開始します。送信前に全対象を検証し、公開済みの保留でない対象、別 run の対象、引き継ぎ元の欠落は明示エラーにします。
 
-確定結果の保留区間 ID は `processing_metadata.json` に保存します。設定の「保留中の分類を再試行」で再実行でき、Jev が有効な状態で API キーを保存すると再試行を開始します。再試行 run は対象区間だけを送信し、それ以外の区間には公開済みの優先度と元 run・segmentation run・segment ID を引き継いだことを記録します。引き継ぐ以前の判定が見つからない場合は明示エラーにします。
+- **優先度だけの再試行**: 公開済みの境界判定 run をそのまま使い、指定した節だけを 40 節ずつ送ります。新しい優先度 run で、その他の全ての節の判定を元 run・イベント・節参照付きで引き継ぎます。指定しなかった保留は保留のまま引き継ぎます。
+- **境界を含む再試行**: 新しい境界判定 run を作り、公開済みの成功判定を元 run・イベント参照付きで引き継ぎ、保留の区間だけ Noul を送ります。全区間から節を組み直し、除去後本文が UTF-8 byte 列で完全一致する変わらない節の優先度を元参照の検証付きで引き継ぎ、新しく閉じた節と指定した保留だけを Choice に送ります。ASR と音声は再実行しません。
+- ASR gap で必要な次区間の原文がない保留は、同じ ASR では回復できません。送信前に「次の区間に音声認識結果がないため、境界を再判定できません。録音を再処理してください」とエラーにします。
 
-`content_priority.assigned` は表示用 priority と、今回の判定、再試行待ち、元判定からの引き継ぎのいずれかを保持します。ライブ分類は独立した content priority run の `processing.run.started` に `configuration.mode: live` を記録し、判定を保存してから暫定表示へ反映します。この run は確定結果の `active_runs` には選択しません。停止時の取り消しで run が未完了でも、保存済みの classified 判定は再利用できます。
+新しい境界・優先度 run と保留一覧は一回の metadata 書き込みで公開します。未公開の再試行 run の結果は使わず、公開済みの snapshot から再構築します。
 
-確定処理は全音声を新しい区間と本文で再認識します。その開始時点で同じセッションの保存済みライブ classified 判定を読み、前後の空白・改行だけを trim した本文が確定本文と完全一致する場合は送信せず優先度を引き継ぎます。元 run・segmentation run・segment ID を carried_over に記録し、本文自体は確定 ASR のものを使います。同一本文の判定が複数ある場合はイベント順で最新の classified 判定を使います。本文内の空白、句読点、表記は正規化しません。未分類・保留・停止後の未保存応答は再利用せず、変更された本文を Jev へ送ります。確定 run を選択してから表示を更新し、保留対象は確定区間 ID で再試行します。Jev が現在利用不能でも保存済みの一致判定は引き継ぎ、残りは保留します。
+## ライブから確定への再利用
+
+確定処理の開始時点でイベントログを読み、その時点で保存済みのライブ優先度 run の classified 判定だけを固定します。その後にライブの Jev キューを取り消します。固定より後に保存された応答や未保存の応答は使いません。未完了のライブ run でも保存済みの判定は使えます。
+
+確定の節本文（フィラー除去後の連結本文）がライブの節本文と **UTF-8 byte 列で完全一致**する場合だけ、送信せず優先度を引き継ぎます。trim、空白・句読点・Unicode の正規化、類似一致はしません。フィラーの位置だけが違って除去後本文が同じなら引き継ぎます。同じ本文の判定が複数あればイベント順で最新の classified を使い、後の保留はそれを無効にしません。節の parts と ID は確定 ASR と確定の境界判定のもので、ライブの境界判定は確定区間へ移しません。境界判定が成立しなかった確定区間に、ライブの節を持ち込みません。境界判定の後に Jev が使えなくなった場合も、一致する節は引き継ぎます。
 
 ## API キーと利用状況
 
-「設定」→「Jev」で API キーを保存・削除します。キーは macOS Keychain に保存し、設定やセッション JSON、イベントログには保存しません。設定画面を開いたときは、キーの有無を属性だけで確かめるため、キーチェーンの許可は求めません。キー本体を読むのは接続確認と分類のときだけです。Keychain の許可はアプリの署名に結び付くため、app bundle は固定の自己署名証明書で署名します（[README](../README.md) の「ビルドと起動」）。Jev の使用切り替えは優先度分類へのアクセスを止めるもので、録音やローカル認識を停止しません。
+「設定」→「Jev」で API キーを保存・削除します。キーは macOS Keychain に保存し、設定やセッション JSON、イベントログには保存しません。設定画面を開いたときは、キーの有無を属性だけで確かめるため、キーチェーンの許可は求めません。キー本体を読むのは接続確認と判定のときだけです。Keychain の許可はアプリの署名に結び付くため、app bundle は固定の自己署名証明書で署名します（[README](../README.md) の「ビルドと起動」）。Jev の使用切り替えは境界判定と優先度判定へのアクセスを止めるもので、録音やローカル認識を停止しません。
 
-「Jev 接続を確認」は、一対象batchで「これは接続確認のためのテスト文です。」だけを送り、応答またはエラーを表示します。保存済みキーがない、Jev が停止中、確認実行中なら開始しません。接続確認はセッション分類の usage counter を通りません。エラーには API キー、対象 key、送信本文、応答本文を含めません。
+「Jev 接続を確認」は、一対象の Choice で「これは接続確認のためのテスト文です。」だけを送り、応答またはエラーを表示します。保存済みキーがない、Jev が停止中、確認実行中なら開始しません。接続確認は利用状況に数えません。エラーには API キー、対象 key、送信本文、応答本文を含めません。
 
-「診断」の Jev 利用状況には次を表示します。
+「診断」の Jev 利用状況は、実際の HTTP リクエスト単位で次を表示します。
 
-- 送信回数
-- 入力 token 数（Jev の報告分）
-- 成功件数
-- token 数不明の件数
-- 失敗件数
-- 再試行待ち件数
+- 合計: 送信回数、入力 token 数（Jev の報告分）、成功件数、token 数不明の件数、失敗件数
+- 境界判定リクエストと優先度判定リクエストのそれぞれの内訳
+- 境界判定の保留区間数と優先度判定の保留節数
 
-送信・成功・失敗と入力 token は対象数ではなく provider の実リクエスト単位で計数します。`JevUsageSnapshot` は合計と `boundaryRequests` / `priorityRequests` の内訳を保持し、診断画面は合計を表示します。40判定の成功でも送信・成功は各一回、入力 token は metadata から一回だけ加算します。入力 token 未報告の成功を0 token の既知成功にはせず、成功件数と「token 数不明の件数」に数えます。報告された入力 token だけを合計し、出力 token は輸送metadataに保持します。
+候補数や節数を送信回数にせず、一送信の token を節ごとに重複して加算しません。入力 token 未報告の成功は「token 数不明の件数」に数え、0 token の既知成功にしません。接続確認、ライブ判定の再利用、質問0の終端、未送信の保留は送信回数を増やさず、未送信の保留は失敗にも数えません。通信成功後の保存失敗は通信の失敗に数えません。取り消されたリクエストは送信回数だけを残します。
 
-再試行待ちは request purpose別計数と独立し、現在の行対象の session ID と segment ID の組で重複なく管理します。対象の分類成功で保留を除き、未送信の保留や保存済み結果の再利用は送信・失敗を増やしません。通信成功後のイベント保存失敗は通信failureに数えません。取り消されたrequestは attemptだけを残し、success・failure・新規保留を加えません。既存の保留は取り消しで消しません。これら実行中のcounterは、保留 ID を保存するmetadataとは別です。
+保留件数はセッションと対象（区間または節）の組で重複なく管理し、request の計数とは独立です。公開した snapshot が解決した保留、または置き換えた run（ライブから確定、区間から節、古い境界判定 run から新しい run）の保留を明示的に除き、累計の request と token は保持します。Jev の分類器を作れない場合でも共有の計数器を更新します。metadata から利用状況を合成しません。
 
 ## 場面判定は音響のみ
 
@@ -110,7 +143,7 @@ scope は `near`、`background`、`unknown` の時間 span として保存しま
 
 ## 実装の根拠
 
-- [Jev request・応答・エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、[共有型・Noul閾値・batch上限](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[優先度閾値・バッチ停止](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[判定イベントと再試行 run](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)
+- [Jev request・応答・エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、[共有型・Noul閾値・batch上限](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[優先度閾値・バッチ停止](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[保存 payload](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[節の組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[確定・再試行の snapshot](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[ライブの判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[保存結果の検証と再利用](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)
 - [アプリ／CLI のアクセス境界と保存済みキー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[アプリの構成](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)
 - [設定と接続確認](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)、[Keychain](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/KeychainStore.swift)、[利用計数](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevUsageCounter.swift)、[診断表示](../app/MacAmbientJev/Sources/MacAmbientJev/DiagnosticsView.swift)
 - [場面の観測と記録時刻](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneCoordinator.swift)、[場面特徴と状態機械](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneInference.swift)、[確定処理の場面設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)

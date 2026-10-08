@@ -186,7 +186,7 @@ private func finalizationFixture(
     return (paths, sessionURL, await writer.committedSnapshot())
 }
 
-private func savePreviousRuns(sessionURL: URL) throws -> ActiveRuns {
+private func savePreviousRuns(sessionURL: URL) async throws -> ActiveRuns {
     let runs = ActiveRuns(
         segmentation: "seg_previous",
         asr: "asr_previous",
@@ -194,10 +194,27 @@ private func savePreviousRuns(sessionURL: URL) throws -> ActiveRuns {
         scene: "scene_previous",
         scope: "scope_previous"
     )
+    let sessionID = try SessionLayout(sessionURL: sessionURL).loadManifest().sessionID
+    let writer = try SessionWriter(sessionURL: sessionURL)
+    let provenance = RunProvenance(engine: "fixture", model: nil, version: "1", configuration: [:])
+    for (stage, runID) in [
+        (ProcessingStage.segmentation, "seg_previous"), (.asr, "asr_previous"),
+        (.diarization, "diar_previous"), (.scene, "scene_previous"), (.scope, "scope_previous")
+    ] {
+        try await writer.append(EventDraft(
+            eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
+            payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
+        ))
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
+            payload: ProcessingRunCompletedPayload(stage: stage, succeeded: true, completedCount: 0, failedCount: 0)
+        ))
+    }
     try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "finalize_previous", state: .complete, failureReason: nil),
         activeRuns: runs,
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
     return runs
 }
@@ -273,7 +290,7 @@ func finalTranscriptPipelineRejectsFluidSpansOutsideFinalPadding(startFrame: Int
     let sessionID = UUID()
     let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let previousRuns = try savePreviousRuns(sessionURL: sessionURL)
+    let previousRuns = try await savePreviousRuns(sessionURL: sessionURL)
     let log = FinalizationCallLog()
     let asr = FakeFinalASR(log: log, values: ["使われない"])
     let processor = NativeSessionProcessor(
@@ -353,7 +370,7 @@ func finalTranscriptPipelineSplitsVADSegmentsAtSpeakerChangesBeforeASR() async t
         lines: recovered.lines,
         activeRuns: try #require(metadata.activeRuns)
     )
-    let rows = TranscriptMaterializer(sampleRate: 16_000).materialize(
+    let rows = try TranscriptMaterializer(sampleRate: 16_000).materialize(
         events: events,
         activeRuns: try #require(metadata.activeRuns)
     )
@@ -417,7 +434,7 @@ func finalTranscriptPipelinePassesOverlappingSpeakerSpansInOneASRCall() async th
     let activeRuns = try #require(loadedActiveRuns)
     let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
     let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-    let rows = TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
+    let rows = try TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
     #expect(rows.map(\.text) == ["短い相づち"])
     #expect(await log.snapshot() == ["vad", "diarize", "asr:0"])
 }
@@ -462,7 +479,7 @@ func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async 
     let activeRuns = try #require(loadedActiveRuns)
     let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
     let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-    let rows = TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
+    let rows = try TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
     #expect(rows.map(\.text) == ["短い話者区間を含む音声"])
     #expect(rows.map(\.startMilliseconds) == [0])
     #expect(rows.map(\.endMilliseconds) == [1_000])
@@ -494,7 +511,7 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
         contentPriority: .jev({
             jevFactoryCalls.recordCall()
             return nil
-        })
+        }, usageCounter: JevUsageCounter())
     )
 
     let result = try await processFinal(
@@ -511,7 +528,7 @@ func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched(diarization
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let previousRuns = try savePreviousRuns(sessionURL: sessionURL)
+    let previousRuns = try await savePreviousRuns(sessionURL: sessionURL)
     let log = FinalizationCallLog()
     let diarizer = FakeFinalDiarizer(
         spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.8)],
@@ -637,7 +654,7 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
         contentPriority: .jev({
             jevFactoryCalls.recordCall()
             return nil
-        })
+        }, usageCounter: JevUsageCounter())
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -652,7 +669,8 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     #expect(jevFactoryCalls.count() == 0)
     #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
     let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(metadata?.pendingContentPrioritySegmentIDs == [])
+    #expect(metadata?.pendingClauseBoundarySegments == [])
+    #expect(metadata?.pendingContentPriorityClauses == [])
     let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
     let completions = try recovered.lines.compactMap { line -> (String, Bool, Int, Int)? in
         guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -693,7 +711,7 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
                 log: log
             )
         ),
-        contentPriority: .jev({ nil })
+        contentPriority: .jev({ nil }, usageCounter: JevUsageCounter())
     )
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
@@ -711,7 +729,12 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     let loadedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     let metadata = try #require(loadedMetadata)
     #expect(metadata.activeRuns?.scope != nil)
-    #expect(metadata.pendingContentPrioritySegmentIDs == ["seg_000001"])
+    // The local transcript is published with every segment boundary-pending in the same write.
+    #expect(metadata.pendingClauseBoundarySegments.map(\.segmentID) == ["seg_000001"])
+    #expect(metadata.activeRuns?.clauseBoundary == nil)
+    let rows = try readFinalRows(sessionURL: sessionURL)
+    #expect(rows.map(\.clauseState) == [.boundaryPending])
+    #expect(rows.map(\.displayText) == ["表示する本文"])
 }
 
 private struct RejectedKeyDecisionProvider: DecisionProvider {
@@ -730,6 +753,7 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let log = FinalizationCallLog()
+    let counter = JevUsageCounter()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -748,8 +772,8 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
             )
         ),
         contentPriority: .jev({
-            JevDecisionCoordinator(provider: RejectedKeyDecisionProvider(), usageCounter: JevUsageCounter())
-        })
+            JevDecisionCoordinator(provider: RejectedKeyDecisionProvider(), usageCounter: counter)
+        }, usageCounter: counter)
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -761,13 +785,14 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     #expect(result.disposition == .completed)
     #expect(await statuses.snapshot().last == UserFacingStatus.jevAuthorizationRequired.text)
     let pending = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        .pendingContentPrioritySegmentIDs
-    #expect(Set(pending) == ["seg_000001", "seg_000002"])
+        .pendingClauseBoundarySegments
+    #expect(pending.map(\.segmentID) == ["seg_000001", "seg_000002"])
 
     let retryStatuses = FinalizationStatusRecorder()
     await processor.retryContentPrioritySession(
         sessionID: sessionID,
-        segmentIDs: pending,
+        boundarySegments: pending,
+        clauses: [],
         onStatus: { await retryStatuses.append($0) },
         onUpdate: { _, _ in }
     )
@@ -1067,6 +1092,17 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let writer = try SessionWriter(sessionURL: sessionURL)
+    for (stage, runID, provenance) in [
+        (ProcessingStage.clauseBoundary, "boundary_live_interrupted", JevRunProvenance.boundary(mode: "live")),
+        (.contentPriority, "priority_live_interrupted", JevRunProvenance.priority(mode: "live"))
+    ] {
+        try await writer.append(EventDraft(
+            eventType: "processing.run.started",
+            sessionID: sessionID,
+            processingRunID: runID,
+            payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
+        ))
+    }
     try await writer.append(EventDraft(
         eventType: "segment.created",
         sessionID: sessionID,
@@ -1097,6 +1133,7 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     #expect(recovered == checkpoint)
 
     let log = FinalizationCallLog()
+    let counter = JevUsageCounter()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -1111,7 +1148,9 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
                 log: log
             )
         ),
-        contentPriority: .disabled
+        contentPriority: .jev({
+            JevDecisionCoordinator(provider: LiveCarryOverProvider(), usageCounter: counter)
+        }, usageCounter: counter)
     )
     let result = try await processFinal(
         processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
@@ -1126,6 +1165,10 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     #expect(runs.diarization?.hasPrefix("diar_final_") == true)
     #expect(runs.scene?.hasPrefix("scene_final_") == true)
     #expect(runs.scope?.hasPrefix("scope_final_") == true)
+    #expect(runs.clauseBoundary != "boundary_live_interrupted")
+    #expect(runs.contentPriority != "priority_live_interrupted")
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["復旧した本文"])
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingJevTargets == [])
     #expect(try scanner.inspect(sessionID: sessionID).recovery == nil)
 }
 
@@ -1273,11 +1316,16 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
 }
 
+/// Accepts every candidate, never continues, and answers LOW for every clause.
 private actor LiveCarryOverProvider: DecisionProvider {
     private var texts: [String] = []
 
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
+        ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
+            continuationProbability: request.next.map { _ in 0.1 },
+            metadata: try JevResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
+        )
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
@@ -1300,7 +1348,9 @@ private actor LiveFoldGate {
     private var waiter: CheckedContinuation<Void, Never>?
 
     func observe(_ segments: [MaterializedTranscriptSegment]) {
-        guard segments.contains(where: { $0.contentPriority == .lowPriority }) else { return }
+        guard segments.contains(where: { segment in
+            segment.clauseSlices.contains { $0.priority == .lowPriority && !$0.displayRanges.isEmpty }
+        }) else { return }
         folded = true
         waiter?.resume()
         waiter = nil
@@ -1312,20 +1362,30 @@ private actor LiveFoldGate {
     }
 }
 
+private func readFinalRows(sessionURL: URL) throws -> [MaterializedTranscriptSegment] {
+    let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
+    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)).lines
+    return try TranscriptMaterializer(sampleRate: 16_000).materialize(
+        events: try EventLogTranscriptReader().events(lines: lines, activeRuns: runs), activeRuns: runs
+    )
+}
+
 @Test(arguments: [false, true])
-func finalizationUsesFinalTextAndOnlyReusesIdenticalLiveDecisions(changed: Bool) async throws {
+func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDecisions(changed: Bool) async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
     let log = FinalizationCallLog()
-    let liveText = " \n同じ発話\t "
-    let finalText = changed ? "変更された発話" : "同じ発話"
+    // Final ASR keeps the raw filler; its nonblank clause is identical across new source segmentation.
+    let liveText = "えー、同じ発話。"
+    let finalText = changed ? "変更された発話。" : liveText
     let provider = LiveCarryOverProvider()
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter())
+    let counter = JevUsageCounter()
+    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: [liveText, finalText]),
+            asr: FakeFinalASR(log: log, values: [liveText, "えー", finalText]),
             diarization: FakeFinalDiarizer(
                 spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
                 log: log, shouldFail: false
@@ -1337,7 +1397,7 @@ func finalizationUsesFinalTextAndOnlyReusesIdenticalLiveDecisions(changed: Bool)
                 log: log
             )
         ),
-        contentPriority: .jev({ decisions })
+        contentPriority: .jev({ decisions }, usageCounter: counter)
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate
@@ -1345,47 +1405,52 @@ func finalizationUsesFinalTextAndOnlyReusesIdenticalLiveDecisions(changed: Bool)
     let gate = LiveFoldGate()
     _ = try await processor.processLiveSegments(
         sessionID: sessionID,
-        segments: [SegmentReference(
-            segmentationRunID: "live_seg", segmentID: "live_row", startFrame: 0, endFrame: 16_000
-        )],
+        segments: [
+            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_row", startFrame: 0, endFrame: 8_000),
+            // A filler-only successor: its clause has no text to classify, so no request depends on timing.
+            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_tail", startFrame: 8_000, endFrame: 16_000),
+        ],
         checkpoint: checkpoint, onStatus: nil,
         onUpdate: { segments, _ in await gate.observe(segments) }
     )
     await gate.wait()
-    await processor.stopLiveContentPriority(sessionID: sessionID)
     let result = await processor.finishLiveTranscription(
         sessionID: sessionID, checkpoint: checkpoint, finalSegments: [], pacingMode: .normal,
         shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(result.disposition == .completed)
-    #expect(await provider.sentTexts() == (changed ? [liveText, finalText] : [liveText]))
+    #expect(await provider.sentTexts() == (changed ? ["同じ発話。", finalText] : ["同じ発話。"]))
     let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
-    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)).lines
-    let materialized = TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
-        events: try EventLogTranscriptReader().events(lines: lines, activeRuns: runs), activeRuns: runs
-    )
+    let materialized = try readFinalRows(sessionURL: sessionURL)
     #expect(materialized.map(\.text) == [finalText])
+    #expect(materialized.map(\.displayText) == [changed ? finalText : "同じ発話。"])
     #expect(materialized.map(\.segmentID) == ["final_row"])
-    #expect(materialized.map(\.contentPriority) == [.lowPriority])
+    #expect(materialized.map(\.clauseState) == [.classified])
+    let slices = try #require(materialized.first).clauseSlices
+    #expect(slices.filter { !$0.displayRanges.isEmpty }.map(\.priority) == [.lowPriority])
+    if !changed {
+        #expect(slices.contains { $0.displayRanges.isEmpty && $0.priority == nil && !$0.needsRetry })
+    }
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingJevTargets == [])
     let objects = try eventObjects(sessionURL)
     let assignment = try #require(objects.first {
         $0["event_type"] as? String == "content_priority.assigned"
             && $0["processing_run_id"] as? String == runs.contentPriority
     })
     let payload = try #require(assignment["payload"] as? [String: Any])
-    let decision = try #require(payload["decision"] as? [String: Any])
+    let decision = try #require((payload["assignments"] as? [[String: Any]])?.first?["decision"] as? [String: Any])
     if changed {
-        #expect(decision["classified"] != nil)
+        #expect(decision["kind"] as? String == "classified")
     } else {
-        let source = try #require(decision["carried_over"] as? [String: Any])
-        let liveAssignment = try #require(objects.first {
-            $0["event_type"] as? String == "content_priority.assigned"
-                && $0["segment_id"] as? String == "live_row"
-        })
-        #expect(source["source_run_id"] as? String == liveAssignment["processing_run_id"] as? String)
-        #expect(source["source_segmentation_run_id"] as? String == "live_seg")
-        #expect(source["source_segment_id"] as? String == "live_row")
+        #expect(decision["kind"] as? String == "carried_over")
+        #expect((decision["source_priority_run_id"] as? String)?.hasPrefix("priority_live_") == true)
+        let sourceClause = try #require(decision["source_clause"] as? [String: Any])
+        #expect((sourceClause["boundary_run_id"] as? String)?.hasPrefix("boundary_live_") == true)
+        #expect(payload["request"] is NSNull)
     }
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.pendingBoundarySegmentCount == 0)
+    #expect(snapshot.priorityRequests.sendCount == (changed ? 2 : 1))
 }
 
 private struct PreparationRejectingDiarizer: DiarizationEngine {
@@ -1444,13 +1509,14 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
         #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
         #expect(metadata.finalizationAttempt?.state == .complete)
-        #expect(metadata.pendingContentPrioritySegmentIDs == [])
+        #expect(metadata.pendingClauseBoundarySegments == [])
+        #expect(metadata.pendingContentPriorityClauses == [])
         let runs = try #require(metadata.activeRuns)
         #expect(runs != previousRuns)
         previousRuns = runs
         let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL))
         let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-        #expect(TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
+        #expect(try TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
             events: events, activeRuns: runs
         ).isEmpty)
         #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
@@ -1514,7 +1580,7 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
         samples: Array(repeating: 0, count: 16_000), sessionID: sessionID
     )
     defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
-    let previous = try savePreviousRuns(sessionURL: sessionURL)
+    let previous = try await savePreviousRuns(sessionURL: sessionURL)
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
         paths: paths,
@@ -1537,9 +1603,6 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     #expect(metadata.finalizationAttempt?.state == .failed)
     #expect(metadata.activeRuns == previous)
     #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
-    #expect(try eventObjects(sessionURL).allSatisfy {
-        $0["event_type"] as? String != "processing.run.completed"
-    })
 }
 
 @Test func processorLookupFailuresDoNotPublishEmptyTranscriptsOrRunEngines() async throws {

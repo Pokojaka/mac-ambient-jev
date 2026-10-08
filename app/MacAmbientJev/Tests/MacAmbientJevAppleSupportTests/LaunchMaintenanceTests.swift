@@ -16,11 +16,31 @@ private func makeSession(_ paths: AppPaths, source: SessionSource, second: Int) 
     ))
 }
 
-private func publish(_ layout: SessionLayout, attempt: FinalizationAttempt.State) throws {
+private func publish(_ layout: SessionLayout, attempt: FinalizationAttempt.State) async throws {
+    let sessionID = try layout.loadManifest().sessionID
+    let writer = try SessionWriter(sessionURL: layout.sessionURL)
+    let localRuns: [(ProcessingStage, String)] = [
+        (.segmentation, "seg_previous"), (.asr, "asr_previous"),
+        (.diarization, "diar_previous"), (.scene, "scene_previous"), (.scope, "scope_previous")
+    ]
+    for (stage, runID) in localRuns {
+        try await writer.append(EventDraft(
+            eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
+            payload: ProcessingRunStartedPayload(
+                stage: stage,
+                provenance: RunProvenance(engine: "test", model: nil, version: "test", configuration: [:])
+            )
+        ))
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
+            payload: ProcessingRunCompletedPayload(stage: stage, succeeded: true, completedCount: 0, failedCount: 0)
+        ))
+    }
     try ProcessingMetadataStore(sessionURL: layout.sessionURL).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "finalize_previous", state: attempt, failureReason: nil),
         activeRuns: publishedRuns,
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
 }
 
@@ -29,7 +49,7 @@ private func publishedRecording(_ paths: AppPaths, second: Int, attempt: Finaliz
     let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1)
     try await writer.append(samples: Array(repeating: 0.3, count: 16_000))
     _ = try await writer.finish()
-    try publish(layout, attempt: attempt)
+    try await publish(layout, attempt: attempt)
     return layout
 }
 
@@ -43,7 +63,7 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
     let recordingNowWriter = try DurableAudioWriter(directory: recordingNow.processingDirectory, chunkDurationSeconds: 1)
     try await recordingNowWriter.append(samples: Array(repeating: 0.3, count: 16_000))
     _ = try await recordingNowWriter.finish()
-    try publish(recordingNow, attempt: .complete)
+    try await publish(recordingNow, attempt: .complete)
     let compactOnly = try await publishedRecording(paths, second: 0, attempt: .complete)
     let reprocessing = try await publishedRecording(paths, second: 1, attempt: .paused)
     let staleInput = try await publishedRecording(paths, second: 2, attempt: .complete)
@@ -54,7 +74,7 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
     try Data("original".utf8).write(to: finishedImport.audioDirectory.appending(path: "original.caf"))
     try FileManager.default.createDirectory(at: finishedImport.processingDirectory, withIntermediateDirectories: true)
     try Data("stale".utf8).write(to: finishedImport.processingDirectory.appending(path: "stale"))
-    try publish(finishedImport, attempt: .complete)
+    try await publish(finishedImport, attempt: .complete)
     let unwritable = try await publishedRecording(paths, second: 4, attempt: .paused)
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: unwritable.audioDirectory.path)
     defer {
@@ -63,6 +83,7 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
     }
 
     let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+    #expect(scan.failures.isEmpty)
     let recordingNowID = try recordingNow.loadManifest().sessionID
     #expect(Set(scan.maintenance.map(\.sessionURL)).contains(recordingNow.sessionURL))
 

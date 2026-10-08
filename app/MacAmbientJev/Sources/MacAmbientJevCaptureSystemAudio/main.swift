@@ -264,8 +264,8 @@ struct CaptureSystemAudioCommand {
     }
 
     private static func loadTranscriptText(sessionURL: URL, sampleRate: Double) throws -> String {
-        guard let runs = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns,
-              runs.scope != nil else {
+        guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
+              let runs = metadata.activeRuns, runs.scope != nil else {
             throw CaptureSystemAudioError.transcriptionFailed("Completed transcript runs are missing")
         }
         let recovered = try SessionRecovery.recoverJSONL(
@@ -274,13 +274,14 @@ struct CaptureSystemAudioCommand {
         guard !recovered.droppedIncompleteTail else {
             throw CaptureSystemAudioError.transcriptionFailed("Transcript event log has an incomplete tail")
         }
+        _ = try JevRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
         let events = try EventLogTranscriptReader().events(
             lines: recovered.lines, activeRuns: runs
         )
-        return TranscriptMaterializer(sampleRate: sampleRate)
+        let segments = try TranscriptMaterializer(sampleRate: sampleRate)
             .materialize(events: events, activeRuns: runs)
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        return try LiveTranscriptProjection().rows(for: segments)
+            .map(\.text)
             .joined(separator: "\n")
     }
 

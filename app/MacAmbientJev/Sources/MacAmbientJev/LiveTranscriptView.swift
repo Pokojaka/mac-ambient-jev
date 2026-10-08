@@ -156,15 +156,33 @@ struct LiveTranscriptView: View {
                             .help("優先度が低い本文です")
                     }
                     .accessibilityHint("除去後の本文を表示または閉じます")
+                    .accessibilityValue(row.text)
                 } else {
                     transcriptText(row)
                         .font(.body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                if row.clauseState == .awaitingNextSegment {
+                    Text(Self.awaitingNextSegmentTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    static let awaitingNextSegmentTitle = "節の続き待ち"
+
+    static func clauseStateDescription(_ state: TranscriptClauseState) -> String {
+        switch state {
+        case .awaitingNextSegment: "Jev: 節の続き待ち"
+        case .boundaryPending: "Jev: 境界判定を保留中"
+        case .priorityPending: "Jev: 優先度判定を待っています"
+        case .classified: "Jev: 判定済み"
+        }
     }
 
     private func detailPopover(for rowID: String) -> Binding<Bool> {
@@ -198,6 +216,7 @@ struct LiveTranscriptView: View {
 
     private func transcriptDetails(_ row: LiveTranscriptRow) -> some View {
         VStack(alignment: .leading, spacing: AppSpacing.xs) {
+            Text(Self.clauseStateDescription(row.clauseState))
             sceneDescription(row.scene)
             scopeDescriptions(row.scopeSpans)
 

@@ -375,7 +375,8 @@ struct ProcessRecordingCommand {
         let result: SessionProcessingResult?
         switch candidate?.action {
         case .retryContentPriority?:
-            throw ProcessRecordingError.invalidSession("この復旧 action は CLI の対象外です")
+            // Jev is never used by the CLI; the published transcript is exported as it is.
+            result = nil
         case .finalize?:
             result = await processor.processSession(
                 sessionID: sessionID,
@@ -407,8 +408,8 @@ struct ProcessRecordingCommand {
     }
 
     private static func export(sessionURL: URL, outputURL: URL) throws {
-        let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-        guard let runs = metadata?.activeRuns, runs.scope != nil else {
+        guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
+              let runs = metadata.activeRuns, runs.scope != nil else {
             throw ProcessRecordingError.processingFailed("音響範囲整理の run が完了していません")
         }
         let recovered = try SessionRecovery.recoverJSONL(
@@ -417,8 +418,9 @@ struct ProcessRecordingCommand {
         guard !recovered.droppedIncompleteTail else {
             throw ProcessRecordingError.processingFailed("イベントログの末尾が不完全です")
         }
+        _ = try JevRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
         let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-        let segments = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate).materialize(
+        let segments = try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate).materialize(
             events: events, activeRuns: runs
         ).filter(\.hasRecognizedText)
         try FileManager.default.createDirectory(

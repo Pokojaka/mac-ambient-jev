@@ -64,6 +64,44 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
     #expect(try Data(contentsOf: layout.eventsURL) == eventsBefore)
 }
 
+@Test
+func savedTranscriptLoaderRejectsAnIncompleteEventTail() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let eventsURL = SessionLayout(sessionURL: session.sessionURL).eventsURL
+    var bytes = try Data(contentsOf: eventsURL)
+    bytes.append(contentsOf: "{\"schema_version\":2".utf8)
+    try bytes.write(to: eventsURL)
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        try SavedTranscriptLoader.load(
+            sessionURL: session.sessionURL,
+            audioSource: try #require(session.audioSource)
+        )
+    }
+}
+
+@Test
+func savedTranscriptLoaderRejectsPendingMetadataThatHidesUnclassifiedRows() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let store = ProcessingMetadataStore(sessionURL: session.sessionURL)
+    let metadata = try #require(try store.load())
+    try store.save(ProcessingMetadata(
+        finalizationAttempt: metadata.finalizationAttempt,
+        activeRuns: metadata.activeRuns,
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
+    ))
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        try SavedTranscriptLoader.load(
+            sessionURL: session.sessionURL,
+            audioSource: try #require(session.audioSource)
+        )
+    }
+}
+
 
 @Test
 func exporterWritesReadableTranscriptAndFlacAudio() async throws {
@@ -266,9 +304,25 @@ func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
 func exporterRefusesSessionWithoutTranscriptAndWritesNothing() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
-    let session = try await fixture.writeLiveSession(activeRuns: ActiveRuns(segmentation: "seg-run"))
+    let session = try await fixture.writeLiveSession(activeRuns: nil)
 
     #expect(throws: SessionExportError.noTranscript) {
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
+    }
+    #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
+}
+
+@Test
+func exporterRejectsIncompletePublishedTranscriptPointersAndWritesNothing() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession(activeRuns: ActiveRuns(segmentation: "seg-run"))
+
+    guard case .corrupted(let reason) = session.processingStatus else {
+        Issue.record("expected incomplete published transcript pointers to be corrupted")
+        return
+    }
+    #expect(throws: SessionExportError.transcriptCorrupted(reason)) {
         try SessionExporter().export(session: session, to: fixture.exportRoot)
     }
     #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
@@ -301,7 +355,7 @@ struct ExportFixture {
 
     func writeLiveSession(
         samples: [Float] = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 },
-        activeRuns: ActiveRuns = completeRuns,
+        activeRuns: ActiveRuns? = completeRuns,
         compacted: Bool = true,
         firstText: String = "こんにちは"
     ) async throws -> SavedSession {
@@ -362,7 +416,7 @@ struct ExportFixture {
     private func writeTranscript(
         sessionID: UUID,
         session: URL,
-        activeRuns: ActiveRuns,
+        activeRuns: ActiveRuns?,
         firstText: String = "こんにちは"
     ) async throws {
         let writer = try SessionWriter(sessionURL: session)
@@ -371,6 +425,7 @@ struct ExportFixture {
             ("seg-2", 65 * 16_000, 67 * 16_000, "今日の議題です", "speaker-b"),
             ("seg-3", 70 * 16_000, 71 * 16_000, "  ", "speaker-a"),
         ]
+        var pending: [SegmentTextReference] = []
         for segment in segments {
             _ = try await writer.append(EventDraft(
                 eventType: "segment.created",
@@ -381,7 +436,7 @@ struct ExportFixture {
                 sourceEndFrame: segment.end,
                 payload: EmptyPayload()
             ))
-            _ = try await writer.append(EventDraft(
+            let recognized = try await writer.append(EventDraft(
                 eventType: "asr.completed",
                 sessionID: sessionID,
                 processingRunID: "asr-run",
@@ -393,6 +448,13 @@ struct ExportFixture {
                     provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
                 )
             ))
+            if ASRRecognitionOutcome(text: segment.text) == .recognized,
+               activeRuns?.asr == "asr-run", activeRuns?.segmentation == "seg-run" {
+                pending.append(try SegmentTextReference(
+                    segmentationRunID: "seg-run", segmentID: segment.id,
+                    asrRunID: "asr-run", asrEventSeq: recognized.eventSeq
+                ))
+            }
             _ = try await writer.append(EventDraft(
                 eventType: "speaker.span",
                 sessionID: sessionID,
@@ -410,7 +472,8 @@ struct ExportFixture {
         try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
             finalizationAttempt: nil,
             activeRuns: activeRuns,
-            pendingContentPrioritySegmentIDs: []
+            pendingClauseBoundarySegments: pending,
+            pendingContentPriorityClauses: []
         ))
     }
 }
@@ -419,6 +482,7 @@ private enum ExportFixtureError: Error {
     case unreadable(UUID)
 }
 
+/// A row whose whole text is one clause with `priority`, or an unsplit row when nil.
 private func segment(
     _ id: String,
     startMilliseconds: Int64,
@@ -428,9 +492,19 @@ private func segment(
     scopes: [AcousticScope] = [],
     priority: ContentPriority? = nil,
     isDiarized: Bool = true
-) -> MaterializedTranscriptSegment {
+) throws -> MaterializedTranscriptSegment {
     let end = startMilliseconds + 1_000
-    return MaterializedTranscriptSegment(
+    var slices: [ClauseRowSlice] = []
+    if let priority {
+        let projection = try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: text)
+        let range = try TextUTF16Range(start: 0, end: text.utf16.count)
+        slices = [ClauseRowSlice(
+            reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0"),
+            sourceRange: range, displayRanges: try projection.displayRanges(for: range),
+            priority: priority, needsRetry: false
+        )]
+    }
+    return try MaterializedTranscriptSegment.fixture(
         segmentID: id,
         startMilliseconds: startMilliseconds,
         endMilliseconds: end,
@@ -445,25 +519,26 @@ private func segment(
         scopeSpans: scopes.map {
             MaterializedScopeSpan(startMilliseconds: startMilliseconds, endMilliseconds: end, scope: $0, confidence: 0.9)
         },
-        contentPriority: priority,
-        isDiarized: isDiarized
+        isDiarized: isDiarized,
+        clauseState: priority == nil ? nil : .classified,
+        clauseSlices: slices
     )
 }
 
 @Test
 func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
     let segments = [
-        segment("kept", startMilliseconds: 0, text: "残る発話", speakers: [("A", 0, 1_000)]),
-        segment("empty", startMilliseconds: 1_000, text: " \n", speakers: [("A", 1_000, 2_000)]),
-        segment(
+        try segment("kept", startMilliseconds: 0, text: "残る発話", speakers: [("A", 0, 1_000)]),
+        try segment("empty", startMilliseconds: 1_000, text: " \n", speakers: [("A", 1_000, 2_000)]),
+        try segment(
             "background", startMilliseconds: 2_000, text: "遠くの会話",
             speakers: [("A", 2_000, 3_000)], scene: .discussion, scopes: [.background]
         ),
-        segment(
+        try segment(
             "low", startMilliseconds: 3_000, text: "えーと、低優先度本文", speakers: [("B", 3_000, 4_000)],
             priority: .lowPriority
         ),
-        segment("filler-only", startMilliseconds: 4_000, text: "えー、", speakers: [("A", 4_000, 5_000)]),
+        try segment("filler-only", startMilliseconds: 4_000, text: "えー、", speakers: [("A", 4_000, 5_000)]),
     ]
 
     let rows = try LiveTranscriptProjection().rows(for: segments)
@@ -475,11 +550,39 @@ func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
 }
 
 @Test
+func mixedClausePrioritiesKeepTheWholeCleanedTextInExport() throws {
+    let raw = "えー、重要。余談。"
+    let projection = try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: raw)
+    let ranges = [try TextUTF16Range(start: 0, end: 6), try TextUTF16Range(start: 6, end: raw.utf16.count)]
+    let slices = try ranges.enumerated().map { index, range in
+        ClauseRowSlice(
+            reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_\(range.start)"),
+            sourceRange: range, displayRanges: try projection.displayRanges(for: range),
+            priority: index == 0 ? .primary : .lowPriority, needsRetry: false
+        )
+    }
+    let mixed = try MaterializedTranscriptSegment.fixture(
+        segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
+        text: raw, scene: .lecture,
+        speakers: [MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)],
+        scopeSpans: [], isDiarized: true, clauseState: .classified, clauseSlices: slices
+    )
+    let row = try #require(LiveTranscriptProjection().rows(for: [mixed]).first)
+    #expect(row.text == "重要。余談。")
+    #expect(row.textFragments == [
+        TranscriptTextFragment(text: "重要。", style: .normal),
+        TranscriptTextFragment(text: "余談。", style: .lowPriority)
+    ])
+    #expect(!row.shouldCollapseRow)
+    #expect(try TranscriptTextRenderer.render([mixed]) == "[00:00] Speaker 1: 重要。余談。\n")
+}
+
+@Test
 func transcriptTextJoinsSpeakersBelowTheEightyPercentRuleAndKeepsOneAbove() throws {
-    let mixed = segment(
+    let mixed = try segment(
         "mixed", startMilliseconds: 0, text: "会話", speakers: [("A", 0, 600), ("B", 600, 1_000)]
     )
-    let dominant = segment(
+    let dominant = try segment(
         "dominant", startMilliseconds: 2_000, text: "講義", speakers: [("A", 2_000, 2_850), ("B", 2_850, 3_000)]
     )
 
@@ -489,7 +592,7 @@ func transcriptTextJoinsSpeakersBelowTheEightyPercentRuleAndKeepsOneAbove() thro
 
 @Test
 func transcriptTextWritesUnknownForADiarizedUtteranceWithoutSpeakers() throws {
-    #expect(try TranscriptTextRenderer.render([segment("lonely", startMilliseconds: 61_000, text: "誰か")])
+    #expect(try TranscriptTextRenderer.render([try segment("lonely", startMilliseconds: 61_000, text: "誰か")])
         == "[01:01] UNKNOWN: 誰か\n")
 }
 
@@ -497,7 +600,7 @@ func transcriptTextWritesUnknownForADiarizedUtteranceWithoutSpeakers() throws {
 func transcriptTextReplacesLineBreaksSoEachUtteranceIsOneLine() throws {
     let text = "一行目\r\n二行目\n三行目\r四行目\u{2028}五行目\u{2029}六行目"
     let rendered = try TranscriptTextRenderer.render([
-        segment("multi", startMilliseconds: 0, text: text, speakers: [("A", 0, 1_000)])
+        try segment("multi", startMilliseconds: 0, text: text, speakers: [("A", 0, 1_000)])
     ])
 
     #expect(rendered == "[00:00] Speaker 1: 一行目 二行目 三行目 四行目 五行目 六行目\n")
@@ -506,7 +609,7 @@ func transcriptTextReplacesLineBreaksSoEachUtteranceIsOneLine() throws {
 @Test
 func transcriptTextRejectsAnUtteranceWithoutDiarization() {
     #expect(throws: TranscriptTextRendererError.missingSpeakerHeading(segmentID: "live")) {
-        try TranscriptTextRenderer.render([segment("live", startMilliseconds: 0, text: "暫定", isDiarized: false)])
+        try TranscriptTextRenderer.render([try segment("live", startMilliseconds: 0, text: "暫定", isDiarized: false)])
     }
 }
 

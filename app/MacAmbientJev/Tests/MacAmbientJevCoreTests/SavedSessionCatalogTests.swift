@@ -229,16 +229,18 @@ func corruptProcessingMetadataIsReportedButIntactAudioStaysReprocessable() throw
 }
 
 @Test
-func catalogSummaryShowsFinalizationStateAndActiveTranscript() throws {
+func catalogSummaryShowsFinalizationStateAndActiveTranscript() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let id = UUID()
     let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true)
+    _ = try await writeTranscript([], root: session, sessionID: id)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .failed, failureReason: "decode failed"),
-        activeRuns: ActiveRuns(asr: "asr"),
-        pendingContentPrioritySegmentIDs: []
+        activeRuns: transcriptRuns,
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
@@ -248,17 +250,20 @@ func catalogSummaryShowsFinalizationStateAndActiveTranscript() throws {
 }
 
 @Test
-func catalogReportsHeatPausedFinalizationAsPaused() throws {
+func catalogReportsHeatPausedFinalizationAsPaused() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let id = UUID()
     let session = try writeCatalogSession(
-        id: UUID(), createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
+        id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
     )
+    _ = try await writeTranscript([], root: session, sessionID: id)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .paused, failureReason: nil),
-        activeRuns: ActiveRuns(asr: "asr"),
-        pendingContentPrioritySegmentIDs: []
+        activeRuns: transcriptRuns,
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
@@ -321,7 +326,7 @@ private func writeCatalogSession(
 }
 
 @Test
-func catalogReportsPendingClassificationAfterLocalFinalization() throws {
+func catalogReportsPendingClassificationAfterLocalFinalization() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -329,10 +334,12 @@ func catalogReportsPendingClassificationAfterLocalFinalization() throws {
     let session = try writeCatalogSession(
         id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
     )
+    let events = try await writeTranscript(["本文"], root: session, sessionID: id)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
-        activeRuns: ActiveRuns(asr: "asr", scope: "scope"),
-        pendingContentPrioritySegmentIDs: ["seg_000001"]
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scope: "scope"),
+        pendingClauseBoundarySegments: [try source("s01", in: events)],
+        pendingContentPriorityClauses: []
     ))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
@@ -342,22 +349,19 @@ func catalogReportsPendingClassificationAfterLocalFinalization() throws {
 }
 
 @Test
-func catalogReportsZeroAudioScopeOnlySessionAsComplete() throws {
+func catalogReportsSuccessfulZeroVADSessionAsComplete() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
     let session = try writeCatalogSession(
-        id: UUID(), createdAt: 1_700_000_000, source: .imported(originalFilename: "lecture.wav"), root: root, includeAudio: true
+        id: id, createdAt: 1_700_000_000, source: .imported(originalFilename: "lecture.wav"), root: root, includeAudio: true
     )
     try Data([1, 2, 3]).write(to: session.appending(path: "audio/original.wav"))
-    try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        finalizationAttempt: nil,
-        activeRuns: ActiveRuns(scope: "scope_empty"),
-        pendingContentPrioritySegmentIDs: []
-    ))
+    _ = try publishLocal(root: session, events: try await writeTranscript([], root: session, sessionID: id))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
     #expect(row.processingStatus == .complete)
-    #expect(!row.hasActiveTranscript)
+    #expect(row.hasActiveTranscript)
 }
 
 private func readable(_ summary: SavedSessionSummary) throws -> SavedSession {
@@ -383,7 +387,8 @@ func catalogRejectsUnreadableEventLog(kind: String) throws {
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "final", state: .complete, failureReason: nil),
         activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
     let eventsURL = session.appending(path: "events.jsonl")
     if kind == "malformed" {
@@ -407,4 +412,42 @@ func catalogRejectsUnreadableEventLog(kind: String) throws {
     #expect(summary.canReprocess)
     #expect(try Data(contentsOf: session.appending(path: "processing_metadata.json")) == metadataBefore)
     #expect(try Data(contentsOf: session.appending(path: "session.json")) == manifestBefore)
+}
+
+@Test
+func catalogReportsCorruptClauseCoverageInsteadOfClassificationPending() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000,
+                                          source: .recording(.microphone), root: root, includeAudio: true)
+    _ = try publishLocal(root: session, events: try await writeTranscript(["一。二"], root: session, sessionID: id))
+    _ = try await buildAndPublish(
+        root: session, sessionID: id,
+        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+            throw JevClientError.missingAnswer
+        }), scope: .all
+    )
+    let catalog = SavedSessionCatalog(fileManager: .default)
+    #expect(try readable(#require(catalog.list(sessionsRoot: root).first)).processingStatus == .classificationPending)
+    var objects = try eventObjects(session)
+    let index = try #require(objects.firstIndex { $0["event_type"] as? String == ClauseEventType.clauseClosed })
+    var payload = try #require(objects[index]["payload"] as? [String: Any])
+    var parts = try #require(payload["parts"] as? [[String: Any]])
+    parts[0]["range"] = ["start": 0, "end": 1]
+    payload["parts"] = parts
+    objects[index]["payload"] = payload
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let bytes = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
+    let eventsURL = session.appending(path: "events.jsonl")
+    try bytes.write(to: eventsURL)
+    let summary = try #require(catalog.list(sessionsRoot: root).first)
+    let row = try readable(summary)
+    #expect(!row.hasActiveTranscript)
+    guard case .corrupted = row.processingStatus else {
+        Issue.record("Corrupt clause coverage must not be reported as retryable classification")
+        return
+    }
+    #expect(summary.canReprocess)
+    #expect(try Data(contentsOf: eventsURL) == bytes)
 }

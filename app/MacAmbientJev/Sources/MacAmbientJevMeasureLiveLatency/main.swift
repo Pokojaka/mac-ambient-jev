@@ -118,8 +118,8 @@ private actor MeasurementCollector {
         let now = DispatchTime.now().uptimeNanoseconds
         let elapsed = Double(now >= clockStart ? now - clockStart : 0) / 1_000_000_000
         for segment in segments {
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
+            let text = segment.displayText
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             latestTexts[segment.segmentID] = text
             if firstUpdateBySegment[segment.segmentID] == nil {
                 firstUpdateBySegment[segment.segmentID] = elapsed

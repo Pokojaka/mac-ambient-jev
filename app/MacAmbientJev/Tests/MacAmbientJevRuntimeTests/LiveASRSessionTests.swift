@@ -75,8 +75,17 @@ private actor SuspendedASREngine: ASREngine {
     func unload() async {}
 }
 
+private final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value { lock.withLock { stored } }
+    func withValue(_ body: (inout Value) -> Void) { lock.withLock { body(&stored) } }
+}
+
 private func makeLiveASRFixture(
-    failOnCall: Int? = nil
+    failOnCall: Int? = nil,
+    jevRuns: (boundary: String, priority: String)? = nil
 ) async throws -> (
     root: URL,
     checkpoint: AudioCheckpoint,
@@ -104,7 +113,9 @@ private func makeLiveASRFixture(
         processingDirectory: root,
         writer: try SessionWriter(sessionURL: root),
         asr: engine,
-        sampleRate: checkpoint.sampleRate
+        sampleRate: checkpoint.sampleRate,
+        clauseBoundaryRunID: jevRuns?.boundary,
+        contentPriorityRunID: jevRuns?.priority
     )
     return (root, checkpoint, session, engine)
 }
@@ -157,8 +168,8 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
 }
 
 @Test
-func liveASRProgressPreservesRowsAcrossRegistrationAndRefreshesPriorityRuns() async throws {
-    let fixture = try await makeLiveASRFixture()
+func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents() async throws {
+    let fixture = try await makeLiveASRFixture(jevRuns: ("boundary_live", "priority_live"))
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
@@ -168,51 +179,91 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndRefreshesPriorityRuns() as
         segmentationRunID: "seg_live_test", segmentID: "seg_000002",
         startFrame: 4_000, endFrame: 8_000
     )
+    let finished = Locked<[LiveASRSegmentStatus]>([])
     let recognized = try await fixture.session.process(
-        segments: [first], checkpoint: fixture.checkpoint
+        segments: [first], checkpoint: fixture.checkpoint,
+        onSegmentFinished: { status, _ in finished.withValue { $0.append(status) } }
     )
+    // Saved ASR is shown at once as normal text while the clause waits for the next segment.
+    #expect(recognized.materializedSegments.map(\.clauseState) == [.awaitingNextSegment])
+    #expect(recognized.materializedSegments.map(\.displayText) == ["segment-1"])
     let registered = try await fixture.session.register(segments: [first, second, second])
     #expect(registered.materializedSegments == recognized.materializedSegments)
-    #expect(registered.completedCount == 1)
-    #expect(registered.failedCount == 0)
     #expect(registered.pendingCount == 1)
-    #expect(try await fixture.session.register(segments: [first, second]) == registered)
+    let snapshot = await fixture.session.snapshot()
+    #expect(snapshot.segments.map(\.segmentID) == ["seg_000001", "seg_000002"])
+    #expect(snapshot.segments[1].outcome == .pending)
+    guard case .recognized(let source, "segment-1") = snapshot.segments[0].outcome else {
+        Issue.record("first segment is not recognized")
+        return
+    }
+    #expect(finished.value.map(\.outcome) == [.recognized(source, "segment-1")])
+    _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
+    let ready = await fixture.session.snapshot()
+    guard case .recognized(let nextSource, let nextText) = ready.segments[1].outcome else {
+        Issue.record("successor is not recognized")
+        return
+    }
 
-    let classified = await fixture.session.applyContentPriority(event: .contentPriority(
-        seq: 100, runID: "priority_a", segmentID: first.segmentID, priority: .lowPriority
-    ))
-    #expect(classified.progress.materializedSegments.map(\.contentPriority) == [.lowPriority])
-    let revised = await fixture.session.applyContentPriority(event: .contentPriority(
-        seq: 101, runID: "priority_a", segmentID: first.segmentID, priority: .primary
-    ))
-    #expect(revised.progress.materializedSegments.map(\.contentPriority) == [.primary])
-    #expect(classified.progress.materializedSegments.map(\.contentPriority) == [.lowPriority])
-
-    // A new active run on a pending row also removes assignments from the old run.
-    let switched = await fixture.session.applyContentPriority(event: .contentPriority(
-        seq: 102, runID: "priority_b", segmentID: second.segmentID, priority: .lowPriority
-    ))
-    #expect(switched.activeRuns.contentPriority == "priority_b")
-    #expect(switched.progress.materializedSegments.map(\.contentPriority) == [nil])
-    #expect(switched.progress.pendingCount == 1)
-    #expect(try await fixture.session.register(segments: [second]) == switched.progress)
+    let assessment = try ClauseBoundaryAssessment(
+        source: source, candidates: [], probabilities: [:],
+        nextHead: NextSegmentHead(source: nextSource, text: nextText),
+        continuationProbability: 0.05,
+        request: JevRequestRecord(requestID: "boundary_req", metadata: JevResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)),
+        sourceDecision: .assessed
+    )
+    let unit = try ClauseUnit(
+        reference: ClauseReference(boundaryRunID: "boundary_live", clauseID: "c\(source.asrEventSeq)_0"),
+        parts: [ClauseSourcePart(source: source, range: TextUTF16Range(start: 0, end: 9))],
+        termination: .notContinued(source: source)
+    )
+    let closed = try await fixture.session.applyClauseEvents([
+        .clause(seq: 100, runID: "boundary_live", kind: .clauseBoundaryAssessed(assessment)),
+        .clause(seq: 101, runID: "boundary_live", kind: .clauseClosed(unit)),
+    ])
+    #expect(closed.progress.materializedSegments.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
+    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.95, probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95])
+    let assigned = try ContentPriorityAssignedPayload(assignments: [
+        ClausePriorityAssignment(
+            reference: unit.reference, priority: .lowPriority, needsRetry: false,
+            decision: .classified(requestID: "req", answerKey: "u0001", response: low)
+        )
+    ], request: JevRequestRecord(requestID: "req", metadata: JevResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)))
+    let classified = try await fixture.session.applyClauseEvents([
+        .clause(seq: 102, runID: "priority_live", kind: .contentPriorityAssigned(assigned))
+    ])
+    #expect(classified.progress.materializedSegments.map(\.clauseState) == [.classified, .awaitingNextSegment])
+    #expect(classified.progress.materializedSegments[0].clauseSlices.map(\.priority) == [.lowPriority])
+    await #expect(throws: LiveASRSessionError.self) {
+        try await fixture.session.applyClauseEvents([
+            .clause(seq: 103, runID: "priority_final", kind: .contentPriorityAssigned(assigned))
+        ])
+    }
+    await #expect(throws: LiveASRSessionError.self) {
+        try await fixture.session.applyClauseEvents([
+            .clause(seq: 103, runID: "boundary_live", kind: .contentPriorityAssigned(assigned))
+        ])
+    }
+    let unknown = try ClauseReference(boundaryRunID: "boundary_live", clauseID: "c999_0")
+    let invalid = try ClausePriorityBatch.pending(
+        references: [unknown], reason: .requestFailed, message: "unknown clause"
+    )
+    await #expect(throws: TranscriptMaterializationError.self) {
+        try await fixture.session.applyClauseEvents([
+            .clause(seq: 103, runID: "priority_live", kind: .contentPriorityAssigned(invalid))
+        ])
+    }
+    #expect(await fixture.session.snapshot().events == classified.events)
 
     let completed = try await fixture.session.process(
         segments: [second], checkpoint: fixture.checkpoint
     )
     #expect(completed.materializedSegments.map(\.text) == ["segment-1", "segment-2"])
-    #expect(completed.materializedSegments.map(\.contentPriority) == [nil, .lowPriority])
-    #expect(completed.completedCount == 2)
-    #expect(completed.failedCount == 0)
+    #expect(completed.materializedSegments.map(\.clauseState) == [.classified, .awaitingNextSegment])
     #expect(completed.pendingCount == 0)
-    #expect(await fixture.session.snapshot().progress == completed)
-    let finished = try await fixture.session.finish()
-    #expect(finished.succeeded)
-    #expect(finished.materializedSegments == completed.materializedSegments)
-    #expect(finished.completedCount == 2)
-    #expect(finished.failedCount == 0)
-    #expect(finished.pendingCount == 0)
-    #expect(registered.materializedSegments == recognized.materializedSegments)
+    let finishedRun = try await fixture.session.finish()
+    #expect(finishedRun.succeeded)
+    #expect(finishedRun.materializedSegments == completed.materializedSegments)
 }
 
 @Test(arguments: [false, true])
@@ -311,7 +362,9 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
         sessionID: UUID(), segmentationRunID: "seg_live_test",
         asrRunID: "asr_live_test", processingDirectory: root,
         writer: try SessionWriter(sessionURL: root), asr: engine,
-        sampleRate: checkpoint.sampleRate
+        sampleRate: checkpoint.sampleRate,
+        clauseBoundaryRunID: nil,
+        contentPriorityRunID: nil
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
@@ -441,14 +494,16 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
 
 @Test
 func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async throws {
-    let fixture = try await makeLiveASRFixture(failOnCall: 1)
+    let fixture = try await makeLiveASRFixture(failOnCall: 2)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+    let first = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001", startFrame: 0, endFrame: 4_000
     )
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_000002", startFrame: 4_000, endFrame: 8_000
+    )
+    let saved = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
     _ = try await fixture.session.register(segments: [segment])
-
     let eventsURL = fixture.root.appending(path: "events.jsonl")
     let backupURL = fixture.root.appending(path: "events.backup")
     try FileManager.default.moveItem(at: eventsURL, to: backupURL)
@@ -457,18 +512,18 @@ func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async thro
         try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
     }
     let pending = await fixture.session.snapshot().progress
-    #expect(pending.completedCount == 0)
+    #expect(pending.completedCount == 1)
     #expect(pending.failedCount == 0)
     #expect(pending.pendingCount == 1)
-    #expect(pending.materializedSegments.isEmpty)
+    #expect(pending.materializedSegments == saved.materializedSegments)
     try FileManager.default.removeItem(at: eventsURL)
     try FileManager.default.moveItem(at: backupURL, to: eventsURL)
-
     let retried = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
     #expect(retried.failedCount == 0)
-    #expect(retried.completedCount == 1)
+    #expect(retried.completedCount == 2)
     #expect(retried.pendingCount == 0)
-    #expect(await fixture.engine.counts().transcribe == 2)
+    #expect(retried.materializedSegments.map(\.text) == ["segment-1", "segment-3"])
+    #expect(await fixture.engine.counts().transcribe == 3)
 }
 
 @Test
@@ -505,7 +560,9 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
         sessionID: UUID(), segmentationRunID: "seg_live_test",
         asrRunID: "asr_live_test", processingDirectory: root,
         writer: try SessionWriter(sessionURL: root), asr: engine,
-        sampleRate: checkpoint.sampleRate
+        sampleRate: checkpoint.sampleRate,
+        clauseBoundaryRunID: nil,
+        contentPriorityRunID: nil
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",

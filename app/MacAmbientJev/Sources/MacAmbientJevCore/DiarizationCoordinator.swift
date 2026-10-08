@@ -81,7 +81,7 @@ public actor DiarizationCoordinator {
             )
         ))
 
-        let materialized = materializer.materialize(
+        let materialized = try materializer.materialize(
             events: events,
             activeRuns: activeRuns
         )

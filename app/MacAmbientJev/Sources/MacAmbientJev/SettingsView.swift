@@ -102,10 +102,10 @@ struct SettingsView: View {
             }
 
             Section("Jev") {
-                Toggle("Jev の意味分類を使用する", isOn: jevEnabledBinding)
+                Toggle("Jev の境界判定と意味分類を使用する", isOn: jevEnabledBinding)
 
                 Text(
-                    "録音、音声認識、話者分離、場面判定はローカルで動作します。Jev を停止しても文字起こしは継続します。"
+                    "録音、音声認識、話者分離、場面判定はローカルで動作します。節の境界判定と優先度判定は Jev に送ります。Jev を停止しても文字起こしは継続します。"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -145,7 +145,7 @@ struct SettingsView: View {
                         }
                         .disabled(isJevPaused || isCheckingJev)
 
-                        Button("保留中の分類を再試行") {
+                        Button("保留中の判定を再試行") {
                             isRetryingDeferred = true
                             Task {
                                 await appState.retryDeferredJev()
@@ -156,7 +156,7 @@ struct SettingsView: View {
                         if isRetryingDeferred {
                             ProgressView()
                                 .controlSize(.small)
-                                .accessibilityLabel("保留中の分類を再試行しています")
+                                .accessibilityLabel("保留中の判定を再試行しています")
                         }
                     }
                 }

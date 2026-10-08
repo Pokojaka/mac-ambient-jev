@@ -6,6 +6,7 @@ public struct RunProvenance: Codable, Sendable, Equatable {
     public let model: String?
     public let version: String
     public let configuration: [String: String]
+    private enum CodingKeys: String, CodingKey { case engine, model, version, configuration }
 
     public init(
         engine: String,

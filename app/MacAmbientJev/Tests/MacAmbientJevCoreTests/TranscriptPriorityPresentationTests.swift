@@ -25,7 +25,9 @@ func priorityPolicyDoesNotCollapseEmptyPendingOrMixedContent() throws {
     let low = TranscriptPrioritySlice(sourceRange: full, priority: .lowPriority, needsRetry: false)
     #expect(try policy.present(text: source, slices: [low], hasUnresolvedBoundary: true, hasUnavailableDecision: false).shouldCollapseRow == false)
     #expect(try policy.present(text: source, slices: [TranscriptPrioritySlice(sourceRange: full, priority: .lowPriority, needsRetry: true)], hasUnresolvedBoundary: false, hasUnavailableDecision: false).shouldCollapseRow == false)
-    #expect(try policy.present(text: source, slices: [low], hasUnresolvedBoundary: false, hasUnavailableDecision: true).shouldCollapseRow == false)
+    let unavailable = try policy.present(text: source, slices: [low], hasUnresolvedBoundary: false, hasUnavailableDecision: true)
+    #expect(!unavailable.shouldCollapseRow)
+    #expect(unavailable.fragments == [TranscriptTextFragment(text: "本文", style: .normal)])
     let empty = try projector.project(sourceText: "えー")
     #expect(try policy.present(text: empty, slices: [], hasUnresolvedBoundary: false, hasUnavailableDecision: false).shouldCollapseRow == false)
 }

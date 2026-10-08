@@ -14,7 +14,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let eventsURL = root.appending(path: "events.jsonl")
-    try Data("{\"event_seq\":1,\"event_type\":\"segment.created\"}".utf8).write(to: eventsURL)
+    try Data("{\"event_seq\":1,\"event_type\":\"segment.created\",\"schema_version\":2}".utf8).write(to: eventsURL)
 
     let writer = try SessionWriter(sessionURL: root)
     _ = try await writer.append(EventDraft(
@@ -53,7 +53,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let eventsURL = root.appending(path: "events.jsonl")
-    let first = "{\"event_seq\":1,\"event_type\":\"segment.created\"}\n"
+    let first = "{\"event_seq\":1,\"event_type\":\"segment.created\",\"schema_version\":2}\n"
     try Data((first + "{\"event_seq\":2,\"eve").utf8).write(to: eventsURL)
 
     let appended = try await SessionWriter(sessionURL: root).append(EventDraft(
@@ -64,4 +64,23 @@ import Testing
     #expect(data.starts(with: Data(first.utf8)))
     let recovered = try SessionRecovery.recoverJSONL(data)
     #expect(recovered.lines.count == 2)
+}
+
+@Test(arguments: [1, 0])
+func readersAndAppendRejectDuplicateOrReversedEventSequences(last: Int) throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let first = Data("{\"event_seq\":2,\"event_type\":\"future.event\",\"schema_version\":2}".utf8)
+    let second = Data("{\"event_seq\":\(last + 1),\"event_type\":\"future.event\",\"schema_version\":2}".utf8)
+    let bytes = first + Data([0x0A]) + second + Data([0x0A])
+    let url = root.appending(path: "events.jsonl")
+    try bytes.write(to: url)
+    #expect(throws: SessionRecoveryError.invalidEventSequence(index: 1)) {
+        _ = try EventLogTranscriptReader().events(lines: [first, second], activeRuns: ActiveRuns())
+    }
+    #expect(throws: SessionRecoveryError.invalidEventSequence(index: 1)) {
+        _ = try SessionWriter(sessionURL: root)
+    }
+    #expect(try Data(contentsOf: url) == bytes)
 }

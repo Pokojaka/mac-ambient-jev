@@ -2,556 +2,507 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-private struct FixedPriorityProvider: DecisionProvider {
-    let decision: ContentPriorityDecision
-    let metadata: JevResponseMetadata
-
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        PriorityBatchResponse(
-            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: metadata
-        )
-    }
-}
-
-private struct ThrowingPriorityProvider: DecisionProvider {
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw URLError(.notConnectedToInternet)
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        throw URLError(.notConnectedToInternet)
-    }
-}
-
-@Test(arguments: [(0.99, ContentPriority.lowPriority), (0.89, .primary)])
-func jevEnrichmentStoresResponseMetadataWhileApplyingVisibleThreshold(
-    confidence: Double, visiblePriority: ContentPriority
-) async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-test",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(
-            provider: FixedPriorityProvider(
-                decision: try ContentPriorityDecision(
-                    priority: .lowPriority,
-                    confidence: confidence,
-                    probabilities: ["PRIMARY": 0.01, "LOW_PRIORITY": 0.99]
-                ),
-                metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 12, outputTokens: 3)
-            ),
-            usageCounter: JevUsageCounter()
-        ),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
-
-    let events: [TranscriptEvent] = [
-        .segmentCreated(
-            seq: 1,
-            segmentationRunID: "seg",
-            segmentID: "seg-1",
-            startFrame: 0,
-            endFrame: 1_000
-        ),
-        .asrCompleted(
-            seq: 2,
-            runID: "asr",
-            segmentationRunID: "seg",
-            segmentID: "seg-1",
-            text: "えー、RSAでは公開鍵を使います",
-            detectedLanguage: nil
-        )
-    ]
-
-    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(
-        segmentation: "seg",
-        asr: "asr"
-    ), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
-
-    #expect(result.retryPendingSegmentIDs.isEmpty)
-    #expect(result.stopReason == nil)
-    #expect(
-        result.materializedSegments.first?.contentPriority
-            == visiblePriority
-    )
-    let payloads = try persistedPriorityPayloads(root: root)
-    let classified = try #require(
-        (payloads["seg-1"]?["decision"] as? [String: Any])?["classified"] as? [String: Any]
-    )
-    #expect(classified["confidence"] as? Double == confidence)
-    #expect(classified["model"] as? String == "jev-test")
-    #expect(classified["input_tokens"] as? Int == 12)
-}
-
 @Test
-func jevFailureKeepsPrimaryAndRecordsRetryPending() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async throws {
+    let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-test",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(
-            provider: ThrowingPriorityProvider(),
-            usageCounter: JevUsageCounter()
-        ),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
-
-    let events: [TranscriptEvent] = [
-        .segmentCreated(
-            seq: 1,
-            segmentationRunID: "seg",
-            segmentID: "seg-1",
-            startFrame: 0,
-            endFrame: 1_000
-        ),
-        .asrCompleted(
-            seq: 2,
-            runID: "asr",
-            segmentationRunID: "seg",
-            segmentID: "seg-1",
-            text: "重要な発話",
-            detectedLanguage: nil
-        )
-    ]
-
-    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(
-        segmentation: "seg",
-        asr: "asr"
-    ), scope: .all, reusableDecisions: [:], completeRun: true, onAssignment: nil)
-
-    #expect(result.retryPendingSegmentIDs == ["seg-1"])
-    #expect(
-        result.materializedSegments.first?.contentPriority
-            == .primary
-    )
-}
-
-
-private actor CountingRetryProvider: DecisionProvider {
-    private var priorityCalls: [String] = []
-
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        priorityCalls.append(contentsOf: targets.map(\.text))
-        let decision = try ContentPriorityDecision(
-            priority: .primary,
-            confidence: 1,
-            probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]
-        )
-        return PriorityBatchResponse(
-            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 4, outputTokens: nil)
-        )
-    }
-
-
-    func recordedPriorityCalls() -> [String] {
-        priorityCalls
-    }
-}
-
-@Test
-func jevRetryCallsOnlyDeferredSegmentsAndCarriesForwardResolvedPriority() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let provider = CountingRetryProvider()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-retry",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(
-            provider: provider,
-            usageCounter: JevUsageCounter()
-        ),
-        materializer: TranscriptMaterializer(
-            sampleRate: 1_000
-        )
-    )
-
-    let events: [TranscriptEvent] = [
-        .segmentCreated(
-            seq: 1,
-            segmentationRunID: "seg",
-            segmentID: "seg-1",
-            startFrame: 0,
-            endFrame: 1_000
-        ),
-        .asrCompleted(
-            seq: 2,
-            runID: "asr",
-            segmentationRunID: "seg",
-            segmentID: "seg-1",
-            text: "えー",
-            detectedLanguage: nil
-        ),
-        .segmentCreated(
-            seq: 3,
-            segmentationRunID: "seg",
-            segmentID: "seg-2",
-            startFrame: 1_000,
-            endFrame: 2_000
-        ),
-        .asrCompleted(
-            seq: 4,
-            runID: "asr",
-            segmentationRunID: "seg",
-            segmentID: "seg-2",
-            text: "重要な発話",
-            detectedLanguage: nil
-        ),
-        .segmentCreated(
-            seq: 5,
-            segmentationRunID: "seg",
-            segmentID: "seg-empty",
-            startFrame: 2_000,
-            endFrame: 3_000
-        ),
-        .asrCompleted(
-            seq: 6,
-            runID: "asr",
-            segmentationRunID: "seg",
-            segmentID: "seg-empty",
-            text: " \n",
-            detectedLanguage: nil
-        ),
-        .contentPriority(
-            seq: 7,
-            runID: "priority-old",
-            segmentID: "seg-1",
-            priority: .lowPriority
-        ),
-        .contentPriority(
-            seq: 8,
-            runID: "priority-old",
-            segmentID: "seg-2",
-            priority: .primary
-        )
-    ]
-
-    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(
-        segmentation: "seg",
-        asr: "asr",
-        contentPriority: "priority-old"
-    ), scope: .retry(["seg-2", "seg-empty"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
-
-    #expect(
-        await provider.recordedPriorityCalls()
-            == ["重要な発話"]
-    )
-
-    let byID = Dictionary(
-        uniqueKeysWithValues:
-            result.materializedSegments.map {
-                ($0.segmentID, $0.contentPriority)
-            }
-    )
-    #expect(byID["seg-1"] == .some(.lowPriority))
-    #expect(byID["seg-2"] == .some(.primary))
-    #expect(!result.retryPendingSegmentIDs.contains("seg-empty"))
-
-    let payloads = try persistedPriorityPayloads(root: root)
-    #expect(payloads["seg-1"]?["decision"] as? [String: [String: String]]
-        == ["carried_over": [
-            "source_run_id": "priority-old",
-            "source_segmentation_run_id": "seg",
-            "source_segment_id": "seg-1"
-        ]])
-    #expect(payloads["seg-1"]?["priority"] as? String == "lowPriority")
-    #expect(payloads["seg-1"]?["needs_retry"] as? Bool == false)
-    let classified = try #require(
-        (payloads["seg-2"]?["decision"] as? [String: Any])?["classified"] as? [String: Any]
-    )
-    #expect(classified["model"] as? String == "jev-test")
-    #expect(classified["input_tokens"] as? Int == 4)
-}
-
-private func persistedPriorityPayloads(root: URL) throws -> [String: [String: Any]] {
-    let lines = try SessionRecovery.recoverJSONL(
-        Data(contentsOf: root.appending(path: "events.jsonl"))
-    ).lines
-    var payloads: [String: [String: Any]] = [:]
-    for line in lines {
-        let event = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
-        guard event["event_type"] as? String == "content_priority.assigned",
-              let segmentID = event["segment_id"] as? String else { continue }
-        payloads[segmentID] = try #require(event["payload"] as? [String: Any])
-    }
-    return payloads
-}
-
-@Test
-func retryRunWithoutAPriorityToCarryOverFailsBeforeSendingAnything() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let provider = CountingRetryProvider()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-retry",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
-    let events: [TranscriptEvent] = [
-        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "a", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "a", text: "一つ目", detectedLanguage: nil),
-        .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "b", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "b", text: "二つ目", detectedLanguage: nil)
-    ]
-
-    await #expect(throws: JevEnrichmentError.noPriorityToCarryOver(segmentID: "b")) {
-        try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .retry(["a"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
-    }
-    #expect(await provider.recordedPriorityCalls().isEmpty)
-}
-
-@Test
-func contentPriorityPayloadRejectsNeedsRetryThatContradictsTheDecision() throws {
-    let json = Data("""
-    {"priority":"primary","needs_retry":false,"decision":{"retry_pending":{}}}
-    """.utf8)
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-    #expect(throws: DecodingError.self) {
-        try decoder.decode(ContentPriorityEventPayload.self, from: json)
-    }
-}
-
-@Test
-func jevEnrichmentSkipsEmptyTextButClassifiesEverythingSpoken() async throws {
-    let root = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let provider = CountingRetryProvider()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(),
-        runID: "priority-empty-filter",
-        writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
-    let events: [TranscriptEvent] = [
-        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "blank", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "blank", text: " \n  ", detectedLanguage: nil),
-        .segmentCreated(seq: 3, segmentationRunID: "seg", segmentID: "spoken", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 4, runID: "asr", segmentationRunID: "seg", segmentID: "spoken", text: "聞き取れませんでした。", detectedLanguage: nil)
-    ]
-
-    let result = try await coordinator.process(existingEvents: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .retry(["blank", "spoken"]), reusableDecisions: [:], completeRun: true, onAssignment: nil)
-
-    #expect(await provider.recordedPriorityCalls() == ["聞き取れませんでした。"])
-    #expect(result.retryPendingSegmentIDs.isEmpty)
-}
-
-private func liveReuseEvents(_ texts: [(String, String)]) -> [TranscriptEvent] {
-    texts.enumerated().flatMap { index, entry in
-        [
-            .segmentCreated(seq: UInt64(index * 2 + 1), segmentationRunID: "seg",
-                            segmentID: entry.0, startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000)),
-            .asrCompleted(seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
-                          segmentID: entry.0, text: entry.1, detectedLanguage: nil)
-        ]
-    }
-}
-
-@Test
-func normalizedLiveReuseDoesNotReuseChangedOrPendingText() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let provider = CountingRetryProvider()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(), runID: "final", writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
-    )
-    let carried = ContentPriorityEventPayload(priority: .lowPriority, decision: .carriedOver(
-        sourceRunID: "live-priority", sourceSegmentationRunID: "live-seg", sourceSegmentID: "original"
-    ))
-    _ = try await coordinator.process(
-        existingEvents: liveReuseEvents([("same", " \n話題\n "), ("changed", "話題です"), ("pending", "未分類")]),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all,
-        reusableDecisions: ["話題": carried, "未分類": .init(priority: .primary, decision: .retryPending)],
-        completeRun: true, onAssignment: nil
-    )
-    #expect(await provider.recordedPriorityCalls() == ["話題です", "未分類"])
-    let payloads = try persistedPriorityPayloads(root: root)
-    #expect(payloads["same"]?["decision"] as? [String: [String: String]] == [
-        "carried_over": ["source_run_id": "live-priority", "source_segmentation_run_id": "live-seg", "source_segment_id": "original"]
-    ])
-}
-
-private struct StatusFailurePriorityProvider: DecisionProvider {
-    let status: Int
-    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.httpStatus(status)
-    }
-
-    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        throw JevClientError.httpStatus(status)
-    }
-}
-
-@Test(arguments: [401, 403, 429, 500, 503])
-func incrementalUnavailableRunStopsLaterRequestsAndCountsAllAssignments(status: Int) async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["えー、これは", "コピーと。うん、うん。", "次の話です"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: ["s01"]), priority: lowForBackchannel)
     let counter = JevUsageCounter()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(), runID: "live", writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(provider: StatusFailurePriorityProvider(status: status), usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
+
+    let boundaryRequests = await provider.boundaryRequests
+    // The last segment has no candidate and no successor, so it needs no request.
+    #expect(boundaryRequests.map(\.source.segmentID) == ["s01", "s02"])
+    #expect(boundaryRequests.map { $0.next?.text } == ["コピーと。うん、うん。", "次の話です"])
+    // Boundaries are judged on raw ASR text, filler included.
+    #expect(boundaryRequests[0].text == "えー、これは")
+    let priorityRequests = await provider.priorityRequests
+    // One Choice for the clauses the boundaries closed; filler removed, parts joined without spaces.
+    #expect(priorityRequests.map { $0.map(\.text) } == [["これはコピーと。", "うん、うん。", "次の話です"]])
+    #expect(result.pendingBoundarySegments.isEmpty)
+    #expect(result.pendingPriorityClauses.isEmpty)
+
+    let published = try readPublished(root: root)
+    #expect(published == result.materializedSegments)
+    #expect(published.map(\.clauseState) == [.classified, .classified, .classified])
+    #expect(published.map(\.text) == ["えー、これは", "コピーと。うん、うん。", "次の話です"])
+    #expect(published.map(\.displayText) == ["これは", "コピーと。うん、うん。", "次の話です"])
+    let spanning = published[0].clauseSlices[0].reference
+    #expect(published[1].clauseSlices.map(\.reference).first == spanning)
+    #expect(published[1].clauseSlices.map(\.priority) == [.primary, .lowPriority])
+    let rows = try LiveTranscriptProjection().rows(for: published)
+    #expect(rows[1].textFragments == [
+        TranscriptTextFragment(text: "コピーと。", style: .normal),
+        TranscriptTextFragment(text: "うん、うん。", style: .lowPriority)
+    ])
+    #expect(!rows[1].shouldCollapseRow)
+
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.boundaryRequests.sendCount == 2)
+    #expect(snapshot.priorityRequests.sendCount == 1)
+    #expect(snapshot.reportedInputTokens == 30)
+    #expect(snapshot.pendingBoundarySegmentCount == 0)
+
+    let assigned = try eventObjects(root).filter { $0["event_type"] as? String == "content_priority.assigned" }
+    #expect(assigned.count == 1)
+    let payload = try requireValue(assigned[0]["payload"] as? [String: Any])
+    #expect((payload["assignments"] as? [Any])?.count == 3)
+    #expect((payload["request"] as? [String: Any])?["request_id"] != nil)
+}
+
+@Test
+func fortyOneClausesAreSentAsTwoOrderedChoiceRequests() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let text = (1...41).map { "文\($0)。" }.joined() + "終わり"
+    _ = try publishLocal(root: root, events: try await writeTranscript([text], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+
+    let requests = await provider.priorityRequests
+    #expect(requests.map(\.count) == [40, 2])
+    #expect(requests[0].first?.text == "文1。")
+    #expect(requests[1].map(\.text) == ["文41。", "終わり"])
+    #expect(await provider.boundaryRequests.count == 1)
+    #expect(result.materializedSegments.first?.clauseSlices.count == 42)
+}
+
+@Test
+func liveDecisionIsReusedOnlyForTheByteIdenticalFilteredText() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    // The first clause differs from the live text only by a removed filler; the second by Unicode normalization.
+    _ = try publishLocal(root: root, events: try await writeTranscript(["えー、同じ発話。か\u{3099}くせい"], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    try await writeLiveRun(
+        root: root, sessionID: sessionID, texts: ["同じ発話。", "がくせい"],
+        results: [(0, .lowPriority), (1, .lowPriority)], complete: false
     )
-    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
-    let first = try await coordinator.process(
-        existingEvents: liveReuseEvents([("a", "一")]), activeRuns: runs, scope: .all,
-        reusableDecisions: [:], completeRun: false, onAssignment: nil
+    let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
+        from: Data(contentsOf: root.appending(path: "events.jsonl"))
     )
-    let second = try await coordinator.process(
-        existingEvents: liveReuseEvents([("a", "一"), ("b", "二")]), activeRuns: runs, scope: .all,
-        reusableDecisions: [:], completeRun: true, onAssignment: nil
+
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider, scope: .all,
+        reusable: reusable
     )
-    #expect(await counter.snapshot().sendCount == 1)
-    #expect(await counter.snapshot().successCount == 0)
-    #expect(await counter.snapshot().failureCount == 1)
-    #expect(await counter.snapshot().retryPendingCount == 2)
-    let expectedReason: JevBatchStopReason = status == 401 || status == 403 ? .authorizationRejected : .providerUnavailable
-    #expect(first.stopReason == expectedReason)
-    #expect(second.stopReason == expectedReason)
-    #expect(second.retryPendingSegmentIDs == ["b"])
-    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: root.appending(path: "events.jsonl"))).lines
-    let events = try lines.map { try #require(JSONSerialization.jsonObject(with: $0) as? [String: Any]) }
-    #expect(events.filter { $0["event_type"] as? String == "content_priority.assigned" }.count == 2)
-    let completed = try #require(events.last?["payload"] as? [String: Any])
-    #expect(completed["completed_count"] as? Int == 2)
-    #expect(completed["failed_count"] as? Int == 2)
+
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["か\u{3099}くせい"]])
+    let slices = try requireValue(result.materializedSegments.first).clauseSlices
+    #expect(slices.map(\.priority) == [.lowPriority, .primary])
+    let assigned = try eventObjects(root).filter {
+        $0["event_type"] as? String == "content_priority.assigned"
+            && $0["processing_run_id"] as? String == result.priorityRunID
+    }
+    let carried = try requireValue(assigned.first?["payload"] as? [String: Any])
+    #expect(carried["request"] is NSNull)
+    let decision = try requireValue(((carried["assignments"] as? [[String: Any]])?.first?["decision"]) as? [String: Any])
+    #expect(decision["kind"] as? String == "carried_over")
+    #expect(decision["source_priority_run_id"] as? String == "priority_live")
+    #expect(decision["source_event_seq"] as? UInt64 == reusable[ExactClauseTextKey(text: "同じ発話。")]?.sourceEventSeq)
+}
+
+@Test
+func nonexistentReuseIsRejectedBeforeAnyBoundaryRequest() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["本文。次"], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let reuse = ReusableClauseDecision(
+        sourcePriorityRunID: "unknown", sourceEventSeq: 999,
+        sourceClause: try ClauseReference(boundaryRunID: "missing", clauseID: "c1_0"),
+        decision: try ContentPriorityDecision(priority: .primary, confidence: 1, probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]),
+        visiblePriority: .primary
+    )
+    await #expect(throws: EventLogTranscriptReaderError.self) {
+        try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all,
+                                  reusable: [ExactClauseTextKey(text: "本文。"): reuse])
+    }
+    #expect(await provider.boundaryRequests.isEmpty)
+    #expect(await provider.priorityRequests.isEmpty)
+}
+
+@Test
+func localOnlyTargetedBoundaryRetryLeavesOtherSourcesPending() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["最初。後半", "", "独立"], root: root, sessionID: sessionID)
+    let local = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider,
+        scope: .retry(boundarySegments: [try source("s01", in: events)], clauses: []))
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01"])
+    #expect(result.pendingBoundarySegments == [local.pendingClauseBoundarySegments[1]])
+    #expect(try readPublished(root: root).filter(\.hasRecognizedText).map(\.clauseState) == [.classified, .boundaryPending])
+}
+
+@Test
+func emptyASRTerminatesAnUnresolvedComponentWithoutResolvingIt() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["保留。末尾", "", "独立。次"], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: { request in
+        if request.source.segmentID == "s01" { throw JevClientError.missingAnswer }
+        return try punctuationBoundaries(continuing: [])(request)
+    }, priority: lowForBackchannel)
+    _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["独立。", "次"]])
+    let rows = try readPublished(root: root).filter(\.hasRecognizedText)
+    #expect(rows.map(\.clauseState) == [.boundaryPending, .classified])
+    #expect(rows[0].clauseSlices.isEmpty)
+}
+
+@Test(arguments: [401, 429, 503])
+func stoppedBoundaryBatchLeavesEverySegmentUnsplitAndPending(status: Int) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["一つ目。二つ目", "三つ目"], root: root, sessionID: sessionID)
+    let local = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(
+        boundary: { _ in throw JevClientError.httpStatus(status) }, priority: lowForBackchannel
+    )
+    let counter = JevUsageCounter()
+    await counter.recordDeferred(sessionID: sessionID, targets: local.pendingJevTargets)
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
+
+    #expect(await provider.boundaryRequests.count == 1)
+    #expect(await provider.priorityRequests.isEmpty)
+    #expect(result.stopReason == (status == 401 ? .authorizationRejected : .providerUnavailable))
+    #expect(result.pendingBoundarySegments == local.pendingClauseBoundarySegments)
+    let published = try readPublished(root: root)
+    #expect(published.map(\.clauseState) == [.boundaryPending, .boundaryPending])
+    #expect(published.allSatisfy { $0.clauseSlices.isEmpty })
+    // Unsplit rows stay normal text; a failed boundary is never turned into "no".
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.textFragments) == [
+        [TranscriptTextFragment(text: "一つ目。二つ目", style: .normal)],
+        [TranscriptTextFragment(text: "三つ目", style: .normal)]
+    ])
+    let reasons = try eventObjects(root).filter { $0["event_type"] as? String == "clause_boundaries.pending" }
+        .compactMap { ($0["payload"] as? [String: Any])?["reason"] as? String }
+    #expect(reasons == Array(repeating: status == 401 ? "authorization_rejected" : "request_failed", count: 2))
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.sendCount == 1)
+    #expect(snapshot.failureCount == 1)
+    #expect(snapshot.pendingBoundarySegmentCount == 2)
+}
+
+@Test
+func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let text = (1...41).map { "文\($0)。" }.joined()
+    _ = try publishLocal(root: root, events: try await writeTranscript([text], root: root, sessionID: sessionID))
+    let failedFirst = Locked(false)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { targets in
+        if !failedFirst.value {
+            failedFirst.set(true)
+            throw JevClientError.missingAnswer
+        }
+        return try lowForBackchannel(targets)
+    })
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+
+    #expect(await provider.priorityRequests.map(\.count) == [40, 1])
+    #expect(result.stopReason == nil)
+    #expect(result.pendingPriorityClauses.count == 40)
+    let published = try readPublished(root: root)
+    #expect(published.map(\.clauseState) == [.priorityPending])
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.shouldCollapseRow) == [false])
+}
+
+@Test
+func priorityOnlyRetryRequestsOnlyTheTargetsAndCarriesEveryOtherResult() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["一。二。三"], root: root, sessionID: sessionID))
+    let failing = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+        throw JevClientError.missingAnswer
+    })
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
+    #expect(first.pendingPriorityClauses.count == 3)
+    let counter = JevUsageCounter()
+    await counter.recordDeferred(sessionID: sessionID, targets: first.pendingTargets)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let target = first.pendingPriorityClauses[1]
+
+    let retried = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider,
+        scope: .retry(boundarySegments: [], clauses: [target]), counter: counter,
+        boundaryRunID: first.boundaryRunID
+    )
+
+    #expect(await provider.boundaryRequests.isEmpty)
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["二。"]])
+    #expect(retried.boundaryRunID == first.boundaryRunID)
+    // Pending results that were not requested stay pending; they are never turned into results.
+    #expect(retried.pendingPriorityClauses == [first.pendingPriorityClauses[0], first.pendingPriorityClauses[2]])
+    let metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
+    #expect(metadata.activeRuns?.contentPriority == retried.priorityRunID)
+    #expect(metadata.pendingContentPriorityClauses == retried.pendingPriorityClauses)
+    #expect(try readPublished(root: root).first?.clauseSlices.map(\.needsRetry) == [true, false, true])
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.pendingPriorityClauseCount == 2)
+    #expect(snapshot.priorityRequests.sendCount == 1)
+}
+
+@Test
+func boundaryRetryCarriesPublishedAssessmentsAndRequestsOnlyPendingSegments() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["前。続く", "途中", "終わり。後"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let failingMiddle = ScriptedDecisionProvider(boundary: { request in
+        if request.source.segmentID == "s02" { throw JevClientError.missingAnswer }
+        return try punctuationBoundaries(continuing: ["s01", "s02"])(request)
+    }, priority: lowForBackchannel)
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failingMiddle, scope: .all)
+    #expect(first.pendingBoundarySegments == [try source("s02", in: events)])
+    // Only "前。" closed independently; the clause touching the pending segment stays unsplit.
+    #expect(try readPublished(root: root).map(\.clauseState) == [.boundaryPending, .boundaryPending, .boundaryPending])
+    #expect(await failingMiddle.priorityRequests.map { $0.map(\.text) } == [["前。", "後"]])
+
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: ["s01", "s02"]), priority: lowForBackchannel)
+    let retried = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider,
+        scope: .retry(boundarySegments: Set(first.pendingBoundarySegments), clauses: [])
+    )
+
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s02"])
+    // Unchanged clauses keep their priority; only the clause that now closes is classified.
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["続く途中終わり。"]])
+    #expect(retried.pendingBoundarySegments.isEmpty)
+    #expect(try readPublished(root: root).map(\.clauseState) == [.classified, .classified, .classified])
+    let carried = try eventObjects(root).filter {
+        $0["event_type"] as? String == "clause_boundaries.assessed" && $0["processing_run_id"] as? String == retried.boundaryRunID
+    }.compactMap { (($0["payload"] as? [String: Any])?["source_decision"] as? [String: Any])?["kind"] as? String }
+    #expect(carried == ["carried_over", "assessed", "carried_over"])
+}
+
+@Test
+func boundaryRetryWithoutTheNextASRSourceFailsBeforeSending() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["前", nil, "後"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    #expect(first.pendingBoundarySegments == [try source("s01", in: events)])
+    let requestsBefore = await provider.boundaryRequests.count
+
+    await #expect(throws: JevEnrichmentError.missingNextASRSource(segmentID: "s01")) {
+        try await buildAndPublish(
+            root: root, sessionID: sessionID, provider: provider,
+            scope: .retry(boundarySegments: Set(first.pendingBoundarySegments), clauses: [])
+        )
+    }
+    #expect(await provider.boundaryRequests.count == requestsBefore)
+}
+
+@Test
+func retryRejectsTargetsThatAreNotPublishedPendingResults() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["一。二"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    let resolved = try requireValue(first.materializedSegments.first?.clauseSlices.first?.reference)
+
+    await #expect(throws: JevEnrichmentError.unknownRetryTarget(resolved.clauseID)) {
+        try await buildAndPublish(
+            root: root, sessionID: sessionID, provider: provider,
+            scope: .retry(boundarySegments: [], clauses: [resolved]), boundaryRunID: first.boundaryRunID
+        )
+    }
+    await #expect(throws: JevEnrichmentError.unknownRetryTarget("s01")) {
+        try await buildAndPublish(
+            root: root, sessionID: sessionID, provider: provider,
+            scope: .retry(boundarySegments: [try source("s01", in: events)], clauses: [])
+        )
+    }
+}
+
+@Test
+func withoutJevEverySegmentStaysUnsplitPendingAndNothingIsSent() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["一。二", "三"], root: root, sessionID: sessionID))
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: nil, scope: .all)
+
+    #expect(result.pendingBoundarySegments.count == 2)
+    #expect(result.pendingPriorityClauses.isEmpty)
+    #expect(result.materializedSegments.map(\.clauseState) == [.boundaryPending, .boundaryPending])
 }
 
 private actor SuspendedPriorityProvider: DecisionProvider {
-    private var response: CheckedContinuation<PriorityBatchResponse, Never>?
-    private var entered: CheckedContinuation<Void, Never>?
-    private var hasEntered = false
+    private var started: CheckedContinuation<Void, Never>?
+    private var didStart = false
+    private var response: CheckedContinuation<Void, Never>?
 
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
+        try punctuationBoundaries(continuing: [])(request)
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        await withCheckedContinuation { continuation in
-            response = continuation
-            hasEntered = true
-            entered?.resume()
-            entered = nil
-        }
+        didStart = true
+        started?.resume()
+        started = nil
+        // Ignores cancellation, like a provider that answers late.
+        await withCheckedContinuation { response = $0 }
+        return try lowForBackchannel(targets)
     }
 
-    func waitUntilEntered() async {
-        if hasEntered { return }
-        await withCheckedContinuation { entered = $0 }
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { started = $0 }
     }
 
-    func respond() throws {
-        response?.resume(returning: PriorityBatchResponse(
-            decisions: ["u0001": try ContentPriorityDecision(
-                priority: .lowPriority, confidence: 1,
-                probabilities: ["PRIMARY": 0, "LOW_PRIORITY": 1]
-            )],
-            metadata: try JevResponseMetadata(model: "suspended-test", inputTokens: nil, outputTokens: nil)
-        ))
+    func releaseResponse() {
+        response?.resume()
         response = nil
     }
 }
 
-@Test(arguments: [false, true])
-func cancellationDoesNotSaveReturnedClassification(hadPending: Bool) async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+@Test
+func cancelledSnapshotDoesNotSaveAResponseThatArrivesLate() async throws {
+    let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let provider = SuspendedPriorityProvider()
-    let counter = JevUsageCounter()
     let sessionID = UUID()
-    if hadPending {
-        await counter.recordDeferred(sessionID: sessionID, segmentID: "a")
-    }
+    let events = try await writeTranscript(["一。"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let provider = SuspendedPriorityProvider()
     let coordinator = JevEnrichmentCoordinator(
-        sessionID: sessionID, runID: "live", writer: try SessionWriter(sessionURL: root),
-        decisions: JevDecisionCoordinator(provider: provider, usageCounter: counter),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
+        sessionID: sessionID, boundaryRunID: "boundary", priorityRunID: "priority",
+        writer: try SessionWriter(sessionURL: root),
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()),
+        usageCounter: JevUsageCounter(), materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
     let task = Task {
         try await coordinator.process(
-            existingEvents: liveReuseEvents([("a", "一")]),
-            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all,
-            reusableDecisions: [:], completeRun: false, onAssignment: nil
+            existingEvents: events, activeRuns: transcriptRuns, scope: .all, reusableDecisions: [:], onEvent: nil
         )
     }
-    await provider.waitUntilEntered()
+    await provider.waitUntilStarted()
     task.cancel()
-    try await provider.respond()
+    await provider.releaseResponse()
+
     await #expect(throws: CancellationError.self) { try await task.value }
-    #expect(try persistedPriorityPayloads(root: root).isEmpty)
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.sendCount == 1)
-    #expect(snapshot.successCount == 0)
-    #expect(snapshot.failureCount == 0)
-    #expect(snapshot.retryPendingCount == (hadPending ? 1 : 0))
-    #expect(snapshot.reportedInputTokens == 0)
+    #expect(try eventObjects(root).filter { $0["event_type"] as? String == "content_priority.assigned" }.isEmpty)
+}
+
+final class Locked<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value { lock.withLock { stored } }
+    func set(_ value: Value) { lock.withLock { stored = value } }
 }
 
 @Test
-func persistenceFailureAfterAResponseDoesNotBecomeATransportFailure() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+func leadingASRGapDoesNotInventTheFollowingHeadsStart() async throws {
+    let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try SessionWriter(sessionURL: root)
-    let eventsURL = root.appending(path: "events.jsonl")
-    try FileManager.default.removeItem(at: eventsURL)
-    try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
-    let counter = JevUsageCounter()
-    let coordinator = JevEnrichmentCoordinator(
-        sessionID: UUID(), runID: "priority", writer: writer,
-        decisions: JevDecisionCoordinator(
-            provider: FixedPriorityProvider(
-                decision: try ContentPriorityDecision(
-                    priority: .lowPriority, confidence: 0.99,
-                    probabilities: ["PRIMARY": 0.01, "LOW_PRIORITY": 0.99]
-                ),
-                metadata: try JevResponseMetadata(model: "jev-test", inputTokens: 12, outputTokens: nil)
-            ),
-            usageCounter: counter
-        ),
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript([nil, "未解決。独立"], root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["独立"]])
+    let row = try requireValue(try readPublished(root: root).first)
+    #expect(row.clauseState == .boundaryPending)
+    #expect(row.clauseSlices.map(\.sourceRange) == [try TextUTF16Range(start: 4, end: 6)])
+}
+
+@Test
+func boundaryRetryReusesExactPublishedTextAtDifferentRawParts() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(
+        ["同じ。", "", "同じ。後半"], root: root, sessionID: sessionID
+    ))
+    let failing = ScriptedDecisionProvider(boundary: { _ in throw JevClientError.missingAnswer },
+                                           priority: lowForBackchannel)
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
+    #expect(first.pendingBoundarySegments.map(\.segmentID) == ["s03"])
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
+                                            priority: lowForBackchannel)
+    let retried = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider,
+        scope: .retry(boundarySegments: Set(first.pendingBoundarySegments), clauses: [])
     )
-    await #expect(throws: (any Error).self) {
-        try await coordinator.process(
-            existingEvents: liveReuseEvents([("a", "本文")]),
-            activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"), scope: .all,
-            reusableDecisions: [:], completeRun: true, onAssignment: nil
-        )
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["後半"]])
+    let rows = retried.materializedSegments.filter(\.hasRecognizedText)
+    #expect(rows.map { $0.clauseSlices.map(\.priority) } == [[.primary], [.primary, .primary]])
+    #expect(rows[0].clauseSlices[0].reference != rows[1].clauseSlices[0].reference)
+}
+
+@Test(arguments: [false, true])
+func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pending: Bool) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(
+        ["前。後"], root: root, sessionID: sessionID
+    ))
+    let initial = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { targets in
+        if pending { throw JevClientError.missingAnswer }
+        return try lowForBackchannel(targets)
+    })
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: initial, scope: .all)
+    let writer = try SessionWriter(sessionURL: root)
+    try await writer.append(EventDraft(
+        eventType: "processing.run.started", sessionID: sessionID, processingRunID: "interrupted_retry",
+        payload: ProcessingRunStartedPayload(stage: .contentPriority,
+                                             provenance: JevRunProvenance.priority(mode: "retry"))
+    ))
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
+                                            priority: lowForBackchannel)
+    let retried = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider,
+        scope: .retry(boundarySegments: [], clauses: Set(first.pendingPriorityClauses))
+    )
+    #expect(retried.boundaryRunID != first.boundaryRunID)
+    #expect(await provider.boundaryRequests.isEmpty)
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == (pending ? [["前。", "後"]] : []))
+    #expect(retried.pendingTargets.isEmpty)
+    #expect(try readPublished(root: root) == retried.materializedSegments)
+}
+
+@Test
+func priorityRetryCannotAppendIntoThePublishedPriorityRun() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
+    let failing = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
+                                           priority: { _ in throw JevClientError.missingAnswer })
+    let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    await #expect(throws: JevEnrichmentError.invalidPriorityRun) {
+        try await buildAndPublish(root: root, sessionID: sessionID, provider: provider,
+            scope: .retry(boundarySegments: [], clauses: Set(first.pendingPriorityClauses)),
+            boundaryRunID: first.boundaryRunID, priorityRunID: first.priorityRunID)
     }
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.sendCount == 1)
-    #expect(snapshot.successCount == 1)
-    #expect(snapshot.failureCount == 0)
-    #expect(snapshot.reportedInputTokens == 12)
-    #expect(snapshot.retryPendingCount == 0)
-    #expect(snapshot.priorityRequests.successCount == 1)
-    #expect(snapshot.priorityRequests.failureCount == 0)
+    #expect(await provider.priorityRequests.isEmpty)
+    #expect(try readPublished(root: root) == first.materializedSegments)
 }

@@ -75,15 +75,15 @@ private func writeRecording(id: UUID, root: URL) throws -> URL {
 private func saveMetadata(
     _ sessionURL: URL,
     attempt: FinalizationAttempt.State?,
-    activeRuns: ActiveRuns?,
-    pending: [String]
+    activeRuns: ActiveRuns?
 ) throws {
     try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
         finalizationAttempt: attempt.map {
             FinalizationAttempt(attemptID: "attempt", state: $0, failureReason: $0 == .failed ? "failed" : nil)
         },
         activeRuns: activeRuns,
-        pendingContentPrioritySegmentIDs: pending
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
 }
 
@@ -92,46 +92,8 @@ private let publishedRuns = ActiveRuns(
     asr: "asr_active",
     diarization: "diar_active",
     scene: "scene_active",
-    scope: "scope_active",
-    contentPriority: "priority_active"
+    scope: "scope_active"
 )
-
-private func appendPublishedSegments(_ ids: [String], sessionID: UUID, writer: SessionWriter) async throws {
-    for (index, id) in ids.enumerated() {
-        try await writer.append(EventDraft(
-            eventType: "segment.created",
-            sessionID: sessionID,
-            segmentationRunID: "seg_active",
-            segmentID: id,
-            sourceStartFrame: Int64(index * 10),
-            sourceEndFrame: Int64(index * 10 + 10),
-            payload: EmptyPayload()
-        ))
-        try await writer.append(EventDraft(
-            eventType: "asr.completed",
-            sessionID: sessionID,
-            processingRunID: "asr_active",
-            segmentationRunID: "seg_active",
-            segmentID: id,
-            sourceStartFrame: Int64(index * 10),
-            sourceEndFrame: Int64(index * 10 + 10),
-            payload: ASRCompletedEventPayload(text: "本文", detectedLanguage: "ja", provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:]))
-        ))
-    }
-}
-
-private func appendPriority(runID: String, segmentID: String, sessionID: UUID, writer: SessionWriter) async throws {
-    try await writer.append(EventDraft(
-        eventType: "content_priority.assigned",
-        sessionID: sessionID,
-        processingRunID: runID,
-        segmentID: segmentID,
-        payload: ContentPriorityEventPayload(
-            priority: .primary,
-            decision: .retryPending
-        )
-    ))
-}
 
 @Test
 func recordingThatCrashedBeforeStopIsFinalizedFromItsTimeline() async throws {
@@ -199,7 +161,7 @@ func interruptedOrPausedFinalizationIsFinalizedAgain(state: FinalizationAttempt.
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    try saveMetadata(url, attempt: state, activeRuns: publishedRuns, pending: [])
+    try saveMetadata(url, attempt: state, activeRuns: publishedRuns)
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
 
@@ -213,7 +175,7 @@ func interruptedFinalizationWithoutAudioIsReportedAsMissingAudio() throws {
     let id = UUID()
     let url = try recoveryURL(id: id, source: .recording(.microphone), root: root)
     try writeRecoveryManifest(sessionID: id, source: .recording(.microphone), to: url)
-    try saveMetadata(url, attempt: .running, activeRuns: nil, pending: [])
+    try saveMetadata(url, attempt: .running, activeRuns: nil)
 
     #expect(throws: SessionRecoveryScannerError.missingAudio) {
         _ = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
@@ -221,14 +183,15 @@ func interruptedFinalizationWithoutAudioIsReportedAsMissingAudio() throws {
 }
 
 @Test
-func failedAndCompletedFinalizationsWaitForTheUser() throws {
+func failedAndCompletedFinalizationsWaitForTheUser() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let failedID = UUID()
-    try saveMetadata(try writeRecording(id: failedID, root: root), attempt: .failed, activeRuns: nil, pending: [])
+    try saveMetadata(try writeRecording(id: failedID, root: root), attempt: .failed, activeRuns: nil)
     let completeID = UUID()
     let completeURL = try writeRecording(id: completeID, root: root)
-    try saveMetadata(completeURL, attempt: .complete, activeRuns: publishedRuns, pending: [])
+    _ = try await writeTranscript([], root: completeURL, sessionID: completeID)
+    try saveMetadata(completeURL, attempt: .complete, activeRuns: transcriptRuns)
 
     let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
 
@@ -242,36 +205,30 @@ func failedAndCompletedFinalizationsWaitForTheUser() throws {
 }
 
 @Test
-func completedFinalizationRetriesOnlyItsPendingClassifications() async throws {
+func completedFinalizationRetriesOnlyItsPublishedPendingJevResults() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    let writer = try SessionWriter(sessionURL: url)
-    try await appendPublishedSegments(["seg_000001", "seg_000002"], sessionID: id, writer: writer)
-    try await appendPriority(runID: "priority_active", segmentID: "seg_000002", sessionID: id, writer: writer)
-    try saveMetadata(url, attempt: .complete, activeRuns: publishedRuns, pending: ["seg_000002"])
+    let events = try await writeTranscript(["一。二", "三"], root: url, sessionID: id)
+    _ = try publishLocal(root: url, events: events)
+    let localOnly = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
+    #expect(localOnly?.action == .retryContentPriority(
+        boundarySegments: [try source("s01", in: events), try source("s02", in: events)], clauses: []
+    ))
+
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+        throw JevClientError.missingAnswer
+    })
+    let result = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all)
+    // An interrupted retry run that was never published is ignored.
+    _ = try await SessionWriter(sessionURL: url).append(EventDraft(
+        eventType: "processing.run.started", sessionID: id, processingRunID: "priority_unpublished",
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "retry"))
+    ))
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
-
-    #expect(candidate?.action == .retryContentPriority(segmentIDs: ["seg_000002"]))
-}
-
-@Test
-func interruptedClassificationRetryReclassifiesEveryPublishedSegment() async throws {
-    let root = temporaryRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let id = UUID()
-    let url = try writeRecording(id: id, root: root)
-    let writer = try SessionWriter(sessionURL: url)
-    try await appendPublishedSegments(["seg_000001", "seg_000002"], sessionID: id, writer: writer)
-    try await appendPriority(runID: "priority_active", segmentID: "seg_000002", sessionID: id, writer: writer)
-    try await appendPriority(runID: "priority_unpublished", segmentID: "seg_000002", sessionID: id, writer: writer)
-    try saveMetadata(url, attempt: .complete, activeRuns: publishedRuns, pending: ["seg_000002"])
-
-    let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
-
-    #expect(candidate?.action == .retryContentPriority(segmentIDs: ["seg_000001", "seg_000002"]))
+    #expect(candidate?.action == .retryContentPriority(boundarySegments: [], clauses: result.pendingPriorityClauses))
 }
 
 @Test
@@ -399,11 +356,14 @@ func finalizationAttemptPublishesRunsOnlyOnCompletion() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let store = ProcessingMetadataStore(sessionURL: root)
-    let oldRuns = ActiveRuns(segmentation: "seg_old", asr: "asr_old", scope: "scope_old", contentPriority: "priority_old")
+    let oldRuns = ActiveRuns(segmentation: "seg_old", asr: "asr_old", scope: "scope_old",
+                             clauseBoundary: "boundary_old", contentPriority: "priority_old")
+    let oldSource = try SegmentTextReference(segmentationRunID: "seg_old", segmentID: "s", asrRunID: "asr_old", asrEventSeq: 1)
     try store.save(ProcessingMetadata(
         finalizationAttempt: nil,
         activeRuns: oldRuns,
-        pendingContentPrioritySegmentIDs: ["seg_old"]
+        pendingClauseBoundarySegments: [oldSource],
+        pendingContentPriorityClauses: []
     ))
 
     try store.beginFinalization(attemptID: "attempt_1", policy: .reject)
@@ -411,22 +371,26 @@ func finalizationAttemptPublishesRunsOnlyOnCompletion() throws {
     #expect(try store.load() == ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "attempt_1", state: .paused, failureReason: nil),
         activeRuns: oldRuns,
-        pendingContentPrioritySegmentIDs: ["seg_old"]
+        pendingClauseBoundarySegments: [oldSource],
+        pendingContentPriorityClauses: []
     ))
     try store.failFinalization(attemptID: "attempt_1", reason: "diarization failed")
     #expect(try store.load()?.activeRuns == oldRuns)
 
     #expect(throws: ProcessingMetadataStoreError.finalizationAttemptMismatch) {
-        try store.completeFinalization(attemptID: "attempt_other", activeRuns: ActiveRuns(asr: "x"))
+        try store.completeFinalization(attemptID: "attempt_other", activeRuns: ActiveRuns(asr: "x"), pendingClauseBoundarySegments: [])
     }
 
     let newRuns = ActiveRuns(segmentation: "seg_new", asr: "asr_new", diarization: "diar_new", scope: "scope_new")
     try store.beginFinalization(attemptID: "attempt_2", policy: .reject)
-    try store.completeFinalization(attemptID: "attempt_2", activeRuns: newRuns)
+    let newSource = try SegmentTextReference(segmentationRunID: "seg_new", segmentID: "s", asrRunID: "asr_new", asrEventSeq: 9)
+    try store.completeFinalization(attemptID: "attempt_2", activeRuns: newRuns, pendingClauseBoundarySegments: [newSource])
+    // The local runs and the boundary-pending list of their segments are one write; old Jev runs are gone.
     #expect(try store.load() == ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "attempt_2", state: .complete, failureReason: nil),
         activeRuns: newRuns,
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [newSource],
+        pendingContentPriorityClauses: []
     ))
 }
 
@@ -452,6 +416,72 @@ func unreadableMetadataIsReplacedOnlyWhenTheCallerAllowsIt() throws {
     #expect(try store.load() == ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "attempt", state: .running, failureReason: nil),
         activeRuns: nil,
-        pendingContentPrioritySegmentIDs: []
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
     ))
+}
+
+@Test
+func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async throws {
+    let root = temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let url = try writeRecording(id: id, root: root)
+    _ = try publishLocal(root: url, events: try await writeTranscript(["本文"], root: url, sessionID: id))
+    _ = try await buildAndPublish(root: url, sessionID: id,
+                                  provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
+                                                                     priority: lowForBackchannel), scope: .all)
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
+    let metadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
+    let active = try #require(metadata.activeRuns)
+    let writer = try SessionWriter(sessionURL: url)
+    try await writer.append(EventDraft(
+        eventType: "processing.run.started", sessionID: id, processingRunID: "unfinished_live",
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "live"))
+    ))
+    #expect(try !JevRetryAnalyzer().hasUnpublishedJevRun(lines: eventLines(url), activeRuns: active))
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
+    try await writer.append(EventDraft(
+        eventType: "processing.run.started", sessionID: id, processingRunID: "unpublished_retry",
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "retry"))
+    ))
+    #expect(try JevRetryAnalyzer().hasUnpublishedJevRun(lines: eventLines(url), activeRuns: active))
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
+        == .retryContentPriority(boundarySegments: [], clauses: []))
+    _ = try await buildAndPublish(
+        root: url, sessionID: id,
+        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel),
+        scope: .retry(boundarySegments: [], clauses: [])
+    )
+    let replaced = try #require(try ProcessingMetadataStore(sessionURL: url).load()?.activeRuns)
+    #expect(try !JevRetryAnalyzer().hasUnpublishedJevRun(lines: eventLines(url), activeRuns: replaced))
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
+}
+
+@Test
+func recoveryRejectsCorruptionEvenWhenMetadataHasNoPendingTargets() async throws {
+    let root = temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let url = try writeRecording(id: id, root: root)
+    _ = try publishLocal(root: url, events: try await writeTranscript(["本文"], root: url, sessionID: id))
+    _ = try await buildAndPublish(root: url, sessionID: id,
+                                  provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
+                                                                     priority: lowForBackchannel), scope: .all)
+    let eventsURL = url.appending(path: "events.jsonl")
+    var objects = try eventObjects(url)
+    let index = try #require(objects.firstIndex { $0["event_type"] as? String == ClauseEventType.priorityAssigned })
+    var payload = try #require(objects[index]["payload"] as? [String: Any])
+    payload.removeValue(forKey: "assignments")
+    objects[index]["payload"] = payload
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let original = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
+    try original.write(to: eventsURL)
+    #expect(throws: EventLogTranscriptReaderError.self) {
+        _ = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
+    }
+    let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
+    #expect(scan.candidates.isEmpty)
+    #expect(scan.failures.map(\.sessionURL) == [url])
+    #expect(try Data(contentsOf: eventsURL) == original)
 }

@@ -43,8 +43,14 @@ private actor RecordingJev: DecisionProvider {
     private(set) var texts: [String] = []
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var boundaryTexts: [String] = []
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.invalidResponse
+        boundaryTexts.append(request.text)
+        return ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
+            continuationProbability: request.next.map { _ in 0.1 },
+            metadata: try JevResponseMetadata(model: "recording-test", inputTokens: 5, outputTokens: nil)
+        )
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
@@ -116,42 +122,38 @@ private func withLiveJevRecording(
 }
 
 @MainActor
-@Test("AppState recording sends live ASR text to Jev and never shows an undecided row")
-func appRecordingHoldsLiveRowsUntilJevDecision() async throws {
+@Test("AppState recording shows live rows at once and applies only saved Jev results")
+func appRecordingShowsLiveRowsWhileJevWaits() async throws {
     let provider = RecordingJev()
     try await withLiveJevRecording(makeDecisions: { counter in
         { JevDecisionCoordinator(provider: provider, usageCounter: counter) }
     }) { state in
-        var publishedPriorities: [[Bool]] = []
-        let observation = state.transcriptViewModel.$rows.sink { rows in
-            publishedPriorities.append(rows.map(\.shouldCollapseRow))
-        }
-        defer { observation.cancel() }
         let deadline = ContinuousClock.now + .seconds(5)
         while await provider.texts.isEmpty, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
+        // The first row's boundary needed the second row; the second still waits for a successor.
+        #expect(await provider.boundaryTexts == ["録音の発話1"])
         #expect(await provider.texts == ["録音の発話1"])
-        #expect(await state.jevUsageCounter.snapshot().sendCount == 1)
         let sessionID = try #require(state.recordingSessionID)
         await state.waitForLiveASRDrain(sessionID: sessionID)
         #expect(state.liveASRFailures[sessionID] == nil)
-        #expect(state.transcriptViewModel.rows.isEmpty)
-        #expect(state.processingStatusText == UserFacingStatus.classifyingWithJev.text)
+        // Rows never wait for Jev: both are shown as normal text while the Choice is in flight.
+        #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
+        #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
+        #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [false, false])
 
         await provider.release()
         let decisionDeadline = ContinuousClock.now + .seconds(5)
-        while state.transcriptViewModel.rows.count != 2, ContinuousClock.now < decisionDeadline {
+        while state.transcriptViewModel.rows.first?.clauseState != .classified, ContinuousClock.now < decisionDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(await provider.texts == ["録音の発話1", "録音の発話2"])
-        #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
-        #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [true, true])
-        #expect(publishedPriorities.allSatisfy { $0.allSatisfy { $0 } })
+        #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.classified, .awaitingNextSegment])
+        #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [true, false])
         let usage = await state.jevUsageCounter.snapshot()
-        #expect(usage.sendCount == 2)
-        #expect(usage.successCount == 2)
-        #expect(usage.reportedInputTokens == 14)
+        #expect(usage.boundaryRequests.sendCount == 1)
+        #expect(usage.priorityRequests.sendCount == 1)
+        #expect(usage.reportedInputTokens == 12)
     }
 }
 
@@ -173,6 +175,7 @@ func appRecordingShowsJevFactoryFailureReason() async throws {
         #expect(state.liveASRFailures[sessionID] == nil)
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
         #expect(state.transcriptViewModel.rows.allSatisfy { !$0.shouldCollapseRow })
+        #expect(state.transcriptViewModel.rows.first?.clauseState == .boundaryPending)
         #expect(state.processingStatusText?.contains(description) == true)
         #expect(state.transcriptViewModel.statusText.contains(description))
         #expect(state.liveContentPriorityStatus[sessionID]?.contains(description) == true)

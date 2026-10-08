@@ -117,10 +117,31 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
 
     #expect(resumed.disposition == .completed)
     #expect(await asr.calls == 1)
-    let completed = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(completed?.finalizationAttempt?.state == .complete)
-    #expect(completed?.activeRuns?.scope != nil)
-    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
+    let completed = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(completed.finalizationAttempt?.state == .complete)
+    let runs = try #require(completed.activeRuns)
+    #expect(runs.segmentation != nil)
+    #expect(runs.asr != nil)
+    #expect(runs.diarization != nil)
+    #expect(runs.scene != nil)
+    #expect(runs.scope != nil)
+    #expect(runs.clauseBoundary == nil)
+    #expect(runs.contentPriority == nil)
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)
+    )
+    let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
+    let sources = try events.compactMap { try $0.asrSource() }
+    let rows = try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
+        .materialize(events: events, activeRuns: runs)
+    #expect(rows.map(\.text) == ["spoken words"])
+    #expect(rows.map(\.clauseState) == [.boundaryPending])
+    #expect(completed.pendingClauseBoundarySegments == sources)
+    #expect(completed.pendingContentPriorityClauses.isEmpty)
+    // Local finalization completes without Jev runs; its boundary-pending text remains retryable.
+    let pending = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
+        .inspect(sessionID: sessionID).recovery
+    #expect(pending?.action == .retryContentPriority(boundarySegments: sources, clauses: []))
     #expect(try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL)).load()
         == .importedOriginal(TimelineAudioInfo(committedFrames: 16_000, gapEvents: [])))
 }
