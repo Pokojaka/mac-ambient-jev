@@ -158,6 +158,30 @@ func invalidResponseEnvelopeRejectsWholeBatch(_ template: String) async {
     await #expect(throws: JevClientError.self) { try await client.classifyPriorities([.init(key: "u0001", text: "本文")]) }
 }
 
+@Test(arguments: [nil, #"{"type":"noul","noul":0.9}"#,
+                  #"{"type":"choice","choice":"OTHER","confidence":1,"probabilities":{"PRIMARY":1,"LOW_PRIORITY":0}}"#] as [String?])
+func malformedSecondChoiceRejectsTheFirstValidChoiceAndCountsOneFailedRequest(_ second: String?) async throws {
+    let suffix = second.map { ",\"p0002\":\($0)" } ?? ""
+    let transport = ContractTransport(json: "{\"model\":\"jev-test\",\"usage\":{\"input_tokens\":7},\"answers\":{\"p0001\":\(validChoice)\(suffix)}}")
+    let counter = JevUsageCounter()
+    let coordinator = JevDecisionCoordinator(
+        provider: JevClient(apiKey: "secret", transport: transport), usageCounter: counter
+    )
+    let outcome = await coordinator.classifyPriorities([
+        .init(key: "u0001", text: "先に有効"),
+        .init(key: "u0002", text: "後に不正")
+    ])
+    guard case .failed = outcome else {
+        Issue.record("Malformed batch exposed a result")
+        return
+    }
+    let usage = await counter.snapshot()
+    #expect(usage.priorityRequests.sendCount == 1)
+    #expect(usage.priorityRequests.failureCount == 1)
+    #expect(usage.priorityRequests.successCount == 0)
+    #expect(usage.reportedInputTokens == 0)
+}
+
 @Test(arguments: [#"{"type":"noul","noul":-0.1}"#, #"{"type":"noul","noul":1.1}"#, #"{"type":"noul","noul":"0.9"}"#, #"{"type":"noul"}"#, #"{"type":"choice","noul":0.9}"#])
 func invalidNoulDoesNotPublishPartialProbabilities(_ invalid: String) async throws {
     let transport = ContractTransport(json: "{\"model\":\"jev-test\",\"usage\":{},\"answers\":{\"b0001\":{\"type\":\"noul\",\"noul\":0.9},\"b0002\":\(invalid)}}")

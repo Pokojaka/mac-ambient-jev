@@ -62,6 +62,28 @@ func weakCandidatesAndExactlyHalfDoNotSplitWhileAcceptedBoundariesCutRawRanges()
     #expect(ClauseBoundaryPolicy.acceptsBoundary(0.5000001))
 }
 
+@Test(arguments: ["前、弱。？！後。", "句読点なし", "か\u{3099}😀、後"])
+func rejectedCandidatesPreserveTheEntireRawClauseUntilStreamEnd(_ text: String) throws {
+    let source = try ref("raw", 1)
+    var assembly = ClauseBoundaryAssembly(boundaryRunID: "boundary")
+    let delta = try assembly.consume(assessed(source, text, next: nil))
+    #expect(delta.closed.map(\.parts) == [[try part(source, 0, text.utf16.count)]])
+    #expect(delta.closed.map(\.termination) == [.streamEnd])
+    #expect(try assembly.state(for: source) == .resolved)
+}
+
+@Test
+func consecutiveAcceptedPunctuationNeverCreatesEmptyClausesOrAnEndCandidate() throws {
+    let source = try ref("raw", 1)
+    let text = "前？！後。"
+    #expect(try ClauseBoundaryCandidate.candidates(in: text).map(\.offsetUTF16) == [2, 3])
+    var assembly = ClauseBoundaryAssembly(boundaryRunID: "boundary")
+    let delta = try assembly.consume(assessed(source, text, accepted: [0, 1], next: nil))
+    #expect(delta.closed.map(\.parts) == [
+        [try part(source, 0, 2)], [try part(source, 2, 3)], [try part(source, 3, 5)]
+    ])
+}
+
 @Test
 func continuationAfterAFinalPeriodJoinsTheNextSegmentAndNoClosesIt() throws {
     let a = try ref("a", 1), b = try ref("b", 2), c = try ref("c", 3)

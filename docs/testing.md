@@ -7,8 +7,11 @@
 ## macOS の基本検証
 
 ```bash
-bash scripts/verify_v1.sh
+python3 -B scripts/check_portable_core.py
 python3 scripts/check_doc_references.py
+swift build --package-path app/MacAmbientJev
+swift test --package-path app/MacAmbientJev
+bash scripts/verify_v1.sh
 ```
 
 `verify_v1.sh` は次を行う。
@@ -32,7 +35,7 @@ python3 scripts/check_doc_references.py
 
 ```bash
 swift build --package-path app/MacAmbientJev
-swift test --package-path app/MacAmbientJev --filter 'JevDecisionTests|JevEnrichmentCoordinatorTests|JevFailureHandlingTests|LiveContentPriorityGatingTests|LiveJevRecordingTests|FinalTranscriptPipelineTests'
+swift test --package-path app/MacAmbientJev --filter 'JevDecisionTests|JevEnrichmentCoordinatorTests|JevFailureHandlingTests|ClauseAssemblyTests|TranscriptPriorityPresentationTests|LiveContentPriorityGatingTests|LiveJevRecordingTests|FinalTranscriptPipelineTests|nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurableAnswers'
 swift test --package-path app/MacAmbientJev --filter JevTransportContractTests
 ```
 
@@ -107,15 +110,29 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 フィラーの回帰検証は UTF-16 座標、Unicode Character の境界、単語内部の類似文字列、後続本文と接続した先頭フィラー、隣接する句読点、フィラーだけの行、画面 projection と `transcript.txt` の本文一致を扱う。materializer は ASR の原文を保持する。`savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport` は保存済み ASR イベントを `SavedTranscriptLoader` で読み、原文の保持と画面・テキストの除去済み本文、イベントの不変性を確認する。保存済みセッションの smoke は入力 `えー、今日は公開鍵暗号を説明します。` を使い、`SavedTranscriptLoader` → 共通 projection → `SessionExporter` の実際の `transcript.txt` 書き込み・再読込を通して本文が `今日は公開鍵暗号を説明します。` となり、イベントが原文のままであることを確認する。GUI の選択コピーとアクセシビリティ読み上げは別途、画面上で検証する。
 
-節優先度の回帰検証は注入 `DecisionProvider` / `JevHTTPTransport` で決定的に行い、モデル品質の正解とは分ける。厳密な `> 0.5` と LOW 採用 `≥ 0.90`、候補の raw UTF-16 座標、跨ぎ節と終端、40/41節の batch 境界、全回答検証による部分公開の拒否、待機中も本文を表示すること、停止と takeover の遅い応答、保留再試行と公開 snapshot、UTF-8 byte 完全一致の再利用、schema・参照・coverage の破損、実リクエスト単位の token 計数を対象とする。画面 projection と txt は混在 PRIMARY/LOW、全 LOW、待機・保留、フィラーのみを含む実 slice で本文と行集合を確認する。文言・内部配線・コピーした設定値を固定するテストは根拠にしない。
+節優先度の回帰検証は注入 `DecisionProvider` / `JevHTTPTransport` で決定的に行い、モデル品質の正解とは分ける。厳密な `> 0.5` と LOW 採用 `≥ 0.90`（直前の Double を含む）、候補の raw UTF-16 座標、全no・無句読点・連続句読点と末尾除外、跨ぎ節と終端、再利用対象を除いた後の40/41節の batch 境界を対象とする。最初の回答が有効でも後続の回答欠落・type不一致・不正Choiceで全batchを拒否し、一HTTPの失敗として数える。UTF-8 byte 完全一致の再利用では、trim・句読点・Unicode byte差を同一視せず、未公開retryのdurable回答も使わない。schema・参照・coverageの破損、保留再試行と公開snapshot、request単位のtoken計数、takeover時の保存済みLOWと通信中の通常行を確認する。LOW＋続き待ちは閉じたLOW部分だけ淡色で、待機本文も保持し、行を畳まない。画面projectionとtxtは混在PRIMARY/LOW、全LOW、待機・保留、フィラーのみを含む実sliceで本文と行集合を確認する。文言・内部配線・コピーした設定値を固定するテストは根拠にしない。
 
-実ファイルの受入 smoke は一時 harness で `NativeSessionProcessor` → `SessionWriter` → 保存再読込 → `SessionExporter` を通す。ライブの `えー、これは` と `コピーと。うん。` から跨ぎ節と混在 PRIMARY/LOW を作り、空 ASR でテキスト列を終端する。final の異なる区間配置 `えー、これはコピーと。` / `うん。新しい本文。` へ byte 完全一致の2節だけを引き継ぎ、追加節の503を保留にして設定と同じ API で優先度だけ再試行する。events と JSON の `text` はフィラーを保持し、画面 projection・JSON の `display_text`・実出力 txt は除去後本文を使い、txt は LOW も含む。注入応答の送信数は境界4・優先度3、失敗1、報告入力 token の合計34、再試行後の両保留0であることを確認する。これらは注入応答の計数であり実 API の性能値ではない。Jev disabled では外部送信0・無分割通常行・ローカル5段公開を確認し、harness と一時セッションは受入後に削除する。
+実ファイルの受入smokeは一時harnessで `NativeSessionProcessor` → `SessionWriter` → metadata・readerの再読込 → `SavedSessionCatalog` → `SessionExporter` を通す。注入ASRの `えー、週末の設計を確認します。そうですね。` からPRIMARY/LOW混在を作り、rawの保持、除去後本文、LOWを含む実txt出力、全LOW行の畳みを確認する。注入401/429ではpriority保留を通常表示し、priorityだけのtargeted retryで公開boundaryを維持・非対象pendingをcarryする。boundaryの429では無分割行を保持し、boundary retryで両runとpendingを一括公開する。provider応答前の再読込では直前の公開snapshotのままであることを確認する。2つのlive区間から1つのfinal区間への除去後本文完全一致carryはChoiceの再送なしで確認する。event appendとmetadata公開をそれぞれ実ファイルで失敗させ、ローカルのdurable本文・通常表示・5段公開を保持し、未公開の任意段を採用しないことを確認する。注入値は実APIの精度・ネットワーク課金の証拠ではない。harnessと一時セッションは受入後に削除する。
 
 ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した空 ASR・後続本文を保存し、`JevEnrichmentCoordinator` → metadata 公開 → reader/materializer の再読込を通す。前半本文を未解決のまま残し、空 ASR より後の本文だけを一回の Choice で分類し、保存 snapshot と再読込が一致することを確認する。空 ASR の後に新たな gap がある場合に先頭を推測しないことは回帰テストで扱う。
 
 ライブ状態表示の実ファイル smoke は、注入 ASR で2区間を保存し、分類器の生成で資格情報エラーを投げる。`LiveASRSession` と `LiveContentPrioritySession` の実装を通して、ASR 原文と通常表示を維持し、両区間の durable 保留理由と最後の状態表示に同じ失敗原因が残り、境界・優先度の外部送信が0であることを確認する。App の状態への反映は回帰テストで扱い、実 GUI の検証とは分ける。
 
-この節単位 cutover の受入では実 GUI、録音、実 Jev API は実行していない。注入応答の回帰・保存イベントの再読込・txt 書き出しで確認できる範囲と、実画面での折畳み/展開・選択コピー・accessibility、実 API の境界品質・送信時間を区別する。Jev disabled の CLI、build 成功、試作の利用者報告値は実ライブ Jev の検証や性能測定の代わりにしない。
+### 録音しない受入と実画面での確認
+
+授業など録音できない環境では、マイク・システム音声を開始せず、システム音量や出力装置にも触れない。既存ファイルのCLI処理とディスクだけの注入smokeを行う。CLIの隔離rootで `--keep-session` の実処理を完了した後、JSONの `text` と参照先ASRイベントのraw、`display_text`、`source`、`clause_state`、空sliceを照合する。Jev disabledでは5つのローカルactive run、境界保留、priority保留なし、Jev requestなしを確認する。inspect → resumeの再書き出しでイベントbytesとmetadataが変わらないことも確認する。フィラーが実ASR結果に含まれなければ、そのファイルをフィラー削除の証拠にしない。
+
+実API観測は実 `JevClient` と通常のtransportを使い、録音ではなく新しいテキストを境界→組立て→除去後本文のChoiceへ送る。キーは `security find-generic-password -s app.mac-ambient-jev.jev -w` のstdoutをメモリだけで取得し、端末・ログ・ファイルへ出さない。候補のraw UTF-16位置、確率、返却model、purpose別HTTP数、reported input token、HTTP時間を記録する。next到着待ち、consumerの反映処理、GUI描画をHTTP時間と混ぜず、未計測は未計測とする。新規テキストの観測と限界は [節API受入記録](records/2026-10-09-clause-acceptance.md) を参照する。利用者報告の13行の試作を再測定した値ではなく、CSJ全認定の一致率でもない。
+
+bundleはREADMEの手順でbuildして `open .build/MacAmbientJev.app` で起動する。プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
+
+- Jev有効化・Keychain読取・録音元・書き出し先、マイク／システム音声の実権限。
+- 14秒超の実ASR原文をイベントで確認し、第一行の「節の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
+- PRIMARY＋LOWの淡色、全LOWだけの初期畳み、LOW＋待機／保留の非畳み、展開後の全文、選択copy/paste・accessibilityのclean全文とLOW保持、行単位の時刻popover・話者見出し。
+- 録音停止後のASR drain・finishInputとfinal takeover、late応答不採用、実live/final本文が完全一致する場合だけのcarryと送信削減。
+- 未設定／設定停止／不正キー／通信失敗でもローカル公開が続くこと、priority障害で保存済みboundaryを維持すること。
+- 設定の保留再試行ボタン／キー保存トリガー、二種targetの送信、atomic metadata切替、診断のrequest・pending内訳。
+- 保存済み録音の再選択とGUI「書き出す」の実txt再読込、時刻・話者・改行処理・背景行除外、clean全文とLOW保持、イベントraw不変。GUI exportにJSONは含まれない。
 
 `MacAmbientJevEvaluateSession`, `MacAmbientJevEvaluateASR`, and `MacAmbientJevEvaluateDiarization` consume explicit artifact files only; none locate or create saved sessions, so these artifact-only modes do not require `--sessions-root`. Every mode of the capture, file-processing, and live-latency CLIs requires an explicit root that rejects protected app data/cache roots, their ancestors/descendants, and symlink aliases.
 
@@ -162,7 +179,7 @@ ID は UUID、root は必須。inspect は位置引数・`--keep-session`・`--l
 
 UUID は manifest の完全 ID です。root 直下の manifest を検索して実フォルダーを解決し、不在・複数一致・名前の検証不整合は明示エラーにします。`none` は存在する正常セッションに復旧 action がない場合だけです。
 
-resume は先にそのセッションの保存整理（FLAC 変換または一時音声の削除）を実行し、再走査した action で動く。resume は音声ファイルではなく対象 UUID と、セッション外の出力先を一つ指定する。録音・import の両方が対象で、finalize は共通確定処理を全量実行する。pending ASR だけを再投入する経路ではない。CLI は `retryContentPriority` を拒否する。action がない場合は公開済みの結果を書き出すため、resume が常に再処理を始めるわけではない。確定処理の失敗・一時停止では直前の正常な active run を保持する。
+resume は先にそのセッションの保存整理（FLAC 変換または一時音声の削除）を実行し、再走査した action で動く。resume は音声ファイルではなく対象 UUID と、セッション外の出力先を一つ指定する。録音・import の両方が対象で、finalize は共通確定処理を全量実行する。pending ASR だけを再投入する経路ではない。`retryContentPriority` または action なしの場合、CLI は Jev を再試行せず公開済みの結果を書き出す。resume が常に再処理を始めるわけではない。確定処理の失敗・一時停止では直前の正常な active run を保持する。
 
 引数 parser は構文だけを検査します。resume の出力先 containment は実行時に実フォルダーを解決した後、symlink 解決・大文字小文字の同一視を保って検査します。実セッション内への出力は拒否し、lookup と containment の失敗は production engine の構築・処理より前に返します。
 

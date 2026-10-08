@@ -73,6 +73,35 @@ func fortyOneClausesAreSentAsTwoOrderedChoiceRequests() async throws {
     #expect(result.materializedSegments.first?.clauseSlices.count == 42)
 }
 
+@Test(arguments: [40, 41])
+func priorityBatchLimitAppliesAfterRemovingDurableReusableClauses(_ remaining: Int) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let texts = (1...(remaining + 1)).map { "文\($0)。" }
+    _ = try publishLocal(root: root, events: try await writeTranscript([texts.joined()], root: root, sessionID: sessionID))
+    try await writeLiveRun(root: root, sessionID: sessionID, texts: [texts[0]],
+                           results: [(0, .lowPriority)], complete: false)
+    let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
+        from: Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let counter = JevUsageCounter()
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider, scope: .all,
+        reusable: reusable, counter: counter
+    )
+    let requests = await provider.priorityRequests
+    #expect(requests.map(\.count) == (remaining == 40 ? [40] : [40, 1]))
+    #expect(requests.flatMap { $0.map(\.text) } == Array(texts.dropFirst()))
+    #expect(result.materializedSegments.first?.clauseSlices.first?.priority == .lowPriority)
+    let usage = await counter.snapshot()
+    #expect(usage.boundaryRequests.sendCount == 1)
+    #expect(usage.priorityRequests.sendCount == (remaining == 40 ? 1 : 2))
+    #expect(usage.reportedInputTokens == (remaining == 40 ? 20 : 30))
+    #expect(try readPublished(root: root) == result.materializedSegments)
+}
+
 @Test
 func liveDecisionIsReusedOnlyForTheByteIdenticalFilteredText() async throws {
     let root = temporarySessionRoot()
@@ -475,6 +504,22 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pendin
         payload: ProcessingRunStartedPayload(stage: .contentPriority,
                                              provenance: JevRunProvenance.priority(mode: "retry"))
     ))
+    // A durable but unpublished answer must not leak into either reuse or retry selection.
+    let reference = try requireValue(first.materializedSegments.first?.clauseSlices.first?.reference)
+    let unpublishedDecision = try ContentPriorityDecision(
+        priority: .lowPriority, confidence: 1, probabilities: ["PRIMARY": 0, "LOW_PRIORITY": 1]
+    )
+    try await writer.append(EventDraft(
+        eventType: ClauseEventType.priorityAssigned, sessionID: sessionID,
+        processingRunID: "interrupted_retry",
+        payload: try ContentPriorityAssignedPayload(
+            assignments: [ClausePriorityAssignment(
+                reference: reference, priority: .lowPriority, needsRetry: false,
+                decision: .classified(requestID: "unpublished", answerKey: "u0001", response: unpublishedDecision)
+            )],
+            request: JevRequestRecord(requestID: "unpublished", metadata: testMetadata)
+        )
+    ))
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
                                             priority: lowForBackchannel)
     let retried = try await buildAndPublish(
@@ -486,6 +531,7 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pendin
     #expect(await provider.priorityRequests.map { $0.map(\.text) } == (pending ? [["前。", "後"]] : []))
     #expect(retried.pendingTargets.isEmpty)
     #expect(try readPublished(root: root) == retried.materializedSegments)
+    #expect(retried.materializedSegments.first?.clauseSlices.map(\.priority) == [.primary, .primary])
 }
 
 @Test
@@ -505,4 +551,29 @@ func priorityRetryCannotAppendIntoThePublishedPriorityRun() async throws {
     }
     #expect(await provider.priorityRequests.isEmpty)
     #expect(try readPublished(root: root) == first.materializedSegments)
+}
+
+@Test(arguments: [" 同じ。", "同じ。 ", "同じ！"])
+func liveReuseDoesNotTrimWhitespaceOrNormalizePunctuation(_ finalText: String) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript([finalText], root: root, sessionID: sessionID))
+    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["同じ。"],
+                           results: [(0, .lowPriority)], complete: false)
+    let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
+        from: Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    let provider = ScriptedDecisionProvider(boundary: { request in
+        ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.1) }),
+            continuationProbability: nil, metadata: testMetadata
+        )
+    }, priority: lowForBackchannel)
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID, provider: provider, scope: .all, reusable: reusable
+    )
+    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [[finalText]])
+    #expect(result.materializedSegments.first?.clauseSlices.map(\.priority) == [.primary])
+    #expect(try readPublished(root: root) == result.materializedSegments)
 }

@@ -407,6 +407,9 @@ func nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurabl
         from: SessionWriter.readDurableLog(eventsURL: SessionLayout(sessionURL: fixture.sessionURL).eventsURL)
     )
     #expect(Set(frozen.keys) == [ExactClauseTextKey(text: "保存済み。")])
+    let waitingRows = try LiveTranscriptProjection().rows(for: await liveUpdates.snapshot())
+    #expect(waitingRows.map(\.shouldCollapseRow) == [true, false])
+    #expect(waitingRows[1].textFragments == [TranscriptTextFragment(text: "遅い結果。", style: .normal)])
 
     let finalUpdates = LiveUpdateRecorder()
     let result = await fixture.processor.finishLiveTranscription(

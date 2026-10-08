@@ -13,10 +13,11 @@ test-data/recordings/local/lecture-ja-001/
 
 ## segments.json の生成
 
-リポジトリのルートから SwiftPM の CLI を実行する。`AUDIO` には音声ファイルのパスを指定する。
+リポジトリのルートから SwiftPM の CLI を実行する。`AUDIO` には音声ファイル、`SESSIONS_ROOT` にはアプリの保存・cache領域と重ならない隔離した保存ルートを指定する。
 
 ```bash
-swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording "$AUDIO"
+swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
+  --sessions-root "$SESSIONS_ROOT" "$AUDIO"
 ```
 
 出力先を省略すると音声と同じディレクトリに `segments.json` を生成する。明示する場合は音声ファイルの次に出力パスを指定する。入力音声と同じファイルへの出力は拒否する。
@@ -25,7 +26,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording "$AUDIO
 
 ```bash
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
-  --keep-session "$AUDIO" "$SEGMENTS"
+  --sessions-root "$SESSIONS_ROOT" --keep-session "$AUDIO" "$SEGMENTS"
 ```
 
 Jev は CLI では無効。音声処理はアプリと同じ確定パイプラインを使う。`segments.json` には空本文の区間を含めず、イベントログには保持する。

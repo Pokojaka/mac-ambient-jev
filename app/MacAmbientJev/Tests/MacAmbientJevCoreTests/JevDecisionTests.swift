@@ -60,9 +60,9 @@ func confidentLowPriorityDemotesAnyUtterance() throws {
     #expect(ContentPriorityPolicy.visiblePriority(for: try lowPriority(confidence: 0.90)) == .lowPriority)
 }
 
-@Test
-func lowPriorityBelowThresholdStaysPrimary() throws {
-    #expect(ContentPriorityPolicy.visiblePriority(for: try lowPriority(confidence: 0.89)) == .primary)
+@Test(arguments: [Double(0.90).nextDown, 0.89])
+func lowPriorityBelowThresholdStaysPrimary(_ confidence: Double) throws {
+    #expect(ContentPriorityPolicy.visiblePriority(for: try lowPriority(confidence: confidence)) == .primary)
 }
 
 @Test

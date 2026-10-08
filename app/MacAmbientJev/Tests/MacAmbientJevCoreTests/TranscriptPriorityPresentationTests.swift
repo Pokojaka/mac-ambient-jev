@@ -59,6 +59,32 @@ func priorityPolicyPreservesMixedStylesAcrossRemovedFillersAndUnclassifiedText()
 }
 
 @Test
+func lowClosedSliceAndAwaitingTailRemainVisibleWithOnlyTheClosedSliceDimmed() throws {
+    let cleaned = try TranscriptTextProjector(detector: FillerTextSpanDetector())
+        .project(sourceText: "うん。続き")
+    let result = try TranscriptPriorityPresentationPolicy().present(
+        text: cleaned,
+        slices: [
+            TranscriptPrioritySlice(
+                sourceRange: try TextUTF16Range(start: 0, end: 3),
+                priority: .lowPriority, needsRetry: false
+            ),
+            TranscriptPrioritySlice(
+                sourceRange: try TextUTF16Range(start: 3, end: 5),
+                priority: nil, needsRetry: false
+            )
+        ],
+        hasUnresolvedBoundary: true, hasUnavailableDecision: false
+    )
+    #expect(result.text == "うん。続き")
+    #expect(result.fragments == [
+        TranscriptTextFragment(text: "うん。", style: .lowPriority),
+        TranscriptTextFragment(text: "続き", style: .normal)
+    ])
+    #expect(!result.shouldCollapseRow)
+}
+
+@Test
 func priorityPolicyRejectsMissingOrOverlappingCoverageInsteadOfDroppingVisibleText() throws {
     let cleaned = try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: "本文")
     let first = TranscriptPrioritySlice(
