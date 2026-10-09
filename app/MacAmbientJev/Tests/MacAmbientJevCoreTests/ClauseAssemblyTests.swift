@@ -156,7 +156,7 @@ func clauseRecordsRejectInconsistentPayloads() throws {
         try ClauseUnit(reference: ClauseReference(boundaryRunID: "b", clauseID: "c4_1"),
                        parts: [part(a, 0, 2)], termination: .streamEnd)
     }
-    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.89, probabilities: ["PRIMARY": 0.11, "LOW_PRIORITY": 0.89])
+    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.89, probabilities: ["PRIMARY": 0.055, "LOW_PRIORITY": 0.945])
     let reference = try ClauseReference(boundaryRunID: "b", clauseID: "c4_0")
     // Below 0.90 the actual decision stays recorded but the visible priority is PRIMARY.
     #expect(throws: ClauseRecordError.invalidPriorityAssignment) {

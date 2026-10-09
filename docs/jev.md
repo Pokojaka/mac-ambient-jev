@@ -48,6 +48,10 @@ ASR gap の後に空の ASR 結果が保存された場合も、そこでテキ�
 
 全 requested answer key、質問と一致する type、Choice の二択・両選択肢の probabilities・confidence、非空 model、usage object を検証します。確率と confidence は有限の 0..1、token は未報告なら nil、報告された値は非負整数です。不足・余分な回答、型不一致、不正値はリクエスト全体を拒否し、部分結果や架空の確率を記録しません。HTTP の並列化、自動再送、同文の cache、失敗した batch の一節ずつの再送はしません。
 
+Choice は両確率の和が 1 に近いこと（絶対誤差 ≤ 0.01）、選択した option が最大確率であること（同率最大はどちらも可）、confidence が二択の式 `2 * max(probabilities) - 1` と整合すること（絶対誤差 ≤ 0.015）も検証します。比較には浮動小数点演算の端数用に `1e-12` を加え、値を正規化・補正しません。Noul は単一の確率なので和・Choice confidence の検査はなく、有限の閉区間 0..1 を厳密に検証します。矛盾した応答は既存の `invalidResponse` 経路で送信を停止し、全対象を保留します。
+
+根拠は [API reference](https://docs.typesafe.ai/api.md) の「和が1」「最高確率の option」と [Confidence](https://docs.typesafe.ai/confidence.md) の Choice 式です。API は丸め桁数や許容誤差を保証していません。[Choice の文書例](https://docs.typesafe.ai/primitives/choice.md) は二桁の確率・confidence を示すため、各値の丸め幅 0.005 から、二択の和に 0.01、confidence に `2 * 0.005 + 0.005 = 0.015` のローカル許容幅を使います。[記録済み実API観測](records/2026-10-09-clause-acceptance.md) は Noul 0.15〜0.78、Choice confidence 0.94／0.96／1.00 を報告していますが、Choice の全確率や元応答の桁数は残していません。したがって、この幅を実応答の最大誤差やAPIの保証値とは主張しません。
+
 ## 優先度の採用と表示
 
 | Jev の判定 | 節の表示用優先度 |

@@ -272,7 +272,7 @@ func writeLiveRun(
         let payload: ContentPriorityAssignedPayload
         if let priority = result.priority {
             let decision = try ContentPriorityDecision(priority: priority, confidence: 0.95,
-                                                       probabilities: ["PRIMARY": 0.5, "LOW_PRIORITY": 0.5])
+                                                       probabilities: priority == .primary ? ["PRIMARY": 0.975, "LOW_PRIORITY": 0.025] : ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975])
             payload = try ContentPriorityAssignedPayload(assignments: [ClausePriorityAssignment(
                 reference: reference, priority: priority, needsRetry: false,
                 decision: .classified(requestID: "p\(order)", answerKey: "u0001", response: decision)

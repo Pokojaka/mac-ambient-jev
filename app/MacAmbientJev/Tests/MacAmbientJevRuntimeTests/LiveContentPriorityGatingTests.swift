@@ -100,7 +100,7 @@ private actor LiveProvider: DecisionProvider {
             let low = target.text.contains("うん")
             decisions[target.key] = try ContentPriorityDecision(
                 priority: low ? .lowPriority : .primary, confidence: 0.95,
-                probabilities: low ? ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95] : ["PRIMARY": 0.95, "LOW_PRIORITY": 0.05]
+                probabilities: low ? ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975] : ["PRIMARY": 0.975, "LOW_PRIORITY": 0.025]
             )
         }
         return PriorityBatchResponse(decisions: decisions, metadata: try JevResponseMetadata(model: "jev-live", inputTokens: 7, outputTokens: nil))

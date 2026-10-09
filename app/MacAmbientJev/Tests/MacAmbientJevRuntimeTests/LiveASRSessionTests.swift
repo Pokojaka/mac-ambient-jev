@@ -222,7 +222,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         .clause(seq: 101, runID: "boundary_live", kind: .clauseClosed(unit)),
     ])
     #expect(closed.progress.materializedSegments.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
-    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.95, probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95])
+    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.95, probabilities: ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975])
     let assigned = try ContentPriorityAssignedPayload(assignments: [
         ClausePriorityAssignment(
             reference: unit.reference, priority: .lowPriority, needsRetry: false,

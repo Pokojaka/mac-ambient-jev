@@ -20,7 +20,7 @@ private func contractSource(_ segment: String, seq: UInt64) throws -> SegmentTex
     try SegmentTextReference(segmentationRunID: "private-segmentation", segmentID: segment, asrRunID: "private-asr", asrEventSeq: seq)
 }
 
-private let validChoice = #"{"type":"choice","choice":"LOW_PRIORITY","confidence":0.9,"probabilities":{"PRIMARY":0.1,"LOW_PRIORITY":0.9}}"#
+private let validChoice = #"{"type":"choice","choice":"LOW_PRIORITY","confidence":0.9,"probabilities":{"PRIMARY":0.05,"LOW_PRIORITY":0.95}}"#
 
 private func choiceEnvelope(_ answer: String, model: String = #""jev-test""#, usage: String = "{}", answersKey: String = "p0001") -> String {
     "{\"model\":\(model),\"usage\":\(usage),\"answers\":{\"\(answersKey)\":\(answer)}}"
@@ -85,7 +85,7 @@ func fortyChoiceTargetsProduceOneResponseWithTargetKeys() async throws {
     let transport = ContractTransport(json: "{\"model\":\"jev-test\",\"usage\":{\"input_tokens\":123},\"answers\":{\(answers)}}")
     let result = try await JevClient(apiKey: "secret", transport: transport).classifyPriorities(targets)
     #expect(Set(result.decisions.keys) == Set(targets.map(\.key)))
-    #expect(result.decisions.values.allSatisfy { $0.priority == .lowPriority && $0.confidence == 0.9 && $0.probabilities == ["PRIMARY": 0.1, "LOW_PRIORITY": 0.9] })
+    #expect(result.decisions.values.allSatisfy { $0.priority == .lowPriority && $0.confidence == 0.9 && $0.probabilities == ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95] })
     #expect(result.metadata.inputTokens == 123)
     #expect(result.metadata.outputTokens == nil)
     let sends = await transport.requests
@@ -240,4 +240,113 @@ func codableProbabilityAndNextHeadValidationCannotBeBypassed() throws {
     #expect(throws: (any Error).self) { try JSONDecoder().decode(NextSegmentHead.self, from: invalidHead) }
     #expect(throws: (any Error).self) { try JevResponseMetadata(model: " ", inputTokens: nil, outputTokens: nil) }
     #expect(throws: (any Error).self) { try JevResponseMetadata(model: "m", inputTokens: nil, outputTokens: -1) }
+}
+
+@Test(arguments: [
+    (0.99, 0.01, 0.98, ContentPriority.lowPriority),
+    (0.01, 0.01, 0.0, ContentPriority.primary),
+    (0.8, 0.8, 0.6, ContentPriority.primary),
+    (0.5, 0.5, 0.95, ContentPriority.lowPriority),
+    (0.8, 0.2, 0.616, ContentPriority.primary),
+    (0.499, 0.501, 0.002, ContentPriority.primary),
+    (-Double.leastNonzeroMagnitude, 1.0, 1.0, ContentPriority.lowPriority),
+    (Double(1).nextUp, 0.0, 1.0, ContentPriority.primary),
+    (0.8, 0.189, 0.6, ContentPriority.primary)
+])
+func inconsistentChoiceIsRejectedByConstructionDecodingAndTransport(
+    _ primary: Double, _ low: Double, _ confidence: Double, _ priority: ContentPriority
+) async throws {
+    let probabilities = ["PRIMARY": primary, "LOW_PRIORITY": low]
+    #expect(throws: ClauseValidationError.invalidProbability) {
+        try ContentPriorityDecision(priority: priority, confidence: confidence, probabilities: probabilities)
+    }
+    let stored: [String: Any] = ["priority": priority.rawValue, "confidence": confidence, "probabilities": probabilities]
+    let data = try JSONSerialization.data(withJSONObject: stored)
+    #expect(throws: ClauseValidationError.invalidProbability) {
+        try JSONDecoder().decode(ContentPriorityDecision.self, from: data)
+    }
+    let choice = priority == .primary ? "PRIMARY" : "LOW_PRIORITY"
+    let answer = "{\"type\":\"choice\",\"choice\":\"\(choice)\",\"confidence\":\(confidence),\"probabilities\":{\"PRIMARY\":\(primary),\"LOW_PRIORITY\":\(low)}}"
+    let client = JevClient(apiKey: "secret", transport: ContractTransport(json: choiceEnvelope(answer)))
+    do {
+        _ = try await client.classifyPriorities([.init(key: "u0001", text: "本文")])
+        Issue.record("Inconsistent Choice was accepted")
+    } catch JevClientError.invalidResponse {
+        // The transport boundary must map invalid probabilities to this pending-path error.
+    } catch {
+        Issue.record("Expected invalidResponse, received \(error)")
+    }
+}
+
+@Test(arguments: [
+    (0.5, 0.5, 0.0, ContentPriority.primary),
+    (0.5, 0.5, 0.0, ContentPriority.lowPriority),
+    (1.0, 0.0, 1.0, ContentPriority.primary),
+    (0.0, 1.0, 1.0, ContentPriority.lowPriority),
+    (0.8, 0.19, 0.6, ContentPriority.primary),
+    (0.8, 0.21, 0.6, ContentPriority.primary),
+    (0.8, 0.2, 0.615, ContentPriority.primary),
+    (0.8, 0.2, 0.585, ContentPriority.primary),
+    (0.7, 0.3, 0.4, ContentPriority.primary)
+])
+func choiceTiesRoundingAndClosedBoundariesPreserveReportedValues(
+    _ primary: Double, _ low: Double, _ confidence: Double, _ priority: ContentPriority
+) throws {
+    let decision = try ContentPriorityDecision(
+        priority: priority, confidence: confidence, probabilities: ["PRIMARY": primary, "LOW_PRIORITY": low]
+    )
+    #expect(decision.priority == priority)
+    #expect(decision.confidence == confidence)
+    #expect(decision.probabilities == ["PRIMARY": primary, "LOW_PRIORITY": low])
+}
+
+@Test(arguments: [
+    #"{"type":"choice","choice":"LOW_PRIORITY","confidence":0.98,"probabilities":{"PRIMARY":0.99,"LOW_PRIORITY":0.01}}"#,
+    #"{"type":"choice","choice":"LOW_PRIORITY","confidence":0,"probabilities":{"PRIMARY":0.01,"LOW_PRIORITY":0.01}}"#,
+    #"{"type":"choice","choice":"LOW_PRIORITY","confidence":0.95,"probabilities":{"PRIMARY":0.5,"LOW_PRIORITY":0.5}}"#
+])
+func invalidChoiceLeavesDurablePriorityPendingWithoutRetry(_ answer: String) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
+    let transport = ContractTransport(json: choiceEnvelope(answer))
+    let counter = JevUsageCounter()
+    let result = try await buildAndPublish(
+        root: root, sessionID: sessionID,
+        provider: JevClient(apiKey: "secret", transport: transport), scope: .all, counter: counter
+    )
+    #expect(result.pendingPriorityClauses.count == 1)
+    let published = try readPublished(root: root)
+    #expect(published.first?.clauseState == .priorityPending)
+    #expect(published.first?.clauseSlices.first?.priority == nil)
+    #expect(published.first?.clauseSlices.first?.needsRetry == true)
+    #expect(await transport.requests.count == 1)
+    let usage = await counter.snapshot()
+    #expect(usage.priorityRequests.failureCount == 1)
+    #expect(usage.priorityRequests.successCount == 0)
+}
+
+@Test(arguments: [Double.nan, .infinity, -.infinity, -Double.leastNonzeroMagnitude, Double(1).nextUp])
+func nonfiniteOrOutOfRangeNoulFromInjectedProviderStopsTheBatch(_ probability: Double) async throws {
+    let request = try ClauseBoundaryRequest(source: contractSource("one", seq: 1), text: "前。後", next: nil)
+    let provider = ScriptedDecisionProvider(boundary: { request in
+        ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, probability) }),
+            continuationProbability: nil, metadata: testMetadata
+        )
+    }, priority: lowForBackchannel)
+    let outcome = await JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()).assessBoundaries(request)
+    guard case .failed(stopsBatch: .providerUnavailable, message: _) = outcome else {
+        Issue.record("Invalid Noul did not stop the batch")
+        return
+    }
+}
+
+@Test(arguments: [0.0, 1.0])
+func noulTransportAcceptsClosedScalarBoundaries(_ probability: Double) async throws {
+    let request = try ClauseBoundaryRequest(source: contractSource("one", seq: 1), text: "前。後", next: nil)
+    let transport = ContractTransport(json: "{\"model\":\"jev-test\",\"usage\":{},\"answers\":{\"b0001\":{\"type\":\"noul\",\"noul\":\(probability)}}}")
+    let response = try await JevClient(apiKey: "secret", transport: transport).assessBoundaries(request)
+    #expect(response.probabilities == ["b0001": probability])
 }

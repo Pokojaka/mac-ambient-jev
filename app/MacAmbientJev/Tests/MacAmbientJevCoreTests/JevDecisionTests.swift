@@ -51,7 +51,7 @@ private func lowPriority(confidence: Double) throws -> ContentPriorityDecision {
     try ContentPriorityDecision(
         priority: .lowPriority,
         confidence: confidence,
-        probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95]
+        probabilities: ["PRIMARY": (1 - confidence) / 2, "LOW_PRIORITY": (1 + confidence) / 2]
     )
 }
 
@@ -70,7 +70,7 @@ func confidentPrimaryStaysPrimary() throws {
     let decision = try ContentPriorityDecision(
         priority: .primary,
         confidence: 0.99,
-        probabilities: ["PRIMARY": 0.99, "LOW_PRIORITY": 0.01]
+        probabilities: ["PRIMARY": 0.995, "LOW_PRIORITY": 0.005]
     )
     #expect(ContentPriorityPolicy.visiblePriority(for: decision) == .primary)
 }
@@ -133,7 +133,7 @@ private struct MismatchedPriorityKeysProvider: DecisionProvider {
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        let decision = try ContentPriorityDecision(priority: .primary, confidence: 0.9, probabilities: ["PRIMARY": 0.9, "LOW_PRIORITY": 0.1])
+        let decision = try ContentPriorityDecision(priority: .primary, confidence: 0.9, probabilities: ["PRIMARY": 0.95, "LOW_PRIORITY": 0.05])
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: keys.map { ($0, decision) }),
             metadata: testMetadata

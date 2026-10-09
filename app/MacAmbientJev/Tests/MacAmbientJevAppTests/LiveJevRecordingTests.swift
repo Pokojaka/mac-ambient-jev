@@ -58,7 +58,7 @@ private actor RecordingJev: DecisionProvider {
         if !released { await withCheckedContinuation { waiters.append($0) } }
         let decision = try ContentPriorityDecision(
             priority: .lowPriority, confidence: 0.95,
-            probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95]
+            probabilities: ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975]
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),

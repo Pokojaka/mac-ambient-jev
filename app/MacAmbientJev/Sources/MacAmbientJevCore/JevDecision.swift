@@ -68,8 +68,8 @@ public actor JevDecisionCoordinator {
     ) async -> JevRequestOutcome<ClauseBoundaryResponse> {
         await send(purpose: .boundary) {
             let response = try await self.provider.assessBoundaries(request)
-            guard response.probabilities.values.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
-                  response.continuationProbability.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
+            guard response.probabilities.values.allSatisfy(isValidProbability),
+                  response.continuationProbability.map(isValidProbability) ?? true else {
                 throw JevClientError.invalidResponse
             }
             guard Set(response.probabilities.keys) == Set(request.candidates.map(\.id)),

@@ -1332,7 +1332,7 @@ private actor LiveCarryOverProvider: DecisionProvider {
         texts.append(contentsOf: targets.map(\.text))
         let decision = try ContentPriorityDecision(
             priority: .lowPriority, confidence: 0.95,
-            probabilities: ["PRIMARY": 0.05, "LOW_PRIORITY": 0.95]
+            probabilities: ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975]
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),

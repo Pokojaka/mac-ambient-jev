@@ -18,6 +18,11 @@ func isRequestLocalKey(_ key: String, prefix: Character) -> Bool {
 
 func isValidProbability(_ value: Double) -> Bool { value.isFinite && (0...1).contains(value) }
 
+// Two-decimal documentation examples allow 0.005 rounding per reported value.
+// The API does not promise a precision; these are local acceptance limits.
+private let choiceSumTolerance = 0.01 + 1e-12
+private let choiceConfidenceTolerance = 0.015 + 1e-12
+
 public struct SegmentTextReference: Codable, Sendable, Hashable {
     public let segmentationRunID: String
     public let segmentID: String
@@ -158,7 +163,18 @@ public struct ContentPriorityDecision: Codable, Sendable, Equatable {
     public let confidence: Double
     public let probabilities: [String: Double]
     public init(priority: ContentPriority, confidence: Double, probabilities: [String: Double]) throws {
-        guard isValidProbability(confidence), Set(probabilities.keys) == ["PRIMARY", "LOW_PRIORITY"], probabilities.values.allSatisfy(isValidProbability) else { throw ClauseValidationError.invalidProbability }
+        guard isValidProbability(confidence), probabilities.count == 2,
+              let primary = probabilities["PRIMARY"], let low = probabilities["LOW_PRIORITY"],
+              isValidProbability(primary), isValidProbability(low),
+              abs(primary + low - 1) <= choiceSumTolerance else {
+            throw ClauseValidationError.invalidProbability
+        }
+        let selected = priority == .primary ? primary : low
+        let maximum = max(primary, low)
+        guard selected == maximum,
+              abs(confidence - (2 * maximum - 1)) <= choiceConfidenceTolerance else {
+            throw ClauseValidationError.invalidProbability
+        }
         self.priority = priority
         self.confidence = confidence
         self.probabilities = probabilities
