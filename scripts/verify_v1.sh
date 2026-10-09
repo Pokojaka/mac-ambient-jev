@@ -52,6 +52,15 @@ fi
 
 bash "$ROOT/scripts/build_app.sh"
 
+APP_CONTENTS="$ROOT/.build/MacAmbientJev.app/Contents"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_CONTENTS/Info.plist")" = "AppIcon.icns"
+ICONSET="$ROOT/.build/VerifiedAppIcon.iconset"
+rm -rf "$ICONSET"
+iconutil -c iconset "$APP_CONTENTS/Resources/AppIcon.icns" -o "$ICONSET"
+test -r "$ICONSET/icon_16x16.png"
+test -r "$ICONSET/icon_512x512@2x.png"
+rm -rf "$ICONSET"
+
 APP_MLX_METALLIB="$ROOT/.build/MacAmbientJev.app/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
 if [[ ! -r "$APP_MLX_METALLIB" ]]; then
   echo "Built app is missing the MLX Metal shader library: $APP_MLX_METALLIB" >&2

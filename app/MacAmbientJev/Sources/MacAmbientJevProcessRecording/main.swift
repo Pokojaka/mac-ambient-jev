@@ -50,7 +50,6 @@ enum RecordingInput {
     case resume(sessionID: UUID, root: URL, output: URL, pacing: ASRPacingMode)
 }
 
-@main
 struct ProcessRecordingCommand {
     static func main() async throws {
         let invocation: Invocation
@@ -478,3 +477,5 @@ struct ProcessRecordingCommand {
         ))
     }
 }
+
+try await ProcessRecordingCommand.main()

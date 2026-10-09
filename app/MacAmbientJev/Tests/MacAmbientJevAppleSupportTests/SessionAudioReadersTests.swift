@@ -18,7 +18,10 @@ private func cleanUp(_ layout: SessionLayout) {
 }
 
 /// Samples that are exact 16-bit values, so FLAC reads them back unchanged.
-private let samples16: [Float] = (0..<20_000).map { Float(($0 * 37) % 2_001 - 1_000) / 32_768 }
+private let samples16: [Float] = (0..<20_000).map { (index: Int) -> Float in
+    let level: Int = (index * 37) % 2_001 - 1_000
+    return Float(level) / 32_768
+}
 
 private func writeFLAC(_ samples: [Float], to url: URL) throws {
     let format = try #require(AVAudioFormat(

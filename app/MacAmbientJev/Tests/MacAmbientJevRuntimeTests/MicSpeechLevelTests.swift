@@ -161,12 +161,14 @@ struct MicSpeechLevelTests {
         #expect(repeated.micSpeechLevels.isEmpty)
         let final = try await session.finish(checkpoint: checkpoint)
         #expect(final.micSpeechLevels.map(\.startSeconds) == [0.768])
-        #expect(final.micSpeechLevels.map(\.speechSeconds) == [3_712.0 / 16_000])
+        let expectedSpeechSeconds: Double = 3_712.0 / 16_000
+        #expect(final.micSpeechLevels.map(\.speechSeconds) == [expectedSpeechSeconds])
         let repeatedFinish = try await session.finish(checkpoint: checkpoint)
         #expect(repeatedFinish.micSpeechLevels.isEmpty)
 
         let all = first.micSpeechLevels + final.micSpeechLevels
-        #expect(abs(all.map(\.speechSeconds).reduce(0, +) - 1.0) < 1e-12)
+        let totalSpeechSeconds: Double = all.map(\.speechSeconds).reduce(0, +)
+        #expect(abs(totalSpeechSeconds - 1.0) < 1e-12)
         for window in all {
             #expect(abs(try #require(window.speechMeanSquare) - 1e-4) < 1e-10)
         }

@@ -188,8 +188,10 @@ private func scalars(_ writes: [[MicInputVolumeElement]]) -> [[Float]] {
 
 infix operator ≈: ComparisonPrecedence
 private func ≈ (lhs: [[Float]], rhs: [[Float]]) -> Bool {
-    lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { left, right in
-        left.count == right.count && zip(left, right).allSatisfy { abs($0 - $1) < 1e-6 }
+    guard lhs.count == rhs.count else { return false }
+    return zip(lhs, rhs).allSatisfy { (left: [Float], right: [Float]) -> Bool in
+        guard left.count == right.count else { return false }
+        return zip(left, right).allSatisfy { (a: Float, b: Float) -> Bool in abs(a - b) < 1e-6 }
     }
 }
 
