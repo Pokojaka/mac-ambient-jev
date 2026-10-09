@@ -85,8 +85,7 @@ private func withLiveJevRecording(
     capture.onStart = { sessionID in
         let sessionURL = try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
-        let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: sessionURL).processingDirectory,
-                                            chunkDurationSeconds: 0.5)
+        let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: sessionURL).processingDirectory, chunkDurationSeconds: 0.5, sessionURL: sessionURL)
         try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
         capture.stopResult = cleanStopResult(try await writer.finish())
     }
@@ -96,7 +95,7 @@ private func withLiveJevRecording(
         engines: SessionProcessingEngines(asr: RecordingASR(),
             diarization: FluidOfflineDiarizationEngine(paths: paths),
             finalTranscriptVAD: RecordingFinalVAD()),
-        makeLiveVADSession: { _, _, _ in RecordingVAD() }, makeJevDecisions: makeDecisions
+        makeLiveVADSession: { _, _, _, _ in RecordingVAD() }, makeJevDecisions: makeDecisions
     )
     state.readLiveThermalPressure = { .nominal }
     let maintenanceDeadline = ContinuousClock.now + .seconds(5)

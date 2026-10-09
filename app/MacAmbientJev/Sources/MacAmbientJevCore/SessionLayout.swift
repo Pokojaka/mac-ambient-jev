@@ -13,7 +13,7 @@ public struct SessionLayout: Sendable, Equatable {
     }
 
     public func loadManifest() throws -> SessionManifest {
-        let data = try Data(contentsOf: manifestURL)
+        let data = try SessionFileAccess.read(manifestURL, relativeTo: sessionURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         do {
@@ -62,23 +62,17 @@ public struct SessionLayout: Sendable, Equatable {
 
     /// The imported source file: exactly one regular file named `original` or `original.*` in `audio/`.
     public func importedOriginalURL() throws -> URL {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: audioDirectory.path) else {
+        let originals: [URL]
+        do {
+            originals = try SessionFileAccess.contentsOfDirectory(audioDirectory, relativeTo: sessionURL)
+                .filter { $0.lastPathComponent == "original" || $0.lastPathComponent.hasPrefix("original.") }
+        } catch let error as CocoaError where (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == Int(ENOENT) {
             throw SessionAudioSourceError.importedOriginalMissing
         }
-        let originals = try fileManager.contentsOfDirectory(
-            at: audioDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )
-        .filter { url in
-            url.lastPathComponent == "original" || url.lastPathComponent.hasPrefix("original.")
+        for url in originals {
+            _ = try SessionFileAccess.fileSize(url, relativeTo: sessionURL)
         }
-        var regularFiles: [URL] = []
-        for url in originals
-        where try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
-            regularFiles.append(url)
-        }
+        let regularFiles = originals
         switch regularFiles.count {
         case 0:
             throw SessionAudioSourceError.importedOriginalMissing
@@ -99,17 +93,16 @@ public struct SessionLayout: Sendable, Equatable {
         try storage.validate(for: manifest.source)
         switch storage {
         case .recordingPCM:
-            guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory),
+            guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory, relativeTo: sessionURL),
                   checkpoint.committedFrames > 0 else {
                 return nil
             }
-            try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint).validateAudio()
+            try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint, sessionURL: sessionURL).validateAudio()
             return .recordedPCM(checkpoint)
         case .recordingFLAC(let info):
             guard info.committedFrames > 0 else { throw SessionAudioSourceError.emptyRecordingFLAC }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: recordingFLACURL.path, isDirectory: &isDirectory),
-                  !isDirectory.boolValue else {
+            do { _ = try SessionFileAccess.fileSize(recordingFLACURL, relativeTo: sessionURL) }
+            catch let error as CocoaError where (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == Int(ENOENT) {
                 throw SessionAudioSourceError.recordingFLACMissing
             }
             return .recordedFLAC(info)

@@ -27,8 +27,8 @@ private struct TailWindowDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
-        let source = try CanonicalCAFAudioSource(fileURL: fileURL)
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
+        let source = try CanonicalCAFAudioSource(fileURL: fileURL, sessionURL: sessionURL)
         let config = OfflineDiarizerConfig.default
         var window = [Float](repeating: 0, count: config.samplesPerWindow)
         // OfflineEmbeddingExtractor requests the full window, including at EOF, after zeroing its buffer.
@@ -75,7 +75,7 @@ func micCaptureStopFinalizesSpeechThroughTheLastPartialDiarizationWindow(sampleR
         contentPriority: .disabled)
     let liveRun = "seg_live_tail"
     _ = try await processor.startLiveTranscription(sessionID: sessionID, segmentationRunID: liveRun, sampleRate: 16_000)
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 4096, sampleRate: sampleRate)
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: sampleRate))
     let totalDeviceFrames = Int(107.25 * sampleRate)

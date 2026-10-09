@@ -239,7 +239,7 @@ struct ProcessRecordingCommand {
         defer {
             if !keepSession {
                 do {
-                    try FileManager.default.removeItem(at: sessionURL)
+                    try SessionFileAccess.removeIfPresent(sessionURL, relativeTo: sessionURL.deletingLastPathComponent())
                 } catch {
                     FileHandle.standardError.write(
                         Data(
@@ -413,7 +413,7 @@ struct ProcessRecordingCommand {
             throw ProcessRecordingError.processingFailed("音響範囲整理の run が完了していません")
         }
         let recovered = try SessionRecovery.recoverJSONL(
-            Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
+            SessionFileAccess.read(sessionURL.appending(path: "events.jsonl"), relativeTo: sessionURL)
         )
         guard !recovered.droppedIncompleteTail else {
             throw ProcessRecordingError.processingFailed("イベントログの末尾が不完全です")

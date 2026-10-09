@@ -5,7 +5,6 @@ import MacAmbientJevCore
 public enum RecordingFLACError: LocalizedError, Equatable {
     case nonFiniteSample(frame: Int64)
     case audioToolbox(operation: String, status: OSStatus)
-    case disposeAfterFailure(failure: String, status: OSStatus)
 
     public var errorDescription: String? {
         switch self {
@@ -13,8 +12,6 @@ public enum RecordingFLACError: LocalizedError, Equatable {
             "フレーム \(frame) の音声サンプルが有限値ではないため 16-bit FLAC にできません"
         case .audioToolbox(let operation, let status):
             "FLAC の書き出しに失敗しました（\(operation)、OSStatus \(status)）"
-        case .disposeAfterFailure(let failure, let status):
-            "FLAC の書き出しに失敗しました: \(failure)。ファイルも閉じられませんでした（OSStatus \(status)）"
         }
     }
 }
@@ -42,81 +39,148 @@ public enum RecordingFLAC {
 
     /// Writes the recording directly to `url` and closes the file. The caller validates `reader`
     /// when it opens it.
-    public static func write(reader: any TimelineAudioReading, to url: URL) throws {
-        let committedFrames = reader.info.committedFrames
-        let storedFrames = storedFrames(committedFrames: committedFrames)
-        var file: ExtAudioFileRef?
+    public static func write(reader: any TimelineAudioReading, to url: URL, sessionURL: URL) throws {
+        var client = AudioStreamBasicDescription(
+            mSampleRate: CanonicalAudio.sampleRate, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2,
+            mChannelsPerFrame: UInt32(CanonicalAudio.channelCount), mBitsPerChannel: 16, mReserved: 0
+        )
         var destination = AudioStreamBasicDescription(
             mSampleRate: CanonicalAudio.sampleRate, mFormatID: kAudioFormatFLAC,
             mFormatFlags: kAppleLosslessFormatFlag_16BitSourceData, mBytesPerPacket: 0,
             mFramesPerPacket: UInt32(blockFrames), mBytesPerFrame: 0,
             mChannelsPerFrame: UInt32(CanonicalAudio.channelCount), mBitsPerChannel: 0, mReserved: 0
         )
-        try check(
-            ExtAudioFileCreateWithURL(
-                url as CFURL, kAudioFileFLACType, &destination, nil, AudioFileFlags.eraseFile.rawValue, &file
-            ),
-            "ExtAudioFileCreateWithURL"
+        var created: AudioConverterRef?
+        try check(AudioConverterNew(&client, &destination, &created), "AudioConverterNew")
+        guard let converter = created else {
+            throw RecordingFLACError.audioToolbox(operation: "AudioConverterNew returned no converter", status: noErr)
+        }
+        defer { AudioConverterDispose(converter) }
+        let descriptorFile = try DescriptorAudioFile(
+            url: url, sessionURL: sessionURL, type: kAudioFileFLACType, format: &destination
         )
-        guard let file else {
-            throw RecordingFLACError.audioToolbox(operation: "ExtAudioFileCreateWithURL returned no file", status: noErr)
+        try writeCookie(converter, to: descriptorFile.audioFile)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var maximumPacketSize: UInt32 = 0
+        try check(AudioConverterGetProperty(
+            converter, kAudioConverterPropertyMaximumOutputPacketSize, &size, &maximumPacketSize
+        ), "AudioConverterGetProperty maximum packet size")
+        guard maximumPacketSize > 0 else {
+            throw RecordingFLACError.audioToolbox(operation: "empty maximum packet size", status: kAudio_ParamError)
         }
-        do {
-            var client = AudioStreamBasicDescription(
-                mSampleRate: CanonicalAudio.sampleRate, mFormatID: kAudioFormatLinearPCM,
-                mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
-                mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2,
-                mChannelsPerFrame: UInt32(CanonicalAudio.channelCount), mBitsPerChannel: 16, mReserved: 0
+        let output = UnsafeMutableRawPointer.allocate(byteCount: Int(maximumPacketSize), alignment: MemoryLayout<Int16>.alignment)
+        defer { output.deallocate() }
+        let input = EncodingInput(reader: reader, capacity: Int(framesPerWrite))
+        var packetIndex: Int64 = 0
+        while true {
+            var packets: UInt32 = 1
+            var description = AudioStreamPacketDescription()
+            var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
+                mNumberChannels: UInt32(CanonicalAudio.channelCount), mDataByteSize: maximumPacketSize, mData: output
+            ))
+            let status = AudioConverterFillComplexBuffer(
+                converter, supplyPCM, Unmanaged.passUnretained(input).toOpaque(),
+                &packets, &buffer, &description
             )
-            try check(
-                ExtAudioFileSetProperty(
-                    file, kExtAudioFileProperty_ClientDataFormat,
-                    UInt32(MemoryLayout.size(ofValue: client)), &client
-                ),
-                "ExtAudioFileSetProperty"
-            )
-            var startFrame: Int64 = 0
-            while startFrame < storedFrames {
-                let endFrame = min(storedFrames, startFrame + framesPerWrite)
-                var samples = [Int16](repeating: 0, count: Int(endFrame - startFrame))
-                let readEnd = min(endFrame, committedFrames)
-                if startFrame < readEnd {
-                    let source = try reader.readSamples(frameRange: startFrame..<readEnd)
-                    for (index, sample) in source.enumerated() {
-                        guard let quantized = quantize16(sample) else {
-                            throw RecordingFLACError.nonFiniteSample(frame: startFrame + Int64(index))
-                        }
-                        samples[index] = quantized
-                    }
-                }
-                try write(samples, to: file)
-                startFrame = endFrame
+            if let error = input.error { throw error }
+            try check(status, "AudioConverterFillComplexBuffer")
+            guard packets > 0 else { break }
+            let produced = packets
+            try check(AudioFileWritePackets(
+                descriptorFile.audioFile, false, buffer.mBuffers.mDataByteSize,
+                &description, packetIndex, &packets, output
+            ), "AudioFileWritePackets")
+            guard packets == produced else {
+                throw RecordingFLACError.audioToolbox(operation: "incomplete packet write", status: kAudioFileUnspecifiedError)
             }
-        } catch {
-            let disposeStatus = ExtAudioFileDispose(file)
-            guard disposeStatus == noErr else {
-                throw RecordingFLACError.disposeAfterFailure(
-                    failure: error.localizedDescription, status: disposeStatus
-                )
-            }
-            throw error
+            packetIndex += Int64(packets)
         }
-        try check(ExtAudioFileDispose(file), "ExtAudioFileDispose")
+        guard input.position == input.storedFrames else {
+            throw RecordingFLACError.audioToolbox(operation: "encoder ended before recorded frames", status: kAudioFileUnspecifiedError)
+        }
+        try writeCookie(converter, to: descriptorFile.audioFile)
+        try descriptorFile.close()
     }
 
-    private static func write(_ samples: [Int16], to file: ExtAudioFileRef) throws {
-        var samples = samples
-        let frameCount = samples.count
-        let byteCount = frameCount * MemoryLayout<Int16>.size
-        try samples.withUnsafeMutableBytes { raw in
-            var list = AudioBufferList(
-                mNumberBuffers: 1,
-                mBuffers: AudioBuffer(
-                    mNumberChannels: UInt32(CanonicalAudio.channelCount),
-                    mDataByteSize: UInt32(byteCount), mData: raw.baseAddress
-                )
+    /// FLAC stream-info is supplied by the codec, including its final frame count.
+    private static func writeCookie(_ converter: AudioConverterRef, to file: AudioFileID) throws {
+        var size: UInt32 = 0
+        try check(AudioConverterGetPropertyInfo(
+            converter, kAudioConverterCompressionMagicCookie, &size, nil
+        ), "AudioConverterGetPropertyInfo magic cookie")
+        guard size > 0 else {
+            throw RecordingFLACError.audioToolbox(operation: "empty FLAC magic cookie", status: kAudioFileUnspecifiedError)
+        }
+        var cookie = Data(count: Int(size))
+        try cookie.withUnsafeMutableBytes { bytes in
+            try check(AudioConverterGetProperty(
+                converter, kAudioConverterCompressionMagicCookie, &size, bytes.baseAddress!
+            ), "AudioConverterGetProperty magic cookie")
+            try check(AudioFileSetProperty(file, kAudioFilePropertyMagicCookieData, size, bytes.baseAddress!),
+                      "AudioFileSetProperty magic cookie")
+        }
+    }
+
+    private final class EncodingInput {
+        let reader: any TimelineAudioReading
+        let capacity: Int
+        let samples: UnsafeMutablePointer<Int16>
+        let storedFrames: Int64
+        var position: Int64 = 0
+        var error: (any Error)?
+
+        init(reader: any TimelineAudioReading, capacity: Int) {
+            self.reader = reader
+            self.capacity = capacity
+            self.samples = .allocate(capacity: capacity)
+            self.storedFrames = RecordingFLAC.storedFrames(committedFrames: reader.info.committedFrames)
+        }
+
+        deinit { samples.deallocate() }
+
+        func supply(_ requested: UInt32, to buffers: UnsafeMutablePointer<AudioBufferList>) throws -> UInt32 {
+            let count = Int(min(Int64(min(Int(requested), capacity)), storedFrames - position))
+            let end = position + Int64(count)
+            let readEnd = min(end, reader.info.committedFrames)
+            var sourceCount = 0
+            if position < readEnd {
+                let source = try reader.readSamples(frameRange: position..<readEnd)
+                guard source.count == Int(readEnd - position) else {
+                    throw RecordingFLACError.audioToolbox(operation: "unexpected PCM EOF", status: kAudioFileUnspecifiedError)
+                }
+                sourceCount = source.count
+                for (index, sample) in source.enumerated() {
+                    guard let quantized = RecordingFLAC.quantize16(sample) else {
+                        throw RecordingFLACError.nonFiniteSample(frame: position + Int64(index))
+                    }
+                    samples[index] = quantized
+                }
+            }
+            if sourceCount < count {
+                samples.advanced(by: sourceCount).initialize(repeating: 0, count: count - sourceCount)
+            }
+            buffers.pointee.mNumberBuffers = 1
+            buffers.pointee.mBuffers = AudioBuffer(
+                mNumberChannels: UInt32(CanonicalAudio.channelCount),
+                mDataByteSize: UInt32(count * MemoryLayout<Int16>.size), mData: samples
             )
-            try check(ExtAudioFileWrite(file, UInt32(frameCount), &list), "ExtAudioFileWrite")
+            position = end
+            return UInt32(count)
+        }
+    }
+
+    private static let supplyPCM: AudioConverterComplexInputDataProc = { _, packets, buffers, descriptions, context in
+        let input = Unmanaged<EncodingInput>.fromOpaque(context!).takeUnretainedValue()
+        do {
+            packets.pointee = try input.supply(packets.pointee, to: buffers)
+            descriptions?.pointee = nil
+            return noErr
+        } catch {
+            input.error = error
+            packets.pointee = 0
+            return kAudioFileUnspecifiedError
         }
     }
 

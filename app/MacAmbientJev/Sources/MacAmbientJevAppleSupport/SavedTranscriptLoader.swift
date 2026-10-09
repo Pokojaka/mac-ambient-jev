@@ -22,7 +22,7 @@ public enum SavedTranscriptLoader {
             return .unavailable
         }
 
-        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
+        let recovered = try SessionRecovery.recoverJSONL(SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL))
         guard !recovered.droppedIncompleteTail else {
             throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
         }

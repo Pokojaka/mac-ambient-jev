@@ -52,11 +52,12 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
 
     func diarize(
         fileURL: URL,
-        canonicalSampleRate: Double
+        canonicalSampleRate: Double,
+        sessionURL: URL
     ) async throws -> [SpeakerSpan] {
         guard canonicalSampleRate == CanonicalAudio.sampleRate else { throw CanonicalAudioError.noncanonicalFormat }
         let started = Date()
-        let source = try CanonicalCAFAudioSource(fileURL: fileURL)
+        let source = try CanonicalCAFAudioSource(fileURL: fileURL, sessionURL: sessionURL)
         let loadingSeconds = Date().timeIntervalSince(started)
         let manager = try await preparedManager()
         let result = try await manager.process(audioSource: source, audioLoadingSeconds: loadingSeconds, progressCallback: nil)

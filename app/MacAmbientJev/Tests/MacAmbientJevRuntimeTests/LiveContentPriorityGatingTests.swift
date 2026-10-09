@@ -148,14 +148,14 @@ private struct LiveJevFixture {
     init(texts: [String?], makeDecisions: @escaping LiveContentPrioritySession.DecisionFactory, counter: JevUsageCounter) async throws {
         root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+        let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
         let durableFrames = max(16_000, ((texts.count + 3) / 4) * 16_000)
         try await audio.append(samples: Array(repeating: Float(0.1), count: durableFrames))
         checkpoint = await audio.committedSnapshot()
         let writer = try SessionWriter(sessionURL: root)
         let sessionID = UUID()
         asr = LiveASRSession(
-            sessionID: sessionID, segmentationRunID: "live_seg", asrRunID: "live_asr",
+            sessionID: sessionID, sessionURL: root, segmentationRunID: "live_seg", asrRunID: "live_asr",
             processingDirectory: root, writer: writer, asr: ScriptedASR(texts), sampleRate: checkpoint.sampleRate,
             clauseBoundaryRunID: "boundary_live", contentPriorityRunID: "priority_live"
         )

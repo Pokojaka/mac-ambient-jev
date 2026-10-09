@@ -32,9 +32,10 @@ public actor AudioFileTimelineBuilder {
 
     public func build(
         from sourceURL: URL,
-        into processingDirectory: URL
+        into processingDirectory: URL,
+        sessionURL: URL
     ) async throws -> AudioCheckpoint {
-        let file = try AVAudioFile(forReading: sourceURL, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let file = try DescriptorAudioReader(url: sourceURL, sessionURL: sessionURL)
         let format = file.processingFormat
 
         guard format.commonFormat == .pcmFormatFloat32,
@@ -43,12 +44,10 @@ public actor AudioFileTimelineBuilder {
             throw AudioFileTimelineBuilderError.unsupportedPCMFormat
         }
 
-        if FileManager.default.fileExists(atPath: processingDirectory.path) {
-            try FileManager.default.removeItem(at: processingDirectory)
-        }
+        try SessionFileAccess.removeIfPresent(processingDirectory, relativeTo: sessionURL)
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
-            chunkDurationSeconds: Self.chunkDurationSeconds
+            chunkDurationSeconds: Self.chunkDurationSeconds, sessionURL: sessionURL
         )
         let converter = try CanonicalAudioResampler(sampleRate: format.sampleRate)
 

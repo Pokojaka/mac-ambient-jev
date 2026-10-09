@@ -16,7 +16,7 @@ public enum SessionsRootPolicy {
         case unsafeRoot
 
         public var errorDescription: String? {
-            "Sessions root must be a directory outside protected application data and cache roots."
+            "Sessions root must be a real directory, not a symlink, outside protected application data and cache roots."
         }
     }
 
@@ -36,17 +36,15 @@ public enum SessionsRootPolicy {
             for component in missing.reversed() { resolved.appendPathComponent(component) }
             return resolved.standardizedFileURL
         }
-        let selected = resolve(root)
+        let selected = root.standardizedFileURL
+        let resolvedSelected = resolve(selected)
         for protected in protectedRoots {
-            let a = selected.pathComponents.map { $0.lowercased() }
+            let a = resolvedSelected.pathComponents.map { $0.lowercased() }
             let b = resolve(protected).pathComponents.map { $0.lowercased() }
             guard !a.starts(with: b), !b.starts(with: a) else { throw Error.unsafeRoot }
         }
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: selected.path, isDirectory: &isDirectory),
-           !isDirectory.boolValue {
-            throw Error.unsafeRoot
-        }
+        do { _ = try SessionFileAccess.isDirectoryIfPresent(selected, relativeTo: selected) }
+        catch { throw Error.unsafeRoot }
         return selected
     }
 }

@@ -31,16 +31,10 @@ public struct SessionBootstrapper {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.dateEncodingStrategy = .iso8601
 
-        guard !fileManager.fileExists(atPath: sessionURL.path) else {
-            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: sessionURL.path])
-        }
-        try fileManager.createDirectory(
-            at: sessionURL,
-            withIntermediateDirectories: true
-        )
-        try encoder.encode(manifest).write(
-            to: sessionURL.appending(path: "session.json"),
-            options: .atomic
+        try SessionFileAccess.createDirectory(paths.sessionsRoot, relativeTo: paths.sessionsRoot)
+        try SessionFileAccess.createExclusiveDirectory(sessionURL, relativeTo: paths.sessionsRoot)
+        try SessionFileAccess.writeAtomically(
+            encoder.encode(manifest), to: sessionURL.appending(path: "session.json"), relativeTo: sessionURL
         )
         try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL))
             .save(.initial(for: source))

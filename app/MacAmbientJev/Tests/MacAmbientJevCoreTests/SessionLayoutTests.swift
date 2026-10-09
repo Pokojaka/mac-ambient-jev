@@ -24,7 +24,7 @@ func importedSessionAudioIsTheOriginalEvenWhenATimelineExists() async throws {
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
     let original = layout.audioDirectory.appending(path: "original.m4a")
     try Data([1, 2, 3]).write(to: original)
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: layout.sessionURL)
     try await writer.append(samples: Array(repeating: 0.5, count: 10))
     _ = try await writer.finish()
 
@@ -64,7 +64,7 @@ func recordingWithoutCapturedAudioHasNoSource() async throws {
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
     #expect(try layout.audioSource(for: manifest) == nil)
 
-    _ = try await DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate).finish()
+    _ = try await DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: layout.sessionURL).finish()
     #expect(try layout.audioSource(for: manifest) == nil)
 }
 
@@ -72,7 +72,7 @@ func recordingWithoutCapturedAudioHasNoSource() async throws {
 func recordingResolvesToItsTimelineAndRejectsACorruptOne() async throws {
     let (layout, manifest) = try makeSession(source: .recording(.microphone))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: layout.sessionURL)
     try await writer.append(samples: Array(repeating: 0.5, count: 10))
     let checkpoint = try await writer.finish()
     #expect(try layout.audioSource(for: manifest) == .recordedPCM(checkpoint))

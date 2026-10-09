@@ -101,11 +101,11 @@ public struct SessionAudioStorageStore: Sendable {
 
     public func load() throws -> SessionAudioStorage {
         let url = layout.audioStorageURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard let data = try SessionFileAccess.readIfPresent(url, relativeTo: layout.sessionURL) else {
             throw SessionAudioStorageError.missing
         }
         do {
-            return try JSONDecoder().decode(SessionAudioStorage.self, from: Data(contentsOf: url))
+            return try JSONDecoder().decode(SessionAudioStorage.self, from: data)
         } catch {
             throw SessionAudioStorageError.unreadable(String(describing: error))
         }
@@ -115,42 +115,27 @@ public struct SessionAudioStorageStore: Sendable {
     public func save(_ storage: SessionAudioStorage) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try DurableFile.replace(layout.audioStorageURL, with: encoder.encode(storage))
+        try SessionFileAccess.createDirectory(layout.audioDirectory, relativeTo: layout.sessionURL)
+        try DurableFile.replace(layout.audioStorageURL, with: encoder.encode(storage), relativeTo: layout.sessionURL)
     }
 }
 
 /// Atomic same-directory replacement whose new contents and directory entry are both
 /// synchronized before return.
 public enum DurableFile {
-    public static func replace(_ url: URL, with data: Data) throws {
+    public static func replace(_ url: URL, with data: Data, relativeTo root: URL) throws {
         let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let temporary = directory.appending(path: ".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        try data.write(to: temporary)
-        try synchronize(temporary)
-        try rename(temporary, to: url)
+        try SessionFileAccess.createDirectory(directory, relativeTo: root)
+        try SessionFileAccess.writeAtomically(data, to: url, relativeTo: root)
     }
 
-    /// rename(2) replaces `destination` atomically, then the directory entry is synchronized.
-    public static func rename(_ source: URL, to destination: URL) throws {
-        guard Foundation.rename(source.path, destination.path) == 0 else {
-            throw posixError(destination)
-        }
-        try synchronize(destination.deletingLastPathComponent())
+    /// rename(2) replaces `destination` atomically without following either entry.
+    public static func rename(_ source: URL, to destination: URL, relativeTo root: URL) throws {
+        try SessionFileAccess.rename(source, to: destination, relativeTo: root)
     }
 
     /// Flushes a regular file or a directory to stable storage (`F_FULLFSYNC`).
-    public static func synchronize(_ url: URL) throws {
-        let descriptor = open(url.path, O_RDONLY)
-        guard descriptor >= 0 else { throw posixError(url) }
-        defer { close(descriptor) }
-        guard fcntl(descriptor, F_FULLFSYNC) == 0 else { throw posixError(url) }
-    }
-
-    private static func posixError(_ url: URL) -> CocoaError {
-        CocoaError(.fileWriteUnknown, userInfo: [
-            NSFilePathErrorKey: url.path,
-            NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(errno)),
-        ])
+    public static func synchronize(_ url: URL, relativeTo root: URL, isDirectory: Bool = false) throws {
+        try SessionFileAccess.synchronize(url, relativeTo: root, isDirectory: isDirectory)
     }
 }

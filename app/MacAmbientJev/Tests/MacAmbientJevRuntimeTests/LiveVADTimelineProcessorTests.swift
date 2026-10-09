@@ -30,7 +30,7 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     let vad = RecordingVADChunkSegmenter()
 
     try await writer.append(
@@ -40,7 +40,7 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
 
     let processor = FluidVADTimelineProcessor(engine: vad)
 
-    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: firstCheckpoint))
+    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: firstCheckpoint, sessionURL: root))
     #expect(await vad.recordedChunkSizes() == [
         4_096,
         4_096,
@@ -48,7 +48,7 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
     ])
 
     // Polling the same durable boundary must not re-feed audio.
-    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: firstCheckpoint))
+    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: firstCheckpoint, sessionURL: root))
     #expect(await vad.recordedChunkSizes().count == 3)
 
     try await writer.append(
@@ -56,10 +56,10 @@ func liveVADProcessorConsumesEachDurableFrameOnlyOnce() async throws {
     )
     let secondCheckpoint = await writer.committedSnapshot()
 
-    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: secondCheckpoint))
+    _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: secondCheckpoint, sessionURL: root))
     #expect(await vad.recordedChunkSizes().count == 7)
 
-    _ = try await processor.finish(reader: try ProcessingTimelineReader(directory: root, checkpoint: secondCheckpoint))
+    _ = try await processor.finish(reader: try ProcessingTimelineReader(directory: root, checkpoint: secondCheckpoint, sessionURL: root))
 
     let sizes = await vad.recordedChunkSizes()
     #expect(sizes.count == 8)
@@ -92,16 +92,16 @@ private actor FailingOnceVADChunkSegmenter: VADChunkSegmenting {
 func vadProcessorRetryAfterChunkErrorNeitherReplaysAudioNorDropsSegments() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let vad = FailingOnceVADChunkSegmenter()
     let processor = FluidVADTimelineProcessor(engine: vad)
     await #expect(throws: InjectedVADFailure.secondChunk) {
-        try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+        try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
     }
-    var emitted = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
-    emitted += try await processor.finish(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+    var emitted = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
+    emitted += try await processor.finish(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
     #expect(await vad.acceptedFrameCount() == 16_000)
     #expect(emitted.map(\.segmentID) == ["before-failure"])
 }

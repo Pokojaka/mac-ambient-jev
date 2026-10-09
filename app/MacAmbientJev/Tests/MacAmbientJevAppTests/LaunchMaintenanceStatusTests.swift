@@ -15,7 +15,7 @@ private func launchMaintenanceRecording(
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let layout = SessionLayout(sessionURL: sessionURL)
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: layout.sessionURL)
     try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
     _ = try await writer.finish()
     let runs = ActiveRuns(

@@ -2,17 +2,18 @@ import AVFoundation
 import Foundation
 import FluidAudio
 import MacAmbientJevCore
+import MacAmbientJevAppleSupport
 
 /// Random-access reads from the existing canonical CAF; no SRC or whole-audio copy.
 final class CanonicalCAFAudioSource: AudioSampleSource, @unchecked Sendable {
     let sampleCount: Int
-    private let file: AVAudioFile
+    private let file: DescriptorAudioReader
     private let buffer: AVAudioPCMBuffer
     private let lock = NSLock()
 
-    init(fileURL: URL) throws {
+    init(fileURL: URL, sessionURL: URL) throws {
         guard fileURL.pathExtension.lowercased() == "caf" else { throw CanonicalAudioError.noncanonicalFormat }
-        let file = try AVAudioFile(forReading: fileURL)
+        let file = try DescriptorAudioReader(url: fileURL, sessionURL: sessionURL)
         let format = file.processingFormat
         try CanonicalAudio.validate(sampleRate: format.sampleRate, channelCount: Int(format.channelCount), sampleFormat: .float32LE)
         guard file.fileFormat.commonFormat == .pcmFormatFloat32,
@@ -36,7 +37,7 @@ final class CanonicalCAFAudioSource: AudioSampleSource, @unchecked Sendable {
         let available = min(count, sampleCount - offset)
         lock.lock()
         defer { lock.unlock() }
-        file.framePosition = Int64(offset)
+        try file.seek(to: Int64(offset))
         var copied = 0
         while copied < available {
             let requested = min(8192, available - copied)

@@ -10,22 +10,16 @@ public actor SessionWriter {
         self.sessionURL = sessionURL
         self.eventsURL = sessionURL.appending(path: "events.jsonl")
 
-        try FileManager.default.createDirectory(
-            at: sessionURL,
-            withIntermediateDirectories: true
-        )
+        try SessionFileAccess.createDirectory(sessionURL, relativeTo: sessionURL)
 
         _ = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-        if !FileManager.default.fileExists(atPath: eventsURL.path) {
-            _ = FileManager.default.createFile(atPath: eventsURL.path, contents: nil)
-        }
-        let handle = try Self.lockedHandle(eventsURL)
+        let handle = try Self.lockedHandle(eventsURL, create: true)
         defer { try? handle.close() }
         (knownLogSize, lastEventSequence) = try Self.recover(handle)
     }
 
-    private static func lockedHandle(_ url: URL) throws -> FileHandle {
-        let handle = try FileHandle(forUpdating: url)
+    private static func lockedHandle(_ url: URL, create: Bool = false, writable: Bool = true) throws -> FileHandle {
+        let handle = try SessionFileAccess.openHandle(url, relativeTo: url.deletingLastPathComponent(), writable: writable, create: create)
         guard flock(handle.fileDescriptor, LOCK_EX) == 0 else {
             let code = POSIXErrorCode(rawValue: errno) ?? .EIO
             try? handle.close()
@@ -37,7 +31,7 @@ public actor SessionWriter {
     /// Freezes bytes only after an in-flight append has synchronized and released its lock.
     /// This is read-only: unlike writer recovery, it never trims a damaged tail.
     public static func readDurableLog(eventsURL: URL) throws -> Data {
-        let handle = try lockedHandle(eventsURL)
+        let handle = try lockedHandle(eventsURL, writable: false)
         defer { try? handle.close() }
         try handle.seek(toOffset: 0)
         let data = try handle.readToEnd() ?? Data()

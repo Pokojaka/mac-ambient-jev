@@ -65,7 +65,7 @@ private struct ProbeDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         let file = try AVAudioFile(forReading: fileURL)
         let buffer = try #require(AVAudioPCMBuffer(
             pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)
@@ -190,7 +190,7 @@ private func makeFixture(_ kind: Kind, samples: [Float]) async throws -> Fixture
             paths: paths, sessionID: sessionID, source: .recording(.microphone),
             createdAt: createdAt, timeZone: TimeZone(secondsFromGMT: 0)!
         ))
-        let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: layout.sessionURL)
         try await writer.append(samples: samples)
         _ = try await writer.finish()
         return Fixture(root: root, paths: paths, sessionID: sessionID, layout: layout, kind: kind)

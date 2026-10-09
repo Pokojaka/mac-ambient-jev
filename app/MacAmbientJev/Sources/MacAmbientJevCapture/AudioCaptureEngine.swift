@@ -558,7 +558,7 @@ public final class AudioCaptureEngine {
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
         let processingDirectory = SessionLayout(sessionURL: sessionURL).processingDirectory
         let writer = try DurableAudioWriter(
-            directory: processingDirectory, chunkDurationSeconds: chunkDurationSeconds
+            directory: processingDirectory, chunkDurationSeconds: chunkDurationSeconds, sessionURL: sessionURL
         )
         let slotSamples = min(bufferFrameCount, 512)
         let ring = AudioBlockRing(

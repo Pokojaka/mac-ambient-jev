@@ -24,7 +24,7 @@ private let recordedSamples: [Float] = (0..<20_000).map { sin(Float($0) * 0.013)
 
 @discardableResult
 private func recordPCM(_ layout: SessionLayout, samples: [Float] = recordedSamples) async throws -> AudioCheckpoint {
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     try await writer.append(samples: samples)
     return try await writer.finish()
 }
@@ -76,7 +76,7 @@ func compactingAPCMRecordingStoresItsQuantizedSamplesAsFLAC() async throws {
 func compactingKeepsGapEventsInTheStoredInfo() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     try await writer.append(samples: Array(recordedSamples[0..<8_000]))
     try await writer.recordGap(startFrame: 8_000, frameCount: 4_000, reason: .overflow)
     try await writer.append(samples: [Float](repeating: 0, count: 4_000))
@@ -137,7 +137,7 @@ func aNonFiniteSampleFailsAndLeavesThePCMRecording() async throws {
 
     #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
     #expect(!exists(layout.recordingFLACURL))
-    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory) == checkpoint)
+    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL) == checkpoint)
 }
 
 @Test
@@ -313,7 +313,7 @@ private func anInvalidFLACUnderFLACStateFailsWithoutTouchingPCM(damage: Damage) 
         _ = try freshCompactor.compact(layout: layout)
     }
 
-    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory) == checkpoint)
+    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL) == checkpoint)
     #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingFLAC(info))
 }
 
@@ -323,9 +323,9 @@ func fullFLACValidationStopsAtTheStoredEnd(frames: Int, comparePCM: Bool) async 
     defer { cleanUp(layout) }
     let samples = (0..<frames).map { sin(Float($0) * 0.013) * 0.8 }
     let checkpoint = try await recordPCM(layout, samples: samples)
-    let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
-    try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACPartialURL)
-    let reader = try FLACTimelineReader(url: layout.recordingFLACPartialURL, info: pcm.info)
+    let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
+    try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACPartialURL, sessionURL: layout.sessionURL)
+    let reader = try FLACTimelineReader(url: layout.recordingFLACPartialURL, info: pcm.info, sessionURL: layout.sessionURL)
 
     if comparePCM {
         try reader.validateAudio(against: pcm)
@@ -374,7 +374,7 @@ func nonSilentPaddingFailsValidationAndLeavesThePCM() async throws {
         _ = try freshCompactor.compact(layout: layout)
     }
 
-    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory) == checkpoint)
+    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL) == checkpoint)
 }
 
 @Test
@@ -383,7 +383,7 @@ func readingPastTheRecordedFramesOfAPaddedFLACIsRejected() async throws {
     defer { cleanUp(layout) }
     try await recordPCM(layout, samples: [Float](repeating: 0.25, count: 100))
     let info = try freshCompactor.compact(layout: layout)
-    let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: info)
+    let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: info, sessionURL: layout.sessionURL)
 
     #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
         _ = try reader.readSamples(frameRange: 0..<101)
@@ -394,7 +394,7 @@ func readingPastTheRecordedFramesOfAPaddedFLACIsRejected() async throws {
 func aRecordingWithoutFramesIsNeverScheduledForCompaction() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     _ = try await writer.finish()
     try ProcessingMetadataStore(sessionURL: layout.sessionURL).save(ProcessingMetadata(
         finalizationAttempt: nil,

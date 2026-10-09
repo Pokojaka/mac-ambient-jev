@@ -11,10 +11,11 @@ import UniformTypeIdentifiers
 
 extension AppState {
     static func makeFluidLiveVADSession(
-        processingDirectory: URL, initialCheckpoint: AudioCheckpoint, measureMicInputLevels: Bool
+        processingDirectory: URL, initialCheckpoint: AudioCheckpoint, measureMicInputLevels: Bool, sessionURL: URL
     ) async throws -> any LiveVADProcessing {
         try await LiveVADSession.make(
             processingDirectory: processingDirectory,
+            sessionURL: sessionURL,
             initialCheckpoint: initialCheckpoint,
             measureMicInputLevels: measureMicInputLevels,
             segmentationRunID: "seg_live_\(UUID().uuidString.lowercased())"
@@ -31,7 +32,7 @@ extension AppState {
         liveVADFailureText = nil
         liveVADSegmentCount = 0
         let vadSession = try await makeLiveVADSession(
-            directory, checkpoint, micInputSessionID == sessionID
+            directory, checkpoint, micInputSessionID == sessionID, sessionURL
         )
         guard isCurrentRecording(sessionID) else { return }
         liveVADSession = vadSession

@@ -30,6 +30,7 @@ public actor LiveVADSession {
     public nonisolated let segmentationRunID: String
 
     private let processingDirectory: URL
+    private let sessionURL: URL
     private let processor: FluidVADTimelineProcessor
     private var segmentCount = 0
     private var lastCommittedFrames: Int64
@@ -37,6 +38,7 @@ public actor LiveVADSession {
 
     public static func make(
         processingDirectory: URL,
+        sessionURL: URL,
         initialCheckpoint: AudioCheckpoint,
         measureMicInputLevels: Bool,
         segmentationRunID: String
@@ -49,6 +51,7 @@ public actor LiveVADSession {
         return LiveVADSession(
             segmentationRunID: segmentationRunID,
             processingDirectory: processingDirectory,
+            sessionURL: sessionURL,
             processor: FluidVADTimelineProcessor(engine: engine),
             initialCommittedFrames: initialCheckpoint.committedFrames
         )
@@ -57,11 +60,13 @@ public actor LiveVADSession {
     init(
         segmentationRunID: String,
         processingDirectory: URL,
+        sessionURL: URL,
         processor: FluidVADTimelineProcessor,
         initialCommittedFrames: Int64
     ) {
         self.segmentationRunID = segmentationRunID
         self.processingDirectory = processingDirectory
+        self.sessionURL = sessionURL
         self.processor = processor
         self.lastCommittedFrames = initialCommittedFrames
     }
@@ -80,7 +85,7 @@ public actor LiveVADSession {
         }
 
         let emitted = try await processor.processAvailable(
-            reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
+            reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint, sessionURL: sessionURL)
         )
         segmentCount += emitted.count
         lastCommittedFrames = checkpoint.committedFrames
@@ -107,7 +112,7 @@ public actor LiveVADSession {
         }
 
         let emitted = try await processor.finish(
-            reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint)
+            reader: ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint, sessionURL: sessionURL)
         )
         segmentCount += emitted.count
         lastCommittedFrames = checkpoint.committedFrames

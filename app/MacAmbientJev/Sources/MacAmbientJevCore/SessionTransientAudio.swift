@@ -13,13 +13,16 @@ public enum SessionTransientAudio {
         return urls
     }
 
-    public static func isPresent(layout: SessionLayout, source: SessionSource) -> Bool {
-        urls(layout: layout, source: source).contains { FileManager.default.fileExists(atPath: $0.path) }
+    public static func isPresent(layout: SessionLayout, source: SessionSource) throws -> Bool {
+        for url in urls(layout: layout, source: source) {
+            if try SessionFileAccess.isDirectoryIfPresent(url, relativeTo: layout.sessionURL) != nil { return true }
+        }
+        return false
     }
 
     public static func remove(layout: SessionLayout, source: SessionSource) throws {
-        for url in urls(layout: layout, source: source) where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        for url in urls(layout: layout, source: source) {
+            try SessionFileAccess.removeIfPresent(url, relativeTo: layout.sessionURL)
         }
     }
 }
@@ -43,12 +46,12 @@ public enum SessionStorageMaintenance: String, Sendable, Equatable {
                 return .compactRecording
             }
         case .recordingFLAC:
-            if FileManager.default.fileExists(atPath: layout.processingDirectory.path) {
+            if try SessionFileAccess.isDirectoryIfPresent(layout.processingDirectory, relativeTo: layout.sessionURL) != nil {
                 return .compactRecording
             }
         case .importedOriginal:
             break
         }
-        return SessionTransientAudio.isPresent(layout: layout, source: manifest.source) ? .removeTransients : nil
+        return try SessionTransientAudio.isPresent(layout: layout, source: manifest.source) ? .removeTransients : nil
     }
 }

@@ -46,7 +46,7 @@ private func publish(_ layout: SessionLayout, attempt: FinalizationAttempt.State
 
 private func publishedRecording(_ paths: AppPaths, second: Int, attempt: FinalizationAttempt.State) async throws -> SessionLayout {
     let layout = try makeSession(paths, source: .recording(.microphone), second: second)
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: layout.sessionURL)
     try await writer.append(samples: Array(repeating: 0.3, count: 16_000))
     _ = try await writer.finish()
     try await publish(layout, attempt: attempt)
@@ -60,7 +60,7 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root.appending(path: "sessions"))
     let recordingNow = try makeSession(paths, source: .recording(.microphone), second: 9)
-    let recordingNowWriter = try DurableAudioWriter(directory: recordingNow.processingDirectory, chunkDurationSeconds: 1)
+    let recordingNowWriter = try DurableAudioWriter(directory: recordingNow.processingDirectory, chunkDurationSeconds: 1, sessionURL: recordingNow.sessionURL)
     try await recordingNowWriter.append(samples: Array(repeating: 0.3, count: 16_000))
     _ = try await recordingNowWriter.finish()
     try await publish(recordingNow, attempt: .complete)

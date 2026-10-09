@@ -138,7 +138,7 @@ private final class InputFreeMicCaptureEngine: AppCaptureEngine {
             throw AudioCaptureEngineError.micInputVolumeNotConfigured
         }
         self.configuration = nil
-        let writer = try DurableAudioWriter(directory: root.appending(path: "capture-\(sessionID.uuidString)"), chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root.appending(path: "capture-\(sessionID.uuidString)"), chunkDurationSeconds: 1, sessionURL: root)
         let ring = AudioBlockRing(capacity: 16, blockFrameCapacity: 512, sampleRate: 16_000)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: clock,
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
@@ -228,7 +228,7 @@ struct MicInputStatusTests {
         let final = speechBatches(seconds: 1..<2, dBFS: -40)[0]
         let vad = ScriptedLiveVAD(batches: live, finalLevels: final)
         var measureRequests: [Bool] = []
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure, _ in
             measureRequests.append(measure)
             return vad
         }
@@ -332,7 +332,7 @@ struct MicInputStatusTests {
         engine.stopResult = cleanStopResult(testCheckpoint())
         let vad = ScriptedLiveVAD(batches: speechBatches(seconds: 0..<2, dBFS: -40))
         var measureRequests: [Bool] = []
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure, _ in
             measureRequests.append(measure)
             return vad
         }
@@ -360,7 +360,7 @@ struct MicInputStatusTests {
         engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _ in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _, _ in
             guard failsWhilePolling else { throw InjectedLiveVADFailure() }
             return ScriptedLiveVAD(batches: [], failsProcessing: true)
         }
@@ -386,7 +386,7 @@ struct MicInputStatusTests {
         let vad = ScriptedLiveVAD(batches: batches) { [clock = engine.clock] index in
             clock.set(seconds: InputFreeMicCaptureEngine.clockOrigin + Double(index + 1))
         }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _ in vad }
+        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _, _ in vad }
 
         await state.startRecording()
         #expect(state.micInputStatus == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
@@ -409,7 +409,7 @@ struct MicInputStatusTests {
         let vad = ScriptedLiveVAD(batches: speechBatches(seconds: 0..<4, dBFS: -40)) { [clock = engine.clock] index in
             clock.set(seconds: InputFreeMicCaptureEngine.clockOrigin + Double(index + 1))
         }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _ in vad }
+        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _, _ in vad }
 
         await state.startRecording()
         try await waitUntil { engine.volume.writes.count == 1 }

@@ -20,11 +20,11 @@ public enum SessionAudioReaders {
     public static func open(_ source: SessionAudioSource, layout: SessionLayout) throws -> any TimelineAudioReading {
         switch source {
         case .recordedPCM(let checkpoint):
-            let reader = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
+            let reader = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
             try reader.validateAudio()
             return reader
         case .recordedFLAC(let info):
-            let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: info)
+            let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: info, sessionURL: layout.sessionURL)
             try reader.validateAudio()
             return reader
         case .importedOriginal:

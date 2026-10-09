@@ -13,19 +13,17 @@ public struct AudioImporter: Sendable {
 
     public func importFile(_ sourceURL: URL, into sessionURL: URL) throws -> ImportedAudio {
         let audioDirectory = sessionURL.appending(path: "audio", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(
-            at: audioDirectory,
-            withIntermediateDirectories: true
-        )
+        try SessionFileAccess.createDirectory(audioDirectory, relativeTo: sessionURL)
 
         let fileExtension = sourceURL.pathExtension
         let name = fileExtension.isEmpty ? "original" : "original.\(fileExtension)"
         let destinationURL = audioDirectory.appending(path: name)
-        guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+        guard try SessionFileAccess.isDirectoryIfPresent(destinationURL, relativeTo: sessionURL) == nil else {
             throw AudioImporterError.destinationAlreadyExists
         }
 
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        let resolvedSource = sourceURL.resolvingSymlinksInPath()
+        try SessionFileAccess.copy(resolvedSource, relativeTo: resolvedSource.deletingLastPathComponent(), to: destinationURL, relativeTo: sessionURL)
         return ImportedAudio(originalURL: destinationURL)
     }
 }

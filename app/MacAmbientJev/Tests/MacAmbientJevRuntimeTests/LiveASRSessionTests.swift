@@ -99,7 +99,7 @@ private func makeLiveASRFixture(
         withIntermediateDirectories: true
     )
 
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     try await writer.append(
         samples: Array(repeating: Float(0.1), count: 16_000)
     )
@@ -108,6 +108,7 @@ private func makeLiveASRFixture(
     let engine = CountingASREngine(failOnCall: failOnCall)
     let session = LiveASRSession(
         sessionID: UUID(),
+        sessionURL: root,
         segmentationRunID: "seg_live_test",
         asrRunID: "asr_live_test",
         processingDirectory: root,
@@ -354,12 +355,12 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()
     let session = LiveASRSession(
-        sessionID: UUID(), segmentationRunID: "seg_live_test",
+        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
         asrRunID: "asr_live_test", processingDirectory: root,
         writer: try SessionWriter(sessionURL: root), asr: engine,
         sampleRate: checkpoint.sampleRate,
@@ -552,12 +553,12 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()
     let session = LiveASRSession(
-        sessionID: UUID(), segmentationRunID: "seg_live_test",
+        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
         asrRunID: "asr_live_test", processingDirectory: root,
         writer: try SessionWriter(sessionURL: root), asr: engine,
         sampleRate: checkpoint.sampleRate,

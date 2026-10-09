@@ -29,7 +29,8 @@ public protocol DiarizationEngine: Sendable {
     func prepare() async throws
     func diarize(
         fileURL: URL,
-        canonicalSampleRate: Double
+        canonicalSampleRate: Double,
+        sessionURL: URL
     ) async throws -> [SpeakerSpan]
     /// Releases the loaded models; `prepare()` loads them again.
     func unload() async

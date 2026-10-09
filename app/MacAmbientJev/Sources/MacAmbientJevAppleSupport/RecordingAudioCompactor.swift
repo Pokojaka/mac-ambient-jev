@@ -39,7 +39,7 @@ public struct RecordingAudioCompactor: Sendable {
         case .importedOriginal:
             throw RecordingAudioCompactorError.notARecording
         case .recordingFLAC(let stored):
-            try FLACTimelineReader(url: layout.recordingFLACURL, info: stored).validateAudio()
+            try FLACTimelineReader(url: layout.recordingFLACURL, info: stored, sessionURL: layout.sessionURL).validateAudio()
             info = stored
         case .recordingPCM:
             info = try publishFLAC(layout: layout)
@@ -51,49 +51,44 @@ public struct RecordingAudioCompactor: Sendable {
     }
 
     private func publishFLAC(layout: SessionLayout) throws -> TimelineAudioInfo {
-        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: layout.processingDirectory),
+        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL),
               checkpoint.committedFrames > 0 else {
             throw RecordingAudioCompactorError.emptyRecording
         }
-        let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
+        let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
         try pcm.validateAudio()
-        try removeIfPresent(layout.recordingFLACPartialURL)
+        try SessionFileAccess.removeIfPresent(layout.recordingFLACPartialURL, relativeTo: layout.sessionURL)
 
-        if FileManager.default.fileExists(atPath: layout.recordingFLACURL.path) {
+        if try SessionFileAccess.isDirectoryIfPresent(layout.recordingFLACURL, relativeTo: layout.sessionURL) != nil {
             do {
-                try FLACTimelineReader(url: layout.recordingFLACURL, info: pcm.info).validateAudio(against: pcm)
+                try FLACTimelineReader(url: layout.recordingFLACURL, info: pcm.info, sessionURL: layout.sessionURL).validateAudio(against: pcm)
                 return pcm.info
             } catch {
-                try removeIfPresent(layout.recordingFLACURL)
+                try SessionFileAccess.removeIfPresent(layout.recordingFLACURL, relativeTo: layout.sessionURL)
             }
         }
 
         let partial = layout.recordingFLACPartialURL
-        try RecordingFLAC.write(reader: pcm, to: partial)
+        try RecordingFLAC.write(reader: pcm, to: partial, sessionURL: layout.sessionURL)
         try interrupt?(.partialWritten)
-        try DurableFile.synchronize(partial)
+        try DurableFile.synchronize(partial, relativeTo: layout.sessionURL)
         try interrupt?(.partialSynchronized)
-        try FLACTimelineReader(url: partial, info: pcm.info).validateAudio(against: pcm)
+        try FLACTimelineReader(url: partial, info: pcm.info, sessionURL: layout.sessionURL).validateAudio(against: pcm)
         try interrupt?(.partialVerified)
-        try DurableFile.rename(partial, to: layout.recordingFLACURL)
+        try DurableFile.rename(partial, to: layout.recordingFLACURL, relativeTo: layout.sessionURL)
         try interrupt?(.published)
         return pcm.info
     }
 
     private func removePCM(layout: SessionLayout) throws {
-        if FileManager.default.fileExists(atPath: layout.processingDirectory.path) {
+        if try SessionFileAccess.isDirectoryIfPresent(layout.processingDirectory, relativeTo: layout.sessionURL) != nil {
             try interrupt?(.pcmRemovalStarted)
-            try FileManager.default.removeItem(at: layout.processingDirectory)
-            try DurableFile.synchronize(layout.audioDirectory)
+            try SessionFileAccess.removeIfPresent(layout.processingDirectory, relativeTo: layout.sessionURL)
+            try DurableFile.synchronize(layout.audioDirectory, relativeTo: layout.sessionURL, isDirectory: true)
         }
-        try removeIfPresent(layout.recordingFLACPartialURL)
+        try SessionFileAccess.removeIfPresent(layout.recordingFLACPartialURL, relativeTo: layout.sessionURL)
     }
 
-    private func removeIfPresent(_ url: URL) throws {
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-    }
 }
 
 /// Runs the storage work `SessionStorageMaintenance.required` reported for a session.

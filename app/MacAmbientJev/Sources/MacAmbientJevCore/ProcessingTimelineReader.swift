@@ -26,11 +26,13 @@ public enum ProcessingTimelineReaderError: LocalizedError, Equatable {
 /// Reads the durable PCM chunks of a recording or an import timeline.
 public struct ProcessingTimelineReader: TimelineAudioReading {
     public let directory: URL
+    private let sessionURL: URL
     public let checkpoint: AudioCheckpoint
     public let info: TimelineAudioInfo
 
-    public init(directory: URL, checkpoint: AudioCheckpoint) throws {
+    public init(directory: URL, checkpoint: AudioCheckpoint, sessionURL: URL) throws {
         self.directory = directory
+        self.sessionURL = sessionURL
         self.checkpoint = checkpoint
         self.info = try checkpoint.info
     }
@@ -106,16 +108,11 @@ public struct ProcessingTimelineReader: TimelineAudioReading {
     }
 
     private func chunkFileSize(_ filename: String) throws -> Int {
-        let values: URLResourceValues
         do {
-            values = try directory.appending(path: filename).resourceValues(forKeys: [.fileSizeKey])
-        } catch {
+            return try SessionFileAccess.fileSize(directory.appending(path: filename), relativeTo: sessionURL)
+        } catch let error as CocoaError where (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == Int(ENOENT) {
             throw ProcessingTimelineReaderError.unreadableChunk(filename)
         }
-        guard let size = values.fileSize else {
-            throw ProcessingTimelineReaderError.unreadableChunk(filename)
-        }
-        return size
     }
 
     /// Reads only the requested byte span after checking that the whole chunk has its indexed size.
@@ -125,10 +122,16 @@ public struct ProcessingTimelineReader: TimelineAudioReading {
     ) throws {
         let handle: FileHandle
         do {
-            handle = try FileHandle(forReadingFrom: directory.appending(path: filename))
+            handle = try SessionFileAccess.openHandle(directory.appending(path: filename), relativeTo: sessionURL)
+        } catch let error as CocoaError {
+            if (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == Int(ENOENT) {
+                throw ProcessingTimelineReaderError.unreadableChunk(filename)
+            }
+            throw error
         } catch {
             throw ProcessingTimelineReaderError.unreadableChunk(filename)
         }
+        defer { try? handle.close() }
         let data: Data?
         do {
             guard try handle.seekToEnd() == UInt64(frameCount * bytesPerFrame) else {

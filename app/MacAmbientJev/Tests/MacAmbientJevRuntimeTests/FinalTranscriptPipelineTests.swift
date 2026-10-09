@@ -77,7 +77,7 @@ private struct FakeFinalDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         await log.append("diarize")
         guard !shouldFail else { throw FakeFinalizationError.expected }
         return spans
@@ -92,8 +92,8 @@ private struct PaddedWindowFinalDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
-        let source = try CanonicalCAFAudioSource(fileURL: fileURL)
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
+        let source = try CanonicalCAFAudioSource(fileURL: fileURL, sessionURL: sessionURL)
         return try FluidOfflineDiarizationEngine.mapSegments(
             [TimedSpeakerSegment(
                 speakerId: "S1", embedding: [],
@@ -180,7 +180,7 @@ private func finalizationFixture(
         .appending(path: "processing", directoryHint: .isDirectory)
     let writer = try DurableAudioWriter(
         directory: processingDirectory,
-        chunkDurationSeconds: 1
+        chunkDurationSeconds: 1, sessionURL: sessionURL
     )
     try await writer.append(samples: samples ?? Array(repeating: 0.1, count: frames))
     return (paths, sessionURL, await writer.committedSnapshot())
@@ -813,9 +813,9 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: try ProcessingTimelineReader(
             directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
-            checkpoint: checkpoint
+            checkpoint: checkpoint, sessionURL: sourceSessionURL
         ),
-        to: originalURL
+        to: originalURL, sessionURL: importURL
     )
     let log = FinalizationCallLog()
     let processor = NativeSessionProcessor(
@@ -1464,7 +1464,7 @@ private struct PreparationRejectingDiarizer: DiarizationEngine {
 
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         await log.append("diarize")
         throw FakeFinalizationError.expected
     }

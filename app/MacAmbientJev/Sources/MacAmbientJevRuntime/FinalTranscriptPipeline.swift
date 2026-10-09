@@ -199,7 +199,7 @@ struct FinalTranscriptPipeline: Sendable {
             let diarizationInputURL = layout.diarizationInputURL
             try ProcessingTimelineAudioExporter(
                 framesPerBuffer: max(1, Int64(info.sampleRate.rounded()))
-            ).export(reader: audio, to: diarizationInputURL)
+            ).export(reader: audio, to: diarizationInputURL, sessionURL: layout.sessionURL)
 
             await onStatus(UserFacingStatus.preparingDiarization.text)
             try await startRun(.diarization, diarizationRunID, diarization.provenance)
@@ -419,7 +419,7 @@ struct FinalTranscriptPipeline: Sendable {
         segments: [SegmentReference],
         expected: [(ProcessingStage, String)]
     ) throws {
-        let eventData = try Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)
+        let eventData = try SessionFileAccess.read(SessionLayout(sessionURL: sessionURL).eventsURL, relativeTo: sessionURL)
         let recovered = try SessionRecovery.recoverJSONL(eventData)
         let objects = try recovered.lines.compactMap { line in
             try JSONSerialization.jsonObject(with: line) as? [String: Any]

@@ -44,7 +44,7 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     let runID = "seg_live_test"
     let vad = EmittingLiveVAD(runID: runID)
 
@@ -56,6 +56,7 @@ func liveVADSessionAccumulatesOnlyNewDurableAudio() async throws {
     let session = LiveVADSession(
         segmentationRunID: runID,
         processingDirectory: root,
+        sessionURL: root,
         processor: processor,
         initialCommittedFrames: firstCheckpoint.committedFrames
     )
@@ -95,7 +96,7 @@ func liveVADSessionFinishIsIdempotent() async throws {
         .appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
     try await writer.append(
         samples: Array(repeating: Float(0.1), count: 16_000)
     )
@@ -105,6 +106,7 @@ func liveVADSessionFinishIsIdempotent() async throws {
     let session = LiveVADSession(
         segmentationRunID: runID,
         processingDirectory: root,
+        sessionURL: root,
         processor: FluidVADTimelineProcessor(engine: EmittingLiveVAD(runID: runID)),
         initialCommittedFrames: checkpoint.committedFrames
     )

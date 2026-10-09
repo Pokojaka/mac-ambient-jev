@@ -29,7 +29,7 @@ private actor CountingDiarizer: DiarizationEngine {
     nonisolated let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     private(set) var unloadCount = 0
     func prepare() async throws {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] { [] }
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] { [] }
     func unload() async { unloadCount += 1 }
 }
 

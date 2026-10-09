@@ -142,13 +142,14 @@ struct MicSpeechLevelTests {
     func liveSessionDeliversEachChunkLevelExactlyOnce() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
         try await writer.append(samples: alternating(0.01, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let vad = ScriptedProbabilityVAD(measures: true) { _ in 0.9 }
         let session = LiveVADSession(
             segmentationRunID: "seg",
             processingDirectory: root,
+            sessionURL: root,
             processor: FluidVADTimelineProcessor(engine: vad),
             initialCommittedFrames: 0
         )
@@ -176,11 +177,11 @@ struct MicSpeechLevelTests {
     func rejectedChunksBetweenSpeechAreNotReported() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
         try await writer.append(samples: alternating(0.2, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(engine: ScriptedProbabilityVAD(measures: true) { $0 == 1 ? 0.3 : 0.9 })
-        _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+        _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
         #expect(await processor.takeMicSpeechLevels().map(\.startSeconds) == [0, 0.512])
     }
 
@@ -188,14 +189,14 @@ struct MicSpeechLevelTests {
     func chunkFailureNeitherDropsNorDuplicatesLevels() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
         try await writer.append(samples: alternating(0.01, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let processor = FluidVADTimelineProcessor(engine: ScriptedProbabilityVAD(measures: true, failingCall: 2) { _ in 0.9 })
         await #expect(throws: ScriptedVADFailure.injected) {
-            try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+            try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
         }
-        let segments = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+        let segments = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
         #expect(segments.map(\.segmentID) == ["chunk-0", "chunk-1", "chunk-2"])
         #expect(await processor.takeMicSpeechLevels().map(\.startSeconds) == [0, 0.256, 0.512])
         #expect(await processor.takeMicSpeechLevels().isEmpty)
@@ -205,7 +206,7 @@ struct MicSpeechLevelTests {
     func windowTouchingReplacementSilenceIsExcluded() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
         try await writer.append(samples: alternating(0.01, count: 6_000))
         try await writer.recordGap(startFrame: 6_000, frameCount: 1_000, reason: .missingCallback)
         try await writer.append(samples: Array(repeating: 0, count: 1_000))
@@ -213,7 +214,7 @@ struct MicSpeechLevelTests {
         let checkpoint = await writer.committedSnapshot()
         #expect(checkpoint.gapEvents.count == 1)
         let processor = FluidVADTimelineProcessor(engine: ScriptedProbabilityVAD(measures: true) { _ in 0.9 })
-        _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+        _ = try await processor.processAvailable(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
         #expect(await processor.takeMicSpeechLevels().map(\.startSeconds) == [0, 0.512])
     }
 
@@ -221,13 +222,14 @@ struct MicSpeechLevelTests {
     func disabledMeasurementDeliversNoLevels() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
         try await writer.append(samples: alternating(0.01, count: 16_000))
         let checkpoint = await writer.committedSnapshot()
         let vad = ScriptedProbabilityVAD(measures: false) { _ in 0.9 }
         let session = LiveVADSession(
             segmentationRunID: "seg",
             processingDirectory: root,
+            sessionURL: root,
             processor: FluidVADTimelineProcessor(engine: vad),
             initialCommittedFrames: 0
         )

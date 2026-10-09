@@ -154,10 +154,7 @@ public struct ProcessingMetadataStore: Sendable {
     }
 
     public func load() throws -> ProcessingMetadata? {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return nil
-        }
-        let data = try Data(contentsOf: url)
+        guard let data = try SessionFileAccess.readIfPresent(url, relativeTo: url.deletingLastPathComponent()) else { return nil }
         do {
             return try JSONDecoder().decode(ProcessingMetadata.self, from: data)
         } catch let error as DecodingError {
@@ -169,7 +166,7 @@ public struct ProcessingMetadataStore: Sendable {
 
     public func save(_ metadata: ProcessingMetadata) throws {
         let data = try JSONEncoder().encode(metadata)
-        try data.write(to: url, options: .atomic)
+        try SessionFileAccess.writeAtomically(data, to: url, relativeTo: url.deletingLastPathComponent())
     }
 
     /// Marks a new attempt as running and returns the metadata it replaced

@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import Foundation
 import MacAmbientJevCore
 
@@ -31,37 +32,32 @@ public struct ProcessingTimelineAudioExporter: Sendable {
     /// Writes into a hidden sibling first, then moves it over `destinationURL`.
     public func export(
         reader: any TimelineAudioReading,
-        to destinationURL: URL
+        to destinationURL: URL,
+        sessionURL: URL
     ) throws {
         let parent = destinationURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try SessionFileAccess.createDirectory(parent, relativeTo: sessionURL)
         let temporaryURL = parent.appending(
             path: ".\(UUID().uuidString)-\(destinationURL.lastPathComponent)"
         )
         do {
-            try write(reader: reader, to: temporaryURL)
-            if FileManager.default.fileExists(atPath: destinationURL.path) {
-                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
-            } else {
-                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-            }
+            try write(reader: reader, to: temporaryURL, sessionURL: sessionURL)
+            try SessionFileAccess.rename(temporaryURL, to: destinationURL, relativeTo: sessionURL)
         } catch {
-            if FileManager.default.fileExists(atPath: temporaryURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: temporaryURL)
-                } catch let cleanupError {
-                    throw ProcessingTimelineAudioExporterError.temporaryFileNotRemoved(
-                        path: temporaryURL.path,
-                        writeFailure: error.localizedDescription,
-                        cleanupFailure: cleanupError.localizedDescription
-                    )
-                }
+            do {
+                try SessionFileAccess.removeIfPresent(temporaryURL, relativeTo: sessionURL)
+            } catch let cleanupError {
+                throw ProcessingTimelineAudioExporterError.temporaryFileNotRemoved(
+                    path: temporaryURL.path,
+                    writeFailure: error.localizedDescription,
+                    cleanupFailure: cleanupError.localizedDescription
+                )
             }
             throw error
         }
     }
 
-    private func write(reader: any TimelineAudioReading, to url: URL) throws {
+    private func write(reader: any TimelineAudioReading, to url: URL, sessionURL: URL) throws {
         let committedFrames = reader.info.committedFrames
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: CanonicalAudio.sampleRate,
@@ -69,24 +65,46 @@ public struct ProcessingTimelineAudioExporter: Sendable {
         ) else {
             throw ProcessingTimelineAudioExporterError.invalidFormat
         }
-        let file = try AVAudioFile(
-            forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false
+        var destination = format.streamDescription.pointee
+        let descriptorFile = try DescriptorAudioFile(
+            url: url, sessionURL: sessionURL, type: kAudioFileCAFType, format: &destination
         )
-        var startFrame: Int64 = 0
-        while startFrame < committedFrames {
-            let endFrame = min(committedFrames, startFrame + framesPerBuffer)
-            let samples = try reader.readSamples(frameRange: startFrame..<endFrame)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
-                throw ProcessingTimelineAudioExporterError.invalidFormat
-            }
-            buffer.frameLength = AVAudioFrameCount(samples.count)
-            guard let channel = buffer.floatChannelData?[0] else {
-                throw ProcessingTimelineAudioExporterError.missingChannelData
-            }
-            channel.update(from: samples, count: samples.count)
-            try file.write(from: buffer)
-            startFrame = endFrame
+        var wrapped: ExtAudioFileRef?
+        let wrapStatus = ExtAudioFileWrapAudioFileID(descriptorFile.audioFile, true, &wrapped)
+        guard wrapStatus == noErr, let file = wrapped else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(wrapStatus))
         }
-        file.close()
+        do {
+            let clientStatus = ExtAudioFileSetProperty(
+                file, kExtAudioFileProperty_ClientDataFormat,
+                UInt32(MemoryLayout.size(ofValue: destination)), &destination
+            )
+            guard clientStatus == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(clientStatus)) }
+            var startFrame: Int64 = 0
+            while startFrame < committedFrames {
+                let endFrame = min(committedFrames, startFrame + framesPerBuffer)
+                let samples = try reader.readSamples(frameRange: startFrame..<endFrame)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
+                    throw ProcessingTimelineAudioExporterError.invalidFormat
+                }
+                buffer.frameLength = AVAudioFrameCount(samples.count)
+                guard let channel = buffer.floatChannelData?[0] else {
+                    throw ProcessingTimelineAudioExporterError.missingChannelData
+                }
+                channel.update(from: samples, count: samples.count)
+                let status = ExtAudioFileWrite(file, buffer.frameLength, buffer.audioBufferList)
+                guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+                startFrame = endFrame
+            }
+        } catch {
+            let status = ExtAudioFileDispose(file)
+            guard status == noErr else {
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSUnderlyingErrorKey: error])
+            }
+            throw error
+        }
+        let status = ExtAudioFileDispose(file)
+        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        try descriptorFile.close()
     }
 }

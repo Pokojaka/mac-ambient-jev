@@ -36,14 +36,14 @@ func audioFileTimelineBuilderRebuildsACorruptedTimelineFromTheOriginal() async t
 
     let first = try await builder.build(
         from: source,
-        into: processingDirectory
+        into: processingDirectory, sessionURL: root
     )
     try Data([0xFF]).write(
         to: processingDirectory.appending(path: first.chunkFiles[0])
     )
     let second = try await builder.build(
         from: source,
-        into: processingDirectory
+        into: processingDirectory, sessionURL: root
     )
 
     #expect(first.committedFrames == 12)
@@ -57,19 +57,16 @@ func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() a
     defer { try? FileManager.default.removeItem(at: root) }
 
     let processing = root.appending(path: "processing", directoryHint: .isDirectory)
-    let writer = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 8.0 / CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 8.0 / CanonicalAudio.sampleRate, sessionURL: root)
     try await writer.append(samples: (0..<24).map { Float($0) / 24 })
     let checkpoint = try await writer.finish()
 
-    let reader = try ProcessingTimelineReader(
-        directory: processing,
-        checkpoint: checkpoint
-    )
+    let reader = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint, sessionURL: root)
     let output = root.appending(path: "diarization.caf")
 
     try ProcessingTimelineAudioExporter(
         framesPerBuffer: 5
-    ).export(reader: reader, to: output)
+    ).export(reader: reader, to: output, sessionURL: root)
 
     let file = try AVAudioFile(forReading: output)
     #expect(file.length == 24)

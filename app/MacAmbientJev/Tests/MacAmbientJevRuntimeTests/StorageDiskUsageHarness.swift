@@ -27,7 +27,7 @@ private struct StorageHarnessDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         let file = try AVAudioFile(forReading: fileURL)
         guard canonicalSampleRate == CanonicalAudio.sampleRate,
               file.processingFormat.sampleRate == canonicalSampleRate,
@@ -110,8 +110,7 @@ func storageDiskUsageHarness() async throws {
         paths: paths, sessionID: recordingID, source: .recording(.systemAudio),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
-    let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: recordingURL).processingDirectory,
-        chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: recordingURL).processingDirectory, chunkDurationSeconds: 0.5, sessionURL: recordingURL)
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 512, sampleRate: sourceFormat.sampleRate)
     let drain = AudioCaptureDrain(ring: ring, writer: writer,
         converter: try CanonicalAudioResampler(sampleRate: sourceFormat.sampleRate))
@@ -173,7 +172,7 @@ func storageDiskUsageHarness() async throws {
     let original = try AudioImporter().importFile(source, into: importURL).originalURL
     // Snapshot the same import timeline that finalization builds from the original.
     _ = try await AudioFileTimelineBuilder().build(
-        from: original, into: SessionLayout(sessionURL: importURL).processingDirectory
+        from: original, into: SessionLayout(sessionURL: importURL).processingDirectory, sessionURL: importURL
     )
     let importDuring = try storageHarnessBytes(importURL)
     let importResult = await processor.processSession(

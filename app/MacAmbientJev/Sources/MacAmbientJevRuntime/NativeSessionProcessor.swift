@@ -214,6 +214,7 @@ public actor NativeSessionProcessor {
         }
         let liveSession = LiveASRSession(
             sessionID: sessionID,
+            sessionURL: sessionLayout.sessionURL,
             segmentationRunID: segmentationRunID,
             asrRunID: asrRunID,
             processingDirectory: sessionLayout.processingDirectory,
@@ -449,8 +450,8 @@ public actor NativeSessionProcessor {
         }
         await onStatus(UserFacingStatus.convertingTimeline.text)
         let checkpoint = try await AudioFileTimelineBuilder()
-            .build(from: originalURL, into: layout.processingDirectory)
-        let reader = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
+            .build(from: originalURL, into: layout.processingDirectory, sessionURL: layout.sessionURL)
+        let reader = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
         try reader.validateAudio()
         try SessionAudioStorageStore(layout: layout).save(.importedOriginal(reader.info))
         return reader

@@ -81,7 +81,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         paths: paths, sessionID: sessionID, source: .recording(.systemAudio),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
-    let writer = try DurableAudioWriter(directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory), chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory), chunkDurationSeconds: 0.5, sessionURL: sessionURL)
     state.showNewSession(sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let pressure = ThermalPressureSource(.critical)
@@ -165,7 +165,7 @@ private struct UnusedThermalQueueDiarizer: DiarizationEngine {
     )
     func prepare() async throws { throw UnexpectedDiarization.called }
     func unload() async {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         throw UnexpectedDiarization.called
     }
     private enum UnexpectedDiarization: Error { case called }

@@ -221,7 +221,7 @@ struct MeasureLiveLatencyCommand {
 
         let writer = try DurableAudioWriter(
             directory: processingDirectory,
-            chunkDurationSeconds: LiveTranscriptionCadence.durableChunkDurationSeconds
+            chunkDurationSeconds: LiveTranscriptionCadence.durableChunkDurationSeconds, sessionURL: sessionDirectory
         )
         var checkpoint = try await writer.checkpoint()
         let processor = NativeSessionProcessor(
@@ -240,6 +240,7 @@ struct MeasureLiveLatencyCommand {
         )
         let vadSession = try await LiveVADSession.make(
             processingDirectory: processingDirectory,
+            sessionURL: sessionDirectory,
             initialCheckpoint: checkpoint,
             measureMicInputLevels: false,
             segmentationRunID: segmentationRunID

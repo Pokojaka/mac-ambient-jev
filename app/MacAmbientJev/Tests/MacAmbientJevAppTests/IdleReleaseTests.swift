@@ -30,7 +30,7 @@ private actor CountingASR: ASREngine {
 private struct NoopDiarizer: DiarizationEngine {
     let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] { [] }
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] { [] }
     func unload() async {}
 }
 

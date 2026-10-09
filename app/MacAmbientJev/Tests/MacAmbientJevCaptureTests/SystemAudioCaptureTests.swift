@@ -659,7 +659,7 @@ func fakeTapGapUsesSharedDrain() async throws {
     #expect(result.gapCount == 1 && result.totalGapFrames == 2)
     let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: root, sessionID: sessionID)
     let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
-    let samples = try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint)
+    let samples = try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint, sessionURL: sessionURL)
         .readSamples(frameRange: 0..<10)
     #expect(samples == [0.25, -0.25, 0.5, -0.5, 0, 0, 0.25, -0.25, 0.5, -0.5])
 }

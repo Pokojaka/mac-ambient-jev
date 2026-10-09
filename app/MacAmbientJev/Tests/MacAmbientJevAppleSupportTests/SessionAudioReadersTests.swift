@@ -45,7 +45,7 @@ private func writeFLAC(_ samples: [Float], to url: URL) throws {
 func openingAPCMRecordingReadsItsChunks() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     try await writer.append(samples: samples16)
     let checkpoint = try await writer.finish()
 
@@ -59,7 +59,7 @@ func openingAPCMRecordingReadsItsChunks() async throws {
 func openingAPCMRecordingWithACorruptChunkThrows() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     try await writer.append(samples: samples16)
     let checkpoint = try await writer.finish()
     try Data(count: 3).write(to: layout.processingDirectory.appending(path: checkpoint.chunkFiles[0]))
@@ -116,7 +116,7 @@ func openingATruncatedFLACRecordingThrows() throws {
 func aFLACRecordingNeverFallsBackToPCMStillOnDisk() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     try await writer.append(samples: samples16)
     let checkpoint = try await writer.finish()
 

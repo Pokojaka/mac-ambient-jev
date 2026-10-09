@@ -19,7 +19,7 @@ protocol LiveVADProcessing: Sendable {
 extension LiveVADSession: LiveVADProcessing {}
 
 typealias LiveVADFactory = @MainActor (
-    _ processingDirectory: URL, _ initialCheckpoint: AudioCheckpoint, _ measureMicInputLevels: Bool
+    _ processingDirectory: URL, _ initialCheckpoint: AudioCheckpoint, _ measureMicInputLevels: Bool, _ sessionURL: URL
 ) async throws -> any LiveVADProcessing
 
 enum MicInputVolumePreference {

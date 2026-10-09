@@ -42,3 +42,18 @@ func sessionsRootPolicyRejectsProtectedOverlapsAndSymlinkAliases() throws {
     let safe = home.appending(path: "scratch/sessions", directoryHint: .isDirectory)
     #expect(try SessionsRootPolicy.validated(safe, protectedRoots: protectedRoots, fileManager: fileManager).path == safe.path)
 }
+
+@Test
+func sessionsRootPolicyRejectsSymlinkToUnprotectedDirectory() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let real = root.appending(path: "real-sessions")
+    let link = root.appending(path: "linked-sessions")
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+    #expect(throws: SessionsRootPolicy.Error.unsafeRoot) {
+        try SessionsRootPolicy.validated(link, protectedRoots: [], fileManager: .default)
+    }
+    #expect(try SessionsRootPolicy.validated(real, protectedRoots: [], fileManager: .default).path == real.path)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: real.path).isEmpty)
+}

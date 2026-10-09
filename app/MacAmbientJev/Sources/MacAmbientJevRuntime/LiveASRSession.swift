@@ -100,6 +100,7 @@ public actor LiveASRSession {
     public nonisolated let asrRunID: String
 
     private let sessionID: UUID
+    private let sessionURL: URL
     private let processingDirectory: URL
     private let writer: SessionWriter
     private let asr: any ASREngine
@@ -129,6 +130,7 @@ public actor LiveASRSession {
 
     public init(
         sessionID: UUID,
+        sessionURL: URL,
         segmentationRunID: String,
         asrRunID: String,
         processingDirectory: URL,
@@ -139,6 +141,7 @@ public actor LiveASRSession {
         contentPriorityRunID: String?
     ) {
         self.sessionID = sessionID
+        self.sessionURL = sessionURL
         self.segmentationRunID = segmentationRunID
         self.asrRunID = asrRunID
         self.clauseBoundaryRunID = clauseBoundaryRunID
@@ -228,7 +231,8 @@ public actor LiveASRSession {
         let loader = ASRAudioLoader(
             reader: try ProcessingTimelineReader(
                 directory: processingDirectory,
-                checkpoint: checkpoint
+                checkpoint: checkpoint,
+                sessionURL: sessionURL
             )
         )
 

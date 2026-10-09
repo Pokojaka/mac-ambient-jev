@@ -143,9 +143,7 @@ extension AppState {
     }
 
     private static func existingDirectory(_ url: URL, missing: SessionFolderRevealError) throws -> URL {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
+        guard try SessionFileAccess.isDirectoryIfPresent(url, relativeTo: url) == true else {
             throw missing
         }
         return url

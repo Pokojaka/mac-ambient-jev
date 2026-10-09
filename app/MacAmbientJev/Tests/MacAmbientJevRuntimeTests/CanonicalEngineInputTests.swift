@@ -23,7 +23,7 @@ func canonicalCAFAudioSourceReadsBoundedRandomRangesWithoutAudioCopies() throws 
     }
     file.close()
     let originalSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
-    let source = try CanonicalCAFAudioSource(fileURL: url)
+    let source = try CanonicalCAFAudioSource(fileURL: url, sessionURL: url.deletingLastPathComponent())
     #expect(source.sampleCount == 128000)
     for (offset, count) in [(8203, 20017), (127993, 20017), (128000, 320), (128003, 320), (0, 320), (503, 8192)] {
         let destination = UnsafeMutablePointer<Float>.allocate(capacity: count)
@@ -87,7 +87,7 @@ private struct ObservingDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         let file = try AVAudioFile(forReading: fileURL)
         let format = file.fileFormat
         log.state.withLock {
@@ -142,8 +142,7 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
     let recordingURL = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths, sessionID: recordingID, source: .recording(.systemAudio),
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!)
-    let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: recordingURL).processingDirectory,
-        chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: SessionLayout(sessionURL: recordingURL).processingDirectory, chunkDurationSeconds: 0.5, sessionURL: recordingURL)
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 512, sampleRate: 48_000)
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: 48_000))
     var device = (0..<96_000).map { Float(0.3 * sin(2 * .pi * 440 * Double($0) / 48_000)) }

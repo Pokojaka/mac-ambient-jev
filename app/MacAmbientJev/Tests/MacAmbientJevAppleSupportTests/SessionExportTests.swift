@@ -362,12 +362,12 @@ struct ExportFixture {
         let id = UUID()
         let session = try writeManifest(id: id, source: .recording(.microphone))
         let layout = SessionLayout(sessionURL: session)
-        let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate)
+        let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: (fixtureSampleRate * 0.5) / CanonicalAudio.sampleRate, sessionURL: layout.sessionURL)
         try await writer.append(samples: samples)
         let checkpoint = try await writer.finish()
         if compacted {
-            let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint)
-            try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACURL)
+            let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
+            try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACURL, sessionURL: layout.sessionURL)
             try SessionAudioStorageStore(layout: layout).save(.recordingFLAC(pcm.info))
             try FileManager.default.removeItem(at: layout.processingDirectory)
         }

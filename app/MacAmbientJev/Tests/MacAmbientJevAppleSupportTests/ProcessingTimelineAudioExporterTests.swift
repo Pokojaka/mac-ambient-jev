@@ -19,10 +19,10 @@ import Testing
     }
     let previous = try Data(contentsOf: destination)
     let checkpoint = AudioCheckpoint(committedFrames: 1, sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE, chunkFiles: ["missing.f32le"], chunkFrameCounts: [1], gapEvents: [])
-    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     do {
         try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000)
-            .export(reader: reader, to: destination)
+            .export(reader: reader, to: destination, sessionURL: root)
         Issue.record("Missing chunk should fail export")
     } catch {}
     #expect(try Data(contentsOf: destination) == previous)

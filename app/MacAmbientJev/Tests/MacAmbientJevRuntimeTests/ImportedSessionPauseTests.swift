@@ -21,7 +21,7 @@ private struct PausedImportDiarizer: DiarizationEngine {
     func prepare() async throws {}
     func unload() async {}
 
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)]
     }
 }
@@ -60,13 +60,13 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
         .appending(path: "processing", directoryHint: .isDirectory)
-    let writer = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
     try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
-        reader: try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint),
-        to: sourceURL
+        reader: try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint, sessionURL: sessionURL),
+        to: sourceURL, sessionURL: sessionURL
     )
 
     let asr = PausedImportASR()

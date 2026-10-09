@@ -48,12 +48,10 @@ actor RunMonitor {
             throw RunMonitorError.duplicateDestination
         }
         for url in [metricsURL, thermalURL, memoryURL] {
-            guard !FileManager.default.fileExists(atPath: url.path) else {
+            try SessionFileAccess.createDirectory(url.deletingLastPathComponent(), relativeTo: url.deletingLastPathComponent())
+            guard try SessionFileAccess.isDirectoryIfPresent(url, relativeTo: url.deletingLastPathComponent()) == nil else {
                 throw RunMonitorError.destinationExists(url.path)
             }
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
         }
         self.runID = runID
         self.metricsURL = metricsURL
@@ -84,7 +82,7 @@ actor RunMonitor {
             runID: runID, disposition: result.disposition,
             asr: result.metrics, message: result.message
         ))
-        try data.write(to: metricsURL, options: .atomic)
+        try SessionFileAccess.writeAtomically(data, to: metricsURL, relativeTo: metricsURL.deletingLastPathComponent())
         if let samplingFailure { throw samplingFailure }
     }
 
@@ -143,12 +141,8 @@ actor RunMonitor {
     private static func appendLine(_ value: [String: Any], to url: URL) throws {
         var data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
         data.append(0x0A)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
-                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
-            }
-        }
-        let handle = try FileHandle(forWritingTo: url)
+        let handle = try SessionFileAccess.openHandle(url, relativeTo: url.deletingLastPathComponent(), writable: true, create: true)
+        defer { try? handle.close() }
         let written = Result {
             try handle.seekToEnd()
             try handle.write(contentsOf: data)

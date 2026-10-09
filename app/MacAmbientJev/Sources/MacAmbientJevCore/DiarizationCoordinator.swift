@@ -46,7 +46,8 @@ public actor DiarizationCoordinator {
         try await engine.prepare()
         let spans = try await engine.diarize(
             fileURL: fileURL,
-            canonicalSampleRate: canonicalSampleRate
+            canonicalSampleRate: canonicalSampleRate,
+            sessionURL: writer.sessionURL
         )
 
         var events = existingEvents

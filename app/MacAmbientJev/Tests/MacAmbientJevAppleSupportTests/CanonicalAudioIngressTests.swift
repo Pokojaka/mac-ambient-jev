@@ -35,7 +35,7 @@ func continuousCanonicalIngress(rate: Double) async throws {
     let referenceConverter = try CanonicalAudioResampler(sampleRate: rate)
     var reference = try referenceConverter.convert(mono: source)
     reference += try referenceConverter.finish()
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 0.5)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 0.5, sessionURL: root)
     let ring = AudioBlockRing(capacity: 8, blockFrameCapacity: 512, sampleRate: rate)
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: rate))
     var cursor = 0
@@ -50,7 +50,7 @@ func continuousCanonicalIngress(rate: Double) async throws {
     ring.finish(tailFrame: Int64(frames))
     let checkpoint = try await drain.finish()
     #expect(try await drain.finish() == checkpoint)
-    let actual = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint).readSamples(frameRange: 0..<checkpoint.committedFrames)
+    let actual = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<checkpoint.committedFrames)
     #expect(try checkpoint.committedFrames == CanonicalAudio.boundary(Int64(frames), sampleRate: rate))
     #expect(actual.count == reference.count)
     // Block boundaries must not reset phase, priming, or the filter state.
@@ -70,7 +70,7 @@ func fractionalGapsOverlapOverflowAndStopTail() async throws {
     let root = try ingressRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let rate = 44_100.0
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 0.01)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 0.01, sessionURL: root)
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 512, sampleRate: rate)
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: rate))
     #expect(ingressPush(tone(0..<512, rate: rate), at: 0, ring: ring))
@@ -101,7 +101,7 @@ func fractionalGapsOverlapOverflowAndStopTail() async throws {
     let converter = try CanonicalAudioResampler(sampleRate: rate)
     var expected = try converter.convert(mono: source)
     expected += try converter.finish()
-    let actual = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint).readSamples(frameRange: 0..<checkpoint.committedFrames)
+    let actual = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<checkpoint.committedFrames)
     #expect(actual == expected)
 }
 
@@ -109,7 +109,7 @@ func fractionalGapsOverlapOverflowAndStopTail() async throws {
 func failedCanonicalAppendRetriesOutputWithoutReconversion() async throws {
     let root = try ingressRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 0.001)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 0.001, sessionURL: root)
     let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 512, sampleRate: 44_100)
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: 44_100))
     let source = tone(0..<2048, rate: 44_100)
@@ -126,7 +126,7 @@ func failedCanonicalAppendRetriesOutputWithoutReconversion() async throws {
     let converter = try CanonicalAudioResampler(sampleRate: 44_100)
     var expected = try converter.convert(mono: source)
     expected += try converter.finish()
-    let actual = try ProcessingTimelineReader(directory: root, checkpoint: final).readSamples(frameRange: 0..<final.committedFrames)
+    let actual = try ProcessingTimelineReader(directory: root, checkpoint: final, sessionURL: root).readSamples(frameRange: 0..<final.committedFrames)
     #expect(actual == expected)
 }
 
@@ -152,13 +152,13 @@ func importedChannelsAreAveragedBeforeContinuousSRC() async throws {
     let bytes = try Data(contentsOf: url)
     let processing = root.appending(path: "processing")
     let builder = AudioFileTimelineBuilder(readFrameCount: 512)
-    let checkpoint = try await builder.build(from: url, into: processing)
+    let checkpoint = try await builder.build(from: url, into: processing, sessionURL: root)
     let converter = try CanonicalAudioResampler(sampleRate: rate)
     var expected = try converter.convert(mono: source.map { $0 * 0.625 })
     expected += try converter.finish()
-    let actual = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint).readSamples(frameRange: 0..<checkpoint.committedFrames)
+    let actual = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<checkpoint.committedFrames)
     #expect(actual.count == expected.count)
     #expect(zip(actual, expected).allSatisfy { abs($0 - $1) < 0.000001 })
     #expect(try Data(contentsOf: url) == bytes)
-    #expect(try await builder.build(from: url, into: processing) == checkpoint)
+    #expect(try await builder.build(from: url, into: processing, sessionURL: root) == checkpoint)
 }

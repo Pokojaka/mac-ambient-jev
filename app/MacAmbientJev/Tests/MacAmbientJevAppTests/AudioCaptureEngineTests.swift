@@ -63,7 +63,7 @@ func stopResultReportsTimelineLoss() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 2)
-        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: directory)
         let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: CanonicalAudio.sampleRate))
         #expect(pushRingMono([1, 2], at: 0, into: ring))
         var sample: Float = 5
@@ -80,7 +80,7 @@ func stopResultReportsTimelineLoss() async throws {
         let result = cleanStopResult(checkpoint)
         #expect(ring.overflowCount == 0)
         #expect(checkpoint.gapEvents == expectedGap.map { [$0] } ?? [])
-        #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
+        #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint, sessionURL: directory)
             .readSamples(frameRange: 0..<tailFrame) == expectedSamples)
         #expect(result.didOverflow == (expectedGap != nil))
     }
@@ -359,7 +359,7 @@ private func drainMainActor() async {
                                         clock: ManualClock(seconds: 10),
                                         micInputVolumeFactory: { factoryCalls += 1; return volume })
         let directory = root.appending(path: "capture", directoryHint: .isDirectory)
-        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1, sessionURL: root)
         let ring = AudioBlockRing(capacity: 16, blockFrameCapacity: 512, sampleRate: 16_000)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: ManualClock(seconds: 10),
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))
@@ -394,7 +394,7 @@ private func drainMainActor() async {
         #expect(volume.writes.count == 2 && volume.unbinds == 1)
         #expect(log.statuses.last?.adjustment == .restoreFailed(.writeRejected))
         #expect(result.checkpoint.committedFrames == 1_600)
-        #expect(try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint)
+        #expect(try ProcessingTimelineReader(directory: directory, checkpoint: result.checkpoint, sessionURL: root)
             .readSamples(frameRange: 0..<1_600) == samples)
     }
 
@@ -408,7 +408,7 @@ private func drainMainActor() async {
         let engine = AudioCaptureEngine(paths: paths, bufferFrameCount: 512,
                                         clock: ManualClock(seconds: 10),
                                         micInputVolumeFactory: { factoryCalls += 1; return RecordingMicVolume() })
-        let writer = try DurableAudioWriter(directory: root.appending(path: "capture"), chunkDurationSeconds: 1)
+        let writer = try DurableAudioWriter(directory: root.appending(path: "capture"), chunkDurationSeconds: 1, sessionURL: root)
         let ring = AudioBlockRing(capacity: 16, blockFrameCapacity: 512, sampleRate: 16_000)
         let sink = TimestampedMonoSink(ring: ring, frameCapacity: 512, clock: ManualClock(seconds: 10),
                                        meter: RawInputMeter(channelCount: 1, sampleRate: 16_000))

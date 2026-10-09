@@ -154,7 +154,7 @@ func temporaryDefaults() throws -> (defaults: UserDefaults, suiteName: String) {
 
 @MainActor
 func idleLiveVADFactory() -> LiveVADFactory {
-    { _, _, _ in FakeLiveVAD() }
+    { _, _, _, _ in FakeLiveVAD() }
 }
 
 /// A stop with no loss, storage failure or release failure.
@@ -196,7 +196,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let sessionID = try #require(startedSessionID)
     let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
     let directory = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
-    let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1)
+    let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await writer.append(samples: Array(repeating: 0.25, count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let message = AudioCaptureEngineError.writerFailure(
@@ -230,7 +230,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     #expect(!state.isRecording)
     #expect(state.savedSessions.first(where: { $0.sessionID == sessionID })?.audioSource
         == .recordedPCM(checkpoint))
-    #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint)
+    #expect(try ProcessingTimelineReader(directory: directory, checkpoint: checkpoint, sessionURL: sessionURL)
         .readSamples(frameRange: 0..<16_000) == Array(repeating: 0.25, count: 16_000))
 }
 
@@ -255,7 +255,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            engines: .production(paths: paths), makeLiveVADSession: { _, _, _ in vad }
+            engines: .production(paths: paths), makeLiveVADSession: { _, _, _, _ in vad }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -305,7 +305,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
             let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
             startedSessionURL = sessionURL
             let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
-            let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1)
+            let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 1, sessionURL: sessionURL)
             if hasGap {
                 try await writer.recordGap(startFrame: 0, frameCount: 16_000, reason: .missingCallback)
                 try await writer.append(samples: Array(repeating: 0, count: 16_000))

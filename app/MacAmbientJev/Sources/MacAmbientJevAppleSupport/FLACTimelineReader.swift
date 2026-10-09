@@ -38,14 +38,20 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
     public let url: URL
     public let info: TimelineAudioInfo
     private static let framesPerRead: AVAudioFrameCount = 8_192
-    private let file: AVAudioFile
+    private let file: DescriptorAudioReader
     private let buffer: AVAudioPCMBuffer
     private let lock = NSLock()
 
-    public init(url: URL, info: TimelineAudioInfo) throws {
-        let file: AVAudioFile
+    public init(url: URL, info: TimelineAudioInfo, sessionURL: URL) throws {
+        let file: DescriptorAudioReader
         do {
-            file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+            file = try DescriptorAudioReader(url: url, sessionURL: sessionURL)
+        } catch let error as CocoaError {
+            if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+               underlying.domain == NSPOSIXErrorDomain, underlying.code == ENOENT {
+                throw FLACTimelineReaderError.unreadable(error.localizedDescription)
+            }
+            throw error
         } catch {
             throw FLACTimelineReaderError.unreadable(error.localizedDescription)
         }
@@ -77,7 +83,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         defer { lock.unlock() }
         var output = [Float]()
         output.reserveCapacity(frameRange.count)
-        file.framePosition = frameRange.lowerBound
+        try file.seek(to: frameRange.lowerBound)
         while output.count < frameRange.count {
             let requested = min(Int(Self.framesPerRead), frameRange.count - output.count)
             let read = try readBuffer(frameCount: AVAudioFrameCount(requested), at: frameRange.lowerBound + Int64(output.count))
@@ -102,7 +108,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         defer { lock.unlock() }
         let committedFrames = info.committedFrames
         let storedFrames = RecordingFLAC.storedFrames(committedFrames: committedFrames)
-        file.framePosition = 0
+        try file.seek(to: 0)
         var decoded: Int64 = 0
         while decoded < storedFrames {
             let requested = AVAudioFrameCount(min(Int64(Self.framesPerRead), storedFrames - decoded))

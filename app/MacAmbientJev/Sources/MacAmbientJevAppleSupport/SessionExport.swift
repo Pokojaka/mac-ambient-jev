@@ -123,10 +123,10 @@ public struct SessionExporter: Sendable {
             case .recordedPCM:
                 throw SessionExportError.recordingNotCompacted
             case .recordedFLAC(let info):
-                try FLACTimelineReader(url: layout.recordingFLACURL, info: info).validateAudio()
-                try fileManager.copyItem(at: layout.recordingFLACURL, to: audioURL)
+                try FLACTimelineReader(url: layout.recordingFLACURL, info: info, sessionURL: layout.sessionURL).validateAudio()
+                try SessionFileAccess.copy(layout.recordingFLACURL, relativeTo: layout.sessionURL, to: audioURL, relativeTo: staging)
             case .importedOriginal(let originalURL, _):
-                try fileManager.copyItem(at: originalURL, to: audioURL)
+                try SessionFileAccess.copy(originalURL, relativeTo: layout.sessionURL, to: audioURL, relativeTo: staging)
             }
 
             if fileManager.fileExists(atPath: destination.path) {

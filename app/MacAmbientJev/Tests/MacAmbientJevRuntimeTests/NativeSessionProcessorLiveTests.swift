@@ -83,7 +83,7 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         .appending(path: "audio", directoryHint: .isDirectory)
         .appending(path: "processing", directoryHint: .isDirectory)
 
-    let audioWriter = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1)
+    let audioWriter = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await audioWriter.append(
         samples: Array(repeating: Float(0.1), count: 16_000)
     )
@@ -210,7 +210,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     )
     let audioWriter = try DurableAudioWriter(directory: sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
-        .appending(path: "processing", directoryHint: .isDirectory), chunkDurationSeconds: 1)
+        .appending(path: "processing", directoryHint: .isDirectory), chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audioWriter.committedSnapshot()
     let asr = GatedLiveProcessorASR()
@@ -272,7 +272,7 @@ private struct LiveProcessorFinalDiarizer: DiarizationEngine {
     let provenance = RunProvenance(engine: "fixture-diarizer", model: nil, version: "test", configuration: [:])
     func prepare() async throws {}
     func unload() async {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double) async throws -> [SpeakerSpan] {
+    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
         [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.95)]
     }
 }
@@ -359,7 +359,7 @@ private struct NativeJevFixture {
             paths: paths, sessionID: sessionID, source: .recording(.microphone),
             createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
         )
-        let audio = try DurableAudioWriter(directory: SessionLayout(sessionURL: sessionURL).processingDirectory, chunkDurationSeconds: 1)
+        let audio = try DurableAudioWriter(directory: SessionLayout(sessionURL: sessionURL).processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
         try await audio.append(samples: Array(repeating: 0.1, count: 16_000))
         checkpoint = await audio.committedSnapshot()
         asr = ScriptedLiveProcessorASR(texts: texts)

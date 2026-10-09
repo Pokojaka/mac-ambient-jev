@@ -269,7 +269,7 @@ struct CaptureSystemAudioCommand {
             throw CaptureSystemAudioError.transcriptionFailed("Completed transcript runs are missing")
         }
         let recovered = try SessionRecovery.recoverJSONL(
-            Data(contentsOf: sessionURL.appending(path: "events.jsonl"))
+            SessionFileAccess.read(sessionURL.appending(path: "events.jsonl"), relativeTo: sessionURL)
         )
         guard !recovered.droppedIncompleteTail else {
             throw CaptureSystemAudioError.transcriptionFailed("Transcript event log has an incomplete tail")

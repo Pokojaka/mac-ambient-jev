@@ -143,7 +143,7 @@ public struct SavedSessionCatalog {
     }
 
     public func list(sessionsRoot: URL) throws -> [SavedSessionSummary] {
-        guard fileManager.fileExists(atPath: sessionsRoot.path) else {
+        guard try SessionFileAccess.isDirectoryIfPresent(sessionsRoot, relativeTo: sessionsRoot) == true else {
             return []
         }
 
@@ -198,7 +198,7 @@ public struct SavedSessionCatalog {
         let hasActiveTranscript: Bool
         if let activeRuns = metadata?.activeRuns {
             do {
-                let data = try Data(contentsOf: layout.eventsURL)
+                let data = try SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL)
                 let recovered = try SessionRecovery.recoverJSONL(data)
                 guard !recovered.droppedIncompleteTail else {
                     throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)

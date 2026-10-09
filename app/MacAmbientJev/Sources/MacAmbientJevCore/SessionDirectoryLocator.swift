@@ -48,11 +48,16 @@ struct SessionDirectoryInventory {
     static func read(sessionsRoot: URL, fileManager: FileManager) throws -> [Self] {
         // Enumerate existing names, preserving the caller's root URL spelling.
         // Foundation's URL enumeration can rewrite /var to /private/var on macOS.
-        let names = try fileManager.contentsOfDirectory(atPath: sessionsRoot.path)
+        let names = try SessionFileAccess.contentsOfDirectory(sessionsRoot, relativeTo: sessionsRoot).map(\.lastPathComponent)
         var entries: [Self] = []
         for name in names.sorted() {
             let url = sessionsRoot.appending(path: name, directoryHint: .isDirectory)
-            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
+            do {
+                guard try SessionFileAccess.isDirectoryIfPresent(url, relativeTo: sessionsRoot) == true else { continue }
+            } catch {
+                entries.append(Self(url: url, manifest: .failure(error)))
+                continue
+            }
             let manifest: Result<SessionManifest, Error>
             do {
                 manifest = .success(try SessionLayout(sessionURL: url).loadManifest())

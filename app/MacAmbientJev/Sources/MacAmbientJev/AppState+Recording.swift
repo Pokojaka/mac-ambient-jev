@@ -150,7 +150,7 @@ extension AppState {
                 let processing = SessionLayout(sessionURL: sessionURL).processingDirectory
                 let keepSession: Bool
                 do {
-                    let checkpoint = try AudioCheckpoint.loadRecovered(from: processing)
+                    let checkpoint = try AudioCheckpoint.loadRecovered(from: processing, relativeTo: sessionURL)
                     keepSession = try checkpoint?.info.hasCapturedAudio ?? false
                 } catch {
                     // Damaged durable data must remain available for recovery/diagnosis.
@@ -160,7 +160,7 @@ extension AppState {
                     refreshSavedSessions()
                 } else {
                     do {
-                        try FileManager.default.removeItem(at: sessionURL)
+                        try SessionFileAccess.removeIfPresent(sessionURL, relativeTo: paths.sessionsRoot)
                     } catch {
                         removalFailure = "空の録音フォルダを削除できませんでした: \(error.localizedDescription)"
                         refreshSavedSessions()

@@ -170,7 +170,7 @@ extension AppState {
             var message = "音声ファイルを読み込めませんでした: \(error.localizedDescription)"
             if let sessionURL = createdSessionURL {
                 do {
-                    try FileManager.default.removeItem(at: sessionURL)
+                    try SessionFileAccess.removeIfPresent(sessionURL, relativeTo: paths.sessionsRoot)
                 } catch let cleanupError {
                     message += "（読み込み途中のセッションを削除できませんでした: \(cleanupError.localizedDescription)）"
                 }

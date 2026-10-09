@@ -49,11 +49,11 @@ func asrAudioLoaderReadsCanonicalSegmentWithoutChangingSamples() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
     try await writer.append(samples: [2, 3, 6])
     let checkpoint = try await writer.finish()
 
-    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint)
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     let loader = ASRAudioLoader(reader: reader)
     let segment = SegmentReference(
         segmentationRunID: "seg_run",
@@ -72,10 +72,10 @@ func asrAudioLoaderReadsCanonicalSegmentWithoutChangingSamples() async throws {
 func asrAudioLoaderRejectsReversedSegmentRange() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate)
+    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
     try await writer.append(samples: [1, 2, 3])
     let checkpoint = try await writer.finish()
-    let loader = ASRAudioLoader(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint))
+    let loader = ASRAudioLoader(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
 
     #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
         try loader.load(segment: SegmentReference(

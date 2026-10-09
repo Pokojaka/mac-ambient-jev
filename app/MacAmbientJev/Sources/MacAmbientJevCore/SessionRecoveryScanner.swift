@@ -103,7 +103,7 @@ public struct SessionRecoveryScanner: Sendable {
     }
 
     public func pendingSessions() throws -> SessionRecoveryScan {
-        guard FileManager.default.fileExists(atPath: sessionsRoot.path) else {
+        guard try SessionFileAccess.isDirectoryIfPresent(sessionsRoot, relativeTo: sessionsRoot) == true else {
             return SessionRecoveryScan(candidates: [], maintenance: [], failures: [])
         }
 
@@ -170,7 +170,7 @@ public struct SessionRecoveryScanner: Sendable {
             guard let metadata, let activeRuns = metadata.activeRuns else {
                 throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "完了した処理状態に公開 run がありません")
             }
-            let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
+            let recovered = try SessionRecovery.recoverJSONL(SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL))
             guard !recovered.droppedIncompleteTail else {
                 throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
             }
