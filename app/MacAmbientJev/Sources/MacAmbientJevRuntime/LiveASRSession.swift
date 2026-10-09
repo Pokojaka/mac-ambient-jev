@@ -104,12 +104,11 @@ public actor LiveASRSession {
     private let processingDirectory: URL
     private let writer: SessionWriter
     private let asr: any ASREngine
-    private let materializer: TranscriptMaterializer
+    private let materializer: IncrementalTranscriptMaterializer
 
     private let clauseBoundaryRunID: String?
     private let contentPriorityRunID: String?
     private var transcriptEvents: [TranscriptEvent] = []
-    private var materializedSegments: [MaterializedTranscriptSegment] = []
     private var segmentStatuses: [LiveASRSegmentStatus] = []
     private var segmentStatusIndex: [String: Int] = [:]
     private var registeredSegmentIDs: Set<String> = []
@@ -149,7 +148,10 @@ public actor LiveASRSession {
         self.processingDirectory = processingDirectory
         self.writer = writer
         self.asr = asr
-        self.materializer = TranscriptMaterializer(sampleRate: sampleRate)
+        self.materializer = IncrementalTranscriptMaterializer(
+            sampleRate: sampleRate, segmentationRunID: segmentationRunID,
+            asrRunID: asrRunID, clauseBoundaryRunID: clauseBoundaryRunID
+        )
     }
 
     /// Durably registers newly detected speech before it enters the ASR queue.
@@ -184,13 +186,15 @@ public actor LiveASRSession {
                 sourceEndFrame: segment.endFrame,
                 payload: EmptyPayload()
             ))
-            transcriptEvents.append(.segmentCreated(
+            let event = TranscriptEvent.segmentCreated(
                 seq: created.eventSeq,
                 segmentationRunID: segmentationRunID,
                 segmentID: segment.segmentID,
                 startFrame: segment.startFrame,
                 endFrame: segment.endFrame
-            ))
+            )
+            try materializer.appendSourceEvent(event)
+            transcriptEvents.append(event)
             registeredSegmentIDs.insert(segment.segmentID)
             setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
         }
@@ -279,6 +283,7 @@ public actor LiveASRSession {
                 text: result.text,
                 detectedLanguage: result.detectedLanguage
             )
+            try materializer.appendSourceEvent(event)
             transcriptEvents.append(event)
             completedCount += 1
             finishedSegmentIDs.insert(segment.segmentID)
@@ -290,7 +295,6 @@ public actor LiveASRSession {
                 outcome: .recognized(source, result.text)
             )
             setStatus(status)
-            try refreshMaterializedSegments()
             await onSegmentFinished?(status, snapshot())
         }
 
@@ -324,10 +328,8 @@ public actor LiveASRSession {
                 throw LiveASRSessionError.foreignClauseEvent
             }
         }
-        let mergedEvents = transcriptEvents + events
-        let mergedSegments = try materializer.materialize(events: mergedEvents, activeRuns: currentActiveRuns())
-        transcriptEvents = mergedEvents
-        materializedSegments = mergedSegments
+        try materializer.applyClauseEvents(events)
+        transcriptEvents.append(contentsOf: events)
         return snapshot()
     }
 
@@ -473,16 +475,10 @@ public actor LiveASRSession {
         registeredSegmentIDs.count - finishedSegmentIDs.count
     }
 
-    private func refreshMaterializedSegments() throws {
-        materializedSegments = try materializer.materialize(
-            events: transcriptEvents,
-            activeRuns: currentActiveRuns()
-        )
-    }
 
     private func currentProgress() -> LiveASRProgress {
         LiveASRProgress(
-            materializedSegments: materializedSegments,
+            materializedSegments: materializer.materializedSegments,
             completedCount: completedCount,
             failedCount: failedCount,
             pendingCount: currentPendingCount

@@ -56,10 +56,41 @@ public enum ClauseAssemblyError: LocalizedError, Sendable, Equatable {
 /// A pending result never closes a clause across it: the open tail it touches, the source
 /// itself, and the head of the following source stay unresolved.
 public struct ClauseBoundaryAssembly: Sendable {
+    /// Immutable links make a transaction checkpoint independent of the open tail's length.
+    private final class TailPart: Sendable {
+        let part: ClauseSourcePart
+        let previous: TailPart?
+        let count: Int
+
+        init(_ part: ClauseSourcePart, previous: TailPart?) {
+            self.part = part
+            self.previous = previous
+            self.count = (previous?.count ?? 0) + 1
+        }
+
+        var parts: [ClauseSourcePart] {
+            var result: [ClauseSourcePart] = []
+            result.reserveCapacity(count)
+            var link: TailPart? = self
+            while let current = link {
+                result.append(current.part)
+                link = current.previous
+            }
+            result.reverse()
+            return result
+        }
+    }
+
     private struct Tail: Sendable {
-        var parts: [ClauseSourcePart]
+        var last: TailPart?
+        let firstOrdinal: Int
         /// True when the tail touches a pending result and can never close as a clause.
         var unresolved: Bool
+
+        var parts: [ClauseSourcePart] { last?.parts ?? [] }
+        mutating func append(_ part: ClauseSourcePart) {
+            last = TailPart(part, previous: last)
+        }
     }
 
     private let boundaryRunID: String
@@ -68,10 +99,48 @@ public struct ClauseBoundaryAssembly: Sendable {
     private var expectedSuccessor: NextSegmentHead?
     private var tail: Tail?
     private var unresolvedSources: Set<SegmentTextReference> = []
-    private var consumedSources: Set<SegmentTextReference> = []
+    private var consumedSources: [SegmentTextReference: Int] = [:]
+    private var recordingUndo = false
+    private var consumedUndo: [SegmentTextReference] = []
+    private var unresolvedUndo: [SegmentTextReference] = []
 
     public init(boundaryRunID: String) {
         self.boundaryRunID = boundaryRunID
+    }
+
+    /// Journals only newly touched sources. A failed batch restores the cursor without
+    /// copying its historical source indexes or its possibly long cross-segment tail.
+    public mutating func withTransaction<Result>(
+        _ body: (inout ClauseBoundaryAssembly) throws -> Result
+    ) rethrows -> Result {
+        precondition(!recordingUndo, "clause assembly transactions cannot nest")
+        let previousFinished = finished
+        let previousSource = lastSource
+        let previousSuccessor = expectedSuccessor
+        let previousTail = tail
+        recordingUndo = true
+        defer {
+            recordingUndo = false
+            consumedUndo.removeAll(keepingCapacity: true)
+            unresolvedUndo.removeAll(keepingCapacity: true)
+        }
+        do {
+            return try body(&self)
+        } catch {
+            for source in consumedUndo { consumedSources.removeValue(forKey: source) }
+            for source in unresolvedUndo { unresolvedSources.remove(source) }
+            finished = previousFinished
+            lastSource = previousSource
+            expectedSuccessor = previousSuccessor
+            tail = previousTail
+            throw error
+        }
+    }
+
+    /// Checks a stored stream-end closure without finishing the live cursor.
+    public func openStreamEndClause() throws -> ClauseUnit? {
+        guard let tail, !tail.unresolved, tail.last != nil else { return nil }
+        return try clause(parts: tail.parts, termination: .streamEnd)
     }
 
     public mutating func consume(_ input: ClauseAssemblyInput) throws -> ClauseAssemblyDelta {
@@ -97,8 +166,10 @@ public struct ClauseBoundaryAssembly: Sendable {
         case .pending:
             let whole = try ClauseSourcePart(source: input.source, range: TextUTF16Range(start: 0, end: length))
             let alreadyUnresolved = tail?.unresolved == true
-            if tail == nil { tail = Tail(parts: [], unresolved: true) }
-            tail!.parts.append(whole)
+            if tail == nil {
+                tail = Tail(last: nil, firstOrdinal: consumedSources.count, unresolved: true)
+            }
+            tail!.append(whole)
             tail!.unresolved = true
             markUnresolved(alreadyUnresolved ? [whole] : tail!.parts, affected: &affected)
             expectedSuccessor = nil
@@ -131,9 +202,9 @@ public struct ClauseBoundaryAssembly: Sendable {
             }
             let last = try ClauseSourcePart(source: input.source, range: TextUTF16Range(start: start, end: length))
             if tail != nil {
-                tail!.parts.append(last)
+                tail!.append(last)
             } else {
-                tail = Tail(parts: [last], unresolved: false)
+                tail = Tail(last: TailPart(last, previous: nil), firstOrdinal: consumedSources.count, unresolved: false)
             }
             if assessment.nextHead == nil {
                 try closeTail(termination: .streamEnd, closed: &closed, affected: &affected)
@@ -144,7 +215,8 @@ public struct ClauseBoundaryAssembly: Sendable {
             expectedSuccessor = assessment.nextHead
         }
 
-        consumedSources.insert(input.source)
+        consumedSources[input.source] = consumedSources.count
+        if recordingUndo { consumedUndo.append(input.source) }
         lastSource = input.source
         affected.append(input.source)
         for unit in closed { affected.append(contentsOf: unit.parts.map(\.source)) }
@@ -157,7 +229,9 @@ public struct ClauseBoundaryAssembly: Sendable {
         guard !finished else { throw ClauseAssemblyError.finished }
         var affected: [SegmentTextReference] = []
         let alreadyUnresolved = tail?.unresolved == true
-        if tail == nil { tail = Tail(parts: [], unresolved: true) }
+        if tail == nil {
+            tail = Tail(last: nil, firstOrdinal: consumedSources.count, unresolved: true)
+        }
         tail!.unresolved = true
         if !alreadyUnresolved { markUnresolved(tail!.parts, affected: &affected) }
         expectedSuccessor = nil
@@ -191,9 +265,9 @@ public struct ClauseBoundaryAssembly: Sendable {
     }
 
     public func state(for source: SegmentTextReference) throws -> ClauseAssemblyRowState {
-        guard consumedSources.contains(source) else { throw ClauseAssemblyError.unknownSource }
+        guard let ordinal = consumedSources[source] else { throw ClauseAssemblyError.unknownSource }
         if unresolvedSources.contains(source) { return .boundaryPending }
-        if let tail, tail.parts.contains(where: { $0.source == source }) { return .awaitingNextSegment }
+        if let tail, ordinal >= tail.firstOrdinal { return .awaitingNextSegment }
         return .resolved
     }
 
@@ -213,7 +287,9 @@ public struct ClauseBoundaryAssembly: Sendable {
 
     private mutating func markUnresolved(_ parts: [ClauseSourcePart], affected: inout [SegmentTextReference]) {
         for part in parts {
-            unresolvedSources.insert(part.source)
+            if unresolvedSources.insert(part.source).inserted, recordingUndo {
+                unresolvedUndo.append(part.source)
+            }
             affected.append(part.source)
         }
     }

@@ -53,6 +53,7 @@ swift test --package-path app/MacAmbientJev --filter measureLiveRegistrationCost
 swift test --package-path app/MacAmbientJev --filter measureLatestCheckpointRetentionDuringThermalStall
 swift test --package-path app/MacAmbientJev --filter 'liveASR|liveRows|liveAuthorization|stoppingRecordingCancels'
 swift test --package-path app/MacAmbientJev --filter 'appRecordingShowsLiveRowsWhileJevWaits|appRecordingShowsJevFactoryFailureReason|liveRowsShowAtOnce|nativeTakeover'
+CLAUSE_INCREMENTAL_BENCHMARK=1 swift test --package-path app/MacAmbientJev --filter liveClauseIncrementalBenchmark
 ```
 
 correctness test は読み取れないイベントログ、検証済み VAD の空結果、録音障害と停止時の資源解放障害、冷却後のライブ認識再開の境界を合成イベントで検証する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照・checkpoint・chunk 一覧の項目数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、保持数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
@@ -62,6 +63,8 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 `measureLatestCheckpointRetentionDuringThermalStall` は実 `AppState` の区間登録・enqueue と強制 critical を使い、一発話につき 5 秒の合成 chunk 一覧項目を追加する（音声ファイルは作らない）。120・720・2880 発話で checkpoint の保持数はセッションあたり 1 件、保持 chunk 項目数は最新 checkpoint の 120・720・2880 件だけとなる。区間参照は全件保持する。`coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState` は保存済み合成 PCM と injected ASR を使い、critical 中の認識停止、最新 checkpoint の保持、冷却後の全区間の一度だけの順次認識、録音停止後のキュー・checkpoint 解放を確認する。計測 harness は時間の assertion を置かない。
 
 ライブ ASR regression は認識後の新規 pending 登録・重複 ID、ASR 完了・空本文・失敗の ordered snapshot、同一 run の保存済み節更新と active run 切替、登録・完了・失敗・終了イベントの保存障害、並行登録・終了を検証します。取得済み行配列は後の認識や節更新で変わりません。Jev 待機中も全行が即時表示されること、時間順、無効・失敗・停止、空区間のテキスト列終端、ASR gap 後の未解決先頭を注入 provider で検証します。
+
+[LiveClauseIncrementalTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/LiveClauseIncrementalTests.swift) は通常の全履歴 materializer と増分更新の行・projection・保存 JSON を照合し、長い跨ぎ節、空区間、ASR gap、不正 batch の rollback、取得済み snapshot の不変性を検証します。[LiveClauseIncrementalBenchmark.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/LiveClauseIncrementalBenchmark.swift) は一時音声と注入 ASR で実 `LiveASRSession.applyClauseEvents` を動かし、40・400・2500 区間で境界・節閉鎖・優先度を反映する時間を、テスト専用の全履歴再構築 actor と比較します。各規模で warmup 1 回と標本 20 回を使い、結果の同一性は計測区間外で照合します。通常 test では計測を無効とし、時間閾値を correctness の合否にしません。[測定記録](records/2026-10-09-clause-incremental.md) を参照してください。
 
 `appRecordingShowsLiveRowsWhileJevWaits` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、Jev queue、画面用 projection を通します。capture・VAD・ASR・Jev は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsJevFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
 
