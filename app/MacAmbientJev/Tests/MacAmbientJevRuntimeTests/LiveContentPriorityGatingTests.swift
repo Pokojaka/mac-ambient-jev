@@ -502,3 +502,37 @@ func stoppingJevBetweenBoundaryAndPriorityKeepsTheSavedBoundaryWithoutSendingCho
     #expect(await counter.snapshot().boundaryRequests.sendCount == 1)
     #expect(await counter.snapshot().priorityRequests.sendCount == 0)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func savedLowSliceDoesNotFlickerWhileItsContinuationWaitsForPriority() async throws {
+    let provider = LiveProvider(continuing: ["seg_1"], holdPriorityNumber: 2)
+    let counter = JevUsageCounter()
+    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let fixture = try await LiveJevFixture(
+        texts: ["うん。続く", "本文。", "次"],
+        makeDecisions: { decisions }, counter: counter
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await fixture.recognize(0)
+    try await fixture.recognize(1)
+    try await fixture.recorder.wait { $0.first?.clauseSlices.first?.priority == .lowPriority }
+    let awaiting = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
+    #expect(awaiting[0].clauseState == .awaitingNextSegment)
+    let expected = [
+        TranscriptTextFragment(text: "うん。", style: .lowPriority),
+        TranscriptTextFragment(text: "続く", style: .normal)
+    ]
+    #expect(awaiting[0].textFragments == expected)
+    #expect(!awaiting[0].shouldCollapseRow)
+
+    try await fixture.recognize(2)
+    try await provider.waitForPriorities(2)
+    try await fixture.recorder.wait { $0.first?.clauseState == .priorityPending }
+    let pending = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
+    #expect(pending[0].textFragments == expected)
+    #expect(!pending[0].shouldCollapseRow)
+    await provider.release()
+    try await fixture.recorder.wait { $0.first?.clauseState == .classified }
+    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)[0].textFragments == expected)
+    await fixture.jev.stop()
+}

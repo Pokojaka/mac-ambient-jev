@@ -117,12 +117,39 @@ func temporaryRecordingPaths() -> (root: URL, paths: AppPaths) {
     ))
 }
 
-/// A disposable preference domain with the app's registered defaults; removed by the caller.
+/// An injected preference store; all reads and writes stay in this instance's memory.
+private final class InMemoryUserDefaults: UserDefaults, @unchecked Sendable {
+    private var values: [String: Any] = [:]
+    private var registered: [String: Any] = [:]
+
+    override func object(forKey key: String) -> Any? { values[key] ?? registered[key] }
+    override func set(_ value: Any?, forKey key: String) { values[key] = value }
+    override func set(_ value: Bool, forKey key: String) { values[key] = value }
+    override func set(_ value: Int, forKey key: String) { values[key] = value }
+    override func set(_ value: Float, forKey key: String) { values[key] = value }
+    override func set(_ value: Double, forKey key: String) { values[key] = value }
+    override func set(_ value: URL?, forKey key: String) { values[key] = value }
+    override func removeObject(forKey key: String) { values.removeValue(forKey: key) }
+    override func register(defaults: [String: Any]) {
+        registered.merge(defaults) { _, new in new }
+    }
+    override func data(forKey key: String) -> Data? { object(forKey: key) as? Data }
+    override func string(forKey key: String) -> String? { object(forKey: key) as? String }
+    override func bool(forKey key: String) -> Bool { object(forKey: key) as? Bool ?? false }
+    override func integer(forKey key: String) -> Int { object(forKey: key) as? Int ?? 0 }
+    override func float(forKey key: String) -> Float { object(forKey: key) as? Float ?? 0 }
+    override func double(forKey key: String) -> Double { object(forKey: key) as? Double ?? 0 }
+    override func url(forKey key: String) -> URL? { object(forKey: key) as? URL }
+    override func dictionaryRepresentation() -> [String: Any] {
+        registered.merging(values) { _, value in value }
+    }
+    override func removePersistentDomain(forName _: String) { values.removeAll() }
+}
+
 func temporaryDefaults() throws -> (defaults: UserDefaults, suiteName: String) {
-    let suiteName = "MacAmbientJevTests.\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    let defaults = InMemoryUserDefaults()
     MicInputVolumePreference.register(in: defaults)
-    return (defaults, suiteName)
+    return (defaults, "in-memory")
 }
 
 @MainActor

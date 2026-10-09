@@ -714,8 +714,7 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
         let presentation = try TranscriptPriorityPresentationPolicy().present(
             text: segment.textProjection,
             slices: try segment.prioritySlices(),
-            hasUnresolvedBoundary: state == .awaitingNextSegment || state == .boundaryPending,
-            hasUnavailableDecision: state == .priorityPending
+            hasUnresolvedBoundary: state == .awaitingNextSegment || state == .boundaryPending
         )
         self.segmentID = segment.segmentID
         self.startMilliseconds = segment.startMilliseconds

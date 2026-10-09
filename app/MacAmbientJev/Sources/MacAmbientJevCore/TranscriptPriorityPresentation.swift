@@ -31,7 +31,7 @@ public enum TranscriptPriorityPresentationError: Error, Sendable, Equatable {
 public struct TranscriptPriorityPresentationPolicy: Sendable {
     public init() {}
     public func present(text: CleanedTranscriptText, slices: [TranscriptPrioritySlice],
-                        hasUnresolvedBoundary: Bool, hasUnavailableDecision: Bool) throws -> TranscriptPriorityPresentation {
+                        hasUnresolvedBoundary: Bool) throws -> TranscriptPriorityPresentation {
         guard !slices.isEmpty else {
             let fragments = text.text.isEmpty ? [] : [TranscriptTextFragment(text: text.text, style: .normal)]
             return TranscriptPriorityPresentation(text: text.text, fragments: fragments, shouldCollapseRow: false)
@@ -77,7 +77,7 @@ public struct TranscriptPriorityPresentationPolicy: Sendable {
         var allLow = true
         for slice in slices {
             guard slice.sourceRange.start < slice.sourceRange.end else { continue }
-            let low = slice.priority == .lowPriority && !slice.needsRetry && !hasUnavailableDecision
+            let low = slice.priority == .lowPriority && !slice.needsRetry
             let style: TranscriptTextStyle = low ? .lowPriority : .normal
             while runIndex < text.retainedRuns.count {
                 let run = text.retainedRuns[runIndex]
@@ -108,7 +108,7 @@ public struct TranscriptPriorityPresentationPolicy: Sendable {
         }
         let hasVisibleText = text.text.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
         let collapse = hasVisibleText && allLow
-            && !hasUnresolvedBoundary && !hasUnavailableDecision && !slices.contains(where: \.needsRetry)
+            && !hasUnresolvedBoundary && !slices.contains(where: \.needsRetry)
         return TranscriptPriorityPresentation(text: text.text, fragments: fragments, shouldCollapseRow: collapse)
     }
 }

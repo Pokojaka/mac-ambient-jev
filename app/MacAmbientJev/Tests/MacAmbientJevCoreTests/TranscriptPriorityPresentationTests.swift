@@ -8,8 +8,7 @@ func priorityPolicyStylesLowTextAndCollapsesOnlyResolvedAllLowContent() throws {
     let result = try TranscriptPriorityPresentationPolicy().present(
         text: cleaned,
         slices: [TranscriptPrioritySlice(sourceRange: range, priority: .lowPriority, needsRetry: false)],
-        hasUnresolvedBoundary: false,
-        hasUnavailableDecision: false
+        hasUnresolvedBoundary: false
     )
     #expect(result.text == "低本文")
     #expect(result.fragments == [TranscriptTextFragment(text: "低本文", style: .lowPriority)])
@@ -23,13 +22,13 @@ func priorityPolicyDoesNotCollapseEmptyPendingOrMixedContent() throws {
     let source = try projector.project(sourceText: "本文")
     let full = try TextUTF16Range(start: 0, end: source.text.utf16.count)
     let low = TranscriptPrioritySlice(sourceRange: full, priority: .lowPriority, needsRetry: false)
-    #expect(try policy.present(text: source, slices: [low], hasUnresolvedBoundary: true, hasUnavailableDecision: false).shouldCollapseRow == false)
-    #expect(try policy.present(text: source, slices: [TranscriptPrioritySlice(sourceRange: full, priority: .lowPriority, needsRetry: true)], hasUnresolvedBoundary: false, hasUnavailableDecision: false).shouldCollapseRow == false)
-    let unavailable = try policy.present(text: source, slices: [low], hasUnresolvedBoundary: false, hasUnavailableDecision: true)
+    #expect(try policy.present(text: source, slices: [low], hasUnresolvedBoundary: true).shouldCollapseRow == false)
+    let retry = TranscriptPrioritySlice(sourceRange: full, priority: .lowPriority, needsRetry: true)
+    let unavailable = try policy.present(text: source, slices: [retry], hasUnresolvedBoundary: false)
     #expect(!unavailable.shouldCollapseRow)
     #expect(unavailable.fragments == [TranscriptTextFragment(text: "本文", style: .normal)])
     let empty = try projector.project(sourceText: "えー")
-    #expect(try policy.present(text: empty, slices: [], hasUnresolvedBoundary: false, hasUnavailableDecision: false).shouldCollapseRow == false)
+    #expect(try policy.present(text: empty, slices: [], hasUnresolvedBoundary: false).shouldCollapseRow == false)
 }
 
 @Test
@@ -42,7 +41,7 @@ func priorityPolicyPreservesMixedStylesAcrossRemovedFillersAndUnclassifiedText()
         TranscriptPrioritySlice(sourceRange: try TextUTF16Range(start: 8, end: 12), priority: .primary, needsRetry: false)
     ]
     let result = try TranscriptPriorityPresentationPolicy().present(
-        text: cleaned, slices: slices, hasUnresolvedBoundary: false, hasUnavailableDecision: false
+        text: cleaned, slices: slices, hasUnresolvedBoundary: false
     )
     #expect(result.text == "低。😀本文")
     #expect(result.fragments == [
@@ -52,7 +51,7 @@ func priorityPolicyPreservesMixedStylesAcrossRemovedFillersAndUnclassifiedText()
     #expect(!result.shouldCollapseRow)
 
     let unclassified = try TranscriptPriorityPresentationPolicy().present(
-        text: cleaned, slices: [], hasUnresolvedBoundary: true, hasUnavailableDecision: true
+        text: cleaned, slices: [], hasUnresolvedBoundary: true
     )
     #expect(unclassified.fragments == [TranscriptTextFragment(text: "低。😀本文", style: .normal)])
     #expect(!unclassified.shouldCollapseRow)
@@ -74,7 +73,7 @@ func lowClosedSliceAndAwaitingTailRemainVisibleWithOnlyTheClosedSliceDimmed() th
                 priority: nil, needsRetry: false
             )
         ],
-        hasUnresolvedBoundary: true, hasUnavailableDecision: false
+        hasUnresolvedBoundary: true
     )
     #expect(result.text == "うん。続き")
     #expect(result.fragments == [
@@ -96,10 +95,10 @@ func priorityPolicyRejectsMissingOrOverlappingCoverageInsteadOfDroppingVisibleTe
     let policy = TranscriptPriorityPresentationPolicy()
     for slices in [[first], [last]] {
         #expect(throws: TranscriptPriorityPresentationError.incompleteSliceCoverage) {
-            try policy.present(text: cleaned, slices: slices, hasUnresolvedBoundary: false, hasUnavailableDecision: false)
+            try policy.present(text: cleaned, slices: slices, hasUnresolvedBoundary: false)
         }
     }
     #expect(throws: TranscriptPriorityPresentationError.invalidSliceOrder) {
-        try policy.present(text: cleaned, slices: [first, first, last], hasUnresolvedBoundary: false, hasUnavailableDecision: false)
+        try policy.present(text: cleaned, slices: [first, first, last], hasUnresolvedBoundary: false)
     }
 }
