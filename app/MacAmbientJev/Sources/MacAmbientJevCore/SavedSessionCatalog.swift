@@ -273,7 +273,7 @@ public struct SavedSessionCatalog {
         case .failed:
             .failed(metadata?.finalizationAttempt?.failureReason)
         case nil:
-            metadata?.activeRuns?.asr == nil && metadata?.activeRuns?.scope == nil
+            metadata?.activeRuns?.asr == nil
                 ? .notProcessed
                 : .complete
         }

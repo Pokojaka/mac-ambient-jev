@@ -45,10 +45,8 @@ func manifestRejectsReferenceWithoutExactlyOneSource(json: String) {
 func evaluationScoresJoinedSegmentTextAgainstReference() throws {
     let segments = try JSONDecoder().decode([ASRSessionSegment].self, from: Data("""
     [
-      {"segment_id": "seg_000001", "start_ms": 0, "end_ms": 1000, "text": "ABC", "scene": "lecture",
-       "speakers": [], "scope_spans": []},
-      {"segment_id": "seg_000002", "start_ms": 1000, "end_ms": 2000, "text": "公開鍵", "scene": "lecture",
-       "speakers": [], "scope_spans": []}
+      {"segment_id": "seg_000001", "start_ms": 0, "end_ms": 1000, "text": "ABC", "speakers": []},
+      {"segment_id": "seg_000002", "start_ms": 1000, "end_ms": 2000, "text": "公開鍵", "speakers": []}
     ]
     """.utf8))
 
@@ -57,25 +55,4 @@ func evaluationScoresJoinedSegmentTextAgainstReference() throws {
     #expect(report.id == "r1")
     #expect(report.asrEvaluation.raw.rate > 0)
     #expect(report.asrEvaluation.normalized.rate == 0)
-    #expect(report.sceneOscillationCount == 0)
-}
-
-@Test
-func oscillationCountsSceneReturnsWithinThirtySeconds() {
-    func segment(_ seconds: Int64, _ scene: SceneState) -> ASRSessionSegment {
-        ASRSessionSegment(startMilliseconds: seconds * 1_000, text: "", scene: scene)
-    }
-
-    #expect(ASRSessionEvaluator.sceneOscillationCount([
-        segment(0, .lecture), segment(10, .discussion), segment(15, .discussion), segment(30, .lecture)
-    ]) == 1)
-    #expect(ASRSessionEvaluator.sceneOscillationCount([
-        segment(0, .lecture), segment(10, .discussion), segment(31, .lecture)
-    ]) == 0)
-    #expect(ASRSessionEvaluator.sceneOscillationCount([
-        segment(0, .lecture), segment(5, .lecture), segment(10, .discussion), segment(20, .lectureCandidate)
-    ]) == 0)
-    #expect(ASRSessionEvaluator.sceneOscillationCount([
-        segment(0, .lecture), segment(5, .discussion), segment(10, .lecture), segment(15, .discussion)
-    ]) == 2)
 }

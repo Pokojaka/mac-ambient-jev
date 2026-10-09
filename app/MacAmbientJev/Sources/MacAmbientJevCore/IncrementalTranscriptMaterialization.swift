@@ -305,7 +305,7 @@ public final class IncrementalTranscriptMaterializer {
         }
         return MaterializedTranscriptSegment(segmentID: source.segmentID, source: source,
             startMilliseconds: milliseconds(segment.start), endMilliseconds: milliseconds(segment.end),
-            text: entry.text, textProjection: projection, scene: .unknown, speakers: [], scopeSpans: [],
+            text: entry.text, textProjection: projection, speakers: [],
             clauseState: state, clauseSlices: slices, isDiarized: false)
     }
 

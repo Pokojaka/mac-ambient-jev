@@ -105,7 +105,7 @@ struct SettingsView: View {
                 Toggle("Jev の境界判定と意味分類を使用する", isOn: jevEnabledBinding)
 
                 Text(
-                    "録音、音声認識、話者分離、場面判定はローカルで動作します。節の境界判定と優先度判定は Jev に送ります。Jev を停止しても文字起こしは継続します。"
+                    "録音、発話区間検出、音声認識、話者分離はローカルで動作します。節の境界判定と優先度判定は Jev に送ります。Jev を停止しても文字起こしは継続します。"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

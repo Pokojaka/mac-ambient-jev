@@ -58,7 +58,7 @@ func liveProjectionCleansDisplayWithoutChangingMaterializedASRText() throws {
     let raw = "えー、今日は公開鍵暗号を説明します。"
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "raw", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
-        scene: .lecture, speakers: [], scopeSpans: [], isDiarized: false
+        speakers: [], isDiarized: false
     )
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
     #expect(segment.text == raw)
@@ -82,7 +82,7 @@ func liveProjectionHidesEmptyTextButShowsEverythingSpoken() throws {
         try MaterializedTranscriptSegment.fixture(
             segmentID: "s\(index)", startMilliseconds: Int64(index * 1000),
             endMilliseconds: Int64((index + 1) * 1000), text: text,
-            scene: .unknown, speakers: [], scopeSpans: [], isDiarized: false
+            speakers: [], isDiarized: false
         )
     }
 
@@ -94,11 +94,11 @@ func liveProjectionHidesEmptyTextButShowsEverythingSpoken() throws {
 func liveProjectionUsesDominantSpeakerWhenItCoversAtLeastEightyPercent() throws {
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "dominant", startMilliseconds: 1_000, endMilliseconds: 2_000,
-        text: "発話", scene: .unknown,
+        text: "発話",
         speakers: [
             MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_800, confidence: nil, displayLabel: nil),
             MaterializedSpeakerSpan(id: "B", startMilliseconds: 1_800, endMilliseconds: 2_100, confidence: nil, displayLabel: nil)
-        ], scopeSpans: [], isDiarized: true
+        ], isDiarized: true
     )
 
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
@@ -110,11 +110,11 @@ func liveProjectionUsesDominantSpeakerWhenItCoversAtLeastEightyPercent() throws 
 func liveProjectionShowsBothSpeakersWhenNoSpeakerReachesEightyPercent() throws {
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "会話", scene: .unknown,
+        text: "会話",
         speakers: [
             MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 600, confidence: nil, displayLabel: nil),
             MaterializedSpeakerSpan(id: "B", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
-        ], scopeSpans: [], isDiarized: true
+        ], isDiarized: true
     )
 
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
@@ -123,7 +123,7 @@ func liveProjectionShowsBothSpeakersWhenNoSpeakerReachesEightyPercent() throws {
 }
 
 @Test
-func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
+func materializerKeepsMultipleSpeakerSpans() throws {
     let events: [TranscriptEvent] = [
         .segmentCreated(
             seq: 1, segmentationRunID: "seg", segmentID: "s1",
@@ -141,19 +141,11 @@ func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
         .speakerSpan(
             seq: 4, runID: "diar", speakerID: "speaker_2",
             startFrame: 400, endFrame: 1000, confidence: 0.7
-        ),
-        .scopeSpan(
-            seq: 5, runID: "scope", startFrame: 0, endFrame: 500,
-            scope: .near, confidence: 0.9
-        ),
-        .scopeSpan(
-            seq: 6, runID: "scope", startFrame: 500, endFrame: 1000,
-            scope: .unknown, confidence: 0.5
         )
     ]
     let runs = ActiveRuns(
         segmentation: "seg", asr: "asr",
-        diarization: "diar", scope: "scope"
+        diarization: "diar"
     )
     let segment = try #require(
         try TranscriptMaterializer(sampleRate: 1000)
@@ -161,8 +153,12 @@ func materializerKeepsMultipleSpeakerAndScopeSpans() throws {
             .first
     )
 
-    #expect(segment.speakers.count == 2)
-    #expect(segment.scopeSpans.count == 2)
+    #expect(segment.speakers == [
+        MaterializedSpeakerSpan(id: "speaker_1", startMilliseconds: 0, endMilliseconds: 400,
+                                confidence: 0.8, displayLabel: "Speaker 1"),
+        MaterializedSpeakerSpan(id: "speaker_2", startMilliseconds: 400, endMilliseconds: 1_000,
+                                confidence: 0.7, displayLabel: "Speaker 2")
+    ])
 }
 
 @Test
@@ -218,9 +214,7 @@ func materializedJSONKeepsRawASRAlongsideTheFillerRemovedDisplayText() throws {
         startMilliseconds: 0,
         endMilliseconds: 1000,
         text: "えー、本文",
-        scene: .lecture,
         speakers: [],
-        scopeSpans: [],
         isDiarized: true
     )
 
@@ -229,6 +223,10 @@ func materializedJSONKeepsRawASRAlongsideTheFillerRemovedDisplayText() throws {
         JSONSerialization.jsonObject(with: data) as? [String: Any]
     )
 
+    #expect(Set(object.keys) == Set([
+        "segment_id", "source", "start_ms", "end_ms", "text", "display_text",
+        "speakers", "clause_state", "clause_slices"
+    ]))
     #expect(object["text"] as? String == "えー、本文")
     #expect(object["display_text"] as? String == "本文")
 }
@@ -254,93 +252,29 @@ func materializerMarksSegmentsDiarizedOnlyWhenADiarizationRunIsActive() throws {
 }
 
 @Test
-func liveProjectionHidesOnlyBackgroundOnlyDiscussionSegments() throws {
-    let backgroundOnly = try MaterializedTranscriptSegment.fixture(
-        segmentID: "bg",
-        startMilliseconds: 0,
-        endMilliseconds: 1000,
-        text: "遠くの会話",
-        scene: .discussion,
-        speakers: [],
-        scopeSpans: [
-            MaterializedScopeSpan(
-                startMilliseconds: 0, endMilliseconds: 1000,
-                scope: .background, confidence: 0.9
-            )
-        ],
-        isDiarized: false
-    )
-
-    let mixed = try MaterializedTranscriptSegment.fixture(
-        segmentID: "mixed",
-        startMilliseconds: 1000,
-        endMilliseconds: 2000,
-        text: "近くも含む",
-        scene: .discussion,
-        speakers: [],
-        scopeSpans: [
-            MaterializedScopeSpan(
-                startMilliseconds: 1000, endMilliseconds: 1500,
-                scope: .background, confidence: 0.8
-            ),
-            MaterializedScopeSpan(
-                startMilliseconds: 1500, endMilliseconds: 2000,
-                scope: .near, confidence: 0.7
-            )
-        ],
-        isDiarized: false
-    )
-
-    let rows = try LiveTranscriptProjection().rows(for: [backgroundOnly, mixed])
-    #expect(rows.map(\.segmentID) == ["mixed"])
-}
-
-@Test
-func materializerSelectsSceneByLatestTransitionFrameNotAppendOrder() throws {
-    let events: [TranscriptEvent] = [
-        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "utterance", startFrame: 800, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "utterance", text: "speech", detectedLanguage: nil),
-        .sceneChanged(seq: 3, runID: "scene", atFrame: 700, scene: .discussion),
-        .sceneChanged(seq: 4, runID: "scene", atFrame: 0, scene: .lecture),
-        .sceneChanged(seq: 5, runID: "scene", atFrame: 900, scene: .lecture)
-    ]
-    let result = try #require(try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scene: "scene")
-    ).first)
-    #expect(result.scene == .discussion)
-}
-
-@Test
 func materializerHandlesTenThousandSegmentLog() throws {
     let count = 10_000
     var events: [TranscriptEvent] = []
-    events.reserveCapacity(count * 3)
+    events.reserveCapacity(count * 2)
     for index in 0..<count {
         let segmentID = "segment-\(index)"
         events.append(.segmentCreated(
-            seq: UInt64(index * 3 + 1), segmentationRunID: "seg", segmentID: segmentID,
+            seq: UInt64(index * 2 + 1), segmentationRunID: "seg", segmentID: segmentID,
             startFrame: Int64(index * 1_000), endFrame: Int64((index + 1) * 1_000)
         ))
         events.append(.asrCompleted(
-            seq: UInt64(index * 3 + 2), runID: "asr", segmentationRunID: "seg",
+            seq: UInt64(index * 2 + 2), runID: "asr", segmentationRunID: "seg",
             segmentID: segmentID, text: "utterance \(index)",
             detectedLanguage: nil
-        ))
-        events.append(.sceneChanged(
-            seq: UInt64(index * 3 + 3), runID: "scene",
-            atFrame: Int64(index * 1_000),
-            scene: index.isMultiple(of: 2) ? .discussion : .lecture
         ))
     }
     let clock = ContinuousClock()
     let start = clock.now
     let materialized = try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scene: "scene")
+        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
     )
     let elapsed = start.duration(to: clock.now)
     #expect(materialized.count == count)
-    #expect(materialized.first?.scene == .discussion)
-    #expect(materialized.last?.scene == .lecture)
     #expect(materialized.last?.text == "utterance 9999")
     #expect(elapsed < .seconds(8))
 }
@@ -379,7 +313,7 @@ func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrSpeakerTiming(
 func liveProjectionRejectsInvalidRawOrDisplayClauseCoordinates(insideCharacter: Bool) throws {
     let base = try MaterializedTranscriptSegment.fixture(
         segmentID: "s", startMilliseconds: 0, endMilliseconds: 100, text: "👩🏽‍💻本文",
-        scene: .lecture, speakers: [], scopeSpans: [], isDiarized: false
+        speakers: [], isDiarized: false
     )
     let slice = ClauseRowSlice(
         reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0"),
@@ -389,7 +323,7 @@ func liveProjectionRejectsInvalidRawOrDisplayClauseCoordinates(insideCharacter: 
     let invalid = MaterializedTranscriptSegment(
         segmentID: base.segmentID, source: base.source, startMilliseconds: base.startMilliseconds,
         endMilliseconds: base.endMilliseconds, text: base.text, textProjection: base.textProjection,
-        scene: base.scene, speakers: base.speakers, scopeSpans: base.scopeSpans, clauseState: .classified,
+        speakers: base.speakers, clauseState: .classified,
         clauseSlices: [slice], isDiarized: false
     )
     #expect(throws: (any Error).self) { _ = try LiveTranscriptProjection().rows(for: [invalid]) }

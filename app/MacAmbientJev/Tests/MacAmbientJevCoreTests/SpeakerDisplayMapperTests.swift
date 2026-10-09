@@ -67,12 +67,12 @@ func speakerDisplayMapperDeduplicatesOtherInMixedTurns() throws {
     }
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "会話", scene: .unknown,
+        text: "会話",
         speakers: [
             MaterializedSpeakerSpan(id: "S1", startMilliseconds: 0, endMilliseconds: 600, confidence: nil, displayLabel: nil),
             MaterializedSpeakerSpan(id: "S8", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil, displayLabel: nil),
             MaterializedSpeakerSpan(id: "S9", startMilliseconds: 700, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
-        ], scopeSpans: [], isDiarized: true
+        ], isDiarized: true
     )
 
     #expect(SpeakerDisplayMapper.turnLabels(
@@ -89,13 +89,11 @@ func liveProjectionSummarizesMultipleSpeakersAndKeepsUnknownLabel() throws {
     let segments = [
         try MaterializedTranscriptSegment.fixture(
             segmentID: "overlap", startMilliseconds: 0, endMilliseconds: 1_000,
-            text: "重なり", scene: .unknown, speakers: overlappingSpeakers,
-            scopeSpans: [], isDiarized: true
+            text: "重なり", speakers: overlappingSpeakers, isDiarized: true
         ),
         try MaterializedTranscriptSegment.fixture(
             segmentID: "unknown", startMilliseconds: 1_000, endMilliseconds: 2_000,
-            text: "不明", scene: .unknown, speakers: [],
-            scopeSpans: [], isDiarized: true
+            text: "不明", speakers: [], isDiarized: true
         )
     ]
 
@@ -128,8 +126,7 @@ func projectionShowsNoSpeakerHeadingBeforeDiarization() throws {
     let segments = [
         try MaterializedTranscriptSegment.fixture(
             segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
-            text: "ライブ", scene: .unknown, speakers: [],
-            scopeSpans: [], isDiarized: false
+            text: "ライブ", speakers: [], isDiarized: false
         )
     ]
 
@@ -143,8 +140,7 @@ func projectionShowsUnknownForDiarizedResultWithoutAnySpeakerSpan() throws {
     let segments = [
         try MaterializedTranscriptSegment.fixture(
             segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
-            text: "確定", scene: .unknown, speakers: [],
-            scopeSpans: [], isDiarized: true
+            text: "確定", speakers: [], isDiarized: true
         )
     ]
 

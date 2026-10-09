@@ -172,12 +172,6 @@ struct ClauseEventLog {
             case "speaker.span":
                 _ = try line.body(SpeakerSpanBody.self)
                 localEvidence[.diarization, default: []].insert(try line.requiredRunID())
-            case "scene.changed":
-                _ = try line.body(SceneChangedBody.self)
-                localEvidence[.scene, default: []].insert(try line.requiredRunID())
-            case "scope.span":
-                _ = try line.body(ScopeSpanBody.self)
-                localEvidence[.scope, default: []].insert(try line.requiredRunID())
             case "clause_boundaries.assessed":
                 let runID = try line.requiredRunID()
                 let assessment = try line.body(PayloadBody<ClauseBoundaryAssessment>.self).payload

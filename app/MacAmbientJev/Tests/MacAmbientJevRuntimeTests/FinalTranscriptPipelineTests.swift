@@ -190,16 +190,14 @@ private func savePreviousRuns(sessionURL: URL) async throws -> ActiveRuns {
     let runs = ActiveRuns(
         segmentation: "seg_previous",
         asr: "asr_previous",
-        diarization: "diar_previous",
-        scene: "scene_previous",
-        scope: "scope_previous"
+        diarization: "diar_previous"
     )
     let sessionID = try SessionLayout(sessionURL: sessionURL).loadManifest().sessionID
     let writer = try SessionWriter(sessionURL: sessionURL)
     let provenance = RunProvenance(engine: "fixture", model: nil, version: "1", configuration: [:])
     for (stage, runID) in [
         (ProcessingStage.segmentation, "seg_previous"), (.asr, "asr_previous"),
-        (.diarization, "diar_previous"), (.scene, "scene_previous"), (.scope, "scope_previous")
+        (.diarization, "diar_previous")
     ] {
         try await writer.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
@@ -728,7 +726,7 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     #expect(await statuses.snapshot().last == UserFacingStatus.jevDeferred.text)
     let loadedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     let metadata = try #require(loadedMetadata)
-    #expect(metadata.activeRuns?.scope != nil)
+    #expect(metadata.activeRuns?.asr != nil)
     // The local transcript is published with every segment boundary-pending in the same write.
     #expect(metadata.pendingClauseBoundarySegments.map(\.segmentID) == ["seg_000001"])
     #expect(metadata.activeRuns?.clauseBoundary == nil)
@@ -891,26 +889,40 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
     ])
 }
 
-private struct SegmentLineDroppingEvidenceProvider: ProximityEvidenceProvider {
+private actor SegmentLineDroppingASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "log-mutating-asr", model: nil, version: "test", configuration: [:])
     let eventsURL: URL
+    let log: FinalizationCallLog
+    private var callIndex = 0
 
-    func evidenceSpans(
-        startFrame: Int64,
-        endFrame: Int64,
-        speakerSpans: [SpeakerSpan]
-    ) async throws -> [ProximityEvidenceSpan] {
+    init(eventsURL: URL, log: FinalizationCallLog) {
+        self.eventsURL = eventsURL
+        self.log = log
+    }
+
+    func prepare() async throws {}
+    func unload() async {}
+
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        let index = callIndex
+        callIndex += 1
+        await log.append("asr:\(index)")
         let lines = try String(contentsOf: eventsURL, encoding: .utf8)
             .split(separator: "\n", omittingEmptySubsequences: true)
-        let createdIndices = try lines.indices.filter { index in
+        let created = try lines.indices.compactMap { index -> (index: Int, runID: String)? in
             let object = try JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as? [String: Any]
-            return object?["event_type"] as? String == "segment.created"
+            guard object?["event_type"] as? String == "segment.created",
+                  let runID = object?["segmentation_run_id"] as? String else { return nil }
+            return (index, runID)
         }
+        let currentRunID = created.last?.runID
+        let createdIndices = created.filter { $0.runID == currentRunID }.map(\.index)
         if createdIndices.count == 2 {
             var kept = lines
             kept.remove(at: createdIndices[0])
             try (kept.joined(separator: "\n") + "\n").write(to: eventsURL, atomically: true, encoding: .utf8)
         }
-        return []
+        return ASRResult(text: index == 0 ? "前半" : "後半", detectedLanguage: "ja")
     }
 }
 
@@ -929,7 +941,7 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
             )),
             layout: SessionLayout(sessionURL: sessionURL)
         ),
-        asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
+        asr: SegmentLineDroppingASR(eventsURL: sessionURL.appending(path: "events.jsonl"), log: log),
         diarization: FakeFinalDiarizer(
             spans: [
                 SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 8_000, confidence: 0.9),
@@ -941,9 +953,6 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
         vadSegmenter: FakeFinalVAD(
             segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
             log: log
-        ),
-        proximityEvidenceProvider: SegmentLineDroppingEvidenceProvider(
-            eventsURL: sessionURL.appending(path: "events.jsonl")
         )
     )
 
@@ -958,18 +967,9 @@ func finalTranscriptPipelineRejectsPersistedLogMissingChildSegment() async throw
     #expect(await log.snapshot() == ["vad", "diarize", "asr:0", "asr:1"])
 }
 
-private struct FailingEvidenceProvider: ProximityEvidenceProvider {
-    func evidenceSpans(
-        startFrame: Int64,
-        endFrame: Int64,
-        speakerSpans: [SpeakerSpan]
-    ) async throws -> [ProximityEvidenceSpan] {
-        throw FakeFinalizationError.expected
-    }
-}
 
 @Test
-func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async throws {
+func persistedValidationFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -977,7 +977,7 @@ func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async th
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: ["最初の確定", "二回目"]),
+            asr: FakeFinalASR(log: log, values: ["最初の確定"]),
             diarization: FakeFinalDiarizer(
                 spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
                 log: log,
@@ -998,36 +998,36 @@ func lateStageFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async th
     let publishedValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
     let published = try #require(publishedValue)
 
-    // The second attempt fails in the scope stage, after ASR.
-    let pipeline = FinalTranscriptPipeline(
-        sessionID: sessionID,
-        sessionURL: sessionURL,
-        audio: try SessionAudioReaders.open(
-            try #require(try SessionLayout(sessionURL: sessionURL).audioSource(
-                for: SessionLayout(sessionURL: sessionURL).loadManifest()
-            )),
-            layout: SessionLayout(sessionURL: sessionURL)
+    let failing = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: SegmentLineDroppingASR(eventsURL: sessionURL.appending(path: "events.jsonl"), log: log),
+            diarization: FakeFinalDiarizer(
+                spans: [
+                    SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 8_000, confidence: 0.9),
+                    SpeakerSpan(speakerID: "S2", startFrame: 8_000, endFrame: 16_000, confidence: 0.9)
+                ],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
         ),
-        asr: FakeFinalASR(log: log, values: ["置き換えない"]),
-        diarization: FakeFinalDiarizer(
-            spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
-            log: log,
-            shouldFail: false
-        ),
-        vadSegmenter: FakeFinalVAD(
-            segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-            log: log
-        ),
-        proximityEvidenceProvider: FailingEvidenceProvider()
+        contentPriority: .disabled
     )
-    await #expect {
-        _ = try await pipeline.process(
-            onStatus: { _ in }, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in }
-        )
-    } throws: { error in
-        (error as? FinalTranscriptPipelineFailure)?.metrics?.initialPendingCount == 1
-    }
+    let states = FinalizationStateRecorder()
+    let result = try await processFinal(
+        failing, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: states, phases: FinalizationCallLog()
+    )
+    #expect(result.disposition == .failed)
+    #expect(result.metrics?.initialPendingCount == 2)
+    #expect(await states.snapshot().last?.texts == ["最初の確定"])
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["最初の確定"])
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns == published)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .failed)
 }
 
 @Test
@@ -1163,8 +1163,6 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     #expect(runs.segmentation?.hasPrefix("seg_final_") == true)
     #expect(runs.asr?.hasPrefix("asr_final_") == true)
     #expect(runs.diarization?.hasPrefix("diar_final_") == true)
-    #expect(runs.scene?.hasPrefix("scene_final_") == true)
-    #expect(runs.scope?.hasPrefix("scope_final_") == true)
     #expect(runs.clauseBoundary != "boundary_live_interrupted")
     #expect(runs.contentPriority != "priority_live_interrupted")
     #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["復旧した本文"])
@@ -1246,7 +1244,6 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
         var engines: [String: String] = [:]
         for (stage, runID) in [
             ("segmentation", runs.segmentation), ("diarization", runs.diarization), ("asr", runs.asr),
-            ("scene", runs.scene), ("scope", runs.scope),
         ] {
             let ofRun = started.filter { $0["processing_run_id"] as? String == runID }
             #expect(ofRun.count == 1)
@@ -1260,14 +1257,12 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
             "segmentation": "fake-vad",
             "diarization": "fake-diarizer",
             "asr": "fake-asr",
-            "scene": FinalTranscriptStageSettings.sceneProvenance.engine,
-            "scope": FinalTranscriptStageSettings.scopeProvenance.engine,
         ])
         startedRunsByAttempt.append(Dictionary(uniqueKeysWithValues: started.compactMap { object in
             (object["processing_run_id"] as? String).map { ($0, $0) }
         }))
     }
-    #expect(startedRunsByAttempt[1].count == startedRunsByAttempt[0].count + 5)
+    #expect(startedRunsByAttempt[1].count == startedRunsByAttempt[0].count + 3)
 }
 
 @Test
@@ -1524,9 +1519,7 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
         let stageRuns: [(ProcessingStage, String?, RunProvenance)] = [
             (.segmentation, runs.segmentation, FakeFinalVAD(segments: [], log: log).provenance),
             (.diarization, runs.diarization, diarizer.provenance),
-            (.asr, runs.asr, asr.provenance),
-            (.scene, runs.scene, FinalTranscriptStageSettings.sceneProvenance),
-            (.scope, runs.scope, FinalTranscriptStageSettings.scopeProvenance)
+            (.asr, runs.asr, asr.provenance)
         ]
         for (stage, run, expectedProvenance) in stageRuns {
             let runID = try #require(run)

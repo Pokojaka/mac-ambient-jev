@@ -13,8 +13,6 @@ public enum UserFacingStatus: Sendable, Equatable {
     case liveTranscriptionThermalSuspended
     case preparingDiarization
     case diarizing
-    case analyzingScene
-    case analyzingScope
     case classifyingWithJev
     case jevDeferred
     case jevAuthorizationRequired
@@ -46,10 +44,6 @@ public enum UserFacingStatus: Sendable, Equatable {
             return "話者分離を準備しています"
         case .diarizing:
             return "話者を分離しています"
-        case .analyzingScene:
-            return "会話の場面を判定しています"
-        case .analyzingScope:
-            return "発話の音響範囲を整理しています"
         case .classifyingWithJev:
             return "Jev で発話の意味を分類しています"
         case .jevDeferred:

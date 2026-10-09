@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-Mac Ambient Jev は、保存音声を基にローカルで文字起こしを作る Swift アプリです。音声保存と推論を分離し、認識・話者分離・場面・音響範囲・節の境界・優先度の結果をイベントとして保持します。画面や書き出しは、公開済み run のイベントから組み立てます。保存形式の詳細は [storage.md](storage.md) を参照してください。
+Mac Ambient Jev は、保存音声を基にローカルで文字起こしを作る Swift アプリです。音声保存と推論を分離し、認識・話者分離・節の境界・優先度の結果をイベントとして保持します。画面や書き出しは、公開済み run のイベントから組み立てます。保存形式の詳細は [storage.md](storage.md) を参照してください。
 
 ## パッケージとモジュール
 
@@ -12,8 +12,8 @@ macOS 以外でも定義されるターゲットには外部 Swift パッケー�
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、推論の protocol、段階 coordinator、materialization、場面と音響範囲の判定、Jev 通信と優先度処理、CER・話者分離の評価。外部ターゲット依存なし |
-| `MacAmbientJevEvaluateSession` | executable | 参照文付きセッションの ASR 評価と場面振動数。Core に依存 |
+| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、推論の protocol、段階 coordinator、materialization、Jev 通信と優先度処理、CER・話者分離の評価。外部ターゲット依存なし |
+| `MacAmbientJevEvaluateSession` | executable | 参照文付きセッションの ASR 評価。Core に依存 |
 | `MacAmbientJevEvaluateASR` | executable | ASR artifact の CER 評価。Core に依存 |
 | `MacAmbientJevEvaluateDiarization` | executable | 話者分離 artifact の評価。Core に依存 |
 | `MacAmbientJevCoreTests` | test | Core に依存 |
@@ -24,7 +24,7 @@ macOS 以外でも定義されるターゲットには外部 Swift パッケー�
 | --- | --- | --- |
 | `MacAmbientJevAppleSupport` | library | Keychain、AVFoundation による bounded ファイルデコードと stateful canonical SRC、保存済み文字起こし読取と書き出し。Core に依存 |
 | `MacAmbientJevCapture` | library | マイク・システム音声入力、Core Audio tap、権限、入力音量制御、タイムスタンプ付き mono 入力と録音寿命管理。Core と AppleSupport に依存 |
-| `MacAmbientJevRuntime` | library | FluidAudio VAD・offline diarization、Qwen3-ASR、ライブ認識、共通確定処理、近接度の音響 evidence。Core、AppleSupport、FluidAudio、Qwen3ASR、MLX に依存 |
+| `MacAmbientJevRuntime` | library | FluidAudio VAD・offline diarization、Qwen3-ASR、ライブ認識、共通確定処理。Core、AppleSupport、FluidAudio、Qwen3ASR、MLX に依存 |
 | `MacAmbientJev` | executable | SwiftUI 画面、`AppState`、録音・処理キュー・設定・保存済みセッション操作。Core、AppleSupport、Capture、Runtime に依存 |
 | `MacAmbientJevCaptureSystemAudio` | executable | システム音声のキャプチャと確定処理。Core、Capture、Runtime、MLX に依存 |
 | `MacAmbientJevProcessRecording` | executable | ファイル処理、セッションの inspect と resume、JSON と計測の出力。Core、AppleSupport、Runtime、MLX に依存 |
@@ -82,9 +82,7 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
   → offline diarization（保存タイムラインから CAF を生成）
   → SpeakerTurnSegmenter（VAD 区間を話者 turn で分割）
   → ASR
-  → 音響による場面判定
-  → 音響範囲判定
-  → ローカル全段階の成功を検証
+  → ローカル3段階の保存済み結果を検証
   → active_runs と全区間の境界保留を一括公開
   → App で許可された場合だけ Jev 境界判定 → 節の組み立て → Jev 優先度判定
   → 境界判定 run・優先度 run・両保留を一括公開
@@ -98,7 +96,7 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 ## ローカル処理と外部通信
 
-場面判定は話者の音響的活動だけを使い、手がかりのない冒頭を lecture とします。近接度は音響範囲専用の evidence であり、場面判定には使いません。Jev は認識済みテキストの節の境界判定と優先度判定にだけ使い、音声・話者 embedding は送りません。Jev が利用できなくてもローカルの確定結果を公開し、未判定の発話は分割しない通常行として保留します。
+Jev は認識済みテキストの節の境界判定と優先度判定にだけ使い、音声・話者 embedding は送りません。Jev が利用できなくてもローカルの確定結果を公開し、未判定の発話は分割しない通常行として保留します。フィラー除去後に本文がある認識済み行はすべて表示・書き出しの対象です。
 
 App は `ContentPriorityAccess.jev` を渡します。ファイル処理・システム音声キャプチャ・ライブ遅延計測の CLI は `.disabled` を渡し、Jev を呼びません。初回のローカルモデル取得には通信が必要ですが、ASR と話者分離の推論はローカルです。
 
@@ -114,4 +112,4 @@ App は録音・ライブ認識・確定処理の待ち行列・発熱による�
 
 根拠: [AppState+Processing.swift](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Processing.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)。
 
-根拠: [SceneCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneCoordinator.swift)、[ScopeCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ScopeCoordinator.swift)、[JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[AppState.swift](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[ファイル処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)。
+根拠: [JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[AppState.swift](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[ファイル処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)。

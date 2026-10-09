@@ -1,6 +1,6 @@
-# Jev・場面・音響範囲
+# Jev の節境界・優先度判定
 
-Jev の外部 API を使うのは、発話本文の**節の境界判定**と**節の優先度判定**だけです。録音、VAD、ASR、話者分離、場面判定、近接度・音響範囲判定、フィラー除去はローカルで動作します。Jev を利用できなくても録音、ライブ ASR、ローカルの確定結果の公開を継続します。
+Jev の外部 API を使うのは、発話本文の**節の境界判定**と**節の優先度判定**だけです。録音、VAD、ASR、話者分離、フィラー除去はローカルで動作します。確定処理のローカル必須段階は segmentation・diarization・ASR の3段階です。Jev を利用できなくても録音、ライブ ASR、ローカルの確定結果の公開を継続します。
 
 ## 処理の流れ
 
@@ -16,7 +16,7 @@ Jev の外部 API を使うのは、発話本文の**節の境界判定**と**�
 
 アプリは `ContentPriorityAccess.jev` を使い、設定と Keychain の API キーに応じて分類器を用意します。処理 CLI、システム音声キャプチャ CLI、ライブ遅延計測 CLI は `ContentPriorityAccess.disabled` で、Jev へ送信しません。
 
-API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モデル指定は jev-latest、リクエストのタイムアウトは 15 秒です。この URL は外部 API の endpoint であり、リポジトリ内のパスではありません。音声、話者 embedding、話者・場面・scope、セッション ID、区間 ID は送りません。
+API は https://api.typesafe.ai/v1/systemone へ Bearer 認証で POST し、モデル指定は jev-latest、リクエストのタイムアウトは 15 秒です。この URL は外部 API の endpoint であり、リポジトリ内のパスではありません。音声、話者 embedding、話者情報、セッション ID、区間 ID は送りません。
 
 ### 境界判定（Noul）
 
@@ -63,9 +63,9 @@ Choice は両確率の和が 1 に近いこと（絶対誤差 ≤ 0.01）、選�
 | PRIMARY | `primary` |
 | 未分類・保留 | 通常表示 |
 
-表示方針は [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) の一箇所です。行内の節 slice ごとに LOW の節を淡色にし、PRIMARY と LOW の混在はそのまま表示します。行を畳むのは、行の可視本文を覆う全ての非空の節が保存済み LOW で、境界の未解決部分も保留もない行だけです。続き待ち・境界保留・優先度保留の部分がある行は通常表示で、畳みません。区間をまたぐ節は、所属する全ての行の slice に同じ判定を適用します。話者・場面・scope の違いで節の結合を拒否しません。
+表示方針は [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) の一箇所です。行内の節 slice ごとに LOW の節を淡色にし、PRIMARY と LOW の混在はそのまま表示します。行を畳むのは、行の可視本文を覆う全ての非空の節が保存済み LOW で、境界の未解決部分も保留もない行だけです。続き待ち・境界保留・優先度保留の部分がある行は通常表示で、畳みません。区間をまたぐ節は、所属する全ての行の slice に同じ判定を適用します。話者の違いで節の結合を拒否しません。
 
-画面、コピー、accessibility、`transcript.txt` はフィラー除去後の本文を使い、LOW の本文も残します。ASR イベントの原文は変更しません。
+画面、コピー、accessibility、`transcript.txt` はフィラー除去後の本文を使い、空白・改行だけでない全ての認識済み本文を表示・書き出しします。LOW の本文も残します。ASR イベントの原文は変更しません。
 
 ## 保留と再試行
 
@@ -111,46 +111,9 @@ Choice は両確率の和が 1 に近いこと（絶対誤差 ≤ 0.01）、選�
 
 保留件数はセッションと対象（区間または節）の組で重複なく管理し、request の計数とは独立です。公開した snapshot が解決した保留、または置き換えた run（ライブから確定、区間から節、古い境界判定 run から新しい run）の保留を明示的に除き、累計の request と token は保持します。Jev の分類器を作れない場合でも共有の計数器を更新します。metadata から利用状況を合成しません。
 
-## 場面判定は音響のみ
-
-場面は講義、討論、それぞれへの候補、未判定を表します。確定処理の開始時点は**講義**で、冒頭に手がかりのない区間も講義扱いです。Jev の本文意味や近接度は場面判定の入力ではありません。
-
-話者 span から、20 秒の観測窓を 1 秒ずつ進めて次の特徴を求めます。音声が 20 秒より短い場合はその範囲を一つの窓として観測します。
-
-- 活動話者数
-- 話者交替率（毎秒の交替数）
-- 発声時間内の重なり率
-- 最も長く話す話者の占有率
-- 観測窓内の発声時間率
-
-状態遷移の実際の根拠は、活動話者数、話者交替率、最多話者の占有率です。
-
-| 遷移先の根拠 | 条件 | 連続観測 |
-| --- | --- | --- |
-| 討論 | 3 話者以上、交替率 ≥ 0.25、最多話者の占有率 ≤ 0.65 | 8 回で討論候補、12 回で討論 |
-| 講義 | 2 話者以下、交替率 ≤ 0.15、最多話者の占有率 ≥ 0.75 | 10 回で講義候補、15 回で講義 |
-
-根拠が途切れると、候補の蓄積を取り消して直前の確定状態へ戻します。単独の短い発話だけで討論へ切り替えません。転換イベントの時刻は状態が変わった観測窓の終了フレームです。発話の場面は、その発話開始時刻以前の最新転換から決めます。同時刻の転換はイベント記録順で決めます。
-
-## 近接度と音響範囲（scope）
-
-近接度は音響範囲判定だけに使います。話者ごとに音声レベルとスペクトルの鋭さの**固定 profile**を作り、セッション内の中央値との差から相対的な近傍・遠方の根拠を得ます。話者が移動するたびに profile を更新する追跡ではなく、物理距離をメートルで推定するものでもありません。
-
-一話者あたり最大 8 個のサンプルを使い、各サンプルは最大 2 秒、候補に必要な長さは 0.35 秒です。安定した profile が 3 話者分未満なら距離判定を未判定にします。対象範囲に活動話者が複数いる、または話者の根拠がない場合も未判定です。音声の根拠が足りないことと読取失敗は区別し、音声読取失敗は scope 段階の失敗として確定 run の公開を止めます。
-
-scope は `near`、`background`、`unknown` の時間 span として保存します。
-
-- 近傍の根拠は、音量・スペクトルから得た confidence の平均が 0.6 以上なら near、それ未満なら unknown です。
-- 遠方の根拠から background にするのは、**討論が確定している場面だけ**です。音量とスペクトルの両方の根拠があり、confidence の平均が 0.75 以上必要です。
-- 講義や候補状態では、遠いことだけで background にしません。unknown として保持します。
-- 発話内で場面が変わる場合は scope の span を転換位置でも分け、その時点の場面を使います。
-
-画面と `transcript.txt` が除外するのは、発話の場面が討論で、scope span が存在し、そのすべてが background の行だけです。一部に near / unknown を含む発話、scope のない発話は丸ごと背景として捨てません。背景として表示しない発話もイベントログと認識本文を保持します。
-
 ## 実装の根拠
 
 - [Jev request・応答・エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevClient.swift)、[共有型・Noul閾値・batch上限](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[優先度閾値・バッチ停止](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevDecision.swift)、[保存 payload](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[節の組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[確定・再試行の snapshot](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[ライブの判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[保存結果の検証と再利用](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)
 - [アプリ／CLI のアクセス境界と保存済みキー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[アプリの構成](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)
 - [設定と接続確認](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)、[Keychain](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/KeychainStore.swift)、[利用計数](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevUsageCounter.swift)、[診断表示](../app/MacAmbientJev/Sources/MacAmbientJev/DiagnosticsView.swift)
-- [場面の観測と記録時刻](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneCoordinator.swift)、[場面特徴と状態機械](../app/MacAmbientJev/Sources/MacAmbientJevCore/SceneInference.swift)、[確定処理の場面設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)
-- [近接度 profile](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/TimelineProximityEvidenceProvider.swift)、[scope の閾値](../app/MacAmbientJev/Sources/MacAmbientJevCore/ScopeInference.swift)、[場面と scope の結合](../app/MacAmbientJev/Sources/MacAmbientJevCore/ScopeCoordinator.swift)、[画面と書き出しの行集合](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)
+- [画面と書き出しの行集合・節 slice](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)

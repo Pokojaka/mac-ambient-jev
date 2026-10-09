@@ -219,29 +219,23 @@ event_lines = []
 if events and events.exists():
     try: event_lines = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
     except ValueError as error: reason['event_log'] = str(error)
+    if any(type(event.get('schema_version')) is not int or event['schema_version'] != 3 for event in event_lines):
+        fail('events.jsonl requires schema_version 3')
 else:
     reason['event_log'] = 'no session event log was found'
 session_dir = directory
 metadata = session_dir / 'processing_metadata.json' if session_dir else None
-checkpoint = session_dir / 'audio/processing/checkpoint.json' if session_dir else None
 active_runs = {}
-sample_rate = None
 if metadata and metadata.exists():
-    active_runs = json.loads(metadata.read_text()).get('active_runs') or {}
-if checkpoint and checkpoint.exists():
-    sample_rate = read_json(checkpoint)['sampleRate']
+    state = read_json(metadata)
+    if type(state.get('schema_version')) is not int or state['schema_version'] != 3:
+        fail('processing_metadata.json requires schema_version 3')
+    published_runs = state['active_runs']
+    if published_runs is not None:
+        active_runs = published_runs
 completed = [e for e in event_lines if e.get('event_type') == 'processing.run.completed' and e.get('payload', {}).get('succeeded') is True]
 diarization = next((e for e in reversed(completed) if e.get('processing_run_id') == active_runs.get('diarization') and e.get('payload', {}).get('stage') == 'diarization'), None)
 if not diarization: reason['diarization_completed_at'] = 'no successful active diarization run was observed'
-scene_changes = [e for e in event_lines if e.get('event_type') == 'scene.changed' and e.get('processing_run_id') == active_runs.get('scene')]
-oscillations = None
-if sample_rate and active_runs.get('scene'):
-    ordered = sorted(scene_changes, key=lambda e: e['source_start_frame'])
-    oscillations = sum(a['payload'] == c['payload'] != b['payload'] and
-                       c['source_start_frame'] - a['source_start_frame'] <= 30 * sample_rate
-                       for a, b, c in zip(ordered, ordered[1:], ordered[2:]))
-else:
-    reason['scene_oscillation_count'] = 'no active scene run or checkpoint sample rate'
 for key in ('capture_dropout_count', 'jev_success_count', 'jev_failure_count', 'jev_retry_pending_count', 'crash_recovery_loss_window_seconds'):
     reason[key] = 'file import or offline session recovery cannot measure this live-session value'
 report = {
@@ -276,8 +270,6 @@ report = {
  'memory_sample_count': len(asr_samples),
  'thermal_sample_count': len(thermal_samples),
  'diarization_completed_at': diarization.get('created_at') if diarization else None,
- 'scene_change_count': len(scene_changes) if active_runs.get('scene') else None,
- 'scene_oscillation_count': oscillations,
  'capture_dropout_count': None, 'jev_success_count': None,
  'jev_failure_count': None, 'jev_retry_pending_count': None,
  'crash_recovery_loss_window_seconds': None,

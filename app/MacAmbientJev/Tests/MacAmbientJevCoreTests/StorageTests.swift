@@ -21,8 +21,8 @@ import Testing
 }
 
 @Test func recoveryDropsOnlyIncompleteFinalJSONLine() throws {
-    let valid1 = #"{"event_seq":1,"event_type":"segment.created"}"# + "\n"
-    let valid2 = #"{"event_seq":2,"event_type":"asr.pending"}"# + "\n"
+    let valid1 = #"{"event_seq":1,"event_type":"segment.created","schema_version":3}"# + "\n"
+    let valid2 = #"{"event_seq":2,"event_type":"asr.pending","schema_version":3}"# + "\n"
     let broken = #"{"event_seq":3,"event_type":"asr.com"#
     let recovered = try SessionRecovery.recoverJSONL(Data((valid1 + valid2 + broken).utf8))
     #expect(recovered.lines.count == 2)
@@ -30,7 +30,7 @@ import Testing
 }
 
 @Test func corruptMiddleLineIsNotSilentlyDropped() throws {
-    let input = "{\"event_seq\":1}\nnot-json\n{\"event_seq\":3}\n"
+    let input = "{\"event_seq\":1,\"schema_version\":3}\nnot-json\n{\"event_seq\":3,\"schema_version\":3}\n"
     #expect(throws: SessionRecoveryError.self) {
         _ = try SessionRecovery.recoverJSONL(Data(input.utf8))
     }
@@ -67,6 +67,32 @@ import Testing
 
 
 @Test
+func processingMetadataEncodesThePublishedStageContract() throws {
+    let metadata = ProcessingMetadata(
+        finalizationAttempt: FinalizationAttempt(attemptID: "final", state: .complete, failureReason: nil),
+        activeRuns: ActiveRuns(
+            segmentation: "seg", asr: "asr", diarization: "diar",
+            clauseBoundary: "boundary", contentPriority: "priority"
+        ),
+        pendingClauseBoundarySegments: [],
+        pendingContentPriorityClauses: []
+    )
+    let data = try JSONEncoder().encode(metadata)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["schema_version"] as? Int == 3)
+    #expect(Set(object.keys) == Set([
+        "schema_version", "finalization_attempt", "active_runs",
+        "pending_clause_boundary_segments", "pending_content_priority_clauses"
+    ]))
+    let runs = try #require(object["active_runs"] as? [String: String])
+    #expect(runs == [
+        "segmentation": "seg", "asr": "asr", "diarization": "diar",
+        "clause_boundary": "boundary", "content_priority": "priority"
+    ])
+    #expect(try JSONDecoder().decode(ProcessingMetadata.self, from: data) == metadata)
+}
+
+@Test
 func processingMetadataStorePersistsSelectedRuns() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -97,6 +123,7 @@ func missingClauseMetadataArraysAreRejectedBeforeReadingOrAppending(key: String)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     var object: [String: Any] = [
+        "schema_version": EventLogSchema.version,
         "finalization_attempt": NSNull(), "active_runs": NSNull(),
         "pending_clause_boundary_segments": [], "pending_content_priority_clauses": []
     ]
@@ -106,6 +133,31 @@ func missingClauseMetadataArraysAreRejectedBeforeReadingOrAppending(key: String)
     try original.write(to: store.url)
     #expect(throws: ProcessingMetadataStoreError.self) { _ = try store.load() }
     #expect(throws: ProcessingMetadataStoreError.self) { _ = try SessionWriter(sessionURL: root) }
+    #expect(try Data(contentsOf: store.url) == original)
+}
+
+@Test(arguments: [1, 2, 4, nil] as [Int?])
+func unsupportedMetadataSchemaCannotBeReadAppendedOrReplaced(version: Int?) throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    var object: [String: Any] = [
+        "finalization_attempt": NSNull(), "active_runs": NSNull(),
+        "pending_clause_boundary_segments": [], "pending_content_priority_clauses": []
+    ]
+    object["schema_version"] = version
+    let store = ProcessingMetadataStore(sessionURL: root)
+    let original = try JSONSerialization.data(withJSONObject: object)
+    try original.write(to: store.url)
+    #expect(throws: ProcessingMetadataStoreError.unsupportedSchemaVersion) { _ = try store.load() }
+    #expect(throws: ProcessingMetadataStoreError.unsupportedSchemaVersion) {
+        _ = try SessionWriter(sessionURL: root)
+    }
+    for policy in [UnreadableMetadataPolicy.reject, .replace] {
+        #expect(throws: ProcessingMetadataStoreError.unsupportedSchemaVersion) {
+            try store.beginFinalization(attemptID: "new", policy: policy)
+        }
+    }
     #expect(try Data(contentsOf: store.url) == original)
 }
 

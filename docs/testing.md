@@ -17,10 +17,10 @@ bash scripts/verify_v1.sh
 `verify_v1.sh` は次を行う。
 
 1. ドキュメント参照 checker の自己テストと参照検査を実行する。
-   `scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。Python の `regex` package が必要。
+   `scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
 2. SwiftPM の依存を解決し、package を build する。
 3. `RUN_MODEL_TESTS` を外して通常の Swift test を実行する。
-4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、named folder の inspect、resume 出力先の containment を確認する。
+4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル3段階の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
 6. モデル検証を指定した場合は Runtime test bundle を実行する。
 7. `scripts/build_app.sh` で app bundle を作り（MLX の Metal shader library は Swift Build backend だけが作るため、このスクリプトは `swift build` を Swift Build backend で実行する。アプリは Apple Silicon 専用のため arm64 だけを build する）、アプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、利用者が選んだファイルへの read/write・app-scope bookmark entitlement を確認する。
@@ -76,7 +76,7 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 Linux 音声正規化は入力と出力が同一ファイル（シンボリックリンク解決後を含む）なら、出力先を変更する前に拒否し、原音声を保持する。`tools/linux-audio/tests/test_audio.py` は実 ffmpeg を使う同一パス・symlink の境界と、正常変換・変換失敗時の出力処理を検証する。
 
-`validatedEmptyVADCompletesWithoutSpeechInference` は 1 秒の合成無音を 2 回確定し、検証済み VAD の空結果が話者分離の準備失敗・推論失敗に依存しないことを確認する。ASR 準備も呼ばれず、原音声の bytes、読み取れる空 transcript、5 段階の provenance と成功 0 件完了、`complete` metadata、終端の無発話表示、復旧対象外の分類を検証する。VAD 自体の失敗と発話ありの推論失敗は `failed` のまま旧公開 run を保持する。これは orchestration の検証であり、実 FluidAudio モデルの無音成功・クラッシュを測った結果ではない。
+`validatedEmptyVADCompletesWithoutSpeechInference` は 1 秒の合成無音を 2 回確定し、検証済み VAD の空結果が話者分離の準備失敗・推論失敗に依存しないことを確認する。ASR 準備も呼ばれず、原音声の bytes、読み取れる空 transcript、3 段階の provenance と成功 0 件完了、`complete` metadata、終端の無発話表示、復旧対象外の分類を検証する。VAD 自体の失敗と発話ありの推論失敗は `failed` のまま公開済み run を保持する。これは orchestration の検証であり、実 FluidAudio モデルの無音成功・クラッシュを測った結果ではない。
 
 [CanonicalAudioIngressTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/CanonicalAudioIngressTests.swift) は device-rate の合成 tone を irregular / 512-frame block に分けて実 drain とディスクへ通す。48 kHz・44.1 kHz の累積 duration、block 境界の single-stream reference との sample 差、997 / 3101 Hz の波形誤差、16 kHz identity、4-channel import 平均、fractional-ratio の gap・overlap・overflow・stop tail、部分 append failure 後の retry と並行 finish / snapshot を検証する。fixture を保存前に preconvert しない。EOS 後の全体長は正確な長さの floor か ceil で、gap は公開範囲へ切り詰める。
 
@@ -121,7 +121,7 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 節優先度の回帰検証は注入 `DecisionProvider` / `JevHTTPTransport` で決定的に行い、モデル品質の正解とは分ける。厳密な `> 0.5` と LOW 採用 `≥ 0.90`（直前の Double を含む）、候補の raw UTF-16 座標、全no・無句読点・連続句読点と末尾除外、跨ぎ節と終端、再利用対象を除いた後の40/41節の batch 境界を対象とする。最初の回答が有効でも後続の回答欠落・type不一致・不正Choiceで全batchを拒否し、一HTTPの失敗として数える。UTF-8 byte 完全一致の再利用では、trim・句読点・Unicode byte差を同一視せず、未公開retryのdurable回答も使わない。schema・参照・coverageの破損、保留再試行と公開snapshot、request単位のtoken計数、takeover時の保存済みLOWと通信中の通常行を確認する。LOW＋続き待ちは閉じたLOW部分だけ淡色で、待機本文も保持し、行を畳まない。画面projectionとtxtは混在PRIMARY/LOW、全LOW、待機・保留、フィラーのみを含む実sliceで本文と行集合を確認する。文言・内部配線・コピーした設定値を固定するテストは根拠にしない。
 
-実ファイルの受入smokeは一時harnessで `NativeSessionProcessor` → `SessionWriter` → metadata・readerの再読込 → `SavedSessionCatalog` → `SessionExporter` を通す。注入ASRの `えー、週末の設計を確認します。そうですね。` からPRIMARY/LOW混在を作り、rawの保持、除去後本文、LOWを含む実txt出力、全LOW行の畳みを確認する。注入401/429ではpriority保留を通常表示し、priorityだけのtargeted retryで公開boundaryを維持・非対象pendingをcarryする。boundaryの429では無分割行を保持し、boundary retryで両runとpendingを一括公開する。provider応答前の再読込では直前の公開snapshotのままであることを確認する。2つのlive区間から1つのfinal区間への除去後本文完全一致carryはChoiceの再送なしで確認する。event appendとmetadata公開をそれぞれ実ファイルで失敗させ、ローカルのdurable本文・通常表示・5段公開を保持し、未公開の任意段を採用しないことを確認する。注入値は実APIの精度・ネットワーク課金の証拠ではない。harnessと一時セッションは受入後に削除する。
+実ファイルの受入smokeは一時harnessで `NativeSessionProcessor` → `SessionWriter` → metadata・readerの再読込 → `SavedSessionCatalog` → `SessionExporter` を通す。注入ASRの `えー、週末の設計を確認します。そうですね。` からPRIMARY/LOW混在を作り、rawの保持、除去後本文、LOWを含む実txt出力、全LOW行の畳みを確認する。注入401/429ではpriority保留を通常表示し、priorityだけのtargeted retryで公開boundaryを維持・非対象pendingをcarryする。boundaryの429では無分割行を保持し、boundary retryで両runとpendingを一括公開する。provider応答前の再読込では直前の公開snapshotのままであることを確認する。2つのlive区間から1つのfinal区間への除去後本文完全一致carryはChoiceの再送なしで確認する。event appendとmetadata公開をそれぞれ実ファイルで失敗させ、ローカルのdurable本文・通常表示・3段公開を保持し、未公開の任意段を採用しないことを確認する。注入値は実APIの精度・ネットワーク課金の証拠ではない。harnessと一時セッションは受入後に削除する。
 
 ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した空 ASR・後続本文を保存し、`JevEnrichmentCoordinator` → metadata 公開 → reader/materializer の再読込を通す。前半本文を未解決のまま残し、空 ASR より後の本文だけを一回の Choice で分類し、保存 snapshot と再読込が一致することを確認する。空 ASR の後に新たな gap がある場合に先頭を推測しないことは回帰テストで扱う。
 
@@ -129,7 +129,7 @@ ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した�
 
 ### 録音しない受入と実画面での確認
 
-授業など録音できない環境では、マイク・システム音声を開始せず、システム音量や出力装置にも触れない。既存ファイルのCLI処理とディスクだけの注入smokeを行う。CLIの隔離rootで `--keep-session` の実処理を完了した後、JSONの `text` と参照先ASRイベントのraw、`display_text`、`source`、`clause_state`、空sliceを照合する。Jev disabledでは5つのローカルactive run、境界保留、priority保留なし、Jev requestなしを確認する。inspect → resumeの再書き出しでイベントbytesとmetadataが変わらないことも確認する。フィラーが実ASR結果に含まれなければ、そのファイルをフィラー削除の証拠にしない。
+授業など録音できない環境では、マイク・システム音声を開始せず、システム音量や出力装置にも触れない。既存ファイルのCLI処理とディスクだけの注入smokeを行う。CLIの隔離rootで `--keep-session` の実処理を完了した後、JSONの `text` と参照先ASRイベントのraw、`display_text`、`source`、`clause_state`、空sliceを照合する。Jev disabledでは3つのローカルactive run、境界保留、priority保留なし、Jev requestなしを確認する。inspect → resumeの再書き出しでイベントbytesとmetadataが変わらないことも確認する。フィラーが実ASR結果に含まれなければ、そのファイルをフィラー除去の証拠にしない。
 
 実API観測は実 `JevClient` と通常のtransportを使い、録音ではなく新しいテキストを境界→組立て→除去後本文のChoiceへ送る。キーは `security find-generic-password -s app.mac-ambient-jev.jev -w` のstdoutをメモリだけで取得し、端末・ログ・ファイルへ出さない。候補のraw UTF-16位置、確率、返却model、purpose別HTTP数、reported input token、HTTP時間を記録する。next到着待ち、consumerの反映処理、GUI描画をHTTP時間と混ぜず、未計測は未計測とする。新規テキストの観測と限界は [節API受入記録](records/2026-10-09-clause-acceptance.md) を参照する。利用者報告の13行の試作を再測定した値ではなく、CSJ全認定の一致率でもない。
 
@@ -141,7 +141,7 @@ bundleはREADMEの手順でbuildして `open .build/MacAmbientJev.app` で起動
 - 録音停止後のASR drain・finishInputとfinal takeover、late応答不採用、実live/final本文が完全一致する場合だけのcarryと送信削減。
 - 未設定／設定停止／不正キー／通信失敗でもローカル公開が続くこと、priority障害で保存済みboundaryを維持すること。
 - 設定の保留再試行ボタン／キー保存トリガー、二種targetの送信、atomic metadata切替、診断のrequest・pending内訳。
-- 保存済み録音の再選択とGUI「書き出す」の実txt再読込、時刻・話者・改行処理・背景行除外、clean全文とLOW保持、イベントraw不変。GUI exportにJSONは含まれない。
+- 保存済み録音の再選択とGUI「書き出す」の実txt再読込、時刻・話者・改行処理、フィラー除去後に本文が残る全行とLOWの保持、イベントraw不変。GUI exportにJSONは含まれない。
 
 `MacAmbientJevEvaluateSession`, `MacAmbientJevEvaluateASR`, and `MacAmbientJevEvaluateDiarization` consume explicit artifact files only; none locate or create saved sessions, so these artifact-only modes do not require `--sessions-root`. Every mode of the capture, file-processing, and live-latency CLIs requires an explicit root that rejects protected app data/cache roots, their ancestors/descendants, and symlink aliases.
 
@@ -196,7 +196,7 @@ resume は先にそのセッションの保存整理（FLAC 変換または一�
 
 `scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行する。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認する。さらに実 named folder で inspect の正常・不在・完全 UUID の重複・同じ先頭 8 桁の別 ID・名前/日時/suffix/stem の不整合を検証し、実セッション内（symlink・大文字小文字の違いを含む）への resume 出力を拒否して原ファイルが変わらないことを確認する。実モデルの正常推論とは別の検査である。
 
-## セッションの CER と場面振動数
+## セッションの CER
 
 `MacAmbientJevEvaluateSession` は portable で、二つの位置引数だけを受け取る。
 
@@ -217,7 +217,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateSession \
 
 `reference` は `text` または `file` のどちらか一つ。file は UTF-8 の参照文で、相対パスなら manifest のディレクトリから解決する。audio は manifest の必須項目だが、この CLI は音声を読み込んだり認識したりしない。
 
-入力する `segments.json` の各要素から `start_ms`、`text`、`scene` を読む。保存順に本文を改行で連結して CER を求める。レポートは `id`、`asr_evaluation`（raw/normalized CER と normalizer version）、`scene_oscillation_count`。振動数は連続した同じ場面をまとめた後、30 秒以内の A→B→A を数える。これは人手の場面転換正解との誤差ではない。保持必須語・誤低優先度・誤背景の注釈評価は行わない。
+入力する `segments.json` の各要素から `start_ms` と `text` を読む。保存順に本文を改行で連結して CER を求める。レポートは `id` と `asr_evaluation`（raw/normalized CER と normalizer version）を持つ。
 
 Linux runner の全音声一つの ASR artifact には `MacAmbientJevEvaluateASR`、話者分離 artifact には `MacAmbientJevEvaluateDiarization` を使う。どちらも参照・artifact の二位置引数と任意の末尾 `--output` を受け取る。詳細は [linux.md](linux.md) を参照する。
 
@@ -258,6 +258,7 @@ bash scripts/measure_v1_run.sh \
 - `run.json` の対象キーは `recording_id`。`status` は `completed` / `failed` / `paused`。
 - `asr_rtf` は ASR 呼び出し時間 ÷ 処理済み音声秒数。モデルロード、pacing 待機、処理全体の wall time を混ぜない。
 - 欠落・破損した engine metrics、thermal/memory sample、run ID 不一致は失敗。欠測を 0 として補完しない。
+- 読み取るイベントと processing metadata は `schema_version: 3` が必須。版が異なるか欠落している場合は計測を失敗とする。
 - `memory.jsonl` は run ID、UTC 時刻、phase、`footprint_bytes`、MLX の active/cache/peak/cache-limit bytes。footprint 取得失敗は null と `footprint_error` の理由を持つ。sample 書き込み失敗も CLI の失敗になる。
 - `thermal.jsonl` は run ID、UTC 時刻、state。サンプルは開始・終了・約 5 秒ごと、および phase 変更時に取る。critical は確定処理を一時停止する。
 - マイクの dropout、Jev 利用件数、クラッシュ復旧の音声喪失窓は、このオフライン計測では測れず null と理由を記録する。

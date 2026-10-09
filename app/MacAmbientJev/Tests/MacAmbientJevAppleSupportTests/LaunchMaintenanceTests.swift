@@ -5,8 +5,7 @@ import Testing
 @testable import MacAmbientJevCore
 
 private let publishedRuns = ActiveRuns(
-    segmentation: "seg_previous", asr: "asr_previous", diarization: "diar_previous",
-    scene: "scene_previous", scope: "scope_previous"
+    segmentation: "seg_previous", asr: "asr_previous", diarization: "diar_previous"
 )
 
 private func makeSession(_ paths: AppPaths, source: SessionSource, second: Int) throws -> SessionLayout {
@@ -21,7 +20,7 @@ private func publish(_ layout: SessionLayout, attempt: FinalizationAttempt.State
     let writer = try SessionWriter(sessionURL: layout.sessionURL)
     let localRuns: [(ProcessingStage, String)] = [
         (.segmentation, "seg_previous"), (.asr, "asr_previous"),
-        (.diarization, "diar_previous"), (.scene, "scene_previous"), (.scope, "scope_previous")
+        (.diarization, "diar_previous")
     ]
     for (stage, runID) in localRuns {
         try await writer.append(EventDraft(

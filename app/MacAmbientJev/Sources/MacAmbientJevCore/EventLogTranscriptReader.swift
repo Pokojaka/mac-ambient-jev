@@ -102,8 +102,8 @@ struct EventLogLine {
         return value
     }
 
-    /// Existing logs must have the required schema2 clause payloads before a writer appends.
-    /// Reference/coverage validation remains scoped to the consumer's selected snapshot.
+    /// Existing logs must have the required clause payloads before a writer appends.
+    /// Reference/coverage validation uses the consumer's selected snapshot.
     func validateClausePayload() throws {
         switch header.eventType {
         case ClauseEventType.boundaryAssessed:
@@ -198,39 +198,6 @@ struct SpeakerSpanBody: Decodable {
             startFrame: try payload.decode(Int64.self, forKey: .startFrame),
             endFrame: try payload.decode(Int64.self, forKey: .endFrame),
             confidence: try payload.decodeIfPresent(Double.self, forKey: .confidence)
-        )
-    }
-}
-
-struct SceneChangedBody: Decodable {
-    let frame: Int64
-    let scene: SceneState
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: EventLogKeys.self)
-        frame = try container.decode(Int64.self, forKey: .sourceStartFrame)
-        scene = try container.decode(SceneState.self, forKey: .payload)
-    }
-}
-
-struct ScopeSpanBody: Decodable {
-    let span: ScopeSpan
-
-    private enum PayloadKeys: String, CodingKey {
-        case startFrame = "start_frame"
-        case endFrame = "end_frame"
-        case scope
-        case confidence
-    }
-
-    init(from decoder: Decoder) throws {
-        let payload = try decoder.container(keyedBy: EventLogKeys.self)
-            .nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
-        span = ScopeSpan(
-            startFrame: try payload.decode(Int64.self, forKey: .startFrame),
-            endFrame: try payload.decode(Int64.self, forKey: .endFrame),
-            scope: try payload.decode(AcousticScope.self, forKey: .scope),
-            confidence: try payload.decode(Double.self, forKey: .confidence)
         )
     }
 }
@@ -360,32 +327,13 @@ public struct EventLogTranscriptReader: Sendable {
                     confidence: span.confidence
                 ))
 
-            case "scene.changed":
-                let runID = try line.requiredRunID()
-                guard runID == activeRuns.scene else { continue }
-                let body = try line.body(SceneChangedBody.self)
-                events.append(.sceneChanged(seq: seq, runID: runID, atFrame: body.frame, scene: body.scene))
-
-            case "scope.span":
-                let runID = try line.requiredRunID()
-                guard runID == activeRuns.scope else { continue }
-                let span = try line.body(ScopeSpanBody.self).span
-                events.append(.scopeSpan(
-                    seq: seq,
-                    runID: runID,
-                    startFrame: span.startFrame,
-                    endFrame: span.endFrame,
-                    scope: span.scope,
-                    confidence: span.confidence
-                ))
-
             default:
                 continue
             }
         }
 
         let log = try ClauseEventLog(lines: decoded, selectedRuns: Set([
-            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization, activeRuns.scene, activeRuns.scope,
+            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
             activeRuns.clauseBoundary, activeRuns.contentPriority
         ].compactMap { $0 }))
         if let published = try log.publishedRuns(activeRuns) {

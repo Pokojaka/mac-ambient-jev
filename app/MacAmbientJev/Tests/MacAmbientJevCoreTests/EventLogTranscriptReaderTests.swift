@@ -57,36 +57,13 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
             confidence: 0.9
         )
     ))
-    _ = try await writer.append(EventDraft(
-        eventType: "scene.changed",
-        sessionID: sessionID,
-        processingRunID: "scene-active",
-        sourceStartFrame: 0,
-        payload: SceneState.discussion
-    ))
-    _ = try await writer.append(EventDraft(
-        eventType: "scope.span",
-        sessionID: sessionID,
-        processingRunID: "scope-active",
-        segmentID: "seg-1",
-        sourceStartFrame: 0,
-        sourceEndFrame: 1_000,
-        payload: ScopeSpan(
-            startFrame: 0,
-            endFrame: 1_000,
-            scope: .near,
-            confidence: 0.95
-        )
-    ))
     let recovered = try SessionRecovery.recoverJSONL(
         Data(contentsOf: root.appending(path: "events.jsonl"))
     )
     let activeRuns = ActiveRuns(
         segmentation: "seg-active",
         asr: "asr-active",
-        diarization: "diar-active",
-        scene: "scene-active",
-        scope: "scope-active"
+        diarization: "diar-active"
     )
     let events = try EventLogTranscriptReader().events(
         lines: recovered.lines,
@@ -102,15 +79,13 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
 
     #expect(materialized.count == 1)
     #expect(materialized[0].text == "現在の結果")
-    #expect(materialized[0].scene == .discussion)
     #expect(materialized[0].speakers.first?.id == "speaker-1")
-    #expect(materialized[0].scopeSpans.first?.scope == .near)
     #expect(materialized[0].clauseState == .boundaryPending)
 }
 
 private func eventLine(_ object: [String: Any]) throws -> Data {
     var envelope = object
-    envelope["schema_version"] = 2
+    envelope["schema_version"] = EventLogSchema.version
     envelope["session_id"] = "0123ABCD-0000-0000-0000-000000000001"
     return try JSONSerialization.data(withJSONObject: envelope)
 }
@@ -201,7 +176,7 @@ func eventLogReadersRejectALineWithoutEnvelope() throws {
     }
 }
 
-@Test(arguments: [1, nil] as [Int?])
+@Test(arguments: [1, 2, 4, nil] as [Int?])
 func readersAndWriterRejectAnyOtherEnvelopeVersion(version: Int?) async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -406,7 +381,7 @@ func malformedUnrelatedRunsDoNotInvalidatePublishedClauseSnapshot() async throws
     let lastSeq = try #require(try eventObjects(root).last?["event_seq"] as? UInt64)
     for (offset, type) in ["asr.completed", ClauseEventType.boundaryAssessed, ClauseEventType.priorityAssigned].enumerated() {
         let corrupted: [String: Any] = [
-            "schema_version": 2, "event_seq": lastSeq + UInt64(offset) + 1, "event_type": type,
+            "schema_version": EventLogSchema.version, "event_seq": lastSeq + UInt64(offset) + 1, "event_type": type,
             "session_id": sessionID.uuidString, "processing_run_id": "unpublished",
             "segmentation_run_id": "unused", "payload": [:]
         ]
@@ -484,7 +459,7 @@ func everyClauseConsumerRejectsCorruptDurableSnapshot(kind: String) async throws
 }
 
 @Test
-func appendRejectsMissingSchema2ClauseFieldsWithoutChangingTheLog() async throws {
+func appendRejectsMissingClauseFieldsWithoutChangingTheLog() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let writer = try SessionWriter(sessionURL: root)
@@ -548,7 +523,7 @@ func liveReuseDoesNotInventAStreamEndForAnUnassessedSuccessor() async throws {
     #expect(throws: EventLogTranscriptReaderError.self) { _ = try log.boundaryRun("boundary_live") }
 }
 
-@Test(arguments: [ProcessingStage.segmentation, .asr, .diarization, .scene, .scope])
+@Test(arguments: [ProcessingStage.segmentation, .asr, .diarization])
 func readersRejectUnknownLocalPointersInsteadOfInventingAnEmptyTranscript(stage: ProcessingStage) async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -558,9 +533,7 @@ func readersRejectUnknownLocalPointersInsteadOfInventingAnEmptyTranscript(stage:
     let invalid = ActiveRuns(
         segmentation: stage == .segmentation ? "missing" : "seg",
         asr: stage == .asr ? "missing" : "asr",
-        diarization: stage == .diarization ? "missing" : "diar",
-        scene: stage == .scene ? "missing" : "scene",
-        scope: stage == .scope ? "missing" : "scope"
+        diarization: stage == .diarization ? "missing" : "diar"
     )
     #expect(throws: EventLogTranscriptReaderError.self) {
         _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: invalid)

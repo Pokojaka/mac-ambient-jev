@@ -41,33 +41,6 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
     }
 }
 
-/// Settings of the acoustic scene and scope stages, recorded as their run provenance.
-enum FinalTranscriptStageSettings {
-    static let sceneConfig = SceneStateMachineConfig.production
-    static let sceneWindowSeconds = 20.0
-    static let sceneHopSeconds = 1.0
-
-    static let sceneProvenance = RunProvenance(
-        engine: "acoustic-scene-state-machine",
-        model: nil,
-        version: "1",
-        configuration: [
-            "window_seconds": String(sceneWindowSeconds),
-            "hop_seconds": String(sceneHopSeconds),
-            "discussion_candidate_observations": String(sceneConfig.discussionCandidateObservations),
-            "discussion_confirm_observations": String(sceneConfig.discussionConfirmObservations),
-            "lecture_candidate_observations": String(sceneConfig.lectureCandidateObservations),
-            "lecture_confirm_observations": String(sceneConfig.lectureConfirmObservations),
-        ]
-    )
-
-    static let scopeProvenance = RunProvenance(
-        engine: "proximity-scope-classifier",
-        model: nil,
-        version: "1",
-        configuration: ["evidence": "timeline-level-and-spectral"]
-    )
-}
 
 struct FinalTranscriptPipelineResult: Sendable {
     let activeRuns: ActiveRuns
@@ -117,7 +90,6 @@ struct FinalTranscriptPipeline: Sendable {
     let asr: any ASREngine
     let diarization: any DiarizationEngine
     let vadSegmenter: any FinalTranscriptVADSegmenter
-    let proximityEvidenceProvider: any ProximityEvidenceProvider
 
     /// - Throws: `FinalTranscriptPipelineFailure`.
     func process(
@@ -157,8 +129,6 @@ struct FinalTranscriptPipeline: Sendable {
         let segmentationRunID = "seg_final_\(UUID().uuidString.lowercased())"
         let asrRunID = "asr_final_\(UUID().uuidString.lowercased())"
         let diarizationRunID = "diar_final_\(UUID().uuidString.lowercased())"
-        let sceneRunID = "scene_final_\(UUID().uuidString.lowercased())"
-        let scopeRunID = "scope_final_\(UUID().uuidString.lowercased())"
 
         func startRun(_ stage: ProcessingStage, _ runID: String, _ provenance: RunProvenance) async throws {
             try await writer.append(EventDraft(
@@ -309,55 +279,8 @@ struct FinalTranscriptPipeline: Sendable {
         let activeRuns = ActiveRuns(
             segmentation: segmentationRunID,
             asr: asrRunID,
-            diarization: diarizationRunID,
-            scene: sceneRunID,
-            scope: scopeRunID
+            diarization: diarizationRunID
         )
-        try await startRun(.scene, sceneRunID, FinalTranscriptStageSettings.sceneProvenance)
-        if vadSegments.isEmpty {
-            try await completeEmptyRun(.scene, sceneRunID)
-            try await startRun(.scope, scopeRunID, FinalTranscriptStageSettings.scopeProvenance)
-            try await completeEmptyRun(.scope, scopeRunID)
-        } else {
-            await onStatus(UserFacingStatus.analyzingScene.text)
-            let sceneCoordinator = SceneCoordinator(
-                sessionID: sessionID,
-                runID: sceneRunID,
-                writer: writer,
-                materializer: materializer,
-                config: FinalTranscriptStageSettings.sceneConfig,
-                windowSeconds: FinalTranscriptStageSettings.sceneWindowSeconds,
-                hopSeconds: FinalTranscriptStageSettings.sceneHopSeconds
-            )
-            let sceneResult = try await sceneCoordinator.process(
-                speakerSpans: speakerSpans,
-                totalFrames: info.committedFrames,
-                sampleRate: info.sampleRate,
-                existingEvents: transcriptEvents,
-                activeRuns: ActiveRuns(
-                    segmentation: segmentationRunID,
-                    asr: asrRunID,
-                    diarization: diarizationRunID,
-                    scene: sceneRunID
-                )
-            )
-
-            await onStatus(UserFacingStatus.analyzingScope.text)
-            try await startRun(.scope, scopeRunID, FinalTranscriptStageSettings.scopeProvenance)
-            let scopeCoordinator = ScopeCoordinator(
-                sessionID: sessionID,
-                runID: scopeRunID,
-                writer: writer,
-                provider: proximityEvidenceProvider,
-                materializer: materializer
-            )
-            let scopeResult = try await scopeCoordinator.process(
-                existingEvents: sceneResult.events,
-                speakerSpans: speakerSpans,
-                activeRuns: activeRuns
-            )
-            transcriptEvents = scopeResult.events
-        }
 
         try validatePersistedRuns(
             segmentationRunID: segmentationRunID,
@@ -365,9 +288,7 @@ struct FinalTranscriptPipeline: Sendable {
             expected: [
                 (.segmentation, segmentationRunID),
                 (.diarization, diarizationRunID),
-                (.asr, asrRunID),
-                (.scene, sceneRunID),
-                (.scope, scopeRunID)
+                (.asr, asrRunID)
             ]
         )
 

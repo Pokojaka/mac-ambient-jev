@@ -2,16 +2,15 @@
 
 ## 文字起こしの行集合
 
-画面と `transcript.txt` は `LiveTranscriptProjection` が選んだ同じ発話を使う。次の発話は表示・テキスト書き出しから除く。
-
-- フィラー除去後の本文が空、または空白だけの発話。
-- 場面が `discussion` で、音響範囲の span があり、そのすべてが `background` の発話。
+画面と `transcript.txt` は `LiveTranscriptProjection` が選んだ同じ発話を使う。フィラー除去後の本文が空、または空白・改行だけの発話だけを除き、非空白の認識済み発話をすべて含める。
 
 低優先度の発話は画面では共通の表示方針に従って淡色表示・折り畳みを行うが、書き出しにはフィラー除去済みの LOW 本文を印なしで含める。フィラーだけで空になった行は省く。「聞き取れませんでした」などの文字列だけで発話を除外しない。認識不能は ASR の構造化状態 `outcome: empty` で扱う。イベントには空本文を含む区間が残る。
 
-`SavedTranscriptLoader` は保存済み active run のイベントから原文とフィラー除去写像、節の行内 slice を materialize し、画面と書き出しは共通 projection を適用する。読み込み・書き出しは ASR イベントを書き換えない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は除去後本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラーだけの発話（空の `display_text`）や背景のみの発話も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
+`SavedTranscriptLoader` は保存済み active run のイベントから原文とフィラー除去写像、節の行内 slice を materialize し、画面と書き出しは共通 projection を適用する。読み込み・書き出しは ASR イベントを書き換えない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は除去後本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラーだけの発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
 
-処理 CLI とキャプチャ CLI も、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に Jev を再実行しない。キャプチャ CLI の `transcriptText` は画面と同じ projection の除去後本文を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の Jev 再試行待ちセッションの resume は外部送信せず、公開済みの raw/display JSON を書き出す。
+処理 CLI とキャプチャ CLI は発話区間検出・音声認識・話者分離の3段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に Jev を再実行しない。キャプチャ CLI の `transcriptText` は画面と同じ projection の除去後本文を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の Jev 再試行待ちセッションの resume は外部送信せず、公開済みの raw/display JSON を書き出す。
+
+イベントログと `processing_metadata.json` は `schema_version: 3` を必須とする。欠損・未対応の version は読取エラーとして拒否し、明示的な再処理でも metadata を置換しない。
 
 ## transcript.txt
 
@@ -78,7 +77,7 @@ Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙�
 
 音声がない場合は「保存済み音声がありません」、音声を読めない場合は「音声を読めません: 理由」を処理状態より優先して表示する。セッション情報の欠損・破損、フォルダー名と manifest の不整合、完全セッション ID の重複は項目全体を読み込みエラーとする。行の identity と選択は実フォルダー URL を使い、UUID を読めないフォルダーも個別に選べる。
 
-再処理には読めるセッション情報と利用できる原音声が必要。派生 metadata の破損だけなら原音声から再処理できるが、破損状態の書き出しは許可しない。書き出しにはさらに公開済み文字起こしが必要。録音中は保存済み録音の選択を無効にし、録音・読み込み中や同じセッションの処理待ち・処理中は再処理を重ねて開始しない。
+再処理には読めるセッション情報と利用できる原音声が必要。派生 metadata の一般的な破損だけなら原音声から再処理できるが、schema version の欠損・未対応は再処理でも拒否する。破損状態の書き出しは許可しない。書き出しにはさらに公開済み文字起こしが必要。録音中は保存済み録音の選択を無効にし、録音・読み込み中や同じセッションの処理待ち・処理中は再処理を重ねて開始しない。
 
 一覧は active ASR run のイベントログと active transcript payload を読み取り専用で検証する。ログが欠損・不正、または不完全な末尾を含む場合は破損状態となり、文字起こしを公開せず書き出しを無効にする。再処理は利用可能な原音声から行える。
 

@@ -740,8 +740,7 @@ public actor NativeSessionProcessor {
                 audio: audio,
                 asr: asr,
                 diarization: diarization,
-                vadSegmenter: finalTranscriptVAD,
-                proximityEvidenceProvider: TimelineProximityEvidenceProvider(reader: audio)
+                vadSegmenter: finalTranscriptVAD
             ).process(
                 onStatus: onStatus,
                 pacingMode: pacingMode,
@@ -859,7 +858,7 @@ public actor NativeSessionProcessor {
         onStatus: @escaping StatusHandler,
         onUpdate: UpdateHandler
     ) async throws {
-        let localStatus = "文字起こし、話者分離、場面判定、音響範囲整理が完了しました（\(final.completedCount)区間）"
+        let localStatus = "文字起こしと話者分離が完了しました（\(final.completedCount)区間）"
         func complete(_ segments: [MaterializedTranscriptSegment], status: String) async {
             await onUpdate(segments, .complete)
             await onPhase(.complete)

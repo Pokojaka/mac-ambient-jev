@@ -408,8 +408,9 @@ struct ProcessRecordingCommand {
 
     private static func export(sessionURL: URL, outputURL: URL) throws {
         guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
-              let runs = metadata.activeRuns, runs.scope != nil else {
-            throw ProcessRecordingError.processingFailed("音響範囲整理の run が完了していません")
+              let runs = metadata.activeRuns,
+              runs.segmentation != nil, runs.asr != nil, runs.diarization != nil else {
+            throw ProcessRecordingError.processingFailed("発話区間・音声認識・話者分離の run が完了していません")
         }
         let recovered = try SessionRecovery.recoverJSONL(
             SessionFileAccess.read(sessionURL.appending(path: "events.jsonl"), relativeTo: sessionURL)

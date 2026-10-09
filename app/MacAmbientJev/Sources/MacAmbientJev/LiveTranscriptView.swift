@@ -217,8 +217,6 @@ struct LiveTranscriptView: View {
     private func transcriptDetails(_ row: LiveTranscriptRow) -> some View {
         VStack(alignment: .leading, spacing: AppSpacing.xs) {
             Text(Self.clauseStateDescription(row.clauseState))
-            sceneDescription(row.scene)
-            scopeDescriptions(row.scopeSpans)
 
             if !row.speakers.isEmpty {
                 Text("話者区間")
@@ -232,40 +230,6 @@ struct LiveTranscriptView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-    }
-
-    @ViewBuilder
-    private func sceneDescription(_ scene: SceneState) -> some View {
-        switch scene {
-        case .lecture:
-            Label("場面: 講義", systemImage: "person.fill")
-        case .discussion:
-            Label("場面: 討論", systemImage: "person.2.fill")
-        case .discussionCandidate:
-            Label("場面: 討論候補", systemImage: "person.2")
-        case .lectureCandidate:
-            Label("場面: 講義候補", systemImage: "person")
-        case .unknown:
-            Text("場面: 未判定")
-        }
-    }
-
-    @ViewBuilder
-    private func scopeDescriptions(_ spans: [MaterializedScopeSpan]) -> some View {
-        if spans.isEmpty {
-            Text("音響範囲: 未判定")
-        } else {
-            ForEach(Array(spans.enumerated()), id: \.offset) { entry in
-                let span = entry.element
-                let label: String = switch span.scope {
-                case .near: "近傍"
-                case .background: "背景"
-                case .unknown: "未判定"
-                }
-                Text("音響範囲: \(label) · \(formatTime(span.startMilliseconds))–\(formatTime(span.endMilliseconds))")
-                    .font(.caption.monospacedDigit())
-            }
-        }
     }
 
     private func formatTime(_ milliseconds: Int64) -> String {

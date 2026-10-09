@@ -337,7 +337,7 @@ func catalogReportsPendingClassificationAfterLocalFinalization() async throws {
     let events = try await writeTranscript(["本文"], root: session, sessionID: id)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", scope: "scope"),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar"),
         pendingClauseBoundarySegments: [try source("s01", in: events)],
         pendingContentPriorityClauses: []
     ))

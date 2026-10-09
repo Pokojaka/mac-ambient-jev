@@ -6,7 +6,7 @@ public struct EmptyPayload: Codable, Sendable, Equatable {
 
 /// The only `events.jsonl` envelope version readers and writers accept.
 public enum EventLogSchema {
-    public static let version = 2
+    public static let version = 3
 }
 
 public struct EventDraft<Payload: Codable & Sendable>: Sendable {
@@ -87,7 +87,7 @@ public struct EventEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         guard try c.decode(Int.self, forKey: .schemaVersion) == EventLogSchema.version else {
-            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: c, debugDescription: "schema_version 2 required")
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: c, debugDescription: "schema_version \(EventLogSchema.version) required")
         }
         self.init(
             eventSeq: try c.decode(UInt64.self, forKey: .eventSeq),

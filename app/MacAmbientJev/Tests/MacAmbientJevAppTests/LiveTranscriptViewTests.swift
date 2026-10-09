@@ -9,21 +9,21 @@ func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() throws {
         LiveTranscriptRow(
             segment: .fixture(
                 segmentID: "first", startMilliseconds: 0, endMilliseconds: 1_000, text: "最初",
-                scene: .unknown, speakers: [], scopeSpans: [], isDiarized: true
+                speakers: [], isDiarized: true
             ),
             displaySpeakerLabels: ["Speaker 1"]
         ),
         LiveTranscriptRow(
             segment: .fixture(
                 segmentID: "second", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "続き",
-                scene: .unknown, speakers: [], scopeSpans: [], isDiarized: true
+                speakers: [], isDiarized: true
             ),
             displaySpeakerLabels: ["Speaker 1"]
         ),
         LiveTranscriptRow(
             segment: .fixture(
                 segmentID: "third", startMilliseconds: 2_000, endMilliseconds: 3_000, text: "次",
-                scene: .unknown, speakers: [], scopeSpans: [], isDiarized: true
+                speakers: [], isDiarized: true
             ),
             displaySpeakerLabels: ["Speaker 2"]
         )
@@ -51,7 +51,7 @@ func waitingAndPendingRowsDescribeTheirJevStateWithoutHidingText() throws {
     let row = try LiveTranscriptRow(
         segment: .fixture(
             segmentID: "waiting", startMilliseconds: 0, endMilliseconds: 1_000, text: "えー、続く",
-            scene: .unknown, speakers: [], scopeSpans: [], isDiarized: false, clauseState: .awaitingNextSegment
+            speakers: [], isDiarized: false, clauseState: .awaitingNextSegment
         ),
         displaySpeakerLabels: []
     )

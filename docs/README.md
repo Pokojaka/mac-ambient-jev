@@ -5,7 +5,7 @@
 - [live.md](live.md): ライブ認識、表示、熱制御、遅延指標。
 - [final.md](final.md): 確定処理、復旧、再処理、一時停止、失敗、話者見出し。
 - [capture.md](capture.md): マイクとシステム音声、入力音量、注意・エラー、容量判定。
-- [jev.md](jev.md): 優先度分類、エラー、利用量、音響による場面と範囲。
+- [jev.md](jev.md): 節の境界・優先度判定、エラー、利用量。
 - [export.md](export.md): テキストと音声の書き出し、保存先、自動書き出し、保存済み一覧。
 - [linux.md](linux.md): Linux 評価、artifact と baseline、corpus、CSJ、CI。
 - [testing.md](testing.md): 検証コマンド、モデルテスト、CLI、評価・計測。

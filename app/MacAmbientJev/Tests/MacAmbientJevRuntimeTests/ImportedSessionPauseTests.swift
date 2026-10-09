@@ -123,8 +123,6 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     #expect(runs.segmentation != nil)
     #expect(runs.asr != nil)
     #expect(runs.diarization != nil)
-    #expect(runs.scene != nil)
-    #expect(runs.scope != nil)
     #expect(runs.clauseBoundary == nil)
     #expect(runs.contentPriority == nil)
     let recovered = try SessionRecovery.recoverJSONL(

@@ -71,7 +71,7 @@ func savedTranscriptLoaderRejectsAnIncompleteEventTail() async throws {
     let session = try await fixture.writeLiveSession()
     let eventsURL = SessionLayout(sessionURL: session.sessionURL).eventsURL
     var bytes = try Data(contentsOf: eventsURL)
-    bytes.append(contentsOf: "{\"schema_version\":2".utf8)
+    bytes.append(contentsOf: "{\"schema_version\":3".utf8)
     try bytes.write(to: eventsURL)
     #expect(throws: EventLogTranscriptReaderError.self) {
         try SavedTranscriptLoader.load(
@@ -488,8 +488,6 @@ private func segment(
     startMilliseconds: Int64,
     text: String,
     speakers: [(id: String, start: Int64, end: Int64)] = [],
-    scene: SceneState = .lecture,
-    scopes: [AcousticScope] = [],
     priority: ContentPriority? = nil,
     isDiarized: Bool = true
 ) throws -> MaterializedTranscriptSegment {
@@ -509,15 +507,11 @@ private func segment(
         startMilliseconds: startMilliseconds,
         endMilliseconds: end,
         text: text,
-        scene: scene,
         speakers: speakers.map {
             MaterializedSpeakerSpan(
                 id: $0.id, startMilliseconds: $0.start, endMilliseconds: $0.end,
                 confidence: nil, displayLabel: nil
             )
-        },
-        scopeSpans: scopes.map {
-            MaterializedScopeSpan(startMilliseconds: startMilliseconds, endMilliseconds: end, scope: $0, confidence: 0.9)
         },
         isDiarized: isDiarized,
         clauseState: priority == nil ? nil : .classified,
@@ -531,8 +525,8 @@ func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
         try segment("kept", startMilliseconds: 0, text: "残る発話", speakers: [("A", 0, 1_000)]),
         try segment("empty", startMilliseconds: 1_000, text: " \n", speakers: [("A", 1_000, 2_000)]),
         try segment(
-            "background", startMilliseconds: 2_000, text: "遠くの会話",
-            speakers: [("A", 2_000, 3_000)], scene: .discussion, scopes: [.background]
+            "conversation", startMilliseconds: 2_000, text: "別の会話",
+            speakers: [("A", 2_000, 3_000)]
         ),
         try segment(
             "low", startMilliseconds: 3_000, text: "えーと、低優先度本文", speakers: [("B", 3_000, 4_000)],
@@ -544,9 +538,9 @@ func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
     let rows = try LiveTranscriptProjection().rows(for: segments)
     let lines = try TranscriptTextRenderer.render(segments).split(separator: "\n", omittingEmptySubsequences: false)
 
-    #expect(rows.map(\.segmentID) == ["kept", "low"])
-    #expect(rows.map(\.text) == ["残る発話", "低優先度本文"])
-    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:03] Speaker 2: 低優先度本文", ""])
+    #expect(rows.map(\.segmentID) == ["kept", "conversation", "low"])
+    #expect(rows.map(\.text) == ["残る発話", "別の会話", "低優先度本文"])
+    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:02] Speaker 1: 別の会話", "[00:03] Speaker 2: 低優先度本文", ""])
 }
 
 @Test
@@ -563,9 +557,9 @@ func mixedClausePrioritiesKeepTheWholeCleanedTextInExport() throws {
     }
     let mixed = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: raw, scene: .lecture,
+        text: raw,
         speakers: [MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)],
-        scopeSpans: [], isDiarized: true, clauseState: .classified, clauseSlices: slices
+        isDiarized: true, clauseState: .classified, clauseSlices: slices
     )
     let row = try #require(LiveTranscriptProjection().rows(for: [mixed]).first)
     #expect(row.text == "重要。余談。")

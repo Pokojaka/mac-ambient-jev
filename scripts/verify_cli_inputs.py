@@ -56,13 +56,70 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
         "source_kind": "recording", "capture_source": "systemAudio",
     }
     (session / "session.json").write_text(json.dumps(manifest))
-    (session / "events.jsonl").write_text("")
+    events = []
+    active_runs = {"segmentation": "fixture-seg", "diarization": "fixture-diar", "asr": "fixture-asr"}
+    for stage, run_id in active_runs.items():
+        for event_type, payload in [
+            ("processing.run.started", {
+                "stage": stage,
+                "provenance": {"engine": "fixture", "model": None, "version": "test", "configuration": {}},
+            }),
+            ("processing.run.completed", {
+                "stage": stage, "succeeded": True, "completed_count": 0, "failed_count": 0,
+            }),
+        ]:
+            events.append({
+                "event_seq": len(events) + 1,
+                "event_id": f"75AC3491-986E-4F0A-8697-E9181B0910D{len(events)}",
+                "event_type": event_type, "schema_version": 3, "session_id": session_id,
+                "processing_run_id": run_id, "created_at": "2024-03-01T00:00:00Z", "payload": payload,
+            })
+    event_path = session / "events.jsonl"
+    event_bytes = "".join(json.dumps(event) + "\n" for event in events)
+    event_path.write_text(event_bytes)
+    metadata = {
+        "schema_version": 3,
+        "finalization_attempt": {"attempt_id": "fixture-attempt", "state": "complete", "failure_reason": None},
+        "active_runs": active_runs,
+        "pending_clause_boundary_segments": [], "pending_content_priority_clauses": [],
+    }
+    metadata_path = session / "processing_metadata.json"
+    metadata_path.write_text(json.dumps(metadata))
     (session / "audio").mkdir()
     (session / "audio" / "storage.json").write_text(json.dumps({"state": "recordingPCM"}))
     before = {str(p.relative_to(session)): p.read_bytes() for p in session.rglob("*") if p.is_file()}
     valid = inspect(session_id.lower())
     assert valid.returncode == 0, valid.stderr
     assert json.loads(valid.stdout) == {"session_id": session_id, "action": "none", "maintenance": None}, valid.stdout
+
+    schema_cases = [("unsupported", 2), ("invalid type", "3"), ("boolean", True), ("missing", None)]
+    for label, version in schema_cases:
+        invalid_metadata = dict(metadata)
+        if label == "missing":
+            invalid_metadata.pop("schema_version")
+        else:
+            invalid_metadata["schema_version"] = version
+        metadata_path.write_text(json.dumps(invalid_metadata))
+        invalid_bytes = metadata_path.read_bytes()
+        rejected = inspect(session_id)
+        assert rejected.returncode != 0 and not rejected.stdout.strip(), (label, rejected)
+        assert metadata_path.read_bytes() == invalid_bytes
+        assert event_path.read_text() == event_bytes
+        metadata_path.write_text(json.dumps(metadata))
+    for label, version in schema_cases:
+        invalid_event = dict(events[-1])
+        if label == "missing":
+            invalid_event.pop("schema_version")
+        else:
+            invalid_event["schema_version"] = version
+        invalid_bytes = "".join(json.dumps(event) + "\n" for event in events[:-1]) + json.dumps(invalid_event) + "\n"
+        event_path.write_text(invalid_bytes)
+        rejected = inspect(session_id)
+        assert rejected.returncode != 0 and not rejected.stdout.strip(), (label, rejected)
+        assert event_path.read_text() == invalid_bytes
+        assert metadata_path.read_bytes() == before["processing_metadata.json"]
+        event_path.write_text(event_bytes)
+    assert {str(p.relative_to(session)): p.read_bytes() for p in session.rglob("*") if p.is_file()} == before
     # Another full ID with the same prefix must not become a match.
     collision = sessions / "2024-03-01_00-00-00_録音_31ac3491"
     collision.mkdir()

@@ -28,6 +28,7 @@ public struct FinalizationAttempt: Codable, Sendable, Equatable {
 /// Per-session processing state. Which engines and settings produced each run is
 /// recorded on the run itself as a `processing.run.started` event.
 public struct ProcessingMetadata: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
     public var finalizationAttempt: FinalizationAttempt?
     /// The published run set. The local runs are set when a finalization attempt completes;
     /// the Jev runs when their snapshot is published.
@@ -43,6 +44,7 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
         pendingClauseBoundarySegments: [SegmentTextReference],
         pendingContentPriorityClauses: [ClauseReference]
     ) {
+        self.schemaVersion = EventLogSchema.version
         self.finalizationAttempt = finalizationAttempt
         self.activeRuns = activeRuns
         self.pendingClauseBoundarySegments = pendingClauseBoundarySegments
@@ -89,6 +91,7 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
         case finalizationAttempt = "finalization_attempt"
         case activeRuns = "active_runs"
         case pendingClauseBoundarySegments = "pending_clause_boundary_segments"
@@ -97,6 +100,10 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let version = try? c.decode(Int.self, forKey: .schemaVersion),
+              version == EventLogSchema.version else {
+            throw ProcessingMetadataStoreError.unsupportedSchemaVersion
+        }
         let boundary = try c.decode([SegmentTextReference].self, forKey: .pendingClauseBoundarySegments)
         let priority = try c.decode([ClauseReference].self, forKey: .pendingContentPriorityClauses)
         self.init(
@@ -111,6 +118,7 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         try validate()
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
         try c.encode(finalizationAttempt, forKey: .finalizationAttempt)
         try c.encode(activeRuns, forKey: .activeRuns)
         try c.encode(pendingClauseBoundarySegments, forKey: .pendingClauseBoundarySegments)
@@ -118,11 +126,12 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     }
 }
 
-/// What a new finalization attempt does with a `processing_metadata.json` that cannot be decoded.
+/// What a new finalization attempt does with malformed `processing_metadata.json`.
 public enum UnreadableMetadataPolicy: Sendable, Equatable {
     /// Fail: the file is reported and left untouched.
     case reject
-    /// Start over with fresh metadata. Only an explicit user reprocess chooses this.
+    /// Start over with fresh metadata after a decoding failure, not an unsupported schema.
+    /// Only an explicit user reprocess chooses this.
     case replace
 }
 
@@ -130,6 +139,7 @@ public enum ProcessingMetadataStoreError: Error, LocalizedError, Equatable {
     case metadataMissing
     case finalizationAttemptMismatch
     case publishedRunsChanged
+    case unsupportedSchemaVersion
     case unreadable(String)
 
     public var errorDescription: String? {
@@ -140,6 +150,8 @@ public enum ProcessingMetadataStoreError: Error, LocalizedError, Equatable {
             "処理状態ファイルの確定処理 ID が一致しません"
         case .publishedRunsChanged:
             "公開済みの処理結果が変更されたため、Jev の判定結果を公開できません"
+        case .unsupportedSchemaVersion:
+            "処理状態ファイルは対応していない形式です（schema_version \(EventLogSchema.version) のみ対応）"
         case .unreadable(let reason):
             "処理状態ファイルを読めません: \(reason)"
         }
@@ -157,6 +169,8 @@ public struct ProcessingMetadataStore: Sendable {
         guard let data = try SessionFileAccess.readIfPresent(url, relativeTo: url.deletingLastPathComponent()) else { return nil }
         do {
             return try JSONDecoder().decode(ProcessingMetadata.self, from: data)
+        } catch let error as ProcessingMetadataStoreError {
+            throw error
         } catch let error as DecodingError {
             throw ProcessingMetadataStoreError.unreadable(String(describing: error))
         } catch {

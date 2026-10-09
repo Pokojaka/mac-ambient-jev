@@ -33,4 +33,4 @@ Jev は CLI では無効。音声処理はアプリと同じ確定パイプラ�
 
 ## 参照文による評価
 
-`MacAmbientJevEvaluateSession` は音声と参照文を指定する manifest と生成済みの `segments.json` を受け取り、ASR CER と場面振動数を出力する。manifest の形式、モデルテストの設定、計測方法は [検証と計測](../../docs/testing.md)、Linux corpus は [Linux 評価](../../docs/linux.md)を参照。
+`MacAmbientJevEvaluateSession` は音声と参照文を指定する manifest と生成済みの `segments.json` を受け取り、ASR CER を出力する。manifest の形式、モデルテストの設定、計測方法は [検証と計測](../../docs/testing.md)、Linux corpus は [Linux 評価](../../docs/linux.md)を参照。

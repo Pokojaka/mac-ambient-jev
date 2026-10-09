@@ -57,6 +57,19 @@ class ArtifactTests(unittest.TestCase):
         code += "\nprint(json.dumps({'directory':str(directory) if directory else None,'events':str(events) if events else None,'audio':audio}))\n"
         return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
+    def artifact_schema_check(self):
+        tree = embedded("measure_v1_run.sh")
+        start = next(i for i, node in enumerate(tree.body) if assignment(node, "event_lines"))
+        end = next(i for i, node in enumerate(tree.body) if assignment(node, "completed"))
+        nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name in ("fail", "read_json")]
+        nodes += tree.body[start:end]
+        code = "import json,pathlib,sys\n"
+        code += f"folder=pathlib.Path({str(self.root)!r}); exit_code='0'; reason={{}}; events=folder/'events.jsonl'; directory=folder\n"
+        code += ast.unparse(ast.Module(body=nodes, type_ignores=[]))
+        code += "\nprint(json.dumps({'event_lines':event_lines,'active_runs':active_runs,'reason':reason}))\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
     def capture(self, folder, identity=IDENTITY):
         summary = self.root / "summary.json"
         summary.write_text(json.dumps(dict(errors=[], permission="authorized", session_id=identity, path=str(folder))))
@@ -66,6 +79,54 @@ class ArtifactTests(unittest.TestCase):
         code += "\nprint(session.name)\n"
         return subprocess.run([sys.executable, "-I", "-c", code, str(summary), "unused.wav", "3", str(self.sessions)],
                               capture_output=True, text=True)
+
+    def test_current_artifact_schema_versions(self):
+        event = {
+            "event_seq": 1, "event_id": "75AC3491-986E-4F0A-8697-E9181B0910D4",
+            "event_type": "fixture.unused", "schema_version": 3, "session_id": IDENTITY,
+            "created_at": "2024-03-01T00:00:00Z", "payload": {},
+        }
+        metadata = {
+            "schema_version": 3, "finalization_attempt": None,
+            "active_runs": {
+                "segmentation": "segmentation-run", "asr": "asr-run",
+                "diarization": "diarization-run", "clause_boundary": "boundary-run",
+                "content_priority": "priority-run",
+            },
+            "pending_clause_boundary_segments": [], "pending_content_priority_clauses": [],
+        }
+        expected_runs = {"segmentation", "asr", "diarization", "clause_boundary", "content_priority"}
+        self.assertEqual(set(metadata["active_runs"]), expected_runs)
+        (self.root / "events.jsonl").write_text(json.dumps(event) + "\n")
+        (self.root / "processing_metadata.json").write_text(json.dumps(metadata))
+        valid = self.artifact_schema_check()
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(set(json.loads(valid.stdout)["active_runs"]), expected_runs)
+
+        for label, version in (("unsupported", 2), ("invalid type", "3"), ("boolean", True), ("missing", None)):
+            with self.subTest(file="events.jsonl", version=label):
+                invalid_event = dict(event)
+                if label == "missing":
+                    invalid_event.pop("schema_version")
+                else:
+                    invalid_event["schema_version"] = version
+                (self.root / "events.jsonl").write_text(json.dumps(invalid_event) + "\n")
+                rejected = self.artifact_schema_check()
+                self.assertEqual(rejected.returncode, 1)
+                self.assertIn("events.jsonl requires schema_version 3", rejected.stderr)
+
+        (self.root / "events.jsonl").write_text(json.dumps(event) + "\n")
+        for label, version in (("unsupported", 2), ("invalid type", "3"), ("boolean", True), ("missing", None)):
+            with self.subTest(file="processing_metadata.json", version=label):
+                invalid_metadata = dict(metadata)
+                if label == "missing":
+                    invalid_metadata.pop("schema_version")
+                else:
+                    invalid_metadata["schema_version"] = version
+                (self.root / "processing_metadata.json").write_text(json.dumps(invalid_metadata))
+                rejected = self.artifact_schema_check()
+                self.assertEqual(rejected.returncode, 1)
+                self.assertIn("processing_metadata.json requires schema_version 3", rejected.stderr)
 
     def test_full_identity_and_resolved_original(self):
         folder = self.session()

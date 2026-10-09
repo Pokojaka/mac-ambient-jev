@@ -55,37 +55,29 @@ public enum ASRSessionReference: Decodable, Sendable, Equatable {
 public struct ASRSessionSegment: Decodable, Sendable, Equatable {
     public let startMilliseconds: Int64
     public let text: String
-    public let scene: SceneState
 
-    public init(startMilliseconds: Int64, text: String, scene: SceneState) {
+    public init(startMilliseconds: Int64, text: String) {
         self.startMilliseconds = startMilliseconds
         self.text = text
-        self.scene = scene
     }
 
     private enum CodingKeys: String, CodingKey {
         case startMilliseconds = "start_ms"
         case text
-        case scene
     }
 }
 
 public struct ASRSessionReport: Encodable, Sendable, Equatable {
     public let id: String
     public let asrEvaluation: ASREvaluationResult
-    public let sceneOscillationCount: Int
 
     private enum CodingKeys: String, CodingKey {
         case id
         case asrEvaluation = "asr_evaluation"
-        case sceneOscillationCount = "scene_oscillation_count"
     }
 }
 
 public enum ASRSessionEvaluator {
-    /// A scene that returns within this window after switching away counts as one oscillation.
-    public static let oscillationWindowMilliseconds: Int64 = 30_000
-
     /// Evaluates segments in their `segments.json` order.
     public static func evaluate(
         id: String,
@@ -97,20 +89,7 @@ public enum ASRSessionEvaluator {
             asrEvaluation: ASREvaluation.evaluate(
                 reference: reference,
                 hypothesis: segments.map(\.text).joined(separator: "\n")
-            ),
-            sceneOscillationCount: sceneOscillationCount(segments)
+            )
         )
-    }
-
-    /// Counts A→B→A scene runs whose two A starts lie within the oscillation window.
-    public static func sceneOscillationCount(_ segments: [ASRSessionSegment]) -> Int {
-        var runs: [ASRSessionSegment] = []
-        for segment in segments where runs.last?.scene != segment.scene {
-            runs.append(segment)
-        }
-        return zip(runs, runs.dropFirst(2)).count { first, third in
-            first.scene == third.scene
-                && third.startMilliseconds - first.startMilliseconds <= oscillationWindowMilliseconds
-        }
     }
 }

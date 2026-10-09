@@ -265,7 +265,8 @@ struct CaptureSystemAudioCommand {
 
     private static func loadTranscriptText(sessionURL: URL, sampleRate: Double) throws -> String {
         guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
-              let runs = metadata.activeRuns, runs.scope != nil else {
+              let runs = metadata.activeRuns,
+              runs.segmentation != nil, runs.asr != nil, runs.diarization != nil else {
             throw CaptureSystemAudioError.transcriptionFailed("Completed transcript runs are missing")
         }
         let recovered = try SessionRecovery.recoverJSONL(

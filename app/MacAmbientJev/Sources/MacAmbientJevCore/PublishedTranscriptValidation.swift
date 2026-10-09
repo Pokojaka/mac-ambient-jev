@@ -5,7 +5,7 @@ extension ClauseEventLog {
     func validateLocalRuns(_ activeRuns: ActiveRuns) throws {
         let selected: [(ProcessingStage, String?)] = [
             (.segmentation, activeRuns.segmentation), (.asr, activeRuns.asr),
-            (.diarization, activeRuns.diarization), (.scene, activeRuns.scene), (.scope, activeRuns.scope)
+            (.diarization, activeRuns.diarization)
         ]
         for (stage, selectedRunID) in selected {
             guard let runID = selectedRunID else { continue }

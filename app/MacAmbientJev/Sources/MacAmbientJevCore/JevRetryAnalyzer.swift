@@ -20,8 +20,8 @@ public struct JevRetryAnalyzer: Sendable {
     public func hasUnpublishedJevRun(lines: [Data], activeRuns: ActiveRuns) throws -> Bool {
         let decoded = try EventLogLine.decode(lines)
         let active = Set([
-            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization, activeRuns.scene,
-            activeRuns.scope, activeRuns.clauseBoundary, activeRuns.contentPriority
+            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
+            activeRuns.clauseBoundary, activeRuns.contentPriority
         ].compactMap { $0 })
         let watermark = decoded.lazy.filter {
             ($0.header.eventType == "processing.run.started" || $0.header.eventType == "processing.run.completed")
@@ -49,7 +49,7 @@ public struct JevRetryAnalyzer: Sendable {
             throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "公開された文字起こしがありません")
         }
         let log = try ClauseEventLog(lines: EventLogLine.decode(lines), selectedRuns: Set([
-            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization, activeRuns.scene, activeRuns.scope,
+            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
             activeRuns.clauseBoundary, activeRuns.contentPriority
         ].compactMap { $0 }))
         let expectedBoundary: [SegmentTextReference]
