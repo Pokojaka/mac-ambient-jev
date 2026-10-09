@@ -223,13 +223,8 @@ public actor LiveContentPrioritySession {
         return nil
     }
 
-    private enum Availability {
-        case available(JevDecisionCoordinator)
-        case pending(ClausePendingReason, String)
-    }
-
     /// The current Jev coordinator; settings are read again for every request.
-    private func availableDecisions() -> Availability {
+    private func availableDecisions() -> JevDecisionAvailability {
         do {
             guard let decisions = try makeDecisions() else {
                 return .pending(.unconfigured, JevPendingMessage.unavailable)
@@ -336,30 +331,11 @@ public actor LiveContentPrioritySession {
         }
         try await show(events)
 
-        var remaining = targets[...]
-        while !remaining.isEmpty {
-            let batch = Array(remaining.prefix(JevPriorityBatchPolicy.maximumTargets))
-            remaining = remaining.dropFirst(batch.count)
+        var batches = try ClausePriorityBatches(targets: targets, stopReason: stopReason)
+        while batches.hasRemaining {
             try ensureActive()
-            let available: Availability
-            if let stopReason {
-                available = .pending(stopReason.pendingReason, JevPendingMessage.stopped)
-            } else {
-                available = availableDecisions()
-            }
-            let payload: ContentPriorityAssignedPayload
-            switch available {
-            case .available(let decisions):
-                let result = try await ClausePriorityBatch.classify(
-                    references: batch.map(\.reference), texts: batch.map(\.text), decisions: decisions
-                )
-                if let stop = result.stop { stopReason = stop }
-                payload = result.payload
-            case .pending(let reason, let message):
-                payload = try ClausePriorityBatch.pending(
-                    references: batch.map(\.reference), reason: reason, message: message
-                )
-            }
+            let payload = try await batches.next { self.availableDecisions() }
+            stopReason = batches.stopReason
             try ensureActive()
             let event = try await append(ClauseEventType.priorityAssigned, stage: .contentPriority, payload: payload,
                                          kind: .contentPriorityAssigned(payload))

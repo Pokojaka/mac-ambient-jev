@@ -218,7 +218,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 {"assignments":[
   {"reference":{"boundary_run_id":"boundary_example","clause_id":"c12_0"},"priority":"lowPriority","needs_retry":false,
    "decision":{"kind":"classified","request_id":"jevreq_example","answer_key":"u0001",
-               "response":{"priority":"lowPriority","confidence":0.95,"probabilities":{"PRIMARY":0.05,"LOW_PRIORITY":0.95}}}}],
+               "response":{"priority":"lowPriority","confidence":0.95,"probabilities":{"PRIMARY":0.025,"LOW_PRIORITY":0.975}}}}],
  "request":{"request_id":"jevreq_example","metadata":{"model":"jev-1.13.0","input_tokens":120}}}
 ```
 
@@ -228,9 +228,11 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `retry_pending` | null | true | `reason`、`message` |
 | `carried_over` | 元の値 | `source_needs_retry` と同じ | `source_priority_run_id`、`source_event_seq`、`source_clause`、`source_needs_retry` |
 
-`request` が null のイベントは、送信のない引き継ぎ・保留だけを含みます。引き継ぎは元 run・イベント・節が実在し、優先度と保留状態、節本文の UTF-8 byte 列が一致することを検証します。保留のまま引き継いだ節は保留のままです。
+`request` が null のイベントは、引き継ぎ・保留だけを含みます。リクエスト記録は成功応答だけに付けるため、送信したリクエストが失敗した保留も null です。引き継ぎは元 run・イベント・節が実在し、優先度と保留状態、節本文の UTF-8 byte 列が一致することを検証します。保留のまま引き継いだ節は保留のままです。
 
-根拠: [ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[ClauseBoundaryAssembly.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)。
+新しい優先度判定と優先度保留は、ライブ・確定・再試行とも原文順に最大 40 節ずつ `content_priority.assigned` に保存します。リクエストが失敗した batch は全対象を `request: null` の保留にし、送信停止後の残りや分類器を取得できなかった未送信の batch にも同じ粒度を使います。取り消しには保留イベントを作りません。送信のない引き継ぎイベントの件数は Choice の送信上限では制限しません。
+
+根拠: [ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[ClauseBoundaryAssembly.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[共通の直列 batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClausePriorityBatches.swift)、[JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)、[確定・再試行の batch 保存](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift)。
 
 ### run の来歴
 
@@ -332,6 +334,8 @@ chunk を atomic write して synchronize した後、その index を append / 
 ライブ→確定の固定には `SessionWriter.readDurableLog` を使い、append と同じファイルロックを取って synchronize 完了後のログを読みます。読取は破損末尾を切り詰めずエラーにし、固定後のイベントは再利用対象に追加しません。公開 reader・再試行・catalog は公開 run と参照先の source／carry 元だけを厳密に解釈し、carry 元も再帰的に境界組み立てと優先度整合を検証します。
 
 `EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非 active run や未知のイベント種別の payload は解釈せず、active run の必要フィールドの欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。Jev の節イベントは reader、再試行の分析（`JevRetryAnalyzer`）、ライブ判定の再利用、保存済みセッション一覧が共通の decoder で検証します。保存された境界判定から節を組み立て直し、保存された節と比べます。完了した run は組み立て結果と完全に一致し、全ての非空区間を覆う必要があります。未完了のライブ run は組み立て結果の先頭部分であれば読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーで、読取で Jev を再実行しません。
+
+`EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、節イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [JevRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した節 decoder を持ちません。
 
 `TranscriptMaterializer` が公開 run の区間・ASR・話者・場面・音響範囲・優先度を適用します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
 

@@ -189,8 +189,25 @@ private struct LiveJevFixture {
     }
 
     func eventObjects() throws -> [[String: Any]] {
-        try SessionRecovery.recoverJSONL(Data(contentsOf: root.appending(path: "events.jsonl"))).lines.map {
+        try SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: root.appending(path: "events.jsonl"))).lines.map {
             try JSONSerialization.jsonObject(with: $0) as! [String: Any]
+        }
+    }
+
+    func waitForJevCompletion() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while true {
+            if try eventObjects().contains(where: {
+                $0["event_type"] as? String == "processing.run.completed"
+                    && ($0["payload"] as? [String: Any])?["stage"] as? String == "contentPriority"
+            }) { return }
+            if let failure = await recorder.statuses.last(where: { $0.contains("判定を保存できませんでした") }) {
+                throw LiveFixtureWaitError(message: failure)
+            }
+            guard ContinuousClock.now < deadline else {
+                throw LiveFixtureWaitError(message: "Timed out waiting for live Jev completion")
+            }
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 }
@@ -241,18 +258,26 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
     #expect(snapshot.priorityRequests.sendCount == 1)
 }
 
-@Test(.timeLimit(.minutes(1)))
-func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults() async throws {
-    let provider = LiveProvider(continuing: [], holdBoundaryNumber: 2)
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Bool) async throws {
+    let provider = LiveProvider(
+        continuing: [], holdBoundaryNumber: holdingPriority ? nil : 2,
+        holdPriorityNumber: holdingPriority ? 2 : nil
+    )
     let counter = JevUsageCounter()
     let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await LiveJevFixture(texts: ["うん。", "二つ目。", "三つ目。"], makeDecisions: { decisions }, counter: counter)
+    let second = holdingPriority ? (1...81).map { "本文\($0)。" }.joined() : "二つ目。"
+    let fixture = try await LiveJevFixture(texts: ["うん。", second, "三つ目。"], makeDecisions: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     try await fixture.recognize(0)
     try await fixture.recognize(1)
     try await fixture.recognize(2)
-    try await provider.waitForBoundaries(2)
+    if holdingPriority {
+        try await provider.waitForPriorities(2)
+    } else {
+        try await provider.waitForBoundaries(2)
+    }
     try await fixture.recorder.wait { $0.first?.clauseState == .classified }
     let updatesBeforeStop = await fixture.recorder.updates.count
     let eventsBeforeStop = try Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
@@ -263,9 +288,14 @@ func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults() async throws {
 
     #expect(await fixture.recorder.updates.count == updatesBeforeStop)
     #expect(try Data(contentsOf: fixture.root.appending(path: "events.jsonl")) == eventsBeforeStop)
-    #expect(await provider.priorityRequests == [["うん。"]])
+    let expectedRequests = holdingPriority
+        ? [["うん。"], (1...40).map { "本文\($0)。" }]
+        : [["うん。"]]
+    #expect(await provider.priorityRequests == expectedRequests)
     #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.shouldCollapseRow) == [true, false, false])
-    #expect(await fixture.recorder.latest.map(\.clauseState) == [.classified, .awaitingNextSegment, .awaitingNextSegment])
+    #expect(await fixture.recorder.latest.map(\.clauseState) == [
+        .classified, holdingPriority ? .priorityPending : .awaitingNextSegment, .awaitingNextSegment
+    ])
 }
 
 @Test
@@ -460,10 +490,20 @@ func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async thro
 private final class LiveAvailability: @unchecked Sendable {
     private let lock = NSLock()
     private var suspended = false
+    private var acquisitionCount = 0
     var stopped: Bool {
         get { lock.withLock { suspended } }
         set { lock.withLock { suspended = newValue } }
     }
+
+    func stoppedForRequest() -> Bool {
+        lock.withLock {
+            acquisitionCount += 1
+            return suspended
+        }
+    }
+
+    var acquisitions: Int { lock.withLock { acquisitionCount } }
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -534,5 +574,121 @@ func savedLowSliceDoesNotFlickerWhileItsContinuationWaitsForPriority() async thr
     await provider.release()
     try await fixture.recorder.wait { $0.first?.clauseState == .classified }
     #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)[0].textFragments == expected)
+    await fixture.jev.stop()
+}
+
+private actor StoppingPriorityProvider: DecisionProvider {
+    private(set) var prioritySizes: [Int] = []
+    private let status: Int
+    private(set) var boundaryCount = 0
+
+    init(status: Int) { self.status = status }
+
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        boundaryCount += 1
+        return ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
+            continuationProbability: request.next.map { _ in 0.1 },
+            metadata: try JevResponseMetadata(model: "injected", inputTokens: 1, outputTokens: nil)
+        )
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        prioritySizes.append(targets.count)
+        throw JevClientError.httpStatus(status)
+    }
+}
+
+@Test(.timeLimit(.minutes(1)), arguments: [401, 429])
+func stoppedLivePriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int) async throws {
+    let provider = StoppingPriorityProvider(status: status)
+    let counter = JevUsageCounter()
+    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let raw = (1...81).map { "本文\($0)。" }.joined()
+    let availability = LiveAvailability()
+    let fixture = try await LiveJevFixture(
+        texts: [raw, "後続"],
+        makeDecisions: {
+            _ = availability.stoppedForRequest()
+            return decisions
+        },
+        counter: counter
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await fixture.recognize(0)
+    try await fixture.recognize(1)
+    try await fixture.jev.finishInput(snapshot: await fixture.asr.snapshot())
+    try await fixture.waitForJevCompletion()
+    let assigned = try fixture.eventObjects().filter { $0["event_type"] as? String == ClauseEventType.priorityAssigned }
+    let payloads = try assigned.map { try #require($0["payload"] as? [String: Any]) }
+    #expect(payloads.map { ($0["assignments"] as? [Any])?.count } == [40, 40, 1])
+    #expect(payloads.allSatisfy { $0["request"] is NSNull })
+    #expect(await provider.prioritySizes == [40])
+    #expect(await provider.boundaryCount == 1)
+    #expect(availability.acquisitions == 2)
+    let assignments = try payloads.flatMap { try #require($0["assignments"] as? [[String: Any]]) }
+    #expect(assignments.allSatisfy {
+        ($0["decision"] as? [String: Any])?["reason"] as? String
+            == (status == 401 ? "authorization_rejected" : "request_failed")
+    })
+    let pendingBoundaries = try fixture.eventObjects().filter {
+        $0["event_type"] as? String == ClauseEventType.boundaryPending
+    }
+    #expect(pendingBoundaries.count == 1)
+    #expect((pendingBoundaries[0]["payload"] as? [String: Any])?["reason"] as? String
+        == (status == 401 ? "authorization_rejected" : "request_failed"))
+    #expect(await counter.snapshot().priorityRequests.sendCount == 1)
+    #expect(await counter.snapshot().priorityRequests.failureCount == 1)
+    #expect(await counter.snapshot().pendingPriorityClauseCount == 81)
+    #expect(await counter.snapshot().pendingBoundarySegmentCount == 1)
+    let row = try #require(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).first)
+    #expect(row.text == raw)
+    #expect(row.clauseState == .priorityPending)
+    #expect(row.textFragments == [TranscriptTextFragment(text: raw, style: .normal)])
+    #expect(!row.shouldCollapseRow)
+    await fixture.jev.stop()
+}
+
+@Test(.timeLimit(.minutes(1)))
+func livePriorityBatchesReadCurrentAvailabilityAfterEachSavedBatch() async throws {
+    let provider = LiveProvider(continuing: [], holdPriorityNumber: 1)
+    let counter = JevUsageCounter()
+    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let availability = LiveAvailability()
+    let raw = (1...81).map { "本文\($0)。" }.joined()
+    let fixture = try await LiveJevFixture(
+        texts: [raw],
+        makeDecisions: {
+            if availability.stoppedForRequest() { throw JevAvailabilityError.stopped }
+            return decisions
+        },
+        counter: counter
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await fixture.recognize(0)
+    try await fixture.jev.finishInput(snapshot: await fixture.asr.snapshot())
+    try await provider.waitForPriorities(1)
+    availability.stopped = true
+    await provider.release()
+    try await fixture.waitForJevCompletion()
+
+    let slices = try #require(await fixture.recorder.latest.first?.clauseSlices)
+    #expect(slices.prefix(40).allSatisfy { $0.priority == .primary && !$0.needsRetry })
+    #expect(slices.dropFirst(40).allSatisfy { $0.priority == nil && $0.needsRetry })
+    #expect(slices.count == 81)
+    let assigned = try fixture.eventObjects().filter { $0["event_type"] as? String == ClauseEventType.priorityAssigned }
+    let payloads = try assigned.map { try #require($0["payload"] as? [String: Any]) }
+    #expect(payloads.map { ($0["assignments"] as? [Any])?.count } == [40, 40, 1])
+    #expect(payloads.first?["request"] is [String: Any])
+    #expect(payloads.dropFirst().allSatisfy {
+        $0["request"] is NSNull && ($0["assignments"] as? [[String: Any]])?.allSatisfy {
+            ($0["decision"] as? [String: Any])?["reason"] as? String == "stopped"
+        } == true
+    })
+    #expect(await provider.priorityRequests == [(1...40).map { "本文\($0)。" }])
+    #expect(availability.acquisitions == 4)
+    #expect(await counter.snapshot().priorityRequests.successCount == 1)
+    #expect(await counter.snapshot().priorityRequests.failureCount == 0)
+    #expect(await counter.snapshot().pendingPriorityClauseCount == 41)
     await fixture.jev.stop()
 }

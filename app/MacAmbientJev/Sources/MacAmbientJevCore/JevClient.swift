@@ -120,22 +120,22 @@ public struct JevClient: DecisionProvider, Sendable {
         while request.text.contains(frame) || request.next?.text.contains(frame) == true { frame += "⟨" }
         var marked = ""
         var questions: [String: JevQuestion] = [:]
-        var offset = 0
-        var candidateIndex = 0
-        for character in request.text {
-            marked.append(character)
-            offset += character.unicodeScalars.reduce(0) { $0 + ($1.value > 0xFFFF ? 2 : 1) }
-            if candidateIndex < request.candidates.count, request.candidates[candidateIndex].offsetUTF16 == offset {
-                let candidate = request.candidates[candidateIndex]
-                let marker = "\(frame)\(candidateIndex + 1)⟩"
-                marked += marker
-                questions[candidate.id] = JevQuestion(type: "noul", instructions: "`text` は話し言葉の文字起こしで、候補位置に印がある。印 `\(marker)` の位置は、述語を中心に統語的・意味的にまとまった節を終える絶対境界または強境界ですか？弱境界では切らない。判定対象は `text` だけで、`next_text` は継続質問専用。", criteria: [
-                    "true": "印の直前で文が終わる（文末）、または「けど」「が」「し」などの並列・逆接で前の節が完結し、後ろが新しい節として始まる絶対境界・強境界",
-                    "false": "同じ節の途中。主語や目的語の後、連用・連体修飾、通常の条件・理由・引用・テ接続などの弱境界、言いよどみや言い直しの途中"
-                ])
-                candidateIndex += 1
-            }
+        var previousOffset = 0
+        var cursor = request.text.startIndex
+        for (candidateIndex, candidate) in request.candidates.enumerated() {
+            let endUTF16 = request.text.utf16.index(cursor, offsetBy: candidate.offsetUTF16 - previousOffset)
+            guard let end = String.Index(endUTF16, within: request.text) else { throw JevClientError.invalidRequest }
+            marked.append(contentsOf: request.text[cursor..<end])
+            let marker = "\(frame)\(candidateIndex + 1)⟩"
+            marked += marker
+            questions[candidate.id] = JevQuestion(type: "noul", instructions: "`text` は話し言葉の文字起こしで、候補位置に印がある。印 `\(marker)` の位置は、述語を中心に統語的・意味的にまとまった節を終える絶対境界または強境界ですか？弱境界では切らない。判定対象は `text` だけで、`next_text` は継続質問専用。", criteria: [
+                "true": "印の直前で文が終わる（文末）、または「けど」「が」「し」などの並列・逆接で前の節が完結し、後ろが新しい節として始まる絶対境界・強境界",
+                "false": "同じ節の途中。主語や目的語の後、連用・連体修飾、通常の条件・理由・引用・テ接続などの弱境界、言いよどみや言い直しの途中"
+            ])
+            previousOffset = candidate.offsetUTF16
+            cursor = end
         }
+        marked.append(contentsOf: request.text[cursor...])
         if request.next != nil {
             questions["continuation"] = JevQuestion(type: "noul", instructions: "`text` の末尾の部分と `next_text` の先頭は、録音の区切りで分かれた同じ節の続きですか？末尾の句点だけでは否定しない。「と。」「いうか」のように表現が続く可能性も判定してください。", criteria: [
                 "true": "`text` の末尾は述語未完または表現の途中で、`next_text` の先頭がその節を継続する",

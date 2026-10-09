@@ -78,57 +78,6 @@ public enum ClauseBoundaryStep {
     }
 }
 
-/// Builds the assignments of one Choice batch of at most 40 clauses.
-public enum ClausePriorityBatch {
-    /// Request-local keys `u0001`… in clause order; no source identifier is sent.
-    public static func targets(texts: [String]) -> [PriorityTextTarget] {
-        texts.enumerated().map { PriorityTextTarget(key: String(format: "u%04d", $0.offset + 1), text: $0.element) }
-    }
-
-    public static func classify(
-        references: [ClauseReference],
-        texts: [String],
-        decisions: JevDecisionCoordinator
-    ) async throws -> (payload: ContentPriorityAssignedPayload, stop: JevBatchStopReason?) {
-        guard !references.isEmpty, references.count == texts.count,
-              references.count <= JevPriorityBatchPolicy.maximumTargets,
-              Set(references).count == references.count,
-              texts.allSatisfy({ !ClauseTextComposer.isBlank($0) }) else {
-            throw ClauseRecordError.invalidPriorityEvent
-        }
-        let targets = targets(texts: texts)
-        switch await decisions.classifyPriorities(targets) {
-        case .answered(let response, let record):
-            var assignments: [ClausePriorityAssignment] = []
-            for (reference, target) in zip(references, targets) {
-                guard let decision = response.decisions[target.key] else { throw JevClientError.missingAnswer }
-                assignments.append(try ClausePriorityAssignment(
-                    reference: reference,
-                    priority: ContentPriorityPolicy.visiblePriority(for: decision),
-                    needsRetry: false,
-                    decision: .classified(requestID: record.requestID, answerKey: target.key, response: decision)
-                ))
-            }
-            return (try ContentPriorityAssignedPayload(assignments: assignments, request: record), nil)
-        case .failed(let stop, let message):
-            return (try pending(references: references, reason: stop?.pendingReason ?? .requestFailed, message: message), stop)
-        case .cancelled:
-            throw CancellationError()
-        }
-    }
-
-    public static func pending(
-        references: [ClauseReference], reason: ClausePendingReason, message: String
-    ) throws -> ContentPriorityAssignedPayload {
-        try ContentPriorityAssignedPayload(assignments: references.map {
-            try ClausePriorityAssignment(
-                reference: $0, priority: nil, needsRetry: true,
-                decision: .retryPending(reason: reason, message: message)
-            )
-        }, request: nil)
-    }
-}
-
 public enum JevEnrichmentError: LocalizedError, Sendable, Equatable {
     case missingPublishedTranscript
     case missingPublishedJevRuns
@@ -499,26 +448,15 @@ public actor JevEnrichmentCoordinator {
             payloads.append(try ContentPriorityAssignedPayload(assignments: carried, request: nil))
             try await record(payloads[payloads.count - 1])
         }
-        var remaining = targets[...]
-        while !remaining.isEmpty {
-            try Task.checkCancellation()
-            let batch = Array(remaining.prefix(JevPriorityBatchPolicy.maximumTargets))
-            guard stopReason == nil, let decisions else {
-                payloads.append(try ClausePriorityBatch.pending(
-                    references: remaining.map(\.reference),
-                    reason: stopReason?.pendingReason ?? .unconfigured,
-                    message: stopReason == nil ? JevPendingMessage.unavailable : JevPendingMessage.stopped
-                ))
-                try await record(payloads[payloads.count - 1])
-                break
+        var batches = try ClausePriorityBatches(targets: targets, stopReason: stopReason)
+        while batches.hasRemaining {
+            let payload = try await batches.next {
+                if let decisions = self.decisions { return .available(decisions) }
+                return .pending(.unconfigured, JevPendingMessage.unavailable)
             }
-            remaining = remaining.dropFirst(batch.count)
-            let result = try await ClausePriorityBatch.classify(
-                references: batch.map(\.reference), texts: batch.map(\.text), decisions: decisions
-            )
-            if let stop = result.stop { stopReason = stop }
-            payloads.append(result.payload)
-            try await record(result.payload)
+            stopReason = batches.stopReason
+            payloads.append(payload)
+            try await record(payload)
         }
         var assignments: [ClauseReference: ClausePriorityAssignment] = [:]
         for payload in payloads {

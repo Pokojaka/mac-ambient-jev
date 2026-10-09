@@ -28,7 +28,7 @@ private func choiceEnvelope(_ answer: String, model: String = #""jev-test""#, us
 
 @Test
 func boundaryTransportUsesRawCharacterCandidatesAndPrivateMinimalState() async throws {
-    let raw = "👩🏽‍💻、⟨1⟩。？！?!最後。"
+    let raw = "👩🏽‍💻、e\u{301}\r\n⟨1⟩。？！?!最後。"
     let source = try contractSource("private-current", seq: 1)
     let head = String(String(repeating: "👨‍👩‍👧‍👦", count: 60).prefix(60))
     let next = try NextSegmentHead(source: contractSource("private-next", seq: 2), text: head)
@@ -56,8 +56,7 @@ func boundaryTransportUsesRawCharacterCandidatesAndPrivateMinimalState() async t
     #expect(Set(state.keys) == ["text", "next_text"])
     #expect(state["next_text"] == head)
     let marked = try #require(state["text"])
-    #expect(marked.contains("⟨1⟩"))
-    for (index, _) in candidates.enumerated() { #expect(marked.contains("⟨⟨\(index + 1)⟩")) }
+    #expect(marked == "👩🏽‍💻、⟨⟨1⟩e\u{301}\r\n⟨1⟩。⟨⟨2⟩？⟨⟨3⟩！⟨⟨4⟩?⟨⟨5⟩!⟨⟨6⟩最後。")
     let questions = try #require(body["questions"] as? [String: [String: Any]])
     #expect(Set(questions.keys) == Set(candidates.map(\.id) + ["continuation"]))
     #expect(questions.values.allSatisfy { $0["type"] as? String == "noul" })
