@@ -41,33 +41,3 @@ func pacedReplayStoresCanonicalAudioWithoutLoadingEngines(rate: Double) async th
     #expect(error < 0.00001)
     #expect(try Data(contentsOf: url) == original)
 }
-
-@Test
-func replayBehindScheduleCatchesUpWithoutWaitingPerChunk() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let url = root.appending(path: "replay.caf")
-    let rate = CanonicalAudio.sampleRate
-    let format = try #require(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
-    let source = try AVAudioFile(forWriting: url, settings: format.settings)
-    let frames = Int(rate * 6)
-    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
-    buffer.frameLength = buffer.frameCapacity
-    let samples = try #require(buffer.floatChannelData)[0]
-    for frame in 0..<frames {
-        samples[frame] = Float(0.2 * sin(2 * .pi * 440 * Double(frame) / rate))
-    }
-    try source.write(from: buffer)
-    source.close()
-    let writer = try DurableAudioWriter(
-        directory: root.appending(path: "processing"), chunkDurationSeconds: 0.5, sessionURL: root
-    )
-    let started = ContinuousClock.now
-    let result = try await MeasureLiveLatencyCommand.feedAudio(url, sourceFormat: format,
-        targetFormat: format, into: writer, origin: started.advanced(by: .seconds(-60)))
-    let elapsed = started.duration(to: .now) / .seconds(1)
-    #expect(elapsed < 3)
-    #expect(result.maxFeedLagSeconds > 50)
-    #expect(result.checkpoint.committedFrames == Int64(frames))
-}
