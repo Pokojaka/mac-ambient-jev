@@ -276,7 +276,7 @@ bash scripts/measure_live_latency.sh "$AUDIO_FILE"
 bash scripts/measure_live_latency.sh --sample-rate 48000 --channels 1 "$AUDIO_FILE"
 ```
 
-`MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初のフィラー除去後の非空更新までを計測する。フィラーだけの行は非空更新として数えず、report の本文は除去後本文の空白・句読点を変更しない。Jev は disabled なので次区間待ち・Noul・Choice の時間は測らない。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
+`MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初のフィラー除去後の非空更新までを計測する。投入は遅延計測と同じ時計の起点からの絶対予定で行い、各 0.5 秒の塊はその末尾の音声時刻まで待ってから durable append する。変換や append の処理時間は後続の塊へ累積しない。report の `replay_max_feed_lag_seconds` は、各 append の完了時刻から、それまでに投入した replay input の音声秒数を引いた値の最大値である。この値が大きい場合は投入が原速に追いついておらず、遅延値に投入の遅れが含まれる。フィラーだけの行は非空更新として数えず、report の本文は除去後本文の空白・句読点を変更しない。Jev は disabled なので次区間待ち・Noul・Choice の時間は測らない。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
 
 Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間、または最長 14 秒分割が表示単位であり、長い発話は初表示まで待つ。測るのは非空更新までで、実画面描画、マイク入力の実時間、全発話の精度を保証する指標ではない。
 
