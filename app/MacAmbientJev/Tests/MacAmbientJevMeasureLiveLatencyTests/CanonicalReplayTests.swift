@@ -43,7 +43,7 @@ func pacedReplayStoresCanonicalAudioWithoutLoadingEngines(rate: Double) async th
 }
 
 @Test
-func replayKeepsRealTimeScheduleWithoutAccumulatingLag() async throws {
+func replayBehindScheduleCatchesUpWithoutWaitingPerChunk() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -63,12 +63,11 @@ func replayKeepsRealTimeScheduleWithoutAccumulatingLag() async throws {
     let writer = try DurableAudioWriter(
         directory: root.appending(path: "processing"), chunkDurationSeconds: 0.5, sessionURL: root
     )
-    let origin = ContinuousClock.now
+    let started = ContinuousClock.now
     let result = try await MeasureLiveLatencyCommand.feedAudio(url, sourceFormat: format,
-        targetFormat: format, into: writer, origin: origin)
-    let elapsed = origin.duration(to: .now) / .seconds(1)
-    #expect(elapsed >= 6)
-    #expect(result.maxFeedLagSeconds >= 0)
-    #expect(result.maxFeedLagSeconds < 0.15)
-    #expect(elapsed < 6.5)
+        targetFormat: format, into: writer, origin: started.advanced(by: .seconds(-60)))
+    let elapsed = started.duration(to: .now) / .seconds(1)
+    #expect(elapsed < 3)
+    #expect(result.maxFeedLagSeconds > 50)
+    #expect(result.checkpoint.committedFrames == Int64(frames))
 }
