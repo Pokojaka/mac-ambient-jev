@@ -133,7 +133,13 @@ ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した�
 
 実API観測は実 `JevClient` と通常のtransportを使い、録音ではなく新しいテキストを境界→組立て→除去後本文のChoiceへ送る。キーは `security find-generic-password -s app.mac-ambient-jev.jev -w` のstdoutをメモリだけで取得し、端末・ログ・ファイルへ出さない。候補のraw UTF-16位置、確率、返却model、purpose別HTTP数、reported input token、HTTP時間を記録する。next到着待ち、consumerの反映処理、GUI描画をHTTP時間と混ぜず、未計測は未計測とする。新規テキストの観測と限界は [節API受入記録](records/2026-10-09-clause-acceptance.md) を参照する。利用者報告の13行の試作を再測定した値ではなく、CSJ全認定の一致率でもない。
 
-bundleはREADMEの手順でbuildして `open .build/MacAmbientJev.app` で起動する。プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
+bundleはREADMEの手順でbuildして、次のコマンドで起動する。
+
+```bash
+open .build/MacAmbientJev.app
+```
+
+プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
 
 - Jev有効化・Keychain読取・録音元・書き出し先、マイク／システム音声の実権限。
 - 14秒超の実ASR原文をイベントで確認し、第一行の「節の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
