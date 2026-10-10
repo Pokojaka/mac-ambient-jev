@@ -6,9 +6,10 @@
 
 - 保存済みの処理タイムラインだけを VAD に渡します。まだディスクに確定していない音声は対象にしません。
 - 録音中の durable chunk（確定処理の後に FLAC へ変換して削除する PCM）は 0.5 秒、アプリの checkpoint 確認間隔は 250 ms です。保存済みの 16 kHz mono float32 を直接 FluidAudio のストリーミング VAD に渡します。VAD と ASR は入力形式を検証し、処理段階の SRC・downmix は行いません。
-- 発話開始の前に 0.10 秒の pre-roll を含めます。無音による区間終了の設定は 0.75 秒、最大区間長は 14 秒です。
-- ASR に送るのは、VAD が閉じた区間、または 14 秒に達して分割した区間です。長い連続発話では最初の区間が閉じるまで初表示が遅れます。14 秒は表示遅延の上限ではなく、音声区間の最大長です。
-- 最初の発話区間の最小長は 20 ms です。14 秒分割後の端数は continuation として保持し、この最小長では捨てません。たとえば 14 秒 + 4 ms の発話範囲は、14 秒と 4 ms の二つの区間になります。ただし Qwen3-ASR の入力が 20 ms 未満なら推論せず空本文を返すため、端数区間が残ることと文字が表示されることは別です。
+- 発話開始は VAD 確率 0.50 以上、発話終了は 0.35 未満で判定します（FluidAudio の streaming VAD は開始閾値から 0.15 引いた値を終了閾値に使います）。BGM の重なる発話を落とさないための値です。発話開始の前に 0.10 秒の pre-roll を含めます。無音による区間終了の設定は 0.75 秒です。確定処理も同じ設定で区間を作ります。
+- 最大区間長は 14 秒です。区間が 14 秒に達すると、区間開始から 12〜14 秒の範囲で RMS が最も小さい 20 ms frame（絶対 sample 0 に揃えた 320 sample）の中点で分割します。同じ値なら早い frame を選びます。語の途中で切って境界で語が重複するのを減らすためで、14 秒に達した時点でこの範囲の音声は処理済みなので先読みはしません。分割用のエネルギー履歴は直近 3 秒分（150 frame）だけを保持し、必要な範囲が履歴にない場合はプログラムの誤りとして停止します。
+- ASR に送るのは、VAD が閉じた区間、または分割した区間です。長い連続発話では最初の区間が閉じるまで初表示が遅れます。14 秒は表示遅延の上限ではなく、音声区間の最大長です。
+- 発話開始から始まる独立区間は、pre-roll を含めて 0.5 秒未満なら ASR に送りません。無音や雑音の短い断片から ASR が「はい。」などを生成するのを防ぐためで、0.5 秒未満の本物の相づちも送られません。分割後の端数は continuation として保持し、この最小長では捨てません。ただし Qwen3-ASR の入力が 20 ms 未満なら推論せず空本文を返すため、端数区間が残ることと文字が表示されることは別です。
 
 ファイル replay は capture device を開かず、ファイルまたは指定した device 相当形式を原速で ingress に投入します。replay input と保存形式は別で、durable timeline とイベント frame 座標は常に 16 kHz mono です。詳細は[原速 replay のライブ遅延計測](testing.md#原速-replay-のライブ遅延計測)を参照してください。
 - 検出した区間は ASR の待ち行列に入れる前に `segment.created` として保存します。ライブ経路は `asr.pending` を書きません。このイベントは確定処理の ASR 待ち状態に使います。
@@ -104,7 +105,7 @@ bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FI
 
 ## 実装の根拠
 
-- [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADTimelineProcessor.swift)
+- [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADTimelineProcessor.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
 - [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)、[Qwen3-ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[モデル ID](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)
 - [ライブキューと熱制御](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[ライブの Jev キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)
 - [表示規則](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[文字起こし画面](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[局所フィラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/FillerTextSpanDetector.swift)、[ASR の構造化結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
