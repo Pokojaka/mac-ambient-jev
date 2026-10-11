@@ -82,15 +82,31 @@ public struct ClauseBoundaryCandidate: Codable, Sendable, Equatable {
 public struct NextSegmentHead: Codable, Sendable, Equatable {
     public let source: SegmentTextReference
     public let text: String
-    public init(source: SegmentTextReference, text: String) throws {
-        guard !text.isEmpty, text.count <= ClauseBoundaryPolicy.nextHeadCharacterLimit else { throw ClauseValidationError.invalidNextHead }
+    /// Seconds of silence from the end of the current segment to the start of this one, from `silenceSeconds`.
+    public let silenceBeforeSeconds: Double
+
+    /// Silence between two segments in seconds, rounded to one decimal; overlapping segments have none.
+    public static func silenceSeconds(currentEndFrame: Int64, nextStartFrame: Int64) -> Double {
+        (Double(max(0, nextStartFrame - currentEndFrame)) / CanonicalAudio.sampleRate * 10).rounded() / 10
+    }
+
+    public init(source: SegmentTextReference, text: String, silenceBeforeSeconds: Double) throws {
+        guard !text.isEmpty, text.count <= ClauseBoundaryPolicy.nextHeadCharacterLimit,
+              silenceBeforeSeconds.isFinite, silenceBeforeSeconds >= 0 else { throw ClauseValidationError.invalidNextHead }
         self.source = source
         self.text = text
+        self.silenceBeforeSeconds = silenceBeforeSeconds
     }
-    enum CodingKeys: String, CodingKey { case source, text }
+    enum CodingKeys: String, CodingKey {
+        case source, text, silenceBeforeSeconds = "silence_before_seconds"
+    }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        try self.init(source: c.decode(SegmentTextReference.self, forKey: .source), text: c.decode(String.self, forKey: .text))
+        try self.init(
+            source: c.decode(SegmentTextReference.self, forKey: .source),
+            text: c.decode(String.self, forKey: .text),
+            silenceBeforeSeconds: c.decode(Double.self, forKey: .silenceBeforeSeconds)
+        )
     }
 }
 

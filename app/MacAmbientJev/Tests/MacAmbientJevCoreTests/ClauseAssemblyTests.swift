@@ -14,7 +14,7 @@ private func assessed(
     let candidates = try ClauseBoundaryCandidate.candidates(in: text)
     var probabilities: [String: Double] = [:]
     for (index, candidate) in candidates.enumerated() { probabilities[candidate.id] = accepted.contains(index) ? 0.9 : 0.5 }
-    let head = try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(60))) }
+    let head = try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(60)), silenceBeforeSeconds: 0) }
     let decision: BoundaryDecisionSource = candidates.isEmpty && head == nil ? .terminalWithoutQuestions : .assessed
     let assessment = try ClauseBoundaryAssessment(
         source: source, candidates: candidates, probabilities: probabilities, nextHead: head,

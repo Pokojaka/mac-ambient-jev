@@ -52,7 +52,10 @@ private struct JevRequest<State: Encodable>: Encodable {
 private struct BoundaryState: Encodable {
     let text: String
     let nextText: String?
-    enum CodingKeys: String, CodingKey { case text, nextText = "next_text" }
+    let silenceBeforeNext: String?
+    enum CodingKeys: String, CodingKey {
+        case text, nextText = "next_text", silenceBeforeNext = "silence_before_next"
+    }
 }
 
 private struct NoulAnswer: Decodable {
@@ -137,12 +140,16 @@ public struct JevClient: DecisionProvider, Sendable {
         }
         marked.append(contentsOf: request.text[cursor...])
         if request.next != nil {
-            questions["continuation"] = JevQuestion(type: "noul", instructions: "`text` の末尾の部分と `next_text` の先頭は、録音の区切りで分かれた同じ節の続きですか？末尾の句点だけでは否定しない。「と。」「いうか」のように表現が続く可能性も判定してください。", criteria: [
-                "true": "`text` の末尾は述語未完または表現の途中で、`next_text` の先頭がその節を継続する",
-                "false": "`text` の末尾で節が完結しており、`next_text` は新しい節として始まる"
+            questions["continuation"] = JevQuestion(type: "noul", instructions: "`text` の末尾の部分と `next_text` の先頭は、録音の区切りで分かれた同じ節の続きですか？末尾の句点だけでは否定しない。「と。」「いうか」のように表現が続く可能性も判定してください。`silence_before_next` は `text` の末尾から `next_text` の先頭までの無音の秒数です。0 秒は、話し続けている途中を録音の長さ上限で機械的に区切ったことを示します。", criteria: [
+                "true": "`text` の末尾は述語未完または表現の途中で、`next_text` の先頭がその節を継続する。`next_text` が「ですね」「ますので」「でしょうか」「ということです」のような語尾・助動詞・接続助詞から始まり、単独では文を始められない場合も、無音の長さにかかわらず継続",
+                "false": "`text` の末尾で節が完結しており、`next_text` は主語・接続詞・フィラーなどから新しい節として始まる"
             ])
         }
-        let body = JevRequest(model: Self.model, state: BoundaryState(text: marked, nextText: request.next?.text), questions: questions)
+        let body = JevRequest(model: Self.model, state: BoundaryState(
+            text: marked,
+            nextText: request.next?.text,
+            silenceBeforeNext: request.next.map { String(format: "%.1f 秒", $0.silenceBeforeSeconds) }
+        ), questions: questions)
         let response: JevEnvelope<NoulAnswer> = try await perform(body)
         var probabilities = response.answers.mapValues(\.noul)
         let continuation = probabilities.removeValue(forKey: "continuation")

@@ -18,7 +18,7 @@ func incrementalAssessment(source: SegmentTextReference, text: String,
     let asks = !candidates.isEmpty || next != nil
     return try ClauseBoundaryAssessment(source: source, candidates: candidates,
         probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, acceptBoundaries ? 0.95 : 0.05) }),
-        nextHead: try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))) },
+        nextHead: try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)), silenceBeforeSeconds: 0) },
         continuationProbability: next.map { _ in continues ? 0.95 : 0.05 },
         request: asks ? JevRequestRecord(requestID: "boundary_\(source.asrEventSeq)",
             metadata: JevResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)) : nil,

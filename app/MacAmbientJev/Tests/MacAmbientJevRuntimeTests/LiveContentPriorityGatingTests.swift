@@ -241,6 +241,7 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
     let requests = await provider.boundaryRequests
     #expect(requests.map(\.source.segmentID) == ["seg_1", "seg_2", "seg_3"])
     #expect(requests.map { $0.next?.text } == ["コピーと", "いうか。うん、うん。", nil])
+    #expect(requests.map { $0.next?.silenceBeforeSeconds } == [0.1, 0.1, nil])
     #expect(await provider.priorityRequests == [["これはコピーというか。", "うん、うん。"]])
     let rows = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
     #expect(rows.map(\.shouldCollapseRow) == [false, false, false])

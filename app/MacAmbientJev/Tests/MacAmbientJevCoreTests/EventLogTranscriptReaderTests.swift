@@ -223,7 +223,9 @@ func writeLiveRun(
     var assembly = ClauseBoundaryAssembly(boundaryRunID: "boundary_live")
     var units: [ClauseUnit] = []
     for (index, source) in sources.enumerated() {
-        let next = index + 1 < texts.count ? try NextSegmentHead(source: sources[index + 1], text: texts[index + 1]) : nil
+        let next = index + 1 < texts.count
+            ? try NextSegmentHead(source: sources[index + 1], text: texts[index + 1], silenceBeforeSeconds: 0)
+            : nil
         let candidates = try ClauseBoundaryCandidate.candidates(in: texts[index])
         let assessment = try ClauseBoundaryAssessment(
             source: source, candidates: candidates,
