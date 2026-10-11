@@ -15,6 +15,7 @@
 
 - [v1-acceptance-results-2026-09-23.md](records/v1-acceptance-results-2026-09-23.md): ファイル入力の測定記録。
 - [v1-live-latency-results-2026-09-25.md](records/v1-live-latency-results-2026-09-25.md): ライブ遅延の測定記録。
+- [continuous-speech-live-latency-2026-10-10.md](records/continuous-speech-live-latency-2026-10-10.md): 連続発話でのライブ遅延と投入ペースの測定記録。
 - [aozora-audio-fixtures-2026-09-25.md](records/aozora-audio-fixtures-2026-09-25.md): 朗読素材の取得元とハッシュ。
 - [nemotron3-diarization-test-2026-09-27.md](records/nemotron3-diarization-test-2026-09-27.md): 話者交代検出の測定記録。
 - [lecture-jev-boundary-2026-10-11.md](records/lecture-jev-boundary-2026-10-11.md): 講義音声の Jev 節境界・継続・優先度判定と質問文の比較。

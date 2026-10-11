@@ -27,7 +27,7 @@ func pacedReplayStoresCanonicalAudioWithoutLoadingEngines(rate: Double) async th
     let directory = root.appending(path: "processing")
     let writer = try DurableAudioWriter(directory: directory, chunkDurationSeconds: 0.5, sessionURL: root)
     let checkpoint = try await MeasureLiveLatencyCommand.feedAudio(url, sourceFormat: format,
-        targetFormat: format, into: writer)
+        targetFormat: format, into: writer, origin: .now).checkpoint
     #expect(checkpoint.sampleRate == CanonicalAudio.sampleRate)
     #expect(checkpoint.channelCount == 1)
     #expect(try abs(checkpoint.committedFrames - CanonicalAudio.boundary(Int64(frames), sampleRate: rate)) <= 1)
