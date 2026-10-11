@@ -128,9 +128,9 @@ public struct JevClient: DecisionProvider, Sendable {
             marked.append(contentsOf: request.text[cursor..<end])
             let marker = "\(frame)\(candidateIndex + 1)⟩"
             marked += marker
-            questions[candidate.id] = JevQuestion(type: "noul", instructions: "`text` は話し言葉の文字起こしで、候補位置に印がある。印 `\(marker)` の位置は、述語を中心に統語的・意味的にまとまった節を終える絶対境界または強境界ですか？弱境界では切らない。判定対象は `text` だけで、`next_text` は継続質問専用。", criteria: [
-                "true": "印の直前で文が終わる（文末）、または「けど」「が」「し」などの並列・逆接で前の節が完結し、後ろが新しい節として始まる絶対境界・強境界",
-                "false": "同じ節の途中。主語や目的語の後、連用・連体修飾、通常の条件・理由・引用・テ接続などの弱境界、言いよどみや言い直しの途中"
+            questions[candidate.id] = JevQuestion(type: "noul", instructions: "`text` は講義などの話し言葉の文字起こしで、候補位置に印がある。印 `\(marker)` の直前で、文または独立した節が終わっていますか？判定対象は `text` だけで、`next_text` は継続質問専用。", criteria: [
+                "true": "印の直前で文が終わる（「です」「ます」「ですね」「でしょうか」「わけです」などの文末）、または「けど」「が」「し」などで前の節が完結し、後ろが新しい文・節として始まる",
+                "false": "文の途中。主語や目的語の後、連用・連体修飾、テ接続・条件・理由・引用の途中、言いよどみや言い直しの途中"
             ])
             previousOffset = candidate.offsetUTF16
             cursor = end

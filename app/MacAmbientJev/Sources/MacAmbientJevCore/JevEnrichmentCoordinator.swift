@@ -9,7 +9,7 @@ public enum ClauseEventType {
 
 /// What each Jev run records about the service and policy; the model is recorded per response.
 public enum JevRunProvenance {
-    public static let boundaryPromptRevision = "1"
+    public static let boundaryPromptRevision = "2"
     public static let fillerProjectionRevision = "1"
 
     /// `mode` is `live`, `final` or `retry`.
@@ -21,7 +21,7 @@ public enum JevRunProvenance {
             "boundary_threshold": String(ClauseBoundaryPolicy.boundaryThreshold),
             "continuation_threshold": String(ClauseBoundaryPolicy.continuationThreshold),
             "next_head_character_limit": String(ClauseBoundaryPolicy.nextHeadCharacterLimit),
-            "unit_policy": "absolute-and-strong",
+            "unit_policy": "sentence-or-independent-clause",
             "text_policy": "raw-asr",
             "filler_projection_revision": fillerProjectionRevision,
         ])
