@@ -16,7 +16,7 @@ struct ClauseEventLog {
         case none
         case empty
         case missing
-        case recognized(SegmentTextReference, String)
+        case recognized(SegmentTextReference, String, silenceBeforeSeconds: Double)
     }
 
     struct BoundaryRun {
@@ -40,7 +40,7 @@ struct ClauseEventLog {
     private(set) var runs: [String: Run] = [:]
     private(set) var asrTexts: [SegmentTextReference: String] = [:]
     /// Segment IDs of each segmentation run in time order.
-    private var segmentOrder: [String: [(segmentID: String, startFrame: Int64, createdSeq: UInt64)]] = [:]
+    private var segmentOrder: [String: [(segmentID: String, startFrame: Int64, endFrame: Int64, createdSeq: UInt64)]] = [:]
     private var segmentIDs: [String: Set<String>] = [:]
     /// The latest `asr.completed` of each segment per (segmentation run, ASR run).
     private var asrBySegment: [String: [String: SegmentTextReference]] = [:]
@@ -144,7 +144,7 @@ struct ClauseEventLog {
                       segmentIDs[segmentationRunID, default: []].insert(body.segmentID).inserted else {
                     throw line.malformed
                 }
-                segmentOrder[segmentationRunID, default: []].append((body.segmentID, body.startFrame, header.eventSeq))
+                segmentOrder[segmentationRunID, default: []].append((body.segmentID, body.startFrame, body.endFrame, header.eventSeq))
                 localEvidence[.segmentation, default: []].insert(segmentationRunID)
             case "asr.completed":
                 let runID = try line.requiredRunID()
@@ -236,7 +236,9 @@ struct ClauseEventLog {
               let text = asrTexts[nextSource] else {
             return .missing
         }
-        return ASRRecognitionOutcome(text: text) == .recognized ? .recognized(nextSource, text) : .empty
+        guard ASRRecognitionOutcome(text: text) == .recognized else { return .empty }
+        let silence = NextSegmentHead.silenceSeconds(currentEndFrame: order[index].endFrame, nextStartFrame: order[next].startFrame)
+        return .recognized(nextSource, text, silenceBeforeSeconds: silence)
     }
 
     private func hasEmptySeparator(before source: SegmentTextReference, eventSeq: UInt64?) -> Bool {
@@ -314,9 +316,10 @@ struct ClauseEventLog {
                     _ = try boundaryRun(sourceRunID)
                 }
                 switch successor(of: assessment.source, before: run.mode == "live" ? seq : nil) {
-                case .recognized(let next, let text):
+                case .recognized(let next, let text, let silence):
                     guard let head = assessment.nextHead, head.source == next,
-                          head.text.utf8.elementsEqual(String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)).utf8) else {
+                          head.text.utf8.elementsEqual(String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)).utf8),
+                          head.silenceBeforeSeconds == silence else {
                         throw fail("区間 \(assessment.source.segmentID) の次区間先頭が原文と一致しません")
                     }
                 case .none, .empty:

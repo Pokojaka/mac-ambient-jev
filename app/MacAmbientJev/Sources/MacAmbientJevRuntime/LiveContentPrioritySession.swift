@@ -138,7 +138,9 @@ public actor LiveContentPrioritySession {
     private func update(_ statuses: [LiveASRSegmentStatus]) throws {
         guard statuses.count >= segments.count,
               zip(statuses, segments).allSatisfy({ current, previous in
-                  guard current.segmentID == previous.segmentID, current.startFrame == previous.startFrame else { return false }
+                  guard current.segmentID == previous.segmentID,
+                         current.startFrame == previous.startFrame,
+                         current.endFrame == previous.endFrame else { return false }
                   switch previous.outcome {
                   case .pending:
                       return true
@@ -214,8 +216,13 @@ public actor LiveContentPrioritySession {
                     guard ASRRecognitionOutcome(text: nextText) == .recognized else {
                         return Step(source: source, text: text, successor: .head(nil))
                     }
+                    let silenceBeforeSeconds = NextSegmentHead.silenceSeconds(
+                        currentEndFrame: segment.endFrame, nextStartFrame: segments[successorIndex].startFrame
+                    )
                     return Step(source: source, text: text, successor: .head(try NextSegmentHead(
-                        source: nextSource, text: String(nextText.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))
+                        source: nextSource,
+                        text: String(nextText.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)),
+                        silenceBeforeSeconds: silenceBeforeSeconds
                     )))
                 }
             }

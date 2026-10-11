@@ -31,7 +31,7 @@ func boundaryTransportUsesRawCharacterCandidatesAndPrivateMinimalState() async t
     let raw = "👩🏽‍💻、e\u{301}\r\n⟨1⟩。？！?!最後。"
     let source = try contractSource("private-current", seq: 1)
     let head = String(String(repeating: "👨‍👩‍👧‍👦", count: 60).prefix(60))
-    let next = try NextSegmentHead(source: contractSource("private-next", seq: 2), text: head)
+    let next = try NextSegmentHead(source: contractSource("private-next", seq: 2), text: head, silenceBeforeSeconds: 0)
     let request = try ClauseBoundaryRequest(source: source, text: raw, next: next)
     let candidates = request.candidates
     #expect(candidates.first?.offsetUTF16 == "👩🏽‍💻、".utf16.count)
@@ -53,13 +53,20 @@ func boundaryTransportUsesRawCharacterCandidatesAndPrivateMinimalState() async t
     let bodyData = try #require(sent.httpBody)
     let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
     let state = try #require(body["state"] as? [String: String])
-    #expect(Set(state.keys) == ["text", "next_text"])
+    #expect(Set(state.keys) == ["text", "next_text", "silence_before_next"])
     #expect(state["next_text"] == head)
+    #expect(state["silence_before_next"] == "0.0 秒")
     let marked = try #require(state["text"])
     #expect(marked == "👩🏽‍💻、⟨⟨1⟩e\u{301}\r\n⟨1⟩。⟨⟨2⟩？⟨⟨3⟩！⟨⟨4⟩?⟨⟨5⟩!⟨⟨6⟩最後。")
     let questions = try #require(body["questions"] as? [String: [String: Any]])
     #expect(Set(questions.keys) == Set(candidates.map(\.id) + ["continuation"]))
     #expect(questions.values.allSatisfy { $0["type"] as? String == "noul" })
+    let continuationInstructions = try #require(questions["continuation"]?["instructions"] as? String)
+    #expect(continuationInstructions == "`text` の末尾の部分と `next_text` の先頭は、録音の区切りで分かれた同じ節の続きですか？末尾の句点だけでは否定しない。「と。」「いうか」のように表現が続く可能性も判定してください。`silence_before_next` は `text` の末尾から `next_text` の先頭までの無音の秒数です。0 秒は、話し続けている途中を録音の長さ上限で機械的に区切ったことを示します。")
+    #expect(candidates.allSatisfy { candidate in
+        guard let instructions = questions[candidate.id]?["instructions"] as? String else { return false }
+        return !instructions.contains("silence_before_next")
+    })
     let encoded = String(decoding: bodyData, as: UTF8.self)
     for forbidden in ["private-current", "private-next", "private-asr", "private-segmentation", "private-secret"] { #expect(!encoded.contains(forbidden)) }
 }
@@ -74,7 +81,39 @@ func terminalBoundaryOmitsSuccessorAndContinuation() async throws {
     let sends = await transport.requests
     let body = try #require(JSONSerialization.jsonObject(with: sends[0].httpBody!) as? [String: Any])
     #expect((body["state"] as? [String: String]) == ["text": "前。⟨1⟩後。"])
+    #expect((body["state"] as? [String: String])?["silence_before_next"] == nil)
     #expect(Set((body["questions"] as! [String: Any]).keys) == ["b0001"])
+}
+
+@Test
+func boundaryCarryOverPreservesNextHeadSilence() throws {
+    let source = try contractSource("current", seq: 1)
+    let nextSource = try contractSource("next", seq: 2)
+    let nextHead = try NextSegmentHead(source: nextSource, text: "続き", silenceBeforeSeconds: 1.2)
+    let original = try ClauseBoundaryAssessment(
+        source: source,
+        candidates: [],
+        probabilities: [:],
+        nextHead: nextHead,
+        continuationProbability: 0.9,
+        request: try JevRequestRecord(requestID: "silence", metadata: testMetadata),
+        sourceDecision: .assessed
+    )
+
+    let carried = try original.carriedOver(fromRunID: "boundary", eventSeq: 3)
+    #expect(original.hasSameDecisions(as: carried))
+    #expect(carried.nextHead?.silenceBeforeSeconds == 1.2)
+
+    let altered = try ClauseBoundaryAssessment(
+        source: source,
+        candidates: [],
+        probabilities: [:],
+        nextHead: NextSegmentHead(source: nextSource, text: "続き", silenceBeforeSeconds: 2.3),
+        continuationProbability: 0.9,
+        request: nil,
+        sourceDecision: .carriedOver(sourceBoundaryRunID: "boundary", sourceEventSeq: 3)
+    )
+    #expect(!original.hasSameDecisions(as: altered))
 }
 
 @Test
@@ -197,7 +236,7 @@ func sharedCodableTypesAndCandidateCoverageRejectInvalidData() throws {
     #expect(throws: (any Error).self) { try JSONDecoder().decode(JevResponseMetadata.self, from: Data(#"{"model":"m","input_tokens":-1}"#.utf8)) }
     #expect(throws: (any Error).self) { try ContentPriorityDecision(priority: .primary, confidence: .nan, probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]) }
     #expect(throws: (any Error).self) { try ContentPriorityDecision(priority: .primary, confidence: 1, probabilities: ["PRIMARY": .infinity, "LOW_PRIORITY": 0]) }
-    #expect(throws: (any Error).self) { try NextSegmentHead(source: source, text: String(repeating: "😀", count: 61)) }
+    #expect(throws: (any Error).self) { try NextSegmentHead(source: source, text: String(repeating: "😀", count: 61), silenceBeforeSeconds: 0) }
     #expect(throws: (any Error).self) { try ClauseBoundaryRequest(source: source, text: "😀。後", candidates: [.init(id: "b0001", offsetUTF16: 2)], next: nil) }
     #expect(throws: (any Error).self) { try ClauseBoundaryRequest(source: source, text: "前。後", candidates: [], next: nil) }
     #expect(throws: (any Error).self) { try ClauseBoundaryRequest(source: source, text: "前。後", candidates: [.init(id: "b0002", offsetUTF16: 2)], next: nil) }
@@ -213,7 +252,7 @@ func noulPolicyUsesStrictThreshold(_ probability: Double, _ expected: Bool) {
 @Test(arguments: [false, true])
 func boundaryAnswerSetMustMatchContinuationPresence(_ hasNext: Bool) async throws {
     let source = try contractSource("one", seq: 1)
-    let next = hasNext ? try NextSegmentHead(source: contractSource("two", seq: 2), text: "続き") : nil
+    let next = hasNext ? try NextSegmentHead(source: contractSource("two", seq: 2), text: "続き", silenceBeforeSeconds: 0) : nil
     let request = try ClauseBoundaryRequest(source: source, text: "前。後", next: next)
     let answers = hasNext
         ? #"{"b0001":{"type":"noul","noul":0.9}}"#
@@ -232,13 +271,57 @@ func codableProbabilityAndNextHeadValidationCannotBeBypassed() throws {
     let invalid = try JSONSerialization.data(withJSONObject: object)
     #expect(throws: (any Error).self) { try JSONDecoder().decode(ContentPriorityDecision.self, from: invalid) }
     let source = try contractSource("one", seq: 1)
-    let head = try NextSegmentHead(source: source, text: "次")
+    let head = try NextSegmentHead(source: source, text: "次", silenceBeforeSeconds: 0)
     var headObject = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(head)) as? [String: Any])
     headObject["text"] = String(repeating: "👩🏽‍💻", count: 61)
     let invalidHead = try JSONSerialization.data(withJSONObject: headObject)
     #expect(throws: (any Error).self) { try JSONDecoder().decode(NextSegmentHead.self, from: invalidHead) }
     #expect(throws: (any Error).self) { try JevResponseMetadata(model: " ", inputTokens: nil, outputTokens: nil) }
     #expect(throws: (any Error).self) { try JevResponseMetadata(model: "m", inputTokens: nil, outputTokens: -1) }
+}
+
+@Test
+func nextHeadSilenceIsRoundedFrameGapAndOverlapIsZero() {
+    #expect(NextSegmentHead.silenceSeconds(currentEndFrame: 16_000, nextStartFrame: 35_840) == 1.2)
+    #expect(NextSegmentHead.silenceSeconds(currentEndFrame: 16_000, nextStartFrame: 16_000) == 0)
+    #expect(NextSegmentHead.silenceSeconds(currentEndFrame: 16_000, nextStartFrame: 14_400) == 0)
+}
+
+@Test
+func codableNextHeadStoresRequiredSilence() throws {
+    let source = try contractSource("one", seq: 1)
+    let head = try NextSegmentHead(source: source, text: "次", silenceBeforeSeconds: 1.2)
+
+    let encoded = try JSONEncoder().encode(head)
+    let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    #expect(Set(object.keys) == ["source", "text", "silence_before_seconds"])
+    #expect(object["silence_before_seconds"] as? Double == 1.2)
+    #expect(try JSONDecoder().decode(NextSegmentHead.self, from: encoded) == head)
+
+    var missingSilence = object
+    missingSilence.removeValue(forKey: "silence_before_seconds")
+    let missingSilenceData = try JSONSerialization.data(withJSONObject: missingSilence)
+    #expect(throws: (any Error).self) { try JSONDecoder().decode(NextSegmentHead.self, from: missingSilenceData) }
+
+    var nullSilence = object
+    nullSilence["silence_before_seconds"] = NSNull()
+    let nullSilenceData = try JSONSerialization.data(withJSONObject: nullSilence)
+    #expect(throws: (any Error).self) { try JSONDecoder().decode(NextSegmentHead.self, from: nullSilenceData) }
+
+    var negativeSilence = object
+    negativeSilence["silence_before_seconds"] = -0.1
+    let negativeSilenceData = try JSONSerialization.data(withJSONObject: negativeSilence)
+    #expect(throws: ClauseValidationError.invalidNextHead) {
+        try JSONDecoder().decode(NextSegmentHead.self, from: negativeSilenceData)
+    }
+}
+
+@Test(arguments: [-0.1, -Double.leastNonzeroMagnitude, Double.nan, Double.infinity, -Double.infinity] as [Double])
+func invalidNextHeadSilenceIsRejectedAtConstruction(_ silence: Double) throws {
+    let source = try contractSource("one", seq: 1)
+    #expect(throws: ClauseValidationError.invalidNextHead) {
+        try NextSegmentHead(source: source, text: "次", silenceBeforeSeconds: silence)
+    }
 }
 
 @Test(arguments: [

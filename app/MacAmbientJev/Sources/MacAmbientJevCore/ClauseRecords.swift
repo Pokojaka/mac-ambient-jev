@@ -306,7 +306,9 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         case (nil, nil):
             return true
         case (.some(let head), .some(let otherHead)):
-            return head.source == otherHead.source && head.text.utf8.elementsEqual(otherHead.text.utf8)
+            return head.source == otherHead.source
+                && head.text.utf8.elementsEqual(otherHead.text.utf8)
+                && head.silenceBeforeSeconds == otherHead.silenceBeforeSeconds
         default:
             return false
         }

@@ -86,7 +86,7 @@ func oneBoundaryRequestCarriesEveryCandidateAndTheContinuationAndCountsOnce() as
     let coordinator = JevDecisionCoordinator(provider: provider, usageCounter: counter)
     let request = try ClauseBoundaryRequest(
         source: boundarySource("a", 1), text: "一。二、三。四",
-        next: NextSegmentHead(source: boundarySource("b", 2), text: "次の区間")
+        next: NextSegmentHead(source: boundarySource("b", 2), text: "次の区間", silenceBeforeSeconds: 0)
     )
 
     guard case .answered(let response, let record) = await coordinator.assessBoundaries(request) else {

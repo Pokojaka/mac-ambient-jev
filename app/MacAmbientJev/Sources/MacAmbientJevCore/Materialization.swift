@@ -410,9 +410,10 @@ public struct TranscriptMaterializer: Sendable {
                 }
                 if case .assessed(let assessment) = input.state {
                     switch timeline.successor(ofSourceAt: index) {
-                    case .recognized(let next, let raw):
+                    case .recognized(let next, let raw, let silence):
                         guard let head = assessment.nextHead, head.source == next,
-                              head.text.utf8.elementsEqual(String(raw.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)).utf8) else {
+                              head.text.utf8.elementsEqual(String(raw.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)).utf8),
+                              head.silenceBeforeSeconds == silence else {
                             throw ClauseAssemblyError.unexpectedSuccessor
                         }
                     case .none, .empty:
