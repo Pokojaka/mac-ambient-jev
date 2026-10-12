@@ -8,7 +8,6 @@ struct SettingsView: View {
 
     @EnvironmentObject private var appState: AppState
 
-    @AppStorage("jev.isPaused") private var isJevPaused = false
     @AppStorage(MicInputVolumePreference.key)
     private var automaticMicInputVolume = MicInputVolumePreference.initialValue
     @AppStorage(ExportDestinationStore.autoExportKey)
@@ -17,7 +16,8 @@ struct SettingsView: View {
     @State private var hasStoredKey = false
     @State private var statusMessage: String?
     @State private var statusIsError = false
-    @State private var isCheckingJev = false
+    @State private var checkingEngine: DecisionEngineChoice?
+    @State private var checkedLocalModelIdentity: ClauseTaggerModelIdentity?
     @State private var isRevealingExportDirectory = false
     @State private var isRetryingDeferred = false
     @State private var microphoneAccess = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -101,63 +101,126 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Jev") {
-                Toggle("Jev の境界判定と意味分類を使用する", isOn: jevEnabledBinding)
+            Section("発話文の判定") {
+                if appState.decisionPause != nil {
+                    Toggle("境界判定と優先度判定を使用する", isOn: decisionEnabledBinding)
+                        .disabled(decisionControlsDisabled)
+                } else {
+                    Label("境界判定と優先度判定を使用する", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Picker("判定エンジン", selection: decisionEngineBinding) {
+                    if appState.decisionEngine == nil {
+                        Text("設定エラー").tag(Optional<DecisionEngineChoice>.none)
+                    }
+                    ForEach(DecisionEngineChoice.allCases, id: \.self) { choice in
+                        Text(choice.displayName).tag(Optional(choice))
+                    }
+                }
+                .disabled(decisionControlsDisabled || checkingEngine != nil || isRetryingDeferred)
+
+                if let error = appState.decisionPreferenceError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
                 Text(
-                    "録音、発話区間検出、音声認識、話者分離はローカルで動作します。節の境界判定と優先度判定は Jev に送ります。Jev を停止しても文字起こしは継続します。"
+                    "録音、発話区間検出、音声認識、話者分離はローカルで動作します。BTSJ の発話文では、「けど」「が」「し」に続くフィラーや倒置・後付けだけでは新しい単位に分割しません。選択したエンジンが境界判定と優先度判定を行い、停止中も文字起こしは継続します。"
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                LabeledContent("APIキー") {
-                    Text(hasStoredKey ? "Keychain に保存済み" : "未設定")
-                        .foregroundStyle(.secondary)
-                }
+                if selectedEngineChoice == .jev {
+                    LabeledContent("APIキー") {
+                        Text(hasStoredKey ? "Keychain に保存済み" : "未設定")
+                            .foregroundStyle(.secondary)
+                    }
 
-                SecureField(
-                    hasStoredKey
-                        ? "新しいAPIキーで置き換える"
-                        : "APIキーを入力",
-                    text: $apiKey
-                )
-                .textFieldStyle(.roundedBorder)
+                    SecureField(
+                        hasStoredKey
+                            ? "新しいAPIキーで置き換える"
+                            : "APIキーを入力",
+                        text: $apiKey
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(appState.decisionPreferenceError != nil)
+
+                    HStack {
+                        Button("Keychain に保存") {
+                            saveAPIKey()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            appState.decisionPreferenceError != nil
+                                || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
+
+                        if hasStoredKey {
+                            Button("削除", role: .destructive) {
+                                deleteAPIKey()
+                            }
+                            .disabled(appState.decisionPreferenceError != nil || checkingEngine != nil)
+
+                            Button("Jev 接続を確認") {
+                                Task { await checkSelectedEngine() }
+                            }
+                            .disabled(
+                                appState.decisionPreferenceError != nil
+                                    || appState.decisionPause != false
+                                    || checkingEngine != nil
+                            )
+                        }
+                    }
+                } else if selectedEngineChoice == .localModel {
+                    LabeledContent("モデルの場所") {
+                        Text(LocalClauseTagger.modelDirectory(paths: appState.paths).path)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+
+                    Text("この場所に ClauseTagger.mlpackage と tokenizer.json が必要です。モデルのダウンロードや別の保存先はありません。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("モデルを確認") {
+                        Task { await checkSelectedEngine() }
+                    }
+                    .disabled(decisionControlsDisabled || checkingEngine != nil)
+
+                    if let checkedLocalModelIdentity {
+                        Text("モデル ID: \(checkedLocalModelIdentity.modelID)")
+                            .font(.caption)
+                            .textSelection(.enabled)
+                        Text("revision: \(checkedLocalModelIdentity.revision)")
+                            .font(.caption)
+                            .textSelection(.enabled)
+                    }
+                }
 
                 HStack {
-                    Button("Keychain に保存") {
-                        saveAPIKey()
+                    Button("保留中の判定を再試行") {
+                        isRetryingDeferred = true
+                        Task {
+                            await appState.retryDeferredDecisions()
+                            isRetryingDeferred = false
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if hasStoredKey {
-                        Button("削除", role: .destructive) {
-                            deleteAPIKey()
-                        }
-                        .disabled(isCheckingJev)
-                    }
-                }
-
-                if hasStoredKey {
-                    HStack {
-                        Button("Jev 接続を確認") {
-                            Task { await checkJevConnection() }
-                        }
-                        .disabled(isJevPaused || isCheckingJev)
-
-                        Button("保留中の判定を再試行") {
-                            isRetryingDeferred = true
-                            Task {
-                                await appState.retryDeferredJev()
-                                isRetryingDeferred = false
-                            }
-                        }
-                        .disabled(isJevPaused || isCheckingJev || isRetryingDeferred)
-                        if isRetryingDeferred {
-                            ProgressView()
-                                .controlSize(.small)
-                                .accessibilityLabel("保留中の判定を再試行しています")
-                        }
+                    .disabled(
+                        decisionControlsDisabled
+                            || appState.decisionPause != false
+                            || checkingEngine != nil
+                            || isRetryingDeferred
+                            || selectedEngineChoice == nil
+                    )
+                    if isRetryingDeferred {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("保留中の判定を再試行しています")
                     }
                 }
 
@@ -172,8 +235,8 @@ struct SettingsView: View {
                     .foregroundStyle(statusIsError ? .red : .secondary)
                     .accessibilityElement(children: .combine)
                 }
-                if isCheckingJev {
-                    ProgressView("Jev の応答を待っています")
+                if let checkingEngine {
+                    ProgressView("\(checkingEngine.displayName) を確認しています")
                         .controlSize(.small)
                 }
             }
@@ -208,26 +271,79 @@ struct SettingsView: View {
             }
 
             Section("送信される情報") {
-                Text("内容優先度判定では現在の発話テキストだけを送信します。")
-                Text("原音声、音声ファイルのパス、話者埋め込み、セッション全文は送信しません。")
+                if selectedEngineChoice == .jev {
+                    Text("対象区間の ASR 原文と候補位置、次区間の先頭60 Character以内、優先度判定の発話文本文だけを Jev に送ります。")
+                    Text("原音声、音声ファイルのパス、話者埋め込み、セッション全文は送信しません。")
+                } else if selectedEngineChoice == .localModel {
+                    Text("ローカルモデルの判定テキストはネットワークに送信しません。")
+                    Text("原音声、音声ファイルのパス、話者埋め込み、セッション全文も送信しません。")
+                } else {
+                    Text("判定エンジンの設定が不正なため、判定テキストの送信先を決定できません。")
+                }
             }
             .font(.callout)
         }
         .formStyle(.grouped)
         .frame(minWidth: 520, minHeight: 460)
         .task {
-            refreshStoredKeyState()
+            appState.refreshDecisionPreferences()
+            refreshStoredKeyStateIfJevSelected()
             microphoneAccess = AVCaptureDevice.authorizationStatus(for: .audio)
+        }
+        .onChange(of: appState.decisionEngine) { _, _ in
+            statusMessage = nil
+            statusIsError = false
+            checkedLocalModelIdentity = nil
+            apiKey = ""
+            hasStoredKey = false
+            refreshStoredKeyStateIfJevSelected()
         }
     }
 
-    private var jevEnabledBinding: Binding<Bool> {
+    private var selectedEngineChoice: DecisionEngineChoice? {
+        appState.decisionEngine
+    }
+
+    private var decisionControlsDisabled: Bool {
+        appState.decisionPreferenceError != nil
+            || appState.decisionEngine == nil
+            || appState.decisionPause == nil
+            || appState.recordingPhase != .idle
+            || appState.isProcessing
+    }
+
+    private var decisionEngineBinding: Binding<DecisionEngineChoice?> {
         Binding(
-            get: { !isJevPaused },
+            get: { appState.decisionEngine },
+            set: { choice in
+                guard let choice else { return }
+                do {
+                    try appState.selectDecisionEngine(choice)
+                } catch {
+                    statusIsError = true
+                    statusMessage = error.localizedDescription
+                }
+            }
+        )
+    }
+
+    private var decisionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: {
+                guard let isPaused = appState.decisionPause else { return false }
+                return !isPaused
+            },
             set: { enabled in
-                isJevPaused = !enabled
-                if enabled {
-                    Task { await appState.retryDeferredJev() }
+                guard appState.decisionPause != nil,
+                      appState.decisionPreferenceError == nil else { return }
+                do {
+                    try appState.setDecisionPaused(!enabled)
+                    if enabled {
+                        Task { await appState.retryDeferredDecisions() }
+                    }
+                } catch {
+                    statusIsError = true
+                    statusMessage = error.localizedDescription
                 }
             }
         )
@@ -235,7 +351,9 @@ struct SettingsView: View {
 
     private func saveAPIKey() {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard appState.decisionPreferenceError == nil,
+              selectedEngineChoice == .jev,
+              !trimmed.isEmpty else { return }
 
         do {
             try secretStore.save(trimmed, account: Self.apiKeyAccount)
@@ -243,8 +361,8 @@ struct SettingsView: View {
             hasStoredKey = true
             statusIsError = false
             statusMessage = "APIキーを Keychain に保存しました"
-            if !isJevPaused {
-                Task { await appState.retryDeferredJev() }
+            if selectedEngineChoice == .jev, appState.decisionPause == false {
+                Task { await appState.retryDeferredDecisions() }
             }
         } catch {
             statusIsError = true
@@ -262,11 +380,28 @@ struct SettingsView: View {
         }
     }
 
-    private func checkJevConnection() async {
-        guard hasStoredKey, !isJevPaused, !isCheckingJev else { return }
-        isCheckingJev = true
-        defer { isCheckingJev = false }
+    private func checkSelectedEngine() async {
+        guard let selectedChoice = selectedEngineChoice,
+              !decisionControlsDisabled,
+              checkingEngine == nil else { return }
+        if selectedChoice == .jev, (appState.decisionPause != false || !hasStoredKey) {
+            return
+        }
 
+        checkingEngine = selectedChoice
+        statusMessage = nil
+        statusIsError = false
+        defer { checkingEngine = nil }
+
+        switch selectedChoice {
+        case .jev:
+            await checkJevConnection()
+        case .localModel:
+            await checkLocalModel()
+        }
+    }
+
+    private func checkJevConnection() async {
         do {
             guard let key = try secretStore.load(account: Self.apiKeyAccount), !key.isEmpty else {
                 hasStoredKey = false
@@ -292,6 +427,22 @@ struct SettingsView: View {
         }
     }
 
+    private func checkLocalModel() async {
+        checkedLocalModelIdentity = nil
+        let factory = appState.selectedDecisionProviderFactory
+        do {
+            let identity = try await Task.detached(priority: .userInitiated) {
+                try factory.localModelIdentity()
+            }.value
+            checkedLocalModelIdentity = identity
+            statusIsError = false
+            statusMessage = "ローカルモデルのメタデータを確認しました"
+        } catch {
+            statusIsError = true
+            statusMessage = "ローカルモデルを確認できませんでした: \(error.localizedDescription)"
+        }
+    }
+
     private func deleteAPIKey() {
         do {
             try secretStore.delete(account: Self.apiKeyAccount)
@@ -303,6 +454,11 @@ struct SettingsView: View {
             statusIsError = true
             statusMessage = error.localizedDescription
         }
+    }
+
+    private func refreshStoredKeyStateIfJevSelected() {
+        guard selectedEngineChoice == .jev else { return }
+        refreshStoredKeyState()
     }
 
     private func refreshStoredKeyState() {

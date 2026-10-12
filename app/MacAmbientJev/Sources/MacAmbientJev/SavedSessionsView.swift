@@ -278,7 +278,7 @@ struct SavedSessionsView: View {
         case .running: "処理中"
         case .paused: "一時停止中（発熱）"
         case .complete: session.hasActiveTranscript ? "文字起こしあり" : "処理完了"
-        case .classificationPending: "文字起こしあり・Jev 判定を再試行"
+        case .classificationPending: "文字起こしあり・判定を再試行"
         case .failed(let reason): "再処理が必要: \(reason ?? "処理に失敗しました")"
         case .corrupted: "文字起こしデータが破損しています（音声から再処理できます）"
         }

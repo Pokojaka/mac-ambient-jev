@@ -74,13 +74,21 @@ dependencies += [
     .package(
         url: "https://github.com/ml-explore/mlx-swift.git",
         exact: "0.31.6"
+    ),
+    .package(
+        url: "https://github.com/huggingface/swift-transformers",
+        exact: "1.3.4"
     )
 ]
 
 targets += [
     .target(
         name: "MacAmbientJevAppleSupport",
-        dependencies: ["MacAmbientJevCore"]
+        dependencies: [
+            "MacAmbientJevCore",
+            .product(name: "Tokenizers", package: "swift-transformers"),
+            .product(name: "Hub", package: "swift-transformers")
+        ]
     ),
     .target(
         name: "MacAmbientJevCapture",
@@ -156,7 +164,8 @@ targets += [
         dependencies: [
             "MacAmbientJevCore",
             "MacAmbientJevAppleSupport"
-        ]
+        ],
+        resources: [.copy("Resources/ClauseTaggerFixtures.json")]
     ),
     .testTarget(
         name: "MacAmbientJevRuntimeTests",

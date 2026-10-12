@@ -84,7 +84,7 @@ public struct TranscriptEvent: Sendable, Equatable {
         )
     }
 
-    /// One Jev clause event of `runID`; clause events carry their sources in the payload.
+    /// One clause event of `runID`; clause events carry their sources in the payload.
     public static func clause(seq: UInt64, runID: String, kind: TranscriptEventKind) -> TranscriptEvent {
         TranscriptEvent(eventSeq: seq, processingRunID: runID, kind: kind)
     }
@@ -133,7 +133,7 @@ public struct MaterializedSpeakerSpan: Encodable, Sendable, Equatable {
     }
 }
 
-/// How far Jev has resolved one transcript row.
+/// How far the decision engine has resolved one transcript row.
 public enum TranscriptClauseState: String, Codable, Sendable, Equatable {
     /// The row ends in a clause that may continue into the next segment.
     case awaitingNextSegment = "awaiting_next_segment"

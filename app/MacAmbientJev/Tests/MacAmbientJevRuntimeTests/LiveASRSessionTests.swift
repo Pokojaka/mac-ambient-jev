@@ -85,7 +85,7 @@ private final class Locked<Value>: @unchecked Sendable {
 
 private func makeLiveASRFixture(
     failOnCall: Int? = nil,
-    jevRuns: (boundary: String, priority: String)? = nil
+    decisionRuns: (boundary: String, priority: String)? = nil
 ) async throws -> (
     root: URL,
     checkpoint: AudioCheckpoint,
@@ -115,8 +115,8 @@ private func makeLiveASRFixture(
         writer: try SessionWriter(sessionURL: root),
         asr: engine,
         sampleRate: checkpoint.sampleRate,
-        clauseBoundaryRunID: jevRuns?.boundary,
-        contentPriorityRunID: jevRuns?.priority
+        clauseBoundaryRunID: decisionRuns?.boundary,
+        contentPriorityRunID: decisionRuns?.priority
     )
     return (root, checkpoint, session, engine)
 }
@@ -170,7 +170,7 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
 
 @Test
 func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents() async throws {
-    let fixture = try await makeLiveASRFixture(jevRuns: ("boundary_live", "priority_live"))
+    let fixture = try await makeLiveASRFixture(decisionRuns: ("boundary_live", "priority_live"))
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
@@ -210,7 +210,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         source: source, candidates: [], probabilities: [:],
         nextHead: NextSegmentHead(source: nextSource, text: nextText),
         continuationProbability: 0.05,
-        request: JevRequestRecord(requestID: "boundary_req", metadata: JevResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)),
+        request: DecisionRequestRecord(requestID: "boundary_req", metadata: DecisionResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)),
         sourceDecision: .assessed
     )
     let unit = try ClauseUnit(
@@ -229,7 +229,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
             reference: unit.reference, priority: .lowPriority, needsRetry: false,
             decision: .classified(requestID: "req", answerKey: "u0001", response: low)
         )
-    ], request: JevRequestRecord(requestID: "req", metadata: JevResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)))
+    ], request: DecisionRequestRecord(requestID: "req", metadata: DecisionResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)))
     let classified = try await fixture.session.applyClauseEvents([
         .clause(seq: 102, runID: "priority_live", kind: .contentPriorityAssigned(assigned))
     ])

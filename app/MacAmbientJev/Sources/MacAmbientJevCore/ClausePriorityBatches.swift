@@ -1,7 +1,7 @@
 import Foundation
 
-public enum JevDecisionAvailability: Sendable {
-    case available(JevDecisionCoordinator)
+public enum DecisionAvailability: Sendable {
+    case available(DecisionCoordinator)
     case pending(ClausePendingReason, String)
 }
 
@@ -9,9 +9,9 @@ public enum JevDecisionAvailability: Sendable {
 public struct ClausePriorityBatches: Sendable {
     private let targets: [(reference: ClauseReference, text: String)]
     private var offset = 0
-    public private(set) var stopReason: JevBatchStopReason?
+    public private(set) var stopReason: DecisionBatchStopReason?
 
-    public init(targets: [(reference: ClauseReference, text: String)], stopReason: JevBatchStopReason?) throws {
+    public init(targets: [(reference: ClauseReference, text: String)], stopReason: DecisionBatchStopReason?) throws {
         guard Set(targets.lazy.map(\.reference)).count == targets.count,
               targets.allSatisfy({ !ClauseTextComposer.isBlank($0.text) }) else {
             throw ClauseRecordError.invalidPriorityEvent
@@ -25,15 +25,15 @@ public struct ClausePriorityBatches: Sendable {
     /// Availability is read only for a batch that has not been stopped; it may change live.
     public mutating func next(
         isolation: isolated (any Actor)? = #isolation,
-        availability: () async -> JevDecisionAvailability
+        availability: () async -> DecisionAvailability
     ) async throws -> ContentPriorityAssignedPayload {
         guard hasRemaining else { throw ClauseRecordError.invalidPriorityEvent }
         try Task.checkCancellation()
-        let end = min(offset + JevPriorityBatchPolicy.maximumTargets, targets.count)
+        let end = min(offset + PriorityBatchPolicy.maximumTargets, targets.count)
         let batch = targets[offset..<end]
-        let current: JevDecisionAvailability
+        let current: DecisionAvailability
         if let stopReason {
-            current = .pending(stopReason.pendingReason, JevPendingMessage.stopped)
+            current = .pending(stopReason.pendingReason, DecisionPendingMessage.stopped)
         } else {
             current = await availability()
         }
@@ -67,10 +67,10 @@ public enum ClausePriorityBatch {
     public static func classify(
         references: [ClauseReference],
         texts: [String],
-        decisions: JevDecisionCoordinator
-    ) async throws -> (payload: ContentPriorityAssignedPayload, stop: JevBatchStopReason?) {
+        decisions: DecisionCoordinator
+    ) async throws -> (payload: ContentPriorityAssignedPayload, stop: DecisionBatchStopReason?) {
         guard !references.isEmpty, references.count == texts.count,
-              references.count <= JevPriorityBatchPolicy.maximumTargets,
+              references.count <= PriorityBatchPolicy.maximumTargets,
               Set(references).count == references.count,
               texts.allSatisfy({ !ClauseTextComposer.isBlank($0) }) else {
             throw ClauseRecordError.invalidPriorityEvent
@@ -80,7 +80,7 @@ public enum ClausePriorityBatch {
         case .answered(let response, let record):
             var assignments: [ClausePriorityAssignment] = []
             for (reference, target) in zip(references, targets) {
-                guard let decision = response.decisions[target.key] else { throw JevClientError.missingAnswer }
+                guard let decision = response.decisions[target.key] else { throw DecisionResponseError.missingAnswer }
                 assignments.append(try ClausePriorityAssignment(
                     reference: reference,
                     priority: ContentPriorityPolicy.visiblePriority(for: decision),

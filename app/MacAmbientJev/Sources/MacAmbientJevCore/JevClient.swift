@@ -90,12 +90,12 @@ private struct JevUsage: Decodable {
 
 private struct JevEnvelope<Answer: Decodable>: Decodable {
     let answers: [String: Answer]
-    let metadata: JevResponseMetadata
+    let metadata: DecisionResponseMetadata
     enum CodingKeys: String, CodingKey { case model, answers, usage }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let usage = try c.decode(JevUsage.self, forKey: .usage)
-        metadata = try JevResponseMetadata(model: c.decode(String.self, forKey: .model), inputTokens: usage.inputTokens, outputTokens: usage.outputTokens)
+        metadata = try DecisionResponseMetadata(model: c.decode(String.self, forKey: .model), inputTokens: usage.inputTokens, outputTokens: usage.outputTokens)
         answers = try c.decode([String: Answer].self, forKey: .answers)
     }
 }
@@ -104,6 +104,7 @@ public struct JevClient: DecisionProvider, Sendable {
     public static let endpoint = URL(string: "https://api.typesafe.ai/v1/systemone")!
     public static let requestTimeout: TimeInterval = 15
     public static let model = "jev-latest"
+    public static let boundaryPromptRevision = "1"
     public static let priorityPromptRevision = "2"
     private let apiKey: String
     private let transport: any JevHTTPTransport
@@ -128,18 +129,18 @@ public struct JevClient: DecisionProvider, Sendable {
             marked.append(contentsOf: request.text[cursor..<end])
             let marker = "\(frame)\(candidateIndex + 1)⟩"
             marked += marker
-            questions[candidate.id] = JevQuestion(type: "noul", instructions: "`text` は話し言葉の文字起こしで、候補位置に印がある。印 `\(marker)` の位置は、述語を中心に統語的・意味的にまとまった節を終える絶対境界または強境界ですか？弱境界では切らない。判定対象は `text` だけで、`next_text` は継続質問専用。", criteria: [
-                "true": "印の直前で文が終わる（文末）、または「けど」「が」「し」などの並列・逆接で前の節が完結し、後ろが新しい節として始まる絶対境界・強境界",
-                "false": "同じ節の途中。主語や目的語の後、連用・連体修飾、通常の条件・理由・引用・テ接続などの弱境界、言いよどみや言い直しの途中"
+            questions[candidate.id] = JevQuestion(type: "noul", instructions: "`text` は話し言葉の文字起こしで、候補位置に印がある。印 `\(marker)` の位置で、話された文（BTSJ発話文）が終わっていますか？ true は一つの発話文が完結し、次の発話文が始まる場合。false は同じ発話文の内部で、節が完結していても「けど」「が」「し」などの接続で内容が続く場合、フィラーや言い直し・修復が続く場合、倒置・後置・付け足しの内容が後から続く場合。文末の「けど」「が」「し」は、語尾だけで決めず、話された文全体が実際に終わっている場合に限り true。判定対象は `text` だけで、`next_text` は継続質問専用。", criteria: [
+                "true": "印の直前で話された一つの発話文が実際に完結し、印の後ろから新しい発話文が始まる",
+                "false": "印の後ろに同じ発話文の内容が続く。節が完結した後でも、接続表現、フィラー、言い直し・修復、倒置・後置・付け足しが続く場合を含む"
             ])
             previousOffset = candidate.offsetUTF16
             cursor = end
         }
         marked.append(contentsOf: request.text[cursor...])
         if request.next != nil {
-            questions["continuation"] = JevQuestion(type: "noul", instructions: "`text` の末尾の部分と `next_text` の先頭は、録音の区切りで分かれた同じ節の続きですか？末尾の句点だけでは否定しない。「と。」「いうか」のように表現が続く可能性も判定してください。", criteria: [
-                "true": "`text` の末尾は述語未完または表現の途中で、`next_text` の先頭がその節を継続する",
-                "false": "`text` の末尾で節が完結しており、`next_text` は新しい節として始まる"
+            questions["continuation"] = JevQuestion(type: "noul", instructions: "`text` の末尾と `next_text` の先頭は、ASR 区間をまたぐ同じ BTSJ 発話文の続きですか？述語が完結していても、倒置・後置・付け足しの内容が次区間に続けば同じ発話文として判定してください。末尾の句点だけでは否定せず、「と。」「いうか」のように表現が続く場合も考慮してください。", criteria: [
+                "true": "`text` の表現が未完、または倒置・後置・付け足しとして発話文に付く内容が `next_text` に続き、両者が同じ発話文を構成する",
+                "false": "`text` が一つの発話文として終わっており、`next_text` は独立した次の発話文である"
             ])
         }
         let body = JevRequest(model: Self.model, state: BoundaryState(text: marked, nextText: request.next?.text), questions: questions)
@@ -150,7 +151,7 @@ public struct JevClient: DecisionProvider, Sendable {
     }
 
     public func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        guard !targets.isEmpty, targets.count <= JevPriorityBatchPolicy.maximumTargets,
+        guard !targets.isEmpty, targets.count <= PriorityBatchPolicy.maximumTargets,
               Set(targets.map(\.key)).count == targets.count,
               targets.allSatisfy({ isRequestLocalKey($0.key, prefix: "u") && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw JevClientError.invalidRequest }
         var state: [String: String] = [:]

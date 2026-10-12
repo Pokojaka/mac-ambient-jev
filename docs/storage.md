@@ -1,12 +1,12 @@
 # セッション保存形式
 
-保存音声は再処理の基礎であり、文字起こし・話者・節の境界・優先度は派生結果です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
+保存音声は再処理の基礎であり、文字起こし・話者・BTSJ 発話文の境界・優先度は派生結果です。発話文の境界と優先度は Jev または local Core ML provider が同じ単位で判定します。保存 key と event 名の `clause` / `節` はその発話文単位の識別名です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
 
 以下の表は **JSON 上の実際のキーと値**です。イベントと処理 metadata は snake_case のキーを使いますが、checkpoint と音声用 JSONL は camelCase です。String enum の値はキー変換の対象ではなく、`clauseBoundary`、`contentPriority`、`lowPriority` などは camelCase のままです。
 
 ## 保存場所とセッションフォルダー
 
-GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。全てのセッション CLI は各モードで `--sessions-root DIRECTORY` を必須とし、CLI が既定保存先を選ぶことはありません。非 sandbox の `~/Library/Application Support/mac-ambient-jev/sessions` とその cache、および sandbox 側の app data/cache は CLI の保護対象です。明示 root はこれらの領域と祖先・子孫関係にならず、symlink 経由でも重ならない必要があります。各 Application Support の mac-ambient-jev 以下に sessions と models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。`AppPaths` は sessions の root を上書きできます。設定の「保存先」の「録音データ」と保存済み録音の詳細の「録音データを Finder で表示」で、この sessions フォルダーとセッションごとのフォルダーを Finder で開けます。App の設定は UserDefaults / AppStorage、Jev API キーは Keychain にあり、セッション JSON のフィールドではありません。
+GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。全てのセッション CLI は各モードで `--sessions-root DIRECTORY` を必須とし、CLI が既定保存先を選ぶことはありません。非 sandbox の `~/Library/Application Support/mac-ambient-jev/sessions` とその cache、および sandbox 側の app data/cache は CLI の保護対象です。明示 root はこれらの領域と祖先・子孫関係にならず、symlink 経由でも重ならない必要があります。各 Application Support の mac-ambient-jev 以下に sessions と models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。発話文ローカルモデルの固定位置は sandbox 内の `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/models/clause-tagger/` です。ClauseTagger.mlpackage と tokenizer.json を手動配置します。自動ダウンロードも model path override もありません。外部 model ID は sbintuitions/modernbert-ja-30m-multitagger で、ファイルパスではありません。`AppPaths` は sessions root のみ上書きでき、models root は上書きできません。設定の「録音データ」と保存済み録音の詳細から sessions フォルダーを Finder で開けます。App の設定は UserDefaults / AppStorage、Jev API キーは Keychain にあり、セッション JSON のフィールドではありません。
 
 フォルダー名は `YYYY-MM-DD_HH-mm-ss_<stem>_<UUID先頭8桁の小文字hex>` です。作成時に一度取得した日時を、明示した time zone のローカル時刻として Gregorian calendar・`en_US_POSIX` で表します。年は ASCII 4 桁（0001–9999）。アプリと CLI は `.current` を渡します。マイク・システム音声の録音は stem が `録音`、読み込みは元ファイル名の最後の拡張子を除いた stem です。
 
@@ -175,13 +175,13 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。`speaker.span` の ID はエンジンの raw ID で、表示用の Speaker 番号をイベントへ書き戻しません。
 
-`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、diarization は span を数えます。clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文がある節の成立数と保留数を数えます。Jev の run は保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル確定の失敗を意味しません。保存破損や参照の不整合は保留に変換せず、エラーにします。
+`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、diarization は span を数えます。clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文のある発話文の成立数と保留数を数えます。decision run は判定保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル必須処理の失敗を意味しません。保存破損や参照の不整合は保留に変換せず、エラーにします。
 
-検証済み VAD が 0 区間の確定処理では、segmentation / diarization / ASR の各 run に provenance を持つ開始と、成功・完了 0 件・失敗 0 件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。3 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` のローカル3段階だけを新しい run へ切り替え、Jev の pointer は nil、両保留配列は空にします。Jev 送信は0です。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
+検証済み VAD が0区間の確定処理では segmentation / diarization / ASR の各 run に provenance を持つ開始と、成功・完了0件・失敗0件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。3 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` はローカル必須3段階だけを新しい run へ切り替え、任意の decision pointer は nil、両保留配列は空にします。Jev request とローカル classifier 呼出しは0です。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
 
 根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[DiarizationCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DiarizationCoordinator.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。
 
-### Jev の節イベント
+### 発話文判定イベント
 
 区間参照（`source`）は `segmentation_run_id`、`segment_id`、`asr_run_id`、`asr_event_seq` を持つ object で、`asr_event_seq` はその区間の `asr.completed` の `event_seq` です。原文の範囲は ASR 原文の UTF-16 code unit の半開区間 `{"start":0,"end":4}` で、両端は Character 境界です。原文は正規化・trim しません。
 
@@ -191,13 +191,13 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | --- | --- | --- |
 | `source` | 区間参照 | 判定した区間 |
 | `candidates` | object 配列 | `id`（`b0001` 等）と `offset_utf16`。原文の `、。？！?!` の直後で、原文末尾を除く。候補なしは空配列 |
-| `probabilities` | 候補 ID → Double | 各候補の Noul 確率 |
-| `next_head` | object または null | 実際に送った次区間の `source` と先頭 `text`（60 Character 以内）。終端は null |
+| `probabilities` | 候補 ID → Double | 各候補の選択 provider による境界確率 |
+| `next_head` | object または null | 判定に用いた次区間の `source` と先頭 `text`（60 Character 以内）。終端は null |
 | `continuation_probability` | Double または null | `next_head` があるときだけ値を持つ |
-| `request` | リクエスト記録または null | 今回の実送信だけ。質問0の終端と引き継ぎは null |
+| `request` | リクエスト記録または null | 成功した provider 呼出しの記録。失敗・未送信・terminal・引き継ぎは null |
 | `source_decision` | object | `{"kind":"assessed"}`、`{"kind":"terminal_without_questions"}`、または `{"kind":"carried_over","source_boundary_run_id":…,"source_event_seq":…}` |
 
-候補なしの判定と通信失敗は区別します。失敗は `clause_boundaries.pending` で、`reason` は `unconfigured`、`stopped`、`initialization_failed`、`authorization_rejected`、`request_failed`、`asr_gap`、`cancelled` のいずれかです。保留に架空の確率や一節の結果は入れません。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭であることを検証し、元のリクエストを再送扱いにしません。
+候補なしの terminal と provider の失敗は区別します。失敗は `clause_boundaries.pending` で、`reason` は `unconfigured`、`stopped`、`initialization_failed`、`authorization_rejected`、`request_failed`、`asr_gap`、`cancelled` のいずれかです。保留に架空の確率や発話文を入れません。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭であることを検証し、元 provider 呼出しを再 request として扱いません。
 
 `clauses.closed` の payload:
 
@@ -208,16 +208,32 @@ optional の nil は writer の JSON から省略します。音声区間の共�
  "termination":{"kind":"internal_boundary","source":{"segmentation_run_id":"seg_example","segment_id":"seg_000002","asr_run_id":"asr_example","asr_event_seq":15},"candidate_id":"b0001"}}
 ```
 
-節 ID は `c<最初の part の asr_event_seq>_<開始 offset>` で、本文の hash や行内の連番ではありません。parts は時間順で、二つ目以降は区間の先頭から始まります。`termination.kind` は `internal_boundary`（その区間の採用候補）、`not_continued`（継続 no）、`stream_end`（録音停止・最後の区間・空の次区間。文法的な境界ではない）です。節本文は保存せず、原文とフィラー削除範囲から導きます。
+persisted `節` / `clause` は両エンジンが判定する BTSJ 発話文単位の識別名で、別 splitter の節を意味しません。両境界・継続確率は厳密に `> 0.5` の場合だけ採用します。候補 offset は原文 `、。？！?!` 直後の UTF-16 offset（原文末尾を除く）です。発話文 ID は `c<最初の part の asr_event_seq>_<開始 offset>` で、本文 hash や行内連番ではありません。parts は時間順で、二つ目以降は区間先頭から始まります。`termination.kind` は `internal_boundary`（採用候補）、`not_continued`（継続 no）、`stream_end`（録音停止・最後の区間・空の次区間。文法的な境界ではない）です。発話文本文は保存せず、原文とフィラー削除範囲から導きます。
 
-`content_priority.assigned` は一回の Choice リクエストの全結果を一イベントに保存し、`request` を一回だけ持ちます。リクエスト記録は `{"request_id":…,"metadata":{"model":…,"input_tokens":…,"output_tokens":…}}` で、未報告の token は省略し0を合成しません。
+`content_priority.assigned` は一回の provider 呼出しの全結果を一イベントに保存し、`request` は成功応答に一回だけ付けます。`request_id` は両 provider 共通の `decisionreq_<小文字UUID>` 形式です。metadata decoder に default はなく、必須 identity 欠落・型不一致は読み取りエラーです。
+
+| metadata key | 型 | 保存値 |
+| --- | --- | --- |
+| `provider` | String | `jev` または `local-coreml`。必須 |
+| `model` | String | 実際の provider model ID/name。必須 |
+| `model_revision` | String | Jev は API 応答の実 model と同じ文字列、local は64桁小文字 state-hash revision。必須 |
+| `input_tokens` | optional Int | Jev は API の報告値。local は実際に入力した全 sequence の token 数合計 |
+| `output_tokens` | optional Int | Jev は API の報告値。local は既知の `0` |
+
+Jev の token key は API が返した値だけを保存し、未報告なら省略します。ローカル `model` は固定外部 ID sbintuitions/modernbert-ja-30m-multitagger です。run metadata や要求 model `jev-latest` から response identity を補いません。
 
 ```json
 {"assignments":[
   {"reference":{"boundary_run_id":"boundary_example","clause_id":"c12_0"},"priority":"lowPriority","needs_retry":false,
-   "decision":{"kind":"classified","request_id":"jevreq_example","answer_key":"u0001",
+   "decision":{"kind":"classified","request_id":"decisionreq_00000000-0000-4000-8000-000000000001","answer_key":"u0001",
                "response":{"priority":"lowPriority","confidence":0.95,"probabilities":{"PRIMARY":0.025,"LOW_PRIORITY":0.975}}}}],
- "request":{"request_id":"jevreq_example","metadata":{"model":"jev-1.13.0","input_tokens":120}}}
+ "request":{"request_id":"decisionreq_00000000-0000-4000-8000-000000000001","metadata":{"provider":"jev","model":"jev-1.13.0","model_revision":"jev-1.13.0","input_tokens":120,"output_tokens":10}}}
+```
+
+ローカル provider の成功 request record 例（model ID は外部識別子であり path ではありません）:
+
+```json
+{"request_id":"decisionreq_00000000-0000-4000-8000-000000000002","metadata":{"provider":"local-coreml","model":"sbintuitions/modernbert-ja-30m-multitagger","model_revision":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","input_tokens":288,"output_tokens":0}}
 ```
 
 | `decision.kind` | `priority` | `needs_retry` | その他のキー |
@@ -226,11 +242,11 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `retry_pending` | null | true | `reason`、`message` |
 | `carried_over` | 元の値 | `source_needs_retry` と同じ | `source_priority_run_id`、`source_event_seq`、`source_clause`、`source_needs_retry` |
 
-`request` が null のイベントは、引き継ぎ・保留だけを含みます。リクエスト記録は成功応答だけに付けるため、送信したリクエストが失敗した保留も null です。引き継ぎは元 run・イベント・節が実在し、優先度と保留状態、節本文の UTF-8 byte 列が一致することを検証します。保留のまま引き継いだ節は保留のままです。
+`request` が null でも provider 呼出しがなかったとは限りません。record は成功応答だけに付けるため、呼出し失敗の保留も null です。carry-over、terminal、未送信 pending は provider 呼出し自体がなく、利用計数にも加えません。carry-over は元 run・イベント・発話文が実在し、優先度と保留状態、本文 UTF-8 bytes が一致することを検証します。保留のまま引き継いだ発話文は保留のままです。
 
-新しい優先度判定と優先度保留は、ライブ・確定・再試行とも原文順に最大 40 節ずつ `content_priority.assigned` に保存します。リクエストが失敗した batch は全対象を `request: null` の保留にし、送信停止後の残りや分類器を取得できなかった未送信の batch にも同じ粒度を使います。取り消しには保留イベントを作りません。送信のない引き継ぎイベントの件数は Choice の送信上限では制限しません。
+新しい優先度判定と保留は、ライブ・確定・再試行とも原文順に最大40発話文ずつ `content_priority.assigned` に保存します。選択 provider の一回の `classifyPriorities` 呼出しで1〜40 sequence を処理し、失敗した batch は全対象を `request: null` の保留にします。未送信 batch にも同じ粒度を使います。取り消しには保留イベントを作りません。provider 呼出しのない carry-over event は batch 上限に含めません。
 
-根拠: [ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[ClauseBoundaryAssembly.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[共通の直列 batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClausePriorityBatches.swift)、[JevEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevEnrichmentCoordinator.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/JevEnrichmentCoordinatorTests.swift)、[確定・再試行の batch 保存](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift)。
+根拠: [ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[ClauseBoundaryAssembly.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[共通の直列 batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClausePriorityBatches.swift)、[DecisionEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionEnrichmentCoordinator.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionEnrichmentCoordinatorTests.swift)、[確定・再試行の batch 保存](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift)。
 
 ### run の来歴
 
@@ -243,19 +259,26 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `version` | String | 実装または依存 package の version / revision |
 | `configuration` | String → String の object | その run の設定。数値も文字列で保存 |
 
-確定処理は新しい run ごとに各 engine から provenance を取り、開始イベントを保存します。以前の run の version や設定は引き継ぎません。現在の本番構成は次のとおりです。
+判定 run は開始時の選択 provider / availability の provenance を `processing.run.started` に保存します。run の `configuration` は全て string 値です。
 
 | 段階 | engine / model / version | configuration |
 | --- | --- | --- |
-| segmentation | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`minimum_segment_seconds` = `0.02` |
-| asr | `qwen3-asr-swift` / 外部モデル ID: aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language` = `ja`、`minimum_input_seconds` = `0.02` |
-| diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default |
-| clauseBoundary | `jev` / run の model なし / `1` | `mode` = `live` / `final` / `retry`、`endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`candidate_characters` = `、。？！?!`、`boundary_threshold` = `0.5`、`continuation_threshold` = `0.5`、`next_head_character_limit` = `60`、`unit_policy` = `absolute-and-strong`、`text_policy` = `raw-asr`、`filler_projection_revision` = `1` |
-| contentPriority | `jev` / run の model なし / `2` | `mode`、`endpoint`、`minimum_demotion_confidence` = `0.9`、`maximum_targets` = `40`、`prompt_revision` = `2`、`text_policy` = `filler-removed-exact`、`filler_projection_revision` = `1`。応答モデルは各リクエスト記録に保存し、run 全体の単一モデルを推測しない |
+| segmentation | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds=0.1`、`max_segment_seconds=14.0`、`min_silence_seconds=0.75`、`minimum_segment_seconds=0.02` |
+| asr | `qwen3-asr-swift` / 外部モデル ID aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language=ja`、`minimum_input_seconds=0.02` |
+| diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config=FluidAudio の OfflineDiarizerConfig.default` |
+| clauseBoundary (Jev) | `jev` / run `model=nil` / version `1` | `provider=jev`、`model_id=jev-latest`、`model_revision=response-metadata`、`mode` は `live`、`final`、`retry`、外部 API `endpoint` = https://api.typesafe.ai/v1/systemone、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`unit_policy=btsj-utterance-sentence`、`text_policy=raw-asr`、`filler_projection_revision=1` |
+| contentPriority (Jev) | `jev` / run `model=nil` / version `2` | `provider=jev`、`model_id=jev-latest`、`model_revision=response-metadata`、`mode` は `live`、`final`、`retry`、外部 API `endpoint` = https://api.typesafe.ai/v1/systemone、`unit_policy=btsj-utterance-sentence`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`prompt_revision=2`、`text_policy=filler-removed-exact`、`filler_projection_revision=1` |
+| clauseBoundary (local) | `local-coreml` / 外部 model ID sbintuitions/modernbert-ja-30m-multitagger / version = model の64桁state-hash revision | `provider=local-coreml`、`model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`、`next_head_character_limit=60`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`filler_projection_revision=1`、`text_policy=neutral-punctuation-piecewise` |
+| contentPriority (local) | `local-coreml` / 外部 model ID sbintuitions/modernbert-ja-30m-multitagger / version = model の64桁state-hash revision | `provider=local-coreml`、実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`filler_projection_revision=1`、`text_policy=filler-removed-neutral-punctuation-piecewise` |
+| decision unavailable | `unavailable` / `model=nil` / version `1` | `provider=unavailable`、`mode` は `live`、`final`、`retry`、`unit_policy=btsj-utterance-sentence` |
 
-Jev provenance は実際に Jev の run を始める場合に保存します。ライブの境界判定 run と優先度 run は判定を逐次保存し、テキスト列の終端まで判定すると完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済みの結果を保持します。ライブ run は metadata の active_runs に選ばず、確定処理は独立した境界判定 run と優先度 run を完了・選択します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ ASR run に出すわけではありません。
+Jev の run configuration は要求 model `jev-latest` と `model_revision=response-metadata` を記録します。run の `model` は nil で、実際に API が返した model と同じ `model_revision` は各成功 request record に保存します。run provenance に未確認の API model revision を作りません。ローカル run の `model`、configuration の `model_id` / `model_revision`、`version` は実際にロードした外部 model ID と state-hash revision です。ライブ run は開始時の provider availability を provenance に記録し、その後 provider availability が変わった場合も、各応答の実 provider/model/revision は request record を正とします。
+
+ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は選択 provider による独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Jev HTTP と Core ML tagger の両方を無効にし、必須の segmentation・diarization・ASR は実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
 
 根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)。
+
+ローカル判定と固定 model path の実装: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[LocalClauseTagger.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[ClauseTaggerModel.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerTokenizer.swift)、[ClauseTaggerEncoding.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)。
 
 ## processing_metadata.json
 
@@ -267,9 +290,9 @@ Jev provenance は実際に Jev の run を始める場合に保存します。�
 | `finalization_attempt` | object または null | 最新の確定処理の状態 |
 | `active_runs` | object または null | 一括公開された現在の run 集合 |
 | `pending_clause_boundary_segments` | 区間参照の配列 | 必須。公開済み snapshot で境界判定が未成立の区間。時間順 |
-| `pending_content_priority_clauses` | 節参照の配列 | 必須。公開済みの境界判定 run の閉じた非空の節のうち、優先度が未成立の節。原文順 |
+| `pending_content_priority_clauses` | 発話文参照の配列 | 必須。公開済み境界判定 run の閉じた非空発話文のうち、優先度が未成立のもの。原文順 |
 
-保留の配列は重複を許さず、イベントログと一致しない場合（未知の区間・節、別の run、成立済みの対象を含むなど）は読取・再試行の前にエラーにします。境界の保留配列は送信できなかった区間リクエストだけを含み、保留区間に続く未解決の行を重複して加えません。
+保留の配列は重複を許さず、イベントログと一致しない場合（未知の区間・発話文、別 run、成立済み対象を含むなど）は読取・再試行前にエラーにします。境界保留配列は境界判定未成立の区間だけを含み、保留区間に続く未解決行を重複して加えません。
 
 finalization_attempt の全フィールド:
 
@@ -279,11 +302,11 @@ finalization_attempt の全フィールド:
 | `state` | String | `running` / `paused` / `failed` / `complete` |
 | `failure_reason` | String または null | failed の理由 |
 
-active_runs の全フィールドは optional String の `segmentation`、`asr`、`diarization`、`clause_boundary`、`content_priority` です。`clause_boundary` と `content_priority` は任意の外部 Jev 段階で、ローカル必須の3段階ではありません。成功判定用の内部集合は JSON に保存しません。
+active_runs の全フィールドは optional String の `segmentation`、`asr`、`diarization`、`clause_boundary`、`content_priority` です。`clause_boundary` と `content_priority` は任意の decision run pointer で、provider は Jev またはローカル Core ML です。どちらもローカル必須3段階ではなく、必ず外部 Jev run があることも意味しません。成功判定用の内部集合は JSON に保存しません。
 
-開始時は公開済み active_runs と保留を保持したまま running にします。ローカル3段階が全て成功したときだけ、complete、新しい active_runs（Jev の run なし）、全ての非空区間の境界保留を**一回の write** で保存し、優先度の保留を空にします。公開と保留保存の間にクラッシュ窓はありません。その後、Jev が利用可能なら境界判定 run と優先度 run を実行し、両 run の pointer と両保留配列を一回の write で公開します。公開時に active_runs が snapshot の作成元と変わっていれば公開しません。優先度だけの再試行は優先度 run の pointer と保留配列だけを更新します。failed / paused は公開済みの結果を置き換えません。
+開始時は公開済み active_runs と保留を保持したまま running にします。ローカル必須3段階が全て成功したときだけ、complete、新しい active_runs（segmentation・ASR・diarization の run、decision pointer は未設定）、全ての非空区間の境界保留を**一回の write** で保存し、優先度の保留を空にします。公開と保留保存の間にクラッシュ窓はありません。その後、App で選択 provider が利用可能なら境界・優先度 run を実行し、provider が unavailable なら保留として記録します。選択 provider の run pointer と両保留配列は一回の write で公開します。CLI の `ContentPriorityAccess.disabled` は Jev と local の両決定を実行せず、任意 decision run pointer は設定しません。公開時に active_runs が snapshot の作成元と変わっていれば公開しません。優先度だけの再試行は優先度 run pointer と保留配列だけを更新します。failed / paused は公開済みの結果を置き換えません。
 
-復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動で無限再試行しません。complete で保留配列が空でなければ Jev の再試行対象で、両配列をイベントログで検証した上で、公開済み snapshot から再構築します。未公開の再試行 run の結果は使いません。破損した metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。schema_version の相違・欠落・型違いは置換の対象外で、読取・追記・復旧・再処理をエラーにします。
+復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動で無限再試行しません。complete で保留配列が空でなければ、現在選択されている provider による判定再試行対象です。両配列をイベントログで検証し、公開済み snapshot から再構築します。未公開の再試行 run の結果は使いません。破損した metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。schema_version の相違・欠落・型違いは置換の対象外で、読取・追記・復旧・再処理をエラーにします。
 
 根拠: [ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[SessionRecoveryScanner.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)。
 
@@ -330,9 +353,9 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 ライブ→確定の固定には `SessionWriter.readDurableLog` を使い、append と同じファイルロックを取って synchronize 完了後のログを読みます。読取は破損末尾を切り詰めずエラーにし、固定後のイベントは再利用対象に追加しません。公開 reader・再試行・catalog は公開 run と参照先の source／carry 元だけを厳密に解釈し、carry 元も再帰的に境界組み立てと優先度整合を検証します。
 
-`EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非 active run や未知のイベント種別の payload は解釈せず、active run の必要フィールドの欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。Jev の節イベントは reader、再試行の分析（`JevRetryAnalyzer`）、ライブ判定の再利用、保存済みセッション一覧が共通の decoder で検証します。保存された境界判定から節を組み立て直し、保存された節と比べます。完了した run は組み立て結果と完全に一致し、全ての非空区間を覆う必要があります。未完了のライブ run は組み立て結果の先頭部分であれば読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーで、読取で Jev を再実行しません。
+`EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非 active run や未知イベントの payload は解釈せず、active run の必要フィールド欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。発話文判定イベントは reader、再試行分析（`DecisionRetryAnalyzer`）、ライブ再利用、保存済み一覧が共通 decoder で検証します。保存済み境界判定から発話文を再組み立てし、保存結果と比較します。完了 run は全ての非空区間を覆い、組み立て結果と完全一致しなければなりません。未完了のライブ run は組み立て結果の先頭部分であれば読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーです。読み取り・検証で Jev または local provider を再実行しません。
 
-`EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、節イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [JevRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/JevRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した節 decoder を持ちません。
+`EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、発話文イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [DecisionRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した発話文 decoder を持ちません。
 
 `TranscriptMaterializer` が公開 run の区間・ASR・話者・節の境界・優先度を適用します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
 

@@ -18,7 +18,7 @@ extension ClauseEventLog {
         }
     }
 
-    /// The published snapshot: both Jev runs complete over exactly the active ASR sources.
+    /// The published snapshot: both decision runs complete over exactly the active ASR sources.
     func publishedRuns(_ activeRuns: ActiveRuns) throws -> (boundary: BoundaryRun, priority: PriorityRun)? {
         try validateLocalRuns(activeRuns)
         guard let boundaryRunID = activeRuns.clauseBoundary else {

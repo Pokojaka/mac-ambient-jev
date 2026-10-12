@@ -4,7 +4,7 @@ import Foundation
 /// from the session's source audio.
 public enum RecoverableProcessingAction: Sendable, Equatable {
     case finalize
-    /// Requests again the pending Jev results of the published snapshot.
+    /// Requests again the pending decision results of the published snapshot.
     case retryContentPriority(boundarySegments: [SegmentTextReference], clauses: [ClauseReference])
 }
 
@@ -175,8 +175,8 @@ public struct SessionRecoveryScanner: Sendable {
                 throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
             }
             let lines = recovered.lines
-            let targets = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
-            let unpublished = try JevRetryAnalyzer().hasUnpublishedJevRun(lines: lines, activeRuns: activeRuns)
+            let targets = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+            let unpublished = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
             guard !targets.boundarySegments.isEmpty || !targets.clauses.isEmpty || unpublished else { return nil }
             action = .retryContentPriority(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
         }

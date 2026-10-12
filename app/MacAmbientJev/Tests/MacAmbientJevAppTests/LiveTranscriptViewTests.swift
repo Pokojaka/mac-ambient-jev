@@ -47,7 +47,7 @@ func rowTopSpacingSeparatesSpeakerTurnsAndKeepsContinuationsClose() {
 
 @MainActor
 @Test
-func waitingAndPendingRowsDescribeTheirJevStateWithoutHidingText() throws {
+func waitingAndPendingRowsDescribeTheirDecisionStateWithoutHidingText() throws {
     let row = try LiveTranscriptRow(
         segment: .fixture(
             segmentID: "waiting", startMilliseconds: 0, endMilliseconds: 1_000, text: "えー、続く",
@@ -55,6 +55,11 @@ func waitingAndPendingRowsDescribeTheirJevStateWithoutHidingText() throws {
         ),
         displaySpeakerLabels: []
     )
+    #expect(LiveTranscriptView.awaitingNextSegmentTitle == "発話文の続き待ち")
+    #expect(LiveTranscriptView.clauseStateDescription(.awaitingNextSegment) == "発話文: 続き待ち")
+    #expect(LiveTranscriptView.clauseStateDescription(.boundaryPending) == "発話文: 境界判定を保留中")
+    #expect(LiveTranscriptView.clauseStateDescription(.priorityPending) == "発話文: 優先度判定を待っています")
+    #expect(LiveTranscriptView.clauseStateDescription(.classified) == "発話文: 判定済み")
     #expect(row.text == "続く")
     #expect(row.textFragments == [TranscriptTextFragment(text: "続く", style: .normal)])
     #expect(!row.shouldCollapseRow)

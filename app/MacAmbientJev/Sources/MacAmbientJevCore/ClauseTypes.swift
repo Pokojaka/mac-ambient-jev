@@ -3,7 +3,7 @@ import Foundation
 public enum ClauseValidationError: LocalizedError, Sendable {
     case invalidReference, invalidCandidate, invalidNextHead, invalidProbability, invalidMetadata, invalidTargets
 
-    public var errorDescription: String? { "Jev 判定データが不正です" }
+    public var errorDescription: String? { "発話文判定データが不正です" }
 }
 
 private func isNonblank(_ value: String) -> Bool {
@@ -61,12 +61,22 @@ public struct ClauseBoundaryCandidate: Codable, Sendable, Equatable {
         self.offsetUTF16 = offsetUTF16
     }
     public static func candidates(in text: String) throws -> [Self] {
+        let punctuation = "、。？！?!"
+        let utf16Length: (Character) -> Int = { character in
+            character.unicodeScalars.reduce(0) { $0 + ($1.value > 0xFFFF ? 2 : 1) }
+        }
+        let end = text.utf16.count
+        var trailingRunStart = end
+        for character in text.reversed() {
+            guard punctuation.contains(character) else { break }
+            trailingRunStart -= utf16Length(character)
+        }
+
         var result: [Self] = []
         var offset = 0
-        let end = text.utf16.count
         for character in text {
-            offset += character.unicodeScalars.reduce(0) { $0 + ($1.value > 0xFFFF ? 2 : 1) }
-            if "、。？！?!".contains(character), offset < end {
+            offset += utf16Length(character)
+            if punctuation.contains(character), offset < end, offset <= trailingRunStart {
                 result.append(try Self(id: String(format: "b%04d", result.count + 1), offsetUTF16: offset))
             }
         }
@@ -124,28 +134,99 @@ public struct ClauseBoundaryRequest: Sendable, Equatable {
     }
 }
 
-public struct JevResponseMetadata: Codable, Sendable, Equatable {
+public struct DecisionModelIdentity: Sendable, Equatable {
+    public let provider: DecisionEngineChoice
     public let model: String
+    public let modelRevision: String
+
+    public init(provider: DecisionEngineChoice, model: String, modelRevision: String) throws {
+        guard isNonblank(model), isNonblank(modelRevision) else {
+            throw ClauseValidationError.invalidMetadata
+        }
+        switch provider {
+        case .jev:
+            guard modelRevision == model else { throw ClauseValidationError.invalidMetadata }
+        case .localModel:
+            let revisionBytes = modelRevision.utf8
+            guard revisionBytes.count == 64,
+                  revisionBytes.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw ClauseValidationError.invalidMetadata
+            }
+        }
+        self.provider = provider
+        self.model = model
+        self.modelRevision = modelRevision
+    }
+
+    public static let jev = try! DecisionModelIdentity(
+        provider: .jev, model: JevClient.model, modelRevision: JevClient.model
+    )
+}
+
+public struct DecisionResponseMetadata: Codable, Sendable, Equatable {
+    public let identity: DecisionModelIdentity
+    public var provider: DecisionEngineChoice { identity.provider }
+    public var model: String { identity.model }
+    public var modelRevision: String { identity.modelRevision }
     public let inputTokens: Int?
     public let outputTokens: Int?
-    public init(model: String, inputTokens: Int?, outputTokens: Int?) throws {
-        guard isNonblank(model), inputTokens.map({ $0 >= 0 }) ?? true, outputTokens.map({ $0 >= 0 }) ?? true else { throw ClauseValidationError.invalidMetadata }
-        self.model = model
+
+    public init(identity: DecisionModelIdentity, inputTokens: Int?, outputTokens: Int?) throws {
+        guard inputTokens.map({ $0 >= 0 }) ?? true,
+              outputTokens.map({ $0 >= 0 }) ?? true,
+              identity.provider != .localModel || (inputTokens != nil && outputTokens == 0) else {
+            throw ClauseValidationError.invalidMetadata
+        }
+        self.identity = identity
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
     }
-    enum CodingKeys: String, CodingKey { case model, inputTokens = "input_tokens", outputTokens = "output_tokens" }
+
+    public init(model: String, inputTokens: Int?, outputTokens: Int?) throws {
+        try self.init(
+            identity: DecisionModelIdentity(provider: .jev, model: model, modelRevision: model),
+            inputTokens: inputTokens,
+            outputTokens: outputTokens
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case model
+        case modelRevision = "model_revision"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        try self.init(model: c.decode(String.self, forKey: .model), inputTokens: c.decodeIfPresent(Int.self, forKey: .inputTokens), outputTokens: c.decodeIfPresent(Int.self, forKey: .outputTokens))
+        let identity = try DecisionModelIdentity(
+            provider: c.decode(DecisionEngineChoice.self, forKey: .provider),
+            model: c.decode(String.self, forKey: .model),
+            modelRevision: c.decode(String.self, forKey: .modelRevision)
+        )
+        try self.init(
+            identity: identity,
+            inputTokens: c.decodeIfPresent(Int.self, forKey: .inputTokens),
+            outputTokens: c.decodeIfPresent(Int.self, forKey: .outputTokens)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(provider, forKey: .provider)
+        try c.encode(model, forKey: .model)
+        try c.encode(modelRevision, forKey: .modelRevision)
+        try c.encodeIfPresent(inputTokens, forKey: .inputTokens)
+        try c.encodeIfPresent(outputTokens, forKey: .outputTokens)
     }
 }
 
 public struct ClauseBoundaryResponse: Sendable, Equatable {
     public let probabilities: [String: Double]
     public let continuationProbability: Double?
-    public let metadata: JevResponseMetadata
-    public init(probabilities: [String: Double], continuationProbability: Double?, metadata: JevResponseMetadata) {
+    public let metadata: DecisionResponseMetadata
+    public init(probabilities: [String: Double], continuationProbability: Double?, metadata: DecisionResponseMetadata) {
         self.probabilities = probabilities
         self.continuationProbability = continuationProbability
         self.metadata = metadata
@@ -188,8 +269,8 @@ public struct ContentPriorityDecision: Codable, Sendable, Equatable {
 
 public struct PriorityBatchResponse: Sendable, Equatable {
     public let decisions: [String: ContentPriorityDecision]
-    public let metadata: JevResponseMetadata
-    public init(decisions: [String: ContentPriorityDecision], metadata: JevResponseMetadata) { self.decisions = decisions; self.metadata = metadata }
+    public let metadata: DecisionResponseMetadata
+    public init(decisions: [String: ContentPriorityDecision], metadata: DecisionResponseMetadata) { self.decisions = decisions; self.metadata = metadata }
 }
 
 public protocol DecisionProvider: Sendable {
@@ -205,4 +286,4 @@ public enum ClauseBoundaryPolicy {
     public static func acceptsContinuation(_ probability: Double) -> Bool { probability > continuationThreshold }
 }
 
-public enum JevPriorityBatchPolicy { public static let maximumTargets = 40 }
+public enum PriorityBatchPolicy { public static let maximumTargets = 40 }

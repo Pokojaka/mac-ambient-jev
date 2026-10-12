@@ -418,7 +418,7 @@ struct ProcessRecordingCommand {
         guard !recovered.droppedIncompleteTail else {
             throw ProcessRecordingError.processingFailed("イベントログの末尾が不完全です")
         }
-        _ = try JevRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
         let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
         let segments = try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate).materialize(
             events: events, activeRuns: runs

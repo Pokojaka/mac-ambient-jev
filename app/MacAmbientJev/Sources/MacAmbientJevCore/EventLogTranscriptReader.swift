@@ -7,7 +7,7 @@ public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
     case malformedEvent(eventSeq: UInt64, eventType: String)
     /// An `asr.completed` event whose `outcome` contradicts its `text`.
     case asrOutcomeMismatch(eventSeq: UInt64)
-    /// Jev clause events that do not match the ASR text, the boundary results, or each other.
+    /// Clause events that do not match the ASR text, the boundary results, or each other.
     case inconsistentClauseRun(runID: String, reason: String)
 
     public var errorDescription: String? {
@@ -19,7 +19,7 @@ public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
         case .asrOutcomeMismatch(let eventSeq):
             "イベントログの asr.completed（event_seq \(eventSeq)）の outcome が本文と一致しません"
         case .inconsistentClauseRun(let runID, let reason):
-            "イベントログの Jev 判定（run \(runID)）が整合しません: \(reason)"
+            "イベントログの判定（run \(runID)）が整合しません: \(reason)"
         }
     }
 }

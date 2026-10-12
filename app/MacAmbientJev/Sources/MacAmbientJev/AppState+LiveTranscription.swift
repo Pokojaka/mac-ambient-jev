@@ -203,11 +203,10 @@ extension AppState {
                     guard let self,
                           self.recordingSessionID == sessionID,
                           self.recordingPhase == .recording else { return }
-                    if text.hasPrefix(UserFacingStatus.jevAuthorizationRequired.text)
-                        || text.hasPrefix(UserFacingStatus.jevDeferred.text)
-                        || text.hasPrefix("意味分類")
-                        || text.hasPrefix("Jev の判定を保存できませんでした")
-                        || text.hasPrefix("ライブの Jev 判定に失敗しました") {
+                    if text.hasPrefix(UserFacingStatus.decisionAuthorizationRequired.text)
+                        || text.hasPrefix(UserFacingStatus.decisionDeferred.text)
+                        || text.hasPrefix("発話文の判定を保存できませんでした")
+                        || text.hasPrefix("ライブの発話文判定に失敗しました") {
                         self.liveContentPriorityStatus[sessionID] = text
                     }
                     let visibleStatus = self.liveContentPriorityStatus[sessionID] ?? text

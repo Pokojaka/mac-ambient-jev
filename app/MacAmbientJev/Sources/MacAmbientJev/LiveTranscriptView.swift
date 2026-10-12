@@ -174,14 +174,14 @@ struct LiveTranscriptView: View {
         .accessibilityElement(children: .contain)
     }
 
-    static let awaitingNextSegmentTitle = "節の続き待ち"
+    static let awaitingNextSegmentTitle = "発話文の続き待ち"
 
     static func clauseStateDescription(_ state: TranscriptClauseState) -> String {
         switch state {
-        case .awaitingNextSegment: "Jev: 節の続き待ち"
-        case .boundaryPending: "Jev: 境界判定を保留中"
-        case .priorityPending: "Jev: 優先度判定を待っています"
-        case .classified: "Jev: 判定済み"
+        case .awaitingNextSegment: "発話文: 続き待ち"
+        case .boundaryPending: "発話文: 境界判定を保留中"
+        case .priorityPending: "発話文: 優先度判定を待っています"
+        case .classified: "発話文: 判定済み"
         }
     }
 

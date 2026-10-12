@@ -1,6 +1,6 @@
 # 確定処理・復旧・再処理
 
-録音停止後、ライブ処理が継続できなかった録音、音声ファイルの読み込み、保存済みセッションの再処理、クラッシュ復旧、CLI の再開は、共通の確定パイプラインを使います。ライブ文字起こしは暫定結果であり、確定本文や区間、節の境界の入力にはしません。Jev の優先度だけは、確定の節本文と完全一致する保存済みライブ判定を再利用できます。
+録音停止後、ライブ処理が継続できなかった録音、音声ファイルの読み込み、保存済みセッションの再処理、クラッシュ復旧、CLI の再開は、共通の確定パイプラインを使います。ライブ文字起こしは暫定結果であり、確定本文や区間、発話文境界の入力にはしません。確定優先度は、確定発話文のフィラー除去後本文と UTF-8 bytes が完全一致する保存済みライブ判定を、provider にかかわらず再利用できます。
 
 ## 共通パイプライン
 
@@ -10,12 +10,14 @@
   → 録音全体のオフライン話者分離
   → VAD 区間の話者 turn 分割
   → 区間ごとの Qwen3-ASR
-  → ローカル必須段階の結果と全区間の境界保留を一括公開
-  → アプリで利用可能なら Jev の境界判定（一区間一送信）
-  → 節の組み立て
-  → Jev の優先度判定（閉じた節を 40 節ずつ）
+  → 必須ローカル3段階の結果と全区間の境界保留を一括公開
+  → 選択 provider による境界判定（任意。Jev API またはローカル Core ML）
+  → BTSJ 発話文の組み立て
+  → 選択 provider による優先度判定（任意。閉じた発話文を最大 40 件ずつ）
   → 境界判定 run・優先度 run・両保留を一括公開
 ```
+
+境界・優先度の判定単位は両 provider とも BTSJ 発話文です。保存 key や内部名の `clause` / `節` はその発話文を識別し、別の節 splitter を意味しません。必須ローカル処理は segmentation・diarization・ASR の3段階だけです。Core ML 判定は選択された場合の任意推論であり、必須3段階を増やしません。
 
 音声は `storage.json` を確定処理の開始時に読んで決めます。`recordingPCM` は processing ディレクトリの PCM、`recordingFLAC` は `recording.flac` を全復号して検証した読み取り元として使います。FLAC 状態の録音では PCM が残っていても読みません。保存済みの音声がなければ「保存済みの音声がありません」で開始に失敗します。読み込み音声はアプリ内に保存した original から処理タイムラインを作るため、外部の読み込み元ファイルが残っている必要はありません。
 
@@ -29,28 +31,35 @@ FluidAudio の話者時刻はゼロ padding を含むモデル window の grid �
 
 VAD、ASR、話者分離には新しい run ID を付け、各段階の `processing.run.started` に、その実行の engine、model、version、configuration を保存します。以前の run の来歴を新しい実行へ引き継ぎません。
 
-検証済み VAD 結果が 0 区間なら、話者分離用の音声を書き出さず、話者分離と ASR のモデル準備・推論、Jev の判定を実行しません。保留も空です。3 段階すべてに provenance を持つ開始と `succeeded: true`、`completed_count: 0`、`failed_count: 0` の完了を保存し、同じ公開前検証を通して空の確定文字起こしを `complete` として公開します。これは処理対象がないことの完了であり、推論した話者 span を作りません。ASR 計測値はすべて 0、終端表示は「発話区間は検出されませんでした」です。保存音声は変更しません。
+検証済み VAD 結果が 0 区間なら、話者分離用の音声を書き出さず、話者分離と ASR のモデル準備・推論、Jev 判定 request、ローカル Core ML tagger の呼出し・ロードを実行しません。保留も空です。3 段階すべてに provenance を持つ開始と `succeeded: true`、`completed_count: 0`、`failed_count: 0` の完了を保存し、同じ公開前検証を通して空の確定文字起こしを `complete` として公開します。これは処理対象がないことの完了であり、推論した話者 span を作りません。ASR 計測値はすべて 0、終端表示は「発話区間は検出されませんでした」です。保存音声は変更しません。
 
 VAD の失敗・不正な区間、発話がある場合の話者分離・ASR の失敗を空の成功結果へ変換しません。これらは `failed` として以前の公開結果を保持します。空の成功結果は自動復旧の対象ではなく、明示的な再処理では新しい 3 段階の run で同じ空の結果を公開します。
 
-録音停止では、ライブ ASR の残りを処理した後にライブ Jev キューへテキスト列の終端を伝えます。確定処理は開始時にイベントログを読んで保存済みのライブ classified 判定を固定し、その後でライブ Jev キューを取り消します。キューの通信完了は待たず、固定より後に保存された応答も使いません。確定の境界判定は全ての確定区間について一区間一送信で行い（最後の区間は次区間なし）、ライブの境界判定は確定区間へ移しません。組み立てた確定の節のうち、フィラー除去後の連結本文がライブの節本文と UTF-8 byte 列で完全一致する節は Jev へ再送せず優先度を引き継ぎ、元の優先度 run・イベント・節参照を保存します。残りの節を原文順に 40 節ずつ分類し、応答全体を検証してから batch ごとに一イベントで保存します。境界判定が成立しなかった確定区間にはライブの節を持ち込みません。ライブ判定の読取失敗や保存破損は明確なエラーとして表示し、空の再利用で全量を再分類しません。その場合も成功したローカル結果の公開は取り消しません。[Jev](jev.md)
+録音停止では、ライブ ASR の残りを処理した後に選択 provider のキューへテキスト列の終端を伝えます。確定処理は開始時にイベントログから保存済みのライブ classified 結果だけを固定して、直ちにキューを取り消します。ネットワーク request もローカル推論も待たず、固定後に到着・保存された応答は確定処理の表示や再利用に使いません。確定の全区間について選択 provider で境界を判定し、ライブ境界判定自体は確定区間へ移しません。確定発話文のフィラー除去後の連結本文がライブ発話文本文と UTF-8 byte 列で完全一致する場合だけ、優先度を carry-over し、元の優先度 run・イベント・発話文参照と実際の origin request metadata を保ちます。再利用判定を現在選択中のモデルが生成したかのように書き換えません。残りの発話文を原文順に最大 40 件ずつ選択 provider へ分類し、応答全体を検証してから batch ごとに一イベントで保存します。確定 run の `processing.run.started` provenance は run 開始時に実際に選択・初期化された coordinator の identity を示し、全対象が carry-over で provider request がない場合も現在選択 identity を維持します。新規成功 request の実 provider/model/revision は各 request record を正とし、carry-over の origin metadata と区別します。境界保留の区間へライブ発話文を持ち込みません。ライブ判定の読取・保存破損は明確なエラーにし、空の再利用で全量再分類しません。その場合も成功したローカル結果の公開は取り消しません。[発話文判定](decision-engine.md)
 
-## ローカル公開と任意の Jev 公開
+## ローカル公開と任意の選択 provider 判定
 
 開始時に `processing_metadata.json` の finalization attempt を `running` にし、公開済みの `active_runs` は保持します。途中で得た話者 span、本文を、それぞれ独立に画面の現在値へ切り替えることはしません。
 
-ローカル必須段階がすべて成功し、保存イベントの run 開始・成功完了、区間 ID・範囲・件数の整合性を確認した後、`active_runs` の組、finalization の `complete`、全ての非空区間の境界保留を同じ atomic write で保存します。その組から生成した確定表示（分割なしの通常行）を一括で渡します。[Jev](jev.md) は任意の後段です。Jev が使える場合は境界判定 run と優先度 run を実行し、両 run の pointer と両保留を一回の atomic write で公開してから表示を更新します。この保存に失敗した場合は未公開の結果を表示せず、直前に公開したローカル結果を保持して保存エラーを表示します。未設定、停止中、通信失敗でも、成功したローカル結果の公開を取り消しません。CLI は Jev を使わず、全区間を境界保留としたローカル結果を公開します。
+必須のローカル segmentation・diarization・ASR がすべて成功し、保存イベントの run 開始・成功完了、区間 ID・範囲・件数の整合性を確認した後、`active_runs`、finalization の `complete`、全ての非空区間の境界保留を同じ atomic write で保存します。その組から生成した確定表示（境界未判定の通常行）を一括で渡します。選択 provider（Jev API またはローカル Core ML）による境界・優先度判定は任意の後段です。利用可能なら両 run の pointer と両保留を一回の atomic write で公開してから表示を更新します。この保存に失敗した場合は未公開の結果を表示せず、直前に公開したローカル結果を保持してエラーを表示します。
 
-ASR の計測 phase は推論完了時に終了します。その後の `postprocessing` phase は保存済み結果の検証、表示の組み立て、metadata の公開と任意の Jev 処理を表し、追加のローカル推論段階ではありません。
+選択 provider が未設定・一時停止・初期化失敗・判定失敗（ローカル符号化エラーや応答検証エラーを含む）の場合は、別 provider に切り替えず判定対象を保留し、成功した必須3段階の公開結果を保持します。Core ML は選択時だけ使い、API key を必要としません。Jev 固有の 401 / 403 は専用の認証状態として報告し、ローカル provider の status にはしません。設定 Picker は録音中・処理中・接続／モデル確認中・再試行中は変更できず、共通停止設定 `decision.isPaused` は両 provider を停止します。provider factory は各要求時に現在の設定を厳密に読み直します。
 
-Jev の未設定・停止・通信失敗は通常の保留として扱います。一方、保存済み判定の破損・再利用参照の不整合・イベント保存失敗・metadata の公開失敗は保留へ変換せず、処理結果を失敗として報告します。ローカル3段階が既に公開されていれば、その表示と境界保留を保持し、処理結果の失敗を成功完了で上書きしません。
+CLI の `ContentPriorityAccess.disabled` は Jev API と Core ML tagger の呼出し・ロードを両方とも無効にします。CLI でも必須ローカル3段階は通常どおり実行し、全区間を境界保留としたローカル transcript を公開します。
+
+`processing.run.started` は、その判定 run で実際に使う選択 coordinator の engine/model/revision を provenance に保存します。区間が終端で質問0のため provider 呼出しがない場合も、利用可能な coordinator があれば選択 provider identity を記録します。`unavailable` は provider が未設定・停止・初期化失敗、または ASR gap などで未初期化のときだけです。各成功 request record の実 provider/model/revision は開始 provenance より優先する権威です。carry-over の優先度は元の run/event/request metadata を保持し、現在選択 provider が生成した結果として偽装しません。
+
+ASR の計測 phase は推論完了時に終了します。その後の `postprocessing` phase は保存済み結果の検証、表示の組み立て、metadata の公開、および**選択時に限る任意の Core ML 推論や Jev 処理**を含みます。これは必須ローカル推論段階ではなく、必須の segmentation・diarization・ASR の3段階は変わりません。
+
+保存済み判定・origin 参照の破損、不整合、イベントログ破損、イベント保存・metadata 公開失敗は保留に変換せず、処理エラーとして報告します。別 provider への fallback も行いません。ローカル3段階が既に公開されていれば、その表示と境界保留を保持し、エラーを成功完了で上書きしません。
 
 | 結果 | 永続状態と表示 |
 | --- | --- |
 | 成功 | `complete` と新しい全 run を公開 |
 | 発熱による中断 | `paused`。公開済み run を保持 |
-| ローカル処理失敗・ローカル公開失敗 | `failed` と理由。公開済み run を保持 |
-| ローカル公開後の Jev 整合性・保存・公開失敗 | 処理結果は失敗。公開済みローカル run・表示・保留 metadata は保持 |
+| 必須ローカル処理失敗・ローカル公開失敗 | `failed` と理由。公開済み run を保持 |
+| 選択 provider の通常の判定失敗 | 対象判定を保留し、公開済みローカル結果を保持 |
+| 判定ログ・イベント保存・metadata 公開失敗 | 処理結果はエラー。公開済みローカル run・表示・保留 metadata は保持 |
 
 失敗・一時停止では、以前の正常な確定結果があればその表示を保持します。初回録音で確定結果がなければ、終了処理が得たライブ暫定結果を保持します。保持できる結果がなければ文字は表示しません。以前の結果自体が読めない場合は、その読取失敗も明示します。失敗状態の保存まで失敗した場合も元の原因と併記します。
 
@@ -77,12 +86,12 @@ CLI は開始時の熱状態が nominal / fair 以外なら開始を拒否しま
 | finalization が `running` / `paused` | `finalize` |
 | finalization 未作成、公開済み run なし、保存音声あり | `finalize` |
 | finalization が `failed` | 自動復旧しない。利用者の再処理待ち |
-| `complete`、公開済み run と Jev の保留（境界判定の区間または優先度の節）あり | `retryContentPriority` |
+| `complete`、公開済み run と選択 provider の保留（境界判定の区間または優先度の発話文）あり | `retryContentPriority` |
 | その他 | 復旧対象なし |
 
 停止前にクラッシュした録音は durable checkpoint の保存範囲を使います。録音・読み込みのどちらも、復旧時の確定処理は VAD、話者分離、ASR の全量を新しい run で実行します。復旧は保存された `asr.pending` の区間に限定しません。
 
-Jev の保留再試行は別の action で、ローカル必須段階をやり直しません。保留一覧をイベントログで検証し、公開済みの snapshot から新しい run を作ります。公開済みより新しい未公開の Jev run がログに残っていても、その部分結果は採用しません。ライブの未完了 run は確定の再試行対象と見なしません。
+保留の再試行は別の action で、ASR・VAD・話者分離を含む必須ローカル3段階を再実行しません。保留一覧をイベントログで検証し、公開済み snapshot から新しい run を作って、その時点で選択中の provider（Jev API またはローカル Core ML）だけを使います。ローカル provider の再試行に API key は不要です。再試行 run の `processing.run.started` は実際に選択・初期化された coordinator identity を記録し、成功 request record は実 provider/model/revision を記録します。公開済みより新しい未公開 run がログに残っていても、その部分結果は採用しません。ライブの未完了 run は確定の再試行対象と見なしません。
 
 読めないセッションは理由付きで報告します。イベントと `processing_metadata.json` は `schema_version: 3` が必須で、version の欠落や未対応の値は明示的な再処理でも拒否します。自動復旧は読めない `processing_metadata.json` を上書きしません。アプリの保存済み一覧で利用者が明示的に「再処理」を選ぶ場合だけ、未対応 version 以外の破損した処理 metadata を置き換えられます。派生結果が「破損」でも対応する保存形式と保存音声が利用可能なら再処理できます。原音声や録音タイムラインまで壊れている場合、metadata を置き換えても音声の問題は解消しません。
 
@@ -100,7 +109,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --resume-session "$SESSION_ID" --sessions-root "$SESSIONS_ROOT" "$SEGMENTS_OUTPUT"
 ```
 
-`--inspect-session` は読み取り専用で、JSON に `action`（`finalize`、`retryContentPriority`、`none`、`unrecoverable`）と `maintenance`（`compactRecording`、`removeTransients`、`null`）を出します。音声欠損は `unrecoverable`、その他の読取不整合はエラーになります。`--resume-session` は先に保存整理（`maintenance`）を実行し、もう一度調べた結果の `action` に従います。`finalize`（録音・読み込み）は再開し、`retryContentPriority` は CLI が Jev を無効にするため Jev を再試行せず、公開済みの結果をそのまま書き出します。通常処理・再開とも `--low-heat` で ASR 区間の間に 2 秒の待機を入れられます。
+`--inspect-session` は読み取り専用で、JSON に `action`（`finalize`、`retryContentPriority`、`none`、`unrecoverable`）と `maintenance`（`compactRecording`、`removeTransients`、`null`）を出します。音声欠損は `unrecoverable`、その他の読取不整合はエラーになります。`--resume-session` は先に保存整理（`maintenance`）を実行し、もう一度調べた結果の `action` に従います。`finalize`（録音・読み込み）は再開します。CLI の `ContentPriorityAccess.disabled` は Jev request と Core ML tagger の双方を無効にし、必須のローカル3段階だけを実行するため、`retryContentPriority` は判定を再試行せず公開済みの結果を書き出します。通常処理・再開とも `--low-heat` で ASR 区間の間に 2 秒の待機を入れられます。
 
 ID は manifest の完全 UUID から実フォルダー URL に解決します。不在・複数一致・フォルダー名の不整合はエラーで、`none` は存在する正常セッションの action がない場合に限ります。resume は実行時に実フォルダーを解決して出力先を検査し、symlink と大文字小文字の違いを考慮してセッション内部への出力を production engine の処理前に拒否します。
 
@@ -139,5 +148,6 @@ VAD 区間を話者 turn と同一視しません。一つの VAD 区間内で�
 
 - [確定パイプライン](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[共通入口・公開・保持](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[ASR の一時停止・失敗・計測](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)
 - [処理 metadata](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[復旧判定](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[アプリの処理キュー](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Processing.swift)、[CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)
+- [選択 provider の provenance・境界／優先度処理・batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionEnrichmentCoordinator.swift)、[provider factory と成功モデル cache](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SelectedDecisionProviderFactory.swift)、[ローカル Core ML provider](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)
 - [読み込み音声のタイムライン準備](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[話者 turn 分割](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerTurnSegmenter.swift)、[話者ラベル](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift)
 - [表示 projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[画面の見出し](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[テキスト書き出し](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)、[構造化 ASR 結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)

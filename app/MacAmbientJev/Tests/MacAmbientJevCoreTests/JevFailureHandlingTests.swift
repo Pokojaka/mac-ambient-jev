@@ -32,7 +32,7 @@ func unavailableHTTPBatchStopsRequestingAndKeepsTextUnsplitAndPending(status: In
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(fiveSegments, root: root, sessionID: sessionID))
     let transport = CountingStatusTransport(status: status, body: "{\"error\":\"unavailable\"}")
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
 
     let result = try await buildAndPublish(
         root: root, sessionID: sessionID,

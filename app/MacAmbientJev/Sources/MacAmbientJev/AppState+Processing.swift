@@ -77,7 +77,7 @@ extension AppState {
         }
     }
 
-    func retryDeferredJev() async {
+    func retryDeferredDecisions() async {
         do {
             let candidates = try SessionRecoveryScanner(
                 sessionsRoot: paths.sessionsRoot
@@ -102,16 +102,16 @@ extension AppState {
 
             if queuedCount == 0 {
                 processingStatusText =
-                    "再試行が必要な Jev 判定はありません"
+                    "再試行が必要な判定はありません"
                 transcriptViewModel.setStatus(
-                    "再試行が必要な Jev 判定はありません"
+                    "再試行が必要な判定はありません"
                 )
             }
         } catch {
             processingStatusText =
-                "保留中の Jev 判定を確認できませんでした: \(error.localizedDescription)"
+                "保留中の判定を確認できませんでした: \(error.localizedDescription)"
             transcriptViewModel.setStatus(
-                "保留中の Jev 判定を確認できませんでした"
+                "保留中の判定を確認できませんでした"
             )
         }
     }
@@ -468,7 +468,7 @@ extension AppState {
         processingState = .partialFailure(message)
     }
 
-    /// Jev retries reuse the timeline the published runs were computed against.
+    /// Decision retries reuse the timeline the published runs were computed against.
     func contentPriorityRetry(
         for candidate: RecoverableSession,
         boundarySegments: [SegmentTextReference],

@@ -85,7 +85,7 @@ public enum LiveASRSessionError: LocalizedError {
     case foreignClauseEvent
 
     public var errorDescription: String? {
-        "ライブ文字起こしと別の Jev 判定を表示しようとしました"
+        "ライブ文字起こしと別の判定を表示しようとしました"
     }
 }
 
@@ -310,8 +310,8 @@ public actor LiveASRSession {
         )
     }
 
-    /// Merges durable Jev clause events of this session's live runs without discarding ASR
-    /// rows recognized while Jev was working.
+    /// Merges durable clause-decision events of this session's live runs without discarding ASR
+    /// rows recognized while clause classification was in progress.
     @discardableResult
     public func applyClauseEvents(_ events: [TranscriptEvent]) throws -> LiveASRSnapshot {
         for event in events {

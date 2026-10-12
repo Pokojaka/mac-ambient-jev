@@ -182,17 +182,17 @@ func metadataRejectsInvalidAtomicSnapshotAndLeavesPublishedBytesIntact(kind: Str
             try SegmentTextReference(segmentationRunID: "seg", segmentID: "s", asrRunID: "other", asrEventSeq: 2)
         ]
     case "wrongBoundary":
-        invalid.activeRuns = active.withJevRuns(clauseBoundary: "boundary", contentPriority: "priority")
+        invalid.activeRuns = active.withDecisionRuns(clauseBoundary: "boundary", contentPriority: "priority")
         invalid.pendingContentPriorityClauses = [try ClauseReference(boundaryRunID: "other", clauseID: "c2_0")]
     default:
-        invalid.activeRuns = active.withJevRuns(clauseBoundary: nil, contentPriority: "priority")
+        invalid.activeRuns = active.withDecisionRuns(clauseBoundary: nil, contentPriority: "priority")
     }
     #expect(throws: ProcessingMetadataStoreError.self) { try store.save(invalid) }
     #expect(try Data(contentsOf: store.url) == original)
 }
 
 @Test
-func staleJevPublicationCannotOverwriteNewLocalRunsOrPendingSources() throws {
+func staleDecisionPublicationCannotOverwriteNewLocalRunsOrPendingSources() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -206,7 +206,7 @@ func staleJevPublicationCannotOverwriteNewLocalRunsOrPendingSources() throws {
     ))
     let original = try Data(contentsOf: store.url)
     #expect(throws: ProcessingMetadataStoreError.publishedRunsChanged) {
-        try store.publishJevSnapshot(basedOn: old, clauseBoundaryRunID: "staleBoundary", contentPriorityRunID: "stalePriority",
+        try store.publishDecisionSnapshot(basedOn: old, clauseBoundaryRunID: "staleBoundary", contentPriorityRunID: "stalePriority",
                                      pendingClauseBoundarySegments: [], pendingContentPriorityClauses: [])
     }
     #expect(try Data(contentsOf: store.url) == original)

@@ -51,7 +51,7 @@ struct MacAmbientJevApp: App {
                         Label("一般", systemImage: "gearshape")
                     }
 
-                DiagnosticsView(usageCounter: appState.jevUsageCounter)
+                DiagnosticsView(usageCounter: appState.decisionUsageCounter)
                     .tabItem {
                         Label("診断", systemImage: "waveform.path.ecg")
                     }

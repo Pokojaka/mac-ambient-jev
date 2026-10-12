@@ -203,7 +203,7 @@ func failedAndCompletedFinalizationsWaitForTheUser() async throws {
 }
 
 @Test
-func completedFinalizationRetriesOnlyItsPublishedPendingJevResults() async throws {
+func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
@@ -222,7 +222,7 @@ func completedFinalizationRetriesOnlyItsPublishedPendingJevResults() async throw
     // An interrupted retry run that was never published is ignored.
     _ = try await SessionWriter(sessionURL: url).append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "priority_unpublished",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "retry"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry"))
     ))
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
@@ -435,15 +435,15 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     let writer = try SessionWriter(sessionURL: url)
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "unfinished_live",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "live"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live"))
     ))
-    #expect(try !JevRetryAnalyzer().hasUnpublishedJevRun(lines: eventLines(url), activeRuns: active))
+    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "unpublished_retry",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "retry"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry"))
     ))
-    #expect(try JevRetryAnalyzer().hasUnpublishedJevRun(lines: eventLines(url), activeRuns: active))
+    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
         == .retryContentPriority(boundarySegments: [], clauses: []))
     _ = try await buildAndPublish(
@@ -452,7 +452,7 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
         scope: .retry(boundarySegments: [], clauses: [])
     )
     let replaced = try #require(try ProcessingMetadataStore(sessionURL: url).load()?.activeRuns)
-    #expect(try !JevRetryAnalyzer().hasUnpublishedJevRun(lines: eventLines(url), activeRuns: replaced))
+    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: replaced))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
 }
 

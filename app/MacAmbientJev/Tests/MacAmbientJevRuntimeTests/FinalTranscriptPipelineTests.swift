@@ -491,7 +491,7 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let log = FinalizationCallLog()
-    let jevFactoryCalls = SynchronousCallRecorder()
+    let decisionFactoryCalls = SynchronousCallRecorder()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -506,10 +506,10 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
                 log: log
             )
         ),
-        contentPriority: .jev({
-            jevFactoryCalls.recordCall()
+        contentPriority: .selectedEngine({
+            decisionFactoryCalls.recordCall()
             return nil
-        }, usageCounter: JevUsageCounter())
+        }, usageCounter: DecisionUsageCounter())
     )
 
     let result = try await processFinal(
@@ -518,7 +518,7 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
     )
 
     #expect(result.disposition == .completed)
-    #expect(jevFactoryCalls.count() == 0)
+    #expect(decisionFactoryCalls.count() == 0)
 }
 
 @Test(arguments: [true, false])
@@ -641,7 +641,7 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let asr = PreparationFailingASR()
     let log = FinalizationCallLog()
-    let jevFactoryCalls = SynchronousCallRecorder()
+    let decisionFactoryCalls = SynchronousCallRecorder()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -649,10 +649,10 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
             diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
             finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
         ),
-        contentPriority: .jev({
-            jevFactoryCalls.recordCall()
+        contentPriority: .selectedEngine({
+            decisionFactoryCalls.recordCall()
             return nil
-        }, usageCounter: JevUsageCounter())
+        }, usageCounter: DecisionUsageCounter())
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -664,7 +664,7 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     #expect(result.disposition == .completed)
     #expect(result.noSpeech)
     #expect(await asr.prepareCallCount == 0)
-    #expect(jevFactoryCalls.count() == 0)
+    #expect(decisionFactoryCalls.count() == 0)
     #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
     let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     #expect(metadata?.pendingClauseBoundarySegments == [])
@@ -690,7 +690,7 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
 }
 
 @Test
-func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async throws {
+func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -709,7 +709,7 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
                 log: log
             )
         ),
-        contentPriority: .jev({ nil }, usageCounter: JevUsageCounter())
+        contentPriority: .selectedEngine({ nil }, usageCounter: DecisionUsageCounter())
     )
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
@@ -723,7 +723,7 @@ func deferredJevKeepsFinalizationRunningUntilLocalTranscriptIsVisible() async th
     let observedStates = await states.snapshot()
     #expect(observedStates.contains { $0.texts == ["表示する本文"] && $0.state == .running })
     #expect(observedStates.last?.state == .complete)
-    #expect(await statuses.snapshot().last == UserFacingStatus.jevDeferred.text)
+    #expect(await statuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
     let loadedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     let metadata = try #require(loadedMetadata)
     #expect(metadata.activeRuns?.asr != nil)
@@ -751,7 +751,7 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let log = FinalizationCallLog()
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -769,8 +769,8 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
                 log: log
             )
         ),
-        contentPriority: .jev({
-            JevDecisionCoordinator(provider: RejectedKeyDecisionProvider(), usageCounter: counter)
+        contentPriority: .selectedEngine({
+            DecisionCoordinator(provider: RejectedKeyDecisionProvider(), identity: .jev, usageCounter: counter)
         }, usageCounter: counter)
     )
     let statuses = FinalizationStatusRecorder()
@@ -781,7 +781,7 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     )
 
     #expect(result.disposition == .completed)
-    #expect(await statuses.snapshot().last == UserFacingStatus.jevAuthorizationRequired.text)
+    #expect(await statuses.snapshot().last == UserFacingStatus.decisionAuthorizationRequired.text)
     let pending = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
         .pendingClauseBoundarySegments
     #expect(pending.map(\.segmentID) == ["seg_000001", "seg_000002"])
@@ -794,7 +794,7 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
         onStatus: { await retryStatuses.append($0) },
         onUpdate: { _, _ in }
     )
-    #expect(await retryStatuses.snapshot().last == UserFacingStatus.jevAuthorizationRequired.text)
+    #expect(await retryStatuses.snapshot().last == UserFacingStatus.decisionAuthorizationRequired.text)
 }
 
 @Test
@@ -1093,8 +1093,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let writer = try SessionWriter(sessionURL: sessionURL)
     for (stage, runID, provenance) in [
-        (ProcessingStage.clauseBoundary, "boundary_live_interrupted", JevRunProvenance.boundary(mode: "live")),
-        (.contentPriority, "priority_live_interrupted", JevRunProvenance.priority(mode: "live"))
+        (ProcessingStage.clauseBoundary, "boundary_live_interrupted", DecisionRunProvenance.boundary(mode: "live")),
+        (.contentPriority, "priority_live_interrupted", DecisionRunProvenance.priority(mode: "live"))
     ] {
         try await writer.append(EventDraft(
             eventType: "processing.run.started",
@@ -1133,7 +1133,7 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     #expect(recovered == checkpoint)
 
     let log = FinalizationCallLog()
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -1148,8 +1148,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
                 log: log
             )
         ),
-        contentPriority: .jev({
-            JevDecisionCoordinator(provider: LiveCarryOverProvider(), usageCounter: counter)
+        contentPriority: .selectedEngine({
+            DecisionCoordinator(provider: LiveCarryOverProvider(), identity: .jev, usageCounter: counter)
         }, usageCounter: counter)
     )
     let result = try await processFinal(
@@ -1166,7 +1166,7 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     #expect(runs.clauseBoundary != "boundary_live_interrupted")
     #expect(runs.contentPriority != "priority_live_interrupted")
     #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["復旧した本文"])
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingJevTargets == [])
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingDecisionTargets == [])
     #expect(try scanner.inspect(sessionID: sessionID).recovery == nil)
 }
 
@@ -1319,7 +1319,7 @@ private actor LiveCarryOverProvider: DecisionProvider {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
-            metadata: try JevResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
+            metadata: try DecisionResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
         )
     }
 
@@ -1331,7 +1331,7 @@ private actor LiveCarryOverProvider: DecisionProvider {
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try JevResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
+            metadata: try DecisionResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
         )
     }
 
@@ -1375,8 +1375,8 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     let liveText = "えー、同じ発話。"
     let finalText = changed ? "変更された発話。" : liveText
     let provider = LiveCarryOverProvider()
-    let counter = JevUsageCounter()
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -1392,7 +1392,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
                 log: log
             )
         ),
-        contentPriority: .jev({ decisions }, usageCounter: counter)
+        contentPriority: .selectedEngine({ decisions }, usageCounter: counter)
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate
@@ -1426,7 +1426,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     if !changed {
         #expect(slices.contains { $0.displayRanges.isEmpty && $0.priority == nil && !$0.needsRetry })
     }
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingJevTargets == [])
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingDecisionTargets == [])
     let objects = try eventObjects(sessionURL)
     let assignment = try #require(objects.first {
         $0["event_type"] as? String == "content_priority.assigned"

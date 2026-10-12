@@ -297,7 +297,7 @@ private actor NativeClauseProvider: DecisionProvider {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.95) }),
             continuationProbability: request.next.map { _ in 0.05 },
-            metadata: try JevResponseMetadata(model: "native-fixture", inputTokens: 5, outputTokens: nil)
+            metadata: try DecisionResponseMetadata(model: "native-fixture", inputTokens: 5, outputTokens: nil)
         )
     }
 
@@ -319,7 +319,7 @@ private actor NativeClauseProvider: DecisionProvider {
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try JevResponseMetadata(model: "native-fixture", inputTokens: 7, outputTokens: nil)
+            metadata: try DecisionResponseMetadata(model: "native-fixture", inputTokens: 7, outputTokens: nil)
         )
     }
 
@@ -339,7 +339,7 @@ private actor NativeClauseProvider: DecisionProvider {
     }
 }
 
-private struct NativeJevFixture {
+private struct NativeDecisionFixture {
     let root: URL
     let paths: AppPaths
     let sessionID: UUID
@@ -348,7 +348,7 @@ private struct NativeJevFixture {
     let asr: ScriptedLiveProcessorASR
     let processor: NativeSessionProcessor
 
-    init(texts: [String], factory: @escaping NativeSessionProcessor.JevDecisionCoordinatorFactory, counter: JevUsageCounter) async throws {
+    init(texts: [String], factory: @escaping NativeSessionProcessor.DecisionCoordinatorFactory, counter: DecisionUsageCounter) async throws {
         root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         paths = AppPaths(
             applicationSupportURL: root.appending(path: "support"), cacheURL: root.appending(path: "cache"),
@@ -366,7 +366,7 @@ private struct NativeJevFixture {
         processor = NativeSessionProcessor(
             paths: paths,
             engines: SessionProcessingEngines(asr: asr, diarization: LiveProcessorFinalDiarizer(), finalTranscriptVAD: LiveProcessorFinalVAD()),
-            contentPriority: .jev(factory, usageCounter: counter)
+            contentPriority: .selectedEngine(factory, usageCounter: counter)
         )
     }
 
@@ -381,10 +381,10 @@ private struct NativeJevFixture {
 
 @Test(.timeLimit(.minutes(1)))
 func nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurableAnswers() async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: 2, failedPriorityNumbers: [])
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await NativeJevFixture(
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(
         texts: ["保存済み。", "遅い結果。", "", "保存済み。遅い結果。"], factory: { decisions }, counter: counter
     )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -434,9 +434,9 @@ func nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurabl
 }
 
 @Test(.timeLimit(.minutes(1)))
-func cancellingUnavailableLiveJevClearsItsPendingKeysWithoutAProvider() async throws {
-    let counter = JevUsageCounter()
-    let fixture = try await NativeJevFixture(texts: ["前の本文", "次の本文"], factory: { nil }, counter: counter)
+func cancellingUnavailableLiveDecisionsClearsItsPendingKeysWithoutAProvider() async throws {
+    let counter = DecisionUsageCounter()
+    let fixture = try await NativeDecisionFixture(texts: ["前の本文", "次の本文"], factory: { nil }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = try await fixture.processor.startLiveTranscription(
         sessionID: fixture.sessionID, segmentationRunID: "live", sampleRate: 16_000
@@ -458,11 +458,11 @@ func cancellingUnavailableLiveJevClearsItsPendingKeysWithoutAProvider() async th
 }
 
 @Test(.timeLimit(.minutes(1)))
-func failedAtomicJevPublicationLeavesTheDurableLocalDisplayAndPendingKeys() async throws {
-    let counter = JevUsageCounter()
+func failedAtomicDecisionPublicationLeavesTheDurableLocalDisplayAndPendingKeys() async throws {
+    let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await NativeJevFixture(texts: ["保存する本文。"], factory: { decisions }, counter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["保存する本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let metadataURL = fixture.sessionURL.appending(path: "processing_metadata.json")
     let savedURL = fixture.sessionURL.appending(path: "saved-metadata.json")
@@ -500,7 +500,7 @@ func failedAtomicJevPublicationLeavesTheDurableLocalDisplayAndPendingKeys() asyn
     )
     let retried = try #require(try ProcessingMetadataStore(sessionURL: fixture.sessionURL).load())
     #expect(retried.activeRuns?.clauseBoundary != nil)
-    #expect(retried.pendingJevTargets == [])
+    #expect(retried.pendingDecisionTargets == [])
     #expect(try fixture.rows().first?.clauseSlices.map(\.priority) == [.lowPriority])
     #expect(await fixture.asr.callCount == 1)
     #expect(await counter.snapshot().pendingBoundarySegmentCount == 0)
@@ -508,10 +508,10 @@ func failedAtomicJevPublicationLeavesTheDurableLocalDisplayAndPendingKeys() asyn
 
 @Test(.timeLimit(.minutes(1)))
 func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUntilSuccess() async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1], primaryPriorityNumbers: [2])
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await NativeJevFixture(texts: ["再試行する本文。"], factory: { decisions }, counter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["再試行する本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
@@ -563,7 +563,7 @@ func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUn
     #expect(afterRuns.contentPriority != unpublishedRunID)
     #expect(afterRuns.segmentation == beforeRuns.segmentation)
     #expect(afterRuns.asr == beforeRuns.asr)
-    #expect(after.pendingJevTargets == [])
+    #expect(after.pendingDecisionTargets == [])
     let finalRows = try fixture.rows()
     #expect(finalRows.first?.clauseSlices.map(\.priority) == [.lowPriority])
     #expect(await updates.snapshot() == finalRows)
@@ -594,10 +594,10 @@ func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUn
 
 @Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func nativeRetryRejectsMetadataMismatchOrIncompleteLogBeforeSending(incompleteTail: Bool) async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await NativeJevFixture(texts: ["保留本文。"], factory: { decisions }, counter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["保留本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
@@ -634,15 +634,15 @@ func nativeRetryRejectsMetadataMismatchOrIncompleteLogBeforeSending(incompleteTa
 
 @Test(.timeLimit(.minutes(1)))
 func corruptedDurableLiveDecisionFailsExplicitlyWithoutReplacingThePublishedLocalText() async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await NativeJevFixture(texts: ["ローカル本文。"], factory: { decisions }, counter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["ローカル本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let writer = try SessionWriter(sessionURL: fixture.sessionURL)
     _ = try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: fixture.sessionID, processingRunID: "priority_live_corrupt",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "live"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live"))
     ))
     _ = try await writer.append(EventDraft(
         eventType: ClauseEventType.priorityAssigned, sessionID: fixture.sessionID, processingRunID: "priority_live_corrupt",
@@ -669,10 +669,10 @@ func corruptedDurableLiveDecisionFailsExplicitlyWithoutReplacingThePublishedLoca
 
 @Test(.timeLimit(.minutes(1)))
 func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverUsesUnpublishedAnswers() async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
-    let fixture = try await NativeJevFixture(texts: ["保存済み本文。"], factory: { decisions }, counter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["保存済み本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let result = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
@@ -681,11 +681,11 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     #expect(result.disposition == .completed)
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
     let before = try #require(try store.load())
-    #expect(before.pendingJevTargets == [])
+    #expect(before.pendingDecisionTargets == [])
     let writer = try SessionWriter(sessionURL: fixture.sessionURL)
     _ = try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: fixture.sessionID, processingRunID: "boundary_retry_unpublished",
-        payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: JevRunProvenance.boundary(mode: "retry"))
+        payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: DecisionRunProvenance.boundary(mode: "retry"))
     ))
     // A well-shaped assessment of a nonexistent source must not enter the rebuilt snapshot.
     _ = try await writer.append(EventDraft(
@@ -705,7 +705,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     let after = try #require(try store.load())
     #expect(after.activeRuns?.clauseBoundary != before.activeRuns?.clauseBoundary)
     #expect(after.activeRuns?.contentPriority != before.activeRuns?.contentPriority)
-    #expect(after.pendingJevTargets == [])
+    #expect(after.pendingDecisionTargets == [])
     #expect(try fixture.rows()[0].clauseSlices.map(\.priority) == [.lowPriority])
     #expect(await provider.requests == [["保存済み本文。"]])
     #expect(await counter.snapshot().sendCount == 1)

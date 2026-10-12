@@ -20,8 +20,8 @@ func incrementalAssessment(source: SegmentTextReference, text: String,
         probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, acceptBoundaries ? 0.95 : 0.05) }),
         nextHead: try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))) },
         continuationProbability: next.map { _ in continues ? 0.95 : 0.05 },
-        request: asks ? JevRequestRecord(requestID: "boundary_\(source.asrEventSeq)",
-            metadata: JevResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)) : nil,
+        request: asks ? DecisionRequestRecord(requestID: "boundary_\(source.asrEventSeq)",
+            metadata: DecisionResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)) : nil,
         sourceDecision: asks ? .assessed : .terminalWithoutQuestions)
 }
 
@@ -100,8 +100,8 @@ func incrementalClausesMatchRebuildAcrossContinuationPendingAndStreamEnd() throw
                 payload = try ContentPriorityAssignedPayload(assignments: [
                     ClausePriorityAssignment(reference: unit.reference, priority: .lowPriority, needsRetry: false,
                         decision: .classified(requestID: "priority_1", answerKey: "u0001", response: response))
-                ], request: JevRequestRecord(requestID: "priority_1",
-                    metadata: JevResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)))
+                ], request: DecisionRequestRecord(requestID: "priority_1",
+                    metadata: DecisionResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)))
             } else {
                 payload = try ClausePriorityBatch.pending(references: [unit.reference], reason: .requestFailed, message: "synthetic priority pending")
             }
@@ -235,8 +235,8 @@ func incrementalASRAfterClauseUpdatePreservesClassifiedHistory() throws {
     let payload = try ContentPriorityAssignedPayload(assignments: [
         ClausePriorityAssignment(reference: unit.reference, priority: .lowPriority, needsRetry: false,
             decision: .classified(requestID: "priority_1", answerKey: "u0001", response: response))
-    ], request: JevRequestRecord(requestID: "priority_1",
-        metadata: JevResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)))
+    ], request: DecisionRequestRecord(requestID: "priority_1",
+        metadata: DecisionResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)))
     let batch = [
         TranscriptEvent.clause(seq: 100, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(assessment)),
         .clause(seq: 101, runID: incrementalBoundaryRun, kind: .clauseClosed(unit)),

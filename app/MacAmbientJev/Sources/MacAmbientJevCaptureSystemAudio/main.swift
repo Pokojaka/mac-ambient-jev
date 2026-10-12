@@ -275,7 +275,7 @@ struct CaptureSystemAudioCommand {
         guard !recovered.droppedIncompleteTail else {
             throw CaptureSystemAudioError.transcriptionFailed("Transcript event log has an incomplete tail")
         }
-        _ = try JevRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
         let events = try EventLogTranscriptReader().events(
             lines: recovered.lines, activeRuns: runs
         )

@@ -6,7 +6,7 @@ enum NativeSessionProcessorError: LocalizedError {
     case liveASRSessionNotStarted
     case transcriptNotPublished
     case storedAudioMissing
-    case duplicateJevRetryTarget
+    case duplicateDecisionRetryTarget
 
     var errorDescription: String? {
         switch self {
@@ -16,8 +16,8 @@ enum NativeSessionProcessorError: LocalizedError {
             "確定済みの文字起こし run がありません"
         case .storedAudioMissing:
             "保存済みの音声がありません"
-        case .duplicateJevRetryTarget:
-            "Jev の再試行対象が重複しています"
+        case .duplicateDecisionRetryTarget:
+            "判定の再試行対象が重複しています"
         }
     }
 }
@@ -29,10 +29,10 @@ private enum FinalizationAudio {
     case stored
 }
 
-extension Optional<JevBatchStopReason> {
+extension Optional<DecisionBatchStopReason> {
     /// The status for segments a batch left pending.
     fileprivate var pendingStatus: UserFacingStatus {
-        self == .authorizationRejected ? .jevAuthorizationRequired : .jevDeferred
+        self == .authorizationRejected ? .decisionAuthorizationRequired : .decisionDeferred
     }
 }
 
@@ -119,17 +119,17 @@ public struct SessionProcessingEngines: Sendable {
     }
 }
 
-/// Whether live transcription and finalization send clause boundaries and priorities to Jev.
+/// Whether live transcription and finalization send clause boundaries and priorities to the selected decision engine.
 public enum ContentPriorityAccess: Sendable {
     case disabled
-    /// The factory returns nil when Jev is currently unavailable; results then stay pending.
+    /// The factory returns nil when the selected engine is unavailable; results then stay pending.
     /// The counter is shared so pending targets can be cleared even when no provider exists.
-    case jev(NativeSessionProcessor.JevDecisionCoordinatorFactory, usageCounter: JevUsageCounter)
+    case selectedEngine(NativeSessionProcessor.DecisionCoordinatorFactory, usageCounter: DecisionUsageCounter)
 }
 
 public actor NativeSessionProcessor {
-    public typealias JevDecisionCoordinatorFactory = @Sendable () throws
-        -> JevDecisionCoordinator?
+    public typealias DecisionCoordinatorFactory = @Sendable () throws
+        -> DecisionCoordinator?
     public typealias StatusHandler = @Sendable (_ text: String) async -> Void
     public typealias UpdateHandler = @Sendable (
         _ segments: [MaterializedTranscriptSegment],
@@ -137,8 +137,6 @@ public actor NativeSessionProcessor {
     ) async -> Void
     public typealias PauseCheck = @Sendable () async -> Bool
     public typealias PhaseHandler = @Sendable (RunPhase) async -> Void
-
-    private static let jevAPIKeyAccount = "jev-api-key"
 
     private let sessionsRoot: URL
     private let asr: any ASREngine
@@ -148,7 +146,7 @@ public actor NativeSessionProcessor {
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
     private var liveContentPrioritySessions: [UUID: LiveContentPrioritySession] = [:]
     /// Pending live keys survive a failed/paused takeover until a published replacement clears them.
-    private var retiredLivePendingTargets: [UUID: Set<JevPendingTarget>] = [:]
+    private var retiredLivePendingTargets: [UUID: Set<DecisionPendingTarget>] = [:]
 
     public init(
         paths: AppPaths,
@@ -160,27 +158,6 @@ public actor NativeSessionProcessor {
         self.diarization = engines.diarization
         self.finalTranscriptVAD = engines.finalTranscriptVAD
         self.contentPriority = contentPriority
-    }
-
-    /// Builds Jev from the API key saved in the Keychain, unless the user paused Jev.
-    public static func storedCredentialJevFactory(
-        usageCounter: JevUsageCounter
-    ) -> JevDecisionCoordinatorFactory {
-        {
-            guard !UserDefaults.standard.bool(forKey: "jev.isPaused") else {
-                throw JevAvailabilityError.stopped
-            }
-            guard let apiKey = try KeychainStore().load(
-                account: jevAPIKeyAccount
-            )?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !apiKey.isEmpty else {
-                return nil
-            }
-            return JevDecisionCoordinator(
-                provider: JevClient(apiKey: apiKey, transport: URLSessionJevHTTPTransport(session: .shared)),
-                usageCounter: usageCounter
-            )
-        }
     }
 
     public func prepareASR(
@@ -205,12 +182,12 @@ public actor NativeSessionProcessor {
         let asrRunID = "asr_live_\(UUID().uuidString.lowercased())"
         let sessionLayout = try layout(for: sessionID)
         let writer = try SessionWriter(sessionURL: sessionLayout.sessionURL)
-        let jevRuns: (boundary: String, priority: String)?
-        if case .jev = contentPriority {
+        let decisionRuns: (boundary: String, priority: String)?
+        if case .selectedEngine = contentPriority {
             let suffix = UUID().uuidString.lowercased()
-            jevRuns = ("boundary_live_\(suffix)", "priority_live_\(suffix)")
+            decisionRuns = ("boundary_live_\(suffix)", "priority_live_\(suffix)")
         } else {
-            jevRuns = nil
+            decisionRuns = nil
         }
         let liveSession = LiveASRSession(
             sessionID: sessionID,
@@ -221,15 +198,15 @@ public actor NativeSessionProcessor {
             writer: writer,
             asr: asr,
             sampleRate: sampleRate,
-            clauseBoundaryRunID: jevRuns?.boundary,
-            contentPriorityRunID: jevRuns?.priority
+            clauseBoundaryRunID: decisionRuns?.boundary,
+            contentPriorityRunID: decisionRuns?.priority
         )
         liveASRSessions[sessionID] = liveSession
-        if case .jev(let factory, let usageCounter) = contentPriority, let jevRuns {
+        if case .selectedEngine(let factory, let usageCounter) = contentPriority, let decisionRuns {
             liveContentPrioritySessions[sessionID] = LiveContentPrioritySession(
                 sessionID: sessionID,
-                boundaryRunID: jevRuns.boundary,
-                priorityRunID: jevRuns.priority,
+                boundaryRunID: decisionRuns.boundary,
+                priorityRunID: decisionRuns.priority,
                 writer: writer,
                 liveASR: liveSession,
                 makeDecisions: factory,
@@ -288,7 +265,7 @@ public actor NativeSessionProcessor {
         return progress
     }
 
-    /// Shows the saved row at once as normal text, then hands the segment to the Jev queue,
+    /// Shows the saved row at once as normal text, then hands the segment to the decision queue,
     /// which never holds back ASR or later rows.
     private func publishLiveSegment(
         sessionID: UUID,
@@ -319,7 +296,7 @@ public actor NativeSessionProcessor {
             }
         } catch {
             await enrichment.stop()
-            let message = "ライブの Jev 判定に失敗しました: \(error.localizedDescription)"
+            let message = "ライブの発話文判定に失敗しました: \(error.localizedDescription)"
             await onStatus?(message)
             await onUpdate?(snapshot.progress.materializedSegments, .partialFailure(message))
         }
@@ -336,9 +313,9 @@ public actor NativeSessionProcessor {
         await onUpdate(snapshot.progress.materializedSegments, .running)
     }
 
-    /// Cancels live Jev work. Results already saved stay durable; later responses are dropped.
+    /// Cancels live decision work. Results already saved stay durable; later responses are dropped.
     /// Returns the pending targets the live session recorded.
-    private func stopLiveContentPriority(sessionID: UUID) async -> Set<JevPendingTarget> {
+    private func stopLiveContentPriority(sessionID: UUID) async -> Set<DecisionPendingTarget> {
         if let enrichment = liveContentPrioritySessions.removeValue(forKey: sessionID) {
             await enrichment.stop()
             let pending = await enrichment.pendingTargets()
@@ -350,7 +327,7 @@ public actor NativeSessionProcessor {
     public func cancelLiveTranscription(sessionID: UUID) async {
         liveASRSessions[sessionID] = nil
         let pending = await stopLiveContentPriority(sessionID: sessionID)
-        if case .jev(_, let usageCounter) = contentPriority {
+        if case .selectedEngine(_, let usageCounter) = contentPriority {
             await usageCounter.clearDeferred(sessionID: sessionID, targets: pending)
         }
         retiredLivePendingTargets[sessionID] = nil
@@ -394,7 +371,7 @@ public actor NativeSessionProcessor {
                 do {
                     try await enrichment.finishInput(snapshot: await liveSession.snapshot())
                 } catch {
-                    await onStatus("ライブの Jev 判定を終了できませんでした: \(error.localizedDescription)")
+                    await onStatus("ライブの発話文判定を終了できませんでした: \(error.localizedDescription)")
                 }
             }
             liveASRSessions[sessionID] = nil
@@ -457,7 +434,7 @@ public actor NativeSessionProcessor {
         return reader
     }
 
-    /// Requests the pending Jev results of the published snapshot again and publishes the new
+    /// Requests the pending decision results of the published snapshot again and publishes the new
     /// snapshot in one metadata write. ASR and audio are not processed again.
     public func retryContentPrioritySession(
         sessionID: UUID,
@@ -470,7 +447,7 @@ public actor NativeSessionProcessor {
         do {
             guard Set(boundarySegments).count == boundarySegments.count,
                   Set(clauses).count == clauses.count else {
-                throw NativeSessionProcessorError.duplicateJevRetryTarget
+                throw NativeSessionProcessorError.duplicateDecisionRetryTarget
             }
 
             let sessionLayout = try layout(for: sessionID)
@@ -479,42 +456,42 @@ public actor NativeSessionProcessor {
                 throw NativeSessionProcessorError.transcriptNotPublished
             }
             let lines = try loadTranscriptLines(sessionLayout: sessionLayout)
-            _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+            _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
             let events = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
             let materializer = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
-            let rebuildSnapshot = try JevRetryAnalyzer().hasUnpublishedJevRun(lines: lines, activeRuns: activeRuns)
+            let rebuildSnapshot = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
             guard !boundarySegments.isEmpty || !clauses.isEmpty || rebuildSnapshot else { return }
-            guard case .jev(let factory, let usageCounter) = contentPriority else {
-                await onStatus(UserFacingStatus.jevDeferred.text)
+            guard case .selectedEngine(let factory, let usageCounter) = contentPriority else {
+                await onStatus(UserFacingStatus.decisionDeferred.text)
                 return
             }
-            let decisions: JevDecisionCoordinator
+            let decisions: DecisionCoordinator
             do {
                 guard let available = try factory() else {
-                    await onStatus(UserFacingStatus.jevDeferred.text)
+                    await onStatus(UserFacingStatus.decisionDeferred.text)
                     return
                 }
                 decisions = available
-            } catch JevAvailabilityError.stopped {
-                await onStatus("\(UserFacingStatus.jevDeferred.text)。\(JevPendingMessage.stopped)")
+            } catch DecisionAvailabilityError.stopped {
+                await onStatus("\(UserFacingStatus.decisionDeferred.text)。\(DecisionPendingMessage.stopped)")
                 return
             } catch {
-                await onStatus("Jev を初期化できませんでした: \(error.localizedDescription)")
+                await onStatus("\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)")
                 return
             }
             let publishedSegments = try materializer.materialize(events: events, activeRuns: activeRuns)
             retainedSegments = publishedSegments
-            await onStatus("保留中の Jev 判定を再試行しています（境界 \(boundarySegments.count)区間・優先度 \(clauses.count)節）")
+            await onStatus("保留中の判定を再試行しています（境界 \(boundarySegments.count)区間・優先度 \(clauses.count)節）")
             await onUpdate(publishedSegments, .running)
             let suffix = UUID().uuidString.lowercased()
-            let scope = JevEnrichmentScope.retry(boundarySegments: Set(boundarySegments), clauses: Set(clauses))
+            let scope = DecisionEnrichmentScope.retry(boundarySegments: Set(boundarySegments), clauses: Set(clauses))
             let boundaryRunID: String
             if boundarySegments.isEmpty, !rebuildSnapshot, let published = activeRuns.clauseBoundary {
                 boundaryRunID = published
             } else {
                 boundaryRunID = "boundary_retry_\(suffix)"
             }
-            let coordinator = JevEnrichmentCoordinator(
+            let coordinator = DecisionEnrichmentCoordinator(
                 sessionID: sessionID,
                 boundaryRunID: boundaryRunID,
                 priorityRunID: "priority_retry_\(suffix)",
@@ -530,23 +507,23 @@ public actor NativeSessionProcessor {
                 reusableDecisions: [:],
                 onEvent: nil
             )
-            try metadataStore.publishJevSnapshot(
+            try metadataStore.publishDecisionSnapshot(
                 basedOn: activeRuns,
                 clauseBoundaryRunID: result.boundaryRunID,
                 contentPriorityRunID: result.priorityRunID,
                 pendingClauseBoundarySegments: result.pendingBoundarySegments,
                 pendingContentPriorityClauses: result.pendingPriorityClauses
             )
-            await coordinator.recordPublished(result, replacing: metadata.pendingJevTargets)
+            await coordinator.recordPublished(result, replacing: metadata.pendingDecisionTargets)
 
             await onUpdate(result.materializedSegments, .complete)
             if result.pendingTargets.isEmpty {
-                await onStatus("保留中の Jev 判定を更新しました")
+                await onStatus("保留中の判定を更新しました")
             } else {
                 await onStatus(result.stopReason.pendingStatus.text)
             }
         } catch {
-            let message = "Jev の判定を再試行できませんでした: \(error.localizedDescription)"
+            let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
             if let retainedSegments {
                 await onUpdate(retainedSegments, .partialFailure(message))
             }
@@ -583,7 +560,7 @@ public actor NativeSessionProcessor {
         // Freeze the durable live decisions first, then cancel the live queue: whatever it saves
         // afterwards is neither reused nor shown. Finalization never waits for live requests.
         let liveDecisions: Result<[ExactClauseTextKey: ReusableClauseDecision], Error>
-        if case .jev = contentPriority {
+        if case .selectedEngine = contentPriority {
             liveDecisions = Result {
                 try EventLogTranscriptReader().liveContentPriorityDecisions(
                     from: try SessionWriter.readDurableLog(eventsURL: sessionLayout.eventsURL)
@@ -718,7 +695,7 @@ public actor NativeSessionProcessor {
         attemptID: String,
         previous: ProcessingMetadata?,
         liveDecisions: Result<[ExactClauseTextKey: ReusableClauseDecision], Error>,
-        livePendingTargets: Set<JevPendingTarget>,
+        livePendingTargets: Set<DecisionPendingTarget>,
         provisional: [MaterializedTranscriptSegment],
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
@@ -813,18 +790,18 @@ public actor NativeSessionProcessor {
                     onUpdate: onUpdate
                 )
             }
-            let localPending = Set(pendingSources.map(JevPendingTarget.boundary))
-            if case .jev(_, let usageCounter) = contentPriority {
+            let localPending = Set(pendingSources.map(DecisionPendingTarget.boundary))
+            if case .selectedEngine(_, let usageCounter) = contentPriority {
                 await usageCounter.clearDeferred(
                     sessionID: sessionID,
-                    targets: livePendingTargets.union(previous?.pendingJevTargets ?? [])
+                    targets: livePendingTargets.union(previous?.pendingDecisionTargets ?? [])
                 )
                 await usageCounter.recordDeferred(sessionID: sessionID, targets: localPending)
             }
             retiredLivePendingTargets[sessionID] = nil
             await onUpdate(final.materializedSegments, .running)
             do {
-                try await publishJevSnapshot(
+                try await publishDecisionSnapshot(
                     final,
                     sessionID: sessionID,
                     sessionLayout: sessionLayout,
@@ -835,7 +812,7 @@ public actor NativeSessionProcessor {
                     onUpdate: onUpdate
                 )
             } catch {
-                let message = "境界判定と意味分類を完了できませんでした: \(error.localizedDescription)"
+                let message = "境界と優先度の判定を完了できませんでした: \(error.localizedDescription)"
                 await onUpdate(final.materializedSegments, .partialFailure(message))
                 await onPhase(.complete)
                 await onStatus(message)
@@ -845,14 +822,14 @@ public actor NativeSessionProcessor {
         }
     }
 
-    /// After the local runs are published, runs the optional Jev stages and publishes their
-    /// snapshot in one metadata write. Without Jev, or when saving fails, the local transcript
+    /// After the local runs are published, runs the optional decision stages and publishes their
+    /// snapshot in one metadata write. Without a selected engine, or when saving fails, the local transcript
     /// stays published with every boundary pending.
-    private func publishJevSnapshot(
+    private func publishDecisionSnapshot(
         _ final: FinalTranscriptPipelineResult,
         sessionID: UUID,
         sessionLayout: SessionLayout,
-        localPending: Set<JevPendingTarget>,
+        localPending: Set<DecisionPendingTarget>,
         liveDecisions: Result<[ExactClauseTextKey: ReusableClauseDecision], Error>,
         onPhase: PhaseHandler,
         onStatus: @escaping StatusHandler,
@@ -868,7 +845,7 @@ public actor NativeSessionProcessor {
             await complete(final.materializedSegments, status: final.completedCount == 0 ? "発話区間は検出されませんでした" : localStatus)
             return
         }
-        guard case .jev(let factory, let usageCounter) = contentPriority else {
+        guard case .selectedEngine(let factory, let usageCounter) = contentPriority else {
             await complete(final.materializedSegments, status: localStatus)
             return
         }
@@ -879,24 +856,24 @@ public actor NativeSessionProcessor {
         case .failure(let error):
             throw error
         }
-        let decisions: JevDecisionCoordinator?
+        let decisions: DecisionCoordinator?
         do {
             decisions = try factory()
-        } catch JevAvailabilityError.stopped {
-            await complete(final.materializedSegments, status: "\(UserFacingStatus.jevDeferred.text)。\(JevPendingMessage.stopped)")
+        } catch DecisionAvailabilityError.stopped {
+            await complete(final.materializedSegments, status: "\(UserFacingStatus.decisionDeferred.text)。\(DecisionPendingMessage.stopped)")
             return
         } catch {
-            await complete(final.materializedSegments, status: "\(UserFacingStatus.jevDeferred.text)。意味分類器を初期化できませんでした: \(error.localizedDescription)")
+            await complete(final.materializedSegments, status: "\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)")
             return
         }
         guard let decisions else {
-            await complete(final.materializedSegments, status: UserFacingStatus.jevDeferred.text)
+            await complete(final.materializedSegments, status: UserFacingStatus.decisionDeferred.text)
             return
         }
 
-        await onStatus(UserFacingStatus.classifyingWithJev.text)
+        await onStatus(UserFacingStatus.classifyingContent.text)
         let suffix = UUID().uuidString.lowercased()
-        let coordinator = JevEnrichmentCoordinator(
+        let coordinator = DecisionEnrichmentCoordinator(
             sessionID: sessionID,
             boundaryRunID: "boundary_\(suffix)",
             priorityRunID: "priority_\(suffix)",
@@ -912,7 +889,7 @@ public actor NativeSessionProcessor {
             reusableDecisions: reusable,
             onEvent: nil
         )
-        try ProcessingMetadataStore(sessionURL: sessionLayout.sessionURL).publishJevSnapshot(
+        try ProcessingMetadataStore(sessionURL: sessionLayout.sessionURL).publishDecisionSnapshot(
             basedOn: final.activeRuns,
             clauseBoundaryRunID: result.boundaryRunID,
             contentPriorityRunID: result.priorityRunID,
@@ -993,7 +970,7 @@ public actor NativeSessionProcessor {
     ) throws -> [TranscriptEvent] {
         let lines = try loadTranscriptLines(sessionLayout: sessionLayout)
         if let metadata {
-            _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+            _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
         }
         return try EventLogTranscriptReader().events(
             lines: lines,

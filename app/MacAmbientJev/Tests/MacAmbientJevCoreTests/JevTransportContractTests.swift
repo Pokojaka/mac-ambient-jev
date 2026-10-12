@@ -162,9 +162,9 @@ func invalidResponseEnvelopeRejectsWholeBatch(_ template: String) async {
 func malformedSecondChoiceRejectsTheFirstValidChoiceAndCountsOneFailedRequest(_ second: String?) async throws {
     let suffix = second.map { ",\"p0002\":\($0)" } ?? ""
     let transport = ContractTransport(json: "{\"model\":\"jev-test\",\"usage\":{\"input_tokens\":7},\"answers\":{\"p0001\":\(validChoice)\(suffix)}}")
-    let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(
-        provider: JevClient(apiKey: "secret", transport: transport), usageCounter: counter
+    let counter = DecisionUsageCounter()
+    let coordinator = DecisionCoordinator(
+        provider: JevClient(apiKey: "secret", transport: transport), identity: .jev, usageCounter: counter
     )
     let outcome = await coordinator.classifyPriorities([
         .init(key: "u0001", text: "先に有効"),
@@ -194,7 +194,7 @@ func sharedCodableTypesAndCandidateCoverageRejectInvalidData() throws {
     #expect(try JSONDecoder().decode(SegmentTextReference.self, from: JSONEncoder().encode(source)) == source)
     #expect(throws: (any Error).self) { try JSONDecoder().decode(SegmentTextReference.self, from: Data(#"{"segmentation_run_id":" ","segment_id":"s","asr_run_id":"a","asr_event_seq":1}"#.utf8)) }
     #expect(throws: (any Error).self) { try JSONDecoder().decode(ClauseBoundaryCandidate.self, from: Data(#"{"id":"b0000","offset_utf16":1}"#.utf8)) }
-    #expect(throws: (any Error).self) { try JSONDecoder().decode(JevResponseMetadata.self, from: Data(#"{"model":"m","input_tokens":-1}"#.utf8)) }
+    #expect(throws: (any Error).self) { try JSONDecoder().decode(DecisionResponseMetadata.self, from: Data(#"{"model":"m","input_tokens":-1}"#.utf8)) }
     #expect(throws: (any Error).self) { try ContentPriorityDecision(priority: .primary, confidence: .nan, probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]) }
     #expect(throws: (any Error).self) { try ContentPriorityDecision(priority: .primary, confidence: 1, probabilities: ["PRIMARY": .infinity, "LOW_PRIORITY": 0]) }
     #expect(throws: (any Error).self) { try NextSegmentHead(source: source, text: String(repeating: "😀", count: 61)) }
@@ -237,8 +237,8 @@ func codableProbabilityAndNextHeadValidationCannotBeBypassed() throws {
     headObject["text"] = String(repeating: "👩🏽‍💻", count: 61)
     let invalidHead = try JSONSerialization.data(withJSONObject: headObject)
     #expect(throws: (any Error).self) { try JSONDecoder().decode(NextSegmentHead.self, from: invalidHead) }
-    #expect(throws: (any Error).self) { try JevResponseMetadata(model: " ", inputTokens: nil, outputTokens: nil) }
-    #expect(throws: (any Error).self) { try JevResponseMetadata(model: "m", inputTokens: nil, outputTokens: -1) }
+    #expect(throws: (any Error).self) { try DecisionResponseMetadata(model: " ", inputTokens: nil, outputTokens: nil) }
+    #expect(throws: (any Error).self) { try DecisionResponseMetadata(model: "m", inputTokens: nil, outputTokens: -1) }
 }
 
 @Test(arguments: [
@@ -310,7 +310,7 @@ func invalidChoiceLeavesDurablePriorityPendingWithoutRetry(_ answer: String) asy
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
     let transport = ContractTransport(json: choiceEnvelope(answer))
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let result = try await buildAndPublish(
         root: root, sessionID: sessionID,
         provider: JevClient(apiKey: "secret", transport: transport), scope: .all, counter: counter
@@ -335,7 +335,7 @@ func nonfiniteOrOutOfRangeNoulFromInjectedProviderStopsTheBatch(_ probability: D
             continuationProbability: nil, metadata: testMetadata
         )
     }, priority: lowForBackchannel)
-    let outcome = await JevDecisionCoordinator(provider: provider, usageCounter: JevUsageCounter()).assessBoundaries(request)
+    let outcome = await DecisionCoordinator(provider: provider, identity: .jev, usageCounter: DecisionUsageCounter()).assessBoundaries(request)
     guard case .failed(stopsBatch: .providerUnavailable, message: _) = outcome else {
         Issue.record("Invalid Noul did not stop the batch")
         return

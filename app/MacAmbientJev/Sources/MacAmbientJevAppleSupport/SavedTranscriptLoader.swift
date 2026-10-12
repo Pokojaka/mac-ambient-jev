@@ -27,7 +27,7 @@ public enum SavedTranscriptLoader {
             throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
         }
         let lines = recovered.lines
-        _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
         let events = try EventLogTranscriptReader().events(
             lines: lines,
             activeRuns: activeRuns

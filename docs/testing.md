@@ -35,7 +35,7 @@ bash scripts/verify_v1.sh
 
 ```bash
 swift build --package-path app/MacAmbientJev
-swift test --package-path app/MacAmbientJev --filter 'JevDecisionTests|JevEnrichmentCoordinatorTests|JevFailureHandlingTests|ClauseAssemblyTests|TranscriptPriorityPresentationTests|LiveContentPriorityGatingTests|LiveJevRecordingTests|FinalTranscriptPipelineTests|nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurableAnswers'
+swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionEnrichmentCoordinatorTests|JevFailureHandlingTests|ClauseAssemblyTests|TranscriptPriorityPresentationTests|LiveContentPriorityGatingTests|LiveDecisionRecordingTests|FinalTranscriptPipelineTests|nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurableAnswers'
 swift test --package-path app/MacAmbientJev --filter JevTransportContractTests
 ```
 
@@ -45,6 +45,28 @@ swift test --package-path app/MacAmbientJev --filter JevTransportContractTests
 
 実行 smoke は一時 harness で実 SessionWriter／NativeSessionProcessor／reader／metadata／export を通します。複数の保存 raw 区間から跨ぎ節と行内別節を作り、混在 Choice、finishInput、確定 ASR の異なる区間配置への byte 完全一致 carry、通信失敗保留、設定と同じ retry API、metadata 再読込、txt 実出力、purpose 別 usage を観測します。Jev.disabled では外部送信0・無分割通常表示・ローカル公開を確認します。raw に残ったフィラーが表示と txt から消えることも確認し、harness は検証後に除去します。この smoke は外部 API の精度・GUI・録音権限を検証しません。
 
+### ローカル発話文モデルの parity
+
+通常の `swift test` では実 Core ML モデルを使う次のテストは skip されますが、encoding、fixture metadata、engine の不正選択、BOM token、tokenizer・package・モデル欠損の検証は毎回実行されます。実モデルテストは macOS 15 以降で CPU only・float32 を使います。リポジトリルートから実行します。
+
+```bash
+RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|SelectedDecisionProviderFactoryTests'
+```
+
+`/absolute/path/to/exported-model` は例示用 placeholder です。学習済み ClauseTagger.mlpackage と tokenizer.json が直下にある実在ディレクトリの絶対パスへ置き換えてください。テストを有効にした状態で環境変数が未設定、相対パス、存在しないパス、またはディレクトリでないパスを指定するとセットアップエラーになります。既定パス、モデルの自動取得、fallback はありません。モデル package と tokenizer は外部テスト artifact として用意し、Git には含めません。
+
+[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/Resources/ClauseTaggerFixtures.json) は SwiftPM の小さな test resource で、13件の入力文、厳密な token ID、boundary・span・priority の参照確率を持ちます。fixture の `model_revision` と `tokenizer_sha256` はテスト対象の学習済み package と tokenizer に一致しなければなりません。新しい学習済み export を作ったら、その export から fixture を再生成します。Swift の誤った tokenization を観測した値に合わせて期待 ID を書き換えてはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
+
+Parity の受け入れ基準は次のとおりです。
+
+- Python の参照出力と Core ML reference MLProgram package を、`input_ids` が int32、shape が `[1,L]` の dynamic sequence 入力で照合します。全整数長 `L=2...192` の通常入力と randomized input について、`boundary_probs`・`span_probs`・`priority_probs` の各 head の最大絶対誤差が `1e-3` 以下であること。mask 対応は長さ 2、64、65、66、128、192 で確認します。これは Python 側が全長を検証する受入基準です。
+- Swift fixture の全13文について、token ID と候補・junction index が完全一致し、三 head の確率誤差が `1e-3` 以下であること。句読点、連続句読点、Unicode、空白、190 token を超える長文の窓分割、continuation を含みます。raw `[CLS, SEP]` の2 token 入力と192 token 入力も検証します。優先度判定では、192 token を超える本文が先頭190 token への切り詰めで判定されること、句読点だけの本文がモデルで判定されることも検証します。Swift fixture は選定した入力群であり、全191長の確認を意味しません。
+- Core ML は macOS 15 以降、CPU only・float32。Tokenizer は swift-transformers Tokenizers `1.3.4` の Unigram semantics を piecewise に使い、`prepend_scheme=never`、`split=false`、UTF-8 byte fallback を正確に実装します。要求と異なる tokenizer config は失敗させます。モデル入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,3]`、`priority_probs` `[1,2]` です。
+
+Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、上記の MLProgram 入出力契約を満たす必要があります。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
+
+[SelectedDecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SelectedDecisionProviderFactoryTests.swift) は選択した local provider が Keychain 読み込み・HTTP 分岐を使わず、provider cache と実 token usage を通り、同時要求が一つのロードを共有しエンジン選択の変更がロードを待たないこと、必須の provider/model/model revision metadata を記録することも検証します。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。
+
 ### 合成イベントによる回帰検証とライブ滞留計測
 
 ```bash
@@ -52,7 +74,7 @@ swift test --package-path app/MacAmbientJev --filter 'catalogRejectsUnreadableEv
 swift test --package-path app/MacAmbientJev --filter measureLiveRegistrationCost
 swift test --package-path app/MacAmbientJev --filter measureLatestCheckpointRetentionDuringThermalStall
 swift test --package-path app/MacAmbientJev --filter 'liveASR|liveRows|liveAuthorization|stoppingRecordingCancels'
-swift test --package-path app/MacAmbientJev --filter 'appRecordingShowsLiveRowsWhileJevWaits|appRecordingShowsJevFactoryFailureReason|liveRowsShowAtOnce|nativeTakeover'
+swift test --package-path app/MacAmbientJev --filter 'appRecordingShowsLiveRowsWhileDecisionsWait|appRecordingShowsDecisionFactoryFailureReason|liveRowsShowAtOnce|nativeTakeover'
 CLAUSE_INCREMENTAL_BENCHMARK=1 swift test --package-path app/MacAmbientJev --filter liveClauseIncrementalBenchmark
 ```
 
@@ -68,7 +90,7 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 [PriorityBatchPersistenceTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift) と [LiveContentPriorityGatingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/LiveContentPriorityGatingTests.swift) は注入 provider と一時イベントログで、81 節の確定・優先度再試行・ライブを検証します。401/429 後の送信停止、残りの保留を 40/40/1 件で保存すること、境界失敗後の既存閉節の保留、batch 間の設定変更、分類器取得中・応答待ち中の取り消しを扱います。保存済み run の完了を待ってイベント・再読込行・保留一覧・利用量を照合し、実 Jev API は呼びません。境界 transport の回帰は emoji・結合文字・CRLF と印の衝突を含む原文で、候補 UTF-16 位置への印挿入と本文保存を確認します。
 
-`appRecordingShowsLiveRowsWhileJevWaits` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、Jev queue、画面用 projection を通します。capture・VAD・ASR・Jev は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsJevFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
+`appRecordingShowsLiveRowsWhileDecisionsWait` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、判定 queue、画面用 projection を通します。capture・VAD・ASR・判定 provider は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsDecisionFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実 Keychain、外部 API、マイク、GUI は使いません。
 
 ライブ ASR drain の完了は、独立して動く Jev キューの完了を保証しません。分類器生成エラーの regression は、2 行の表示と先頭行の `boundaryPending` を同じ 5 秒の期限内で待ちます。この保留行の公開はエラー状態表示の通知後なので、その時点で理由の保持を検証します。待機間隔は 10 ms とし、固定 sleep の延長や失敗後のリトライでは同期しません。
 
@@ -123,7 +145,7 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 実ファイルの受入smokeは一時harnessで `NativeSessionProcessor` → `SessionWriter` → metadata・readerの再読込 → `SavedSessionCatalog` → `SessionExporter` を通す。注入ASRの `えー、週末の設計を確認します。そうですね。` からPRIMARY/LOW混在を作り、rawの保持、除去後本文、LOWを含む実txt出力、全LOW行の畳みを確認する。注入401/429ではpriority保留を通常表示し、priorityだけのtargeted retryで公開boundaryを維持・非対象pendingをcarryする。boundaryの429では無分割行を保持し、boundary retryで両runとpendingを一括公開する。provider応答前の再読込では直前の公開snapshotのままであることを確認する。2つのlive区間から1つのfinal区間への除去後本文完全一致carryはChoiceの再送なしで確認する。event appendとmetadata公開をそれぞれ実ファイルで失敗させ、ローカルのdurable本文・通常表示・3段公開を保持し、未公開の任意段を採用しないことを確認する。注入値は実APIの精度・ネットワーク課金の証拠ではない。harnessと一時セッションは受入後に削除する。
 
-ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した空 ASR・後続本文を保存し、`JevEnrichmentCoordinator` → metadata 公開 → reader/materializer の再読込を通す。前半本文を未解決のまま残し、空 ASR より後の本文だけを一回の Choice で分類し、保存 snapshot と再読込が一致することを確認する。空 ASR の後に新たな gap がある場合に先頭を推測しないことは回帰テストで扱う。
+ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した空 ASR・後続本文を保存し、`DecisionEnrichmentCoordinator` → metadata 公開 → reader/materializer の再読込を通す。前半本文を未解決のまま残し、空 ASR より後の本文だけを一回の Choice で分類し、保存 snapshot と再読込が一致することを確認する。空 ASR の後に新たな gap がある場合に先頭を推測しないことは回帰テストで扱う。
 
 ライブ状態表示の実ファイル smoke は、注入 ASR で2区間を保存し、分類器の生成で資格情報エラーを投げる。`LiveASRSession` と `LiveContentPrioritySession` の実装を通して、ASR 原文と通常表示を維持し、両区間の durable 保留理由と最後の状態表示に同じ失敗原因が残り、境界・優先度の外部送信が0であることを確認する。App の状態への反映は回帰テストで扱い、実 GUI の検証とは分ける。
 
@@ -136,7 +158,7 @@ ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した�
 bundleはREADMEの手順でbuildして `open .build/MacAmbientJev.app` で起動する。プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
 
 - Jev有効化・Keychain読取・録音元・書き出し先、マイク／システム音声の実権限。
-- 14秒超の実ASR原文をイベントで確認し、第一行の「節の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
+- 14秒超の実ASR原文をイベントで確認し、第一行の「発話文の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
 - PRIMARY＋LOWの淡色、全LOWだけの初期畳み、LOW＋待機／保留の非畳み、展開後の全文、選択copy/paste・accessibilityのclean全文とLOW保持、行単位の時刻popover・話者見出し。
 - 録音停止後のASR drain・finishInputとfinal takeover、late応答不採用、実live/final本文が完全一致する場合だけのcarryと送信削減。
 - 未設定／設定停止／不正キー／通信失敗でもローカル公開が続くこと、priority障害で保存済みboundaryを維持すること。

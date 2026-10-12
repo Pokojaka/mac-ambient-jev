@@ -14,9 +14,10 @@ private struct FailingDecisionProvider: DecisionProvider {
 
 @Test
 func networkFailureStopsTheBatchAsProviderUnavailable() async {
-    let coordinator = JevDecisionCoordinator(
+    let coordinator = DecisionCoordinator(
         provider: FailingDecisionProvider(),
-        usageCounter: JevUsageCounter()
+        identity: .jev,
+        usageCounter: DecisionUsageCounter()
     )
 
     let result = await coordinator.classifyPriorities([PriorityTextTarget(key: "u0001", text: "えー")])
@@ -29,22 +30,22 @@ func networkFailureStopsTheBatchAsProviderUnavailable() async {
 }
 
 @Test(arguments: [
-    (401, JevBatchStopReason.authorizationRejected),
+    (401, DecisionBatchStopReason.authorizationRejected),
     (403, .authorizationRejected),
     (429, .providerUnavailable),
     (500, .providerUnavailable),
     (503, .providerUnavailable)
-] as [(Int, JevBatchStopReason)])
-func httpStatusSelectsTheBatchStopReason(status: Int, reason: JevBatchStopReason) {
-    #expect(JevBatchStopReason(error: JevClientError.httpStatus(status)) == reason)
+] as [(Int, DecisionBatchStopReason)])
+func httpStatusSelectsTheBatchStopReason(status: Int, reason: DecisionBatchStopReason) {
+    #expect(DecisionBatchStopReason(error: JevClientError.httpStatus(status)) == reason)
 }
 
 @Test
 func requestSpecificFailuresDoNotStopTheBatch() {
-    #expect(JevBatchStopReason(error: JevClientError.httpStatus(400)) == nil)
-    #expect(JevBatchStopReason(error: JevClientError.missingAnswer) == nil)
-    #expect(JevBatchStopReason(error: JevClientError.invalidChoice) == nil)
-    #expect(JevBatchStopReason(error: JevClientError.unexpectedAnswers) == nil)
+    #expect(DecisionBatchStopReason(error: JevClientError.httpStatus(400)) == nil)
+    #expect(DecisionBatchStopReason(error: JevClientError.missingAnswer) == nil)
+    #expect(DecisionBatchStopReason(error: JevClientError.invalidChoice) == nil)
+    #expect(DecisionBatchStopReason(error: JevClientError.unexpectedAnswers) == nil)
 }
 
 private func lowPriority(confidence: Double) throws -> ContentPriorityDecision {
@@ -81,9 +82,9 @@ private func boundarySource(_ id: String, _ seq: UInt64) throws -> SegmentTextRe
 
 @Test
 func oneBoundaryRequestCarriesEveryCandidateAndTheContinuationAndCountsOnce() async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: ["a"]), priority: lowForBackchannel)
-    let coordinator = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let coordinator = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
     let request = try ClauseBoundaryRequest(
         source: boundarySource("a", 1), text: "一。二、三。四",
         next: NextSegmentHead(source: boundarySource("b", 2), text: "次の区間")
@@ -106,9 +107,10 @@ func oneBoundaryRequestCarriesEveryCandidateAndTheContinuationAndCountsOnce() as
 
 @Test
 func fortyPriorityTargetsAreOneRequestWithOneTokenReport() async throws {
-    let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(
+    let counter = DecisionUsageCounter()
+    let coordinator = DecisionCoordinator(
         provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel),
+        identity: .jev,
         usageCounter: counter
     )
     let targets = ClausePriorityBatch.targets(texts: (1...40).map { "節\($0)" })
@@ -143,8 +145,8 @@ private struct MismatchedPriorityKeysProvider: DecisionProvider {
 
 @Test(arguments: [[], ["u0001"], ["u0001", "u0002", "u0003"]])
 func mismatchedAnswerKeysFailTheWholeRequestBeforeSuccessAccounting(keys: [String]) async throws {
-    let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(provider: MismatchedPriorityKeysProvider(keys: keys), usageCounter: counter)
+    let counter = DecisionUsageCounter()
+    let coordinator = DecisionCoordinator(provider: MismatchedPriorityKeysProvider(keys: keys), identity: .jev, usageCounter: counter)
 
     let result = await coordinator.classifyPriorities(ClausePriorityBatch.targets(texts: ["一", "二"]))
 
@@ -161,8 +163,8 @@ func mismatchedAnswerKeysFailTheWholeRequestBeforeSuccessAccounting(keys: [Strin
 
 @Test
 func boundaryAnswerMustCoverExactlyTheQuestionsSent() async throws {
-    let counter = JevUsageCounter()
-    let coordinator = JevDecisionCoordinator(provider: MismatchedPriorityKeysProvider(keys: []), usageCounter: counter)
+    let counter = DecisionUsageCounter()
+    let coordinator = DecisionCoordinator(provider: MismatchedPriorityKeysProvider(keys: []), identity: .jev, usageCounter: counter)
     let request = try ClauseBoundaryRequest(source: boundarySource("a", 1), text: "一。二", next: nil)
 
     guard case .failed(nil, _) = await coordinator.assessBoundaries(request) else {
@@ -174,7 +176,7 @@ func boundaryAnswerMustCoverExactlyTheQuestionsSent() async throws {
 
 @Test
 func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
 
     await counter.recordAttempt(purpose: .boundary)
     await counter.recordSuccess(purpose: .boundary, inputTokens: 42)
@@ -187,7 +189,7 @@ func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
     await counter.recordAttempt(purpose: .priority)
     await counter.recordSuccess(purpose: .priority, inputTokens: 3)
 
-    #expect(await counter.snapshot() == JevUsageSnapshot(
+    #expect(await counter.snapshot() == DecisionUsageSnapshot(
         sendCount: 5,
         reportedInputTokens: 45,
         successCount: 4,
@@ -195,11 +197,11 @@ func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
         failureCount: 1,
         pendingBoundarySegmentCount: 0,
         pendingPriorityClauseCount: 0,
-        boundaryRequests: JevRequestUsageSnapshot(
+        boundaryRequests: DecisionRequestUsageSnapshot(
             sendCount: 2, reportedInputTokens: 42, successCount: 2,
             unreportedTokenSuccessCount: 1, failureCount: 0
         ),
-        priorityRequests: JevRequestUsageSnapshot(
+        priorityRequests: DecisionRequestUsageSnapshot(
             sendCount: 3, reportedInputTokens: 3, successCount: 2,
             unreportedTokenSuccessCount: 0, failureCount: 1
         )
@@ -208,7 +210,7 @@ func usageCounterSeparatesPurposesAndUnreportedTokensFromZero() async {
 
 @Test
 func pendingTargetsAreKeptPerSessionAndKindAndClearWithoutChangingRequests() async throws {
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let first = UUID(), second = UUID()
     let segment = try boundarySource("a", 1)
     let clause = try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0")

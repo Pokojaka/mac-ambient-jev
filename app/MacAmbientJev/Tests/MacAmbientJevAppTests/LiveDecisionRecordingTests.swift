@@ -49,7 +49,7 @@ private actor RecordingJev: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
-            metadata: try JevResponseMetadata(model: "recording-test", inputTokens: 5, outputTokens: nil)
+            metadata: try DecisionResponseMetadata(model: "recording-test", inputTokens: 5, outputTokens: nil)
         )
     }
 
@@ -62,7 +62,7 @@ private actor RecordingJev: DecisionProvider {
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try JevResponseMetadata(model: "recording-test", inputTokens: 7, outputTokens: nil)
+            metadata: try DecisionResponseMetadata(model: "recording-test", inputTokens: 7, outputTokens: nil)
         )
     }
     func release() {
@@ -73,8 +73,8 @@ private actor RecordingJev: DecisionProvider {
 }
 
 @MainActor
-private func withLiveJevRecording(
-    makeDecisions: @escaping @Sendable (JevUsageCounter) -> NativeSessionProcessor.JevDecisionCoordinatorFactory,
+private func withLiveDecisionRecording(
+    makeDecisions: @escaping @Sendable (DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory,
     body: (AppState) async throws -> Void
 ) async throws {
     let (root, paths) = temporaryRecordingPaths()
@@ -95,7 +95,8 @@ private func withLiveJevRecording(
         engines: SessionProcessingEngines(asr: RecordingASR(),
             diarization: FluidOfflineDiarizationEngine(paths: paths),
             finalTranscriptVAD: RecordingFinalVAD()),
-        makeLiveVADSession: { _, _, _, _ in RecordingVAD() }, makeJevDecisions: makeDecisions
+        makeLiveVADSession: { _, _, _, _ in RecordingVAD() },
+        makeDecisions: { _, counter in makeDecisions(counter) }
     )
     state.readLiveThermalPressure = { .nominal }
     let maintenanceDeadline = ContinuousClock.now + .seconds(5)
@@ -122,10 +123,10 @@ private func withLiveJevRecording(
 
 @MainActor
 @Test("AppState recording shows live rows at once and applies only saved Jev results")
-func appRecordingShowsLiveRowsWhileJevWaits() async throws {
+func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
     let provider = RecordingJev()
-    try await withLiveJevRecording(makeDecisions: { counter in
-        { JevDecisionCoordinator(provider: provider, usageCounter: counter) }
+    try await withLiveDecisionRecording(makeDecisions: { counter in
+        { DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter) }
     }) { state in
         let deadline = ContinuousClock.now + .seconds(5)
         while await provider.texts.isEmpty, ContinuousClock.now < deadline {
@@ -149,7 +150,7 @@ func appRecordingShowsLiveRowsWhileJevWaits() async throws {
         }
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.classified, .awaitingNextSegment])
         #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [true, false])
-        let usage = await state.jevUsageCounter.snapshot()
+        let usage = await state.decisionUsageCounter.snapshot()
         #expect(usage.boundaryRequests.sendCount == 1)
         #expect(usage.priorityRequests.sendCount == 1)
         #expect(usage.reportedInputTokens == 12)
@@ -158,10 +159,10 @@ func appRecordingShowsLiveRowsWhileJevWaits() async throws {
 
 @MainActor
 @Test("AppState keeps the classifier factory error visible while live ASR continues")
-func appRecordingShowsJevFactoryFailureReason() async throws {
+func appRecordingShowsDecisionFactoryFailureReason() async throws {
     let description = "Synthetic credential read denied (no Keychain access)"
-    try await withLiveJevRecording(makeDecisions: { _ in
-        { throw NSError(domain: "LiveJevRecordingTest", code: 1,
+    try await withLiveDecisionRecording(makeDecisions: { _ in
+        { throw NSError(domain: "LiveDecisionRecordingTests", code: 1,
                         userInfo: [NSLocalizedDescriptionKey: description]) }
     }) { state in
         let deadline = ContinuousClock.now + .seconds(5)

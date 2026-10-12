@@ -1,6 +1,6 @@
 import Foundation
 
-/// Materializes the fixed live ASR/Jev runs. Historical rows and source projections are
+/// Materializes the fixed live ASR/decision runs. Historical rows and source projections are
 /// indexed once; a batch journals only the clauses and sources it touches.
 public final class IncrementalTranscriptMaterializer {
     private struct Segment {
@@ -108,10 +108,10 @@ public final class IncrementalTranscriptMaterializer {
         if recognized, cursor != nil {
             if recognizedIndex > 0,
                let previous = segments[recognizedPositions[recognizedIndex - 1]].source,
-               previous.asrEventSeq >= source.asrEventSeq { throw JevEnrichmentError.invalidSourceTimeline }
+               previous.asrEventSeq >= source.asrEventSeq { throw DecisionEnrichmentError.invalidSourceTimeline }
             if recognizedIndex < recognizedPositions.count,
                let next = segments[recognizedPositions[recognizedIndex]].source,
-               source.asrEventSeq >= next.asrEventSeq { throw JevEnrichmentError.invalidSourceTimeline }
+               source.asrEventSeq >= next.asrEventSeq { throw DecisionEnrichmentError.invalidSourceTimeline }
         }
         segments[position].source = source
         sources[source] = Source(text: text, projection: nil)

@@ -31,7 +31,7 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public var finalizationAttempt: FinalizationAttempt?
     /// The published run set. The local runs are set when a finalization attempt completes;
-    /// the Jev runs when their snapshot is published.
+    /// the selected engine runs when their snapshot is published.
     public var activeRuns: ActiveRuns?
     /// Segments whose boundary request has no result in the published snapshot, in time order.
     public var pendingClauseBoundarySegments: [SegmentTextReference]
@@ -57,11 +57,11 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
         guard Set(pendingClauseBoundarySegments).count == pendingClauseBoundarySegments.count,
               Set(pendingContentPriorityClauses).count == pendingContentPriorityClauses.count,
               (activeRuns?.clauseBoundary == nil) == (activeRuns?.contentPriority == nil) else {
-            throw ProcessingMetadataStoreError.unreadable("Jev の公開参照または保留一覧が不正です")
+            throw ProcessingMetadataStoreError.unreadable("公開参照または保留一覧が不正です")
         }
         if activeRuns?.clauseBoundary != nil {
             guard activeRuns?.segmentation != nil, activeRuns?.asr != nil else {
-                throw ProcessingMetadataStoreError.unreadable("Jev の公開 run に原文の処理 run がありません")
+                throw ProcessingMetadataStoreError.unreadable("公開 run に原文の処理 run がありません")
             }
         }
         if activeRuns == nil {
@@ -85,9 +85,9 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     }
 
     /// Every pending target the published snapshot names.
-    public var pendingJevTargets: Set<JevPendingTarget> {
-        Set(pendingClauseBoundarySegments.map(JevPendingTarget.boundary))
-            .union(pendingContentPriorityClauses.map(JevPendingTarget.priority))
+    public var pendingDecisionTargets: Set<DecisionPendingTarget> {
+        Set(pendingClauseBoundarySegments.map(DecisionPendingTarget.boundary))
+            .union(pendingContentPriorityClauses.map(DecisionPendingTarget.priority))
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -149,7 +149,7 @@ public enum ProcessingMetadataStoreError: Error, LocalizedError, Equatable {
         case .finalizationAttemptMismatch:
             "処理状態ファイルの確定処理 ID が一致しません"
         case .publishedRunsChanged:
-            "公開済みの処理結果が変更されたため、Jev の判定結果を公開できません"
+            "公開済みの処理結果が変更されたため、発話文の判定結果を公開できません"
         case .unsupportedSchemaVersion:
             "処理状態ファイルは対応していない形式です（schema_version \(EventLogSchema.version) のみ対応）"
         case .unreadable(let reason):
@@ -254,9 +254,9 @@ public struct ProcessingMetadataStore: Sendable {
         }
     }
 
-    /// Publishes a Jev snapshot in one write: both run pointers and both pending lists. Fails
+    /// Publishes a decision snapshot in one write: both run pointers and both pending lists. Fails
     /// when the published runs are no longer the ones the snapshot was built from.
-    public func publishJevSnapshot(
+    public func publishDecisionSnapshot(
         basedOn published: ActiveRuns,
         clauseBoundaryRunID: String,
         contentPriorityRunID: String,
@@ -268,7 +268,7 @@ public struct ProcessingMetadataStore: Sendable {
                   metadata.finalizationAttempt?.state == .complete else {
                 throw ProcessingMetadataStoreError.publishedRunsChanged
             }
-            metadata.activeRuns = current.withJevRuns(
+            metadata.activeRuns = current.withDecisionRuns(
                 clauseBoundary: clauseBoundaryRunID, contentPriority: contentPriorityRunID
             )
             metadata.pendingClauseBoundarySegments = pendingClauseBoundarySegments

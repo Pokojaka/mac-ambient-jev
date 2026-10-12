@@ -70,7 +70,7 @@ public struct ClauseSourcePart: Codable, Sendable, Hashable {
 
 public enum ClauseTermination: Codable, Sendable, Equatable {
     case internalBoundary(source: SegmentTextReference, candidateID: String)
-    /// Jev answered that the clause does not continue into the next segment.
+    /// The decision engine answered that the clause does not continue into the next segment.
     case notContinued(source: SegmentTextReference)
     /// The text stream ended (recording stop, last segment, or an empty successor).
     /// This is not a grammatical boundary.
@@ -151,12 +151,12 @@ public struct ClauseUnit: Codable, Sendable, Equatable {
     }
 }
 
-/// One HTTP request to Jev and the metadata of its response.
-public struct JevRequestRecord: Codable, Sendable, Equatable {
+/// One decision request and the metadata of its response.
+public struct DecisionRequestRecord: Codable, Sendable, Equatable {
     public let requestID: String
-    public let metadata: JevResponseMetadata
+    public let metadata: DecisionResponseMetadata
 
-    public init(requestID: String, metadata: JevResponseMetadata) throws {
+    public init(requestID: String, metadata: DecisionResponseMetadata) throws {
         guard isNonblankIdentifier(requestID) else { throw ClauseRecordError.invalidAssessment }
         self.requestID = requestID
         self.metadata = metadata
@@ -167,7 +167,7 @@ public struct JevRequestRecord: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             requestID: c.decode(String.self, forKey: .requestID),
-            metadata: c.decode(JevResponseMetadata.self, forKey: .metadata)
+            metadata: c.decode(DecisionResponseMetadata.self, forKey: .metadata)
         )
     }
 }
@@ -183,7 +183,7 @@ public enum ClausePendingReason: String, Codable, Sendable {
 }
 
 public enum BoundaryDecisionSource: Codable, Sendable, Equatable {
-    /// Jev answered this boundary request in this run.
+    /// The decision engine answered this boundary request in this run.
     case assessed
     /// The last text segment had no candidate and no successor, so no request was needed.
     case terminalWithoutQuestions
@@ -229,7 +229,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
     public let probabilities: [String: Double]
     public let nextHead: NextSegmentHead?
     public let continuationProbability: Double?
-    public let request: JevRequestRecord?
+    public let request: DecisionRequestRecord?
     public let sourceDecision: BoundaryDecisionSource
 
     public init(
@@ -238,7 +238,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         probabilities: [String: Double],
         nextHead: NextSegmentHead?,
         continuationProbability: Double?,
-        request: JevRequestRecord?,
+        request: DecisionRequestRecord?,
         sourceDecision: BoundaryDecisionSource
     ) throws {
         guard Set(probabilities.keys) == Set(candidates.map(\.id)),
@@ -276,7 +276,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         self.sourceDecision = sourceDecision
     }
 
-    /// The candidates Jev accepted as absolute or strong boundaries, in text order.
+    /// The candidates accepted as absolute or strong boundaries, in text order.
     public var acceptedBoundaries: [ClauseBoundaryCandidate] {
         candidates.filter { candidate in
             probabilities[candidate.id].map(ClauseBoundaryPolicy.acceptsBoundary) == true
@@ -297,7 +297,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         )
     }
 
-    /// True when both record the same Jev decisions for the same source and successor head.
+    /// True when both record the same decisions for the same source and successor head.
     public func hasSameDecisions(as other: ClauseBoundaryAssessment) -> Bool {
         guard source == other.source, candidates == other.candidates,
               probabilities == other.probabilities,
@@ -328,7 +328,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
             probabilities: c.decode([String: Double].self, forKey: .probabilities),
             nextHead: c.decode(NextSegmentHead?.self, forKey: .nextHead),
             continuationProbability: c.decode(Double?.self, forKey: .continuationProbability),
-            request: c.decode(JevRequestRecord?.self, forKey: .request),
+            request: c.decode(DecisionRequestRecord?.self, forKey: .request),
             sourceDecision: c.decode(BoundaryDecisionSource.self, forKey: .sourceDecision)
         )
     }
@@ -477,9 +477,9 @@ public struct ClausePriorityAssignment: Codable, Sendable, Equatable {
 /// assignments made without a request (carried over or left pending).
 public struct ContentPriorityAssignedPayload: Codable, Sendable, Equatable {
     public let assignments: [ClausePriorityAssignment]
-    public let request: JevRequestRecord?
+    public let request: DecisionRequestRecord?
 
-    public init(assignments: [ClausePriorityAssignment], request: JevRequestRecord?) throws {
+    public init(assignments: [ClausePriorityAssignment], request: DecisionRequestRecord?) throws {
         guard !assignments.isEmpty,
               Set(assignments.map(\.reference)).count == assignments.count else {
             throw ClauseRecordError.invalidPriorityEvent
@@ -494,7 +494,7 @@ public struct ContentPriorityAssignedPayload: Codable, Sendable, Equatable {
                 throw ClauseRecordError.invalidPriorityEvent
             }
         }
-        guard answerKeys.count <= JevPriorityBatchPolicy.maximumTargets else { throw ClauseRecordError.invalidPriorityEvent }
+        guard answerKeys.count <= PriorityBatchPolicy.maximumTargets else { throw ClauseRecordError.invalidPriorityEvent }
         if request != nil {
             let expected = Set((1...assignments.count).map { String(format: "u%04d", $0) })
             guard answerKeys == expected else { throw ClauseRecordError.invalidPriorityEvent }
@@ -509,7 +509,7 @@ public struct ContentPriorityAssignedPayload: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             assignments: c.decode([ClausePriorityAssignment].self, forKey: .assignments),
-            request: c.decode(JevRequestRecord?.self, forKey: .request)
+            request: c.decode(DecisionRequestRecord?.self, forKey: .request)
         )
     }
 
@@ -558,8 +558,8 @@ public struct ReusableClauseDecision: Sendable, Equatable {
     }
 }
 
-/// What a pending Jev result waits for: a segment's boundary request or a clause's priority.
-public enum JevPendingTarget: Sendable, Hashable {
+/// What a pending decision waits for: a segment's boundary request or a clause's priority.
+public enum DecisionPendingTarget: Sendable, Hashable {
     case boundary(SegmentTextReference)
     case priority(ClauseReference)
 }

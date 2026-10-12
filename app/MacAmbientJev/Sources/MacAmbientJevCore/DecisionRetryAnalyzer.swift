@@ -1,6 +1,6 @@
 import Foundation
-/// The Jev results a retry must request again, checked against the event log.
-public struct JevRetryTargets: Sendable, Equatable {
+/// The decision results a retry must request again, checked against the event log.
+public struct DecisionRetryTargets: Sendable, Equatable {
     public let boundarySegments: [SegmentTextReference]
     public let clauses: [ClauseReference]
 
@@ -12,12 +12,12 @@ public struct JevRetryTargets: Sendable, Equatable {
 
 /// Checks the pending lists of the published metadata against the event log. An unpublished
 /// retry or finalization run is never adopted: retries start again from the published snapshot.
-public struct JevRetryAnalyzer: Sendable {
+public struct DecisionRetryAnalyzer: Sendable {
     public init() {}
 
-    /// A newer final/retry Jev run was saved without atomically publishing its snapshot.
+    /// A newer final/retry decision run was saved without atomically publishing its snapshot.
     /// Live runs and runs replaced by the current published snapshot are not recovery work.
-    public func hasUnpublishedJevRun(lines: [Data], activeRuns: ActiveRuns) throws -> Bool {
+    public func hasUnpublishedDecisionRun(lines: [Data], activeRuns: ActiveRuns) throws -> Bool {
         let decoded = try EventLogLine.decode(lines)
         let active = Set([
             activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
@@ -43,7 +43,7 @@ public struct JevRetryAnalyzer: Sendable {
         return found
     }
 
-    public func retryTargets(lines: [Data], metadata: ProcessingMetadata) throws -> JevRetryTargets {
+    public func retryTargets(lines: [Data], metadata: ProcessingMetadata) throws -> DecisionRetryTargets {
         guard let activeRuns = metadata.activeRuns,
               let segmentationRunID = activeRuns.segmentation, let asrRunID = activeRuns.asr else {
             throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "公開された文字起こしがありません")
@@ -69,6 +69,6 @@ public struct JevRetryAnalyzer: Sendable {
                 runID: activeRuns.clauseBoundary ?? asrRunID, reason: "処理状態の保留一覧がイベントログと一致しません"
             )
         }
-        return JevRetryTargets(boundarySegments: expectedBoundary, clauses: expectedClauses)
+        return DecisionRetryTargets(boundarySegments: expectedBoundary, clauses: expectedClauses)
     }
 }

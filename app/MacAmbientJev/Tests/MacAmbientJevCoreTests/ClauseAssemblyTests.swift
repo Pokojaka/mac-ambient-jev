@@ -19,7 +19,7 @@ private func assessed(
     let assessment = try ClauseBoundaryAssessment(
         source: source, candidates: candidates, probabilities: probabilities, nextHead: head,
         continuationProbability: head.map { _ in continues ? 0.51 : 0.5 },
-        request: decision == .assessed ? JevRequestRecord(requestID: "r-\(source.segmentID)", metadata: testMetadata) : nil,
+        request: decision == .assessed ? DecisionRequestRecord(requestID: "r-\(source.segmentID)", metadata: testMetadata) : nil,
         sourceDecision: decision
     )
     return ClauseAssemblyInput(source: source, text: text, state: .assessed(assessment))
@@ -70,6 +70,28 @@ func rejectedCandidatesPreserveTheEntireRawClauseUntilStreamEnd(_ text: String) 
     #expect(delta.closed.map(\.parts) == [[try part(source, 0, text.utf16.count)]])
     #expect(delta.closed.map(\.termination) == [.streamEnd])
     #expect(try assembly.state(for: source) == .resolved)
+}
+
+@Test
+func trailingPunctuationCandidatesPreserveCharacterBoundariesAndUTF16Offsets() throws {
+    #expect(try ClauseBoundaryCandidate.candidates(in: "本当？！").isEmpty)
+    #expect(try ClauseBoundaryCandidate.candidates(in: "、。？！?!").isEmpty)
+
+    let mixed = try ClauseBoundaryCandidate.candidates(in: "a。!b？！")
+    #expect(mixed.map(\.id) == ["b0001", "b0002"])
+    #expect(mixed.map(\.offsetUTF16) == [2, 3])
+
+    let emoji = try ClauseBoundaryCandidate.candidates(in: "😀a。!b？！")
+    #expect(emoji.map(\.id) == ["b0001", "b0002"])
+    #expect(emoji.map(\.offsetUTF16) == [4, 5])
+
+    let combining = try ClauseBoundaryCandidate.candidates(in: "か\u{3099}😀、後。")
+    #expect(combining.map(\.id) == ["b0001"])
+    #expect(combining.map(\.offsetUTF16) == [5])
+
+    let whitespace = try ClauseBoundaryCandidate.candidates(in: "a! ")
+    #expect(whitespace.map(\.id) == ["b0001"])
+    #expect(whitespace.map(\.offsetUTF16) == [2])
 }
 
 @Test

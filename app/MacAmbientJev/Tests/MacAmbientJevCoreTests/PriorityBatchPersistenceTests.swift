@@ -9,7 +9,7 @@ func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, 
     let id = UUID()
     let raw = (1...81).map { "本文\($0)。" }.joined()
     _ = try publishLocal(root: root, events: try await writeTranscript([raw], root: root, sessionID: id))
-    let scope: JevEnrichmentScope
+    let scope: DecisionEnrichmentScope
     let boundaryRunID: String?
     if retry {
         let previous = try await buildAndPublish(
@@ -28,7 +28,7 @@ func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, 
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
         throw JevClientError.httpStatus(status)
     })
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let result = try await buildAndPublish(
         root: root, sessionID: id, provider: provider, scope: scope,
         counter: counter, boundaryRunID: boundaryRunID
@@ -80,7 +80,7 @@ func unconfiguredPriorityRetryPersistsUnsentClausesInBoundedBatches() async thro
         }),
         scope: .all
     )
-    let counter = JevUsageCounter()
+    let counter = DecisionUsageCounter()
     let result = try await buildAndPublish(
         root: root, sessionID: id, provider: nil,
         scope: .retry(boundarySegments: [], clauses: Set(previous.pendingPriorityClauses)),
@@ -96,7 +96,7 @@ func unconfiguredPriorityRetryPersistsUnsentClausesInBoundedBatches() async thro
     #expect(payloads.allSatisfy { payload in
         payload.request == nil && payload.assignments.allSatisfy {
             $0.priority == nil && $0.needsRetry
-                && $0.decision == .retryPending(reason: .unconfigured, message: JevPendingMessage.unavailable)
+                && $0.decision == .retryPending(reason: .unconfigured, message: DecisionPendingMessage.unavailable)
         }
     })
     #expect(result.stopReason == nil)
@@ -132,8 +132,8 @@ private actor PriorityAvailabilityGate {
 func cancellationDuringPriorityAvailabilityDoesNotSendOrConsumeTheBatch() async throws {
     let gate = PriorityAvailabilityGate()
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
-    let counter = JevUsageCounter()
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
     let reference = try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0")
     let task = Task {
         var batches = try ClausePriorityBatches(targets: [(reference, "本文")], stopReason: nil)
@@ -178,7 +178,7 @@ func boundaryStopKeepsPreviouslyClosedClausesPendingWithoutSendingChoice() async
     #expect(payloads.allSatisfy { payload in
         payload.request == nil && payload.assignments.allSatisfy {
             $0.priority == nil && $0.needsRetry
-                && $0.decision == .retryPending(reason: .authorizationRejected, message: JevPendingMessage.stopped)
+                && $0.decision == .retryPending(reason: .authorizationRejected, message: DecisionPendingMessage.stopped)
         }
     })
     #expect(result.stopReason == .authorizationRejected)
@@ -195,15 +195,15 @@ func priorityBatchesResumeAfterAnUnsentAvailabilityBatch() async throws {
         (reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c\($0)_0"), text: "本文\($0)")
     }
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
-    let counter = JevUsageCounter()
-    let decisions = JevDecisionCoordinator(provider: provider, usageCounter: counter)
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
     var batches = try ClausePriorityBatches(targets: targets, stopReason: nil)
-    let pending = try await batches.next { .pending(.stopped, JevPendingMessage.stopped) }
+    let pending = try await batches.next { .pending(.stopped, DecisionPendingMessage.stopped) }
     #expect(pending.assignments.map(\.reference) == targets.prefix(40).map(\.reference))
     #expect(pending.request == nil)
     #expect(pending.assignments.allSatisfy {
         $0.priority == nil && $0.needsRetry
-            && $0.decision == .retryPending(reason: .stopped, message: JevPendingMessage.stopped)
+            && $0.decision == .retryPending(reason: .stopped, message: DecisionPendingMessage.stopped)
     })
     #expect(batches.stopReason == nil)
     #expect(await counter.snapshot().sendCount == 0)

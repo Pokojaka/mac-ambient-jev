@@ -205,7 +205,7 @@ public struct SavedSessionCatalog {
                 }
                 _ = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
                 if let metadata, activeRuns.segmentation != nil || activeRuns.asr != nil {
-                    _ = try JevRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
+                    _ = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
                 }
                 hasActiveTranscript = activeRuns.asr != nil
             } catch {
@@ -267,7 +267,7 @@ public struct SavedSessionCatalog {
         case .paused:
             .paused
         case .complete:
-            metadata?.pendingJevTargets.isEmpty == false
+            metadata?.pendingDecisionTargets.isEmpty == false
                 ? .classificationPending
                 : .complete
         case .failed:

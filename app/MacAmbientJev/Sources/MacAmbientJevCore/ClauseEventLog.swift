@@ -1,5 +1,5 @@
 import Foundation
-/// Decodes and checks every Jev clause event of a log against the ASR text it refers to.
+/// Decodes and checks every clause event of a log against the ASR text it refers to.
 /// Reader, retry analysis, live reuse and the saved-session catalog all go through it.
 struct ClauseEventLog {
     struct Run {

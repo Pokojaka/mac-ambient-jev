@@ -1,13 +1,13 @@
 import Foundation
 
-public enum JevRequestPurpose: String, Codable, Sendable {
+public enum DecisionRequestPurpose: String, Codable, Sendable {
     case boundary
     case priority
 }
 
-public struct JevRequestUsageSnapshot: Sendable, Equatable {
+public struct DecisionRequestUsageSnapshot: Sendable, Equatable {
     public let sendCount: Int
-    /// Sum of the input token counts Jev reported for these requests.
+    /// Sum of the input token counts the provider reported for these requests.
     public let reportedInputTokens: Int
     public let successCount: Int
     /// Successful requests whose response carried no input token count.
@@ -29,9 +29,9 @@ public struct JevRequestUsageSnapshot: Sendable, Equatable {
     }
 }
 
-public struct JevUsageSnapshot: Sendable, Equatable {
+public struct DecisionUsageSnapshot: Sendable, Equatable {
     public let sendCount: Int
-    /// Sum of the input token counts Jev reported.
+    /// Sum of the input token counts the provider reported.
     public let reportedInputTokens: Int
     public let successCount: Int
     public let unreportedTokenSuccessCount: Int
@@ -40,8 +40,8 @@ public struct JevUsageSnapshot: Sendable, Equatable {
     public let pendingBoundarySegmentCount: Int
     /// Clauses whose priority is pending.
     public let pendingPriorityClauseCount: Int
-    public let boundaryRequests: JevRequestUsageSnapshot
-    public let priorityRequests: JevRequestUsageSnapshot
+    public let boundaryRequests: DecisionRequestUsageSnapshot
+    public let priorityRequests: DecisionRequestUsageSnapshot
 
     public init(
         sendCount: Int,
@@ -51,8 +51,8 @@ public struct JevUsageSnapshot: Sendable, Equatable {
         failureCount: Int,
         pendingBoundarySegmentCount: Int,
         pendingPriorityClauseCount: Int,
-        boundaryRequests: JevRequestUsageSnapshot,
-        priorityRequests: JevRequestUsageSnapshot
+        boundaryRequests: DecisionRequestUsageSnapshot,
+        priorityRequests: DecisionRequestUsageSnapshot
     ) {
         self.sendCount = sendCount
         self.reportedInputTokens = reportedInputTokens
@@ -66,7 +66,7 @@ public struct JevUsageSnapshot: Sendable, Equatable {
     }
 }
 
-public actor JevUsageCounter {
+public actor DecisionUsageCounter {
     private struct RequestUsage {
         var sendCount = 0
         var reportedInputTokens = 0
@@ -74,8 +74,8 @@ public actor JevUsageCounter {
         var unreportedTokenSuccessCount = 0
         var failureCount = 0
 
-        var snapshot: JevRequestUsageSnapshot {
-            JevRequestUsageSnapshot(
+        var snapshot: DecisionRequestUsageSnapshot {
+            DecisionRequestUsageSnapshot(
                 sendCount: sendCount,
                 reportedInputTokens: reportedInputTokens,
                 successCount: successCount,
@@ -96,7 +96,7 @@ public actor JevUsageCounter {
 
     private struct PendingKey: Hashable {
         let sessionID: UUID
-        let target: JevPendingTarget
+        let target: DecisionPendingTarget
     }
 
     private var boundaryRequests = RequestUsage()
@@ -105,14 +105,14 @@ public actor JevUsageCounter {
 
     public init() {}
 
-    public func recordAttempt(purpose: JevRequestPurpose) {
+    public func recordAttempt(purpose: DecisionRequestPurpose) {
         switch purpose {
         case .boundary: boundaryRequests.sendCount += 1
         case .priority: priorityRequests.sendCount += 1
         }
     }
 
-    public func recordSuccess(purpose: JevRequestPurpose, inputTokens: Int?) {
+    public func recordSuccess(purpose: DecisionRequestPurpose, inputTokens: Int?) {
         guard !Task.isCancelled else { return }
         switch purpose {
         case .boundary: boundaryRequests.recordSuccess(inputTokens: inputTokens)
@@ -120,7 +120,7 @@ public actor JevUsageCounter {
         }
     }
 
-    public func recordFailure(purpose: JevRequestPurpose) {
+    public func recordFailure(purpose: DecisionRequestPurpose) {
         guard !Task.isCancelled else { return }
         switch purpose {
         case .boundary: boundaryRequests.failureCount += 1
@@ -129,21 +129,21 @@ public actor JevUsageCounter {
     }
 
     /// Records targets whose pending state is durable. Request counts are not changed.
-    public func recordDeferred(sessionID: UUID, targets: Set<JevPendingTarget>) {
+    public func recordDeferred(sessionID: UUID, targets: Set<DecisionPendingTarget>) {
         for target in targets {
             pending.insert(PendingKey(sessionID: sessionID, target: target))
         }
     }
 
     /// Clears targets a published snapshot resolved or replaced. Request counts are kept.
-    public func clearDeferred(sessionID: UUID, targets: Set<JevPendingTarget>) {
+    public func clearDeferred(sessionID: UUID, targets: Set<DecisionPendingTarget>) {
         for target in targets {
             pending.remove(PendingKey(sessionID: sessionID, target: target))
         }
     }
 
-    public func snapshot() -> JevUsageSnapshot {
-        JevUsageSnapshot(
+    public func snapshot() -> DecisionUsageSnapshot {
+        DecisionUsageSnapshot(
             sendCount: boundaryRequests.sendCount + priorityRequests.sendCount,
             reportedInputTokens: boundaryRequests.reportedInputTokens + priorityRequests.reportedInputTokens,
             successCount: boundaryRequests.successCount + priorityRequests.successCount,

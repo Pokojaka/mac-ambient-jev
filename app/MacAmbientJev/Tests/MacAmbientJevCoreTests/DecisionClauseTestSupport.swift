@@ -1,7 +1,7 @@
 import Foundation
 @testable import MacAmbientJevCore
 
-/// Deterministic injected Jev answers. They are fixtures for code paths, not claims about what
+/// Deterministic injected decision answers. They are fixtures for code paths, not claims about what
 /// the real model answers.
 actor ScriptedDecisionProvider: DecisionProvider {
     typealias BoundaryAnswer = @Sendable (ClauseBoundaryRequest) throws -> ClauseBoundaryResponse
@@ -28,7 +28,7 @@ actor ScriptedDecisionProvider: DecisionProvider {
     }
 }
 
-let testMetadata = try! JevResponseMetadata(model: "jev-test", inputTokens: 10, outputTokens: 2)
+let testMetadata = try! DecisionResponseMetadata(model: "jev-test", inputTokens: 10, outputTokens: 2)
 
 /// Accepts a candidate after `。？！?!` and rejects one after `、`; continues into the next
 /// segment only for sources whose segment ID is in `continuing`.
@@ -154,41 +154,41 @@ func publishLocal(root: URL, events: [TranscriptEvent]) throws -> ProcessingMeta
     return metadata
 }
 
-/// Runs one Jev snapshot through the coordinator and publishes it the way the processor does.
+/// Runs one decision snapshot through the coordinator and publishes it the way the processor does.
 func buildAndPublish(
     root: URL,
     sessionID: UUID,
     provider: (any DecisionProvider)?,
-    scope: JevEnrichmentScope,
+    scope: DecisionEnrichmentScope,
     reusable: [ExactClauseTextKey: ReusableClauseDecision] = [:],
-    counter: JevUsageCounter = JevUsageCounter(),
+    counter: DecisionUsageCounter = DecisionUsageCounter(),
     boundaryRunID: String? = nil,
     priorityRunID: String = "priority_\(UUID().uuidString.lowercased())"
-) async throws -> JevEnrichmentBatchResult {
+) async throws -> DecisionEnrichmentBatchResult {
     let store = ProcessingMetadataStore(sessionURL: root)
     let metadata = try requireValue(try store.load())
     let activeRuns = try requireValue(metadata.activeRuns)
     let events = try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: activeRuns)
-    let coordinator = JevEnrichmentCoordinator(
+    let coordinator = DecisionEnrichmentCoordinator(
         sessionID: sessionID,
         boundaryRunID: boundaryRunID ?? "boundary_\(UUID().uuidString.lowercased())",
         priorityRunID: priorityRunID,
         writer: try SessionWriter(sessionURL: root),
-        decisions: provider.map { JevDecisionCoordinator(provider: $0, usageCounter: counter) },
+        decisions: provider.map { DecisionCoordinator(provider: $0, identity: .jev, usageCounter: counter) },
         usageCounter: counter,
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
     let result = try await coordinator.process(
         existingEvents: events, activeRuns: activeRuns, scope: scope, reusableDecisions: reusable, onEvent: nil
     )
-    try store.publishJevSnapshot(
+    try store.publishDecisionSnapshot(
         basedOn: activeRuns,
         clauseBoundaryRunID: result.boundaryRunID,
         contentPriorityRunID: result.priorityRunID,
         pendingClauseBoundarySegments: result.pendingBoundarySegments,
         pendingContentPriorityClauses: result.pendingPriorityClauses
     )
-    await coordinator.recordPublished(result, replacing: metadata.pendingJevTargets)
+    await coordinator.recordPublished(result, replacing: metadata.pendingDecisionTargets)
     return result
 }
 

@@ -40,7 +40,7 @@ app/MacAmbientJev/.build/out/Products/Debug/MacAmbientJevProcessRecording \
 
 ## 実Jev API
 
-一時Core probeが実 `JevClient`、`URLSessionJevHTTPTransport`、`JevDecisionCoordinator`、候補列挙、assembly、フィラーprojectorと優先度採用policyを使用した。キーは指定serviceを `security find-generic-password -s app.mac-ambient-jev.jev -w` でメモリへ読み、キー・Authorizationを出力／ファイル保存しない。音声・source IDは送信しない。応答の品質をtestの固定正解にしない。
+一時Core probeが実 `JevClient`、`URLSessionJevHTTPTransport`、`DecisionCoordinator`、候補列挙、assembly、フィラーprojectorと優先度採用policyを使用した。キーは指定serviceを `security find-generic-password -s app.mac-ambient-jev.jev -w` でメモリへ読み、キー・Authorizationを出力／ファイル保存しない。音声・source IDは送信しない。応答の品質をtestの固定正解にしない。
 
 ### 継続の観測
 

@@ -169,7 +169,7 @@ func eventLogReadersRejectALineWithoutEnvelope() throws {
         _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: ActiveRuns(segmentation: "seg"))
     }
     #expect(throws: EventLogTranscriptReaderError.unreadableLine(index: 0)) {
-        _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: ProcessingMetadata(
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: ProcessingMetadata(
             finalizationAttempt: nil, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
             pendingClauseBoundarySegments: [], pendingContentPriorityClauses: []
         ))
@@ -219,7 +219,7 @@ func writeLiveRun(
         sources.append(try SegmentTextReference(segmentationRunID: "live_seg", segmentID: id, asrRunID: "live_asr", asrEventSeq: asr.eventSeq))
     }
     try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID, processingRunID: "boundary_live",
-                                       payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: JevRunProvenance.boundary(mode: "live"))))
+                                       payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: DecisionRunProvenance.boundary(mode: "live"))))
     var assembly = ClauseBoundaryAssembly(boundaryRunID: "boundary_live")
     var units: [ClauseUnit] = []
     for (index, source) in sources.enumerated() {
@@ -229,7 +229,7 @@ func writeLiveRun(
             source: source, candidates: candidates,
             probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, 0.1) }),
             nextHead: next, continuationProbability: next.map { _ in 0.1 },
-            request: next == nil && candidates.isEmpty ? nil : JevRequestRecord(requestID: "b\(index)", metadata: testMetadata),
+            request: next == nil && candidates.isEmpty ? nil : DecisionRequestRecord(requestID: "b\(index)", metadata: testMetadata),
             sourceDecision: next == nil && candidates.isEmpty ? .terminalWithoutQuestions : .assessed
         )
         try await writer.append(EventDraft(eventType: ClauseEventType.boundaryAssessed, sessionID: sessionID,
@@ -241,7 +241,7 @@ func writeLiveRun(
         }
     }
     try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID, processingRunID: "priority_live",
-                                       payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: "live"))))
+                                       payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live"))))
     for (order, result) in results.enumerated() {
         let reference = units[result.index].reference
         let payload: ContentPriorityAssignedPayload
@@ -251,7 +251,7 @@ func writeLiveRun(
             payload = try ContentPriorityAssignedPayload(assignments: [ClausePriorityAssignment(
                 reference: reference, priority: priority, needsRetry: false,
                 decision: .classified(requestID: "p\(order)", answerKey: "u0001", response: decision)
-            )], request: JevRequestRecord(requestID: "p\(order)", metadata: testMetadata))
+            )], request: DecisionRequestRecord(requestID: "p\(order)", metadata: testMetadata))
         } else {
             payload = try ClausePriorityBatch.pending(references: [reference], reason: .requestFailed, message: "x")
         }
@@ -333,17 +333,17 @@ func publishedSnapshotRejectsAPendingListThatContradictsTheLog() async throws {
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     var metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
 
-    #expect(try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
-        == JevRetryTargets(boundarySegments: [], clauses: result.pendingPriorityClauses))
+    #expect(try DecisionRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+        == DecisionRetryTargets(boundarySegments: [], clauses: result.pendingPriorityClauses))
 
     metadata.pendingContentPriorityClauses = [result.pendingPriorityClauses[0]]
     #expect(throws: EventLogTranscriptReaderError.self) {
-        _ = try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
     }
     metadata.pendingContentPriorityClauses = result.pendingPriorityClauses
     metadata.pendingClauseBoundarySegments = [try source("s01", in: events)]
     #expect(throws: EventLogTranscriptReaderError.self) {
-        _ = try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
     }
 }
 
@@ -391,8 +391,8 @@ func malformedUnrelatedRunsDoNotInvalidatePublishedClauseSnapshot() async throws
     try bytes.write(to: url)
     #expect(try readPublished(root: root) == snapshot.materializedSegments)
     let metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
-    #expect(try JevRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
-        == JevRetryTargets(boundarySegments: [], clauses: []))
+    #expect(try DecisionRetryAnalyzer().retryTargets(lines: eventLines(root), metadata: metadata)
+        == DecisionRetryTargets(boundarySegments: [], clauses: []))
 }
 
 @Test(arguments: ["missingCandidate", "insideCharacter", "coverageGap", "unknownSource", "nextHead", "duplicatePriority", "completionCount"])
@@ -450,7 +450,7 @@ func everyClauseConsumerRejectsCorruptDurableSnapshot(kind: String) async throws
         _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: active)
     }
     #expect(throws: (any Error).self) {
-        _ = try JevRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
+        _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
     }
     let data = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
     #expect(throws: (any Error).self) {
@@ -539,7 +539,7 @@ func readersRejectUnknownLocalPointersInsteadOfInventingAnEmptyTranscript(stage:
         _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: invalid)
     }
     #expect(throws: EventLogTranscriptReaderError.self) {
-        _ = try JevRetryAnalyzer().retryTargets(
+        _ = try DecisionRetryAnalyzer().retryTargets(
             lines: lines, metadata: ProcessingMetadata(finalizationAttempt: nil, activeRuns: invalid,
                                                        pendingClauseBoundarySegments: [], pendingContentPriorityClauses: [])
         )

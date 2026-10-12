@@ -13,9 +13,9 @@ public enum UserFacingStatus: Sendable, Equatable {
     case liveTranscriptionThermalSuspended
     case preparingDiarization
     case diarizing
-    case classifyingWithJev
-    case jevDeferred
-    case jevAuthorizationRequired
+    case classifyingContent
+    case decisionDeferred
+    case decisionAuthorizationRequired
     case finalizationPausedForHeat
 
     public var text: String {
@@ -44,12 +44,12 @@ public enum UserFacingStatus: Sendable, Equatable {
             return "話者分離を準備しています"
         case .diarizing:
             return "話者を分離しています"
-        case .classifyingWithJev:
-            return "Jev で発話の意味を分類しています"
-        case .jevDeferred:
-            return "意味分類を後で再試行します"
-        case .jevAuthorizationRequired:
-            return "Jev の API キーの修正が必要です。意味分類を保留しました"
+        case .classifyingContent:
+            return "発話文の境界と優先度を判定しています"
+        case .decisionDeferred:
+            return "発話文の判定を後で再試行します"
+        case .decisionAuthorizationRequired:
+            return "Jev の API キーの修正が必要です。発話文の判定を保留しました"
         case .finalizationPausedForHeat:
             return "発熱のため確定処理を一時停止中"
         }

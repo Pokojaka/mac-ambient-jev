@@ -96,7 +96,7 @@ func completedLaunchMaintenancePreservesNewProcessingStatus() async throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     _ = try await launchMaintenanceRecording(paths: paths)
     let state = launchMaintenanceState(paths: paths, defaults: defaults)
-    let ongoingStatus = UserFacingStatus.classifyingWithJev.text
+    let ongoingStatus = UserFacingStatus.classifyingContent.text
     let previousTranscriptStatus = "表示済みの文字起こし"
     state.transcriptViewModel.setStatus(previousTranscriptStatus)
     let observation = state.transcriptViewModel.$statusText.dropFirst().sink { _ in

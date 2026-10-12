@@ -7,24 +7,23 @@ public enum LiveContentPriorityError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .unknownSource: "ライブ文字起こしにない区間を Jev に渡そうとしました"
+        case .unknownSource: "ライブ文字起こしにない区間を判定に渡そうとしました"
         case .segmentOrderChanged: "ライブ文字起こしの区間順序が判定済みの区間と一致しません"
         }
     }
 }
 
-/// Explicit Jev suspension is different from a missing credential or an initialization error.
-public enum JevAvailabilityError: LocalizedError, Sendable {
+/// Explicit decision-engine suspension differs from missing configuration or an initialization error.
+public enum DecisionAvailabilityError: LocalizedError, Sendable {
     case stopped
 
-    public var errorDescription: String? { "Jev の判定は設定で停止されています" }
+    public var errorDescription: String? { "発話文の判定は設定で停止されています" }
 }
 
-/// Runs the live Jev boundary and priority stages independently of live ASR and recording drain.
+/// Runs live boundary and priority decision stages independently of ASR and recording drain.
 /// Each segment's boundary request waits until the next segment's ASR is saved; rows stay
 /// visible as normal text meanwhile. Only durable results reach the screen.
 public actor LiveContentPrioritySession {
-    public typealias DecisionFactory = @Sendable () throws -> JevDecisionCoordinator?
     public typealias StatusHandler = @Sendable (String) async -> Void
     public typealias UpdateHandler = @Sendable (LiveASRSnapshot) async -> Void
 
@@ -46,8 +45,8 @@ public actor LiveContentPrioritySession {
     private let sessionID: UUID
     private let writer: SessionWriter
     private let liveASR: LiveASRSession
-    private let makeDecisions: DecisionFactory
-    private let usageCounter: JevUsageCounter
+    private let makeDecisions: NativeSessionProcessor.DecisionCoordinatorFactory
+    private let usageCounter: DecisionUsageCounter
 
     private var segments: [LiveASRSegmentStatus] = []
     private var handledCount = 0
@@ -56,11 +55,13 @@ public actor LiveContentPrioritySession {
     private var composer = ClauseTextComposer()
     private var sourceTexts: [SegmentTextReference: String] = [:]
     private var startedRuns: Set<ProcessingStage> = []
+    private var boundaryProvenance: RunProvenance?
+    private var priorityProvenance: RunProvenance?
     private var completedRuns = false
     private var boundaryCounts = (assessed: 0, pending: 0)
     private var priorityCounts = (classified: 0, pending: 0)
-    private var stopReason: JevBatchStopReason?
-    private var recordedPendingTargets: Set<JevPendingTarget> = []
+    private var stopReason: DecisionBatchStopReason?
+    private var recordedPendingTargets: Set<DecisionPendingTarget> = []
     private var onStatus: StatusHandler?
     private var onUpdate: UpdateHandler?
     private var worker: Task<Void, Never>?
@@ -73,8 +74,8 @@ public actor LiveContentPrioritySession {
         priorityRunID: String,
         writer: SessionWriter,
         liveASR: LiveASRSession,
-        makeDecisions: @escaping DecisionFactory,
-        usageCounter: JevUsageCounter
+        makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
+        usageCounter: DecisionUsageCounter
     ) {
         self.sessionID = sessionID
         self.boundaryRunID = boundaryRunID
@@ -86,7 +87,7 @@ public actor LiveContentPrioritySession {
         self.assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
     }
 
-    /// Notes a newly saved ASR segment and returns without waiting for Jev.
+    /// Notes a newly saved ASR segment and returns without waiting for decision results.
     public func enqueue(
         source: SegmentTextReference,
         snapshot: LiveASRSnapshot,
@@ -120,7 +121,7 @@ public actor LiveContentPrioritySession {
         startWorker()
     }
 
-    /// Cancels the queue immediately, even if a provider ignores cancellation. Results already
+    /// Cancels the queue immediately, even if a decision engine ignores cancellation. Results already
     /// saved stay durable; a response that arrives later is neither saved nor shown.
     public func stop() async {
         stopped = true
@@ -131,7 +132,7 @@ public actor LiveContentPrioritySession {
     }
 
     /// Pending targets this session recorded in the usage counter.
-    public func pendingTargets() -> Set<JevPendingTarget> {
+    public func pendingTargets() -> Set<DecisionPendingTarget> {
         recordedPendingTargets
     }
 
@@ -181,7 +182,7 @@ public actor LiveContentPrioritySession {
         } catch {
             halted = true
             guard !stopped && !Task.isCancelled else { return }
-            await onStatus?("Jev の判定を保存できませんでした: \(error.localizedDescription)")
+            await onStatus?("発話文の判定を保存できませんでした: \(error.localizedDescription)")
         }
     }
 
@@ -223,18 +224,46 @@ public actor LiveContentPrioritySession {
         return nil
     }
 
-    /// The current Jev coordinator; settings are read again for every request.
-    private func availableDecisions() -> JevDecisionAvailability {
+    /// The current decision coordinator; settings are read again for every request.
+    private func availableDecisions(stage: ProcessingStage) -> DecisionAvailability {
         do {
             guard let decisions = try makeDecisions() else {
-                return .pending(.unconfigured, JevPendingMessage.unavailable)
+                storeUnavailableProvenance(for: stage)
+                return .pending(.unconfigured, DecisionPendingMessage.unavailable)
             }
+            let provenance: RunProvenance
+            switch stage {
+            case .clauseBoundary:
+                provenance = decisions.boundaryProvenance(mode: "live")
+            case .contentPriority:
+                provenance = decisions.priorityProvenance(mode: "live")
+            default:
+                preconditionFailure("Live decisions require a boundary or priority stage")
+            }
+            storeProvenance(provenance, for: stage)
             return .available(decisions)
-        } catch JevAvailabilityError.stopped {
-            return .pending(.stopped, JevPendingMessage.stopped)
+        } catch DecisionAvailabilityError.stopped {
+            storeUnavailableProvenance(for: stage)
+            return .pending(.stopped, DecisionPendingMessage.stopped)
         } catch {
-            let message = "意味分類器を初期化できませんでした: \(error.localizedDescription)"
+            storeUnavailableProvenance(for: stage)
+            let message = "判定エンジンを初期化できませんでした: \(error.localizedDescription)"
             return .pending(.initializationFailed, message)
+        }
+    }
+
+    private func storeUnavailableProvenance(for stage: ProcessingStage) {
+        storeProvenance(DecisionRunProvenance.unavailable(stage: stage, mode: "live"), for: stage)
+    }
+
+    private func storeProvenance(_ provenance: RunProvenance, for stage: ProcessingStage) {
+        switch stage {
+        case .clauseBoundary:
+            boundaryProvenance = provenance
+        case .contentPriority:
+            priorityProvenance = provenance
+        default:
+            preconditionFailure("Live decisions require a boundary or priority stage")
         }
     }
 
@@ -242,16 +271,16 @@ public actor LiveContentPrioritySession {
         let state: ClauseBoundaryState
         switch step.successor {
         case .gap:
-            state = .pending(reason: .asrGap, message: JevPendingMessage.asrGap)
+            state = .pending(reason: .asrGap, message: DecisionPendingMessage.asrGap)
         case .head(let next):
             if let stopReason {
-                state = .pending(reason: stopReason.pendingReason, message: JevPendingMessage.stopped)
+                state = .pending(reason: stopReason.pendingReason, message: DecisionPendingMessage.stopped)
             } else {
-                switch availableDecisions() {
+                switch availableDecisions(stage: .clauseBoundary) {
                 case .pending(let reason, let message):
                     state = .pending(reason: reason, message: message)
                 case .available(let decisions):
-                    await report(UserFacingStatus.classifyingWithJev.text)
+                    await report(UserFacingStatus.classifyingContent.text)
                     let result = try await ClauseBoundaryStep.assess(
                         source: step.source, text: step.text, next: next, decisions: decisions
                     )
@@ -334,7 +363,7 @@ public actor LiveContentPrioritySession {
         var batches = try ClausePriorityBatches(targets: targets, stopReason: stopReason)
         while batches.hasRemaining {
             try ensureActive()
-            let payload = try await batches.next { self.availableDecisions() }
+            let payload = try await batches.next { self.availableDecisions(stage: .contentPriority) }
             stopReason = batches.stopReason
             try ensureActive()
             let event = try await append(ClauseEventType.priorityAssigned, stage: .contentPriority, payload: payload,
@@ -344,7 +373,7 @@ public actor LiveContentPrioritySession {
             priorityCounts.pending += pending.count
             try await show([event])
             if !pending.isEmpty {
-                try await recordPending(Set(pending.map(JevPendingTarget.priority)))
+                try await recordPending(Set(pending.map(DecisionPendingTarget.priority)))
                 if let assignment = payload.assignments.first(where: \.needsRetry),
                    case .retryPending(_, let message) = assignment.decision {
                     await reportPending(message: message)
@@ -369,14 +398,21 @@ public actor LiveContentPrioritySession {
     ) async throws -> TranscriptEvent {
         let runID = stage == .clauseBoundary ? boundaryRunID : priorityRunID
         if !startedRuns.contains(stage) {
+            let provenance: RunProvenance
+            switch stage {
+            case .clauseBoundary:
+                provenance = boundaryProvenance
+                    ?? DecisionRunProvenance.unavailable(stage: stage, mode: "live")
+            case .contentPriority:
+                provenance = priorityProvenance
+                    ?? DecisionRunProvenance.unavailable(stage: stage, mode: "live")
+            default:
+                preconditionFailure("Live decisions require a boundary or priority stage")
+            }
             try ensureActive()
             _ = try await writer.append(EventDraft(
                 eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
-                payload: ProcessingRunStartedPayload(
-                    stage: stage,
-                    provenance: stage == .clauseBoundary
-                        ? JevRunProvenance.boundary(mode: "live") : JevRunProvenance.priority(mode: "live")
-                )
+                payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
             ))
             startedRuns.insert(stage)
         }
@@ -387,7 +423,7 @@ public actor LiveContentPrioritySession {
         return TranscriptEvent.clause(seq: envelope.eventSeq, runID: runID, kind: kind)
     }
 
-    private func recordPending(_ targets: Set<JevPendingTarget>) async throws {
+    private func recordPending(_ targets: Set<DecisionPendingTarget>) async throws {
         try ensureActive()
         recordedPendingTargets.formUnion(targets)
         await usageCounter.recordDeferred(sessionID: sessionID, targets: targets)
@@ -399,8 +435,8 @@ public actor LiveContentPrioritySession {
 
     private func reportPending(message: String) async {
         let status = stopReason == .authorizationRejected
-            ? UserFacingStatus.jevAuthorizationRequired.text
-            : UserFacingStatus.jevDeferred.text
+            ? UserFacingStatus.decisionAuthorizationRequired.text
+            : UserFacingStatus.decisionDeferred.text
         await report("\(status)。\(message)")
     }
 

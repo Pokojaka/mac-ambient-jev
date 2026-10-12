@@ -8,8 +8,8 @@ func userFacingStatusStringsRemainJapanese() {
             == "音声認識モデルを読み込んでいます"
     )
     #expect(
-        UserFacingStatus.jevDeferred.text
-            == "意味分類を後で再試行します"
+        UserFacingStatus.decisionDeferred.text
+            == "発話文の判定を後で再試行します"
     )
     #expect(
         UserFacingStatus.detectingSpeech.text
@@ -24,8 +24,8 @@ func pausedAndSuspendedStatusesNameTheirCause() {
             == "発熱のため確定処理を一時停止中"
     )
     #expect(
-        UserFacingStatus.jevAuthorizationRequired.text
-            == "Jev の API キーの修正が必要です。意味分類を保留しました"
+        UserFacingStatus.decisionAuthorizationRequired.text
+            == "Jev の API キーの修正が必要です。発話文の判定を保留しました"
     )
     #expect(
         UserFacingStatus.liveTranscriptionThermalSuspended.text

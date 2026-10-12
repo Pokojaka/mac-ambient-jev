@@ -4,9 +4,9 @@ public enum ProcessingStage: String, Codable, Sendable, Hashable {
     case segmentation
     case asr
     case diarization
-    /// Optional external stage: Jev clause boundaries.
+    /// Optional external stage: clause boundaries.
     case clauseBoundary
-    /// Optional external stage: Jev clause priorities.
+    /// Optional external stage: clause priorities.
     case contentPriority
 }
 
@@ -70,8 +70,8 @@ public struct ActiveRuns: Codable, Sendable, Equatable {
         self.successfulRuns = []
     }
 
-    /// The same local runs with the given Jev runs.
-    public func withJevRuns(clauseBoundary: String?, contentPriority: String?) -> ActiveRuns {
+    /// The same local runs with the given decision runs.
+    public func withDecisionRuns(clauseBoundary: String?, contentPriority: String?) -> ActiveRuns {
         ActiveRuns(
             segmentation: segmentation, asr: asr, diarization: diarization,
             clauseBoundary: clauseBoundary, contentPriority: contentPriority

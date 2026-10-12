@@ -7,43 +7,111 @@ public enum ClauseEventType {
     public static let priorityAssigned = "content_priority.assigned"
 }
 
-/// What each Jev run records about the service and policy; the model is recorded per response.
-public enum JevRunProvenance {
-    public static let boundaryPromptRevision = "1"
+/// What each decision run records about its selected engine and policy.
+public enum DecisionRunProvenance {
     public static let fillerProjectionRevision = "1"
+    private static let unitPolicy = "btsj-utterance-sentence"
+    private static let encodingRevision = "1"
+    private static let maximumTokens = "192"
+    private static let computeUnits = "cpu-only"
 
     /// `mode` is `live`, `final` or `retry`.
     public static func boundary(mode: String) -> RunProvenance {
-        RunProvenance(engine: "jev", model: nil, version: boundaryPromptRevision, configuration: [
-            "mode": mode,
-            "endpoint": JevClient.endpoint.absoluteString,
-            "candidate_characters": "、。？！?!",
-            "boundary_threshold": String(ClauseBoundaryPolicy.boundaryThreshold),
-            "continuation_threshold": String(ClauseBoundaryPolicy.continuationThreshold),
-            "next_head_character_limit": String(ClauseBoundaryPolicy.nextHeadCharacterLimit),
-            "unit_policy": "absolute-and-strong",
-            "text_policy": "raw-asr",
-            "filler_projection_revision": fillerProjectionRevision,
-        ])
+        var configuration = commonConfiguration(
+            provider: .jev, modelID: JevClient.model, modelRevision: "response-metadata", mode: mode
+        )
+        configuration["endpoint"] = JevClient.endpoint.absoluteString
+        configuration["candidate_characters"] = "、。？！?!"
+        configuration["boundary_threshold"] = String(ClauseBoundaryPolicy.boundaryThreshold)
+        configuration["continuation_threshold"] = String(ClauseBoundaryPolicy.continuationThreshold)
+        configuration["next_head_character_limit"] = String(ClauseBoundaryPolicy.nextHeadCharacterLimit)
+        configuration["text_policy"] = "raw-asr"
+        configuration["filler_projection_revision"] = fillerProjectionRevision
+        return RunProvenance(
+            engine: DecisionEngineChoice.jev.rawValue, model: nil, version: JevClient.boundaryPromptRevision, configuration: configuration
+        )
     }
 
     public static func priority(mode: String) -> RunProvenance {
-        RunProvenance(engine: "jev", model: nil, version: JevClient.priorityPromptRevision, configuration: [
+        var configuration = commonConfiguration(
+            provider: .jev, modelID: JevClient.model, modelRevision: "response-metadata", mode: mode
+        )
+        configuration["endpoint"] = JevClient.endpoint.absoluteString
+        configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
+        configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
+        configuration["prompt_revision"] = JevClient.priorityPromptRevision
+        configuration["text_policy"] = "filler-removed-exact"
+        configuration["filler_projection_revision"] = fillerProjectionRevision
+        return RunProvenance(
+            engine: DecisionEngineChoice.jev.rawValue, model: nil, version: JevClient.priorityPromptRevision, configuration: configuration
+        )
+    }
+
+    public static func localBoundary(
+        mode: String, modelID: String, modelRevision: String
+    ) -> RunProvenance {
+        var configuration = commonConfiguration(
+            provider: .localModel, modelID: modelID, modelRevision: modelRevision, mode: mode
+        )
+        configuration["candidate_characters"] = "、。？！?!"
+        configuration["boundary_threshold"] = String(ClauseBoundaryPolicy.boundaryThreshold)
+        configuration["continuation_threshold"] = String(ClauseBoundaryPolicy.continuationThreshold)
+        configuration["next_head_character_limit"] = String(ClauseBoundaryPolicy.nextHeadCharacterLimit)
+        configuration["encoding_revision"] = encodingRevision
+        configuration["max_tokens"] = maximumTokens
+        configuration["compute_units"] = computeUnits
+        configuration["window_content_tokens"] = "190"
+        configuration["window_policy"] = "whole-piece-max-min-context"
+        configuration["filler_projection_revision"] = fillerProjectionRevision
+        configuration["text_policy"] = "neutral-punctuation-piecewise"
+        return RunProvenance(
+            engine: DecisionEngineChoice.localModel.rawValue, model: modelID, version: modelRevision, configuration: configuration
+        )
+    }
+
+    public static func localPriority(
+        mode: String, modelID: String, modelRevision: String
+    ) -> RunProvenance {
+        var configuration = commonConfiguration(
+            provider: .localModel, modelID: modelID, modelRevision: modelRevision, mode: mode
+        )
+        configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
+        configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
+        configuration["encoding_revision"] = encodingRevision
+        configuration["max_tokens"] = maximumTokens
+        configuration["compute_units"] = computeUnits
+        configuration["filler_projection_revision"] = fillerProjectionRevision
+        configuration["text_policy"] = "filler-removed-neutral-punctuation-piecewise"
+        return RunProvenance(
+            engine: DecisionEngineChoice.localModel.rawValue, model: modelID, version: modelRevision, configuration: configuration
+        )
+    }
+
+    public static func unavailable(stage: ProcessingStage, mode: String) -> RunProvenance {
+        RunProvenance(engine: "unavailable", model: nil, version: "1", configuration: [
+            "provider": "unavailable",
             "mode": mode,
-            "endpoint": JevClient.endpoint.absoluteString,
-            "minimum_demotion_confidence": String(ContentPriorityPolicy.minimumDemotionConfidence),
-            "maximum_targets": String(JevPriorityBatchPolicy.maximumTargets),
-            "prompt_revision": JevClient.priorityPromptRevision,
-            "text_policy": "filler-removed-exact",
-            "filler_projection_revision": fillerProjectionRevision,
+            "unit_policy": unitPolicy,
         ])
+    }
+
+    private static func commonConfiguration(
+        provider: DecisionEngineChoice, modelID: String, modelRevision: String, mode: String
+    ) -> [String: String] {
+        [
+            "provider": provider.rawValue,
+            "model_id": modelID,
+            "model_revision": modelRevision,
+            "unit_policy": unitPolicy,
+            "mode": mode,
+        ]
     }
 }
 
-public enum JevPendingMessage {
-    public static let unavailable = "Jev を利用できないため判定を保留しました"
+public enum DecisionPendingMessage {
+    public static let unavailable = "判定エンジンを利用できないため判定を保留しました"
     public static let asrGap = "次の区間を音声認識できなかったため境界を判定できません"
-    public static let stopped = "Jev への送信を停止したため判定を保留しました"
+    public static let stopped = "判定を停止したため保留しました"
 }
 
 /// One boundary request for one source, or the pending state when it cannot be sent.
@@ -54,8 +122,8 @@ public enum ClauseBoundaryStep {
         source: SegmentTextReference,
         text: String,
         next: NextSegmentHead?,
-        decisions: JevDecisionCoordinator
-    ) async throws -> (state: ClauseBoundaryState, stop: JevBatchStopReason?) {
+        decisions: DecisionCoordinator
+    ) async throws -> (state: ClauseBoundaryState, stop: DecisionBatchStopReason?) {
         let request = try ClauseBoundaryRequest(source: source, text: text, next: next)
         if request.candidates.isEmpty && next == nil {
             return (.assessed(try ClauseBoundaryAssessment(
@@ -78,9 +146,9 @@ public enum ClauseBoundaryStep {
     }
 }
 
-public enum JevEnrichmentError: LocalizedError, Sendable, Equatable {
+public enum DecisionEnrichmentError: LocalizedError, Sendable, Equatable {
     case missingPublishedTranscript
-    case missingPublishedJevRuns
+    case missingPublishedDecisionRuns
     case unknownRetryTarget(String)
     case missingNextASRSource(segmentID: String)
     case boundaryRunNotNew
@@ -92,7 +160,7 @@ public enum JevEnrichmentError: LocalizedError, Sendable, Equatable {
         switch self {
         case .missingPublishedTranscript:
             "確定済みの文字起こしがありません"
-        case .missingPublishedJevRuns:
+        case .missingPublishedDecisionRuns:
             "公開済みの境界判定と優先度判定がありません"
         case .unknownRetryTarget(let target):
             "再試行の対象 \(target) は公開済みの保留ではありません"
@@ -110,14 +178,14 @@ public enum JevEnrichmentError: LocalizedError, Sendable, Equatable {
     }
 }
 
-public struct JevEnrichmentBatchResult: Sendable {
+public struct DecisionEnrichmentBatchResult: Sendable {
     public let events: [TranscriptEvent]
     public let materializedSegments: [MaterializedTranscriptSegment]
     public let pendingBoundarySegments: [SegmentTextReference]
     public let pendingPriorityClauses: [ClauseReference]
     public let boundaryRunID: String
     public let priorityRunID: String
-    public let stopReason: JevBatchStopReason?
+    public let stopReason: DecisionBatchStopReason?
 
     public init(
         events: [TranscriptEvent],
@@ -126,7 +194,7 @@ public struct JevEnrichmentBatchResult: Sendable {
         pendingPriorityClauses: [ClauseReference],
         boundaryRunID: String,
         priorityRunID: String,
-        stopReason: JevBatchStopReason?
+        stopReason: DecisionBatchStopReason?
     ) {
         self.events = events
         self.materializedSegments = materializedSegments
@@ -137,14 +205,14 @@ public struct JevEnrichmentBatchResult: Sendable {
         self.stopReason = stopReason
     }
 
-    public var pendingTargets: Set<JevPendingTarget> {
-        Set(pendingBoundarySegments.map(JevPendingTarget.boundary))
-            .union(pendingPriorityClauses.map(JevPendingTarget.priority))
+    public var pendingTargets: Set<DecisionPendingTarget> {
+        Set(pendingBoundarySegments.map(DecisionPendingTarget.boundary))
+            .union(pendingPriorityClauses.map(DecisionPendingTarget.priority))
     }
 }
 
-/// Which results a Jev snapshot requests.
-public enum JevEnrichmentScope: Sendable {
+/// Which results a decision snapshot requests.
+public enum DecisionEnrichmentScope: Sendable {
     /// Every segment of a new transcript: one boundary request per segment, then every clause.
     case all
     /// Only these pending results. Every other published result is carried over. With no
@@ -152,18 +220,18 @@ public enum JevEnrichmentScope: Sendable {
     case retry(boundarySegments: Set<SegmentTextReference>, clauses: Set<ClauseReference>)
 }
 
-/// Builds one Jev snapshot of a published transcript: a boundary run, then a priority run.
+/// Builds one decision snapshot of a published transcript: a boundary run, then a priority run.
 /// The caller publishes the returned runs and pending lists in one metadata write.
-public actor JevEnrichmentCoordinator {
+public actor DecisionEnrichmentCoordinator {
     private let sessionID: UUID
     private let boundaryRunID: String
     private let priorityRunID: String
     private let writer: SessionWriter
-    private let decisions: JevDecisionCoordinator?
-    private let usageCounter: JevUsageCounter
+    private let decisions: DecisionCoordinator?
+    private let usageCounter: DecisionUsageCounter
     private let materializer: TranscriptMaterializer
 
-    private var stopReason: JevBatchStopReason?
+    private var stopReason: DecisionBatchStopReason?
     private var events: [TranscriptEvent] = []
     private var onEvent: ((TranscriptEvent) async -> Void)?
 
@@ -172,8 +240,8 @@ public actor JevEnrichmentCoordinator {
         boundaryRunID: String,
         priorityRunID: String,
         writer: SessionWriter,
-        decisions: JevDecisionCoordinator?,
-        usageCounter: JevUsageCounter,
+        decisions: DecisionCoordinator?,
+        usageCounter: DecisionUsageCounter,
         materializer: TranscriptMaterializer
     ) {
         self.sessionID = sessionID
@@ -187,7 +255,7 @@ public actor JevEnrichmentCoordinator {
 
     /// After the caller published `result`, replaces the pending targets of the snapshot it
     /// replaced with the new ones. Request and token counts are not changed.
-    public func recordPublished(_ result: JevEnrichmentBatchResult, replacing previous: Set<JevPendingTarget>) async {
+    public func recordPublished(_ result: DecisionEnrichmentBatchResult, replacing previous: Set<DecisionPendingTarget>) async {
         await usageCounter.clearDeferred(sessionID: sessionID, targets: previous)
         await usageCounter.recordDeferred(sessionID: sessionID, targets: result.pendingTargets)
     }
@@ -195,17 +263,17 @@ public actor JevEnrichmentCoordinator {
     public func process(
         existingEvents: [TranscriptEvent],
         activeRuns: ActiveRuns,
-        scope: JevEnrichmentScope,
+        scope: DecisionEnrichmentScope,
         reusableDecisions: [ExactClauseTextKey: ReusableClauseDecision],
         onEvent: ((TranscriptEvent) async -> Void)?
-    ) async throws -> JevEnrichmentBatchResult {
+    ) async throws -> DecisionEnrichmentBatchResult {
         try Task.checkCancellation()
         self.onEvent = onEvent
         events = existingEvents
         guard !priorityRunID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               priorityRunID != boundaryRunID,
               priorityRunID != activeRuns.contentPriority else {
-            throw JevEnrichmentError.invalidPriorityRun
+            throw DecisionEnrichmentError.invalidPriorityRun
         }
         guard !boundaryRunID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ClauseRecordError.invalidClauseReference
@@ -218,7 +286,7 @@ public actor JevEnrichmentCoordinator {
             guard !recovered.droppedIncompleteTail else {
                 throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
             }
-            rebuildsUnpublishedSnapshot = try JevRetryAnalyzer().hasUnpublishedJevRun(
+            rebuildsUnpublishedSnapshot = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(
                 lines: recovered.lines, activeRuns: activeRuns
             )
         }
@@ -235,7 +303,7 @@ public actor JevEnrichmentCoordinator {
         }
         _ = try materializer.materialize(events: existingEvents, activeRuns: activeRuns)
         let timeline = try SourceTimeline(events: existingEvents, activeRuns: activeRuns)
-        let published = try PublishedJevSnapshot(events: existingEvents, activeRuns: activeRuns)
+        let published = try PublishedDecisionSnapshot(events: existingEvents, activeRuns: activeRuns)
         let mode: String
         let boundaryTargets: Set<SegmentTextReference>?
         let clauseTargets: Set<ClauseReference>
@@ -252,9 +320,9 @@ public actor JevEnrichmentCoordinator {
         }
         let rebuildsBoundaries = rebuildsUnpublishedSnapshot || (boundaryTargets.map { !$0.isEmpty } ?? true)
         if rebuildsBoundaries {
-            guard boundaryRunID != activeRuns.clauseBoundary else { throw JevEnrichmentError.boundaryRunNotNew }
+            guard boundaryRunID != activeRuns.clauseBoundary else { throw DecisionEnrichmentError.boundaryRunNotNew }
         } else {
-            guard boundaryRunID == activeRuns.clauseBoundary else { throw JevEnrichmentError.boundaryRunMismatch }
+            guard boundaryRunID == activeRuns.clauseBoundary else { throw DecisionEnrichmentError.boundaryRunMismatch }
         }
 
         let clauses: [ClauseUnit]
@@ -274,8 +342,8 @@ public actor JevEnrichmentCoordinator {
             reusableDecisions: reusableDecisions, mode: mode
         )
         let pendingClauses = clauses.map(\.reference).filter { assignments[$0]?.needsRetry == true }
-        let selected = activeRuns.withJevRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
-        return JevEnrichmentBatchResult(
+        let selected = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
+        return DecisionEnrichmentBatchResult(
             events: events,
             materializedSegments: try materializer.materialize(events: events, activeRuns: selected),
             pendingBoundarySegments: pendingBoundary,
@@ -290,13 +358,17 @@ public actor JevEnrichmentCoordinator {
 
     private func buildBoundaryRun(
         timeline: SourceTimeline,
-        published: PublishedJevSnapshot,
+        published: PublishedDecisionSnapshot,
         carriedSegments boundaryTargets: Set<SegmentTextReference>?,
         mode: String
     ) async throws -> (clauses: [ClauseUnit], pending: [SegmentTextReference]) {
         try await append(
             "processing.run.started", runID: boundaryRunID,
-            payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: JevRunProvenance.boundary(mode: mode)),
+            payload: ProcessingRunStartedPayload(
+                stage: .clauseBoundary,
+                provenance: decisions?.boundaryProvenance(mode: mode)
+                    ?? DecisionRunProvenance.unavailable(stage: .clauseBoundary, mode: mode)
+            ),
             kind: nil
         )
         var assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
@@ -349,17 +421,17 @@ public actor JevEnrichmentCoordinator {
         let next: NextSegmentHead?
         switch timeline.successor(ofSourceAt: index) {
         case .missing:
-            return .pending(reason: .asrGap, message: JevPendingMessage.asrGap)
+            return .pending(reason: .asrGap, message: DecisionPendingMessage.asrGap)
         case .none, .empty:
             next = nil
         case .recognized(let source, let text):
             next = try NextSegmentHead(source: source, text: String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)))
         }
         if let stopReason {
-            return .pending(reason: stopReason.pendingReason, message: JevPendingMessage.stopped)
+            return .pending(reason: stopReason.pendingReason, message: DecisionPendingMessage.stopped)
         }
         guard let decisions else {
-            return .pending(reason: .unconfigured, message: JevPendingMessage.unavailable)
+            return .pending(reason: .unconfigured, message: DecisionPendingMessage.unavailable)
         }
         let result = try await ClauseBoundaryStep.assess(
             source: entry.source, text: entry.text, next: next, decisions: decisions
@@ -380,16 +452,20 @@ public actor JevEnrichmentCoordinator {
     private func buildPriorityRun(
         clauses: [ClauseUnit],
         timeline: SourceTimeline,
-        published: PublishedJevSnapshot,
+        published: PublishedDecisionSnapshot,
         rebuildsBoundaries: Bool,
-        scope: JevEnrichmentScope,
+        scope: DecisionEnrichmentScope,
         clauseTargets: Set<ClauseReference>,
         reusableDecisions: [ExactClauseTextKey: ReusableClauseDecision],
         mode: String
     ) async throws -> [ClauseReference: ClausePriorityAssignment] {
         try await append(
             "processing.run.started", runID: priorityRunID,
-            payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: JevRunProvenance.priority(mode: mode)),
+            payload: ProcessingRunStartedPayload(
+                stage: .contentPriority,
+                provenance: decisions?.priorityProvenance(mode: mode)
+                    ?? DecisionRunProvenance.unavailable(stage: .contentPriority, mode: mode)
+            ),
             kind: nil
         )
         var composer = ClauseTextComposer()
@@ -452,7 +528,7 @@ public actor JevEnrichmentCoordinator {
         while batches.hasRemaining {
             let payload = try await batches.next {
                 if let decisions = self.decisions { return .available(decisions) }
-                return .pending(.unconfigured, JevPendingMessage.unavailable)
+                return .pending(.unconfigured, DecisionPendingMessage.unavailable)
             }
             stopReason = batches.stopReason
             payloads.append(payload)
@@ -485,20 +561,20 @@ public actor JevEnrichmentCoordinator {
     private func validateRetry(
         segments: Set<SegmentTextReference>,
         clauses: Set<ClauseReference>,
-        published: PublishedJevSnapshot,
+        published: PublishedDecisionSnapshot,
         timeline: SourceTimeline
     ) throws {
         if !published.hasRuns {
             guard published.activeBoundaryRunID == nil, published.activePriorityRunID == nil,
                   clauses.isEmpty, !segments.isEmpty else {
-                throw JevEnrichmentError.missingPublishedJevRuns
+                throw DecisionEnrichmentError.missingPublishedDecisionRuns
             }
             for source in segments {
                 guard let index = timeline.sources.firstIndex(where: { $0.source == source }) else {
-                    throw JevEnrichmentError.unknownRetryTarget(source.segmentID)
+                    throw DecisionEnrichmentError.unknownRetryTarget(source.segmentID)
                 }
                 if case .missing = timeline.successor(ofSourceAt: index) {
-                    throw JevEnrichmentError.missingNextASRSource(segmentID: source.segmentID)
+                    throw DecisionEnrichmentError.missingNextASRSource(segmentID: source.segmentID)
                 }
             }
             return
@@ -506,15 +582,15 @@ public actor JevEnrichmentCoordinator {
         for source in segments {
             guard published.pendingSources.contains(source),
                   let index = timeline.sources.firstIndex(where: { $0.source == source }) else {
-                throw JevEnrichmentError.unknownRetryTarget(source.segmentID)
+                throw DecisionEnrichmentError.unknownRetryTarget(source.segmentID)
             }
             if case .missing = timeline.successor(ofSourceAt: index) {
-                throw JevEnrichmentError.missingNextASRSource(segmentID: source.segmentID)
+                throw DecisionEnrichmentError.missingNextASRSource(segmentID: source.segmentID)
             }
         }
         for clause in clauses {
             guard published.assignments[clause]?.assignment.needsRetry == true else {
-                throw JevEnrichmentError.unknownRetryTarget(clause.clauseID)
+                throw DecisionEnrichmentError.unknownRetryTarget(clause.clauseID)
             }
         }
     }
@@ -558,7 +634,7 @@ struct SourceTimeline {
 
     init(events: [TranscriptEvent], activeRuns: ActiveRuns) throws {
         guard let segmentationRunID = activeRuns.segmentation, activeRuns.asr != nil else {
-            throw JevEnrichmentError.missingPublishedTranscript
+            throw DecisionEnrichmentError.missingPublishedTranscript
         }
         var results: [String: (source: SegmentTextReference, text: String)] = [:]
         var created: [(segmentID: String, startFrame: Int64)] = []
@@ -569,14 +645,14 @@ struct SourceTimeline {
                 guard let segmentID = event.segmentID, let start = event.sourceStartFrame,
                       let end = event.sourceEndFrame, start >= 0, end > start,
                       createdIDs.insert(segmentID).inserted else {
-                    throw JevEnrichmentError.invalidSourceTimeline
+                    throw DecisionEnrichmentError.invalidSourceTimeline
                 }
                 created.append((segmentID, start))
             case .asrCompleted(let result) where event.processingRunID == activeRuns.asr
                 && event.segmentationRunID == segmentationRunID:
                 guard let segmentID = event.segmentID, createdIDs.contains(segmentID),
                       let source = try event.asrSource() else {
-                    throw JevEnrichmentError.invalidSourceTimeline
+                    throw DecisionEnrichmentError.invalidSourceTimeline
                 }
                 results[segmentID] = (source, result.text)
             default:
@@ -591,7 +667,7 @@ struct SourceTimeline {
             texts[result.source] = result.text
             if ASRRecognitionOutcome(text: result.text) == .recognized {
                 if let previous = entries.last, previous.source.asrEventSeq >= result.source.asrEventSeq {
-                    throw JevEnrichmentError.invalidSourceTimeline
+                    throw DecisionEnrichmentError.invalidSourceTimeline
                 }
                 entries.append(Entry(source: result.source, text: result.text, position: position))
             }
@@ -628,8 +704,8 @@ struct SourceTimeline {
     }
 }
 
-/// The published Jev runs as the reader returned them.
-struct PublishedJevSnapshot {
+/// The published decision runs as the reader returned them.
+struct PublishedDecisionSnapshot {
     private(set) var boundaryStates: [SegmentTextReference: (seq: UInt64, state: ClauseBoundaryState)] = [:]
     private(set) var pendingSources: [SegmentTextReference] = []
     private(set) var clauses: [ClauseUnit] = []
@@ -663,7 +739,7 @@ struct PublishedJevSnapshot {
     }
 
     func priorityRunID() throws -> String {
-        guard let runID = activeRuns.contentPriority else { throw JevEnrichmentError.missingPublishedJevRuns }
+        guard let runID = activeRuns.contentPriority else { throw DecisionEnrichmentError.missingPublishedDecisionRuns }
         return runID
     }
 
@@ -671,10 +747,10 @@ struct PublishedJevSnapshot {
     /// over from its event, a pending result as pending.
     func carriedState(of source: SegmentTextReference) throws -> ClauseBoundaryState {
         guard let runID = activeRuns.clauseBoundary else {
-            return .pending(reason: .unconfigured, message: JevPendingMessage.unavailable)
+            return .pending(reason: .unconfigured, message: DecisionPendingMessage.unavailable)
         }
         guard let published = boundaryStates[source] else {
-            throw JevEnrichmentError.missingPublishedJevRuns
+            throw DecisionEnrichmentError.missingPublishedDecisionRuns
         }
         switch published.state {
         case .assessed(let assessment):
