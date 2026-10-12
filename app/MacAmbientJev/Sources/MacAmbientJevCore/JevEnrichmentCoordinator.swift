@@ -9,7 +9,7 @@ public enum ClauseEventType {
 
 /// What each Jev run records about the service and policy; the model is recorded per response.
 public enum JevRunProvenance {
-    public static let boundaryPromptRevision = "1"
+    public static let boundaryPromptRevision = "2"
     public static let fillerProjectionRevision = "1"
 
     /// `mode` is `live`, `final` or `retry`.
@@ -21,7 +21,8 @@ public enum JevRunProvenance {
             "boundary_threshold": String(ClauseBoundaryPolicy.boundaryThreshold),
             "continuation_threshold": String(ClauseBoundaryPolicy.continuationThreshold),
             "next_head_character_limit": String(ClauseBoundaryPolicy.nextHeadCharacterLimit),
-            "unit_policy": "absolute-and-strong",
+            "next_silence_format": "seconds-1dp",
+            "unit_policy": "sentence-or-independent-clause",
             "text_policy": "raw-asr",
             "filler_projection_revision": fillerProjectionRevision,
         ])
@@ -352,8 +353,11 @@ public actor JevEnrichmentCoordinator {
             return .pending(reason: .asrGap, message: JevPendingMessage.asrGap)
         case .none, .empty:
             next = nil
-        case .recognized(let source, let text):
-            next = try NextSegmentHead(source: source, text: String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)))
+        case .recognized(let source, let text, let silenceBeforeSeconds):
+            next = try NextSegmentHead(
+                source: source, text: String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)),
+                silenceBeforeSeconds: silenceBeforeSeconds
+            )
         }
         if let stopReason {
             return .pending(reason: stopReason.pendingReason, message: JevPendingMessage.stopped)
@@ -542,7 +546,7 @@ struct SourceTimeline {
         case none
         case empty
         case missing
-        case recognized(SegmentTextReference, String)
+        case recognized(SegmentTextReference, String, silenceBeforeSeconds: Double)
     }
 
     struct Entry {
@@ -552,7 +556,10 @@ struct SourceTimeline {
     }
 
     /// Every segment of the active segmentation in time order, with its ASR result if any.
-    private let segments: [(segmentID: String, result: (source: SegmentTextReference, text: String)?)]
+    private let segments: [(
+        segmentID: String, startFrame: Int64, endFrame: Int64,
+        result: (source: SegmentTextReference, text: String)?
+    )]
     let sources: [Entry]
     private let texts: [SegmentTextReference: String]
 
@@ -561,7 +568,7 @@ struct SourceTimeline {
             throw JevEnrichmentError.missingPublishedTranscript
         }
         var results: [String: (source: SegmentTextReference, text: String)] = [:]
-        var created: [(segmentID: String, startFrame: Int64)] = []
+        var created: [(segmentID: String, startFrame: Int64, endFrame: Int64)] = []
         var createdIDs: Set<String> = []
         for event in events.sorted(by: { $0.eventSeq < $1.eventSeq }) {
             switch event.kind {
@@ -571,7 +578,7 @@ struct SourceTimeline {
                       createdIDs.insert(segmentID).inserted else {
                     throw JevEnrichmentError.invalidSourceTimeline
                 }
-                created.append((segmentID, start))
+                created.append((segmentID, start, end))
             case .asrCompleted(let result) where event.processingRunID == activeRuns.asr
                 && event.segmentationRunID == segmentationRunID:
                 guard let segmentID = event.segmentID, createdIDs.contains(segmentID),
@@ -583,7 +590,9 @@ struct SourceTimeline {
                 break
             }
         }
-        segments = created.sorted { $0.startFrame < $1.startFrame }.map { ($0.segmentID, results[$0.segmentID]) }
+        segments = created.sorted { $0.startFrame < $1.startFrame }.map {
+            (segmentID: $0.segmentID, startFrame: $0.startFrame, endFrame: $0.endFrame, result: results[$0.segmentID])
+        }
         var entries: [Entry] = []
         var texts: [SegmentTextReference: String] = [:]
         for (position, segment) in segments.enumerated() {
@@ -601,10 +610,15 @@ struct SourceTimeline {
     }
 
     func successor(ofSourceAt index: Int) -> Successor {
-        let next = sources[index].position + 1
+        let current = sources[index].position
+        let next = current + 1
         guard next < segments.count else { return .none }
         guard let result = segments[next].result else { return .missing }
-        return ASRRecognitionOutcome(text: result.text) == .recognized ? .recognized(result.source, result.text) : .empty
+        guard ASRRecognitionOutcome(text: result.text) == .recognized else { return .empty }
+        let silenceBeforeSeconds = NextSegmentHead.silenceSeconds(
+            currentEndFrame: segments[current].endFrame, nextStartFrame: segments[next].startFrame
+        )
+        return .recognized(result.source, result.text, silenceBeforeSeconds: silenceBeforeSeconds)
     }
 
     /// An empty result since the preceding recognized source resets unresolved ranges,

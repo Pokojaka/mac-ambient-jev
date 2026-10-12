@@ -193,6 +193,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
     #expect(registered.pendingCount == 1)
     let snapshot = await fixture.session.snapshot()
     #expect(snapshot.segments.map(\.segmentID) == ["seg_000001", "seg_000002"])
+    #expect(snapshot.segments.map(\.endFrame) == [first.endFrame, second.endFrame])
     #expect(snapshot.segments[1].outcome == .pending)
     guard case .recognized(let source, "segment-1") = snapshot.segments[0].outcome else {
         Issue.record("first segment is not recognized")
@@ -201,6 +202,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
     #expect(finished.value.map(\.outcome) == [.recognized(source, "segment-1")])
     _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
     let ready = await fixture.session.snapshot()
+    #expect(ready.segments.map(\.endFrame) == [first.endFrame, second.endFrame])
     guard case .recognized(let nextSource, let nextText) = ready.segments[1].outcome else {
         Issue.record("successor is not recognized")
         return
@@ -208,7 +210,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
 
     let assessment = try ClauseBoundaryAssessment(
         source: source, candidates: [], probabilities: [:],
-        nextHead: NextSegmentHead(source: nextSource, text: nextText),
+        nextHead: NextSegmentHead(source: nextSource, text: nextText, silenceBeforeSeconds: 0),
         continuationProbability: 0.05,
         request: JevRequestRecord(requestID: "boundary_req", metadata: JevResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)),
         sourceDecision: .assessed

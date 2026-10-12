@@ -133,13 +133,7 @@ ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した�
 
 実API観測は実 `JevClient` と通常のtransportを使い、録音ではなく新しいテキストを境界→組立て→除去後本文のChoiceへ送る。キーは `security find-generic-password -s app.mac-ambient-jev.jev -w` のstdoutをメモリだけで取得し、端末・ログ・ファイルへ出さない。候補のraw UTF-16位置、確率、返却model、purpose別HTTP数、reported input token、HTTP時間を記録する。next到着待ち、consumerの反映処理、GUI描画をHTTP時間と混ぜず、未計測は未計測とする。新規テキストの観測と限界は [節API受入記録](records/2026-10-09-clause-acceptance.md) を参照する。利用者報告の13行の試作を再測定した値ではなく、CSJ全認定の一致率でもない。
 
-bundleはREADMEの手順でbuildして、次のコマンドで起動する。
-
-```bash
-open .build/MacAmbientJev.app
-```
-
-プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
+bundleは `scripts/run_app.sh` でbuildして起動する。プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
 
 - Jev有効化・Keychain読取・録音元・書き出し先、マイク／システム音声の実権限。
 - 14秒超の実ASR原文をイベントで確認し、第一行の「節の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
@@ -282,7 +276,7 @@ bash scripts/measure_live_latency.sh "$AUDIO_FILE"
 bash scripts/measure_live_latency.sh --sample-rate 48000 --channels 1 "$AUDIO_FILE"
 ```
 
-`MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初のフィラー除去後の非空更新までを計測する。フィラーだけの行は非空更新として数えず、report の本文は除去後本文の空白・句読点を変更しない。Jev は disabled なので次区間待ち・Noul・Choice の時間は測らない。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
+`MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、VAD 区間終了から最初のフィラー除去後の非空更新までを計測する。投入は遅延計測と同じ時計の起点からの絶対予定で行い、各 0.5 秒の塊はその末尾の音声時刻まで待ってから durable append する。変換や append の処理時間は後続の塊へ累積しない。report の `replay_max_feed_lag_seconds` は、各 append の完了時刻から、それまでに投入した replay input の音声秒数を引いた値の最大値である。この値が大きい場合は投入が原速に追いついておらず、遅延値に投入の遅れが含まれる。フィラーだけの行は非空更新として数えず、report の本文は除去後本文の空白・句読点を変更しない。Jev は disabled なので次区間待ち・Noul・Choice の時間は測らない。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
 
 Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間、または最長 14 秒分割が表示単位であり、長い発話は初表示まで待つ。測るのは非空更新までで、実画面描画、マイク入力の実時間、全発話の精度を保証する指標ではない。
 

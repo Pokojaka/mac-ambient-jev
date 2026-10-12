@@ -31,11 +31,13 @@ public struct LiveASRSegmentStatus: Sendable, Equatable {
 
     public let segmentID: String
     public let startFrame: Int64
+    public let endFrame: Int64
     public let outcome: Outcome
 
-    public init(segmentID: String, startFrame: Int64, outcome: Outcome) {
+    public init(segmentID: String, startFrame: Int64, endFrame: Int64, outcome: Outcome) {
         self.segmentID = segmentID
         self.startFrame = startFrame
+        self.endFrame = endFrame
         self.outcome = outcome
     }
 }
@@ -196,7 +198,10 @@ public actor LiveASRSession {
             try materializer.appendSourceEvent(event)
             transcriptEvents.append(event)
             registeredSegmentIDs.insert(segment.segmentID)
-            setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
+            setStatus(LiveASRSegmentStatus(
+                segmentID: segment.segmentID, startFrame: segment.startFrame, endFrame: segment.endFrame,
+                outcome: .pending
+            ))
         }
     }
 
@@ -291,7 +296,7 @@ public actor LiveASRSession {
                 preconditionFailure("an asr.completed event always has a text reference")
             }
             let status = LiveASRSegmentStatus(
-                segmentID: segment.segmentID, startFrame: segment.startFrame,
+                segmentID: segment.segmentID, startFrame: segment.startFrame, endFrame: segment.endFrame,
                 outcome: .recognized(source, result.text)
             )
             setStatus(status)
@@ -429,7 +434,10 @@ public actor LiveASRSession {
         ))
         failedCount += 1
         finishedSegmentIDs.insert(segment.segmentID)
-        let status = LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .failed)
+        let status = LiveASRSegmentStatus(
+            segmentID: segment.segmentID, startFrame: segment.startFrame, endFrame: segment.endFrame,
+            outcome: .failed
+        )
         setStatus(status)
         return status
     }

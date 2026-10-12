@@ -447,6 +447,107 @@ final class Locked<Value: Sendable>: @unchecked Sendable {
     func set(_ value: Value) { lock.withLock { stored = value } }
 }
 
+@Test(arguments: [
+    (Int64(0), Double(0)),
+    (Int64(19_200), Double(1.2)),
+    (Int64(-1_600), Double(0)),
+    (Int64(19_999), Double(1.2)),
+])
+func coordinatorRecordsRoundedSilenceBeforeNextSegment(_ gap: Int64, _ expectedSilence: Double) async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let writer = try SessionWriter(sessionURL: root)
+    let provenance = RunProvenance(engine: "test", model: nil, version: "1", configuration: [:])
+    let nextStartFrame = Int64(16_000) + gap
+    let segments: [(segmentID: String, startFrame: Int64, endFrame: Int64, text: String)] = [
+        ("s01", 0, 16_000, "前半"),
+        ("s02", nextStartFrame, nextStartFrame + 16_000, "後半"),
+    ]
+    var events: [TranscriptEvent] = []
+    for segment in segments {
+        let created = try await writer.append(EventDraft(
+            eventType: "segment.created", sessionID: sessionID, segmentationRunID: "seg",
+            segmentID: segment.segmentID, sourceStartFrame: segment.startFrame,
+            sourceEndFrame: segment.endFrame, payload: EmptyPayload()
+        ))
+        events.append(.segmentCreated(
+            seq: created.eventSeq, segmentationRunID: "seg", segmentID: segment.segmentID,
+            startFrame: segment.startFrame, endFrame: segment.endFrame
+        ))
+        let completed = try await writer.append(EventDraft(
+            eventType: "asr.completed", sessionID: sessionID, processingRunID: "asr",
+            segmentationRunID: "seg", segmentID: segment.segmentID,
+            payload: ASRCompletedEventPayload(
+                text: segment.text, detectedLanguage: "ja", provenance: provenance
+            )
+        ))
+        events.append(.asrCompleted(
+            seq: completed.eventSeq, runID: "asr", segmentationRunID: "seg",
+            segmentID: segment.segmentID, text: segment.text, detectedLanguage: "ja"
+        ))
+    }
+    let provider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel
+    )
+    let usageCounter = JevUsageCounter()
+    let coordinator = JevEnrichmentCoordinator(
+        sessionID: sessionID, boundaryRunID: "boundary", priorityRunID: "priority",
+        writer: writer,
+        decisions: JevDecisionCoordinator(provider: provider, usageCounter: usageCounter),
+        usageCounter: usageCounter,
+        materializer: TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
+    )
+
+    let result = try await coordinator.process(
+        existingEvents: events, activeRuns: transcriptRuns, scope: .all, reusableDecisions: [:], onEvent: nil
+    )
+
+    let requests = await provider.boundaryRequests
+    #expect(requests.count == 1)
+    let requestedHead = try requireValue(requests.first?.next)
+    #expect(requestedHead.silenceBeforeSeconds == expectedSilence)
+    #expect(requestedHead.source.segmentID == "s02")
+    #expect(requestedHead.text == "後半")
+
+    let firstAssessmentEvent = try requireValue(result.events.first { event in
+        guard case .clauseBoundaryAssessed(let assessment) = event.kind else { return false }
+        return assessment.source.segmentID == "s01"
+    })
+    guard case .clauseBoundaryAssessed(let firstAssessment) = firstAssessmentEvent.kind else {
+        throw MissingTestValue()
+    }
+    let assessedHead = try requireValue(firstAssessment.nextHead)
+    #expect(assessedHead.silenceBeforeSeconds == expectedSilence)
+    #expect(assessedHead.source.segmentID == "s02")
+    #expect(assessedHead.text == "後半")
+    let finalAssessment = result.events.compactMap { event -> ClauseBoundaryAssessment? in
+        guard case .clauseBoundaryAssessed(let assessment) = event.kind,
+              assessment.source.segmentID == "s02" else { return nil }
+        return assessment
+    }.first
+    #expect(finalAssessment?.candidates.isEmpty == true)
+    #expect(finalAssessment?.nextHead == nil)
+    #expect(finalAssessment?.request == nil)
+    #expect(result.pendingBoundarySegments.isEmpty)
+
+    let objects = try eventObjects(root)
+    let boundaryAssessments = objects.filter { $0["event_type"] as? String == ClauseEventType.boundaryAssessed }
+    #expect(boundaryAssessments.count == 2)
+    let firstPayload = try requireValue(boundaryAssessments.first?["payload"] as? [String: Any])
+    let firstHead = try requireValue(firstPayload["next_head"] as? [String: Any])
+    #expect(firstHead["silence_before_seconds"] as? Double == expectedSilence)
+    let started = try requireValue(objects.first {
+        $0["event_type"] as? String == "processing.run.started"
+            && $0["processing_run_id"] as? String == "boundary"
+    })
+    let startedPayload = try requireValue(started["payload"] as? [String: Any])
+    let startedProvenance = try requireValue(startedPayload["provenance"] as? [String: Any])
+    #expect(startedProvenance["version"] as? String == "2")
+    let configuration = try requireValue(startedProvenance["configuration"] as? [String: Any])
+    #expect(configuration["next_silence_format"] as? String == "seconds-1dp")
+}
+
 @Test
 func leadingASRGapDoesNotInventTheFollowingHeadsStart() async throws {
     let root = temporarySessionRoot()

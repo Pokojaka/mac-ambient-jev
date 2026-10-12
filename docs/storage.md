@@ -192,12 +192,14 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `source` | 区間参照 | 判定した区間 |
 | `candidates` | object 配列 | `id`（`b0001` 等）と `offset_utf16`。原文の `、。？！?!` の直後で、原文末尾を除く。候補なしは空配列 |
 | `probabilities` | 候補 ID → Double | 各候補の Noul 確率 |
-| `next_head` | object または null | 実際に送った次区間の `source` と先頭 `text`（60 Character 以内）。終端は null |
+| `next_head` | object または null | 非終端では必須の `source`、先頭 `text`（60 Character 以内）、`silence_before_seconds`（Double）。終端は object 全体が null |
 | `continuation_probability` | Double または null | `next_head` があるときだけ値を持つ |
 | `request` | リクエスト記録または null | 今回の実送信だけ。質問0の終端と引き継ぎは null |
 | `source_decision` | object | `{"kind":"assessed"}`、`{"kind":"terminal_without_questions"}`、または `{"kind":"carried_over","source_boundary_run_id":…,"source_event_seq":…}` |
 
-候補なしの判定と通信失敗は区別します。失敗は `clause_boundaries.pending` で、`reason` は `unconfigured`、`stopped`、`initialization_failed`、`authorization_rejected`、`request_failed`、`asr_gap`、`cancelled` のいずれかです。保留に架空の確率や一節の結果は入れません。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭であることを検証し、元のリクエストを再送扱いにしません。
+`silence_before_seconds` は有限かつ 0 以上で、`max(0, 次区間の開始 frame - 現区間の終了 frame) / 16000` 秒を小数1桁に丸めた値です。区間が重なる場合は `0.0` です。
+
+候補なしの判定と通信失敗は区別します。失敗は `clause_boundaries.pending` で、`reason` は `unconfigured`、`stopped`、`initialization_failed`、`authorization_rejected`、`request_failed`、`asr_gap`、`cancelled` のいずれかです。保留に架空の確率や一節の結果は入れません。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭・無音秒数であることを検証し、元のリクエストを再送扱いにしません。
 
 `clauses.closed` の payload:
 
@@ -250,7 +252,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | segmentation | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`vad_threshold` = `0.5`、`split_search_window_seconds` = `2.0`、`split_energy_frame_seconds` = `0.02`、`minimum_independent_segment_seconds` = `0.5` |
 | asr | `qwen3-asr-swift` / 外部モデル ID: aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language` = `ja`、`minimum_input_seconds` = `0.02` |
 | diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default、`embedding.min_segment_duration_seconds` = `0.3` |
-| clauseBoundary | `jev` / run の model なし / `1` | `mode` = `live` / `final` / `retry`、`endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`candidate_characters` = `、。？！?!`、`boundary_threshold` = `0.5`、`continuation_threshold` = `0.5`、`next_head_character_limit` = `60`、`unit_policy` = `absolute-and-strong`、`text_policy` = `raw-asr`、`filler_projection_revision` = `1` |
+| clauseBoundary | `jev` / run の model なし / `2` | `mode` = `live` / `final` / `retry`、`endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`candidate_characters` = `、。？！?!`、`boundary_threshold` = `0.5`、`continuation_threshold` = `0.5`、`next_head_character_limit` = `60`、`next_silence_format` = `seconds-1dp`、`unit_policy` = `sentence-or-independent-clause`、`text_policy` = `raw-asr`、`filler_projection_revision` = `1` |
 | contentPriority | `jev` / run の model なし / `2` | `mode`、`endpoint`、`minimum_demotion_confidence` = `0.9`、`maximum_targets` = `40`、`prompt_revision` = `2`、`text_policy` = `filler-removed-exact`、`filler_projection_revision` = `1`。応答モデルは各リクエスト記録に保存し、run 全体の単一モデルを推測しない |
 
 Jev provenance は実際に Jev の run を始める場合に保存します。ライブの境界判定 run と優先度 run は判定を逐次保存し、テキスト列の終端まで判定すると完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済みの結果を保持します。ライブ run は metadata の active_runs に選ばず、確定処理は独立した境界判定 run と優先度 run を完了・選択します。App だけが Jev を許可し、CLI の production processor は無効にしています。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ各段階の started provenance をライブ ASR run に出すわけではありません。
