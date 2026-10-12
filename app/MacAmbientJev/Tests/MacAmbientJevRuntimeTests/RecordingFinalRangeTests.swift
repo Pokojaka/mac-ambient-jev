@@ -8,17 +8,64 @@ import Testing
 private let tailProbeProvenance = RunProvenance(engine: "tail-probe", model: nil, version: "1", configuration: [:])
 private let speechStart: Int64 = 90 * 16_000
 
+@Test
+func finalTranscriptVADProvenanceRecordsSegmentationConfiguration() {
+    let provenance = FluidFinalTranscriptVADSegmenter().provenance
+    #expect(provenance.engine == "fluidaudio-silero-vad")
+    #expect(provenance.version == "FluidAudio@0.15.8")
+    #expect(provenance.configuration == [
+        "pre_roll_seconds": "0.1",
+        "max_segment_seconds": "14.0",
+        "min_silence_seconds": "0.75",
+        "vad_threshold": "0.5",
+        "split_search_window_seconds": "2.0",
+        "split_energy_frame_seconds": "0.02",
+        "minimum_independent_segment_seconds": "0.5",
+    ])
+}
+
 private struct TailVAD: FinalTranscriptVADSegmenter {
     let provenance = tailProbeProvenance
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
-        // Deterministic speech decisions; the production assembler still supplies the 14-second split.
-        let samples = try reader.readSamples(frameRange: speechStart..<(speechStart + 320))
-        #expect(samples.contains { abs($0) > 0.1 })
-        var assembler = SegmentationAssembler(segmentationRunID: runID, preRollFrames: 0,
-            maxSegmentFrames: 14 * 16_000, minimumSegmentFrames: 320)
-        assembler.speechStarted(atFrame: speechStart)
-        return assembler.speechEnded(atFrame: reader.info.committedFrames)
+        let totalFrames = reader.info.committedFrames
+        let maxSegmentFrames: Int64 = 14 * 16_000
+        let searchWindowFrames: Int64 = 2 * 16_000
+        var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 150)
+        var assembler = SegmentationAssembler(
+            segmentationRunID: runID,
+            preRollFrames: 0,
+            maxSegmentFrames: maxSegmentFrames,
+            minimumIndependentSegmentFrames: 8_000
+        )
+        var segments: [SegmentReference] = []
+        var cursor: Int64 = 0
+        var checkedAudibleSamples = false
+
+        while cursor < totalFrames {
+            let readBoundary = cursor < speechStart ? speechStart : totalFrames
+            let endFrame = min(cursor + 4_096, readBoundary)
+            let samples = try reader.readSamples(frameRange: cursor..<endFrame)
+            history.append(samples)
+            cursor = endFrame
+
+            if cursor == speechStart {
+                assembler.speechStarted(atFrame: speechStart)
+            } else if cursor > speechStart && !checkedAudibleSamples {
+                #expect(samples.prefix(320).contains { abs($0) > 0.1 })
+                checkedAudibleSamples = true
+            }
+
+            while let start = assembler.splitStartFrameIfNeeded(atFrame: cursor) {
+                let range = (start + maxSegmentFrames - searchWindowFrames)..<(start + maxSegmentFrames)
+                let cutFrame = history.quietestFrame(in: range)
+                segments.append(assembler.split(atFrame: cutFrame))
+            }
+        }
+
+        #expect(checkedAudibleSamples)
+        segments.append(contentsOf: assembler.speechEnded(atFrame: totalFrames))
+        return segments
     }
 }
 
@@ -124,8 +171,32 @@ func micCaptureStopFinalizesSpeechThroughTheLastPartialDiarizationWindow(sampleR
     let events = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
     let transcript = try TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
     #expect(transcript.map(\.text) == ["末尾の発話", "末尾の発話"])
-    #expect(transcript.map(\.startMilliseconds) == [90_000, 104_000])
-    #expect(transcript.map(\.endMilliseconds) == [104_000, 107_250])
+    #expect(transcript.count == 2)
+    let firstTranscript = try #require(transcript.first)
+    let secondTranscript = try #require(transcript.dropFirst().first)
+    #expect(firstTranscript.startMilliseconds == 90_000)
+    #expect(secondTranscript.endMilliseconds == 107_250)
+    #expect(firstTranscript.endMilliseconds == secondTranscript.startMilliseconds)
+    #expect((102_000...104_000).contains(firstTranscript.endMilliseconds))
+
+    let createdRanges = try lines.compactMap { line -> (startFrame: Int64, endFrame: Int64)? in
+        guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
+              object["event_type"] as? String == "segment.created",
+              object["segmentation_run_id"] as? String == activeRuns.segmentation,
+              let startFrame = (object["source_start_frame"] as? NSNumber)?.int64Value,
+              let endFrame = (object["source_end_frame"] as? NSNumber)?.int64Value else {
+            return nil
+        }
+        return (startFrame, endFrame)
+    }
+    #expect(createdRanges.count == 2)
+    let firstCreatedRange = try #require(createdRanges.first)
+    let secondCreatedRange = try #require(createdRanges.dropFirst().first)
+    #expect(firstCreatedRange.startFrame == speechStart)
+    #expect(secondCreatedRange.startFrame == firstCreatedRange.endFrame)
+    #expect(secondCreatedRange.endFrame == checkpoint.committedFrames)
+    #expect((speechStart + 192_000...speechStart + 224_000).contains(firstCreatedRange.endFrame))
+
     guard case .recordingFLAC(let info) = try SessionAudioStorageStore(layout: layout).load() else {
         Issue.record("Finalized recording must be compacted to FLAC")
         return

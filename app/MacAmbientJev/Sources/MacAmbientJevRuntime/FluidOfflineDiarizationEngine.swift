@@ -4,19 +4,27 @@ import MacAmbientJevCore
 
 actor FluidOfflineDiarizationEngine: DiarizationEngine {
     static let version = "FluidAudio@0.15.8"
+    static let configuration: OfflineDiarizerConfig = {
+        var config = OfflineDiarizerConfig.default
+        config.embedding.minSegmentDurationSeconds = 0.3
+        return config
+    }()
 
     nonisolated var provenance: RunProvenance {
         RunProvenance(
             engine: "fluidaudio-offline-diarizer",
             model: Repo.diarizer.rawValue,
             version: Self.version,
-            configuration: ["config": "OfflineDiarizerConfig.default"]
+            configuration: [
+                "config": "OfflineDiarizerConfig.default",
+                "embedding.min_segment_duration_seconds": String(Self.configuration.embedding.minSegmentDurationSeconds)
+            ]
         )
     }
 
     private let modelDirectory: URL
     private var manager: OfflineDiarizerManager?
-    private let config = OfflineDiarizerConfig.default
+    private let config = FluidOfflineDiarizationEngine.configuration
 
     init(paths: AppPaths) {
         self.modelDirectory = paths.modelsRoot.appending(

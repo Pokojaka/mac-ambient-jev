@@ -249,9 +249,9 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 | 段階 | engine / model / version | configuration |
 | --- | --- | --- |
-| segmentation | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`minimum_segment_seconds` = `0.02` |
+| segmentation | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`vad_threshold` = `0.5`、`split_search_window_seconds` = `2.0`、`split_energy_frame_seconds` = `0.02`、`minimum_independent_segment_seconds` = `0.5` |
 | asr | `qwen3-asr-swift` / 外部モデル ID: aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language` = `ja`、`minimum_input_seconds` = `0.02` |
-| diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default |
+| diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default、`embedding.min_segment_duration_seconds` = `0.3` |
 | clauseBoundary | `jev` / run の model なし / `2` | `mode` = `live` / `final` / `retry`、`endpoint` = https://api.typesafe.ai/v1/systemone （外部 API URL）、`candidate_characters` = `、。？！?!`、`boundary_threshold` = `0.5`、`continuation_threshold` = `0.5`、`next_head_character_limit` = `60`、`next_silence_format` = `seconds-1dp`、`unit_policy` = `sentence-or-independent-clause`、`text_policy` = `raw-asr`、`filler_projection_revision` = `1` |
 | contentPriority | `jev` / run の model なし / `2` | `mode`、`endpoint`、`minimum_demotion_confidence` = `0.9`、`maximum_targets` = `40`、`prompt_revision` = `2`、`text_policy` = `filler-removed-exact`、`filler_projection_revision` = `1`。応答モデルは各リクエスト記録に保存し、run 全体の単一モデルを推測しない |
 

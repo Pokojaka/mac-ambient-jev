@@ -23,7 +23,10 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
                 "pre_roll_seconds": String(FluidVADSegmentationEngine.preRollSeconds),
                 "max_segment_seconds": String(FluidVADSegmentationEngine.maxSegmentSeconds),
                 "min_silence_seconds": String(FluidVADSegmentationEngine.minSilenceSeconds),
-                "minimum_segment_seconds": String(FluidVADSegmentationEngine.minimumSegmentSeconds),
+                "vad_threshold": String(FluidVADSegmentationEngine.speechProbabilityThreshold),
+                "split_search_window_seconds": String(FluidVADSegmentationEngine.splitSearchWindowSeconds),
+                "split_energy_frame_seconds": String(FluidVADSegmentationEngine.splitEnergyFrameSeconds),
+                "minimum_independent_segment_seconds": String(FluidVADSegmentationEngine.minimumIndependentSegmentSeconds),
             ]
         )
     }
