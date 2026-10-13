@@ -9,7 +9,7 @@ enum NativeQwen3ASREngineError: Error {
 actor NativeQwen3ASREngine: ASREngine {
     static let engineName = "qwen3-asr-swift"
     static let version = "speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003"
-    static let language = "ja"
+    static let language = ASRLanguage.japanese
 
     nonisolated var provenance: RunProvenance {
         RunProvenance(
@@ -22,6 +22,8 @@ actor NativeQwen3ASREngine: ASREngine {
             ]
         )
     }
+
+    nonisolated var language: String? { Self.language }
 
     private let modelStore: ModelStore
     private var model: Qwen3ASRModel?

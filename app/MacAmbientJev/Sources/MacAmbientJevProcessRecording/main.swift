@@ -4,7 +4,7 @@ import MacAmbientJevCore
 import MacAmbientJevRuntime
 import MLX
 
-enum ProcessRecordingError: LocalizedError {
+enum ProcessRecordingError: LocalizedError, Equatable {
     case invalidArguments
     case audioFileNotFound(String)
     case processingFailed(String)
@@ -44,8 +44,16 @@ private actor ProcessingResultCollector {
     }
 }
 
-enum RecordingInput {
-    case importFile(audio: URL, output: URL, root: URL, keepSession: Bool, pacing: ASRPacingMode)
+struct ASRTextSource: Equatable {
+    let planDirectory: URL
+    let textsURL: URL
+}
+
+enum RecordingInput: Equatable {
+    case importFile(
+        audio: URL, output: URL, root: URL, keepSession: Bool, pacing: ASRPacingMode, asrText: ASRTextSource?
+    )
+    case exportASRPlan(audio: URL, directory: URL, root: URL, keepSession: Bool, pacing: ASRPacingMode)
     case inspect(sessionID: UUID, root: URL)
     case resume(sessionID: UUID, root: URL, output: URL, pacing: ASRPacingMode)
 }
@@ -62,7 +70,8 @@ struct ProcessRecordingCommand {
         let input = invocation.input
         let root: URL
         switch input {
-        case .importFile(_, _, let value, _, _), .inspect(_, let value), .resume(_, let value, _, _):
+        case .importFile(_, _, let value, _, _, _), .exportASRPlan(_, _, let value, _, _),
+             .inspect(_, let value), .resume(_, let value, _, _):
             root = value
         }
         let defaults = try AppPaths.systemDefault(fileManager: .default)
@@ -147,6 +156,8 @@ struct ProcessRecordingCommand {
             ? .lowHeat : .normal
         let resumeID = try removeOption("--resume-session", from: &arguments)
         let inspectID = try removeOption("--inspect-session", from: &arguments)
+        let exportPlanPath = try removeOption("--export-asr-plan", from: &arguments)
+        let asrText = try removePair("--asr-text", from: &arguments)
         let rootPath = try removeOption("--sessions-root", from: &arguments)
         guard let rootPath, !rootPath.isEmpty else { throw ProcessRecordingError.invalidArguments }
         let root = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
@@ -155,7 +166,7 @@ struct ProcessRecordingCommand {
         }
         if resumeID != nil || inspectID != nil {
             guard (resumeID == nil) != (inspectID == nil),
-                  !keepSession,
+                  !keepSession, exportPlanPath == nil, asrText == nil,
                   let id = UUID(uuidString: resumeID ?? inspectID ?? "") else {
                 throw ProcessRecordingError.invalidArguments
             }
@@ -170,6 +181,17 @@ struct ProcessRecordingCommand {
                 return .resume(sessionID: id, root: root, output: output, pacing: pacingMode)
             }
         }
+        guard exportPlanPath == nil || asrText == nil else { throw ProcessRecordingError.invalidArguments }
+        if let exportPlanPath {
+            guard !exportPlanPath.isEmpty, arguments.count == 1 else {
+                throw ProcessRecordingError.invalidArguments
+            }
+            return .exportASRPlan(
+                audio: URL(fileURLWithPath: arguments[0]).standardizedFileURL,
+                directory: URL(fileURLWithPath: exportPlanPath, isDirectory: true).standardizedFileURL,
+                root: root, keepSession: keepSession, pacing: pacingMode
+            )
+        }
         guard arguments.count == 1 || arguments.count == 2 else {
             throw ProcessRecordingError.invalidArguments
         }
@@ -182,8 +204,15 @@ struct ProcessRecordingCommand {
             == outputURL.resolvingSymlinksInPath().standardizedFileURL {
             throw ProcessRecordingError.invalidArguments
         }
-        return .importFile(audio: audioURL, output: outputURL, root: root,
-                           keepSession: keepSession, pacing: pacingMode)
+        return .importFile(
+            audio: audioURL, output: outputURL, root: root, keepSession: keepSession, pacing: pacingMode,
+            asrText: asrText.map {
+                ASRTextSource(
+                    planDirectory: URL(fileURLWithPath: $0.0, isDirectory: true).standardizedFileURL,
+                    textsURL: URL(fileURLWithPath: $0.1).standardizedFileURL
+                )
+            }
+        )
     }
 
     private static func execute(input: RecordingInput, monitor: RunMonitor?) async throws -> SessionProcessingResult {
@@ -194,10 +223,21 @@ struct ProcessRecordingCommand {
         case .resume(let id, let root, let output, let pacingMode):
             return try await resume(sessionID: id, root: root, outputURL: output,
                                     pacingMode: pacingMode, monitor: monitor)
-        case .importFile(let audioURL, let outputURL, let root, let keepSession, let pacingMode):
+        case .importFile(let audioURL, let outputURL, let root, let keepSession, let pacingMode, let asrText):
             try checkStart(pacingMode: pacingMode)
-            return try await importFile(audioURL: audioURL, outputURL: outputURL, root: root,
+            let paths = try processingPaths(root: root)
+            let engines = try asrText.map {
+                SessionProcessingEngines.production(
+                    paths: paths,
+                    asr: try ASRPlanReplayEngine(planDirectory: $0.planDirectory, textsURL: $0.textsURL)
+                )
+            } ?? .production(paths: paths)
+            return try await importFile(audioURL: audioURL, outputURL: outputURL, paths: paths, engines: engines,
                                         keepSession: keepSession, pacingMode: pacingMode, monitor: monitor)
+        case .exportASRPlan(let audioURL, let directory, let root, let keepSession, let pacingMode):
+            try checkStart(pacingMode: pacingMode)
+            return try await exportASRPlan(audioURL: audioURL, directory: directory, paths: try processingPaths(root: root),
+                                           keepSession: keepSession, pacingMode: pacingMode, monitor: monitor)
         }
     }
 
@@ -211,21 +251,24 @@ struct ProcessRecordingCommand {
         }
     }
 
-    private static func importFile(
+    private static func processingPaths(root: URL) throws -> AppPaths {
+        let defaults = try AppPaths.systemDefault(fileManager: .default)
+        return AppPaths(applicationSupportURL: defaults.applicationSupportURL,
+                        cacheURL: defaults.cacheURL, sessionsRootOverride: root)
+    }
+
+    /// Creates a session for `audioURL`, imports the audio into it, and removes the session afterwards
+    /// unless `keepSession`.
+    private static func withImportedSession<T>(
         audioURL: URL,
-        outputURL: URL,
-        root: URL,
+        paths: AppPaths,
         keepSession: Bool,
-        pacingMode: ASRPacingMode,
-        monitor: RunMonitor?
-    ) async throws -> SessionProcessingResult {
+        body: (_ sessionID: UUID, _ sessionURL: URL) async throws -> T
+    ) async throws -> T {
         guard FileManager.default.fileExists(atPath: audioURL.path) else {
             throw ProcessRecordingError.audioFileNotFound(audioURL.path)
         }
 
-        let defaults = try AppPaths.systemDefault(fileManager: .default)
-        let paths = AppPaths(applicationSupportURL: defaults.applicationSupportURL,
-                             cacheURL: defaults.cacheURL, sessionsRootOverride: root)
         let sessionID = UUID()
         let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
             paths: paths,
@@ -249,58 +292,98 @@ struct ProcessRecordingCommand {
             }
         }
 
-        let imported = try AudioImporter().importFile(
+        _ = try AudioImporter().importFile(
             audioURL,
             into: sessionURL
         )
-
-        let collector = ProcessingResultCollector()
-        let processor = NativeSessionProcessor(
-            paths: paths, engines: .production(paths: paths), contentPriority: .disabled
-        )
-
         print("処理を開始します: \(audioURL.path)")
+        return try await body(sessionID, sessionURL)
+    }
 
-        let processing = await processor.processSession(
-            sessionID: sessionID,
-            pacingMode: pacingMode,
-            shouldPause: pauseCheck(monitor),
-            onPhase: { phase in await monitor?.setPhase(phase) },
-            metadataPolicy: .reject,
-            onStatus: { message in
-                print(message)
-            },
-            onUpdate: { segments, state in
-                await collector.update(
-                    segments: segments,
-                    state: state
-                )
-            }
-        )
+    private static func importFile(
+        audioURL: URL,
+        outputURL: URL,
+        paths: AppPaths,
+        engines: SessionProcessingEngines,
+        keepSession: Bool,
+        pacingMode: ASRPacingMode,
+        monitor: RunMonitor?
+    ) async throws -> SessionProcessingResult {
+        try await withImportedSession(audioURL: audioURL, paths: paths, keepSession: keepSession) { sessionID, sessionURL in
+            let collector = ProcessingResultCollector()
+            let processor = NativeSessionProcessor(paths: paths, engines: engines, contentPriority: .disabled)
 
-        guard processing.disposition == .completed else { return processing }
-
-        let result = await collector.snapshot()
-        switch result.state {
-        case .partialFailure(let message):
-            throw ProcessRecordingError.processingFailed(message)
-        case .idle, .running, .backlogged:
-            throw ProcessRecordingError.processingFailed(
-                "処理が完了状態へ到達しませんでした"
+            let processing = await processor.processSession(
+                sessionID: sessionID,
+                pacingMode: pacingMode,
+                shouldPause: pauseCheck(monitor),
+                onPhase: { phase in await monitor?.setPhase(phase) },
+                metadataPolicy: .reject,
+                onStatus: { message in
+                    print(message)
+                },
+                onUpdate: { segments, state in
+                    await collector.update(
+                        segments: segments,
+                        state: state
+                    )
+                }
             )
-        case .complete:
-            break
-        }
 
-        try export(sessionURL: sessionURL, outputURL: outputURL)
+            guard processing.disposition == .completed else { return processing }
 
-        print("segments.json を生成しました: \(outputURL.path)")
-        if keepSession {
-            print("セッションデータを保持しました: \(sessionURL.path)")
-        } else {
-            print("テスト用セッションは処理終了後に削除します")
+            let result = await collector.snapshot()
+            switch result.state {
+            case .partialFailure(let message):
+                throw ProcessRecordingError.processingFailed(message)
+            case .idle, .running, .backlogged:
+                throw ProcessRecordingError.processingFailed(
+                    "処理が完了状態へ到達しませんでした"
+                )
+            case .complete:
+                break
+            }
+
+            try export(sessionURL: sessionURL, outputURL: outputURL)
+
+            print("segments.json を生成しました: \(outputURL.path)")
+            if keepSession {
+                print("セッションデータを保持しました: \(sessionURL.path)")
+            } else {
+                print("テスト用セッションは処理終了後に削除します")
+            }
+            return processing
         }
-        return processing
+    }
+
+    /// Runs the normal path up to the ASR requests. The export engine stops the run there, so the
+    /// processor reports a failed finalization that is the expected end.
+    private static func exportASRPlan(
+        audioURL: URL,
+        directory: URL,
+        paths: AppPaths,
+        keepSession: Bool,
+        pacingMode: ASRPacingMode,
+        monitor: RunMonitor?
+    ) async throws -> SessionProcessingResult {
+        let exporter = ASRPlanExportEngine(directory: directory)
+        return try await withImportedSession(audioURL: audioURL, paths: paths, keepSession: keepSession) { sessionID, _ in
+            let processing = await NativeSessionProcessor(
+                paths: paths, engines: .production(paths: paths, asr: exporter), contentPriority: .disabled
+            ).processSession(
+                sessionID: sessionID,
+                pacingMode: pacingMode,
+                shouldPause: pauseCheck(monitor),
+                onPhase: { phase in await monitor?.setPhase(phase) },
+                metadataPolicy: .reject,
+                onStatus: { message in print(message) },
+                onUpdate: { _, _ in }
+            )
+            guard await exporter.hasExported else { return processing }
+            let plan = try ASRPlan.load(directory: directory)
+            print("ASR プランを書き出しました: \(directory.path)（\(plan.requests.count) リクエスト）")
+            return .completed(metrics: processing.metrics, noSpeech: false)
+        }
     }
 
     static func inspect(sessionID: UUID, root: URL) throws {
@@ -356,12 +439,7 @@ struct ProcessRecordingCommand {
         let candidate = try scanner.inspect(sessionID: sessionID).recovery
         try checkStart(pacingMode: pacingMode)
 
-        let defaults = try AppPaths.systemDefault(fileManager: .default)
-        let paths = AppPaths(
-            applicationSupportURL: defaults.applicationSupportURL,
-            cacheURL: defaults.cacheURL,
-            sessionsRootOverride: root
-        )
+        let paths = try processingPaths(root: root)
         let processor = NativeSessionProcessor(
             paths: paths, engines: .production(paths: paths), contentPriority: .disabled
         )
@@ -442,6 +520,18 @@ struct ProcessRecordingCommand {
         return arguments.remove(at: index)
     }
 
+    private static func removePair(_ option: String, from arguments: inout [String]) throws -> (String, String)? {
+        guard let index = arguments.firstIndex(of: option) else { return nil }
+        guard index + 2 < arguments.count,
+              !arguments[index + 1].hasPrefix("--"),
+              !arguments[index + 2].hasPrefix("--"),
+              !arguments[(index + 3)...].contains(option) else {
+            throw ProcessRecordingError.invalidArguments
+        }
+        arguments.remove(at: index)
+        return (arguments.remove(at: index), arguments.remove(at: index))
+    }
+
     private static func removeFlag(
         _ flag: String,
         from arguments: inout [String]
@@ -459,6 +549,8 @@ struct ProcessRecordingCommand {
             """
             使い方:
               MacAmbientJevProcessRecording --sessions-root <path> [--keep-session] [--low-heat] <audio-file> [segments.json]
+              MacAmbientJevProcessRecording --sessions-root <path> [--keep-session] [--low-heat] --export-asr-plan <plan-dir> <audio-file>
+              MacAmbientJevProcessRecording --sessions-root <path> [--keep-session] [--low-heat] --asr-text <plan-dir> <texts.jsonl> <audio-file> [segments.json]
               MacAmbientJevProcessRecording --inspect-session <UUID> --sessions-root <path>
               MacAmbientJevProcessRecording --resume-session <UUID> --sessions-root <path> [--low-heat] <segments.json>
               UUID は session.json の完全 ID。保存 root 直下の実フォルダーを検索します。
@@ -473,6 +565,11 @@ struct ProcessRecordingCommand {
             通常はテスト用セッションを処理後に削除します。
             デバッグ用にセッションを残す場合だけ --keep-session を指定します。
             --low-heat は発話区間の文字起こし完了ごとに約2秒休止します。
+
+            --export-asr-plan は音声認識の直前までを処理し、plan.json と clips/<id>.flac を
+            空か未作成の <plan-dir> に書き出して終了します（音声認識モデルは読み込みません）。
+            --asr-text は plan を再計算して plan.json と完全に一致することを確認し、
+            texts.jsonl（1 行 {"id": ..., "text": ...}）の文字を音声認識結果として使います。
 
             """.utf8
         ))

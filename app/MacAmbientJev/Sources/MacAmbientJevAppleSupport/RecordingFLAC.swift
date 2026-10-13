@@ -4,12 +4,18 @@ import MacAmbientJevCore
 
 public enum RecordingFLACError: LocalizedError, Equatable {
     case nonFiniteSample(frame: Int64)
+    case noncanonicalASRClipSampleRate(Int)
+    case asrClipTooShort(sampleCount: Int, minimum: Int)
     case audioToolbox(operation: String, status: OSStatus)
 
     public var errorDescription: String? {
         switch self {
         case .nonFiniteSample(let frame):
             "フレーム \(frame) の音声サンプルが有限値ではないため 16-bit FLAC にできません"
+        case .noncanonicalASRClipSampleRate(let sampleRate):
+            "ASR クリップのサンプルレートは 16000 Hz である必要があります（入力: \(sampleRate) Hz）"
+        case .asrClipTooShort(let sampleCount, let minimum):
+            "ASR クリップは最低 \(minimum) サンプル必要です（入力: \(sampleCount) サンプル）"
         case .audioToolbox(let operation, let status):
             "FLAC の書き出しに失敗しました（\(operation)、OSStatus \(status)）"
         }
@@ -21,6 +27,7 @@ public enum RecordingFLACError: LocalizedError, Equatable {
 /// shorter than `blockFrames`; frames at and after the recording's length are exactly zero.
 public enum RecordingFLAC {
     public static let blockFrames: Int64 = 4_096
+    public static let asrClipBitDepth = 16
     private static let framesPerWrite: Int64 = 48_000
 
     /// Frames in the FLAC stream for a recording of `committedFrames`: max(committedFrames, blockFrames).
@@ -40,6 +47,37 @@ public enum RecordingFLAC {
     /// Writes the recording directly to `url` and closes the file. The caller validates `reader`
     /// when it opens it.
     public static func write(reader: any TimelineAudioReading, to url: URL, sessionURL: URL) throws {
+        try write(
+            reader: reader, to: url, directory: sessionURL,
+            storedFrames: storedFrames(committedFrames: reader.info.committedFrames),
+            blockFrames: blockFrames
+        )
+    }
+
+    /// Writes an exact-length canonical ASR clip without the recording writer's minimum-block padding.
+    /// The AudioToolbox FLAC encoder rejects blocks under 192 frames, so clips shorter than the ASR minimum are refused.
+    public static func writeASRClip(_ input: ASRAudioInput, to url: URL, directory: URL) throws {
+        guard input.sampleRate == Int(CanonicalAudio.sampleRate) else {
+            throw RecordingFLACError.noncanonicalASRClipSampleRate(input.sampleRate)
+        }
+        guard !input.isShorterThanMinimumASRDuration else {
+            throw RecordingFLACError.asrClipTooShort(
+                sampleCount: input.samples.count,
+                minimum: ASRAudioInput.minimumSampleCount(sampleRate: input.sampleRate)
+            )
+        }
+        let reader = try ASRClipReader(samples: input.samples)
+        try write(
+            reader: reader, to: url, directory: directory,
+            storedFrames: Int64(input.samples.count),
+            blockFrames: min(blockFrames, Int64(input.samples.count))
+        )
+    }
+
+    private static func write(
+        reader: any TimelineAudioReading, to url: URL, directory: URL,
+        storedFrames: Int64, blockFrames: Int64
+    ) throws {
         var client = AudioStreamBasicDescription(
             mSampleRate: CanonicalAudio.sampleRate, mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
@@ -59,7 +97,7 @@ public enum RecordingFLAC {
         }
         defer { AudioConverterDispose(converter) }
         let descriptorFile = try DescriptorAudioFile(
-            url: url, sessionURL: sessionURL, type: kAudioFileFLACType, format: &destination
+            url: url, sessionURL: directory, type: kAudioFileFLACType, format: &destination
         )
         try writeCookie(converter, to: descriptorFile.audioFile)
         var size = UInt32(MemoryLayout<UInt32>.size)
@@ -72,7 +110,7 @@ public enum RecordingFLAC {
         }
         let output = UnsafeMutableRawPointer.allocate(byteCount: Int(maximumPacketSize), alignment: MemoryLayout<Int16>.alignment)
         defer { output.deallocate() }
-        let input = EncodingInput(reader: reader, capacity: Int(framesPerWrite))
+        let input = EncodingInput(reader: reader, capacity: Int(framesPerWrite), storedFrames: storedFrames)
         var packetIndex: Int64 = 0
         while true {
             var packets: UInt32 = 1
@@ -123,6 +161,26 @@ public enum RecordingFLAC {
         }
     }
 
+    private struct ASRClipReader: TimelineAudioReading {
+        let samples: [Float]
+        let info: TimelineAudioInfo
+
+        init(samples: [Float]) throws {
+            self.samples = samples
+            self.info = try TimelineAudioInfo(committedFrames: Int64(samples.count), gapEvents: [])
+        }
+
+        func readSamples(frameRange: Range<Int64>) throws -> [Float] {
+            guard frameRange.lowerBound >= 0, frameRange.upperBound >= frameRange.lowerBound,
+                  frameRange.upperBound <= info.committedFrames else {
+                throw ProcessingTimelineReaderError.invalidFrameRange
+            }
+            return Array(samples[Int(frameRange.lowerBound)..<Int(frameRange.upperBound)])
+        }
+
+        func validateAudio() throws {}
+    }
+
     private final class EncodingInput {
         let reader: any TimelineAudioReading
         let capacity: Int
@@ -131,11 +189,11 @@ public enum RecordingFLAC {
         var position: Int64 = 0
         var error: (any Error)?
 
-        init(reader: any TimelineAudioReading, capacity: Int) {
+        init(reader: any TimelineAudioReading, capacity: Int, storedFrames: Int64) {
             self.reader = reader
             self.capacity = capacity
             self.samples = .allocate(capacity: capacity)
-            self.storedFrames = RecordingFLAC.storedFrames(committedFrames: reader.info.committedFrames)
+            self.storedFrames = storedFrames
         }
 
         deinit { samples.deallocate() }

@@ -48,7 +48,7 @@ for module in ("asr.qwen3_asr", "diarization.nemotron3", "common.voicevox_cli"):
 # measure_v1_run.sh、prepare_fixture / run_suite / voicevox_suite の出力。
 RUNTIME_BASENAMES = frozenset({
     "session.json", "events.jsonl", "processing_metadata.json", "checkpoint.json",
-    "audio-chunks.jsonl", "audio-gaps.jsonl", "transcript.txt", "segments.json",
+    "audio-chunks.jsonl", "audio-gaps.jsonl", "transcript.txt", "segments.json", "plan.json",
     "audio.wav", "audio.m4a", "audio.flac", "storage.json", "recording.flac", "run.json", "engine-metrics.json",
     "memory.jsonl", "thermal.jsonl", "reference-verbatim.txt", "reference-content.txt",
     "speaker-reference.json", "fixture.json", "scenario.json", "qwen3-asr.json",

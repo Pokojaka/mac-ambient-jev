@@ -29,24 +29,40 @@ public struct ASRAudioInput: Sendable, Equatable {
         self.sampleRate = sampleRate
     }
 
-    public var isShorterThanMinimumASRDuration: Bool {
-        sampleRate > 0
-            && samples.count < Int((Self.minimumDurationSeconds * Double(sampleRate)).rounded())
+    public static func minimumSampleCount(sampleRate: Int) -> Int {
+        Int((minimumDurationSeconds * Double(sampleRate)).rounded())
     }
+
+    public var isShorterThanMinimumASRDuration: Bool {
+        sampleRate > 0 && samples.count < Self.minimumSampleCount(sampleRate: sampleRate)
+    }
+}
+
+public enum ASRLanguage {
+    public static let japanese = "ja"
 }
 
 public protocol ASREngine: Sendable {
     var provenance: RunProvenance { get }
+    /// The language passed to recognition, nil when the engine takes none.
+    var language: String? { get }
     func prepare() async throws
     func prepare(onProgress: @escaping @Sendable (Double, String) -> Void) async throws
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult
     func unload() async
+    /// Called once with the ordered requests before the first `transcribe`, and before `prepare`.
+    /// Throwing stops the run before any request is transcribed.
+    func begin(plan: ASRPlan, audio: ASRAudioLoader) async throws
 }
 
 public extension ASREngine {
+    var language: String? { nil }
+
     func prepare(onProgress: @escaping @Sendable (Double, String) -> Void) async throws {
         try await prepare()
     }
+
+    func begin(plan: ASRPlan, audio: ASRAudioLoader) async throws {}
 }
 
 public struct ModelStore: Sendable {
@@ -82,8 +98,12 @@ public struct ASRAudioLoader: Sendable {
         guard segment.startFrame <= segment.endFrame else {
             throw ProcessingTimelineReaderError.invalidFrameRange
         }
-        return ASRAudioInput(
-            samples: try reader.readSamples(frameRange: segment.startFrame..<segment.endFrame),
+        return try load(frameRange: segment.startFrame..<segment.endFrame)
+    }
+
+    public func load(frameRange: Range<Int64>) throws -> ASRAudioInput {
+        ASRAudioInput(
+            samples: try reader.readSamples(frameRange: frameRange),
             sampleRate: Int(CanonicalAudio.sampleRate)
         )
     }

@@ -147,3 +147,38 @@ func diskInspectUsesManifestIdentityAndRejectsMissingOrAmbiguousSessions() throw
         )
     }
 }
+
+@Test
+func asrPlanOptionsSelectExportAndTextReplayInputs() throws {
+    let root = "/tmp/jev-root"
+    #expect(try ProcessRecordingCommand.parseInput(
+        ["--sessions-root", root, "--export-asr-plan", "/tmp/plan", "/tmp/a.wav"], measured: false
+    ) == .exportASRPlan(
+        audio: URL(fileURLWithPath: "/tmp/a.wav"), directory: URL(fileURLWithPath: "/tmp/plan", isDirectory: true),
+        root: URL(fileURLWithPath: root, isDirectory: true), keepSession: false, pacing: .normal
+    ))
+    #expect(try ProcessRecordingCommand.parseInput(
+        ["--sessions-root", root, "--asr-text", "/tmp/plan", "/tmp/texts.jsonl", "/tmp/a.wav", "/tmp/out.json"],
+        measured: false
+    ) == .importFile(
+        audio: URL(fileURLWithPath: "/tmp/a.wav"), output: URL(fileURLWithPath: "/tmp/out.json"),
+        root: URL(fileURLWithPath: root, isDirectory: true), keepSession: false, pacing: .normal,
+        asrText: ASRTextSource(
+            planDirectory: URL(fileURLWithPath: "/tmp/plan", isDirectory: true),
+            textsURL: URL(fileURLWithPath: "/tmp/texts.jsonl")
+        )
+    ))
+}
+
+@Test(arguments: [
+    ["--export-asr-plan", "/tmp/plan", "--asr-text", "/tmp/plan", "/tmp/t.jsonl", "/tmp/a.wav"],
+    ["--export-asr-plan", "/tmp/plan", "/tmp/a.wav", "/tmp/out.json"],
+    ["--asr-text", "/tmp/plan", "/tmp/a.wav"],
+    ["--export-asr-plan", "/tmp/plan", "--resume-session", "A0A0A0A0-0000-4000-8000-000000000000", "/tmp/out.json"],
+    ["--asr-text", "/tmp/plan", "/tmp/t.jsonl", "--inspect-session", "A0A0A0A0-0000-4000-8000-000000000000"],
+])
+func asrPlanOptionsRejectInvalidCombinations(arguments: [String]) {
+    #expect(throws: ProcessRecordingError.invalidArguments) {
+        try ProcessRecordingCommand.parseInput(["--sessions-root", "/tmp/jev-root"] + arguments, measured: false)
+    }
+}

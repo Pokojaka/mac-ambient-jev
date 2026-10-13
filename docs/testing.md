@@ -192,6 +192,43 @@ resume は先にそのセッションの保存整理（FLAC 変換または一�
 
 引数 parser は構文だけを検査します。resume の出力先 containment は実行時に実フォルダーを解決した後、symlink 解決・大文字小文字の同一視を保って検査します。実セッション内への出力は拒否し、lookup と containment の失敗は production engine の構築・処理より前に返します。
 
+### 外部 ASR 用の plan 書き出しとテキスト取り込み
+
+別マシンの ASR で書き起こすために、確定処理を ASR の直前で止めて入力を書き出し、結果のテキストを取り込んで後段を同じコードで実行できる。VAD、話者分離、ASR より後の処理は通常の確定処理と同一で、アプリと同じ `segments.json` を作る。
+
+```bash
+swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
+  --sessions-root "$SESSIONS_ROOT" --export-asr-plan "$PLAN_DIR" "$AUDIO_FILE"
+
+swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
+  --sessions-root "$SESSIONS_ROOT" --asr-text "$PLAN_DIR" "$TEXTS_JSONL" "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
+```
+
+`--export-asr-plan` は ASR モデルを読み込まず、文字起こしも公開しない。`PLAN_DIR` は未作成か空でなければならず、次を書く。
+
+- `plan.json`。クリップをすべて書いた後に最後に書くため、`plan.json` があれば全クリップが揃っている。
+- `clips/<id>.flac`。ASR エンジンに渡る 16 kHz mono のサンプルと同一で、長さは区間と一致する。量子化は 16-bit（FLAC 書き出しが対応する最大）で、`bit_depth` に記録する。
+
+`plan.json` のスキーマ（キーは snake_case）。
+
+| キー | 内容 |
+| --- | --- |
+| `sample_rate` | 正準タイムラインのサンプルレート。常に 16000 |
+| `bit_depth` | クリップの bit 深度。16 |
+| `requests` | ASR リクエストの配列。文字起こしの実行順 |
+| `requests[].id` | 区間 ID。VAD の `seg_NNNNNN`、話者交代で分割した場合は `seg_NNNNNN_turn_NNNN`。同じ音声と同じコードなら同じ値 |
+| `requests[].start_sample`、`end_sample` | 正準タイムライン上の半開区間 |
+| `requests[].language` | ASR に渡す言語。エンジンが言語を取らない場合は省略 |
+| `requests[].speakers` | 区間と重なる話者分離スパンを区間内に切り詰めたもの。`speaker_id`、`start_sample`、`end_sample` |
+
+ASR の最小長（20 ms）未満の区間は、エンジンが空文字を返すだけなのでリクエストに含めない。
+
+`--asr-text` の `TEXTS_JSONL` は 1 行に `{"id": ..., "text": ...}` を一つ書く。処理を始める前に、id の集合が `plan.json` と完全一致すること（欠落・余剰・重複・不正な行は非 0 終了）を確認する。続けて通常どおり VAD と話者分離を実行し、ASR の直前で plan を再計算して `plan.json` と ID・サンプル範囲・順序まで完全に一致することを要求する。一致しなければ、どこが違うかを示して非 0 で終了し、何も公開しない。両オプションは同時に指定できず、import 専用で resume・inspect とは併用できない。
+
+テキストを返すエンジン（`ASRPlanReplayEngine`）とクリップを書くエンジン（`ASRPlanExportEngine`）はどちらも `ASREngine` の実装で、確定処理の本体に分岐はない。確定処理は ASR の前に `ASREngine.begin(plan:audio:)` を一度呼ぶ。通常のエンジンは何もしない。書き出しエンジンは `begin` の中で全クリップと `plan.json` を書いて処理を中断するため、CLI の確定処理は失敗として終わり、プロセスは成功（終了コード 0）として扱う。
+
+round-trip の確認は、短い音声を通常実行して `segments.json` A を得た後に、同じ音声で書き出した plan と A の本文（サンプル範囲で対応づけたもの）から `--asr-text` で `segments.json` B を作り、run ID と時刻以外が一致することを見る。
+
 ### 不正入力の smoke
 
 `scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行する。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認する。さらに実 named folder で inspect の正常・不在・完全 UUID の重複・同じ先頭 8 桁の別 ID・名前/日時/suffix/stem の不整合を検証し、実セッション内（symlink・大文字小文字の違いを含む）への resume 出力を拒否して原ファイルが変わらないことを確認する。実モデルの正常推論とは別の検査である。

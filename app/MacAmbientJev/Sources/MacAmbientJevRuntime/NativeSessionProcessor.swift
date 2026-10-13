@@ -111,8 +111,13 @@ public struct SessionProcessingEngines: Sendable {
     }
 
     public static func production(paths: AppPaths) -> SessionProcessingEngines {
+        production(paths: paths, asr: NativeQwen3ASREngine(modelStore: ModelStore(paths: paths)))
+    }
+
+    /// The production segmentation and diarization with a different recognizer.
+    public static func production(paths: AppPaths, asr: any ASREngine) -> SessionProcessingEngines {
         SessionProcessingEngines(
-            asr: NativeQwen3ASREngine(modelStore: ModelStore(paths: paths)),
+            asr: asr,
             diarization: FluidOfflineDiarizationEngine(paths: paths),
             finalTranscriptVAD: FluidFinalTranscriptVADSegmenter()
         )

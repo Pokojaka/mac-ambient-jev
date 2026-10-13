@@ -208,6 +208,16 @@ struct FinalTranscriptPipeline: Sendable {
             sampleRate: info.sampleRate
         )
         try validateVADSegments(asrSegments, runID: segmentationRunID)
+        try await asr.begin(
+            plan: ASRPlan(
+                segments: asrSegments,
+                speakerSpans: speakerSpans,
+                sampleRate: Int(CanonicalAudio.sampleRate),
+                bitDepth: RecordingFLAC.asrClipBitDepth,
+                language: asr.language
+            ),
+            audio: ASRAudioLoader(reader: audio)
+        )
         try await startRun(.asr, asrRunID, asr.provenance)
         var pendingSince: [String: Date] = [:]
         for segment in asrSegments {
