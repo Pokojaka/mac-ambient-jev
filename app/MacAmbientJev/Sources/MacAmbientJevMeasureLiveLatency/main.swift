@@ -1,5 +1,4 @@
 import AVFoundation
-import Dispatch
 import Darwin
 import Foundation
 import MacAmbientJevCore
@@ -91,6 +90,11 @@ private struct FormatDescription {
     let source: String
 }
 
+struct ReplayFeedResult: Sendable {
+    let checkpoint: AudioCheckpoint
+    let maxFeedLagSeconds: Double
+}
+
 private struct LatencyRecord: Sendable {
     let segmentID: String
     let endSpeechFrame: Int64
@@ -104,9 +108,9 @@ private actor MeasurementCollector {
     private var latestTexts: [String: String] = [:]
     private var finalSegmentsByID: [String: MaterializedTranscriptSegment] = [:]
     private var finalProcessingState: String?
-    private let clockStart: UInt64
+    private let origin: ContinuousClock.Instant
 
-    init(clockStart: UInt64) { self.clockStart = clockStart }
+    init(origin: ContinuousClock.Instant) { self.origin = origin }
 
     func register(_ segments: [SegmentReference]) {
         for segment in segments {
@@ -115,8 +119,7 @@ private actor MeasurementCollector {
     }
 
     func update(_ segments: [MaterializedTranscriptSegment]) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        let elapsed = Double(now >= clockStart ? now - clockStart : 0) / 1_000_000_000
+        let elapsed = origin.duration(to: .now) / .seconds(1)
         for segment in segments {
             let text = segment.displayText
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
@@ -246,19 +249,20 @@ struct MeasureLiveLatencyCommand {
             segmentationRunID: segmentationRunID
         )
 
-        let started = DispatchTime.now().uptimeNanoseconds
-        let collector = MeasurementCollector(clockStart: started)
+        let started = ContinuousClock.now
+        let collector = MeasurementCollector(origin: started)
         let state = ReplayInputState()
         let producer = Task {
             do {
-                let finalCheckpoint = try await feedAudio(
+                let replayResult = try await feedAudio(
                     options.sourceURL,
                     sourceFormat: sourceFormat,
                     targetFormat: target,
-                    into: writer
+                    into: writer,
+                    origin: started
                 )
                 await state.finish()
-                return finalCheckpoint
+                return replayResult
             } catch {
                 await state.finish()
                 throw error
@@ -288,7 +292,8 @@ struct MeasureLiveLatencyCommand {
             }
         }
 
-        checkpoint = try await producer.value
+        let replayResult = try await producer.value
+        checkpoint = replayResult.checkpoint
         if checkpoint.committedFrames > processedFrames {
             let progress = try await vadSession.processAvailable(checkpoint: checkpoint)
             if !progress.emittedSegments.isEmpty {
@@ -393,6 +398,7 @@ struct MeasureLiveLatencyCommand {
             "replay_input_sample_rate_hz": target.sampleRate,
             "replay_input_channels": Int(target.channelCount),
             "replay_input_format_source": targetFormatSource(options: options),
+            "replay_max_feed_lag_seconds": replayResult.maxFeedLagSeconds,
             "microphone_capture_started": false,
             "frame_count": checkpoint.committedFrames,
             "timeline_duration_seconds": Double(checkpoint.committedFrames) / checkpoint.sampleRate,
@@ -473,10 +479,13 @@ struct MeasureLiveLatencyCommand {
         _ sourceURL: URL,
         sourceFormat: AVAudioFormat,
         targetFormat: AVAudioFormat,
-        into writer: DurableAudioWriter
-    ) async throws -> AudioCheckpoint {
+        into writer: DurableAudioWriter,
+        origin: ContinuousClock.Instant
+    ) async throws -> ReplayFeedResult {
         let audioFile = try AVAudioFile(forReading: sourceURL, commonFormat: .pcmFormatFloat32, interleaved: false)
         let ingress = try CanonicalAudioResampler(sampleRate: targetFormat.sampleRate)
+        var cumulativeInputFrames: Int64 = 0
+        var maxFeedLagSeconds = 0.0
         let converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
         let sourceCapacity = AVAudioFrameCount(max(1, Int((sourceFormat.sampleRate * 0.5).rounded())))
         let needsConversion = sourceFormat.sampleRate != targetFormat.sampleRate
@@ -518,12 +527,16 @@ struct MeasureLiveLatencyCommand {
             }
             let frameCount = Int(converted.frameLength)
             guard frameCount > 0 else { continue }
-            try await appendPaced(
+            cumulativeInputFrames += Int64(converted.frameLength)
+            let feedLagSeconds = try await appendPaced(
                 converted,
                 targetFormat: targetFormat,
                 ingress: ingress,
-                into: writer
+                into: writer,
+                origin: origin,
+                cumulativeInputFrames: cumulativeInputFrames
             )
+            maxFeedLagSeconds = max(maxFeedLagSeconds, feedLagSeconds)
         }
 
         if let converter, needsConversion {
@@ -537,27 +550,37 @@ struct MeasureLiveLatencyCommand {
                 if let conversionError { throw conversionError }
                 guard status != .error else { throw ReplayError.invalidFormat }
                 if outputBuffer.frameLength > 0 {
-                    try await appendPaced(
+                    cumulativeInputFrames += Int64(outputBuffer.frameLength)
+                    let feedLagSeconds = try await appendPaced(
                         outputBuffer,
                         targetFormat: targetFormat,
                         ingress: ingress,
-                        into: writer
+                        into: writer,
+                        origin: origin,
+                        cumulativeInputFrames: cumulativeInputFrames
                     )
+                    maxFeedLagSeconds = max(maxFeedLagSeconds, feedLagSeconds)
                 }
                 if status == .endOfStream { break }
                 guard outputBuffer.frameLength > 0 else { throw ReplayError.invalidFormat }
             }
         }
+        let cumulativeInputSeconds = Double(cumulativeInputFrames) / targetFormat.sampleRate
         try await writer.append(samples: ingress.finish())
-        return try await writer.finish()
+        let finalFeedLagSeconds = origin.duration(to: .now) / .seconds(1) - cumulativeInputSeconds
+        maxFeedLagSeconds = max(maxFeedLagSeconds, finalFeedLagSeconds)
+        let checkpoint = try await writer.finish()
+        return ReplayFeedResult(checkpoint: checkpoint, maxFeedLagSeconds: maxFeedLagSeconds)
     }
 
     private static func appendPaced(
         _ buffer: AVAudioPCMBuffer,
         targetFormat: AVAudioFormat,
         ingress: CanonicalAudioResampler,
-        into writer: DurableAudioWriter
-    ) async throws {
+        into writer: DurableAudioWriter,
+        origin: ContinuousClock.Instant,
+        cumulativeInputFrames: Int64
+    ) async throws -> Double {
         guard let channels = buffer.floatChannelData else { throw ReplayError.invalidFormat }
         let frameCount = Int(buffer.frameLength)
         var mono = Array(repeating: Float.zero, count: frameCount)
@@ -570,9 +593,15 @@ struct MeasureLiveLatencyCommand {
             }
             mono[frame] = sum / Float(targetFormat.channelCount)
         }
-        let duration = Double(frameCount) / targetFormat.sampleRate
-        try await Task.sleep(for: .nanoseconds(UInt64((duration * 1_000_000_000).rounded())))
-        try await writer.append(samples: ingress.convert(mono: mono))
+        let samples = try ingress.convert(mono: mono)
+        let cumulativeInputSeconds = Double(cumulativeInputFrames) / targetFormat.sampleRate
+        try await Task.sleep(
+            until: origin.advanced(by: .seconds(cumulativeInputSeconds)),
+            tolerance: .zero,
+            clock: .continuous
+        )
+        try await writer.append(samples: samples)
+        return origin.duration(to: .now) / .seconds(1) - cumulativeInputSeconds
     }
 }
 

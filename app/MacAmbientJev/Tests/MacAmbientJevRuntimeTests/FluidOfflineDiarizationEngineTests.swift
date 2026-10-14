@@ -1,3 +1,4 @@
+import Foundation
 import FluidAudio
 import Testing
 import MacAmbientJevCore
@@ -62,4 +63,42 @@ func fluidDiarizationUsesConfiguredWindowScheduleAndKeepsInRangeSpan() throws {
             sampleCount: 160_000, config: config
         )
     }
+}
+
+@Test
+func fluidDiarizationProductionConfigurationOverridesOnlyMinimumSegmentDuration() throws {
+    let config = FluidOfflineDiarizationEngine.configuration
+    let defaults = OfflineDiarizerConfig.default
+
+    #expect(defaults.embedding.minSegmentDurationSeconds == 1.0)
+    #expect(config.embedding.minSegmentDurationSeconds == 0.3)
+    try config.validate()
+    #expect(Double(config.segmentation.sampleRate) == CanonicalAudio.sampleRate)
+    #expect(config.segmentation.stepRatio == defaults.segmentation.stepRatio)
+    #expect(config.segmentation.windowDurationSeconds == defaults.segmentation.windowDurationSeconds)
+    #expect(config.embedding.excludeOverlap == defaults.embedding.excludeOverlap)
+    #expect(config.embedding.batchSize == defaults.embedding.batchSize)
+    #expect(config.clustering.threshold == defaults.clustering.threshold)
+    #expect(config.postProcessing.minGapDurationSeconds == defaults.postProcessing.minGapDurationSeconds)
+    #expect(config.postProcessing.exclusiveSegments == defaults.postProcessing.exclusiveSegments)
+}
+
+@Test
+func fluidDiarizationProvenanceRecordsProductionConfiguration() {
+    let temporaryRoot = FileManager.default.temporaryDirectory.appending(
+        path: UUID().uuidString,
+        directoryHint: .isDirectory
+    )
+    let paths = AppPaths(
+        applicationSupportURL: temporaryRoot.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: temporaryRoot.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: temporaryRoot.appending(path: "sessions", directoryHint: .isDirectory)
+    )
+    let provenance = FluidOfflineDiarizationEngine(paths: paths).provenance
+
+    #expect(provenance.version == "FluidAudio@0.15.8")
+    #expect(provenance.configuration == [
+        "config": "OfflineDiarizerConfig.default",
+        "embedding.min_segment_duration_seconds": "0.3"
+    ])
 }

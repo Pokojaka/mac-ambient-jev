@@ -2,144 +2,217 @@ import Testing
 @testable import MacAmbientJevCore
 
 @Test
-func segmentationAssemblerKeepsShortUtterancesAndAppliesPreRoll() {
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
-        preRollFrames: 100,
-        maxSegmentFrames: 10_000,
-        minimumSegmentFrames: 0
-    )
+func rollingHistorySelectsQuietestFrameForChosenMaximumLengthSplit() {
+    let frameSampleCount = 320
+    let maxSegmentFrames: Int64 = 224_000
+    var samples = [Float](repeating: 1, count: Int(maxSegmentFrames))
+    for sampleIndex in 208_000..<208_320 {
+        samples[sampleIndex] = 0
+    }
 
-    assembler.speechStarted(atFrame: 1_000)
-    let segment = assembler.speechEnded(atFrame: 1_080).first
+    var history = RollingFrameEnergyHistory(frameSampleCount: frameSampleCount, capacity: 150)
+    var offset = 0
+    while offset < samples.count {
+        let end = min(offset + 4_096, samples.count)
+        let batch = Array(samples[offset..<end])
+        #expect(batch.count <= 4_096)
+        history.append(batch)
+        offset = end
+    }
 
-    #expect(segment?.startFrame == 900)
-    #expect(segment?.endFrame == 1_080)
-}
+    #expect(history.processedSamples == maxSegmentFrames)
+    #expect(history.storedFrameCount == 150)
+    #expect(history.quietestFrame(in: 192_000..<224_000) == 208_160)
 
-@Test
-func segmentationAssemblerSplitsLongUtteranceWithoutDroppingContinuation() {
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
-        preRollFrames: 0,
-        maxSegmentFrames: 1_000,
-        minimumSegmentFrames: 30
-    )
-
-    assembler.speechStarted(atFrame: 500)
-    let first = assembler.splitIfNeeded(atFrame: 1_500)
-    let second = assembler.speechEnded(atFrame: 1_800).first
-
-    #expect(first?.startFrame == 500)
-    #expect(first?.endFrame == 1_500)
-    #expect(second?.startFrame == 1_500)
-    #expect(second?.endFrame == 1_800)
-}
-
-@Test
-func segmentationAssemblerKeepsShortSplitTailAndShortSpeechButSuppressesTinyUtterances() {
     var assembler = SegmentationAssembler(
         segmentationRunID: "seg_run_01",
         preRollFrames: 0,
-        maxSegmentFrames: 672_000,
-        minimumSegmentFrames: 960
+        maxSegmentFrames: maxSegmentFrames,
+        minimumIndependentSegmentFrames: 8_000
     )
+    assembler.speechStarted(atFrame: 0)
+    #expect(assembler.splitStartFrameIfNeeded(atFrame: 223_999) == nil)
+    #expect(assembler.splitStartFrameIfNeeded(atFrame: maxSegmentFrames) == 0)
 
-    assembler.speechStarted(atFrame: 190_344_768)
-    let full = assembler.splitIfNeeded(atFrame: 191_016_768)
-    let tail = assembler.speechEnded(atFrame: 191_016_960)
-    assembler.speechStarted(atFrame: 191_020_000)
-    let shortSpeech = assembler.speechEnded(atFrame: 191_023_840).first
-    assembler.speechStarted(atFrame: 191_030_000)
-    let shorterSpeech = assembler.speechEnded(atFrame: 191_031_152).first
-
-    #expect(full?.segmentID == "seg_000001")
-    #expect(full?.startFrame == 190_344_768)
-    #expect(full?.endFrame == 191_016_768)
-    #expect(tail.map(\.segmentID) == ["seg_000002"])
-    #expect(tail.first?.startFrame == 191_016_768)
-    #expect(tail.first?.endFrame == 191_016_960)
-    #expect(shortSpeech?.segmentID == "seg_000003")
-    #expect(shortSpeech?.startFrame == 191_020_000)
-    #expect(shortSpeech?.endFrame == 191_023_840)
-    #expect(shorterSpeech?.segmentID == "seg_000004")
-    #expect(shorterSpeech?.startFrame == 191_030_000)
-    #expect(shorterSpeech?.endFrame == 191_031_152)
-
-    assembler.speechStarted(atFrame: 191_040_000)
-    #expect(assembler.speechEnded(atFrame: 191_040_192).isEmpty)
+    let first = assembler.split(atFrame: history.quietestFrame(in: 192_000..<224_000))
+    let continuation = assembler.speechEnded(atFrame: maxSegmentFrames).first
+    #expect(first.startFrame == 0)
+    #expect(first.endFrame == 208_160)
+    #expect(continuation?.startFrame == first.endFrame)
+    #expect(continuation?.endFrame == maxSegmentFrames)
+    #expect(first.endFrame == continuation?.startFrame)
 }
 
 @Test
-func segmentationAssemblerKeepsShortSplitTailAtEndOfInput() {
+func rollingHistoryUniformEnergyChoosesEarliestCompleteFrame() {
+    let sampleCount = 224_000
+    var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 150)
+    history.append([Float](repeating: 1, count: sampleCount))
+
+    #expect(history.quietestFrame(in: 192_000..<224_000) == 192_160)
+}
+
+@Test
+func rollingHistoryUsesOnlyCompleteAlignedFramesInUnalignedRange() {
+    var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 10)
+    var samples = [Float](repeating: 0, count: 320)
+    samples.append(contentsOf: [Float](repeating: 1, count: 320))
+    samples.append(contentsOf: [Float](repeating: 0.5, count: 320))
+    history.append(samples)
+
+    #expect(history.quietestFrame(in: 100..<960) == 800)
+}
+
+@Test
+func rollingHistoryCombinesPartialSamplesAndKeepsEarliestEnergyTie() {
+    var history = RollingFrameEnergyHistory(frameSampleCount: 4, capacity: 3)
+    history.append([1, 1])
+    #expect(history.processedSamples == 2)
+    #expect(history.storedFrameCount == 0)
+
+    history.append([0, 0, 0.25])
+    #expect(history.storedFrameCount == 1)
+    history.append([0.25, 0.25, 0.25, -0.25])
+    #expect(history.storedFrameCount == 2)
+    history.append([-0.25, -0.25, -0.25])
+
+    #expect(history.processedSamples == 12)
+    #expect(history.storedFrameCount == 3)
+    #expect(history.quietestFrame(in: 0..<12) == 6)
+}
+
+@Test
+func independentSegmentsApplyMinimumWithoutAdvancingIDsForDroppedSpeech() {
     var assembler = SegmentationAssembler(
         segmentationRunID: "seg_run_01",
         preRollFrames: 0,
-        maxSegmentFrames: 672_000,
-        minimumSegmentFrames: 960
+        maxSegmentFrames: 224_000,
+        minimumIndependentSegmentFrames: 8_000
     )
 
     assembler.speechStarted(atFrame: 0)
-    let full = assembler.splitIfNeeded(atFrame: 672_000)
+    #expect(assembler.speechEnded(atFrame: 7_840).isEmpty)
+    assembler.speechStarted(atFrame: 10_000)
+    let emitted = assembler.speechEnded(atFrame: 18_000).first
 
-    let tail = assembler.speechEnded(atFrame: 672_192)
-    #expect(full?.startFrame == 0)
-    #expect(full?.endFrame == 672_000)
-    #expect(tail.map(\.startFrame) == [672_000])
-    #expect(tail.map(\.endFrame) == [672_192])
-    #expect(assembler.speechEnded(atFrame: 672_192).isEmpty)
+    #expect(emitted?.segmentID == "seg_000001")
+    #expect(emitted?.startFrame == 10_000)
+    #expect(emitted?.endFrame == 18_000)
 }
 
 @Test
-func segmentationAssemblerFlushesActiveSpeechAtEndOfInput() {
+func preRollClampsAtZeroAndCountsTowardIndependentMinimum() {
     var assembler = SegmentationAssembler(
         segmentationRunID: "seg_run_01",
         preRollFrames: 100,
-        maxSegmentFrames: 10_000,
-        minimumSegmentFrames: 0
+        maxSegmentFrames: 224_000,
+        minimumIndependentSegmentFrames: 8_000
     )
 
+    assembler.speechStarted(atFrame: 30)
     assembler.speechStarted(atFrame: 1_000)
-    let segment = assembler.speechEnded(atFrame: 1_750).first
+    #expect(assembler.speechEnded(atFrame: 7_999).isEmpty)
 
-    #expect(segment?.startFrame == 900)
-    #expect(segment?.endFrame == 1_750)
+    assembler.speechStarted(atFrame: 200)
+    let segment = assembler.speechEnded(atFrame: 8_100).first
+    #expect(segment?.segmentID == "seg_000001")
+    #expect(segment?.startFrame == 100)
+    #expect(segment?.endFrame == 8_100)
 }
 
 @Test
-func segmentationAssemblerSpeechEndWithoutActiveSpeechEmitsNothing() {
+func explicitlySplitContinuationEmitsFourMillisecondTail() {
+    let maxSegmentFrames: Int64 = 224_000
     var assembler = SegmentationAssembler(
         segmentationRunID: "seg_run_01",
         preRollFrames: 0,
-        maxSegmentFrames: 10_000,
-        minimumSegmentFrames: 0
+        maxSegmentFrames: maxSegmentFrames,
+        minimumIndependentSegmentFrames: 8_000
+    )
+
+    assembler.speechStarted(atFrame: 0)
+    #expect(assembler.splitStartFrameIfNeeded(atFrame: maxSegmentFrames) == 0)
+    let first = assembler.split(atFrame: maxSegmentFrames)
+    let tail = assembler.speechEnded(atFrame: maxSegmentFrames + 64).first
+
+    #expect(first.endFrame == maxSegmentFrames)
+    #expect(tail?.startFrame == maxSegmentFrames)
+    #expect(tail?.endFrame == maxSegmentFrames + 64)
+}
+
+@Test
+func repeatedSpeechEndsEmitNothingAfterClosingAndWithoutActiveSpeech() {
+    var assembler = SegmentationAssembler(
+        segmentationRunID: "seg_run_01",
+        preRollFrames: 0,
+        maxSegmentFrames: 224_000,
+        minimumIndependentSegmentFrames: 8_000
     )
 
     #expect(assembler.speechEnded(atFrame: 1_000).isEmpty)
+    assembler.speechStarted(atFrame: 0)
+    #expect(assembler.speechEnded(atFrame: 8_000).count == 1)
+    #expect(assembler.speechEnded(atFrame: 8_000).isEmpty)
 }
 
 @Test
-func segmentationAssemblerKeepsTailShorterThanMinimumAfterMaxSplit() {
+func prolongedSpeechRequiresExplicitMaximumLengthCutsWithoutGaps() {
+    let maxSegmentFrames: Int64 = 224_000
     var assembler = SegmentationAssembler(
-        segmentationRunID: "seg", preRollFrames: 0,
-        maxSegmentFrames: 224_000, minimumSegmentFrames: 320
+        segmentationRunID: "seg_run_01",
+        preRollFrames: 0,
+        maxSegmentFrames: maxSegmentFrames,
+        minimumIndependentSegmentFrames: 8_000
     )
     assembler.speechStarted(atFrame: 0)
-    let first = assembler.splitIfNeeded(atFrame: 224_000)
-    let tail = assembler.speechEnded(atFrame: 224_319)
-    #expect(first?.endFrame == 224_000)
-    #expect(tail.map(\.startFrame) == [224_000])
-    #expect(tail.map(\.endFrame) == [224_319])
+
+    var segments: [SegmentReference] = []
+    var activeStart: Int64 = 0
+    for _ in 0..<3 {
+        let cutFrame = activeStart + maxSegmentFrames
+        #expect(assembler.splitStartFrameIfNeeded(atFrame: cutFrame - 1) == nil)
+        #expect(assembler.splitStartFrameIfNeeded(atFrame: cutFrame) == activeStart)
+        segments.append(assembler.split(atFrame: cutFrame))
+        activeStart = cutFrame
+    }
+    segments.append(contentsOf: assembler.speechEnded(atFrame: activeStart + 123))
+
+    #expect(segments.count == 4)
+    #expect(segments.first?.startFrame == 0)
+    #expect(segments.last?.endFrame == activeStart + 123)
+    for index in segments.indices {
+        #expect(segments[index].endFrame - segments[index].startFrame <= maxSegmentFrames)
+        if index > 0 {
+            #expect(segments[index - 1].endFrame == segments[index].startFrame)
+        }
+    }
 }
 
 @Test
-func segmentationAssemblerSpeechEndDoesNotExceedMaxSegmentLength() {
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg", preRollFrames: 0,
-        maxSegmentFrames: 224_000, minimumSegmentFrames: 320
-    )
-    assembler.speechStarted(atFrame: 0)
-    let segments = assembler.speechEnded(atFrame: 448_001)
-    #expect(segments.map(\.startFrame) == [0, 224_000, 448_000])
-    #expect(segments.map(\.endFrame) == [224_000, 448_000, 448_001])
+func tenMinuteHistoryRetainsOnlyCapacityAndFindsRecentKnownEnergy() {
+    let totalSamples = 9_600_000
+    let quietFrameStart = 9_599_360
+    var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 150)
+    let reusableChunk = [Float](repeating: 1, count: 4_096)
+    var offset = 0
+
+    while offset < quietFrameStart {
+        let count = min(reusableChunk.count, quietFrameStart - offset)
+        history.append(count == reusableChunk.count ? reusableChunk : Array(reusableChunk.prefix(count)))
+        offset += count
+        #expect(history.storedFrameCount <= 150)
+    }
+
+    history.append([Float](repeating: 0, count: 320))
+    offset += 320
+    while offset < totalSamples {
+        let count = min(reusableChunk.count, totalSamples - offset)
+        history.append(count == reusableChunk.count ? reusableChunk : Array(reusableChunk.prefix(count)))
+        offset += count
+        #expect(history.storedFrameCount <= 150)
+    }
+
+    #expect(history.processedSamples == 9_600_000)
+    #expect(history.storedFrameCount == 150)
+    #expect(history.quietestFrame(in: Int64(quietFrameStart)..<Int64(quietFrameStart + 320)) == Int64(quietFrameStart + 160))
 }
