@@ -5,6 +5,7 @@ struct ClauseEventLog {
     struct Run {
         let stage: ProcessingStage
         let mode: String?
+        let modelRevision: String?
         let startedSeq: UInt64
         var completionSeq: UInt64?
         var completion: RunCompletedBody?
@@ -125,6 +126,7 @@ struct ClauseEventLog {
                 }
                 runs[runID] = Run(
                     stage: started.stage, mode: started.provenance.configuration["mode"],
+                    modelRevision: started.provenance.configuration["model_revision"],
                     startedSeq: header.eventSeq, completionSeq: nil, completion: nil
                 )
             case "processing.run.completed":

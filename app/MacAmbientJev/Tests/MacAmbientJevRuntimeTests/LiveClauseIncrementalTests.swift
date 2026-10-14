@@ -21,7 +21,7 @@ func incrementalAssessment(source: SegmentTextReference, text: String,
         nextHead: try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))) },
         continuationProbability: next.map { _ in continues ? 0.95 : 0.05 },
         request: asks ? DecisionRequestRecord(requestID: "boundary_\(source.asrEventSeq)",
-            metadata: DecisionResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)) : nil,
+            inputTokens: 1) : nil,
         sourceDecision: asks ? .assessed : .terminalWithoutQuestions)
 }
 
@@ -101,7 +101,7 @@ func incrementalClausesMatchRebuildAcrossContinuationPendingAndStreamEnd() throw
                     ClausePriorityAssignment(reference: unit.reference, priority: .lowPriority, needsRetry: false,
                         decision: .classified(requestID: "priority_1", answerKey: "u0001", response: response))
                 ], request: DecisionRequestRecord(requestID: "priority_1",
-                    metadata: DecisionResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)))
+                    inputTokens: 1))
             } else {
                 payload = try ClausePriorityBatch.pending(references: [unit.reference], reason: .requestFailed, message: "synthetic priority pending")
             }
@@ -236,7 +236,7 @@ func incrementalASRAfterClauseUpdatePreservesClassifiedHistory() throws {
         ClausePriorityAssignment(reference: unit.reference, priority: .lowPriority, needsRetry: false,
             decision: .classified(requestID: "priority_1", answerKey: "u0001", response: response))
     ], request: DecisionRequestRecord(requestID: "priority_1",
-        metadata: DecisionResponseMetadata(model: "synthetic", inputTokens: 1, outputTokens: nil)))
+        inputTokens: 1))
     let batch = [
         TranscriptEvent.clause(seq: 100, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(assessment)),
         .clause(seq: 101, runID: incrementalBoundaryRun, kind: .clauseClosed(unit)),

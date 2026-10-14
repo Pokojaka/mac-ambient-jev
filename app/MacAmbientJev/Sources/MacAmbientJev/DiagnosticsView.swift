@@ -12,15 +12,8 @@ struct DiagnosticsView: View {
             Section {
                 if let snapshot {
                     LabeledContent("リクエスト回数（合計）", value: snapshot.sendCount.formatted())
-                    LabeledContent(
-                        "入力 token 数（Jev 報告分＋ローカル実入力）",
-                        value: snapshot.reportedInputTokens.formatted()
-                    )
+                    LabeledContent("入力 token 数", value: snapshot.inputTokens.formatted())
                     LabeledContent("成功件数", value: snapshot.successCount.formatted())
-                    LabeledContent(
-                        "token 数不明の件数",
-                        value: snapshot.unreportedTokenSuccessCount.formatted()
-                    )
                     LabeledContent("失敗件数", value: snapshot.failureCount.formatted())
                 } else {
                     ProgressView()
@@ -28,7 +21,7 @@ struct DiagnosticsView: View {
             } header: {
                 Text("発話文判定の利用状況（判定リクエスト単位）")
             } footer: {
-                Text("ローカル判定は通信せず、1回の判定呼出しを1リクエストとして数えます。")
+                Text("1回の判定呼出しを1リクエストとして数えます。入力 token 数はモデルが実際に読んだ token の合計です。")
             }
 
             if let snapshot {
@@ -73,12 +66,8 @@ struct DiagnosticsView: View {
     private func requestSection(_ title: String, _ usage: DecisionRequestUsageSnapshot) -> some View {
         Section(title) {
             LabeledContent("リクエスト回数", value: usage.sendCount.formatted())
-            LabeledContent(
-                "入力 token 数（Jev 報告分＋ローカル実入力）",
-                value: usage.reportedInputTokens.formatted()
-            )
+            LabeledContent("入力 token 数", value: usage.inputTokens.formatted())
             LabeledContent("成功件数", value: usage.successCount.formatted())
-            LabeledContent("token 数不明の件数", value: usage.unreportedTokenSuccessCount.formatted())
             LabeledContent("失敗件数", value: usage.failureCount.formatted())
         }
     }

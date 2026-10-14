@@ -85,8 +85,14 @@ extension AppState {
 
             var queuedCount = 0
             for candidate in candidates {
-                guard case .retryContentPriority(let boundarySegments, let clauses)
-                        = candidate.action else {
+                let boundarySegments: [SegmentTextReference]
+                let clauses: [ClauseReference]
+                switch candidate.action {
+                case .recoverDecisionRun(let segments, let references),
+                     .retryContentPriority(let segments, let references):
+                    boundarySegments = segments
+                    clauses = references
+                case .finalize:
                     continue
                 }
 
@@ -394,38 +400,32 @@ extension AppState {
                     transcriptViewModel.setStatus(previousTranscriptStatus)
                 }
             }
-            let candidates = scan.candidates
+            // Pending decisions of a published snapshot wait for the user's retry; the tagger is deterministic.
+            let recoveries: [PendingProcessing] = scan.candidates
                 .filter { $0.manifest.sessionID != recordingSessionID }
                 .filter { maintenanceFailures[$0.manifest.sessionID] == nil }
                 .filter { candidate in
                     !pendingProcessing.contains { $0.sessionID == candidate.manifest.sessionID }
                 }
+                .compactMap { candidate in
+                    switch candidate.action {
+                    case .finalize:
+                        .finalize(sessionID: candidate.manifest.sessionID, metadataPolicy: .reject)
+                    case .recoverDecisionRun(let boundarySegments, let clauses):
+                        contentPriorityRetry(for: candidate, boundarySegments: boundarySegments, clauses: clauses)
+                    case .retryContentPriority:
+                        nil
+                    }
+                }
 
-            if !candidates.isEmpty {
-                processingStatusText = "未完了の文字起こしを復旧しています（\(candidates.count)件）"
+            if !recoveries.isEmpty {
+                processingStatusText = "未完了の文字起こしを復旧しています（\(recoveries.count)件）"
                 transcriptViewModel.setStatus(
                     "未完了の文字起こしを復旧しています"
                 )
             }
-
-            for candidate in candidates {
-                switch candidate.action {
-                case .retryContentPriority(let boundarySegments, let clauses):
-                    enqueueProcessing(
-                        contentPriorityRetry(
-                            for: candidate,
-                            boundarySegments: boundarySegments,
-                            clauses: clauses
-                        )
-                    )
-                case .finalize:
-                    enqueueProcessing(
-                        .finalize(
-                            sessionID: candidate.manifest.sessionID,
-                            metadataPolicy: .reject
-                        )
-                    )
-                }
+            for recovery in recoveries {
+                enqueueProcessing(recovery)
             }
             if !pendingProcessing.isEmpty {
                 startDrainIfIdle()
@@ -445,7 +445,7 @@ extension AppState {
             }
             if !sentences.isEmpty {
                 let message = sentences.joined(separator: "。")
-                if candidates.isEmpty { processingState = .partialFailure(message) }
+                if recoveries.isEmpty { processingState = .partialFailure(message) }
                 processingStatusText = message
             }
         } catch {

@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-@Test(arguments: [401, 429], [false, true])
-func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, retry: Bool) async throws {
+@Test(arguments: [false, true])
+func everyFailedPriorityBatchIsPendingOnItsOwnInBoundedBatches(retry: Bool) async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
@@ -15,7 +15,7 @@ func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, 
         let previous = try await buildAndPublish(
             root: root, sessionID: id,
             provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-                throw JevClientError.missingAnswer
+                throw DecisionResponseError.missingAnswer
             }),
             scope: .all
         )
@@ -26,7 +26,7 @@ func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, 
         boundaryRunID = nil
     }
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-        throw JevClientError.httpStatus(status)
+        throw DecisionResponseError.missingAnswer
     })
     let counter = DecisionUsageCounter()
     let result = try await buildAndPublish(
@@ -41,8 +41,7 @@ func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, 
     let assignments = try payloads.map { try #require($0["assignments"] as? [[String: Any]]) }
     #expect(assignments.map(\.count) == [40, 40, 1])
     #expect(payloads.allSatisfy { $0["request"] is NSNull })
-    #expect(await provider.priorityRequests.map(\.count) == [40])
-    #expect(result.stopReason == (status == 401 ? .authorizationRejected : .providerUnavailable))
+    #expect(await provider.priorityRequests.map(\.count) == [40, 40, 1])
     #expect(result.pendingPriorityClauses.count == 81)
     let recorded = result.events.compactMap { event -> ContentPriorityAssignedPayload? in
         guard event.processingRunID == result.priorityRunID,
@@ -51,58 +50,19 @@ func stoppedPriorityRunPersistsEveryUnsentClauseInBoundedBatches(_ status: Int, 
     }
     #expect(recorded.flatMap { $0.assignments.map(\.reference) } == result.pendingPriorityClauses)
     #expect(await provider.boundaryRequests.count == (retry ? 0 : 1))
-    #expect(await counter.snapshot().priorityRequests.sendCount == 1)
-    #expect(await counter.snapshot().priorityRequests.failureCount == 1)
+    #expect(await counter.snapshot().priorityRequests.sendCount == 3)
+    #expect(await counter.snapshot().priorityRequests.failureCount == 3)
     #expect(await counter.snapshot().pendingPriorityClauseCount == 81)
     #expect(assignments.flatMap { $0 }.allSatisfy {
         let decision = $0["decision"] as? [String: Any]
         return $0["needs_retry"] as? Bool == true
-            && decision?["reason"] as? String == (status == 401 ? "authorization_rejected" : "request_failed")
+            && decision?["reason"] as? String == "request_failed"
     })
     let saved = try readPublished(root: root)
     #expect(saved == result.materializedSegments)
     #expect(saved[0].clauseState == .priorityPending)
     #expect(saved[0].displayText == raw)
     #expect(saved[0].clauseSlices.allSatisfy { $0.priority == nil && $0.needsRetry })
-}
-
-@Test
-func unconfiguredPriorityRetryPersistsUnsentClausesInBoundedBatches() async throws {
-    let root = temporarySessionRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let id = UUID()
-    let raw = (1...81).map { "本文\($0)。" }.joined()
-    _ = try publishLocal(root: root, events: try await writeTranscript([raw], root: root, sessionID: id))
-    let previous = try await buildAndPublish(
-        root: root, sessionID: id,
-        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-            throw JevClientError.missingAnswer
-        }),
-        scope: .all
-    )
-    let counter = DecisionUsageCounter()
-    let result = try await buildAndPublish(
-        root: root, sessionID: id, provider: nil,
-        scope: .retry(boundarySegments: [], clauses: Set(previous.pendingPriorityClauses)),
-        counter: counter, boundaryRunID: previous.boundaryRunID
-    )
-    let payloads = result.events.compactMap { event -> ContentPriorityAssignedPayload? in
-        guard event.processingRunID == result.priorityRunID,
-              case .contentPriorityAssigned(let payload) = event.kind else { return nil }
-        return payload
-    }
-    #expect(payloads.map { $0.assignments.count } == [40, 40, 1])
-    #expect(payloads.flatMap { $0.assignments.map(\.reference) } == previous.pendingPriorityClauses)
-    #expect(payloads.allSatisfy { payload in
-        payload.request == nil && payload.assignments.allSatisfy {
-            $0.priority == nil && $0.needsRetry
-                && $0.decision == .retryPending(reason: .unconfigured, message: DecisionPendingMessage.unavailable)
-        }
-    })
-    #expect(result.stopReason == nil)
-    #expect(await counter.snapshot().sendCount == 0)
-    #expect(await counter.snapshot().pendingPriorityClauseCount == 81)
-    #expect(try readPublished(root: root) == result.materializedSegments)
 }
 
 private actor PriorityAvailabilityGate {
@@ -133,10 +93,10 @@ func cancellationDuringPriorityAvailabilityDoesNotSendOrConsumeTheBatch() async 
     let gate = PriorityAvailabilityGate()
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
     let counter = DecisionUsageCounter()
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let reference = try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0")
     let task = Task {
-        var batches = try ClausePriorityBatches(targets: [(reference, "本文")], stopReason: nil)
+        var batches = try ClausePriorityBatches(targets: [(reference, "本文")])
         do {
             _ = try await batches.next {
                 await gate.suspend()
@@ -158,14 +118,14 @@ func cancellationDuringPriorityAvailabilityDoesNotSendOrConsumeTheBatch() async 
 }
 
 @Test
-func boundaryStopKeepsPreviouslyClosedClausesPendingWithoutSendingChoice() async throws {
+func failedBoundaryRequestLeavesOnlyItsSourcePendingAndPrioritiesContinue() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let raw = (1...81).map { "本文\($0)。" }.joined()
     _ = try publishLocal(root: root, events: try await writeTranscript([raw, "後続。失敗"], root: root, sessionID: id))
     let provider = ScriptedDecisionProvider(boundary: { request in
-        if request.source.segmentID == "s02" { throw JevClientError.httpStatus(401) }
+        if request.source.segmentID == "s02" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: [])(request)
     }, priority: lowForBackchannel)
     let result = try await buildAndPublish(root: root, sessionID: id, provider: provider, scope: .all)
@@ -176,17 +136,13 @@ func boundaryStopKeepsPreviouslyClosedClausesPendingWithoutSendingChoice() async
     }
     #expect(payloads.map { $0.assignments.count } == [40, 40, 1])
     #expect(payloads.allSatisfy { payload in
-        payload.request == nil && payload.assignments.allSatisfy {
-            $0.priority == nil && $0.needsRetry
-                && $0.decision == .retryPending(reason: .authorizationRejected, message: DecisionPendingMessage.stopped)
-        }
+        payload.request != nil && payload.assignments.allSatisfy { $0.priority == .primary && !$0.needsRetry }
     })
-    #expect(result.stopReason == .authorizationRejected)
     #expect(result.pendingBoundarySegments.map(\.segmentID) == ["s02"])
-    #expect(result.pendingPriorityClauses.count == 81)
+    #expect(result.pendingPriorityClauses.isEmpty)
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02"])
-    #expect(await provider.priorityRequests.isEmpty)
-    #expect(try readPublished(root: root).map(\.clauseState) == [.priorityPending, .boundaryPending])
+    #expect(await provider.priorityRequests.map(\.count) == [40, 40, 1])
+    #expect(try readPublished(root: root).map(\.clauseState) == [.classified, .boundaryPending])
 }
 
 @Test
@@ -196,16 +152,16 @@ func priorityBatchesResumeAfterAnUnsentAvailabilityBatch() async throws {
     }
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
     let counter = DecisionUsageCounter()
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
-    var batches = try ClausePriorityBatches(targets: targets, stopReason: nil)
-    let pending = try await batches.next { .pending(.stopped, DecisionPendingMessage.stopped) }
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let failure = "判定エンジンを初期化できませんでした: モデルがありません"
+    var batches = try ClausePriorityBatches(targets: targets)
+    let pending = try await batches.next { .pending(.initializationFailed, failure) }
     #expect(pending.assignments.map(\.reference) == targets.prefix(40).map(\.reference))
     #expect(pending.request == nil)
     #expect(pending.assignments.allSatisfy {
         $0.priority == nil && $0.needsRetry
-            && $0.decision == .retryPending(reason: .stopped, message: DecisionPendingMessage.stopped)
+            && $0.decision == .retryPending(reason: .initializationFailed, message: failure)
     })
-    #expect(batches.stopReason == nil)
     #expect(await counter.snapshot().sendCount == 0)
 
     let answered = try await batches.next { .available(decisions) }

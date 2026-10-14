@@ -18,10 +18,8 @@ func isRequestLocalKey(_ key: String, prefix: Character) -> Bool {
 
 func isValidProbability(_ value: Double) -> Bool { value.isFinite && (0...1).contains(value) }
 
-// Two-decimal documentation examples allow 0.005 rounding per reported value.
-// The API does not promise a precision; these are local acceptance limits.
-private let choiceSumTolerance = 0.01 + 1e-12
-private let choiceConfidenceTolerance = 0.015 + 1e-12
+/// The clause tagger's float32 softmax outputs sum to 1 within this tolerance.
+public let taggerProbabilitySumTolerance = 1e-5
 
 public struct SegmentTextReference: Codable, Sendable, Hashable {
     public let segmentationRunID: String
@@ -134,102 +132,31 @@ public struct ClauseBoundaryRequest: Sendable, Equatable {
     }
 }
 
+/// The loaded clause tagger: its external model ID and the 64-digit lowercase hex state-hash revision.
 public struct DecisionModelIdentity: Sendable, Equatable {
-    public let provider: DecisionEngineChoice
     public let model: String
     public let modelRevision: String
 
-    public init(provider: DecisionEngineChoice, model: String, modelRevision: String) throws {
-        guard isNonblank(model), isNonblank(modelRevision) else {
+    public init(model: String, modelRevision: String) throws {
+        let revisionBytes = modelRevision.utf8
+        guard isNonblank(model), revisionBytes.count == 64,
+              revisionBytes.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw ClauseValidationError.invalidMetadata
         }
-        switch provider {
-        case .jev:
-            guard modelRevision == model else { throw ClauseValidationError.invalidMetadata }
-        case .localModel:
-            let revisionBytes = modelRevision.utf8
-            guard revisionBytes.count == 64,
-                  revisionBytes.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
-                throw ClauseValidationError.invalidMetadata
-            }
-        }
-        self.provider = provider
         self.model = model
         self.modelRevision = modelRevision
-    }
-
-    public static let jev = try! DecisionModelIdentity(
-        provider: .jev, model: JevClient.model, modelRevision: JevClient.model
-    )
-}
-
-public struct DecisionResponseMetadata: Codable, Sendable, Equatable {
-    public let identity: DecisionModelIdentity
-    public var provider: DecisionEngineChoice { identity.provider }
-    public var model: String { identity.model }
-    public var modelRevision: String { identity.modelRevision }
-    public let inputTokens: Int?
-    public let outputTokens: Int?
-
-    public init(identity: DecisionModelIdentity, inputTokens: Int?, outputTokens: Int?) throws {
-        guard inputTokens.map({ $0 >= 0 }) ?? true,
-              outputTokens.map({ $0 >= 0 }) ?? true,
-              identity.provider != .localModel || (inputTokens != nil && outputTokens == 0) else {
-            throw ClauseValidationError.invalidMetadata
-        }
-        self.identity = identity
-        self.inputTokens = inputTokens
-        self.outputTokens = outputTokens
-    }
-
-    public init(model: String, inputTokens: Int?, outputTokens: Int?) throws {
-        try self.init(
-            identity: DecisionModelIdentity(provider: .jev, model: model, modelRevision: model),
-            inputTokens: inputTokens,
-            outputTokens: outputTokens
-        )
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case provider
-        case model
-        case modelRevision = "model_revision"
-        case inputTokens = "input_tokens"
-        case outputTokens = "output_tokens"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let identity = try DecisionModelIdentity(
-            provider: c.decode(DecisionEngineChoice.self, forKey: .provider),
-            model: c.decode(String.self, forKey: .model),
-            modelRevision: c.decode(String.self, forKey: .modelRevision)
-        )
-        try self.init(
-            identity: identity,
-            inputTokens: c.decodeIfPresent(Int.self, forKey: .inputTokens),
-            outputTokens: c.decodeIfPresent(Int.self, forKey: .outputTokens)
-        )
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(provider, forKey: .provider)
-        try c.encode(model, forKey: .model)
-        try c.encode(modelRevision, forKey: .modelRevision)
-        try c.encodeIfPresent(inputTokens, forKey: .inputTokens)
-        try c.encodeIfPresent(outputTokens, forKey: .outputTokens)
     }
 }
 
 public struct ClauseBoundaryResponse: Sendable, Equatable {
     public let probabilities: [String: Double]
     public let continuationProbability: Double?
-    public let metadata: DecisionResponseMetadata
-    public init(probabilities: [String: Double], continuationProbability: Double?, metadata: DecisionResponseMetadata) {
+    /// Token count of every sequence the model ran for this request.
+    public let inputTokens: Int
+    public init(probabilities: [String: Double], continuationProbability: Double?, inputTokens: Int) {
         self.probabilities = probabilities
         self.continuationProbability = continuationProbability
-        self.metadata = metadata
+        self.inputTokens = inputTokens
     }
 }
 
@@ -247,13 +174,12 @@ public struct ContentPriorityDecision: Codable, Sendable, Equatable {
         guard isValidProbability(confidence), probabilities.count == 2,
               let primary = probabilities["PRIMARY"], let low = probabilities["LOW_PRIORITY"],
               isValidProbability(primary), isValidProbability(low),
-              abs(primary + low - 1) <= choiceSumTolerance else {
+              abs(primary + low - 1) <= taggerProbabilitySumTolerance else {
             throw ClauseValidationError.invalidProbability
         }
         let selected = priority == .primary ? primary : low
         let maximum = max(primary, low)
-        guard selected == maximum,
-              abs(confidence - (2 * maximum - 1)) <= choiceConfidenceTolerance else {
+        guard selected == maximum, confidence == 2 * maximum - 1 else {
             throw ClauseValidationError.invalidProbability
         }
         self.priority = priority
@@ -269,8 +195,9 @@ public struct ContentPriorityDecision: Codable, Sendable, Equatable {
 
 public struct PriorityBatchResponse: Sendable, Equatable {
     public let decisions: [String: ContentPriorityDecision]
-    public let metadata: DecisionResponseMetadata
-    public init(decisions: [String: ContentPriorityDecision], metadata: DecisionResponseMetadata) { self.decisions = decisions; self.metadata = metadata }
+    /// Token count of every sequence the model ran for this request.
+    public let inputTokens: Int
+    public init(decisions: [String: ContentPriorityDecision], inputTokens: Int) { self.decisions = decisions; self.inputTokens = inputTokens }
 }
 
 public protocol DecisionProvider: Sendable {

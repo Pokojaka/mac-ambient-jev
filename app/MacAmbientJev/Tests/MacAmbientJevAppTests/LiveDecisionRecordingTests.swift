@@ -5,6 +5,8 @@ import Testing
 import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
+private let testDecisionIdentity = try! DecisionModelIdentity(model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
+
 private actor RecordingASR: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "recording-test", model: nil, version: "test", configuration: [:])
     private var count = 0
@@ -39,7 +41,7 @@ private actor RecordingVAD: LiveVADProcessing {
     }
 }
 
-private actor RecordingJev: DecisionProvider {
+private actor RecordingTagger: DecisionProvider {
     private(set) var texts: [String] = []
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -49,7 +51,7 @@ private actor RecordingJev: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
-            metadata: try DecisionResponseMetadata(model: "recording-test", inputTokens: 5, outputTokens: nil)
+            inputTokens: 5
         )
     }
 
@@ -62,7 +64,7 @@ private actor RecordingJev: DecisionProvider {
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try DecisionResponseMetadata(model: "recording-test", inputTokens: 7, outputTokens: nil)
+            inputTokens: 7
         )
     }
     func release() {
@@ -122,11 +124,11 @@ private func withLiveDecisionRecording(
 }
 
 @MainActor
-@Test("AppState recording shows live rows at once and applies only saved Jev results")
+@Test("AppState recording shows live rows at once and applies only saved decisions")
 func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
-    let provider = RecordingJev()
+    let provider = RecordingTagger()
     try await withLiveDecisionRecording(makeDecisions: { counter in
-        { DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter) }
+        { DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter) }
     }) { state in
         let deadline = ContinuousClock.now + .seconds(5)
         while await provider.texts.isEmpty, ContinuousClock.now < deadline {
@@ -138,7 +140,7 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
         let sessionID = try #require(state.recordingSessionID)
         await state.waitForLiveASRDrain(sessionID: sessionID)
         #expect(state.liveASRFailures[sessionID] == nil)
-        // Rows never wait for Jev: both are shown as normal text while the Choice is in flight.
+        // Rows never wait for decisions: both are shown as normal text while priority is in flight.
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
         #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [false, false])
@@ -153,20 +155,20 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
         let usage = await state.decisionUsageCounter.snapshot()
         #expect(usage.boundaryRequests.sendCount == 1)
         #expect(usage.priorityRequests.sendCount == 1)
-        #expect(usage.reportedInputTokens == 12)
+        #expect(usage.inputTokens == 12)
     }
 }
 
 @MainActor
 @Test("AppState keeps the classifier factory error visible while live ASR continues")
 func appRecordingShowsDecisionFactoryFailureReason() async throws {
-    let description = "Synthetic credential read denied (no Keychain access)"
+    let description = "Synthetic model load failure"
     try await withLiveDecisionRecording(makeDecisions: { _ in
         { throw NSError(domain: "LiveDecisionRecordingTests", code: 1,
                         userInfo: [NSLocalizedDescriptionKey: description]) }
     }) { state in
         let deadline = ContinuousClock.now + .seconds(5)
-        // ASR drain does not wait for Jev. The pending row is published after the factory error status.
+        // ASR drain does not wait for decisions. The pending row is published after the factory error status.
         while (state.transcriptViewModel.rows.count != 2
                || state.transcriptViewModel.rows.first?.clauseState != .boundaryPending),
               ContinuousClock.now < deadline {

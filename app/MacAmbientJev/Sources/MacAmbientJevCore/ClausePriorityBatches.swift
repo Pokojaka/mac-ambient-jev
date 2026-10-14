@@ -5,24 +5,22 @@ public enum DecisionAvailability: Sendable {
     case pending(ClausePendingReason, String)
 }
 
-/// Serial live/final batching, including unsent pending results after a stopping failure.
+/// Serial live/final/retry batching of at most 40 clauses per request.
 public struct ClausePriorityBatches: Sendable {
     private let targets: [(reference: ClauseReference, text: String)]
     private var offset = 0
-    public private(set) var stopReason: DecisionBatchStopReason?
 
-    public init(targets: [(reference: ClauseReference, text: String)], stopReason: DecisionBatchStopReason?) throws {
+    public init(targets: [(reference: ClauseReference, text: String)]) throws {
         guard Set(targets.lazy.map(\.reference)).count == targets.count,
               targets.allSatisfy({ !ClauseTextComposer.isBlank($0.text) }) else {
             throw ClauseRecordError.invalidPriorityEvent
         }
         self.targets = targets
-        self.stopReason = stopReason
     }
 
     public var hasRemaining: Bool { offset < targets.count }
 
-    /// Availability is read only for a batch that has not been stopped; it may change live.
+    /// Availability is read for each batch; it may change live.
     public mutating func next(
         isolation: isolated (any Actor)? = #isolation,
         availability: () async -> DecisionAvailability
@@ -31,21 +29,14 @@ public struct ClausePriorityBatches: Sendable {
         try Task.checkCancellation()
         let end = min(offset + PriorityBatchPolicy.maximumTargets, targets.count)
         let batch = targets[offset..<end]
-        let current: DecisionAvailability
-        if let stopReason {
-            current = .pending(stopReason.pendingReason, DecisionPendingMessage.stopped)
-        } else {
-            current = await availability()
-        }
+        let current = await availability()
         try Task.checkCancellation()
         let payload: ContentPriorityAssignedPayload
         switch current {
         case .available(let decisions):
-            let result = try await ClausePriorityBatch.classify(
+            payload = try await ClausePriorityBatch.classify(
                 references: batch.map(\.reference), texts: batch.map(\.text), decisions: decisions
             )
-            stopReason = result.stop
-            payload = result.payload
         case .pending(let reason, let message):
             payload = try ClausePriorityBatch.pending(
                 references: batch.map(\.reference), reason: reason, message: message
@@ -57,7 +48,7 @@ public struct ClausePriorityBatches: Sendable {
     }
 }
 
-/// Builds the assignments of one Choice batch of at most 40 clauses.
+/// Builds the assignments of one priority batch of at most 40 clauses.
 public enum ClausePriorityBatch {
     /// Request-local keys `u0001`… in clause order; no source identifier is sent.
     public static func targets(texts: [String]) -> [PriorityTextTarget] {
@@ -68,7 +59,7 @@ public enum ClausePriorityBatch {
         references: [ClauseReference],
         texts: [String],
         decisions: DecisionCoordinator
-    ) async throws -> (payload: ContentPriorityAssignedPayload, stop: DecisionBatchStopReason?) {
+    ) async throws -> ContentPriorityAssignedPayload {
         guard !references.isEmpty, references.count == texts.count,
               references.count <= PriorityBatchPolicy.maximumTargets,
               Set(references).count == references.count,
@@ -88,9 +79,9 @@ public enum ClausePriorityBatch {
                     decision: .classified(requestID: record.requestID, answerKey: target.key, response: decision)
                 ))
             }
-            return (try ContentPriorityAssignedPayload(assignments: assignments, request: record), nil)
-        case .failed(let stop, let message):
-            return (try pending(references: references, reason: stop?.pendingReason ?? .requestFailed, message: message), stop)
+            return try ContentPriorityAssignedPayload(assignments: assignments, request: record)
+        case .failed(let message):
+            return try pending(references: references, reason: .requestFailed, message: message)
         case .cancelled:
             throw CancellationError()
         }

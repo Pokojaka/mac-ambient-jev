@@ -7,12 +7,12 @@ private actor PartialPriorityProvider: DecisionProvider {
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
-            continuationProbability: request.next.map { _ in 0.1 }, metadata: testMetadata
+            continuationProbability: request.next.map { _ in 0.1 }, inputTokens: testInputTokens
         )
     }
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         batches += 1
-        if batches == 2 { throw JevClientError.httpStatus(429) }
+        if batches == 2 { throw DecisionResponseError.missingAnswer }
         return try lowForBackchannel(targets)
     }
 }

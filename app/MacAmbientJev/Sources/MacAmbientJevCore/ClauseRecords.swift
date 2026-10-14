@@ -151,35 +151,34 @@ public struct ClauseUnit: Codable, Sendable, Equatable {
     }
 }
 
-/// One decision request and the metadata of its response.
+/// One answered decision request. The model that answered it is the run's provenance.
 public struct DecisionRequestRecord: Codable, Sendable, Equatable {
     public let requestID: String
-    public let metadata: DecisionResponseMetadata
+    /// Token count of every sequence the model ran for this request.
+    public let inputTokens: Int
 
-    public init(requestID: String, metadata: DecisionResponseMetadata) throws {
-        guard isNonblankIdentifier(requestID) else { throw ClauseRecordError.invalidAssessment }
+    public init(requestID: String, inputTokens: Int) throws {
+        guard isNonblankIdentifier(requestID), inputTokens >= 0 else { throw ClauseRecordError.invalidAssessment }
         self.requestID = requestID
-        self.metadata = metadata
+        self.inputTokens = inputTokens
     }
 
-    enum CodingKeys: String, CodingKey { case requestID = "request_id", metadata }
+    enum CodingKeys: String, CodingKey { case requestID = "request_id", inputTokens = "input_tokens" }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             requestID: c.decode(String.self, forKey: .requestID),
-            metadata: c.decode(DecisionResponseMetadata.self, forKey: .metadata)
+            inputTokens: c.decode(Int.self, forKey: .inputTokens)
         )
     }
 }
 
 public enum ClausePendingReason: String, Codable, Sendable {
-    case unconfigured
-    case stopped
+    /// No decision run was published for the source, so it was never requested.
+    case notRequested = "not_requested"
     case initializationFailed = "initialization_failed"
-    case authorizationRejected = "authorization_rejected"
     case requestFailed = "request_failed"
     case asrGap = "asr_gap"
-    case cancelled
 }
 
 public enum BoundaryDecisionSource: Codable, Sendable, Equatable {
@@ -473,7 +472,7 @@ public struct ClausePriorityAssignment: Codable, Sendable, Equatable {
     }
 }
 
-/// Payload of `content_priority.assigned`: every result of one Choice request, or
+/// Payload of `content_priority.assigned`: every result of one priority request, or
 /// assignments made without a request (carried over or left pending).
 public struct ContentPriorityAssignedPayload: Codable, Sendable, Equatable {
     public let assignments: [ClausePriorityAssignment]

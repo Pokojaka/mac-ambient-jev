@@ -67,6 +67,14 @@ if [[ ! -r "$APP_MLX_METALLIB" ]]; then
   exit 1
 fi
 
+for artifact in ClauseTagger.mlpackage tokenizer.json; do
+  if [[ ! -e "$APP_CONTENTS/Resources/clause-tagger/$artifact" ]]; then
+    echo "Built app is missing the clause tagger model file: $artifact" >&2
+    exit 1
+  fi
+done
+codesign --verify --deep "$ROOT/.build/MacAmbientJev.app"
+
 SIGNED_ENTITLEMENTS="$(mktemp)"
 trap 'rm -f "$SIGNED_ENTITLEMENTS"' EXIT
 codesign -d --entitlements - --xml "$ROOT/.build/MacAmbientJev.app" > "$SIGNED_ENTITLEMENTS" 2>/dev/null

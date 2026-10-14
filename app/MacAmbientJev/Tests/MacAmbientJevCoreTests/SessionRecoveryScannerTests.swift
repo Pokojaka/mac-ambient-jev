@@ -216,17 +216,17 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
     ))
 
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-        throw JevClientError.missingAnswer
+        throw DecisionResponseError.missingAnswer
     })
     let result = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all)
-    // An interrupted retry run that was never published is ignored.
+    // An interrupted retry run that was never published is not adopted; launch recovery requests the published pendings again.
     _ = try await SessionWriter(sessionURL: url).append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "priority_unpublished",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity))
     ))
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
-    #expect(candidate?.action == .retryContentPriority(boundarySegments: [], clauses: result.pendingPriorityClauses))
+    #expect(candidate?.action == .recoverDecisionRun(boundarySegments: [], clauses: result.pendingPriorityClauses))
 }
 
 @Test
@@ -383,7 +383,7 @@ func finalizationAttemptPublishesRunsOnlyOnCompletion() throws {
     try store.beginFinalization(attemptID: "attempt_2", policy: .reject)
     let newSource = try SegmentTextReference(segmentationRunID: "seg_new", segmentID: "s", asrRunID: "asr_new", asrEventSeq: 9)
     try store.completeFinalization(attemptID: "attempt_2", activeRuns: newRuns, pendingClauseBoundarySegments: [newSource])
-    // The local runs and the boundary-pending list of their segments are one write; old Jev runs are gone.
+    // The local runs and the boundary-pending list of their segments are one write; old decision runs are gone.
     #expect(try store.load() == ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "attempt_2", state: .complete, failureReason: nil),
         activeRuns: newRuns,
@@ -435,17 +435,17 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     let writer = try SessionWriter(sessionURL: url)
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "unfinished_live",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live", identity: testDecisionIdentity))
     ))
     #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "unpublished_retry",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity))
     ))
     #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
-        == .retryContentPriority(boundarySegments: [], clauses: []))
+        == .recoverDecisionRun(boundarySegments: [], clauses: []))
     _ = try await buildAndPublish(
         root: url, sessionID: id,
         provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel),

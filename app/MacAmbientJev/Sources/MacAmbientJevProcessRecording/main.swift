@@ -310,6 +310,7 @@ struct ProcessRecordingCommand {
             let inspection = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
             switch inspection.recovery?.action {
             case .finalize: action = "finalize"
+            case .recoverDecisionRun: action = "recoverDecisionRun"
             case .retryContentPriority: action = "retryContentPriority"
             case nil: action = "none"
             }
@@ -373,8 +374,8 @@ struct ProcessRecordingCommand {
         let onPhase: NativeSessionProcessor.PhaseHandler = { phase in await monitor?.setPhase(phase) }
         let result: SessionProcessingResult?
         switch candidate?.action {
-        case .retryContentPriority?:
-            // Jev is never used by the CLI; the published transcript is exported as it is.
+        case .recoverDecisionRun?, .retryContentPriority?:
+            // The CLI never runs decisions; the published transcript is exported as it is.
             result = nil
         case .finalize?:
             result = await processor.processSession(

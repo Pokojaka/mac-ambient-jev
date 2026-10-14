@@ -195,9 +195,6 @@ final class AppState: ObservableObject {
     @Published var exportDirectoryPath: String?
     @Published var exportDestinationMessage: String?
     @Published var sessionExports: [UUID: SessionExportState] = [:]
-    @Published var decisionEngine: DecisionEngineChoice?
-    @Published var decisionPause: Bool?
-    @Published var decisionPreferenceError: String?
 
     let transcriptViewModel = LiveTranscriptViewModel()
     let decisionUsageCounter: DecisionUsageCounter
@@ -205,7 +202,7 @@ final class AppState: ObservableObject {
     let paths: AppPaths
     let exportDestination: ExportDestinationStore
     let captureEngine: any AppCaptureEngine
-    let selectedDecisionProviderFactory: SelectedDecisionProviderFactory
+    let decisionProviderFactory: DecisionProviderFactory
     let sessionProcessor: NativeSessionProcessor
     // Device-rate disk requirements and the in-recording floor are enforced by AudioCaptureEngine.
     let microphoneAccess: @MainActor () async -> Bool
@@ -254,19 +251,9 @@ final class AppState: ObservableObject {
         makeDecisions: (@Sendable (AppPaths, DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory)? = nil
     ) {
         let decisionUsageCounter = DecisionUsageCounter()
-        let firstLaunchInitialization: Result<Void, Error>
-        do {
-            try DecisionEnginePreference.initializeFirstLaunch(defaults: userDefaults)
-            firstLaunchInitialization = .success(())
-        } catch {
-            firstLaunchInitialization = .failure(error)
+        let decisionProviderFactory = DecisionProviderFactory(usageCounter: decisionUsageCounter) {
+            try LocalClauseTagger(modelDirectory: LocalClauseTagger.bundledModelDirectory())
         }
-        let selectedDecisionProviderFactory = SelectedDecisionProviderFactory(
-            paths: paths,
-            defaults: userDefaults,
-            secretStore: KeychainStore(),
-            usageCounter: decisionUsageCounter
-        )
 
         self.paths = paths
         self.decisionUsageCounter = decisionUsageCounter
@@ -276,39 +263,20 @@ final class AppState: ObservableObject {
         self.userDefaults = userDefaults
         self.exportDestination = ExportDestinationStore(defaults: userDefaults)
         self.makeLiveVADSession = makeLiveVADSession
-        self.selectedDecisionProviderFactory = selectedDecisionProviderFactory
+        self.decisionProviderFactory = decisionProviderFactory
 
         let makeDecisionCoordinator: NativeSessionProcessor.DecisionCoordinatorFactory
         if let makeDecisions {
             makeDecisionCoordinator = makeDecisions(paths, decisionUsageCounter)
         } else {
-            makeDecisionCoordinator = {
-                try firstLaunchInitialization.get()
-                switch try selectedDecisionProviderFactory.makeCoordinator() {
-                case .available(let coordinator):
-                    return coordinator
-                case .unconfigured:
-                    return nil
-                case .stopped:
-                    throw DecisionAvailabilityError.stopped
-                }
-            }
+            makeDecisionCoordinator = { try decisionProviderFactory.makeCoordinator() }
         }
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
             engines: engines,
-            contentPriority: .selectedEngine(makeDecisionCoordinator, usageCounter: decisionUsageCounter)
+            contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter)
         )
         self.exportDirectoryPath = exportDestination.path
-
-        switch firstLaunchInitialization {
-        case .success:
-            refreshDecisionPreferences()
-        case .failure(let error):
-            decisionEngine = nil
-            decisionPause = nil
-            decisionPreferenceError = error.localizedDescription
-        }
 
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
@@ -323,42 +291,6 @@ final class AppState: ObservableObject {
                 await self?.recoverPendingSessions()
             }
         }
-    }
-
-    func refreshDecisionPreferences() {
-        do {
-            let engine = try DecisionEnginePreference.load(defaults: userDefaults)
-            let isPaused = try DecisionEnginePreference.isPaused(defaults: userDefaults)
-            decisionEngine = engine
-            decisionPause = isPaused
-            decisionPreferenceError = nil
-        } catch {
-            decisionEngine = nil
-            decisionPause = nil
-            decisionPreferenceError = error.localizedDescription
-        }
-    }
-
-    func selectDecisionEngine(_ choice: DecisionEngineChoice) throws {
-        do {
-            try selectedDecisionProviderFactory.selectEngine(choice)
-        } catch {
-            refreshDecisionPreferences()
-            throw error
-        }
-        refreshDecisionPreferences()
-    }
-
-    func setDecisionPaused(_ isPaused: Bool) throws {
-        do {
-            _ = try DecisionEnginePreference.load(defaults: userDefaults)
-            _ = try DecisionEnginePreference.isPaused(defaults: userDefaults)
-            userDefaults.set(isPaused, forKey: DecisionEnginePreference.pauseKey)
-        } catch {
-            refreshDecisionPreferences()
-            throw error
-        }
-        refreshDecisionPreferences()
     }
 
     var isRecording: Bool {

@@ -193,14 +193,14 @@ func readersAndWriterRejectAnyOtherEnvelopeVersion(version: Int?) async throws {
         _ = try EventLogTranscriptReader().events(lines: [line], activeRuns: ActiveRuns(segmentation: "seg"))
     }
     #expect(throws: EventLogSchemaError.unsupportedSchemaVersion(index: 0)) {
-        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: line + Data([0x0A]))
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: line + Data([0x0A]), modelRevision: testDecisionIdentity.modelRevision)
     }
     #expect(throws: EventLogSchemaError.unsupportedSchemaVersion(index: 0)) {
         _ = try SessionWriter(sessionURL: root)
     }
 }
 
-/// Writes a live ASR run and a live Jev run where every segment is one clause that does not
+/// Writes a live ASR run and a live decision run where every segment is one clause that does not
 /// continue, with the given priority results in order. A nil result is a pending assignment.
 func writeLiveRun(
     root: URL, sessionID: UUID, texts: [String], results: [(index: Int, priority: ContentPriority?)], complete: Bool
@@ -219,7 +219,7 @@ func writeLiveRun(
         sources.append(try SegmentTextReference(segmentationRunID: "live_seg", segmentID: id, asrRunID: "live_asr", asrEventSeq: asr.eventSeq))
     }
     try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID, processingRunID: "boundary_live",
-                                       payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: DecisionRunProvenance.boundary(mode: "live"))))
+                                       payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: DecisionRunProvenance.boundary(mode: "live", identity: testDecisionIdentity))))
     var assembly = ClauseBoundaryAssembly(boundaryRunID: "boundary_live")
     var units: [ClauseUnit] = []
     for (index, source) in sources.enumerated() {
@@ -229,7 +229,7 @@ func writeLiveRun(
             source: source, candidates: candidates,
             probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, 0.1) }),
             nextHead: next, continuationProbability: next.map { _ in 0.1 },
-            request: next == nil && candidates.isEmpty ? nil : DecisionRequestRecord(requestID: "b\(index)", metadata: testMetadata),
+            request: next == nil && candidates.isEmpty ? nil : DecisionRequestRecord(requestID: "b\(index)", inputTokens: testInputTokens),
             sourceDecision: next == nil && candidates.isEmpty ? .terminalWithoutQuestions : .assessed
         )
         try await writer.append(EventDraft(eventType: ClauseEventType.boundaryAssessed, sessionID: sessionID,
@@ -241,7 +241,7 @@ func writeLiveRun(
         }
     }
     try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID, processingRunID: "priority_live",
-                                       payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live"))))
+                                       payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live", identity: testDecisionIdentity))))
     for (order, result) in results.enumerated() {
         let reference = units[result.index].reference
         let payload: ContentPriorityAssignedPayload
@@ -251,7 +251,7 @@ func writeLiveRun(
             payload = try ContentPriorityAssignedPayload(assignments: [ClausePriorityAssignment(
                 reference: reference, priority: priority, needsRetry: false,
                 decision: .classified(requestID: "p\(order)", answerKey: "u0001", response: decision)
-            )], request: DecisionRequestRecord(requestID: "p\(order)", metadata: testMetadata))
+            )], request: DecisionRequestRecord(requestID: "p\(order)", inputTokens: testInputTokens))
         } else {
             payload = try ClausePriorityBatch.pending(references: [reference], reason: .requestFailed, message: "x")
         }
@@ -281,7 +281,8 @@ func liveReuseKeepsTheLatestClassifiedTextAndIgnoresLaterPendingResults(complete
     )
 
     let reused = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: try Data(contentsOf: root.appending(path: "events.jsonl"))
+        from: try Data(contentsOf: root.appending(path: "events.jsonl")),
+        modelRevision: testDecisionIdentity.modelRevision
     )
 
     #expect(Array(reused.keys) == [ExactClauseTextKey(text: "同じ本文")])
@@ -289,6 +290,24 @@ func liveReuseKeepsTheLatestClassifiedTextAndIgnoresLaterPendingResults(complete
     #expect(decision.visiblePriority == .primary)
     #expect(decision.sourcePriorityRunID == "priority_live")
     #expect(decision.sourceClause.boundaryRunID == "boundary_live")
+}
+
+@Test
+func liveReuseSkipsRunsOfAnotherTaggerRevision() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["同じ本文"], results: [(0, .lowPriority)], complete: true)
+    let log = try Data(contentsOf: root.appending(path: "events.jsonl"))
+
+    let current = try EventLogTranscriptReader().liveContentPriorityDecisions(
+        from: log, modelRevision: testDecisionIdentity.modelRevision
+    )
+    let replaced = try EventLogTranscriptReader().liveContentPriorityDecisions(
+        from: log, modelRevision: String(repeating: "f", count: 64)
+    )
+
+    #expect(current[ExactClauseTextKey(text: "同じ本文")]?.visiblePriority == .lowPriority)
+    #expect(replaced.isEmpty)
 }
 
 @Test
@@ -315,7 +334,8 @@ func liveReuseRejectsAClauseThatTheSavedBoundariesDoNotProduce() async throws {
 
     #expect(throws: EventLogTranscriptReaderError.self) {
         _ = try EventLogTranscriptReader().liveContentPriorityDecisions(
-            from: try Data(contentsOf: root.appending(path: "events.jsonl"))
+            from: try Data(contentsOf: root.appending(path: "events.jsonl")),
+            modelRevision: testDecisionIdentity.modelRevision
         )
     }
 }
@@ -328,7 +348,7 @@ func publishedSnapshotRejectsAPendingListThatContradictsTheLog() async throws {
     let events = try await writeTranscript(["一。二"], root: root, sessionID: sessionID)
     _ = try publishLocal(root: root, events: events)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-        throw JevClientError.missingAnswer
+        throw DecisionResponseError.missingAnswer
     })
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     var metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
@@ -454,7 +474,7 @@ func everyClauseConsumerRejectsCorruptDurableSnapshot(kind: String) async throws
     }
     let data = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
     #expect(throws: (any Error).self) {
-        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: data)
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: data, modelRevision: testDecisionIdentity.modelRevision)
     }
 }
 
@@ -493,7 +513,7 @@ func liveReuseRejectsUnfinishedFinalRunAsACarryOrigin() async throws {
     let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
     let data = lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }
     #expect(throws: EventLogTranscriptReaderError.self) {
-        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: data)
+        _ = try EventLogTranscriptReader().liveContentPriorityDecisions(from: data, modelRevision: testDecisionIdentity.modelRevision)
     }
 }
 

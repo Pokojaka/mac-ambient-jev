@@ -7,139 +7,88 @@ public enum ClauseEventType {
     public static let priorityAssigned = "content_priority.assigned"
 }
 
-/// What each decision run records about its selected engine and policy.
+/// What each decision run records about the clause tagger and policy.
 public enum DecisionRunProvenance {
     public static let fillerProjectionRevision = "1"
+    private static let engine = "coreml-clause-tagger"
     private static let unitPolicy = "btsj-utterance-sentence"
     private static let encodingRevision = "1"
     private static let maximumTokens = "192"
     private static let computeUnits = "cpu-only"
 
     /// `mode` is `live`, `final` or `retry`.
-    public static func boundary(mode: String) -> RunProvenance {
-        var configuration = commonConfiguration(
-            provider: .jev, modelID: JevClient.model, modelRevision: "response-metadata", mode: mode
-        )
-        configuration["endpoint"] = JevClient.endpoint.absoluteString
+    public static func boundary(mode: String, identity: DecisionModelIdentity) -> RunProvenance {
+        var configuration = commonConfiguration(identity: identity, mode: mode)
         configuration["candidate_characters"] = "、。？！?!"
         configuration["boundary_threshold"] = String(ClauseBoundaryPolicy.boundaryThreshold)
         configuration["continuation_threshold"] = String(ClauseBoundaryPolicy.continuationThreshold)
         configuration["next_head_character_limit"] = String(ClauseBoundaryPolicy.nextHeadCharacterLimit)
-        configuration["text_policy"] = "raw-asr"
-        configuration["filler_projection_revision"] = fillerProjectionRevision
-        return RunProvenance(
-            engine: DecisionEngineChoice.jev.rawValue, model: nil, version: JevClient.boundaryPromptRevision, configuration: configuration
-        )
-    }
-
-    public static func priority(mode: String) -> RunProvenance {
-        var configuration = commonConfiguration(
-            provider: .jev, modelID: JevClient.model, modelRevision: "response-metadata", mode: mode
-        )
-        configuration["endpoint"] = JevClient.endpoint.absoluteString
-        configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
-        configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
-        configuration["prompt_revision"] = JevClient.priorityPromptRevision
-        configuration["text_policy"] = "filler-removed-exact"
-        configuration["filler_projection_revision"] = fillerProjectionRevision
-        return RunProvenance(
-            engine: DecisionEngineChoice.jev.rawValue, model: nil, version: JevClient.priorityPromptRevision, configuration: configuration
-        )
-    }
-
-    public static func localBoundary(
-        mode: String, modelID: String, modelRevision: String
-    ) -> RunProvenance {
-        var configuration = commonConfiguration(
-            provider: .localModel, modelID: modelID, modelRevision: modelRevision, mode: mode
-        )
-        configuration["candidate_characters"] = "、。？！?!"
-        configuration["boundary_threshold"] = String(ClauseBoundaryPolicy.boundaryThreshold)
-        configuration["continuation_threshold"] = String(ClauseBoundaryPolicy.continuationThreshold)
-        configuration["next_head_character_limit"] = String(ClauseBoundaryPolicy.nextHeadCharacterLimit)
-        configuration["encoding_revision"] = encodingRevision
-        configuration["max_tokens"] = maximumTokens
-        configuration["compute_units"] = computeUnits
         configuration["window_content_tokens"] = "190"
         configuration["window_policy"] = "whole-piece-max-min-context"
-        configuration["filler_projection_revision"] = fillerProjectionRevision
         configuration["text_policy"] = "neutral-punctuation-piecewise"
-        return RunProvenance(
-            engine: DecisionEngineChoice.localModel.rawValue, model: modelID, version: modelRevision, configuration: configuration
-        )
+        return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 
-    public static func localPriority(
-        mode: String, modelID: String, modelRevision: String
-    ) -> RunProvenance {
-        var configuration = commonConfiguration(
-            provider: .localModel, modelID: modelID, modelRevision: modelRevision, mode: mode
-        )
+    public static func priority(mode: String, identity: DecisionModelIdentity) -> RunProvenance {
+        var configuration = commonConfiguration(identity: identity, mode: mode)
         configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
         configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
-        configuration["encoding_revision"] = encodingRevision
-        configuration["max_tokens"] = maximumTokens
-        configuration["compute_units"] = computeUnits
-        configuration["filler_projection_revision"] = fillerProjectionRevision
         configuration["text_policy"] = "filler-removed-neutral-punctuation-piecewise"
-        return RunProvenance(
-            engine: DecisionEngineChoice.localModel.rawValue, model: modelID, version: modelRevision, configuration: configuration
-        )
+        return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 
-    public static func unavailable(stage: ProcessingStage, mode: String) -> RunProvenance {
+    /// A live run whose tagger could not be loaded.
+    public static func unavailable(mode: String) -> RunProvenance {
         RunProvenance(engine: "unavailable", model: nil, version: "1", configuration: [
-            "provider": "unavailable",
             "mode": mode,
             "unit_policy": unitPolicy,
         ])
     }
 
-    private static func commonConfiguration(
-        provider: DecisionEngineChoice, modelID: String, modelRevision: String, mode: String
-    ) -> [String: String] {
+    private static func commonConfiguration(identity: DecisionModelIdentity, mode: String) -> [String: String] {
         [
-            "provider": provider.rawValue,
-            "model_id": modelID,
-            "model_revision": modelRevision,
+            "model_id": identity.model,
+            "model_revision": identity.modelRevision,
             "unit_policy": unitPolicy,
             "mode": mode,
+            "encoding_revision": encodingRevision,
+            "max_tokens": maximumTokens,
+            "compute_units": computeUnits,
+            "filler_projection_revision": fillerProjectionRevision,
         ]
     }
 }
 
 public enum DecisionPendingMessage {
-    public static let unavailable = "判定エンジンを利用できないため判定を保留しました"
+    public static let notRequested = "判定を実行していないため保留しました"
     public static let asrGap = "次の区間を音声認識できなかったため境界を判定できません"
-    public static let stopped = "判定を停止したため保留しました"
 }
 
 /// One boundary request for one source, or the pending state when it cannot be sent.
 public enum ClauseBoundaryStep {
-    /// Returns the state to record and, when the failure stops the batch, its reason.
     /// A source with no candidate at the end of the text needs no request.
     public static func assess(
         source: SegmentTextReference,
         text: String,
         next: NextSegmentHead?,
         decisions: DecisionCoordinator
-    ) async throws -> (state: ClauseBoundaryState, stop: DecisionBatchStopReason?) {
+    ) async throws -> ClauseBoundaryState {
         let request = try ClauseBoundaryRequest(source: source, text: text, next: next)
         if request.candidates.isEmpty && next == nil {
-            return (.assessed(try ClauseBoundaryAssessment(
+            return .assessed(try ClauseBoundaryAssessment(
                 source: source, candidates: [], probabilities: [:], nextHead: nil,
                 continuationProbability: nil, request: nil, sourceDecision: .terminalWithoutQuestions
-            )), nil)
+            ))
         }
         switch await decisions.assessBoundaries(request) {
         case .answered(let response, let record):
-            return (.assessed(try ClauseBoundaryAssessment(
+            return .assessed(try ClauseBoundaryAssessment(
                 source: source, candidates: request.candidates, probabilities: response.probabilities,
                 nextHead: next, continuationProbability: response.continuationProbability,
                 request: record, sourceDecision: .assessed
-            )), nil)
-        case .failed(let stop, let message):
-            return (.pending(reason: stop?.pendingReason ?? .requestFailed, message: message), stop)
+            ))
+        case .failed(let message):
+            return .pending(reason: .requestFailed, message: message)
         case .cancelled:
             throw CancellationError()
         }
@@ -185,7 +134,6 @@ public struct DecisionEnrichmentBatchResult: Sendable {
     public let pendingPriorityClauses: [ClauseReference]
     public let boundaryRunID: String
     public let priorityRunID: String
-    public let stopReason: DecisionBatchStopReason?
 
     public init(
         events: [TranscriptEvent],
@@ -193,8 +141,7 @@ public struct DecisionEnrichmentBatchResult: Sendable {
         pendingBoundarySegments: [SegmentTextReference],
         pendingPriorityClauses: [ClauseReference],
         boundaryRunID: String,
-        priorityRunID: String,
-        stopReason: DecisionBatchStopReason?
+        priorityRunID: String
     ) {
         self.events = events
         self.materializedSegments = materializedSegments
@@ -202,7 +149,6 @@ public struct DecisionEnrichmentBatchResult: Sendable {
         self.pendingPriorityClauses = pendingPriorityClauses
         self.boundaryRunID = boundaryRunID
         self.priorityRunID = priorityRunID
-        self.stopReason = stopReason
     }
 
     public var pendingTargets: Set<DecisionPendingTarget> {
@@ -227,11 +173,10 @@ public actor DecisionEnrichmentCoordinator {
     private let boundaryRunID: String
     private let priorityRunID: String
     private let writer: SessionWriter
-    private let decisions: DecisionCoordinator?
+    private let decisions: DecisionCoordinator
     private let usageCounter: DecisionUsageCounter
     private let materializer: TranscriptMaterializer
 
-    private var stopReason: DecisionBatchStopReason?
     private var events: [TranscriptEvent] = []
     private var onEvent: ((TranscriptEvent) async -> Void)?
 
@@ -240,7 +185,7 @@ public actor DecisionEnrichmentCoordinator {
         boundaryRunID: String,
         priorityRunID: String,
         writer: SessionWriter,
-        decisions: DecisionCoordinator?,
+        decisions: DecisionCoordinator,
         usageCounter: DecisionUsageCounter,
         materializer: TranscriptMaterializer
     ) {
@@ -349,8 +294,7 @@ public actor DecisionEnrichmentCoordinator {
             pendingBoundarySegments: pendingBoundary,
             pendingPriorityClauses: pendingClauses,
             boundaryRunID: boundaryRunID,
-            priorityRunID: priorityRunID,
-            stopReason: stopReason
+            priorityRunID: priorityRunID
         )
     }
 
@@ -366,8 +310,7 @@ public actor DecisionEnrichmentCoordinator {
             "processing.run.started", runID: boundaryRunID,
             payload: ProcessingRunStartedPayload(
                 stage: .clauseBoundary,
-                provenance: decisions?.boundaryProvenance(mode: mode)
-                    ?? DecisionRunProvenance.unavailable(stage: .clauseBoundary, mode: mode)
+                provenance: decisions.boundaryProvenance(mode: mode)
             ),
             kind: nil
         )
@@ -427,17 +370,9 @@ public actor DecisionEnrichmentCoordinator {
         case .recognized(let source, let text):
             next = try NextSegmentHead(source: source, text: String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)))
         }
-        if let stopReason {
-            return .pending(reason: stopReason.pendingReason, message: DecisionPendingMessage.stopped)
-        }
-        guard let decisions else {
-            return .pending(reason: .unconfigured, message: DecisionPendingMessage.unavailable)
-        }
-        let result = try await ClauseBoundaryStep.assess(
+        return try await ClauseBoundaryStep.assess(
             source: entry.source, text: entry.text, next: next, decisions: decisions
         )
-        if let stop = result.stop { stopReason = stop }
-        return result.state
     }
 
     private func appendClosed(_ units: [ClauseUnit]) async throws -> [ClauseUnit] {
@@ -463,8 +398,7 @@ public actor DecisionEnrichmentCoordinator {
             "processing.run.started", runID: priorityRunID,
             payload: ProcessingRunStartedPayload(
                 stage: .contentPriority,
-                provenance: decisions?.priorityProvenance(mode: mode)
-                    ?? DecisionRunProvenance.unavailable(stage: .contentPriority, mode: mode)
+                provenance: decisions.priorityProvenance(mode: mode)
             ),
             kind: nil
         )
@@ -524,13 +458,9 @@ public actor DecisionEnrichmentCoordinator {
             payloads.append(try ContentPriorityAssignedPayload(assignments: carried, request: nil))
             try await record(payloads[payloads.count - 1])
         }
-        var batches = try ClausePriorityBatches(targets: targets, stopReason: stopReason)
+        var batches = try ClausePriorityBatches(targets: targets)
         while batches.hasRemaining {
-            let payload = try await batches.next {
-                if let decisions = self.decisions { return .available(decisions) }
-                return .pending(.unconfigured, DecisionPendingMessage.unavailable)
-            }
-            stopReason = batches.stopReason
+            let payload = try await batches.next { .available(self.decisions) }
             payloads.append(payload)
             try await record(payload)
         }
@@ -747,7 +677,7 @@ struct PublishedDecisionSnapshot {
     /// over from its event, a pending result as pending.
     func carriedState(of source: SegmentTextReference) throws -> ClauseBoundaryState {
         guard let runID = activeRuns.clauseBoundary else {
-            return .pending(reason: .unconfigured, message: DecisionPendingMessage.unavailable)
+            return .pending(reason: .notRequested, message: DecisionPendingMessage.notRequested)
         }
         guard let published = boundaryStates[source] else {
             throw DecisionEnrichmentError.missingPublishedDecisionRuns

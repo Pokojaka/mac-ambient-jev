@@ -4,7 +4,10 @@ import Foundation
 /// from the session's source audio.
 public enum RecoverableProcessingAction: Sendable, Equatable {
     case finalize
-    /// Requests again the pending decision results of the published snapshot.
+    /// A final or retry decision run was saved without publishing its snapshot. Launch recovery
+    /// requests the published pending results again and publishes a new snapshot.
+    case recoverDecisionRun(boundarySegments: [SegmentTextReference], clauses: [ClauseReference])
+    /// The published snapshot has pending decision results. Only the user's retry requests them again.
     case retryContentPriority(boundarySegments: [SegmentTextReference], clauses: [ClauseReference])
 }
 
@@ -176,9 +179,13 @@ public struct SessionRecoveryScanner: Sendable {
             }
             let lines = recovered.lines
             let targets = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
-            let unpublished = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
-            guard !targets.boundarySegments.isEmpty || !targets.clauses.isEmpty || unpublished else { return nil }
-            action = .retryContentPriority(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
+            if try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns) {
+                action = .recoverDecisionRun(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
+            } else if !targets.boundarySegments.isEmpty || !targets.clauses.isEmpty {
+                action = .retryContentPriority(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
+            } else {
+                return nil
+            }
         }
 
         guard try layout.audioSource(for: manifest) != nil else {

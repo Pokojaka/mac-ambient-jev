@@ -136,7 +136,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     #expect(rows.map(\.clauseState) == [.boundaryPending])
     #expect(completed.pendingClauseBoundarySegments == sources)
     #expect(completed.pendingContentPriorityClauses.isEmpty)
-    // Local finalization completes without Jev runs; its boundary-pending text remains retryable.
+    // Local finalization completes without decision runs; its boundary-pending text remains retryable.
     let pending = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
         .inspect(sessionID: sessionID).recovery
     #expect(pending?.action == .retryContentPriority(boundarySegments: sources, clauses: []))

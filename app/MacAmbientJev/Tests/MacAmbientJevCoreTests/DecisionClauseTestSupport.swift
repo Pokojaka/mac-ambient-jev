@@ -28,7 +28,8 @@ actor ScriptedDecisionProvider: DecisionProvider {
     }
 }
 
-let testMetadata = try! DecisionResponseMetadata(model: "jev-test", inputTokens: 10, outputTokens: 2)
+let testDecisionIdentity = try! DecisionModelIdentity(model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
+let testInputTokens = 10
 
 /// Accepts a candidate after `。？！?!` and rejects one after `、`; continues into the next
 /// segment only for sources whose segment ID is in `continuing`.
@@ -43,7 +44,7 @@ func punctuationBoundaries(continuing: Set<String>) -> ScriptedDecisionProvider.
         return ClauseBoundaryResponse(
             probabilities: probabilities,
             continuationProbability: request.next.map { _ in continuing.contains(request.source.segmentID) ? 0.9 : 0.1 },
-            metadata: testMetadata
+            inputTokens: testInputTokens
         )
     }
 }
@@ -58,7 +59,7 @@ let lowForBackchannel: ScriptedDecisionProvider.PriorityAnswer = { targets in
             probabilities: low ? ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975] : ["PRIMARY": 0.975, "LOW_PRIORITY": 0.025]
         )
     }
-    return PriorityBatchResponse(decisions: decisions, metadata: testMetadata)
+    return PriorityBatchResponse(decisions: decisions, inputTokens: testInputTokens)
 }
 
 let transcriptRuns = ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
@@ -158,7 +159,7 @@ func publishLocal(root: URL, events: [TranscriptEvent]) throws -> ProcessingMeta
 func buildAndPublish(
     root: URL,
     sessionID: UUID,
-    provider: (any DecisionProvider)?,
+    provider: any DecisionProvider,
     scope: DecisionEnrichmentScope,
     reusable: [ExactClauseTextKey: ReusableClauseDecision] = [:],
     counter: DecisionUsageCounter = DecisionUsageCounter(),
@@ -174,7 +175,7 @@ func buildAndPublish(
         boundaryRunID: boundaryRunID ?? "boundary_\(UUID().uuidString.lowercased())",
         priorityRunID: priorityRunID,
         writer: try SessionWriter(sessionURL: root),
-        decisions: provider.map { DecisionCoordinator(provider: $0, identity: .jev, usageCounter: counter) },
+        decisions: DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter),
         usageCounter: counter,
         materializer: TranscriptMaterializer(sampleRate: 1_000)
     )

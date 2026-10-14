@@ -20,8 +20,12 @@ public actor LocalClauseTagger: DecisionProvider {
         identity = loadedModel.identity
     }
 
-    public static func modelDirectory(paths: AppPaths) -> URL {
-        paths.modelsRoot.appending(path: "clause-tagger", directoryHint: .isDirectory)
+    /// The model inside the app bundle, where `scripts/build_app.sh` places the pinned release asset.
+    public static func bundledModelDirectory() throws -> URL {
+        guard let resources = Bundle.main.resourceURL else {
+            throw ClauseTaggerModelError.unavailable("アプリの Resources フォルダーを特定できません。")
+        }
+        return resources.appending(path: "clause-tagger", directoryHint: .isDirectory)
     }
 
     public func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
@@ -81,12 +85,11 @@ public actor LocalClauseTagger: DecisionProvider {
 
         let inputTokens = boundaryInputs.reduce(0) { $0 + $1.inputIDs.count }
             + (continuationInput?.inputIDs.count ?? 0)
-        let metadata = try responseMetadata(inputTokens: inputTokens)
         try Task.checkCancellation()
         return ClauseBoundaryResponse(
             probabilities: candidateProbabilities,
             continuationProbability: continuationProbability,
-            metadata: metadata
+            inputTokens: inputTokens
         )
     }
 
@@ -128,12 +131,8 @@ public actor LocalClauseTagger: DecisionProvider {
             inputTokens += encoded.inputIDs.count
         }
 
-        let metadata = try responseMetadata(inputTokens: inputTokens)
         try Task.checkCancellation()
-        return PriorityBatchResponse(
-            decisions: decisions,
-            metadata: metadata
-        )
+        return PriorityBatchResponse(decisions: decisions, inputTokens: inputTokens)
     }
 
     private static func isValidPriorityKey(_ key: String) -> Bool {
@@ -141,13 +140,5 @@ public actor LocalClauseTagger: DecisionProvider {
         return bytes.count == 5 && bytes[0] == 117
             && bytes.dropFirst().allSatisfy { (48...57).contains($0) }
             && bytes.dropFirst().contains(where: { $0 != 48 })
-    }
-
-    private func responseMetadata(inputTokens: Int) throws -> DecisionResponseMetadata {
-        try DecisionResponseMetadata(
-            identity: model.identity.decisionIdentity,
-            inputTokens: inputTokens,
-            outputTokens: 0
-        )
     }
 }

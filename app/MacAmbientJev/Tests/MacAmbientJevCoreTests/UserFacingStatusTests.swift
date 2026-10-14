@@ -9,7 +9,7 @@ func userFacingStatusStringsRemainJapanese() {
     )
     #expect(
         UserFacingStatus.decisionDeferred.text
-            == "発話文の判定を後で再試行します"
+            == "発話文の判定を保留しました"
     )
     #expect(
         UserFacingStatus.detectingSpeech.text
@@ -22,10 +22,6 @@ func pausedAndSuspendedStatusesNameTheirCause() {
     #expect(
         UserFacingStatus.finalizationPausedForHeat.text
             == "発熱のため確定処理を一時停止中"
-    )
-    #expect(
-        UserFacingStatus.decisionAuthorizationRequired.text
-            == "Jev の API キーの修正が必要です。発話文の判定を保留しました"
     )
     #expect(
         UserFacingStatus.liveTranscriptionThermalSuspended.text

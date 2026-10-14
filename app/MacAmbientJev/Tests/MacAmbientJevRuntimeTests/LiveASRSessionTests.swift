@@ -210,7 +210,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         source: source, candidates: [], probabilities: [:],
         nextHead: NextSegmentHead(source: nextSource, text: nextText),
         continuationProbability: 0.05,
-        request: DecisionRequestRecord(requestID: "boundary_req", metadata: DecisionResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)),
+        request: DecisionRequestRecord(requestID: "boundary_req", inputTokens: 3),
         sourceDecision: .assessed
     )
     let unit = try ClauseUnit(
@@ -229,7 +229,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
             reference: unit.reference, priority: .lowPriority, needsRetry: false,
             decision: .classified(requestID: "req", answerKey: "u0001", response: low)
         )
-    ], request: DecisionRequestRecord(requestID: "req", metadata: DecisionResponseMetadata(model: "jev", inputTokens: 3, outputTokens: nil)))
+    ], request: DecisionRequestRecord(requestID: "req", inputTokens: 3))
     let classified = try await fixture.session.applyClauseEvents([
         .clause(seq: 102, runID: "priority_live", kind: .contentPriorityAssigned(assigned))
     ])

@@ -203,8 +203,7 @@ extension AppState {
                     guard let self,
                           self.recordingSessionID == sessionID,
                           self.recordingPhase == .recording else { return }
-                    if text.hasPrefix(UserFacingStatus.decisionAuthorizationRequired.text)
-                        || text.hasPrefix(UserFacingStatus.decisionDeferred.text)
+                    if text.hasPrefix(UserFacingStatus.decisionDeferred.text)
                         || text.hasPrefix("発話文の判定を保存できませんでした")
                         || text.hasPrefix("ライブの発話文判定に失敗しました") {
                         self.liveContentPriorityStatus[sessionID] = text

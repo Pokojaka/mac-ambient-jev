@@ -21,7 +21,7 @@ func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async
     // Boundaries are judged on raw ASR text, filler included.
     #expect(boundaryRequests[0].text == "えー、これは")
     let priorityRequests = await provider.priorityRequests
-    // One Choice for the clauses the boundaries closed; filler removed, parts joined without spaces.
+    // One priority request for the clauses the boundaries closed; filler removed, parts joined without spaces.
     #expect(priorityRequests.map { $0.map(\.text) } == [["これはコピーと。", "うん、うん。", "次の話です"]])
     #expect(result.pendingBoundarySegments.isEmpty)
     #expect(result.pendingPriorityClauses.isEmpty)
@@ -44,7 +44,7 @@ func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async
     let snapshot = await counter.snapshot()
     #expect(snapshot.boundaryRequests.sendCount == 2)
     #expect(snapshot.priorityRequests.sendCount == 1)
-    #expect(snapshot.reportedInputTokens == 30)
+    #expect(snapshot.inputTokens == 30)
     #expect(snapshot.pendingBoundarySegmentCount == 0)
 
     let assigned = try eventObjects(root).filter { $0["event_type"] as? String == "content_priority.assigned" }
@@ -55,7 +55,7 @@ func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async
 }
 
 @Test
-func localSelectedFinalSnapshotPersistsModelProvenanceAndResponseMetadata() async throws {
+func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
@@ -64,9 +64,9 @@ func localSelectedFinalSnapshotPersistsModelProvenanceAndResponseMetadata() asyn
     let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
     let revision = String(repeating: "a", count: 64)
     let counter = DecisionUsageCounter()
-    let provider = LocalIdentityDecisionProvider(modelID: modelID, revision: revision)
+    let provider = FixedResponseDecisionProvider()
     let decisions = DecisionCoordinator(
-        provider: provider, identity: try DecisionModelIdentity(provider: .localModel, model: modelID, modelRevision: revision), usageCounter: counter
+        provider: provider, identity: try DecisionModelIdentity(model: modelID, modelRevision: revision), usageCounter: counter
     )
     let boundaryRunID = "boundary_local_final"
     let priorityRunID = "priority_local_final"
@@ -96,11 +96,10 @@ func localSelectedFinalSnapshotPersistsModelProvenanceAndResponseMetadata() asyn
         == [ProcessingStage.clauseBoundary.rawValue, ProcessingStage.contentPriority.rawValue])
     for start in starts {
         let provenance = try requireValue((start["payload"] as? [String: Any])?["provenance"] as? [String: Any])
-        #expect(provenance["engine"] as? String == "local-coreml")
+        #expect(provenance["engine"] as? String == "coreml-clause-tagger")
         #expect(provenance["model"] as? String == modelID)
         #expect(provenance["version"] as? String == revision)
         let configuration = try requireValue(provenance["configuration"] as? [String: String])
-        #expect(configuration["provider"] == "local-coreml")
         #expect(configuration["model_id"] == modelID)
         #expect(configuration["model_revision"] == revision)
         #expect(configuration["unit_policy"] == "btsj-utterance-sentence")
@@ -124,14 +123,8 @@ func localSelectedFinalSnapshotPersistsModelProvenanceAndResponseMetadata() asyn
     let requestRecords = requestedBoundaries + priorityPayloads.compactMap { $0["request"] as? [String: Any] }
     #expect(requestRecords.count == 2)
     #expect(requestRecords.allSatisfy { ($0["request_id"] as? String)?.hasPrefix("decisionreq_") == true })
-    let requestMetadata = requestRecords.compactMap { $0["metadata"] as? [String: Any] }
-    #expect(requestMetadata.count == 2)
-    #expect(requestMetadata.allSatisfy {
-        ($0["provider"] as? String) == "local-coreml"
-            && ($0["model"] as? String) == modelID
-            && ($0["model_revision"] as? String) == revision
-    })
-    #expect(Set(requestMetadata.compactMap { $0["input_tokens"] as? Int }) == [11, 17])
+    #expect(requestRecords.allSatisfy { Set($0.keys) == ["request_id", "input_tokens"] })
+    #expect(Set(requestRecords.compactMap { $0["input_tokens"] as? Int }) == [11, 17])
 
     let selectedRuns = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
     let reconstructed = try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: selectedRuns)
@@ -141,11 +134,11 @@ func localSelectedFinalSnapshotPersistsModelProvenanceAndResponseMetadata() asyn
     let usage = await counter.snapshot()
     #expect(usage.boundaryRequests.sendCount == 1)
     #expect(usage.priorityRequests.sendCount == 1)
-    #expect(usage.reportedInputTokens == 28)
+    #expect(usage.inputTokens == 28)
 }
 
 @Test
-func fortyOneClausesAreSentAsTwoOrderedChoiceRequests() async throws {
+func fortyOneClausesAreSentAsTwoOrderedPriorityRequests() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
@@ -173,7 +166,8 @@ func priorityBatchLimitAppliesAfterRemovingDurableReusableClauses(_ remaining: I
     try await writeLiveRun(root: root, sessionID: sessionID, texts: [texts[0]],
                            results: [(0, .lowPriority)], complete: false)
     let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: Data(contentsOf: root.appending(path: "events.jsonl"))
+        from: Data(contentsOf: root.appending(path: "events.jsonl")),
+        modelRevision: testDecisionIdentity.modelRevision
     )
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
     let counter = DecisionUsageCounter()
@@ -188,7 +182,7 @@ func priorityBatchLimitAppliesAfterRemovingDurableReusableClauses(_ remaining: I
     let usage = await counter.snapshot()
     #expect(usage.boundaryRequests.sendCount == 1)
     #expect(usage.priorityRequests.sendCount == (remaining == 40 ? 1 : 2))
-    #expect(usage.reportedInputTokens == (remaining == 40 ? 20 : 30))
+    #expect(usage.inputTokens == (remaining == 40 ? 20 : 30))
     #expect(try readPublished(root: root) == result.materializedSegments)
 }
 
@@ -205,7 +199,8 @@ func liveDecisionIsReusedOnlyForTheByteIdenticalFilteredText() async throws {
         results: [(0, .lowPriority), (1, .lowPriority)], complete: false
     )
     let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: Data(contentsOf: root.appending(path: "events.jsonl"))
+        from: Data(contentsOf: root.appending(path: "events.jsonl")),
+        modelRevision: testDecisionIdentity.modelRevision
     )
 
     let result = try await buildAndPublish(
@@ -271,7 +266,7 @@ func emptyASRTerminatesAnUnresolvedComponentWithoutResolvingIt() async throws {
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["保留。末尾", "", "独立。次"], root: root, sessionID: sessionID))
     let provider = ScriptedDecisionProvider(boundary: { request in
-        if request.source.segmentID == "s01" { throw JevClientError.missingAnswer }
+        if request.source.segmentID == "s01" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: [])(request)
     }, priority: lowForBackchannel)
     _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
@@ -281,25 +276,69 @@ func emptyASRTerminatesAnUnresolvedComponentWithoutResolvingIt() async throws {
     #expect(rows[0].clauseSlices.isEmpty)
 }
 
-@Test(arguments: [401, 429, 503])
-func stoppedBoundaryBatchLeavesEverySegmentUnsplitAndPending(status: Int) async throws {
+@Test
+func punctuationOnlyASRTerminatesBoundaryStream() async throws {
+    #expect(ASRRecognitionOutcome(text: " \t\n。？！") == .empty)
+    #expect(ASRRecognitionOutcome(text: "本文") == .recognized)
+    #expect(ASRRecognitionOutcome(text: "★") == .recognized)
+    #expect(ASRRecognitionOutcome(text: "😀") == .recognized)
+
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["最初。後続", "。", "次の本文"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let provider = ScriptedDecisionProvider(boundary: { request in
+        if request.next != nil {
+            _ = try ClauseTaggerEncoding.continuationInput(request) { piece in
+                piece.unicodeScalars.map { Int($0.value) }
+            }
+        }
+        return try punctuationBoundaries(continuing: [])(request)
+    }, priority: lowForBackchannel)
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+
+    let boundaryRequests = await provider.boundaryRequests
+    #expect(boundaryRequests.map(\.source.segmentID) == ["s01"])
+    #expect(boundaryRequests.first?.next == nil)
+    #expect(result.pendingBoundarySegments.isEmpty)
+
+    let punctuationEvents = try eventObjects(root).filter {
+        $0["event_type"] as? String == "asr.completed" && $0["segment_id"] as? String == "s02"
+    }
+    #expect(punctuationEvents.count == 1)
+    let punctuationPayload = punctuationEvents.first?["payload"] as? [String: Any]
+    #expect(punctuationPayload?["text"] as? String == "。")
+    #expect(punctuationPayload?["outcome"] as? String == ASRRecognitionOutcome.empty.rawValue)
+
+    let published = try readPublished(root: root)
+    #expect(published.map(\.segmentID) == ["s01", "s02", "s03"])
+    let punctuationSegment = try requireValue(published.first { $0.segmentID == "s02" })
+    #expect(punctuationSegment.text == "。")
+    #expect(!punctuationSegment.hasRecognizedText)
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.segmentID) == ["s01", "s03"])
+}
+
+@Test
+func failedBoundaryRequestLeavesTheFollowingSegmentUnresolved() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["一つ目。二つ目", "三つ目"], root: root, sessionID: sessionID)
     let local = try publishLocal(root: root, events: events)
     let provider = ScriptedDecisionProvider(
-        boundary: { _ in throw JevClientError.httpStatus(status) }, priority: lowForBackchannel
+        boundary: { _ in throw DecisionResponseError.missingAnswer }, priority: lowForBackchannel
     )
     let counter = DecisionUsageCounter()
     await counter.recordDeferred(sessionID: sessionID, targets: local.pendingDecisionTargets)
 
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
 
+    // The last segment has no candidate and no successor, so only the first is requested.
     #expect(await provider.boundaryRequests.count == 1)
     #expect(await provider.priorityRequests.isEmpty)
-    #expect(result.stopReason == (status == 401 ? .authorizationRejected : .providerUnavailable))
-    #expect(result.pendingBoundarySegments == local.pendingClauseBoundarySegments)
+    #expect(result.pendingBoundarySegments == [local.pendingClauseBoundarySegments[0]])
     let published = try readPublished(root: root)
     #expect(published.map(\.clauseState) == [.boundaryPending, .boundaryPending])
     #expect(published.allSatisfy { $0.clauseSlices.isEmpty })
@@ -310,11 +349,29 @@ func stoppedBoundaryBatchLeavesEverySegmentUnsplitAndPending(status: Int) async 
     ])
     let reasons = try eventObjects(root).filter { $0["event_type"] as? String == "clause_boundaries.pending" }
         .compactMap { ($0["payload"] as? [String: Any])?["reason"] as? String }
-    #expect(reasons == Array(repeating: status == 401 ? "authorization_rejected" : "request_failed", count: 2))
+    #expect(reasons == ["request_failed"])
     let snapshot = await counter.snapshot()
     #expect(snapshot.sendCount == 1)
     #expect(snapshot.failureCount == 1)
-    #expect(snapshot.pendingBoundarySegmentCount == 2)
+    #expect(snapshot.pendingBoundarySegmentCount == 1)
+}
+
+@Test
+func requestSpecificBoundaryFailureKeepsSendingTheRemainingSegments() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let texts = (1...5).map { "説明その\($0)。続き" }
+    _ = try publishLocal(root: root, events: try await writeTranscript(texts, root: root, sessionID: sessionID))
+    let provider = ScriptedDecisionProvider(
+        boundary: { _ in throw ClauseTaggerEncodingError.missingJunction }, priority: lowForBackchannel
+    )
+
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02", "s03", "s04", "s05"])
+    #expect(result.pendingBoundarySegments.map(\.segmentID) == ["s01", "s02", "s03", "s04", "s05"])
+    #expect(try readPublished(root: root).map(\.clauseState) == Array(repeating: .boundaryPending, count: 5))
 }
 
 @Test
@@ -328,7 +385,7 @@ func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async t
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { targets in
         if !failedFirst.value {
             failedFirst.set(true)
-            throw JevClientError.missingAnswer
+            throw DecisionResponseError.missingAnswer
         }
         return try lowForBackchannel(targets)
     })
@@ -336,7 +393,6 @@ func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async t
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
 
     #expect(await provider.priorityRequests.map(\.count) == [40, 1])
-    #expect(result.stopReason == nil)
     #expect(result.pendingPriorityClauses.count == 40)
     let published = try readPublished(root: root)
     #expect(published.map(\.clauseState) == [.priorityPending])
@@ -350,7 +406,7 @@ func priorityOnlyRetryRequestsOnlyTheTargetsAndCarriesEveryOtherResult() async t
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["一。二。三"], root: root, sessionID: sessionID))
     let failing = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-        throw JevClientError.missingAnswer
+        throw DecisionResponseError.missingAnswer
     })
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
     #expect(first.pendingPriorityClauses.count == 3)
@@ -387,7 +443,7 @@ func boundaryRetryCarriesPublishedAssessmentsAndRequestsOnlyPendingSegments() as
     let events = try await writeTranscript(["前。続く", "途中", "終わり。後"], root: root, sessionID: sessionID)
     _ = try publishLocal(root: root, events: events)
     let failingMiddle = ScriptedDecisionProvider(boundary: { request in
-        if request.source.segmentID == "s02" { throw JevClientError.missingAnswer }
+        if request.source.segmentID == "s02" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: ["s01", "s02"])(request)
     }, priority: lowForBackchannel)
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failingMiddle, scope: .all)
@@ -459,20 +515,6 @@ func retryRejectsTargetsThatAreNotPublishedPendingResults() async throws {
     }
 }
 
-@Test
-func withoutDecisionProviderEverySegmentStaysUnsplitPendingAndNothingIsSent() async throws {
-    let root = temporarySessionRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["一。二", "三"], root: root, sessionID: sessionID))
-
-    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: nil, scope: .all)
-
-    #expect(result.pendingBoundarySegments.count == 2)
-    #expect(result.pendingPriorityClauses.isEmpty)
-    #expect(result.materializedSegments.map(\.clauseState) == [.boundaryPending, .boundaryPending])
-}
-
 private actor SuspendedPriorityProvider: DecisionProvider {
     private var started: CheckedContinuation<Void, Never>?
     private var didStart = false
@@ -513,7 +555,7 @@ func cancelledSnapshotDoesNotSaveAResponseThatArrivesLate() async throws {
     let coordinator = DecisionEnrichmentCoordinator(
         sessionID: sessionID, boundaryRunID: "boundary", priorityRunID: "priority",
         writer: try SessionWriter(sessionURL: root),
-        decisions: DecisionCoordinator(provider: provider, identity: .jev, usageCounter: DecisionUsageCounter()),
+        decisions: DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: DecisionUsageCounter()),
         usageCounter: DecisionUsageCounter(), materializer: TranscriptMaterializer(sampleRate: 1_000)
     )
     let task = Task {
@@ -559,7 +601,7 @@ func boundaryRetryReusesExactPublishedTextAtDifferentRawParts() async throws {
     _ = try publishLocal(root: root, events: try await writeTranscript(
         ["同じ。", "", "同じ。後半"], root: root, sessionID: sessionID
     ))
-    let failing = ScriptedDecisionProvider(boundary: { _ in throw JevClientError.missingAnswer },
+    let failing = ScriptedDecisionProvider(boundary: { _ in throw DecisionResponseError.missingAnswer },
                                            priority: lowForBackchannel)
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
     #expect(first.pendingBoundarySegments.map(\.segmentID) == ["s03"])
@@ -576,7 +618,7 @@ func boundaryRetryReusesExactPublishedTextAtDifferentRawParts() async throws {
 }
 
 @Test(arguments: [false, true])
-func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pending: Bool) async throws {
+func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingBoundaries(pending: Bool) async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
@@ -584,7 +626,7 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pendin
         ["前。後"], root: root, sessionID: sessionID
     ))
     let initial = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { targets in
-        if pending { throw JevClientError.missingAnswer }
+        if pending { throw DecisionResponseError.missingAnswer }
         return try lowForBackchannel(targets)
     })
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: initial, scope: .all)
@@ -592,7 +634,7 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pendin
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: sessionID, processingRunID: "interrupted_retry",
         payload: ProcessingRunStartedPayload(stage: .contentPriority,
-                                             provenance: DecisionRunProvenance.priority(mode: "retry"))
+                                             provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity))
     ))
     // A durable but unpublished answer must not leak into either reuse or retry selection.
     let reference = try requireValue(first.materializedSegments.first?.clauseSlices.first?.reference)
@@ -607,7 +649,7 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingNoul(pendin
                 reference: reference, priority: .lowPriority, needsRetry: false,
                 decision: .classified(requestID: "unpublished", answerKey: "u0001", response: unpublishedDecision)
             )],
-            request: DecisionRequestRecord(requestID: "unpublished", metadata: testMetadata)
+            request: DecisionRequestRecord(requestID: "unpublished", inputTokens: testInputTokens)
         )
     ))
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
@@ -631,7 +673,7 @@ func priorityRetryCannotAppendIntoThePublishedPriorityRun() async throws {
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
     let failing = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
-                                           priority: { _ in throw JevClientError.missingAnswer })
+                                           priority: { _ in throw DecisionResponseError.missingAnswer })
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
     await #expect(throws: DecisionEnrichmentError.invalidPriorityRun) {
@@ -652,12 +694,13 @@ func liveReuseDoesNotTrimWhitespaceOrNormalizePunctuation(_ finalText: String) a
     try await writeLiveRun(root: root, sessionID: sessionID, texts: ["同じ。"],
                            results: [(0, .lowPriority)], complete: false)
     let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: Data(contentsOf: root.appending(path: "events.jsonl"))
+        from: Data(contentsOf: root.appending(path: "events.jsonl")),
+        modelRevision: testDecisionIdentity.modelRevision
     )
     let provider = ScriptedDecisionProvider(boundary: { request in
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.1) }),
-            continuationProbability: nil, metadata: testMetadata
+            continuationProbability: nil, inputTokens: testInputTokens
         )
     }, priority: lowForBackchannel)
     let result = try await buildAndPublish(
@@ -668,24 +711,12 @@ func liveReuseDoesNotTrimWhitespaceOrNormalizePunctuation(_ finalText: String) a
     #expect(try readPublished(root: root) == result.materializedSegments)
 }
 
-private actor LocalIdentityDecisionProvider: DecisionProvider {
-    private let modelID: String
-    private let revision: String
-
-    init(modelID: String, revision: String) {
-        self.modelID = modelID
-        self.revision = revision
-    }
-
+private struct FixedResponseDecisionProvider: DecisionProvider {
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.99) }),
             continuationProbability: request.next.map { _ in 0.01 },
-            metadata: try DecisionResponseMetadata(
-                identity: DecisionModelIdentity(provider: .localModel, model: modelID, modelRevision: revision),
-                inputTokens: 11,
-                outputTokens: 0
-            )
+            inputTokens: 11
         )
     }
 
@@ -696,13 +727,6 @@ private actor LocalIdentityDecisionProvider: DecisionProvider {
                 probabilities: ["PRIMARY": 0.99, "LOW_PRIORITY": 0.01]
             ))
         })
-        return PriorityBatchResponse(
-            decisions: decisions,
-            metadata: try DecisionResponseMetadata(
-                identity: DecisionModelIdentity(provider: .localModel, model: modelID, modelRevision: revision),
-                inputTokens: 17,
-                outputTokens: 0
-            )
-        )
+        return PriorityBatchResponse(decisions: decisions, inputTokens: 17)
     }
 }

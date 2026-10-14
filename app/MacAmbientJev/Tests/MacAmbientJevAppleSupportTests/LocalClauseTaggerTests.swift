@@ -78,7 +78,7 @@ struct LocalClauseTaggerTests {
         let document = try Self.loadFixture()
 
         #expect(document.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
-        #expect(document.modelRevision == "249b30fa7e7aa76f76ab967834b5cd4f392656166e8804565dcc60fca02fd216")
+        #expect(document.modelRevision == "54443a6a0f48b8c8638caed9b4dd88c001988f03b7d5cb629bf0d9773e192d01")
         #expect(document.trainingStatus == "trained")
         #expect(Self.isLowercaseSHA256(document.tokenizerSHA256))
         #expect(document.unitPolicy == "btsj-utterance-sentence")
@@ -192,7 +192,7 @@ struct LocalClauseTaggerTests {
     }
 
     @Test
-    func missingLocalModelFailsFastWithoutNetworkOrFallback() throws {
+    func missingModelPackageFailsFast() throws {
         let directory = Self.temporaryDirectoryURL()
         #expect(!FileManager.default.fileExists(atPath: directory.path))
 
@@ -329,11 +329,7 @@ struct LocalClauseTaggerTests {
                 #expect(response.probabilities[candidate.id] == expectedProbability)
             }
             #expect(response.continuationProbability == nil)
-            #expect(response.metadata.provider == .localModel)
-            #expect(response.metadata.model == model.identity.modelID)
-            #expect(response.metadata.modelRevision == model.identity.revision)
-            #expect(response.metadata.inputTokens == boundaryInputs.reduce(0) { $0 + $1.inputIDs.count })
-            #expect(response.metadata.outputTokens == 0)
+            #expect(response.inputTokens == boundaryInputs.reduce(0) { $0 + $1.inputIDs.count })
             assessedNoNextFixtures += 1
         }
         #expect(assessedNoNextFixtures > 0)
@@ -364,7 +360,7 @@ struct LocalClauseTaggerTests {
             #expect(longBoundaryResponse.probabilities[candidate.id] == expectedProbability)
         }
         #expect(
-            longBoundaryResponse.metadata.inputTokens
+            longBoundaryResponse.inputTokens
                 == longBoundaryInputs.reduce(0) { $0 + $1.inputIDs.count }
         )
         guard let continuationFixture = document.fixtures.first(where: { $0.next != nil }),
@@ -385,10 +381,7 @@ struct LocalClauseTaggerTests {
             continuationResponse.continuationProbability
                 == 1 - continuationPrediction.boundaryProbabilities[continuationTokenIndex][1]
         )
-        #expect(continuationResponse.metadata.provider == .localModel)
-        #expect(continuationResponse.metadata.model == model.identity.modelID)
-        #expect(continuationResponse.metadata.modelRevision == model.identity.revision)
-        #expect(continuationResponse.metadata.inputTokens == continuationInput.inputIDs.count)
+        #expect(continuationResponse.inputTokens == continuationInput.inputIDs.count)
 
         let longNextText = "続きです"
         let longContinuationRequest = try Self.boundaryRequest(text: longBoundaryText, next: longNextText)
@@ -417,7 +410,7 @@ struct LocalClauseTaggerTests {
                 == 1 - longContinuationPrediction.boundaryProbabilities[longJunctionIndex][1]
         )
         #expect(
-            longContinuationResponse.metadata.inputTokens
+            longContinuationResponse.inputTokens
                 == longBoundaryTokens + longContinuationInput.inputIDs.count
         )
 
@@ -444,11 +437,8 @@ struct LocalClauseTaggerTests {
             syntheticResponse.continuationProbability
                 == 1 - syntheticContinuationPrediction.boundaryProbabilities[syntheticJunctionIndex][1]
         )
-        #expect(syntheticResponse.metadata.provider == .localModel)
-        #expect(syntheticResponse.metadata.model == model.identity.modelID)
-        #expect(syntheticResponse.metadata.modelRevision == model.identity.revision)
         #expect(
-            syntheticResponse.metadata.inputTokens
+            syntheticResponse.inputTokens
                 == baseInput.inputIDs.count + syntheticContinuationInput.inputIDs.count
         )
 
@@ -468,10 +458,7 @@ struct LocalClauseTaggerTests {
         let priorityResponse = try await tagger.classifyPriorities(targets)
         #expect(priorityResponse.decisions.count == priorityFixtures.count)
         let expectedPriorityInputTokens = priorityEncodedInputs.reduce(0) { $0 + $1.inputIDs.count }
-        #expect(priorityResponse.metadata.provider == .localModel)
-        #expect(priorityResponse.metadata.model == model.identity.modelID)
-        #expect(priorityResponse.metadata.modelRevision == model.identity.revision)
-        #expect(priorityResponse.metadata.inputTokens == expectedPriorityInputTokens)
+        #expect(priorityResponse.inputTokens == expectedPriorityInputTokens)
 
         for (target, item) in zip(targets, priorityFixtures) {
             let prediction = predictions[item.offset]
@@ -499,7 +486,7 @@ struct LocalClauseTaggerTests {
         let overlongDecision = try #require(overlongPriorityResponse.decisions["u0001"])
         #expect(overlongDecision.probabilities["PRIMARY"] == overlongPrediction.priorityProbabilities[0])
         #expect(overlongDecision.probabilities["LOW_PRIORITY"] == overlongPrediction.priorityProbabilities[1])
-        #expect(overlongPriorityResponse.metadata.inputTokens == ClauseTaggerEncoding.maximumTokens)
+        #expect(overlongPriorityResponse.inputTokens == ClauseTaggerEncoding.maximumTokens)
 
         try await Self.expectInvalidTargets {
             _ = try await tagger.classifyPriorities([])
@@ -536,7 +523,7 @@ struct LocalClauseTaggerTests {
             let prediction = try model.predict(inputIDs: encoded.inputIDs)
             let decision = try #require(response.decisions["u0001"])
             #expect(decision.probabilities["PRIMARY"] == prediction.priorityProbabilities[0])
-            #expect(response.metadata.inputTokens == encoded.inputIDs.count)
+            #expect(response.inputTokens == encoded.inputIDs.count)
         }
 
         let twoTokenPrediction = try model.predict(inputIDs: [6, 4])

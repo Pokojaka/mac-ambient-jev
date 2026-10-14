@@ -31,7 +31,7 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public var finalizationAttempt: FinalizationAttempt?
     /// The published run set. The local runs are set when a finalization attempt completes;
-    /// the selected engine runs when their snapshot is published.
+    /// the decision runs when their snapshot is published.
     public var activeRuns: ActiveRuns?
     /// Segments whose boundary request has no result in the published snapshot, in time order.
     public var pendingClauseBoundarySegments: [SegmentTextReference]

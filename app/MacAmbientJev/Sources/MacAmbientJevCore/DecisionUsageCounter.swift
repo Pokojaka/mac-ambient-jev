@@ -7,34 +7,24 @@ public enum DecisionRequestPurpose: String, Codable, Sendable {
 
 public struct DecisionRequestUsageSnapshot: Sendable, Equatable {
     public let sendCount: Int
-    /// Sum of the input token counts the provider reported for these requests.
-    public let reportedInputTokens: Int
+    /// Sum of the tokens the model read for the successful requests.
+    public let inputTokens: Int
     public let successCount: Int
-    /// Successful requests whose response carried no input token count.
-    public let unreportedTokenSuccessCount: Int
     public let failureCount: Int
 
-    public init(
-        sendCount: Int,
-        reportedInputTokens: Int,
-        successCount: Int,
-        unreportedTokenSuccessCount: Int,
-        failureCount: Int
-    ) {
+    public init(sendCount: Int, inputTokens: Int, successCount: Int, failureCount: Int) {
         self.sendCount = sendCount
-        self.reportedInputTokens = reportedInputTokens
+        self.inputTokens = inputTokens
         self.successCount = successCount
-        self.unreportedTokenSuccessCount = unreportedTokenSuccessCount
         self.failureCount = failureCount
     }
 }
 
 public struct DecisionUsageSnapshot: Sendable, Equatable {
     public let sendCount: Int
-    /// Sum of the input token counts the provider reported.
-    public let reportedInputTokens: Int
+    /// Sum of the tokens the model read for the successful requests.
+    public let inputTokens: Int
     public let successCount: Int
-    public let unreportedTokenSuccessCount: Int
     public let failureCount: Int
     /// Segments whose boundary request is pending.
     public let pendingBoundarySegmentCount: Int
@@ -45,9 +35,8 @@ public struct DecisionUsageSnapshot: Sendable, Equatable {
 
     public init(
         sendCount: Int,
-        reportedInputTokens: Int,
+        inputTokens: Int,
         successCount: Int,
-        unreportedTokenSuccessCount: Int,
         failureCount: Int,
         pendingBoundarySegmentCount: Int,
         pendingPriorityClauseCount: Int,
@@ -55,9 +44,8 @@ public struct DecisionUsageSnapshot: Sendable, Equatable {
         priorityRequests: DecisionRequestUsageSnapshot
     ) {
         self.sendCount = sendCount
-        self.reportedInputTokens = reportedInputTokens
+        self.inputTokens = inputTokens
         self.successCount = successCount
-        self.unreportedTokenSuccessCount = unreportedTokenSuccessCount
         self.failureCount = failureCount
         self.pendingBoundarySegmentCount = pendingBoundarySegmentCount
         self.pendingPriorityClauseCount = pendingPriorityClauseCount
@@ -69,28 +57,19 @@ public struct DecisionUsageSnapshot: Sendable, Equatable {
 public actor DecisionUsageCounter {
     private struct RequestUsage {
         var sendCount = 0
-        var reportedInputTokens = 0
+        var inputTokens = 0
         var successCount = 0
-        var unreportedTokenSuccessCount = 0
         var failureCount = 0
 
         var snapshot: DecisionRequestUsageSnapshot {
             DecisionRequestUsageSnapshot(
-                sendCount: sendCount,
-                reportedInputTokens: reportedInputTokens,
-                successCount: successCount,
-                unreportedTokenSuccessCount: unreportedTokenSuccessCount,
-                failureCount: failureCount
+                sendCount: sendCount, inputTokens: inputTokens, successCount: successCount, failureCount: failureCount
             )
         }
 
-        mutating func recordSuccess(inputTokens: Int?) {
+        mutating func recordSuccess(inputTokens: Int) {
             successCount += 1
-            if let inputTokens {
-                reportedInputTokens += inputTokens
-            } else {
-                unreportedTokenSuccessCount += 1
-            }
+            self.inputTokens += inputTokens
         }
     }
 
@@ -112,7 +91,7 @@ public actor DecisionUsageCounter {
         }
     }
 
-    public func recordSuccess(purpose: DecisionRequestPurpose, inputTokens: Int?) {
+    public func recordSuccess(purpose: DecisionRequestPurpose, inputTokens: Int) {
         guard !Task.isCancelled else { return }
         switch purpose {
         case .boundary: boundaryRequests.recordSuccess(inputTokens: inputTokens)
@@ -145,9 +124,8 @@ public actor DecisionUsageCounter {
     public func snapshot() -> DecisionUsageSnapshot {
         DecisionUsageSnapshot(
             sendCount: boundaryRequests.sendCount + priorityRequests.sendCount,
-            reportedInputTokens: boundaryRequests.reportedInputTokens + priorityRequests.reportedInputTokens,
+            inputTokens: boundaryRequests.inputTokens + priorityRequests.inputTokens,
             successCount: boundaryRequests.successCount + priorityRequests.successCount,
-            unreportedTokenSuccessCount: boundaryRequests.unreportedTokenSuccessCount + priorityRequests.unreportedTokenSuccessCount,
             failureCount: boundaryRequests.failureCount + priorityRequests.failureCount,
             pendingBoundarySegmentCount: pending.filter {
                 if case .boundary = $0.target { true } else { false }

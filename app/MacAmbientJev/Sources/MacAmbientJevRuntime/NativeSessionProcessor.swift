@@ -29,13 +29,6 @@ private enum FinalizationAudio {
     case stored
 }
 
-extension Optional<DecisionBatchStopReason> {
-    /// The status for segments a batch left pending.
-    fileprivate var pendingStatus: UserFacingStatus {
-        self == .authorizationRejected ? .decisionAuthorizationRequired : .decisionDeferred
-    }
-}
-
 /// What stays on screen when a finalization does not complete.
 public enum RetainedTranscript: Sendable, Equatable {
     /// The previously published finalized transcript.
@@ -119,17 +112,16 @@ public struct SessionProcessingEngines: Sendable {
     }
 }
 
-/// Whether live transcription and finalization send clause boundaries and priorities to the selected decision engine.
+/// Whether live transcription and finalization decide clause boundaries and priorities with the local tagger.
 public enum ContentPriorityAccess: Sendable {
     case disabled
-    /// The factory returns nil when the selected engine is unavailable; results then stay pending.
-    /// The counter is shared so pending targets can be cleared even when no provider exists.
-    case selectedEngine(NativeSessionProcessor.DecisionCoordinatorFactory, usageCounter: DecisionUsageCounter)
+    /// The factory throws when the tagger cannot be loaded; results then stay pending.
+    /// The counter is shared so pending targets can be cleared even when no coordinator exists.
+    case localTagger(NativeSessionProcessor.DecisionCoordinatorFactory, usageCounter: DecisionUsageCounter)
 }
 
 public actor NativeSessionProcessor {
-    public typealias DecisionCoordinatorFactory = @Sendable () throws
-        -> DecisionCoordinator?
+    public typealias DecisionCoordinatorFactory = @Sendable () throws -> DecisionCoordinator
     public typealias StatusHandler = @Sendable (_ text: String) async -> Void
     public typealias UpdateHandler = @Sendable (
         _ segments: [MaterializedTranscriptSegment],
@@ -183,7 +175,7 @@ public actor NativeSessionProcessor {
         let sessionLayout = try layout(for: sessionID)
         let writer = try SessionWriter(sessionURL: sessionLayout.sessionURL)
         let decisionRuns: (boundary: String, priority: String)?
-        if case .selectedEngine = contentPriority {
+        if case .localTagger = contentPriority {
             let suffix = UUID().uuidString.lowercased()
             decisionRuns = ("boundary_live_\(suffix)", "priority_live_\(suffix)")
         } else {
@@ -202,7 +194,7 @@ public actor NativeSessionProcessor {
             contentPriorityRunID: decisionRuns?.priority
         )
         liveASRSessions[sessionID] = liveSession
-        if case .selectedEngine(let factory, let usageCounter) = contentPriority, let decisionRuns {
+        if case .localTagger(let factory, let usageCounter) = contentPriority, let decisionRuns {
             liveContentPrioritySessions[sessionID] = LiveContentPrioritySession(
                 sessionID: sessionID,
                 boundaryRunID: decisionRuns.boundary,
@@ -327,7 +319,7 @@ public actor NativeSessionProcessor {
     public func cancelLiveTranscription(sessionID: UUID) async {
         liveASRSessions[sessionID] = nil
         let pending = await stopLiveContentPriority(sessionID: sessionID)
-        if case .selectedEngine(_, let usageCounter) = contentPriority {
+        if case .localTagger(_, let usageCounter) = contentPriority {
             await usageCounter.clearDeferred(sessionID: sessionID, targets: pending)
         }
         retiredLivePendingTargets[sessionID] = nil
@@ -461,20 +453,13 @@ public actor NativeSessionProcessor {
             let materializer = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
             let rebuildSnapshot = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
             guard !boundarySegments.isEmpty || !clauses.isEmpty || rebuildSnapshot else { return }
-            guard case .selectedEngine(let factory, let usageCounter) = contentPriority else {
+            guard case .localTagger(let factory, let usageCounter) = contentPriority else {
                 await onStatus(UserFacingStatus.decisionDeferred.text)
                 return
             }
             let decisions: DecisionCoordinator
             do {
-                guard let available = try factory() else {
-                    await onStatus(UserFacingStatus.decisionDeferred.text)
-                    return
-                }
-                decisions = available
-            } catch DecisionAvailabilityError.stopped {
-                await onStatus("\(UserFacingStatus.decisionDeferred.text)。\(DecisionPendingMessage.stopped)")
-                return
+                decisions = try factory()
             } catch {
                 await onStatus("\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)")
                 return
@@ -520,7 +505,7 @@ public actor NativeSessionProcessor {
             if result.pendingTargets.isEmpty {
                 await onStatus("保留中の判定を更新しました")
             } else {
-                await onStatus(result.stopReason.pendingStatus.text)
+                await onStatus(UserFacingStatus.decisionDeferred.text)
             }
         } catch {
             let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
@@ -559,16 +544,7 @@ public actor NativeSessionProcessor {
         }
         // Freeze the durable live decisions first, then cancel the live queue: whatever it saves
         // afterwards is neither reused nor shown. Finalization never waits for live requests.
-        let liveDecisions: Result<[ExactClauseTextKey: ReusableClauseDecision], Error>
-        if case .selectedEngine = contentPriority {
-            liveDecisions = Result {
-                try EventLogTranscriptReader().liveContentPriorityDecisions(
-                    from: try SessionWriter.readDurableLog(eventsURL: sessionLayout.eventsURL)
-                )
-            }
-        } else {
-            liveDecisions = .success([:])
-        }
+        let liveEventLog = Result { try SessionWriter.readDurableLog(eventsURL: sessionLayout.eventsURL) }
         liveASRSessions[sessionID] = nil
         let livePendingTargets = await stopLiveContentPriority(sessionID: sessionID)
         let source: SessionAudioSource
@@ -608,7 +584,7 @@ public actor NativeSessionProcessor {
             sessionLayout: sessionLayout,
             attemptID: attemptID,
             previous: previous,
-            liveDecisions: liveDecisions,
+            liveEventLog: liveEventLog,
             livePendingTargets: livePendingTargets,
             provisional: provisional,
             pacingMode: pacingMode,
@@ -694,7 +670,7 @@ public actor NativeSessionProcessor {
         sessionLayout: SessionLayout,
         attemptID: String,
         previous: ProcessingMetadata?,
-        liveDecisions: Result<[ExactClauseTextKey: ReusableClauseDecision], Error>,
+        liveEventLog: Result<Data, Error>,
         livePendingTargets: Set<DecisionPendingTarget>,
         provisional: [MaterializedTranscriptSegment],
         pacingMode: ASRPacingMode,
@@ -791,7 +767,7 @@ public actor NativeSessionProcessor {
                 )
             }
             let localPending = Set(pendingSources.map(DecisionPendingTarget.boundary))
-            if case .selectedEngine(_, let usageCounter) = contentPriority {
+            if case .localTagger(_, let usageCounter) = contentPriority {
                 await usageCounter.clearDeferred(
                     sessionID: sessionID,
                     targets: livePendingTargets.union(previous?.pendingDecisionTargets ?? [])
@@ -806,7 +782,7 @@ public actor NativeSessionProcessor {
                     sessionID: sessionID,
                     sessionLayout: sessionLayout,
                     localPending: localPending,
-                    liveDecisions: liveDecisions,
+                    liveEventLog: liveEventLog,
                     onPhase: onPhase,
                     onStatus: onStatus,
                     onUpdate: onUpdate
@@ -823,14 +799,14 @@ public actor NativeSessionProcessor {
     }
 
     /// After the local runs are published, runs the optional decision stages and publishes their
-    /// snapshot in one metadata write. Without a selected engine, or when saving fails, the local transcript
+    /// snapshot in one metadata write. Without the tagger, or when saving fails, the local transcript
     /// stays published with every boundary pending.
     private func publishDecisionSnapshot(
         _ final: FinalTranscriptPipelineResult,
         sessionID: UUID,
         sessionLayout: SessionLayout,
         localPending: Set<DecisionPendingTarget>,
-        liveDecisions: Result<[ExactClauseTextKey: ReusableClauseDecision], Error>,
+        liveEventLog: Result<Data, Error>,
         onPhase: PhaseHandler,
         onStatus: @escaping StatusHandler,
         onUpdate: UpdateHandler
@@ -845,31 +821,20 @@ public actor NativeSessionProcessor {
             await complete(final.materializedSegments, status: final.completedCount == 0 ? "発話区間は検出されませんでした" : localStatus)
             return
         }
-        guard case .selectedEngine(let factory, let usageCounter) = contentPriority else {
+        guard case .localTagger(let factory, let usageCounter) = contentPriority else {
             await complete(final.materializedSegments, status: localStatus)
             return
         }
-        let reusable: [ExactClauseTextKey: ReusableClauseDecision]
-        switch liveDecisions {
-        case .success(let decisions):
-            reusable = decisions
-        case .failure(let error):
-            throw error
-        }
-        let decisions: DecisionCoordinator?
+        let decisions: DecisionCoordinator
         do {
             decisions = try factory()
-        } catch DecisionAvailabilityError.stopped {
-            await complete(final.materializedSegments, status: "\(UserFacingStatus.decisionDeferred.text)。\(DecisionPendingMessage.stopped)")
-            return
         } catch {
             await complete(final.materializedSegments, status: "\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)")
             return
         }
-        guard let decisions else {
-            await complete(final.materializedSegments, status: UserFacingStatus.decisionDeferred.text)
-            return
-        }
+        let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
+            from: liveEventLog.get(), modelRevision: decisions.identity.modelRevision
+        )
 
         await onStatus(UserFacingStatus.classifyingContent.text)
         let suffix = UUID().uuidString.lowercased()
@@ -899,7 +864,7 @@ public actor NativeSessionProcessor {
         await coordinator.recordPublished(result, replacing: localPending)
         await complete(
             result.materializedSegments,
-            status: result.pendingTargets.isEmpty ? localStatus : result.stopReason.pendingStatus.text
+            status: result.pendingTargets.isEmpty ? localStatus : UserFacingStatus.decisionDeferred.text
         )
     }
 

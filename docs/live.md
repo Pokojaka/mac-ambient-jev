@@ -1,6 +1,6 @@
 # ライブ文字起こし
 
-録音中の文字起こしは暫定表示です。録音保存、発話検出（VAD）、音声認識（ASR）は別々に進み、ASR が遅れても録音保存を止めません。ASR 結果は保存直後に通常の本文として表示し、その後に選択中の判定エンジン（Jev API またはローカル Core ML）が BTSJ 発話文単位の境界・優先度を任意に判定します。保存 key や内部名の `clause` / `節` はこの発話文単位を識別し、別の節分割器はありません。停止後は、保存音声全体を[確定処理](final.md)して表示を置き換えます。
+録音中の文字起こしは暫定表示です。録音保存、発話検出（VAD）、音声認識（ASR）は別々に進み、ASR が遅れても録音保存を止めません。ASR 結果は保存直後に通常の本文として表示し、その後に同梱の Core ML 発話文モデルが BTSJ 発話文単位の境界・優先度を任意に判定します。保存 key や内部名の `clause` / `節` はこの発話文単位を識別し、別の節分割器はありません。停止後は、保存音声全体を[確定処理](final.md)して表示を置き換えます。
 
 ## VAD と ASR の区切り
 
@@ -13,7 +13,7 @@
 
 ファイル replay は capture device を開かず、ファイルまたは指定した device 相当形式を原速で ingress に投入します。replay input と保存形式は別で、durable timeline とイベント frame 座標は常に 16 kHz mono です。詳細は[原速 replay のライブ遅延計測](testing.md#原速-replay-のライブ遅延計測)を参照してください。
 - 検出した区間は ASR の待ち行列に入れる前に `segment.created` として保存します。ライブ経路は `asr.pending` を書きません。このイベントは確定処理の ASR 待ち状態に使います。
-- 未認識区間の新規登録・同じ ID の再登録は認識済み行を変えず、ライブセッション内の行配列を返します。登録の progress 取得は履歴全体の sort・materialization・ID 集合差の生成を行いません。待ち件数は保存済み登録 ID 数と保存済み ASR 完了・失敗 ID 数から求めます。行の更新は ASR 完了・失敗の保存後と、保存済みの選択 provider による発話文イベント（境界判定・発話文・優先度）の適用時に行います。ライブセッションは保存した区間の順序と ASR の結果（認識済み・空・失敗・未処理）を独立した判定キューへ渡し、空の区間や失敗した区間も次区間の判定に使えるようにします。
+- 未認識区間の新規登録・同じ ID の再登録は認識済み行を変えず、ライブセッション内の行配列を返します。登録の progress 取得は履歴全体の sort・materialization・ID 集合差の生成を行いません。待ち件数は保存済み登録 ID 数と保存済み ASR 完了・失敗 ID 数から求めます。行の更新は ASR 完了・失敗の保存後と、保存済みの発話文イベント（境界判定・発話文・優先度）の適用時に行います。ライブセッションは保存した区間の順序と ASR の結果（認識済み・空・失敗・未処理）を独立した判定キューへ渡し、空の区間や失敗した区間も次区間の判定に使えるようにします。空白・改行・句読点だけの ASR 原文は空の結果です。
 - アプリのライブ ASR 待ち行列はバッチごとの `SegmentReference` だけを保持します。`AudioCheckpoint` はセッションごとに最新の保存済み checkpoint を 1 件だけ保持し、各バッチの認識時に使います。保存範囲は単調に伸びるため、最新 checkpoint は待機中の全区間を含みます。checkpoint の chunk 一覧・フレーム数・gap 一覧をバッチごとに保持せず、区間参照はメモリ内に残します。冷却後も登録順で処理し、停止後のライブ処理終了・取消時にキューと checkpoint を解放します。
 
 ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）です。実エンジン名は qwen3-asr-swift、モデル ID は aufklarer/Qwen3-ASR-1.7B-MLX-8bit です。この ID はモデル配布元の識別子であり、リポジトリ内のパスではありません。`asr.completed` の engine/model は実際に認識したエンジンの来歴から取得します。
@@ -30,9 +30,9 @@ ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）
 | 確定処理中 | 保存音声の確定処理を実行中 |
 | 確定済み | 公開済みの確定結果 |
 
-画面と `transcript.txt` は同じ表示用 projection を使い、フィラー除去後の本文が空白・改行だけでない認識済み発話をすべて含めます。認識不能は `asr.completed` の `outcome: empty` で表し、「聞き取れませんでした」などの文字列に一致しただけでは除外しません。
+画面と `transcript.txt` は同じ表示用 projection を使い、フィラー除去後の本文が空白・改行だけでない認識済み発話をすべて含めます。認識不能と、空白・改行・句読点だけの ASR 原文は `asr.completed` の `outcome: empty` で表し、「聞き取れませんでした」などの文字列に一致しただけでは除外しません。
 
-選択 provider が LOW_PRIORITY と判定した発話文は淡色で表示します。行を折り畳むのは、行の可視本文を覆う全ての節が保存済み LOW で、続き待ち・境界保留・優先度保留がない行だけです。PRIMARY と LOW の節が混在する行はそのまま両方を表示します。フィラー除去後に本文が空または空白・改行だけになった行は表示しません。ASR の原文は保存したまま、画面、選択コピー、読み上げ、アクセシビリティと `transcript.txt` は共通のフィラー除去済み本文を使います。除去範囲と原文の UTF-16 座標への写像は共通 projection で作り、行本文と表示 fragment の両方へ適用します。淡色表示と行の折り畳みは [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) 一箇所で決め、UI はその結果を描画するだけで独自判定はしません。行の状態は次のとおりです。
+モデルが LOW_PRIORITY と判定した発話文は淡色で表示します。行を折り畳むのは、行の可視本文を覆う全ての節が保存済み LOW で、続き待ち・境界保留・優先度保留がない行だけです。PRIMARY と LOW の節が混在する行はそのまま両方を表示します。フィラー除去後に本文が空または空白・改行だけになった行は表示しません。ASR の原文は保存したまま、画面、選択コピー、読み上げ、アクセシビリティと `transcript.txt` は共通のフィラー除去済み本文を使います。除去範囲と原文の UTF-16 座標への写像は共通 projection で作り、行本文と表示 fragment の両方へ適用します。淡色表示と行の折り畳みは [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) 一箇所で決め、UI はその結果を描画するだけで独自判定はしません。行の状態は次のとおりです。
 
 | 状態 | 表示 |
 | --- | --- |
@@ -47,27 +47,25 @@ ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）
 
 ## 録音中の発話文判定
 
-ASR 結果を保存した直後に本文を通常色で表示します。選択 provider の結果を待って行や後続行を隠すことはありません。判定キューは時間順の保存済み ASR 区間を処理し、provider の待機・失敗は録音、ASR の登録・認識・表示へ伝播しません。録音・VAD・ASR の drain は選択 provider と独立しています。
+ASR 結果を保存した直後に本文を通常色で表示します。判定結果を待って行や後続行を隠すことはありません。判定キューは時間順の保存済み ASR 区間を処理し、判定の待機・失敗は録音、ASR の登録・認識・表示へ伝播しません。録音・VAD・ASR の drain は判定と独立しています。
 
-境界判定単位は両 provider とも BTSJ 発話文です。候補となる句読点・共通閾値に従って、選択 provider が候補境界と次区間への継続を判定し、コードが発話文を組み立てます。保存名 `clause` / `節` はこの発話文を識別するだけで、節を別途分割する処理はありません。次区間の ASR が保存されるまで境界判定を進めず、次区間先頭 60 Character だけを継続判定に使います。そのため発話文の確定は遅れることがあり、区間をまたぐ発話文は後続区間の判定まで閉じません。区間終端が明らかな場合は次区間なしで扱います。
+境界判定単位は BTSJ 発話文です。候補となる句読点・閾値に従って、モデルが候補境界と次区間への継続を判定し、コードが発話文を組み立てます。保存名 `clause` / `節` はこの発話文を識別するだけで、節を別途分割する処理はありません。次区間の ASR が保存されるまで境界判定を進めず、次区間先頭 60 Character だけを継続判定に使います。そのため発話文の確定は遅れることがあり、区間をまたぐ発話文は後続区間の判定まで閉じません。区間終端が明らかな場合は次区間なしで扱います。
 
-ローカル Core ML provider は候補境界用と継続用を別々に符号化・推論します。長い入力は連続 piece 単位の窓に分けて判定し、一つの piece が上限を超える場合や junction を含む窓を作れない場合は境界要求全体を失敗として保留します。外部通信へ切り替えたり確率を作ったりしません。Jev provider に限り、候補と継続を Noul の一つの API request にまとめます。次区間が保存された後に、閉じた非空の発話文を最大 40 件ずつ選択 provider の優先度 batch へ渡します。未閉鎖の末尾は対象外です。Jev の優先度は Choice です。ローカル優先度も最大 40 件の provider 呼出しを一 batch とし、内部では sequence ごとに直列推論しますが一 request と数え、入力 token は全 sequence の実数の合計を記録します。Jev の HTTP timeout は 15 秒ですが、これは行表示・判定完了の上限ではありません。境界・発話文・優先度は保存された後だけ表示へ反映します。
+境界判定は候補境界用と継続用を別々に符号化・推論し、一 request と数えます。長い入力は連続 piece 単位の窓に分けて判定し、一つの piece が上限を超える場合や junction を含む窓を作れない場合は境界要求全体を失敗として保留します。確率を作って補いません。次区間が保存された後に、閉じた非空の発話文を最大 40 件ずつ優先度 batch へ渡します。未閉鎖の末尾は対象外です。優先度は最大 40 件を一 batch とし、内部では sequence ごとに直列推論しますが一 request と数え、入力 token は全 sequence の実数の合計を記録します。判定に時間の上限はなく、行表示も判定を待ちません。境界・発話文・優先度は保存された後だけ表示へ反映します。
 
 ライブ materialization は区間・ASR 原文・表示行・閉じた発話文を source/reference 索引に保持します。ASR 完了では新しい行だけを作り、保存済み判定イベントでは影響する source の行だけを更新します。全イベントを再 replay しません。開いた末尾は区間ごとの immutable link で保持し、継続ごとに過去の末尾をコピーしません。長い区間横断発話文の閉鎖・優先度更新では、その発話文に含まれる全区間を更新します。長さによる打ち切りはありません。
 
 source の同一性、境界候補、次区間の原文 head、時間順、組み立て結果との一致、発話文と優先度の重複は batch 公開前に検証します。不正 batch は組み立て cursor と索引を戻し、行とイベント列のいずれも一部だけ公開しません。snapshot の配列は Swift の copy-on-write を使い、保存時の全履歴 materialization と同じ表示行・発話文範囲・優先度になります。原文・イベント・行・発話文の索引は保存履歴に比例して増えます。増分処理は無関係な履歴の再解析と一時作業領域を抑えますが、総メモリには一定上限を設けません。
 
-選択 engine は「設定」→「発話文の判定」で選びます。Picker は録音中・処理中・接続確認／モデル確認中・再試行中は変更できません。共通の一時停止 `decision.isPaused` はどちらの provider も停止します。factory は各 request のたびに現在の選択と停止設定を厳密に読み直し、選択 provider だけを作ります。Core ML tagger のロード結果（成功・失敗とも）は factory 内で cache され、エンジン選択を変えるかアプリを再起動するまで再ロードしません。モデルの差し替えと失敗したロードのやり直しは、選択変更か再起動で反映されます。同時に要求されたロードは一つにまとまり、エンジン選択の変更はロードを待ちません。ローカル provider は API key を必要とせず、Keychain と HTTP を使いません。
+判定キューは batch ごとに provider factory から coordinator を取得します。Core ML tagger のロード結果（成功・失敗とも）は factory 内で cache され、アプリを再起動するまで再ロードしません。同時に要求されたロードは一つにまとまります。
 
-選択 provider が未設定・停止・初期化失敗、ローカル符号化失敗、または応答検証失敗なら、該当境界／優先度を保留して表示を通常状態に保ち、別 provider へフォールバックしません。境界保留では分割せず、継続を no と偽装しません。優先度だけが保留の発話文も通常色です。ASR gap は本文をまたいで推測せず、前の境界を `asr_gap` で保留します。空の成功 ASR 区間はテキスト列を終端し、その前の保留を成功に変えず次の列と切り離します。録音先頭が ASR gap の場合も後続の先頭を独立発話文とは推測しません。
+モデルの初期化失敗、符号化失敗、または判定結果の検証失敗なら、該当境界／優先度を保留して表示を通常状態に保ちます。境界保留では分割せず、継続を no と偽装しません。優先度だけが保留の発話文も通常色です。ASR gap は本文をまたいで推測せず、前の境界を `asr_gap` で保留します。空の成功 ASR 区間はテキスト列を終端し、その前の保留を成功に変えず次の列と切り離します。録音先頭が ASR gap の場合も後続の先頭を独立発話文とは推測しません。
 
-Jev 固有の輸送・状態: Jev は境界に Noul、優先度に Choice を使い、HTTP timeout は 15 秒です。401 / 403 は Jev API key の修正が必要な専用状態・表示にし、Jev の後続送信を停止します。429 / 5xx、通信・応答失敗も Jev の後続送信を停止して保留します。Keychain 読取エラーは Jev 選択時だけ起こり得る Jev 固有の初期化失敗です。これらの Jev 固有 status や Keychain 条件をローカル provider の仕様とはしません。
+判定 `processing.run.started` の provenance は run 開始時に実際にロードした tagger の engine/model/revision を記録します。終端区間に候補がなく判定呼出しがない場合も、モデルを読み込めていればその provenance です。`unavailable` はモデルの初期化失敗や ASR gap 等で tagger を取得していない場合に限ります。成功した各判定呼出しの request record は request ID と入力 token 数を持ち、モデルは run の provenance が示します。モデル確認は live 判定 request ではありません。
 
-判定 `processing.run.started` の provenance は run 開始時に実際に選択・初期化された coordinator の engine/model/revision を記録します。終端区間に候補がなく質問が0で provider request がない場合も coordinator を利用できていれば選択 provider の provenance です。`unavailable` は coordinator が未設定・停止・初期化失敗、ASR gap 等で provider が初期化されていない場合に限ります。成功した各 provider 呼出しについては request record の実 provider/model/revision を正とします。Jev API の接続確認・モデル確認は live 判定 request ではありません。
+録音停止時は、ライブ ASR の残りを処理してテキスト列の終端を伝え、境界待ちを解放します。確定処理はイベント append と同じファイル lock で、その時点までに保存済みのライブ classified 結果だけを固定してからキューを取り消します。推論の完了は待ちません。取り消し後に遅れて返った結果は保存も表示もせず、固定より後に保存された結果も確定処理の再利用には使いません。確定時は本文が UTF-8 bytes で完全一致する保存済み判定だけを優先度 carry-over します。[確定時の再利用](final.md)
 
-録音停止時は、ライブ ASR の残りを処理してテキスト列の終端を伝え、境界待ちを解放します。確定処理はイベント append と同じファイル lock で、その時点までに保存済みのライブ classified 結果だけを固定してからキューを取り消します。通信またはローカル推論の完了は待ちません。取り消し後に遅れて返った応答は保存も表示もせず、固定より後に保存された結果も確定処理の再利用には使いません。確定時は本文が UTF-8 bytes で完全一致する保存済み判定だけを優先度 carry-over します。[確定時の再利用](final.md)
-
-ASR drain は選択 provider に関係なく動作し、CLI の `ContentPriorityAccess.disabled` は Jev request と Core ML tagger の両方を無効化します。ライブ判定と確定判定は共通の confidence ≥ 0.90 の優先度表示規則を使います。
+ASR drain は判定に関係なく動作し、CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効化します。ライブ判定と確定判定は共通の confidence ≥ 0.90 の優先度表示規則を使います。
 
 新しい行への自動追従は利用者のスクロール操作で解除します。アプリ自身のスクロールアニメーションでは解除しません。「最新へ戻る」を押すと追従を再開し、その場で末尾へ移動します。
 
@@ -89,11 +87,9 @@ VAD の失敗時は「録音は継続しています。発話検出を停止し�
 
 登録・ASR 完了・ASR 失敗の件数は、それぞれのイベントの保存が成功してから進めます。保存失敗はエラーとして返し、そのイベントの行・件数を公開しません。未処理区間が残る場合や保存済み ASR 失敗がある場合、ライブ run の終了結果は成功になりません。終了は進行中の保存・推論を待ち、終了結果を保存した後は同じ completion を返します。
 
-選択 provider の未設定・停止・初期化失敗・判定失敗は録音保存やライブ ASR を停止せず、その対象を保留して通常表示を保ちます。ローカルモデルの欠損・未学習・metadata/tokenizer 不正では「発話文の判定を後で再試行します。判定エンジンを初期化できませんでした: <実際の理由>」と表示し、保存済み ASR 原文は通常表示のまま録音を続けます。ローカル符号化・応答検証に失敗しても Jev へ fallback しません。ライブ判定のイベント保存・materialization 公開に失敗した場合は保留への置換や別 provider への fallback をせず、理由をエラー表示してその判定キューを停止します。録音と ASR は継続します。
+モデルの初期化失敗・判定失敗は録音保存やライブ ASR を停止せず、その対象を保留して通常表示を保ちます。モデルの欠損・未学習・metadata/tokenizer 不正では「発話文の判定を保留しました。判定エンジンを初期化できませんでした: <実際の理由>」と表示し、保存済み ASR 原文は通常表示のまま録音を続けます。ライブ判定のイベント保存・materialization 公開に失敗した場合は保留への置換をせず、理由をエラー表示してその判定キューを停止します。録音と ASR は継続します。
 
-Jev 固有の状態: 401 / 403 は Jev API key の修正が必要な専用表示を出して Jev の後続送信を止めます。429 / 5xx、通信・応答失敗も Jev の後続送信を止めて保留します。Keychain 読取例外は Jev 選択時だけの初期化失敗です。Jev transport と応答失敗の区分、および再試行の保存規則は [発話文判定](decision-engine.md) を参照してください。
-
-選択 provider の factory は次の要求で現在の設定を読み直します。停止・初期化・ローカル符号化エラー等の判定保留は明確な理由を表示し、別 provider へ切り替えません。
+初期化・符号化エラー等の判定保留は明確な理由を表示します。判定失敗の区分と再試行の保存規則は [発話文判定](decision-engine.md) を参照してください。
 
 ## ライブ遅延の計測範囲
 
@@ -113,6 +109,6 @@ bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FI
 
 - [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADTimelineProcessor.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
 - [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)、[Qwen3-ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[モデル ID](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)
-- [ライブキューと熱制御](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[選択 provider のライブ判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[provider factory](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SelectedDecisionProviderFactory.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)
+- [ライブキューと熱制御](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[ライブ判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[provider factory](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)
 - [表示規則](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[文字起こし画面](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[局所フィラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/FillerTextSpanDetector.swift)、[ASR の構造化結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
 - [遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)、[実行スクリプト](../scripts/measure_live_latency.sh)

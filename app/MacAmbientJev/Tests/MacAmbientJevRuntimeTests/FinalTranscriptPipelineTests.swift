@@ -485,8 +485,12 @@ func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async 
     #expect(await log.snapshot() == ["vad", "diarize", "asr:0"])
 }
 
+private struct UnavailableTagger: LocalizedError {
+    var errorDescription: String? { "モデルがありません" }
+}
+
 @Test
-func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
+func decisionsSkipWhitespaceOnlyFinalTranscript() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -506,9 +510,9 @@ func jevSkipsWhitespaceOnlyFinalTranscript() async throws {
                 log: log
             )
         ),
-        contentPriority: .selectedEngine({
+        contentPriority: .localTagger({
             decisionFactoryCalls.recordCall()
-            return nil
+            throw UnavailableTagger()
         }, usageCounter: DecisionUsageCounter())
     )
 
@@ -649,9 +653,9 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
             diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
             finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
         ),
-        contentPriority: .selectedEngine({
+        contentPriority: .localTagger({
             decisionFactoryCalls.recordCall()
-            return nil
+            throw UnavailableTagger()
         }, usageCounter: DecisionUsageCounter())
     )
     let statuses = FinalizationStatusRecorder()
@@ -709,7 +713,7 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
                 log: log
             )
         ),
-        contentPriority: .selectedEngine({ nil }, usageCounter: DecisionUsageCounter())
+        contentPriority: .localTagger({ throw UnavailableTagger() }, usageCounter: DecisionUsageCounter())
     )
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
@@ -723,7 +727,8 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
     let observedStates = await states.snapshot()
     #expect(observedStates.contains { $0.texts == ["表示する本文"] && $0.state == .running })
     #expect(observedStates.last?.state == .complete)
-    #expect(await statuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
+    #expect(await statuses.snapshot().last
+        == "\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: モデルがありません")
     let loadedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     let metadata = try #require(loadedMetadata)
     #expect(metadata.activeRuns?.asr != nil)
@@ -735,18 +740,18 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
     #expect(rows.map(\.displayText) == ["表示する本文"])
 }
 
-private struct RejectedKeyDecisionProvider: DecisionProvider {
+private struct FailingDecisionProvider: DecisionProvider {
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        throw JevClientError.httpStatus(401)
+        throw DecisionResponseError.missingAnswer
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        throw JevClientError.httpStatus(401)
+        throw DecisionResponseError.missingAnswer
     }
 }
 
 @Test
-func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
+func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -769,8 +774,8 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
                 log: log
             )
         ),
-        contentPriority: .selectedEngine({
-            DecisionCoordinator(provider: RejectedKeyDecisionProvider(), identity: .jev, usageCounter: counter)
+        contentPriority: .localTagger({
+            DecisionCoordinator(provider: FailingDecisionProvider(), identity: testDecisionIdentity, usageCounter: counter)
         }, usageCounter: counter)
     )
     let statuses = FinalizationStatusRecorder()
@@ -781,10 +786,11 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
     )
 
     #expect(result.disposition == .completed)
-    #expect(await statuses.snapshot().last == UserFacingStatus.decisionAuthorizationRequired.text)
+    #expect(await statuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
     let pending = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
         .pendingClauseBoundarySegments
-    #expect(pending.map(\.segmentID) == ["seg_000001", "seg_000002"])
+    // The last segment has no candidate and no successor, so it needs no request.
+    #expect(pending.map(\.segmentID) == ["seg_000001"])
 
     let retryStatuses = FinalizationStatusRecorder()
     await processor.retryContentPrioritySession(
@@ -794,7 +800,7 @@ func rejectedJevKeyAsksForAKeyFixInFinalizationAndRetry() async throws {
         onStatus: { await retryStatuses.append($0) },
         onUpdate: { _, _ in }
     )
-    #expect(await retryStatuses.snapshot().last == UserFacingStatus.decisionAuthorizationRequired.text)
+    #expect(await retryStatuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
 }
 
 @Test
@@ -1093,8 +1099,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let writer = try SessionWriter(sessionURL: sessionURL)
     for (stage, runID, provenance) in [
-        (ProcessingStage.clauseBoundary, "boundary_live_interrupted", DecisionRunProvenance.boundary(mode: "live")),
-        (.contentPriority, "priority_live_interrupted", DecisionRunProvenance.priority(mode: "live"))
+        (ProcessingStage.clauseBoundary, "boundary_live_interrupted", DecisionRunProvenance.boundary(mode: "live", identity: testDecisionIdentity)),
+        (.contentPriority, "priority_live_interrupted", DecisionRunProvenance.priority(mode: "live", identity: testDecisionIdentity))
     ] {
         try await writer.append(EventDraft(
             eventType: "processing.run.started",
@@ -1148,8 +1154,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
                 log: log
             )
         ),
-        contentPriority: .selectedEngine({
-            DecisionCoordinator(provider: LiveCarryOverProvider(), identity: .jev, usageCounter: counter)
+        contentPriority: .localTagger({
+            DecisionCoordinator(provider: LiveCarryOverProvider(), identity: testDecisionIdentity, usageCounter: counter)
         }, usageCounter: counter)
     )
     let result = try await processFinal(
@@ -1319,7 +1325,7 @@ private actor LiveCarryOverProvider: DecisionProvider {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
-            metadata: try DecisionResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
+            inputTokens: 3
         )
     }
 
@@ -1331,7 +1337,7 @@ private actor LiveCarryOverProvider: DecisionProvider {
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try DecisionResponseMetadata(model: "counting-jev", inputTokens: 3, outputTokens: nil)
+            inputTokens: 3
         )
     }
 
@@ -1376,7 +1382,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     let finalText = changed ? "変更された発話。" : liveText
     let provider = LiveCarryOverProvider()
     let counter = DecisionUsageCounter()
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -1392,7 +1398,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
                 log: log
             )
         ),
-        contentPriority: .selectedEngine({ decisions }, usageCounter: counter)
+        contentPriority: .localTagger({ decisions }, usageCounter: counter)
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate

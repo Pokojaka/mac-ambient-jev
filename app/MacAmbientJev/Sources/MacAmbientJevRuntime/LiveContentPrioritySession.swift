@@ -13,13 +13,6 @@ public enum LiveContentPriorityError: LocalizedError {
     }
 }
 
-/// Explicit decision-engine suspension differs from missing configuration or an initialization error.
-public enum DecisionAvailabilityError: LocalizedError, Sendable {
-    case stopped
-
-    public var errorDescription: String? { "発話文の判定は設定で停止されています" }
-}
-
 /// Runs live boundary and priority decision stages independently of ASR and recording drain.
 /// Each segment's boundary request waits until the next segment's ASR is saved; rows stay
 /// visible as normal text meanwhile. Only durable results reach the screen.
@@ -60,7 +53,6 @@ public actor LiveContentPrioritySession {
     private var completedRuns = false
     private var boundaryCounts = (assessed: 0, pending: 0)
     private var priorityCounts = (classified: 0, pending: 0)
-    private var stopReason: DecisionBatchStopReason?
     private var recordedPendingTargets: Set<DecisionPendingTarget> = []
     private var onStatus: StatusHandler?
     private var onUpdate: UpdateHandler?
@@ -224,13 +216,10 @@ public actor LiveContentPrioritySession {
         return nil
     }
 
-    /// The current decision coordinator; settings are read again for every request.
+    /// The decision coordinator for one request; a failed tagger load leaves the request pending.
     private func availableDecisions(stage: ProcessingStage) -> DecisionAvailability {
         do {
-            guard let decisions = try makeDecisions() else {
-                storeUnavailableProvenance(for: stage)
-                return .pending(.unconfigured, DecisionPendingMessage.unavailable)
-            }
+            let decisions = try makeDecisions()
             let provenance: RunProvenance
             switch stage {
             case .clauseBoundary:
@@ -242,18 +231,11 @@ public actor LiveContentPrioritySession {
             }
             storeProvenance(provenance, for: stage)
             return .available(decisions)
-        } catch DecisionAvailabilityError.stopped {
-            storeUnavailableProvenance(for: stage)
-            return .pending(.stopped, DecisionPendingMessage.stopped)
         } catch {
-            storeUnavailableProvenance(for: stage)
+            storeProvenance(DecisionRunProvenance.unavailable(mode: "live"), for: stage)
             let message = "判定エンジンを初期化できませんでした: \(error.localizedDescription)"
             return .pending(.initializationFailed, message)
         }
-    }
-
-    private func storeUnavailableProvenance(for stage: ProcessingStage) {
-        storeProvenance(DecisionRunProvenance.unavailable(stage: stage, mode: "live"), for: stage)
     }
 
     private func storeProvenance(_ provenance: RunProvenance, for stage: ProcessingStage) {
@@ -273,20 +255,14 @@ public actor LiveContentPrioritySession {
         case .gap:
             state = .pending(reason: .asrGap, message: DecisionPendingMessage.asrGap)
         case .head(let next):
-            if let stopReason {
-                state = .pending(reason: stopReason.pendingReason, message: DecisionPendingMessage.stopped)
-            } else {
-                switch availableDecisions(stage: .clauseBoundary) {
-                case .pending(let reason, let message):
-                    state = .pending(reason: reason, message: message)
-                case .available(let decisions):
-                    await report(UserFacingStatus.classifyingContent.text)
-                    let result = try await ClauseBoundaryStep.assess(
-                        source: step.source, text: step.text, next: next, decisions: decisions
-                    )
-                    if let stop = result.stop { stopReason = stop }
-                    state = result.state
-                }
+            switch availableDecisions(stage: .clauseBoundary) {
+            case .pending(let reason, let message):
+                state = .pending(reason: reason, message: message)
+            case .available(let decisions):
+                await report(UserFacingStatus.classifyingContent.text)
+                state = try await ClauseBoundaryStep.assess(
+                    source: step.source, text: step.text, next: next, decisions: decisions
+                )
             }
         }
         try ensureActive()
@@ -360,11 +336,10 @@ public actor LiveContentPrioritySession {
         }
         try await show(events)
 
-        var batches = try ClausePriorityBatches(targets: targets, stopReason: stopReason)
+        var batches = try ClausePriorityBatches(targets: targets)
         while batches.hasRemaining {
             try ensureActive()
             let payload = try await batches.next { self.availableDecisions(stage: .contentPriority) }
-            stopReason = batches.stopReason
             try ensureActive()
             let event = try await append(ClauseEventType.priorityAssigned, stage: .contentPriority, payload: payload,
                                          kind: .contentPriorityAssigned(payload))
@@ -402,10 +377,10 @@ public actor LiveContentPrioritySession {
             switch stage {
             case .clauseBoundary:
                 provenance = boundaryProvenance
-                    ?? DecisionRunProvenance.unavailable(stage: stage, mode: "live")
+                    ?? DecisionRunProvenance.unavailable(mode: "live")
             case .contentPriority:
                 provenance = priorityProvenance
-                    ?? DecisionRunProvenance.unavailable(stage: stage, mode: "live")
+                    ?? DecisionRunProvenance.unavailable(mode: "live")
             default:
                 preconditionFailure("Live decisions require a boundary or priority stage")
             }
@@ -434,10 +409,7 @@ public actor LiveContentPrioritySession {
     }
 
     private func reportPending(message: String) async {
-        let status = stopReason == .authorizationRejected
-            ? UserFacingStatus.decisionAuthorizationRequired.text
-            : UserFacingStatus.decisionDeferred.text
-        await report("\(status)。\(message)")
+        await report("\(UserFacingStatus.decisionDeferred.text)。\(message)")
     }
 
     private func report(_ text: String) async {

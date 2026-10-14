@@ -49,4 +49,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
       - name: Verify V1
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/verify_v1.sh

@@ -29,7 +29,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --sessions-root "$SESSIONS_ROOT" --keep-session "$AUDIO" "$SEGMENTS"
 ```
 
-Jev は CLI では無効。音声処理はアプリと同じ確定パイプラインを使う。`segments.json` には空本文の区間を含めず、イベントログには保持する。
+発話文判定は CLI では無効。音声処理はアプリと同じ確定パイプラインを使う。`segments.json` には空本文の区間を含めず、イベントログには保持する。
 
 ## 参照文による評価
 

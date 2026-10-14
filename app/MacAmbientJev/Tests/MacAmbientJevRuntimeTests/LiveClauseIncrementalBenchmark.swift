@@ -49,7 +49,7 @@ private func timingSummary(_ samples: [Double]) -> [String: Double] {
 }
 
 /// Opt in with CLAUSE_INCREMENTAL_BENCHMARK=1. Only temporary audio/event fixtures and
-/// injected ASR are used; no models, Jev/network, application storage, or devices are used.
+/// injected ASR are used; no models, network, application storage, or devices are used.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["CLAUSE_INCREMENTAL_BENCHMARK"] == "1"))
 func liveClauseIncrementalBenchmark() async throws {
     let clock = ContinuousClock()

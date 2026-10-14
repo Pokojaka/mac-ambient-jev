@@ -19,7 +19,7 @@ private func assessed(
     let assessment = try ClauseBoundaryAssessment(
         source: source, candidates: candidates, probabilities: probabilities, nextHead: head,
         continuationProbability: head.map { _ in continues ? 0.51 : 0.5 },
-        request: decision == .assessed ? DecisionRequestRecord(requestID: "r-\(source.segmentID)", metadata: testMetadata) : nil,
+        request: decision == .assessed ? DecisionRequestRecord(requestID: "r-\(source.segmentID)", inputTokens: testInputTokens) : nil,
         sourceDecision: decision
     )
     return ClauseAssemblyInput(source: source, text: text, state: .assessed(assessment))
@@ -166,7 +166,7 @@ func assemblyRejectsInputsThatDoNotMatchTheTextOrOrder() throws {
         try other.consume(ClauseAssemblyInput(source: a, text: "一つ二つ", state: wrongText.state))
     }
     #expect(throws: ClauseAssemblyError.emptyText) {
-        try other.consume(ClauseAssemblyInput(source: a, text: " ", state: .pending(reason: .unconfigured, message: "")))
+        try other.consume(ClauseAssemblyInput(source: a, text: " ", state: .pending(reason: .notRequested, message: "")))
     }
     #expect(throws: ClauseAssemblyError.unknownSource) { try other.state(for: b) }
 }
@@ -178,7 +178,8 @@ func clauseRecordsRejectInconsistentPayloads() throws {
         try ClauseUnit(reference: ClauseReference(boundaryRunID: "b", clauseID: "c4_1"),
                        parts: [part(a, 0, 2)], termination: .streamEnd)
     }
-    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.89, probabilities: ["PRIMARY": 0.055, "LOW_PRIORITY": 0.945])
+    let belowThreshold: Double = 2 * 0.945 - 1
+    let low = try ContentPriorityDecision(priority: .lowPriority, confidence: belowThreshold, probabilities: ["PRIMARY": 0.055, "LOW_PRIORITY": 0.945])
     let reference = try ClauseReference(boundaryRunID: "b", clauseID: "c4_0")
     // Below 0.90 the actual decision stays recorded but the visible priority is PRIMARY.
     #expect(throws: ClauseRecordError.invalidPriorityAssignment) {

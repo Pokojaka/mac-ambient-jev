@@ -227,8 +227,10 @@ public struct EventLogTranscriptReader: Sendable {
     /// Durable classified decisions of live priority runs, keyed by the exact filler-removed
     /// clause text. For one text the latest classified event wins; a later pending result
     /// does not remove it. `data` is the event log at the moment finalization freezes it.
+    /// Only runs of the tagger revision that classifies the final transcript are reused.
     public func liveContentPriorityDecisions(
-        from data: Data
+        from data: Data,
+        modelRevision: String
     ) throws -> [ExactClauseTextKey: ReusableClauseDecision] {
         let recovered = try SessionRecovery.recoverJSONL(data)
         guard !recovered.droppedIncompleteTail else {
@@ -239,7 +241,8 @@ public struct EventLogTranscriptReader: Sendable {
         let log = try ClauseEventLog(lines: decoded, selectedRuns: roots)
         var boundaryRuns: [String: ClauseEventLog.BoundaryRun] = [:]
         var decisions: [(seq: UInt64, key: ExactClauseTextKey, decision: ReusableClauseDecision)] = []
-        for (runID, run) in log.runs where run.stage == .contentPriority && run.mode == "live" {
+        for (runID, run) in log.runs
+        where run.stage == .contentPriority && run.mode == "live" && run.modelRevision == modelRevision {
             // A run without results references no boundary run yet.
             guard let boundaryRunID = Self.boundaryRunID(of: runID, in: log) else { continue }
             guard log.runs[boundaryRunID]?.mode == "live" else {

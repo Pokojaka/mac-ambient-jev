@@ -32,11 +32,7 @@ public struct ClauseTaggerModelIdentity: Sendable, Equatable {
     public init(modelID: String, revision: String, tokenizerSHA256: String) throws {
         let decisionIdentity: DecisionModelIdentity
         do {
-            decisionIdentity = try DecisionModelIdentity(
-                provider: .localModel,
-                model: modelID,
-                modelRevision: revision
-            )
+            decisionIdentity = try DecisionModelIdentity(model: modelID, modelRevision: revision)
         } catch ClauseValidationError.invalidMetadata {
             throw ClauseTaggerModelError.invalidModel("モデルメタデータが発話文モデルの仕様に一致しません。")
         }
@@ -297,7 +293,7 @@ public final class ClauseTaggerModel {
             array[[NSNumber(value: 0), NSNumber(value: position), NSNumber(value: label)]].doubleValue
         }
         guard values.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
-              abs(values.reduce(0, +) - 1) <= 1e-5 else {
+              abs(values.reduce(0, +) - 1) <= taggerProbabilitySumTolerance else {
             throw ClauseTaggerModelError.invalidOutput
         }
         return values
@@ -308,7 +304,7 @@ public final class ClauseTaggerModel {
             array[[NSNumber(value: 0), NSNumber(value: label)]].doubleValue
         }
         guard values.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
-              abs(values.reduce(0, +) - 1) <= 1e-5 else {
+              abs(values.reduce(0, +) - 1) <= taggerProbabilitySumTolerance else {
             throw ClauseTaggerModelError.invalidOutput
         }
         return values

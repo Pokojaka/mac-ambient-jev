@@ -4,9 +4,10 @@ public enum ASRRecognitionOutcome: String, Codable, Sendable, Equatable {
     case recognized
     case empty
 
-    /// The single rule for "the engine produced no text": empty after trimming whitespace/newlines.
+    /// An ASR result is empty only when every Unicode scalar is whitespace, a newline, or punctuation.
     public init(text: String) {
-        self = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .empty : .recognized
+        let emptyCharacters = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+        self = text.unicodeScalars.allSatisfy { emptyCharacters.contains($0) } ? .empty : .recognized
     }
 }
 

@@ -45,7 +45,7 @@ struct MacAmbientJevApp: App {
 
         Settings {
             TabView {
-                SettingsView(secretStore: KeychainStore())
+                SettingsView()
                     .environmentObject(appState)
                     .tabItem {
                         Label("一般", systemImage: "gearshape")
@@ -126,7 +126,7 @@ private struct ContentView: View {
                 } label: {
                     Label("設定", systemImage: "gearshape")
                 }
-                .help("Jev とマイクの設定を開く")
+                .help("設定を開く")
             }
         }
     }

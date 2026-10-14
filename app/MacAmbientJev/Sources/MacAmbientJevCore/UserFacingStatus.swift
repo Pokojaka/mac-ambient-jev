@@ -15,7 +15,6 @@ public enum UserFacingStatus: Sendable, Equatable {
     case diarizing
     case classifyingContent
     case decisionDeferred
-    case decisionAuthorizationRequired
     case finalizationPausedForHeat
 
     public var text: String {
@@ -47,9 +46,7 @@ public enum UserFacingStatus: Sendable, Equatable {
         case .classifyingContent:
             return "発話文の境界と優先度を判定しています"
         case .decisionDeferred:
-            return "発話文の判定を後で再試行します"
-        case .decisionAuthorizationRequired:
-            return "Jev の API キーの修正が必要です。発話文の判定を保留しました"
+            return "発話文の判定を保留しました"
         case .finalizationPausedForHeat:
             return "発熱のため確定処理を一時停止中"
         }

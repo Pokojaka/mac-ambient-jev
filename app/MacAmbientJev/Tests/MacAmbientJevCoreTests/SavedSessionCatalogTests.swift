@@ -425,7 +425,7 @@ func catalogReportsCorruptClauseCoverageInsteadOfClassificationPending() async t
     _ = try await buildAndPublish(
         root: session, sessionID: id,
         provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-            throw JevClientError.missingAnswer
+            throw DecisionResponseError.missingAnswer
         }), scope: .all
     )
     let catalog = SavedSessionCatalog(fileManager: .default)

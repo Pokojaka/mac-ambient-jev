@@ -297,7 +297,7 @@ private actor NativeClauseProvider: DecisionProvider {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.95) }),
             continuationProbability: request.next.map { _ in 0.05 },
-            metadata: try DecisionResponseMetadata(model: "native-fixture", inputTokens: 5, outputTokens: nil)
+            inputTokens: 5
         )
     }
 
@@ -310,7 +310,7 @@ private actor NativeClauseProvider: DecisionProvider {
             }
         }
         try beforePriority?(number)
-        if failedPriorityNumbers.contains(number) { throw JevClientError.httpStatus(503) }
+        if failedPriorityNumbers.contains(number) { throw DecisionResponseError.missingAnswer }
         // A late live LOW answer must not replace the final fresh PRIMARY answer.
         let low = !primaryPriorityNumbers.contains(number) && (holdPriorityNumber == nil || number <= 2)
         let decision = try ContentPriorityDecision(
@@ -319,7 +319,7 @@ private actor NativeClauseProvider: DecisionProvider {
         )
         return PriorityBatchResponse(
             decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }),
-            metadata: try DecisionResponseMetadata(model: "native-fixture", inputTokens: 7, outputTokens: nil)
+            inputTokens: 7
         )
     }
 
@@ -366,7 +366,7 @@ private struct NativeDecisionFixture {
         processor = NativeSessionProcessor(
             paths: paths,
             engines: SessionProcessingEngines(asr: asr, diarization: LiveProcessorFinalDiarizer(), finalTranscriptVAD: LiveProcessorFinalVAD()),
-            contentPriority: .selectedEngine(factory, usageCounter: counter)
+            contentPriority: .localTagger(factory, usageCounter: counter)
         )
     }
 
@@ -380,10 +380,10 @@ private struct NativeDecisionFixture {
 }
 
 @Test(.timeLimit(.minutes(1)))
-func nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurableAnswers() async throws {
+func nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDurableAnswers() async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: 2, failedPriorityNumbers: [])
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await NativeDecisionFixture(
         texts: ["保存済み。", "遅い結果。", "", "保存済み。遅い結果。"], factory: { decisions }, counter: counter
     )
@@ -404,7 +404,8 @@ func nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurabl
     try await provider.waitUntilHeld()
     try await liveUpdates.waitFor { $0.filter(\.hasRecognizedText).map(\.clauseState) == [.classified, .priorityPending] }
     let frozen = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: SessionWriter.readDurableLog(eventsURL: SessionLayout(sessionURL: fixture.sessionURL).eventsURL)
+        from: SessionWriter.readDurableLog(eventsURL: SessionLayout(sessionURL: fixture.sessionURL).eventsURL),
+        modelRevision: testDecisionIdentity.modelRevision
     )
     #expect(Set(frozen.keys) == [ExactClauseTextKey(text: "保存済み。")])
     let waitingRows = try LiveTranscriptProjection().rows(for: await liveUpdates.snapshot())
@@ -433,10 +434,14 @@ func nativeTakeoverFinishesWithoutWaitingForLiveNetworkAndReusesOnlyFrozenDurabl
     #expect(await counter.snapshot().pendingPriorityClauseCount == 0)
 }
 
+private struct TaggerLoadFailure: Error {}
+
 @Test(.timeLimit(.minutes(1)))
-func cancellingUnavailableLiveDecisionsClearsItsPendingKeysWithoutAProvider() async throws {
+func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async throws {
     let counter = DecisionUsageCounter()
-    let fixture = try await NativeDecisionFixture(texts: ["前の本文", "次の本文"], factory: { nil }, counter: counter)
+    let fixture = try await NativeDecisionFixture(
+        texts: ["前の本文", "次の本文"], factory: { throw TaggerLoadFailure() }, counter: counter
+    )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = try await fixture.processor.startLiveTranscription(
         sessionID: fixture.sessionID, segmentationRunID: "live", sampleRate: 16_000
@@ -461,7 +466,7 @@ func cancellingUnavailableLiveDecisionsClearsItsPendingKeysWithoutAProvider() as
 func failedAtomicDecisionPublicationLeavesTheDurableLocalDisplayAndPendingKeys() async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await NativeDecisionFixture(texts: ["保存する本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let metadataURL = fixture.sessionURL.appending(path: "processing_metadata.json")
@@ -510,7 +515,7 @@ func failedAtomicDecisionPublicationLeavesTheDurableLocalDisplayAndPendingKeys()
 func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUntilSuccess() async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1], primaryPriorityNumbers: [2])
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await NativeDecisionFixture(texts: ["再試行する本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
@@ -596,7 +601,7 @@ func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUn
 func nativeRetryRejectsMetadataMismatchOrIncompleteLogBeforeSending(incompleteTail: Bool) async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await NativeDecisionFixture(texts: ["保留本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
@@ -636,13 +641,13 @@ func nativeRetryRejectsMetadataMismatchOrIncompleteLogBeforeSending(incompleteTa
 func corruptedDurableLiveDecisionFailsExplicitlyWithoutReplacingThePublishedLocalText() async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await NativeDecisionFixture(texts: ["ローカル本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let writer = try SessionWriter(sessionURL: fixture.sessionURL)
     _ = try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: fixture.sessionID, processingRunID: "priority_live_corrupt",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live"))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live", identity: testDecisionIdentity))
     ))
     _ = try await writer.append(EventDraft(
         eventType: ClauseEventType.priorityAssigned, sessionID: fixture.sessionID, processingRunID: "priority_live_corrupt",
@@ -671,7 +676,7 @@ func corruptedDurableLiveDecisionFailsExplicitlyWithoutReplacingThePublishedLoca
 func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverUsesUnpublishedAnswers() async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
-    let decisions = DecisionCoordinator(provider: provider, identity: .jev, usageCounter: counter)
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await NativeDecisionFixture(texts: ["保存済み本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let result = await fixture.processor.processSession(
@@ -685,7 +690,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     let writer = try SessionWriter(sessionURL: fixture.sessionURL)
     _ = try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: fixture.sessionID, processingRunID: "boundary_retry_unpublished",
-        payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: DecisionRunProvenance.boundary(mode: "retry"))
+        payload: ProcessingRunStartedPayload(stage: .clauseBoundary, provenance: DecisionRunProvenance.boundary(mode: "retry", identity: testDecisionIdentity))
     ))
     // A well-shaped assessment of a nonexistent source must not enter the rebuilt snapshot.
     _ = try await writer.append(EventDraft(
