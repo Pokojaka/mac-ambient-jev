@@ -83,11 +83,11 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 | LOW_PRIORITY、confidence ≥ 0.90 | `lowPriority` |
 | LOW_PRIORITY、confidence < 0.90 | `primary`（実際の判定は記録する） |
 | PRIMARY | `primary` |
-| 未分類・保留 | 通常表示 |
+| 未分類・保留 | 本文を表示 |
 
-表示方針は [TranscriptPriorityPresentationPolicy](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptPriorityPresentation.swift) の一箇所です。行内の発話文 slice ごとに LOW の発話文を淡色にし、PRIMARY と LOW の混在はそのまま表示します。行を畳むのは、行の可視本文を覆う全ての非空の発話文が保存済み LOW で、境界の未解決部分も保留もない行だけです。続き待ち・境界保留・優先度保留の部分がある行は通常表示で、畳みません。区間をまたぐ発話文は、所属する全ての行の slice に同じ判定を適用します。話者の違いで発話文の結合を拒否しません。
+表示方針は [MaterializedTranscriptSegment](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift) の `displayText` 一箇所です。行内の発話文 slice ごとに、`lowPriority` が保存され再試行待ちでない発話文をフィラー除去後の本文から除きます。PRIMARY と LOW の混在行は PRIMARY の本文だけを表示し、表示本文が空白・改行だけになった行は表示しません。続き待ち・境界保留・優先度保留の部分は本文を残します。区間をまたぐ発話文は、所属する全ての行の slice に同じ判定を適用します。話者の違いで発話文の結合を拒否しません。
 
-画面、コピー、accessibility、`transcript.txt` はフィラー除去後の本文を使い、空白・改行だけでない全ての認識済み本文を表示・書き出しします。LOW の本文も残します。ASR イベントの原文は変更しません。
+画面、コピー、accessibility、`transcript.txt` と CLI の `display_text` は同じ表示本文を使います。ASR イベントの原文は変更しません。
 
 ## 保留と再試行
 

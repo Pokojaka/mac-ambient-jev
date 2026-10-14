@@ -14,11 +14,8 @@ extension TranscriptDisplayState {
 }
 
 struct LiveTranscriptView: View {
-    static let lowPriorityCollapsedTitle = "低優先度の発話"
-
     @ObservedObject var viewModel: LiveTranscriptViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var expandedLowPriorityRowIDs: Set<String> = []
     @State private var detailRowID: String?
 
     var body: some View {
@@ -144,25 +141,10 @@ struct LiveTranscriptView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if row.shouldCollapseRow {
-                    DisclosureGroup(isExpanded: lowPriorityExpansion(for: row.id)) {
-                        transcriptText(row)
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } label: {
-                        Label(Self.lowPriorityCollapsedTitle, systemImage: "arrow.down.circle")
-                            .foregroundStyle(.secondary)
-                            .help("優先度が低い本文です")
-                    }
-                    .accessibilityHint("除去後の本文を表示または閉じます")
-                    .accessibilityValue(row.text)
-                } else {
-                    transcriptText(row)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                Text(row.text)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 if row.clauseState == .awaitingNextSegment {
                     Text(Self.awaitingNextSegmentTitle)
@@ -192,26 +174,6 @@ struct LiveTranscriptView: View {
                 if !isShown, detailRowID == rowID { detailRowID = nil }
             }
         )
-    }
-
-    private func lowPriorityExpansion(for rowID: String) -> Binding<Bool> {
-        Binding(
-            get: { expandedLowPriorityRowIDs.contains(rowID) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedLowPriorityRowIDs.insert(rowID)
-                } else {
-                    expandedLowPriorityRowIDs.remove(rowID)
-                }
-            }
-        )
-    }
-
-    private func transcriptText(_ row: LiveTranscriptRow) -> Text {
-        row.textFragments.reduce(Text("")) { result, fragment in
-            let color: Color = fragment.style == .lowPriority ? .secondary : .primary
-            return result + Text(fragment.text).foregroundColor(color)
-        }
     }
 
     private func transcriptDetails(_ row: LiveTranscriptRow) -> some View {

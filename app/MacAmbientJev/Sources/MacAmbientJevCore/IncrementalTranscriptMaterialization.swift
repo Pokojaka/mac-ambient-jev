@@ -272,7 +272,6 @@ public final class IncrementalTranscriptMaterializer {
             guard let clause = clauses[part.reference] else { throw TranscriptMaterializationError.missingClauseSource }
             priorityPending = priorityPending || clause.isPriorityUnresolved
             slices.append(ClauseRowSlice(reference: part.reference, sourceRange: part.range,
-                displayRanges: try projection.displayRanges(for: part.range),
                 priority: clause.priority, needsRetry: clause.needsRetry))
         }
         slices.sort { $0.sourceRange.start < $1.sourceRange.start }
@@ -303,7 +302,7 @@ public final class IncrementalTranscriptMaterializer {
         } else {
             state = .awaitingNextSegment
         }
-        return MaterializedTranscriptSegment(segmentID: source.segmentID, source: source,
+        return try MaterializedTranscriptSegment(segmentID: source.segmentID, source: source,
             startMilliseconds: milliseconds(segment.start), endMilliseconds: milliseconds(segment.end),
             text: entry.text, textProjection: projection, speakers: [],
             clauseState: state, clauseSlices: slices, isDiarized: false)

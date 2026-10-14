@@ -1344,21 +1344,22 @@ private actor LiveCarryOverProvider: DecisionProvider {
     func sentTexts() -> [String] { texts }
 }
 
-private actor LiveFoldGate {
-    private var folded = false
+private actor LiveLowPriorityRemovalGate {
+    private var removed = false
     private var waiter: CheckedContinuation<Void, Never>?
 
     func observe(_ segments: [MaterializedTranscriptSegment]) {
         guard segments.contains(where: { segment in
-            segment.clauseSlices.contains { $0.priority == .lowPriority && !$0.displayRanges.isEmpty }
+            segment.clauseSlices.contains { $0.priority == .lowPriority }
+                && segment.displayText != segment.textProjection.text
         }) else { return }
-        folded = true
+        removed = true
         waiter?.resume()
         waiter = nil
     }
 
     func wait() async {
-        guard !folded else { return }
+        guard !removed else { return }
         await withCheckedContinuation { waiter = $0 }
     }
 }
@@ -1403,7 +1404,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate
     )
-    let gate = LiveFoldGate()
+    let gate = LiveLowPriorityRemovalGate()
     _ = try await processor.processLiveSegments(
         sessionID: sessionID,
         segments: [
@@ -1424,13 +1425,18 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
     let materialized = try readFinalRows(sessionURL: sessionURL)
     #expect(materialized.map(\.text) == [finalText])
-    #expect(materialized.map(\.displayText) == [changed ? finalText : "同じ発話。"])
+    #expect(materialized.map(\.textProjection.text) == [changed ? finalText : "同じ発話。"])
+    #expect(materialized.map(\.displayText) == [""])
     #expect(materialized.map(\.segmentID) == ["final_row"])
     #expect(materialized.map(\.clauseState) == [.classified])
-    let slices = try #require(materialized.first).clauseSlices
-    #expect(slices.filter { !$0.displayRanges.isEmpty }.map(\.priority) == [.lowPriority])
+    let segment = try #require(materialized.first)
+    let slices = segment.clauseSlices
+    func isFillerOnly(_ slice: ClauseRowSlice) throws -> Bool {
+        try segment.textProjection.displayRanges(for: slice.sourceRange).isEmpty
+    }
+    #expect(try slices.filter { !(try isFillerOnly($0)) }.map(\.priority) == [.lowPriority])
     if !changed {
-        #expect(slices.contains { $0.displayRanges.isEmpty && $0.priority == nil && !$0.needsRetry })
+        #expect(try slices.contains { try isFillerOnly($0) && $0.priority == nil && !$0.needsRetry })
     }
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingDecisionTargets == [])
     let objects = try eventObjects(sessionURL)

@@ -30,16 +30,11 @@ func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async
     #expect(published == result.materializedSegments)
     #expect(published.map(\.clauseState) == [.classified, .classified, .classified])
     #expect(published.map(\.text) == ["えー、これは", "コピーと。うん、うん。", "次の話です"])
-    #expect(published.map(\.displayText) == ["これは", "コピーと。うん、うん。", "次の話です"])
+    #expect(published.map(\.displayText) == ["これは", "コピーと。", "次の話です"])
     let spanning = published[0].clauseSlices[0].reference
     #expect(published[1].clauseSlices.map(\.reference).first == spanning)
     #expect(published[1].clauseSlices.map(\.priority) == [.primary, .lowPriority])
-    let rows = try LiveTranscriptProjection().rows(for: published)
-    #expect(rows[1].textFragments == [
-        TranscriptTextFragment(text: "コピーと。", style: .normal),
-        TranscriptTextFragment(text: "うん、うん。", style: .lowPriority)
-    ])
-    #expect(!rows[1].shouldCollapseRow)
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.text) == ["これは", "コピーと。", "次の話です"])
 
     let snapshot = await counter.snapshot()
     #expect(snapshot.boundaryRequests.sendCount == 2)
@@ -343,10 +338,7 @@ func failedBoundaryRequestLeavesTheFollowingSegmentUnresolved() async throws {
     #expect(published.map(\.clauseState) == [.boundaryPending, .boundaryPending])
     #expect(published.allSatisfy { $0.clauseSlices.isEmpty })
     // Unsplit rows stay normal text; a failed boundary is never turned into "no".
-    #expect(try LiveTranscriptProjection().rows(for: published).map(\.textFragments) == [
-        [TranscriptTextFragment(text: "一つ目。二つ目", style: .normal)],
-        [TranscriptTextFragment(text: "三つ目", style: .normal)]
-    ])
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.text) == ["一つ目。二つ目", "三つ目"])
     let reasons = try eventObjects(root).filter { $0["event_type"] as? String == "clause_boundaries.pending" }
         .compactMap { ($0["payload"] as? [String: Any])?["reason"] as? String }
     #expect(reasons == ["request_failed"])
@@ -396,7 +388,7 @@ func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async t
     #expect(result.pendingPriorityClauses.count == 40)
     let published = try readPublished(root: root)
     #expect(published.map(\.clauseState) == [.priorityPending])
-    #expect(try LiveTranscriptProjection().rows(for: published).map(\.shouldCollapseRow) == [false])
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.text) == [text])
 }
 
 @Test

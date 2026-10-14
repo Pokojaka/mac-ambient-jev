@@ -227,7 +227,7 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
     #expect(await fixture.recorder.updates.first?.map(\.clauseState) == [.awaitingNextSegment])
     #expect(await provider.boundaryCount() == 0)
     let first = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
-    #expect(first.map(\.textFragments) == [[TranscriptTextFragment(text: "これは", style: .normal)]])
+    #expect(first.map(\.text) == ["これは"])
 
     try await fixture.recognize(1)
     try await fixture.recognize(2)
@@ -243,11 +243,7 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
     #expect(requests.map { $0.next?.text } == ["コピーと", "いうか。うん、うん。", nil])
     #expect(await provider.priorityRequests == [["これはコピーというか。", "うん、うん。"]])
     let rows = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
-    #expect(rows.map(\.shouldCollapseRow) == [false, false, false])
-    #expect(rows[2].textFragments == [
-        TranscriptTextFragment(text: "いうか。", style: .normal),
-        TranscriptTextFragment(text: "うん、うん。", style: .lowPriority)
-    ])
+    #expect(rows.map(\.text) == ["これは", "コピーと", "いうか。"])
     // The durable live results are what finalization may reuse.
     let reused = try EventLogTranscriptReader().liveContentPriorityDecisions(
         from: Data(contentsOf: fixture.root.appending(path: "events.jsonl")),
@@ -293,7 +289,7 @@ func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Boo
         ? [["うん。"], (1...40).map { "本文\($0)。" }]
         : [["うん。"]]
     #expect(await provider.priorityRequests == expectedRequests)
-    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.shouldCollapseRow) == [true, false, false])
+    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.text) == [second, "三つ目。"])
     #expect(await fixture.recorder.latest.map(\.clauseState) == [
         .classified, holdingPriority ? .priorityPending : .awaitingNextSegment, .awaitingNextSegment
     ])
@@ -433,10 +429,7 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
     try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
     try await fixture.recorder.wait { $0.map(\.clauseState) == [.boundaryPending, .boundaryPending] }
 
-    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.textFragments) == [
-        [TranscriptTextFragment(text: "一つ目。二つ目", style: .normal)],
-        [TranscriptTextFragment(text: "三つ目", style: .normal)]
-    ])
+    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.text) == ["一つ目。二つ目", "三つ目"])
     let snapshot = await counter.snapshot()
     #expect(snapshot.sendCount == 0)
     #expect(snapshot.pendingBoundarySegmentCount == 2)
@@ -573,9 +566,7 @@ func livePrioritySaveFailureKeepsPreviouslyDurableClassificationAndNewTextVisibl
     try FileManager.default.moveItem(at: savedURL, to: eventsURL)
 
     let rows = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
-    #expect(rows.map(\.text) == ["うん。", "新しい本文。", "続き"])
-    #expect(rows.map(\.shouldCollapseRow) == [true, false, false])
-    #expect(rows[1].textFragments == [TranscriptTextFragment(text: "新しい本文。", style: .normal)])
+    #expect(rows.map(\.text) == ["新しい本文。", "続き"])
     let assignments = try fixture.eventObjects().filter { $0["event_type"] as? String == "content_priority.assigned" }
     #expect(assignments.count == 1)
     #expect(await counter.snapshot().priorityRequests.successCount == 2)
@@ -603,7 +594,7 @@ func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async thro
 }
 
 @Test(.timeLimit(.minutes(1)))
-func savedLowSliceDoesNotFlickerWhileItsContinuationWaitsForPriority() async throws {
+func savedLowSliceStaysRemovedWhileItsContinuationWaitsForPriority() async throws {
     let provider = LiveProvider(continuing: ["seg_1"], holdPriorityNumber: 2)
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
@@ -613,26 +604,22 @@ func savedLowSliceDoesNotFlickerWhileItsContinuationWaitsForPriority() async thr
     )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     try await fixture.recognize(0)
+    let saved = try #require(await fixture.recorder.updates.first)
+    #expect(try LiveTranscriptProjection().rows(for: saved).map(\.text) == ["うん。続く"])
     try await fixture.recognize(1)
     try await fixture.recorder.wait { $0.first?.clauseSlices.first?.priority == .lowPriority }
     let awaiting = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
     #expect(awaiting[0].clauseState == .awaitingNextSegment)
-    let expected = [
-        TranscriptTextFragment(text: "うん。", style: .lowPriority),
-        TranscriptTextFragment(text: "続く", style: .normal)
-    ]
-    #expect(awaiting[0].textFragments == expected)
-    #expect(!awaiting[0].shouldCollapseRow)
+    #expect(awaiting[0].text == "続く")
 
     try await fixture.recognize(2)
     try await provider.waitForPriorities(2)
     try await fixture.recorder.wait { $0.first?.clauseState == .priorityPending }
     let pending = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
-    #expect(pending[0].textFragments == expected)
-    #expect(!pending[0].shouldCollapseRow)
+    #expect(pending[0].text == "続く")
     await provider.release()
     try await fixture.recorder.wait { $0.first?.clauseState == .classified }
-    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)[0].textFragments == expected)
+    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)[0].text == "続く")
     await fixture.priority.stop()
 }
 
@@ -686,8 +673,6 @@ func everyFailedLivePriorityBatchIsPendingOnItsOwn() async throws {
     let row = try #require(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).first)
     #expect(row.text == raw)
     #expect(row.clauseState == .priorityPending)
-    #expect(row.textFragments == [TranscriptTextFragment(text: raw, style: .normal)])
-    #expect(!row.shouldCollapseRow)
     await fixture.priority.stop()
 }
 

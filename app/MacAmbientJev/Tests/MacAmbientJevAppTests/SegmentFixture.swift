@@ -10,7 +10,7 @@ extension MaterializedTranscriptSegment {
         clauseState: TranscriptClauseState? = nil,
         clauseSlices: [ClauseRowSlice] = []
     ) throws -> MaterializedTranscriptSegment {
-        MaterializedTranscriptSegment(
+        try MaterializedTranscriptSegment(
             segmentID: segmentID,
             source: try SegmentTextReference(
                 segmentationRunID: "seg", segmentID: segmentID, asrRunID: "asr", asrEventSeq: asrEventSeq

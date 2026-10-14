@@ -61,6 +61,4 @@ func waitingAndPendingRowsDescribeTheirDecisionStateWithoutHidingText() throws {
     #expect(LiveTranscriptView.clauseStateDescription(.priorityPending) == "発話文: 優先度判定を待っています")
     #expect(LiveTranscriptView.clauseStateDescription(.classified) == "発話文: 判定済み")
     #expect(row.text == "続く")
-    #expect(row.textFragments == [TranscriptTextFragment(text: "続く", style: .normal)])
-    #expect(!row.shouldCollapseRow)
 }

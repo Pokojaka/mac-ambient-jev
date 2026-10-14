@@ -63,7 +63,62 @@ func liveProjectionCleansDisplayWithoutChangingMaterializedASRText() throws {
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
     #expect(segment.text == raw)
     #expect(row.text == "今日は公開鍵暗号を説明します。")
-    #expect(row.textFragments.map(\.text).joined() == row.text)
+}
+
+private func prioritySlice(
+    _ clauseID: String, _ start: Int, _ end: Int, _ priority: ContentPriority?, needsRetry: Bool = false
+) throws -> ClauseRowSlice {
+    ClauseRowSlice(
+        reference: try ClauseReference(boundaryRunID: "boundary", clauseID: clauseID),
+        sourceRange: try TextUTF16Range(start: start, end: end), priority: priority, needsRetry: needsRetry
+    )
+}
+
+@Test
+func lowPrioritySentencesAreRemovedFromScreenTranscriptAndDisplayText() throws {
+    let raw = "えー、資料を配ります。はい。"
+    let segment = try MaterializedTranscriptSegment.fixture(
+        segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [try prioritySlice("c1_0", 0, 11, .primary), try prioritySlice("c1_1", 11, 14, .lowPriority)]
+    )
+    let object = try #require(
+        JSONSerialization.jsonObject(with: try JSONEncoder().encode(segment)) as? [String: Any]
+    )
+    #expect(object["text"] as? String == raw)
+    #expect(object["display_text"] as? String == "資料を配ります。")
+    #expect(try LiveTranscriptProjection().rows(for: [segment]).map(\.text) == ["資料を配ります。"])
+}
+
+@Test
+func rowWhoseEverySentenceIsLowPriorityIsNotShown() throws {
+    let lowOnly = try MaterializedTranscriptSegment.fixture(
+        segmentID: "low", startMilliseconds: 0, endMilliseconds: 1_000, text: "はい。うん。",
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [try prioritySlice("c1_0", 0, 3, .lowPriority), try prioritySlice("c1_1", 3, 6, .lowPriority)]
+    )
+    let primary = try MaterializedTranscriptSegment.fixture(
+        segmentID: "primary", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "本題です。",
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [try prioritySlice("c2_0", 0, 5, .primary)]
+    )
+    #expect(lowOnly.text == "はい。うん。")
+    #expect(lowOnly.displayText == "")
+    #expect(try LiveTranscriptProjection().rows(for: [lowOnly, primary]).map(\.text) == ["本題です。"])
+}
+
+@Test
+func undecidedSentencesKeepTheirTextNextToRemovedLowPrioritySentences() throws {
+    let segment = try MaterializedTranscriptSegment.fixture(
+        segmentID: "pending", startMilliseconds: 0, endMilliseconds: 1_000, text: "はい。うん。そうです。続き",
+        speakers: [], isDiarized: false, clauseState: .awaitingNextSegment,
+        clauseSlices: [
+            try prioritySlice("c1_0", 0, 3, .lowPriority),
+            try prioritySlice("c1_1", 3, 6, .lowPriority, needsRetry: true),
+            try prioritySlice("c1_2", 6, 11, nil)
+        ]
+    )
+    #expect(try LiveTranscriptProjection().rows(for: [segment]).map(\.text) == ["うん。そうです。続き"])
 }
 
 @Test
@@ -292,39 +347,47 @@ func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrSpeakerTiming(
     )
     let segments = result.materializedSegments
     #expect(segments.map(\.text) == ["えー、第一。うん", "えー、続き"])
-    #expect(segments.map(\.displayText) == ["第一。うん", "続き"])
+    #expect(segments.map(\.displayText) == ["第一。", ""])
     #expect(segments.map(\.startMilliseconds) == [0, 1_000])
     #expect(segments.map(\.endMilliseconds) == [900, 1_900])
     #expect(segments[0].clauseSlices.map(\.sourceRange)
         == [try TextUTF16Range(start: 0, end: 6), try TextUTF16Range(start: 6, end: 8)])
-    #expect(segments[0].clauseSlices.map(\.displayRanges)
-        == [[try TextUTF16Range(start: 0, end: 3)], [try TextUTF16Range(start: 3, end: 5)]])
     #expect(segments[1].clauseSlices.map(\.sourceRange) == [try TextUTF16Range(start: 0, end: 5)])
-    #expect(segments[1].clauseSlices.map(\.displayRanges) == [[try TextUTF16Range(start: 0, end: 2)]])
     #expect(segments[0].clauseSlices.last?.reference == segments[1].clauseSlices.first?.reference)
     #expect(segments[0].clauseSlices.map(\.priority) == [.primary, .lowPriority])
     #expect(segments[1].clauseSlices.map(\.priority) == [.lowPriority])
-    let rows = try LiveTranscriptProjection().rows(for: segments)
-    #expect(rows.map(\.text) == ["第一。うん", "続き"])
-    #expect(rows.map(\.shouldCollapseRow) == [false, true])
+    #expect(try LiveTranscriptProjection().rows(for: segments).map(\.text) == ["第一。"])
 }
 
-@Test(arguments: [false, true])
-func liveProjectionRejectsInvalidRawOrDisplayClauseCoordinates(insideCharacter: Bool) throws {
-    let base = try MaterializedTranscriptSegment.fixture(
-        segmentID: "s", startMilliseconds: 0, endMilliseconds: 100, text: "👩🏽‍💻本文",
-        speakers: [], isDiarized: false
+@Test
+func lowPriorityRemovalKeepsFillerRemovalAndSurrogatePairsIntact() throws {
+    let segment = try MaterializedTranscriptSegment.fixture(
+        segmentID: "emoji", startMilliseconds: 0, endMilliseconds: 1_000, text: "えー、低。えー、😀本文",
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [try prioritySlice("c1_0", 0, 5, .lowPriority), try prioritySlice("c1_1", 5, 12, .primary)]
     )
-    let slice = ClauseRowSlice(
-        reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0"),
-        sourceRange: try TextUTF16Range(start: insideCharacter ? 1 : 0, end: base.text.utf16.count),
-        displayRanges: [try TextUTF16Range(start: 0, end: 1)], priority: .lowPriority, needsRetry: false
-    )
-    let invalid = MaterializedTranscriptSegment(
-        segmentID: base.segmentID, source: base.source, startMilliseconds: base.startMilliseconds,
-        endMilliseconds: base.endMilliseconds, text: base.text, textProjection: base.textProjection,
-        speakers: base.speakers, clauseState: .classified,
-        clauseSlices: [slice], isDiarized: false
-    )
-    #expect(throws: (any Error).self) { _ = try LiveTranscriptProjection().rows(for: [invalid]) }
+    #expect(segment.displayText == "😀本文")
+}
+
+@Test
+func segmentRejectsOverlappingClauseSlices() throws {
+    #expect(throws: TranscriptMaterializationError.invalidClauseSlice(segmentID: "s")) {
+        _ = try MaterializedTranscriptSegment.fixture(
+            segmentID: "s", startMilliseconds: 0, endMilliseconds: 100, text: "本文です",
+            speakers: [], isDiarized: false, clauseState: .classified,
+            clauseSlices: [try prioritySlice("c1_0", 0, 2, .primary), try prioritySlice("c1_1", 1, 4, .lowPriority)]
+        )
+    }
+}
+
+@Test
+func segmentRejectsAClauseSliceInsideACharacter() throws {
+    let text = "👩🏽‍💻本文"
+    #expect(throws: TextUTF16RangeError.invalidCharacterBoundary(start: 1, end: text.utf16.count)) {
+        _ = try MaterializedTranscriptSegment.fixture(
+            segmentID: "s", startMilliseconds: 0, endMilliseconds: 100, text: text,
+            speakers: [], isDiarized: false, clauseState: .classified,
+            clauseSlices: [try prioritySlice("c1_0", 1, text.utf16.count, .lowPriority)]
+        )
+    }
 }

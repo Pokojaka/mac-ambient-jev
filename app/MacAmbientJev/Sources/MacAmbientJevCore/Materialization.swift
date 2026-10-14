@@ -149,21 +149,17 @@ public struct ClauseRowSlice: Encodable, Sendable, Equatable {
     public let reference: ClauseReference
     /// Raw ASR text range of this row.
     public let sourceRange: TextUTF16Range
-    /// Ranges in the row's `display_text`.
-    public let displayRanges: [TextUTF16Range]
     public let priority: ContentPriority?
     public let needsRetry: Bool
 
     public init(
         reference: ClauseReference,
         sourceRange: TextUTF16Range,
-        displayRanges: [TextUTF16Range],
         priority: ContentPriority?,
         needsRetry: Bool
     ) {
         self.reference = reference
         self.sourceRange = sourceRange
-        self.displayRanges = displayRanges
         self.priority = priority
         self.needsRetry = needsRetry
     }
@@ -171,7 +167,6 @@ public struct ClauseRowSlice: Encodable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case reference
         case sourceRange = "source_range"
-        case displayRanges = "display_ranges"
         case priority
         case needsRetry = "needs_retry"
     }
@@ -180,7 +175,6 @@ public struct ClauseRowSlice: Encodable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(reference, forKey: .reference)
         try c.encode(sourceRange, forKey: .sourceRange)
-        try c.encode(displayRanges, forKey: .displayRanges)
         try c.encode(priority, forKey: .priority)
         try c.encode(needsRetry, forKey: .needsRetry)
     }
@@ -212,8 +206,6 @@ public struct MaterializedClause: Sendable, Equatable {
 public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Identifiable {
     public var id: String { segmentID }
     public var hasRecognizedText: Bool { ASRRecognitionOutcome(text: text) == .recognized }
-    /// The filler-removed text shown on screen and in transcript.txt.
-    public var displayText: String { textProjection.text }
     public let segmentID: String
     public let source: SegmentTextReference
     public let startMilliseconds: Int64
@@ -221,6 +213,8 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
     /// The ASR text as recognized.
     public let text: String
     public let textProjection: CleanedTranscriptText
+    /// The text shown on screen and in transcript.txt: fillers and saved low-priority clauses removed.
+    public let displayText: String
     public let speakers: [MaterializedSpeakerSpan]
     /// Nil only when the segment has no recognized text.
     public let clauseState: TranscriptClauseState?
@@ -233,13 +227,16 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         text: String, textProjection: CleanedTranscriptText,
         speakers: [MaterializedSpeakerSpan],
         clauseState: TranscriptClauseState?, clauseSlices: [ClauseRowSlice], isDiarized: Bool
-    ) {
+    ) throws {
         self.segmentID = segmentID
         self.source = source
         self.startMilliseconds = startMilliseconds
         self.endMilliseconds = endMilliseconds
         self.text = text
         self.textProjection = textProjection
+        self.displayText = try Self.displayText(
+            segmentID: segmentID, source: source, text: text, projection: textProjection, clauseSlices: clauseSlices
+        )
         self.speakers = speakers
         self.clauseState = clauseState
         self.clauseSlices = clauseSlices
@@ -271,36 +268,41 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         try c.encode(clauseSlices, forKey: .clauseSlices)
     }
 
-    /// The priority slices covering the whole raw text: clause slices, and unresolved gaps.
-    func prioritySlices() throws -> [TranscriptPrioritySlice] {
-        guard source.segmentID == segmentID, text.utf16.count == textProjection.sourceUTF16Length else {
+    /// Removes every clause slice whose low priority is saved; unresolved and retrying clauses stay.
+    private static func displayText(
+        segmentID: String, source: SegmentTextReference, text: String,
+        projection: CleanedTranscriptText, clauseSlices: [ClauseRowSlice]
+    ) throws -> String {
+        guard source.segmentID == segmentID, text.utf16.count == projection.sourceUTF16Length else {
             throw TranscriptMaterializationError.missingClauseSource
         }
-        var result: [TranscriptPrioritySlice] = []
+        var removed: [TextUTF16Range] = []
         var cursor = 0
         for slice in clauseSlices {
-            guard slice.sourceRange.start >= cursor, slice.sourceRange.start < slice.sourceRange.end,
-                  try textProjection.displayRanges(for: slice.sourceRange) == slice.displayRanges else {
+            guard slice.sourceRange.start >= cursor, slice.sourceRange.start < slice.sourceRange.end else {
                 throw TranscriptMaterializationError.invalidClauseSlice(segmentID: segmentID)
             }
-            if cursor < slice.sourceRange.start {
-                result.append(TranscriptPrioritySlice(
-                    sourceRange: try TextUTF16Range(start: cursor, end: slice.sourceRange.start),
-                    priority: nil, needsRetry: false
-                ))
-            }
-            result.append(TranscriptPrioritySlice(
-                sourceRange: slice.sourceRange, priority: slice.priority, needsRetry: slice.needsRetry
-            ))
+            let ranges = try projection.displayRanges(for: slice.sourceRange)
+            if slice.priority == .lowPriority, !slice.needsRetry { removed += ranges }
             cursor = slice.sourceRange.end
         }
-        let end = textProjection.sourceUTF16Length
-        if !clauseSlices.isEmpty, cursor < end {
-            result.append(TranscriptPrioritySlice(
-                sourceRange: try TextUTF16Range(start: cursor, end: end), priority: nil, needsRetry: false
-            ))
+        guard !removed.isEmpty else { return projection.text }
+        let cleaned = projection.text
+        let utf16 = cleaned.utf16
+        var kept = ""
+        var index = utf16.startIndex
+        var offset = 0
+        for range in removed + [try TextUTF16Range(start: utf16.count, end: utf16.count)] {
+            let keptEnd = utf16.index(index, offsetBy: range.start - offset)
+            guard let lower = String.Index(index, within: cleaned),
+                  let upper = String.Index(keptEnd, within: cleaned) else {
+                throw TextUTF16RangeError.invalidCharacterBoundary(start: offset, end: range.start)
+            }
+            kept.append(contentsOf: cleaned[lower..<upper])
+            index = utf16.index(keptEnd, offsetBy: range.end - range.start)
+            offset = range.end
         }
-        return result
+        return kept
     }
 }
 
@@ -465,11 +467,9 @@ public struct TranscriptMaterializer: Sendable {
             )
             clauses[unit.reference] = clause
             for part in unit.parts {
-                let projection = try composer.projection(of: part.source, text: text(of: part.source))
                 slicesBySource[part.source, default: []].append(ClauseRowSlice(
                     reference: unit.reference,
                     sourceRange: part.range,
-                    displayRanges: try projection.displayRanges(for: part.range),
                     priority: clause.priority,
                     needsRetry: clause.needsRetry
                 ))
@@ -539,7 +539,7 @@ public struct TranscriptMaterializer: Sendable {
                 state = .boundaryPending
             }
 
-            segments.append(MaterializedTranscriptSegment(
+            segments.append(try MaterializedTranscriptSegment(
                 segmentID: segmentID,
                 source: source,
                 startMilliseconds: milliseconds(forFrame: startFrame),
@@ -565,32 +565,23 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
     public let segmentID: String
     public let startMilliseconds: Int64
     public let endMilliseconds: Int64
-    /// The filler-removed text, including low-priority text.
+    /// The segment's `displayText`; never blank.
     public let text: String
-    public let textFragments: [TranscriptTextFragment]
     public let speakers: [MaterializedSpeakerSpan]
     public let displaySpeakerLabels: [String]
     public let clauseState: TranscriptClauseState
-    public let shouldCollapseRow: Bool
 
     public init(segment: MaterializedTranscriptSegment, displaySpeakerLabels: [String]) throws {
         guard let state = segment.clauseState else {
             throw TranscriptMaterializationError.missingClauseState(segmentID: segment.segmentID)
         }
-        let presentation = try TranscriptPriorityPresentationPolicy().present(
-            text: segment.textProjection,
-            slices: try segment.prioritySlices(),
-            hasUnresolvedBoundary: state == .awaitingNextSegment || state == .boundaryPending
-        )
         self.segmentID = segment.segmentID
         self.startMilliseconds = segment.startMilliseconds
         self.endMilliseconds = segment.endMilliseconds
-        self.text = presentation.text
-        self.textFragments = presentation.fragments
+        self.text = segment.displayText
         self.speakers = segment.speakers
         self.displaySpeakerLabels = displaySpeakerLabels
         self.clauseState = state
-        self.shouldCollapseRow = presentation.shouldCollapseRow
     }
 }
 

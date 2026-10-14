@@ -35,7 +35,7 @@ bash scripts/verify_v1.sh
 
 ```bash
 swift build --package-path app/MacAmbientJev
-swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionContractTests|DecisionEnrichmentCoordinatorTests|ClauseAssemblyTests|TranscriptPriorityPresentationTests|LiveContentPriorityGatingTests|LiveDecisionRecordingTests|FinalTranscriptPipelineTests|nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDurableAnswers'
+swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionContractTests|DecisionEnrichmentCoordinatorTests|ClauseAssemblyTests|MaterializerTests|LiveContentPriorityGatingTests|LiveDecisionRecordingTests|FinalTranscriptPipelineTests|nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDurableAnswers'
 ```
 
 [DecisionContractTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionContractTests.swift) は共有判定型の JSON 形、境界の厳密な `> 0.5`、確率の有限 0..1 検証、優先度判定の和（tagger と同じ `1e-5`）・confidence の完全一致と同率の扱い、不正な優先度判定を保存済み優先度の保留にすることを検証します。[DecisionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionTests.swift) は回答の不足・余分でリクエスト全体が失敗し、失敗理由が保留の message になることを検証します。
@@ -140,9 +140,9 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 フィラーの回帰検証は UTF-16 座標、Unicode Character の境界、単語内部の類似文字列、後続本文と接続した先頭フィラー、隣接する句読点、フィラーだけの行、画面 projection と `transcript.txt` の本文一致を扱う。materializer は ASR の原文を保持する。`savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport` は保存済み ASR イベントを `SavedTranscriptLoader` で読み、原文の保持と画面・テキストの除去済み本文、イベントの不変性を確認する。保存済みセッションの smoke は入力 `えー、今日は公開鍵暗号を説明します。` を使い、`SavedTranscriptLoader` → 共通 projection → `SessionExporter` の実際の `transcript.txt` 書き込み・再読込を通して本文が `今日は公開鍵暗号を説明します。` となり、イベントが原文のままであることを確認する。GUI の選択コピーとアクセシビリティ読み上げは別途、画面上で検証する。
 
-節優先度の回帰検証は注入 `DecisionProvider` で決定的に行い、モデル品質の正解とは分ける。厳密な `> 0.5` と LOW 採用 `≥ 0.90`（直前の Double を含む）、候補の raw UTF-16 座標、全no・無句読点・連続句読点と末尾除外、跨ぎ節と終端、再利用対象を除いた後の40/41節の batch 境界を対象とする。最初の回答が有効でも後続の回答欠落・余分・不正な優先度判定で全batchを拒否し、一requestの失敗として数える。UTF-8 byte 完全一致の再利用では、trim・句読点・Unicode byte差を同一視せず、未公開retryのdurable回答も使わない。schema・参照・coverageの破損、保留再試行と公開snapshot、request単位のtoken計数、takeover時の保存済みLOWと判定待ちの通常行を確認する。LOW＋続き待ちは閉じたLOW部分だけ淡色で、待機本文も保持し、行を畳まない。画面projectionとtxtは混在PRIMARY/LOW、全LOW、待機・保留、フィラーのみを含む実sliceで本文と行集合を確認する。文言・内部配線・コピーした設定値を固定するテストは根拠にしない。
+節優先度の回帰検証は注入 `DecisionProvider` で決定的に行い、モデル品質の正解とは分ける。厳密な `> 0.5` と LOW 採用 `≥ 0.90`（直前の Double を含む）、候補の raw UTF-16 座標、全no・無句読点・連続句読点と末尾除外、跨ぎ節と終端、再利用対象を除いた後の40/41節の batch 境界を対象とする。最初の回答が有効でも後続の回答欠落・余分・不正な優先度判定で全batchを拒否し、一requestの失敗として数える。UTF-8 byte 完全一致の再利用では、trim・句読点・Unicode byte差を同一視せず、未公開retryのdurable回答も使わない。schema・参照・coverageの破損、保留再試行と公開snapshot、request単位のtoken計数、takeover時の保存済みLOWの除去と判定待ち行の本文表示を確認する。LOW＋続き待ちは閉じたLOW部分だけを除き、待機本文を保持する。画面projection・txt・`display_text` は混在PRIMARY/LOW（LOWを除いた本文）、全LOW（行なし）、待機・保留・再試行待ち（本文を表示）、フィラーのみを含む実sliceで本文と行集合を確認する。文言・内部配線・コピーした設定値を固定するテストは根拠にしない。
 
-実ファイルの受入smokeは一時harnessで `NativeSessionProcessor` → `SessionWriter` → metadata・readerの再読込 → `SavedSessionCatalog` → `SessionExporter` を通す。注入ASRの `えー、週末の設計を確認します。そうですね。` からPRIMARY/LOW混在を作り、rawの保持、除去後本文、LOWを含む実txt出力、全LOW行の畳みを確認する。注入した判定失敗ではpriority保留を通常表示し、priorityだけのtargeted retryで公開boundaryを維持・非対象pendingをcarryする。boundaryの失敗では無分割行を保持し、boundary retryで両runとpendingを一括公開する。判定結果の前の再読込では直前の公開snapshotのままであることを確認する。2つのlive区間から1つのfinal区間への除去後本文完全一致carryは優先度の再判定なしで確認する。event appendとmetadata公開をそれぞれ実ファイルで失敗させ、ローカルのdurable本文・通常表示・3段公開を保持し、未公開の任意段を採用しないことを確認する。注入値はモデル精度の証拠ではない。harnessと一時セッションは受入後に削除する。
+実ファイルの受入smokeは一時harnessで `NativeSessionProcessor` → `SessionWriter` → metadata・readerの再読込 → `SavedSessionCatalog` → `SessionExporter` を通す。注入ASRの `えー、週末の設計を確認します。そうですね。` からPRIMARY/LOW混在を作り、rawの保持、LOWを除いた表示本文と実txt出力、全LOW行の非表示を確認する。注入した判定失敗ではpriority保留の本文を表示し、priorityだけのtargeted retryで公開boundaryを維持・非対象pendingをcarryする。boundaryの失敗では無分割行を保持し、boundary retryで両runとpendingを一括公開する。判定結果の前の再読込では直前の公開snapshotのままであることを確認する。2つのlive区間から1つのfinal区間への除去後本文完全一致carryは優先度の再判定なしで確認する。event appendとmetadata公開をそれぞれ実ファイルで失敗させ、ローカルのdurable本文・本文表示・3段公開を保持し、未公開の任意段を採用しないことを確認する。注入値はモデル精度の証拠ではない。harnessと一時セッションは受入後に削除する。
 
 ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した空 ASR・後続本文を保存し、`DecisionEnrichmentCoordinator` → metadata 公開 → reader/materializer の再読込を通す。前半本文を未解決のまま残し、空 ASR より後の本文だけを一回の優先度判定で分類し、保存 snapshot と再読込が一致することを確認する。空 ASR の後に新たな gap がある場合に先頭を推測しないことは回帰テストで扱う。
 
@@ -156,7 +156,7 @@ bundleは `scripts/run_app.sh` でbuildして起動する。プロセスの生�
 
 - 「モデルを確認」で同梱モデルの ID と revision が表示されること、録音元・書き出し先、マイク／システム音声の実権限。
 - 14秒超の実ASR原文をイベントで確認し、第一行の「発話文の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
-- PRIMARY＋LOWの淡色、全LOWだけの初期畳み、LOW＋待機／保留の非畳み、展開後の全文、選択copy/paste・accessibilityのclean全文とLOW保持、行単位の時刻popover・話者見出し。
+- PRIMARY＋LOWでLOW本文が消えること、全LOW行が消えること、LOW＋待機／保留の本文表示、選択copy/paste・accessibilityがLOWを除いた表示本文と一致すること、行単位の時刻popover・話者見出し。
 - 録音停止後のASR drain・finishInputとfinal takeover、late結果不採用、実live/final本文が完全一致する場合だけのcarryと判定削減。
 - priority障害で保存済みboundaryを維持し、ローカル公開が続くこと。
 - 設定の保留再試行ボタン、二種targetの判定、atomic metadata切替、診断のrequest・token・pending内訳。

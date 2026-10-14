@@ -18,7 +18,7 @@ private actor PartialPriorityProvider: DecisionProvider {
 }
 
 @Test
-func storedLowClausesRemainDimmedWhenAnotherPriorityBatchFails() async throws {
+func storedLowClausesStayRemovedWhenAnotherPriorityBatchFails() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
@@ -30,11 +30,7 @@ func storedLowClausesRemainDimmedWhenAnotherPriorityBatchFails() async throws {
     let row = try #require(try LiveTranscriptProjection().rows(for: segments).first)
     #expect(segments[0].clauseSlices.filter { $0.priority == .lowPriority }.count == 40)
     #expect(result.pendingPriorityClauses.count == 1)
+    #expect(segments[0].text == raw)
     #expect(row.clauseState == .priorityPending)
-    #expect(row.text == raw)
-    #expect(!row.shouldCollapseRow)
-    #expect(row.textFragments == [
-        TranscriptTextFragment(text: String(repeating: "うん。", count: 40), style: .lowPriority),
-        TranscriptTextFragment(text: "うん。", style: .normal)
-    ])
+    #expect(row.text == "うん。")
 }

@@ -143,15 +143,15 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
         // Rows never wait for decisions: both are shown as normal text while priority is in flight.
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
-        #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [false, false])
 
         await provider.release()
         let decisionDeadline = ContinuousClock.now + .seconds(5)
-        while state.transcriptViewModel.rows.first?.clauseState != .classified, ContinuousClock.now < decisionDeadline {
+        while state.transcriptViewModel.rows.count != 1, ContinuousClock.now < decisionDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.classified, .awaitingNextSegment])
-        #expect(state.transcriptViewModel.rows.map(\.shouldCollapseRow) == [true, false])
+        // The saved LOW sentence leaves the screen; the waiting row keeps its text.
+        #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話2"])
+        #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.awaitingNextSegment])
         let usage = await state.decisionUsageCounter.snapshot()
         #expect(usage.boundaryRequests.sendCount == 1)
         #expect(usage.priorityRequests.sendCount == 1)
@@ -179,7 +179,6 @@ func appRecordingShowsDecisionFactoryFailureReason() async throws {
         #expect(state.isRecording)
         #expect(state.liveASRFailures[sessionID] == nil)
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
-        #expect(state.transcriptViewModel.rows.allSatisfy { !$0.shouldCollapseRow })
         #expect(state.transcriptViewModel.rows.first?.clauseState == .boundaryPending)
         #expect(state.processingStatusText?.contains(description) == true)
         #expect(state.transcriptViewModel.statusText.contains(description))

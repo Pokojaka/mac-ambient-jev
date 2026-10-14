@@ -361,11 +361,11 @@ chunk を atomic write して synchronize した後、その index を append / 
 | `source` | 区間参照 |
 | `start_ms`, `end_ms` | Int64 |
 | `text` | String。ASR 原文 |
-| `display_text` | String。フィラー除去後の本文 |
+| `display_text` | String。フィラーと保存済み LOW 発話文を除いた表示本文 |
 | `speakers` | object 配列。各 object は `id`: String、`start_ms` / `end_ms`: Int64、`confidence`: optional Double |
 | `clause_state` | `awaiting_next_segment` / `boundary_pending` / `priority_pending` / `classified` |
-| `clause_slices` | object 配列。各 object は `reference`: 節参照、`source_range`: 原文の範囲、`display_ranges`: `display_text` 上の範囲の配列、`priority`: `primary` / `lowPriority` / null、`needs_retry`: Bool |
+| `clause_slices` | object 配列。各 object は `reference`: 節参照、`source_range`: 原文の範囲、`priority`: `primary` / `lowPriority` / null、`needs_retry`: Bool |
 
-原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。`segments.json.text` とイベント中の ASR 本文は原文のままで、Linux の CER 評価などはこの原文を読みます。`display_text` は画面と同じフィラー除去後の本文です。区間をまたぐ節の全 parts は各行に複製せず、`clause_slices` の節参照から `clauses.closed` を辿ります。全範囲の境界が未成立の行は `clause_slices` が空で `boundary_pending` です。部分的な未解決範囲がある行も `boundary_pending` ですが、独立して閉じた保存済み節の slice は保持します。フィラーだけで `display_text` が空になった行も、原文があれば JSON に残します。テキスト書き出し `transcript.txt` は画面と同じ発話を選び、共通表示 projection により検出済みフィラーを除いた本文を使います。空白・改行だけでない全ての認識済み本文を表示・書き出しし、LOW 本文も保持します。フィラー除去後に空白・改行だけになる行は除外します。話者ラベルは 80% 以上を占める 1 人、満たさなければ併記します。
+原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。`segments.json.text` とイベント中の ASR 本文は原文のままで、Linux の CER 評価などはこの原文を読みます。`display_text` は画面と同じ表示本文です。区間をまたぐ節の全 parts は各行に複製せず、`clause_slices` の節参照から `clauses.closed` を辿ります。全範囲の境界が未成立の行は `clause_slices` が空で `boundary_pending` です。部分的な未解決範囲がある行も `boundary_pending` ですが、独立して閉じた保存済み節の slice は保持します。フィラーだけ・全 LOW で `display_text` が空になった行も、原文があれば JSON に残します。テキスト書き出し `transcript.txt` は画面と同じ発話と表示本文を使い、表示本文が空白・改行だけになる行は除外します。話者ラベルは 80% 以上を占める 1 人、満たさなければ併記します。
 
 根拠: [SessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecovery.swift)、[EventLogTranscriptReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)、[Materialization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)、[ファイル処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)。

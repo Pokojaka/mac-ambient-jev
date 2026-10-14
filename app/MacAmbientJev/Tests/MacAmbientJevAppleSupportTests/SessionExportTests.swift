@@ -494,11 +494,9 @@ private func segment(
     let end = startMilliseconds + 1_000
     var slices: [ClauseRowSlice] = []
     if let priority {
-        let projection = try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: text)
-        let range = try TextUTF16Range(start: 0, end: text.utf16.count)
         slices = [ClauseRowSlice(
             reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0"),
-            sourceRange: range, displayRanges: try projection.displayRanges(for: range),
+            sourceRange: try TextUTF16Range(start: 0, end: text.utf16.count),
             priority: priority, needsRetry: false
         )]
     }
@@ -538,20 +536,19 @@ func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
     let rows = try LiveTranscriptProjection().rows(for: segments)
     let lines = try TranscriptTextRenderer.render(segments).split(separator: "\n", omittingEmptySubsequences: false)
 
-    #expect(rows.map(\.segmentID) == ["kept", "conversation", "low"])
-    #expect(rows.map(\.text) == ["残る発話", "別の会話", "低優先度本文"])
-    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:02] Speaker 1: 別の会話", "[00:03] Speaker 2: 低優先度本文", ""])
+    #expect(rows.map(\.segmentID) == ["kept", "conversation"])
+    #expect(rows.map(\.text) == ["残る発話", "別の会話"])
+    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:02] Speaker 1: 別の会話", ""])
 }
 
 @Test
-func mixedClausePrioritiesKeepTheWholeCleanedTextInExport() throws {
+func mixedClausePrioritiesExportOnlyTheNonLowText() throws {
     let raw = "えー、重要。余談。"
-    let projection = try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: raw)
     let ranges = [try TextUTF16Range(start: 0, end: 6), try TextUTF16Range(start: 6, end: raw.utf16.count)]
     let slices = try ranges.enumerated().map { index, range in
         ClauseRowSlice(
             reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_\(range.start)"),
-            sourceRange: range, displayRanges: try projection.displayRanges(for: range),
+            sourceRange: range,
             priority: index == 0 ? .primary : .lowPriority, needsRetry: false
         )
     }
@@ -562,13 +559,9 @@ func mixedClausePrioritiesKeepTheWholeCleanedTextInExport() throws {
         isDiarized: true, clauseState: .classified, clauseSlices: slices
     )
     let row = try #require(LiveTranscriptProjection().rows(for: [mixed]).first)
-    #expect(row.text == "重要。余談。")
-    #expect(row.textFragments == [
-        TranscriptTextFragment(text: "重要。", style: .normal),
-        TranscriptTextFragment(text: "余談。", style: .lowPriority)
-    ])
-    #expect(!row.shouldCollapseRow)
-    #expect(try TranscriptTextRenderer.render([mixed]) == "[00:00] Speaker 1: 重要。余談。\n")
+    #expect(mixed.text == raw)
+    #expect(row.text == "重要。")
+    #expect(try TranscriptTextRenderer.render([mixed]) == "[00:00] Speaker 1: 重要。\n")
 }
 
 @Test
