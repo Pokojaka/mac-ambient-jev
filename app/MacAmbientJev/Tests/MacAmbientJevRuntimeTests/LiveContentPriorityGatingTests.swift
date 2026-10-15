@@ -61,14 +61,19 @@ private actor LiveRecorder {
 /// Live injected answers: boundaries after `。`, continuation for the listed segments, LOW for `うん`.
 private actor LiveProvider: DecisionProvider {
     private let continuing: Set<String>
+    private let fillerRanges: [TextUTF16Range]
     private var gate: CheckedContinuation<Void, Never>?
     private var holdBoundaryNumber: Int?
     private var holdPriorityNumber: Int?
     private(set) var boundaryRequests: [ClauseBoundaryRequest] = []
     private(set) var priorityRequests: [[String]] = []
 
-    init(continuing: Set<String>, holdBoundaryNumber: Int? = nil, holdPriorityNumber: Int? = nil) {
+    init(
+        continuing: Set<String>, fillerRanges: [TextUTF16Range],
+        holdBoundaryNumber: Int? = nil, holdPriorityNumber: Int? = nil
+    ) {
         self.continuing = continuing
+        self.fillerRanges = fillerRanges
         self.holdBoundaryNumber = holdBoundaryNumber
         self.holdPriorityNumber = holdPriorityNumber
     }
@@ -86,6 +91,7 @@ private actor LiveProvider: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: probabilities,
             continuationProbability: request.next.map { _ in continuing.contains(request.source.segmentID) ? 0.9 : 0.1 },
+            fillerRanges: fillerRanges,
             inputTokens: 5
         )
     }
@@ -214,7 +220,7 @@ private struct LiveDecisionFixture {
 
 @Test
 func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() async throws {
-    let provider = LiveProvider(continuing: ["seg_1", "seg_2"])
+    let provider = LiveProvider(continuing: ["seg_1", "seg_2"], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await LiveDecisionFixture(
@@ -258,7 +264,7 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
 @Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Bool) async throws {
     let provider = LiveProvider(
-        continuing: [], holdBoundaryNumber: holdingPriority ? nil : 2,
+        continuing: [], fillerRanges: [], holdBoundaryNumber: holdingPriority ? nil : 2,
         holdPriorityNumber: holdingPriority ? 2 : nil
     )
     let counter = DecisionUsageCounter()
@@ -337,13 +343,13 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
     let boundaryPayloads = objects.filter { $0["event_type"] as? String == ClauseEventType.boundaryAssessed }
         .compactMap { $0["payload"] as? [String: Any] }
     #expect(boundaryPayloads.count == 2)
-    #expect(boundaryPayloads.compactMap { $0["request"] as? [String: Any] }.count == 1)
+    #expect(boundaryPayloads.compactMap { $0["request"] as? [String: Any] }.count == 2)
     #expect(boundaryPayloads.map {
         ($0["candidates"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
     } == [["b0001"], []])
-    #expect((boundaryPayloads.last?["request"] as? NSNull) != nil)
-    #expect((boundaryPayloads.last?["source_decision"] as? [String: Any])?["kind"] as? String
-        == "terminal_without_questions")
+    #expect(boundaryPayloads.allSatisfy {
+        ($0["source_decision"] as? [String: Any])?["kind"] as? String == "assessed"
+    })
     let priorityPayloads = objects.filter { $0["event_type"] as? String == ClauseEventType.priorityAssigned }
         .compactMap { $0["payload"] as? [String: Any] }
     #expect(priorityPayloads.count == 2)
@@ -351,19 +357,19 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
 
     let requestRecords = boundaryPayloads.compactMap { $0["request"] as? [String: Any] }
         + priorityPayloads.compactMap { $0["request"] as? [String: Any] }
-    #expect(requestRecords.count == 3)
+    #expect(requestRecords.count == 4)
     #expect(requestRecords.allSatisfy { ($0["request_id"] as? String)?.hasPrefix("decisionreq_") == true })
     #expect(requestRecords.allSatisfy { Set($0.keys) == ["request_id", "input_tokens"] })
-    #expect(requestRecords.compactMap { $0["input_tokens"] as? Int } == [11, 17, 17])
+    #expect(requestRecords.compactMap { $0["input_tokens"] as? Int } == [11, 11, 17, 17])
 
     let usage = await counter.snapshot()
-    #expect(usage.boundaryRequests.sendCount == 1)
+    #expect(usage.boundaryRequests.sendCount == 2)
     #expect(usage.priorityRequests.sendCount == 2)
-    #expect(usage.inputTokens == 45)
+    #expect(usage.inputTokens == 56)
 }
 
 @Test(.timeLimit(.minutes(1)))
-func localTerminalWithoutQuestionsKeepsTaggerProvenanceAndCallsPriority() async throws {
+func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
     let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
     let revision = String(repeating: "a", count: 64)
     let counter = DecisionUsageCounter()
@@ -401,19 +407,52 @@ func localTerminalWithoutQuestionsKeepsTaggerProvenanceAndCallsPriority() async 
             && configuration["unit_policy"] == "btsj-utterance-sentence"
     })
     let boundary = try #require(objects.first { $0["event_type"] as? String == ClauseEventType.boundaryAssessed }?["payload"] as? [String: Any])
-    #expect((boundary["request"] as? NSNull) != nil)
+    let boundaryRequest = try #require(boundary["request"] as? [String: Any])
+    #expect((boundaryRequest["request_id"] as? String)?.hasPrefix("decisionreq_") == true)
+    #expect(Set(boundaryRequest.keys) == ["request_id", "input_tokens"])
+    #expect(boundaryRequest["input_tokens"] as? Int == 11)
     #expect((boundary["candidates"] as? [Any])?.isEmpty == true)
-    #expect((boundary["source_decision"] as? [String: Any])?["kind"] as? String
-        == "terminal_without_questions")
+    #expect((boundary["filler_ranges"] as? [Any])?.isEmpty == true)
+    #expect((boundary["source_decision"] as? [String: Any])?["kind"] as? String == "assessed")
     let priority = try #require(objects.first { $0["event_type"] as? String == ClauseEventType.priorityAssigned }?["payload"] as? [String: Any])
     let request = try #require(priority["request"] as? [String: Any])
     #expect((request["request_id"] as? String)?.hasPrefix("decisionreq_") == true)
     #expect(Set(request.keys) == ["request_id", "input_tokens"])
     #expect(request["input_tokens"] as? Int == 17)
     let usage = await counter.snapshot()
-    #expect(usage.boundaryRequests.sendCount == 0)
+    #expect(usage.boundaryRequests.sendCount == 1)
     #expect(usage.priorityRequests.sendCount == 1)
-    #expect(usage.inputTokens == 17)
+    #expect(usage.inputTokens == 28)
+}
+
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+func liveTranscriptRemovesOnlySavedFillerRanges(hasSavedFiller: Bool) async throws {
+    let fillerRange = try TextUTF16Range(start: 0, end: 2)
+    let provider = LiveProvider(
+        continuing: [], fillerRanges: hasSavedFiller ? [fillerRange] : []
+    )
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await LiveDecisionFixture(texts: ["まあ、本文。"], makeDecisions: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    try await fixture.recognize(0)
+    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
+    try await fixture.waitForDecisionCompletion()
+    try await fixture.recorder.wait { $0.first?.clauseState == .classified }
+
+    let objects = try fixture.eventObjects()
+    let raw = try #require(objects.first { $0["event_type"] as? String == "asr.completed" }?["payload"] as? [String: Any])
+    #expect(raw["text"] as? String == "まあ、本文。")
+    let boundary = try #require(objects.first { $0["event_type"] as? String == ClauseEventType.boundaryAssessed }?["payload"] as? [String: Any])
+    let savedRanges = try #require(boundary["filler_ranges"] as? [[String: Any]])
+    #expect(savedRanges.compactMap { $0["start"] as? Int } == (hasSavedFiller ? [0] : []))
+    #expect(savedRanges.compactMap { $0["end"] as? Int } == (hasSavedFiller ? [2] : []))
+    let rows = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
+    #expect(rows.map(\.text) == [hasSavedFiller ? "本文。" : "まあ、本文。"])
+    let usage = await counter.snapshot()
+    #expect(usage.boundaryRequests.sendCount == 1)
+    #expect(usage.priorityRequests.sendCount == 1)
 }
 
 @Test
@@ -446,7 +485,7 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
 
 @Test
 func failedASRLeavesThePrecedingSegmentPendingAndTheNextHeadUnresolved() async throws {
-    let provider = LiveProvider(continuing: [])
+    let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await LiveDecisionFixture(texts: ["前の区間", nil, "後の頭。独立"], makeDecisions: { decisions }, counter: counter)
@@ -488,7 +527,7 @@ func initializationErrorIsShownAndRecordingRowsStayVisible() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func emptySuccessfulASREndsTheTextStreamWithoutSkippingToAFutureHead() async throws {
-    let provider = LiveProvider(continuing: [])
+    let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await LiveDecisionFixture(texts: ["前の本文", "", "後の本文"], makeDecisions: { decisions }, counter: counter)
@@ -498,7 +537,7 @@ func emptySuccessfulASREndsTheTextStreamWithoutSkippingToAFutureHead() async thr
     try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
     try await fixture.recorder.wait { $0.filter(\.hasRecognizedText).map(\.clauseState) == [.classified, .classified] }
 
-    #expect(await provider.boundaryRequests == [])
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["seg_1", "seg_3"])
     #expect(await provider.priorityRequests == [["前の本文"], ["後の本文"]])
     let objects = try fixture.eventObjects()
     let raw = objects.filter { $0["event_type"] as? String == "asr.completed" }
@@ -509,11 +548,14 @@ func emptySuccessfulASREndsTheTextStreamWithoutSkippingToAFutureHead() async thr
         let payload = object["payload"] as? [String: Any]
         return (payload?["termination"] as? [String: Any])?["kind"] as? String == "stream_end"
     })
+    let usage = await counter.snapshot()
+    #expect(usage.boundaryRequests.sendCount == 2)
+    #expect(usage.priorityRequests.sendCount == 2)
 }
 
 @Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func emptySuccessfulASRSeparatesAnUnresolvedGapFromLaterText(missingAfterSeparator: Bool) async throws {
-    let provider = LiveProvider(continuing: [])
+    let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let texts: [String?] = missingAfterSeparator
@@ -530,7 +572,9 @@ func emptySuccessfulASRSeparatesAnUnresolvedGapFromLaterText(missingAfterSeparat
     }
 
     #expect(await provider.priorityRequests == (missingAfterSeparator ? [] : [["独立した後"]]))
-    #expect(await provider.boundaryRequests == [])
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == [missingAfterSeparator ? "seg_5" : "seg_4"])
+    #expect(await counter.snapshot().boundaryRequests.sendCount == 1)
+    #expect(await counter.snapshot().priorityRequests.sendCount == (missingAfterSeparator ? 0 : 1))
     let rows = await fixture.recorder.latest.filter(\.hasRecognizedText)
     #expect(rows.map(\.text) == ["欠落の前", "独立した後"])
     #expect(rows.first?.clauseSlices == [])
@@ -545,7 +589,7 @@ func emptySuccessfulASRSeparatesAnUnresolvedGapFromLaterText(missingAfterSeparat
 
 @Test(.timeLimit(.minutes(1)))
 func livePrioritySaveFailureKeepsPreviouslyDurableClassificationAndNewTextVisible() async throws {
-    let provider = LiveProvider(continuing: [], holdPriorityNumber: 2)
+    let provider = LiveProvider(continuing: [], fillerRanges: [], holdPriorityNumber: 2)
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await LiveDecisionFixture(
@@ -575,7 +619,7 @@ func livePrioritySaveFailureKeepsPreviouslyDurableClassificationAndNewTextVisibl
 
 @Test(.timeLimit(.minutes(1)))
 func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async throws {
-    let provider = LiveProvider(continuing: [])
+    let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await LiveDecisionFixture(texts: [nil, "欠落後の頭。独立"], makeDecisions: { decisions }, counter: counter)
@@ -595,7 +639,7 @@ func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async thro
 
 @Test(.timeLimit(.minutes(1)))
 func savedLowSliceStaysRemovedWhileItsContinuationWaitsForPriority() async throws {
-    let provider = LiveProvider(continuing: ["seg_1"], holdPriorityNumber: 2)
+    let provider = LiveProvider(continuing: ["seg_1"], fillerRanges: [], holdPriorityNumber: 2)
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let fixture = try await LiveDecisionFixture(
@@ -632,6 +676,7 @@ private actor FailingPriorityProvider: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
+            fillerRanges: [],
             inputTokens: 1
         )
     }
@@ -659,7 +704,9 @@ func everyFailedLivePriorityBatchIsPendingOnItsOwn() async throws {
     #expect(payloads.map { ($0["assignments"] as? [Any])?.count } == [40, 40, 1, 1])
     #expect(payloads.allSatisfy { $0["request"] is NSNull })
     #expect(await provider.prioritySizes == [40, 40, 1, 1])
-    #expect(await provider.boundaryCount == 1)
+    #expect(await provider.boundaryCount == 2)
+    #expect(await counter.snapshot().boundaryRequests.sendCount == 2)
+    #expect(await counter.snapshot().boundaryRequests.successCount == 2)
     let assignments = try payloads.flatMap { try #require($0["assignments"] as? [[String: Any]]) }
     #expect(assignments.allSatisfy {
         ($0["decision"] as? [String: Any])?["reason"] as? String
@@ -681,6 +728,7 @@ private struct FixedResponseProvider: DecisionProvider {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.99) }),
             continuationProbability: request.next.map { _ in 0.01 },
+            fillerRanges: [],
             inputTokens: 11
         )
     }

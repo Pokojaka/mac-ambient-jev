@@ -424,9 +424,10 @@ func catalogReportsCorruptClauseCoverageInsteadOfClassificationPending() async t
     _ = try publishLocal(root: session, events: try await writeTranscript(["一。二"], root: session, sessionID: id))
     _ = try await buildAndPublish(
         root: session, sessionID: id,
-        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
-            throw DecisionResponseError.missingAnswer
-        }), scope: .all
+        provider: ScriptedDecisionProvider(
+            boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+            priority: { _ in throw DecisionResponseError.missingAnswer }
+        ), scope: .all
     )
     let catalog = SavedSessionCatalog(fileManager: .default)
     #expect(try readable(#require(catalog.list(sessionsRoot: root).first)).processingStatus == .classificationPending)

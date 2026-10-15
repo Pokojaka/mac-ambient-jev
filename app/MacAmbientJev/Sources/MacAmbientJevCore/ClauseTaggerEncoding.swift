@@ -1,10 +1,21 @@
 import Foundation
 
+public struct ClauseTaggerToken: Sendable, Equatable {
+    public let id: Int
+    public let range: TextUTF16Range
+
+    public init(id: Int, range: TextUTF16Range) {
+        self.id = id
+        self.range = range
+    }
+}
+
 public enum ClauseTaggerEncodingError: LocalizedError, Sendable, Equatable {
     case missingCandidate(offsetUTF16: Int)
     case missingJunction
     case pieceTooLong(tokenCount: Int)
     case contextWindowUnavailable
+    case invalidTokenRange
 
     public var errorDescription: String? {
         switch self {
@@ -16,14 +27,22 @@ public enum ClauseTaggerEncodingError: LocalizedError, Sendable, Equatable {
             return "句読点で区切られたトークン列が上限を超えています（\(tokenCount)トークン）"
         case .contextWindowUnavailable:
             return "接続位置と前後の必要な文脈を含む入力窓を構成できません"
+        case .invalidTokenRange:
+            return "トークナイザーが入力片に対応しない UTF-16 範囲を返しました"
         }
     }
 }
 
 public struct ClauseTaggerEncodedInput: Sendable, Equatable {
     public let inputIDs: [Int]
+    /// Zero-based global content index for `inputIDs[1]`; special tokens are excluded.
+    public let contentStartTokenIndex: Int
+    /// Aligned with `inputIDs`, including nil special-token entries, only for boundary inputs; empty otherwise.
+    public let sourceTokenRanges: [TextUTF16Range?]
     public let candidateTokenIndices: [Int: Int]
     public let junctionIndex: Int?
+    /// Boundary-owned content token positions; empty for whole-text and continuation inputs.
+    public let spanTokenIndices: [Int]
 }
 
 public enum ClauseTaggerEncoding {
@@ -40,10 +59,12 @@ public enum ClauseTaggerEncoding {
         let scalar: Unicode.Scalar
         let isJunction: Bool
         let isNextText: Bool
+        let sourceStartUTF16: Int?
     }
 
     private struct Piece {
         let tokens: [Int]
+        let sourceTokenRanges: [TextUTF16Range?]
         let candidates: [Int: Int]
         let junctionLocalIndex: Int?
         let nextTokenLocalIndices: [Int]
@@ -52,6 +73,7 @@ public enum ClauseTaggerEncoding {
     private struct PieceSequence {
         let pieces: [Piece]
         let contentTokens: [Int]
+        let sourceTokenRanges: [TextUTF16Range?]
         let pieceStarts: [Int]
         let candidatePositions: [Int: Int]
         let junctionPosition: Int?
@@ -70,12 +92,13 @@ public enum ClauseTaggerEncoding {
     public static func encode(
         text: String,
         next: String? = nil,
-        tokenizePiece: (String) throws -> [Int]
+        tokenizePiece: (String) throws -> [ClauseTaggerToken]
     ) throws -> ClauseTaggerEncodedInput {
         let sequence = try makeSequence(
             text: text,
             next: next,
             limitsPieces: false,
+            includesSourceRanges: false,
             tokenizePiece: tokenizePiece
         )
         let contentEnd = min(sequence.contentTokens.count, maximumContentTokens)
@@ -85,16 +108,23 @@ public enum ClauseTaggerEncoding {
             candidateOffsets: sequence.candidatePositions.compactMap { offset, position in
                 position < contentEnd ? offset : nil
             },
-            includesJunction: true
+            includesJunction: true,
+            includesSourceRanges: false,
+            spanTokenPositions: []
         )
     }
 
     public static func boundaryInputs(
         _ request: ClauseBoundaryRequest,
-        tokenizePiece: (String) throws -> [Int]
+        tokenizePiece: (String) throws -> [ClauseTaggerToken]
     ) throws -> [ClauseTaggerEncodedInput] {
-        guard !request.candidates.isEmpty else { return [] }
-        let sequence = try makeSequence(text: request.text, next: nil, limitsPieces: true, tokenizePiece: tokenizePiece)
+        let sequence = try makeSequence(
+            text: request.text,
+            next: nil,
+            limitsPieces: true,
+            includesSourceRanges: true,
+            tokenizePiece: tokenizePiece
+        )
         for candidate in request.candidates where sequence.candidatePositions[candidate.offsetUTF16] == nil {
             throw ClauseTaggerEncodingError.missingCandidate(offsetUTF16: candidate.offsetUTF16)
         }
@@ -112,47 +142,63 @@ public enum ClauseTaggerEncoding {
 
         var chosenByCandidate: [Int: Window] = [:]
         for candidate in request.candidates {
-            guard let position = sequence.candidatePositions[candidate.offsetUTF16] else {
-                throw ClauseTaggerEncodingError.missingCandidate(offsetUTF16: candidate.offsetUTF16)
-            }
-            var bestWindow: Window?
-            var bestScore = -1
-            for window in windows where position >= window.contentStart && position < window.contentEnd {
-                let score = min(position - window.contentStart, window.contentEnd - position - 1)
-                if score > bestScore {
-                    bestScore = score
-                    bestWindow = window
-                }
-            }
-            guard let bestWindow else {
+            guard let position = sequence.candidatePositions[candidate.offsetUTF16],
+                  let bestWindow = bestWindow(containing: position, in: windows) else {
                 throw ClauseTaggerEncodingError.missingCandidate(offsetUTF16: candidate.offsetUTF16)
             }
             chosenByCandidate[candidate.offsetUTF16] = bestWindow
         }
 
-        let chosenStarts = Set(chosenByCandidate.values.map(\.startPiece)).sorted()
-        return try chosenStarts.map { start in
+        var chosenBySourceToken: [Int: Window] = [:]
+        for position in sequence.sourceTokenRanges.indices where sequence.sourceTokenRanges[position] != nil {
+            guard let bestWindow = bestWindow(containing: position, in: windows) else {
+                throw ClauseTaggerEncodingError.contextWindowUnavailable
+            }
+            chosenBySourceToken[position] = bestWindow
+        }
+
+        var chosenStarts = Set(chosenByCandidate.values.map(\.startPiece))
+        chosenStarts.formUnion(chosenBySourceToken.values.map(\.startPiece))
+        if chosenStarts.isEmpty {
+            guard let firstWindow = windows.first else {
+                throw ClauseTaggerEncodingError.contextWindowUnavailable
+            }
+            chosenStarts.insert(firstWindow.startPiece)
+        }
+
+        return try chosenStarts.sorted().map { start in
             guard let window = windows.first(where: { $0.startPiece == start }) else {
                 throw ClauseTaggerEncodingError.contextWindowUnavailable
             }
             let offsets = request.candidates.compactMap { candidate in
                 chosenByCandidate[candidate.offsetUTF16]?.startPiece == start ? candidate.offsetUTF16 : nil
             }
+            let spanPositions = chosenBySourceToken.compactMap { position, owner in
+                owner.startPiece == start ? position : nil
+            }.sorted()
             return makeInput(
                 sequence: sequence,
                 window: window,
                 candidateOffsets: offsets,
-                includesJunction: false
+                includesJunction: false,
+                includesSourceRanges: true,
+                spanTokenPositions: spanPositions
             )
         }
     }
 
     public static func continuationInput(
         _ request: ClauseBoundaryRequest,
-        tokenizePiece: (String) throws -> [Int]
+        tokenizePiece: (String) throws -> [ClauseTaggerToken]
     ) throws -> ClauseTaggerEncodedInput {
         guard let next = request.next else { throw ClauseTaggerEncodingError.missingJunction }
-        let sequence = try makeSequence(text: request.text, next: next.text, limitsPieces: true, tokenizePiece: tokenizePiece)
+        let sequence = try makeSequence(
+            text: request.text,
+            next: next.text,
+            limitsPieces: true,
+            includesSourceRanges: false,
+            tokenizePiece: tokenizePiece
+        )
         guard let junctionPosition = sequence.junctionPosition,
               !sequence.nextTokenPositions.isEmpty else {
             throw ClauseTaggerEncodingError.missingJunction
@@ -181,7 +227,9 @@ public enum ClauseTaggerEncoding {
             sequence: sequence,
             window: chosenWindow,
             candidateOffsets: [],
-            includesJunction: true
+            includesJunction: true,
+            includesSourceRanges: false,
+            spanTokenPositions: []
         )
     }
 
@@ -189,55 +237,77 @@ public enum ClauseTaggerEncoding {
         text: String,
         next: String?,
         limitsPieces: Bool,
-        tokenizePiece: (String) throws -> [Int]
+        includesSourceRanges: Bool,
+        tokenizePiece: (String) throws -> [ClauseTaggerToken]
     ) throws -> PieceSequence {
-        let cleanedText = removingTrailingPunctuation(from: Array(text.unicodeScalars))
-        var elements = cleanedText.map {
-            ScalarElement(scalar: $0, isJunction: false, isNextText: false)
-        }
+        var elements = sourceElements(in: text, isNextText: false)
         if let next {
-            elements.append(ScalarElement(scalar: commaScalar, isJunction: true, isNextText: false))
-            elements.append(contentsOf: removingTrailingPunctuation(from: Array(next.unicodeScalars)).map {
-                ScalarElement(scalar: $0, isJunction: false, isNextText: true)
-            })
+            elements.append(ScalarElement(
+                scalar: commaScalar,
+                isJunction: true,
+                isNextText: false,
+                sourceStartUTF16: nil
+            ))
+            elements.append(contentsOf: sourceElements(in: next, isNextText: true))
         }
 
         var pieces: [Piece] = []
         var runScalars: [Unicode.Scalar] = []
+        var runSourceStartUTF16: Int?
         var runIsNextText = false
-        var offsetUTF16 = 0
+        var sequenceOffsetUTF16 = 0
 
         for element in elements {
             if isPunctuation(element.scalar) {
-                let commaOffset = offsetUTF16 + utf16Width(of: element.scalar)
+                let commaOffset = sequenceOffsetUTF16 + utf16Width(of: element.scalar)
+                let commaRange: TextUTF16Range?
+                if includesSourceRanges, let sourceStart = element.sourceStartUTF16 {
+                    commaRange = try TextUTF16Range(
+                        start: sourceStart,
+                        end: sourceStart + utf16Width(of: element.scalar)
+                    )
+                } else {
+                    commaRange = nil
+                }
                 let piece = try makePiece(
                     runScalars,
+                    runSourceStartUTF16: runSourceStartUTF16,
                     limitsPieces: limitsPieces,
+                    includesSourceRanges: includesSourceRanges,
                     isNextText: runIsNextText,
                     commaOffsetUTF16: commaOffset,
+                    commaRange: commaRange,
                     isJunction: element.isJunction,
                     tokenizePiece: tokenizePiece
                 )
                 pieces.append(piece)
                 runScalars.removeAll(keepingCapacity: true)
+                runSourceStartUTF16 = nil
                 runIsNextText = false
             } else {
-                if runScalars.isEmpty { runIsNextText = element.isNextText }
+                if runScalars.isEmpty {
+                    runIsNextText = element.isNextText
+                    runSourceStartUTF16 = element.sourceStartUTF16
+                }
                 runScalars.append(element.scalar)
             }
-            offsetUTF16 += utf16Width(of: element.scalar)
+            sequenceOffsetUTF16 += utf16Width(of: element.scalar)
         }
 
         pieces.append(try makePiece(
             runScalars,
+            runSourceStartUTF16: runSourceStartUTF16,
             limitsPieces: limitsPieces,
+            includesSourceRanges: includesSourceRanges,
             isNextText: runIsNextText,
             commaOffsetUTF16: nil,
+            commaRange: nil,
             isJunction: false,
             tokenizePiece: tokenizePiece
         ))
 
         var contentTokens: [Int] = []
+        var sourceTokenRanges: [TextUTF16Range?] = []
         var pieceStarts: [Int] = []
         var candidatePositions: [Int: Int] = [:]
         var junctionPosition: Int?
@@ -246,6 +316,7 @@ public enum ClauseTaggerEncoding {
             let pieceStart = contentTokens.count
             pieceStarts.append(pieceStart)
             contentTokens.append(contentsOf: piece.tokens)
+            sourceTokenRanges.append(contentsOf: piece.sourceTokenRanges)
             for (offset, localIndex) in piece.candidates {
                 candidatePositions[offset] = pieceStart + localIndex
             }
@@ -258,6 +329,7 @@ public enum ClauseTaggerEncoding {
         return PieceSequence(
             pieces: pieces,
             contentTokens: contentTokens,
+            sourceTokenRanges: sourceTokenRanges,
             pieceStarts: pieceStarts,
             candidatePositions: candidatePositions,
             junctionPosition: junctionPosition,
@@ -265,36 +337,99 @@ public enum ClauseTaggerEncoding {
         )
     }
 
+    private static func sourceElements(in text: String, isNextText: Bool) -> [ScalarElement] {
+        let scalars = Array(text.unicodeScalars)
+        var elements: [ScalarElement] = []
+        var sourceOffsetUTF16 = 0
+        for scalar in scalars {
+            elements.append(ScalarElement(
+                scalar: scalar,
+                isJunction: false,
+                isNextText: isNextText,
+                sourceStartUTF16: isNextText ? nil : sourceOffsetUTF16
+            ))
+            sourceOffsetUTF16 += utf16Width(of: scalar)
+        }
+        while let last = elements.last, isPunctuation(last.scalar) {
+            elements.removeLast()
+        }
+        return elements
+    }
+
     private static func makePiece(
         _ scalars: [Unicode.Scalar],
+        runSourceStartUTF16: Int?,
         limitsPieces: Bool,
+        includesSourceRanges: Bool,
         isNextText: Bool,
         commaOffsetUTF16: Int?,
+        commaRange: TextUTF16Range?,
         isJunction: Bool,
-        tokenizePiece: (String) throws -> [Int]
+        tokenizePiece: (String) throws -> [ClauseTaggerToken]
     ) throws -> Piece {
         let text = String(String.UnicodeScalarView(scalars))
-        let tokenIDs = try tokenizePiece(text)
-        let tokenCount = tokenIDs.count + (commaOffsetUTF16 == nil ? 0 : 1)
+        let tokenized = try tokenizePiece(text)
+        let tokenCount = tokenized.count + (commaOffsetUTF16 == nil ? 0 : 1)
         guard !limitsPieces || tokenCount <= maximumContentTokens else {
             throw ClauseTaggerEncodingError.pieceTooLong(tokenCount: tokenCount)
         }
 
-        var tokens = tokenIDs
+        var tokens = tokenized.map(\.id)
+        let textUTF16Count = text.utf16.count
+        var sourceTokenRanges: [TextUTF16Range?] = []
+        if includesSourceRanges {
+            sourceTokenRanges.reserveCapacity(tokenCount)
+        }
+        for token in tokenized {
+            guard token.range.end <= textUTF16Count else {
+                throw ClauseTaggerEncodingError.invalidTokenRange
+            }
+            guard includesSourceRanges else { continue }
+            let sourceRange: TextUTF16Range?
+            if isNextText {
+                sourceRange = nil
+            } else if let runSourceStartUTF16 {
+                sourceRange = try TextUTF16Range(
+                    start: runSourceStartUTF16 + token.range.start,
+                    end: runSourceStartUTF16 + token.range.end
+                )
+            } else {
+                sourceRange = nil
+            }
+            sourceTokenRanges.append(sourceRange)
+        }
+
         var candidates: [Int: Int] = [:]
         var junctionLocalIndex: Int?
         if let commaOffsetUTF16 {
             let commaIndex = tokens.count
             tokens.append(commaTokenID)
+            if includesSourceRanges {
+                sourceTokenRanges.append(commaRange)
+            }
             candidates[commaOffsetUTF16] = commaIndex
             if isJunction { junctionLocalIndex = commaIndex }
         }
         return Piece(
             tokens: tokens,
+            sourceTokenRanges: sourceTokenRanges,
             candidates: candidates,
             junctionLocalIndex: junctionLocalIndex,
-            nextTokenLocalIndices: isNextText ? Array(tokenIDs.indices) : []
+            nextTokenLocalIndices: isNextText ? Array(tokenized.indices) : []
         )
+    }
+
+    private static func bestWindow(containing position: Int, in windows: [Window]) -> Window? {
+        var bestWindow: Window?
+        var bestScore = -1
+        for window in windows where position >= window.contentStart && position < window.contentEnd {
+            let score = min(position - window.contentStart, window.contentEnd - position - 1)
+            if score > bestScore {
+                bestScore = score
+                bestWindow = window
+            }
+        }
+        return bestWindow
     }
 
     private static func maximalWindows(in sequence: PieceSequence) -> [Window] {
@@ -325,9 +460,24 @@ public enum ClauseTaggerEncoding {
         sequence: PieceSequence,
         window: Window,
         candidateOffsets: [Int],
-        includesJunction: Bool
+        includesJunction: Bool,
+        includesSourceRanges: Bool,
+        spanTokenPositions: [Int]
     ) -> ClauseTaggerEncodedInput {
         let content = Array(sequence.contentTokens[window.contentStart..<window.contentEnd])
+        let sourceRanges: [TextUTF16Range?]
+        let localSpanIndices: [Int]
+        if includesSourceRanges {
+            sourceRanges = Array(sequence.sourceTokenRanges[window.contentStart..<window.contentEnd])
+            localSpanIndices = spanTokenPositions.map { position -> Int in
+                precondition(position >= window.contentStart && position < window.contentEnd)
+                precondition(sequence.sourceTokenRanges[position] != nil)
+                return position - window.contentStart + 1
+            }
+        } else {
+            sourceRanges = []
+            localSpanIndices = []
+        }
         let candidateIndices = candidateOffsets.reduce(into: [Int: Int]()) { result, offset in
             guard let position = sequence.candidatePositions[offset] else {
                 preconditionFailure("Candidate offset must have an encoded position")
@@ -346,17 +496,12 @@ public enum ClauseTaggerEncoding {
         }
         return ClauseTaggerEncodedInput(
             inputIDs: [clsTokenID] + content + [sepTokenID],
+            contentStartTokenIndex: window.contentStart,
+            sourceTokenRanges: includesSourceRanges ? [nil] + sourceRanges + [nil] : [],
             candidateTokenIndices: candidateIndices,
-            junctionIndex: junctionIndex
+            junctionIndex: junctionIndex,
+            spanTokenIndices: localSpanIndices
         )
-    }
-
-    private static func removingTrailingPunctuation(from scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
-        var end = scalars.count
-        while end > 0 && isPunctuation(scalars[end - 1]) {
-            end -= 1
-        }
-        return Array(scalars[..<end])
     }
 
     private static func isPunctuation(_ scalar: Unicode.Scalar) -> Bool {

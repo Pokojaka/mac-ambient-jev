@@ -789,8 +789,8 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
     #expect(await statuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
     let pending = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
         .pendingClauseBoundarySegments
-    // The last segment has no candidate and no successor, so it needs no request.
-    #expect(pending.map(\.segmentID) == ["seg_000001"])
+    // Terminal segments still require boundary inference; failed requests leave both sources pending.
+    #expect(pending.map(\.segmentID) == ["seg_000001", "seg_000002"])
 
     let retryStatuses = FinalizationStatusRecorder()
     await processor.retryContentPrioritySession(
@@ -869,7 +869,7 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: ["本文"]),
+            asr: FakeFinalASR(log: log, values: ["えー、本文"]),
             diarization: FakeFinalDiarizer(
                 spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
                 log: log,
@@ -889,6 +889,9 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
     )
 
     #expect(result.disposition == .completed)
+    let rows = try readFinalRows(sessionURL: sessionURL)
+    #expect(rows.map(\.textProjection.text) == ["えー、本文"])
+    #expect(rows.map(\.displayText) == ["えー、本文"])
     #expect(await log.snapshot() == [
         "phase:preparing", "vad", "diarize", "phase:asr", "asr:0",
         "phase:postprocessing", "phase:complete"
@@ -1155,7 +1158,11 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
             )
         ),
         contentPriority: .localTagger({
-            DecisionCoordinator(provider: LiveCarryOverProvider(), identity: testDecisionIdentity, usageCounter: counter)
+            DecisionCoordinator(
+                provider: FrozenReuseProvider(fillerRangesByText: [:]),
+                identity: testDecisionIdentity,
+                usageCounter: counter
+            )
         }, usageCounter: counter)
     )
     let result = try await processFinal(
@@ -1318,19 +1325,35 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
 }
 
 /// Accepts every candidate, never continues, and answers LOW for every clause.
-private actor LiveCarryOverProvider: DecisionProvider {
-    private var texts: [String] = []
+private actor FrozenReuseProvider: DecisionProvider {
+    private let fillerRangesByText: [String: [TextUTF16Range]]
+    private var boundaryTexts: [String] = []
+    private var priorityTexts: [String] = []
+
+    init(fillerRangesByText: [String: [TextUTF16Range]]) {
+        self.fillerRangesByText = fillerRangesByText
+    }
 
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        ClauseBoundaryResponse(
+        boundaryTexts.append(request.text)
+        let fillerRanges: [TextUTF16Range]
+        if fillerRangesByText.isEmpty {
+            fillerRanges = []
+        } else if let exactRanges = fillerRangesByText[request.text] {
+            fillerRanges = exactRanges
+        } else {
+            throw DecisionResponseError.missingAnswer
+        }
+        return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
+            fillerRanges: fillerRanges,
             inputTokens: 3
         )
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
-        texts.append(contentsOf: targets.map(\.text))
+        priorityTexts.append(contentsOf: targets.map(\.text))
         let decision = try ContentPriorityDecision(
             priority: .lowPriority, confidence: 0.95,
             probabilities: ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975]
@@ -1341,7 +1364,8 @@ private actor LiveCarryOverProvider: DecisionProvider {
         )
     }
 
-    func sentTexts() -> [String] { texts }
+    func assessedBoundaryTexts() -> [String] { boundaryTexts }
+    func sentPriorityTexts() -> [String] { priorityTexts }
 }
 
 private actor LiveLowPriorityRemovalGate {
@@ -1381,7 +1405,10 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     // Final ASR keeps the raw filler; its nonblank clause is identical across new source segmentation.
     let liveText = "えー、同じ発話。"
     let finalText = changed ? "変更された発話。" : liveText
-    let provider = LiveCarryOverProvider()
+    let fillerRange = try TextUTF16Range(start: 0, end: 2)
+    var fillerRangesByText = [liveText: [fillerRange], "えー": [fillerRange]]
+    if changed { fillerRangesByText[finalText] = [] }
+    let provider = FrozenReuseProvider(fillerRangesByText: fillerRangesByText)
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let processor = NativeSessionProcessor(
@@ -1409,7 +1436,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
         sessionID: sessionID,
         segments: [
             SegmentReference(segmentationRunID: "live_seg", segmentID: "live_row", startFrame: 0, endFrame: 8_000),
-            // A filler-only successor: its clause has no text to classify, so no request depends on timing.
+            // A filler-only successor still receives boundary inference when it becomes terminal.
             SegmentReference(segmentationRunID: "live_seg", segmentID: "live_tail", startFrame: 8_000, endFrame: 16_000),
         ],
         checkpoint: checkpoint, onStatus: nil,
@@ -1421,11 +1448,17 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
         shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(result.disposition == .completed)
-    #expect(await provider.sentTexts() == (changed ? ["同じ発話。", finalText] : ["同じ発話。"]))
+    // Finalization can cancel the terminal request before it is sent.
+    let assessedBoundaryTexts = await provider.assessedBoundaryTexts()
+    #expect(assessedBoundaryTexts == [liveText, finalText] || assessedBoundaryTexts == [liveText, "えー", finalText])
+    #expect(await provider.sentPriorityTexts() == (changed ? ["同じ発話。", finalText] : ["同じ発話。"]))
     let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
     let materialized = try readFinalRows(sessionURL: sessionURL)
     #expect(materialized.map(\.text) == [finalText])
+    #expect(materialized.first?.text.utf8.elementsEqual(finalText.utf8) == true)
     #expect(materialized.map(\.textProjection.text) == [changed ? finalText : "同じ発話。"])
+    let expectedRemovedRanges: [TextUTF16Range] = changed ? [] : [try TextUTF16Range(start: 0, end: 3)]
+    #expect(materialized.map(\.textProjection.removedRanges) == [expectedRemovedRanges])
     #expect(materialized.map(\.displayText) == [""])
     #expect(materialized.map(\.segmentID) == ["final_row"])
     #expect(materialized.map(\.clauseState) == [.classified])
@@ -1457,6 +1490,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     }
     let snapshot = await counter.snapshot()
     #expect(snapshot.pendingBoundarySegmentCount == 0)
+    #expect((2...3).contains(snapshot.boundaryRequests.sendCount))
     #expect(snapshot.priorityRequests.sendCount == (changed ? 2 : 1))
 }
 

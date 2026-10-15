@@ -1,6 +1,6 @@
 # ライブ文字起こし
 
-録音中の文字起こしは暫定表示です。録音保存、発話検出（VAD）、音声認識（ASR）は別々に進み、ASR が遅れても録音保存を止めません。ASR 結果は保存直後に通常の本文として表示し、その後に同梱の Core ML 発話文モデルが BTSJ 発話文単位の境界・優先度を任意に判定します。保存 key や内部名の `clause` / `節` はこの発話文単位を識別し、別の節分割器はありません。停止後は、保存音声全体を[確定処理](final.md)して表示を置き換えます。
+録音中の文字起こしは暫定表示です。録音保存、発話検出（VAD）、音声認識（ASR）は別々に進み、ASR が遅れても録音保存を止めません。ASR 結果は保存直後に RAW 原文として表示し、区間ごとの境界 assessment が保存された後にだけ、その assessment の F 範囲を表示から除きます。同梱の Core ML 発話文モデルが BTSJ 発話文単位の境界・継続・F 範囲・優先度を任意に判定します。保存 key や内部名の `clause` / `節` はこの発話文単位を識別し、別の節分割器はありません。停止後は、保存音声全体を[確定処理](final.md)して表示を置き換えます。
 
 ## VAD と ASR の区切り
 
@@ -32,14 +32,14 @@ ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）
 
 画面と `transcript.txt` は同じ表示用 projection を使い、表示本文が空白・改行だけでない認識済み発話をすべて含めます。認識不能と、空白・改行・句読点だけの ASR 原文は `asr.completed` の `outcome: empty` で表し、「聞き取れませんでした」などの文字列に一致しただけでは除外しません。
 
-表示本文は、ASR 原文からフィラーを除き、さらに保存済み LOW 発話文を除いた本文です。PRIMARY と LOW の発話文が混在する行は PRIMARY の本文だけを表示します。表示本文が空または空白・改行だけになった行（フィラーだけの行、全発話文が LOW の行）は表示しません。未判定・保留・再試行待ちの発話文は判定が決まるまで本文を表示します。ASR の原文は保存したまま、画面、選択コピー、読み上げ、アクセシビリティと `transcript.txt` は共通の表示本文を使います。表示本文は [MaterializedTranscriptSegment](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift) の `displayText` 一箇所で作り、UI はその本文を描画するだけで独自判定はしません。行の状態は次のとおりです。
+表示本文は、ASR 原文に区間ごとの保存済み assessment の `filler_ranges` を適用して F だけを除き、その後、優先度が保存済みの LOW 発話文 slice を別に除いた本文です。F は原文上の raw UTF-16 範囲で保存し、D / O は残します。F 範囲の直後に連続して接する句読点だけを除き、空白は変更・正規化しません。[TranscriptTextProjection](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTextProjection.swift) は保存済み範囲を投影するだけで、materialization は辞書やモデルを使いません。assessment が未保存・保留・失敗の区間は RAW 原文のままです。assessment が保存されれば発話文の続き待ちや優先度待ちでもその区間の F は除かれます。優先度未判定・保留・再試行待ちの slice は除きません。PRIMARY と LOW の発話文が混在する行は LOW slice 以外を表示し、本文が空または空白・改行だけになった行（フィラーだけの行、全発話文が LOW の行）は表示しません。ASR イベントの原文は変更せず、画面、選択コピー、読み上げ、アクセシビリティと `transcript.txt` は共通の表示本文を使います。UI は投影済み本文を描画するだけで独自判定はしません。行の状態は次のとおりです。
 
 | 状態 | 表示 |
 | --- | --- |
-| 発話文の続き待ち | 待機部分を表示し、保存済み LOW 発話文は除く。行の下に「発話文の続き待ち」と表示。次区間の境界判定まで発話文を閉じない |
-| 境界判定を保留中 | 分割せず全文を表示 |
-| 優先度判定を待っています | 閉じた発話文の境界は反映済み。未判定・再試行待ちの発話文は表示し、同じ行の保存済み LOW 発話文は除く |
-| 判定済み | PRIMARY の発話文だけを表示 |
+| 発話文の続き待ち | 保存済み assessment の F を除いた本文を表示し、保存済み LOW slice も除く。行の下に「発話文の続き待ち」と表示。次区間の境界判定まで発話文を閉じない |
+| 境界判定を保留中 | assessment が未保存の範囲は RAW 原文を表示し、分割しない。別区間に保存済み assessment があれば、その F 範囲は除く |
+| 優先度判定を待っています | 保存済み assessment の F と保存済み LOW slice を除く。未判定・再試行待ち slice は本文を表示 |
+| 判定済み | 保存済み assessment の F と保存済み LOW slice を除いた本文を表示 |
 
 状態は時刻ボタンの popover にも表示します。
 
@@ -47,11 +47,11 @@ ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）
 
 ## 録音中の発話文判定
 
-ASR 結果を保存した直後にフィラー除去済みの本文を表示します。判定結果を待って行や後続行を隠すことはありません。LOW 発話文の本文は、その優先度を保存した時点で画面から消えます。判定キューは時間順の保存済み ASR 区間を処理し、判定の待機・失敗は録音、ASR の登録・認識・表示へ伝播しません。録音・VAD・ASR の drain は判定と独立しています。
+ASR 原文を保存した直後は RAW 本文を表示し、まだ境界 assessment が保存されていない区間からフィラーを除きません。境界 assessment の保存後にその区間の F 範囲が表示から消え、発話文が続き待ち、優先度未判定・保留・再試行待ちでも F 除去は反映されます。境界 assessment が未保存・保留・失敗なら原文のままです。LOW 発話文 slice は優先度保存後に別に消えます。ASR イベントの原文は変わりません。判定結果を待って行や後続行を隠すことはありません。判定キューは時間順の保存済み ASR 区間を処理し、判定の待機・失敗は録音、ASR の登録・認識・表示へ伝播しません。録音・VAD・ASR の drain は判定と独立しています。
 
-境界判定単位は BTSJ 発話文です。候補となる句読点・閾値に従って、モデルが候補境界と次区間への継続を判定し、コードが発話文を組み立てます。保存名 `clause` / `節` はこの発話文を識別するだけで、節を別途分割する処理はありません。次区間の ASR が保存されるまで境界判定を進めず、次区間先頭 60 Character だけを継続判定に使います。そのため発話文の確定は遅れることがあり、区間をまたぐ発話文は後続区間の判定まで閉じません。区間終端が明らかな場合は次区間なしで扱います。
+境界判定単位は BTSJ 発話文です。候補となる句読点・閾値に従ってモデルが境界と次区間への継続を判定し、コードが発話文を組み立てます。保存名 `clause` / `節` はこの発話文を識別するだけで、別の節分割処理はありません。通常は次区間の ASR が保存されてから境界判定し、継続入力にはその先頭 60 Character だけを使います。テキスト列の終端では次区間なしで扱いますが、本文のある終端区間も、候補がなくても F 範囲を得るため source-only 境界推論を実行して assessment を保存します。終端を理由に request や推論を省略しません。区間をまたぐ発話文は後続区間の判定まで閉じません。
 
-境界判定は候補境界用と継続用を別々に符号化・推論し、一 request と数えます。長い入力は連続 piece 単位の窓に分けて判定し、一つの piece が上限を超える場合や junction を含む窓を作れない場合は境界要求全体を失敗として保留します。確率を作って補いません。次区間が保存された後に、閉じた非空の発話文を最大 40 件ずつ優先度 batch へ渡します。未閉鎖の末尾は対象外です。優先度は最大 40 件を一 batch とし、内部では sequence ごとに直列推論しますが一 request と数え、入力 token は全 sequence の実数の合計を記録します。判定に時間の上限はなく、行表示も判定を待ちません。境界・発話文・優先度は保存された後だけ表示へ反映します。
+一つの論理境界 request は、候補と原文対応 token を網羅する複数の source-only window、および次区間があれば継続入力を含みます。候補境界と F 範囲の推論、継続推論は別入力でも一 request で、F は source-only window の出力だけから得ます。本文のある終端区間は候補がなくても F 用 source-only window を推論し、request と assessment を保存します。長い原文は連続 piece を切らず複数 window に分けます。一 piece が上限を超える場合や必要な窓を作れない場合は境界 request 全体を失敗として保留し、確率を作って補いません。request の入力 token 数は全 window と継続入力の実数を合計します。次区間が保存された後に、閉じた非空の発話文を最大 40 件ずつ優先度 batch へ渡します。未閉鎖の末尾は対象外です。優先度は最大 40 件を一 batch とし、内部では sequence ごとに直列推論しますが一 request と数え、入力 token は全 sequence の実数の合計を記録します。判定に時間の上限はなく、行表示も判定を待ちません。境界・発話文・優先度は保存された後だけ表示へ反映します。
 
 ライブ materialization は区間・ASR 原文・表示行・閉じた発話文を source/reference 索引に保持します。ASR 完了では新しい行だけを作り、保存済み判定イベントでは影響する source の行だけを更新します。全イベントを再 replay しません。開いた末尾は区間ごとの immutable link で保持し、継続ごとに過去の末尾をコピーしません。長い区間横断発話文の閉鎖・優先度更新では、その発話文に含まれる全区間を更新します。長さによる打ち切りはありません。
 
@@ -61,11 +61,11 @@ source の同一性、境界候補、次区間の原文 head、時間順、組�
 
 モデルの初期化失敗、符号化失敗、または判定結果の検証失敗なら、該当境界／優先度を保留して本文を表示したままにします。境界保留では分割せず、継続を no と偽装しません。優先度だけが保留の発話文も本文を表示します。ASR gap は本文をまたいで推測せず、前の境界を `asr_gap` で保留します。空の成功 ASR 区間はテキスト列を終端し、その前の保留を成功に変えず次の列と切り離します。録音先頭が ASR gap の場合も後続の先頭を独立発話文とは推測しません。
 
-判定 `processing.run.started` の provenance は run 開始時に実際にロードした tagger の engine/model/revision を記録します。終端区間に候補がなく判定呼出しがない場合も、モデルを読み込めていればその provenance です。`unavailable` はモデルの初期化失敗や ASR gap 等で tagger を取得していない場合に限ります。成功した各判定呼出しの request record は request ID と入力 token 数を持ち、モデルは run の provenance が示します。モデル確認は live 判定 request ではありません。
+判定 `processing.run.started` の provenance は run 開始時に実際にロードした tagger の engine/model/revision を記録します。本文のある各区間には、終端で候補がない場合も F 範囲を得る実際の境界 request があり、終端を理由に判定呼出しや provenance を省略しません。`unavailable` はモデルの初期化失敗や ASR gap 等で tagger を取得していない場合に限ります。成功した各判定呼出しの request record は request ID と入力 token 数を持ち、モデルは run の provenance が示します。モデル確認は live 判定 request ではありません。
 
-録音停止時は、ライブ ASR の残りを処理してテキスト列の終端を伝え、境界待ちを解放します。確定処理はイベント append と同じファイル lock で、その時点までに保存済みのライブ classified 結果だけを固定してからキューを取り消します。推論の完了は待ちません。取り消し後に遅れて返った結果は保存も表示もせず、固定より後に保存された結果も確定処理の再利用には使いません。確定時は本文が UTF-8 bytes で完全一致する保存済み判定だけを優先度 carry-over します。[確定時の再利用](final.md)
+録音停止時は、ライブ ASR の残りを処理してテキスト列の終端を伝え、境界待ちを解放します。確定処理はイベント append と同じファイル lock で、その時点までに保存済みのライブ classified 結果だけを固定してからキューを取り消します。推論の完了は待ちません。取り消し後に遅れて返った結果は保存も表示もせず、固定より後に保存された結果も確定処理の再利用には使いません。確定と再試行の比較は各 run 自身の保存済み F 範囲を原文へ適用し、発話文 parts を区間順に区切りなしで連結した UTF-8 byte 列が完全一致する場合だけ優先度を carry-over します。trim・空白・句読点・Unicode 正規化はしません。[確定時の再利用](final.md)
 
-ASR drain は判定に関係なく動作し、CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効化します。ライブ判定と確定判定は共通の confidence ≥ 0.90 の優先度表示規則を使います。
+ASR drain は判定に関係なく動作します。CLI の `ContentPriorityAccess.disabled` は境界・F 範囲・優先度の判定を行わず、assessment と `filler_ranges` を作らないため、表示本文は RAW 原文のままです。ライブ判定と確定判定は共通の confidence ≥ 0.90 の優先度表示規則を使います。
 
 新しい行への自動追従は利用者のスクロール操作で解除します。アプリ自身のスクロールアニメーションでは解除しません。「最新へ戻る」を押すと追従を再開し、その場で末尾へ移動します。
 
@@ -110,5 +110,5 @@ bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FI
 - [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADTimelineProcessor.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
 - [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)、[Qwen3-ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[モデル ID](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)
 - [ライブキューと熱制御](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[ライブ判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[provider factory](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)
-- [表示規則](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[文字起こし画面](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[局所フィラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/FillerTextSpanDetector.swift)、[ASR の構造化結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
+- [表示 materialization](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[保存済み F 範囲から表示本文への projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTextProjection.swift)、[token span から raw UTF-16 F 範囲への projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerSpanProjection.swift)、[Core ML 境界・継続・優先度判定](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[文字起こし画面](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[ASR の構造化結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
 - [遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)、[実行スクリプト](../scripts/measure_live_latency.sh)

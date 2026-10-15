@@ -284,6 +284,7 @@ private actor NativeClauseProvider: DecisionProvider {
     private var gate: CheckedContinuation<Void, Never>?
     private var beforePriority: (@Sendable (Int) throws -> Void)?
     private(set) var requests: [[String]] = []
+    private(set) var boundaryRequests: [ClauseBoundaryRequest] = []
 
     init(holdPriorityNumber: Int?, failedPriorityNumbers: Set<Int>, primaryPriorityNumbers: Set<Int> = []) {
         self.holdPriorityNumber = holdPriorityNumber
@@ -294,9 +295,11 @@ private actor NativeClauseProvider: DecisionProvider {
     func setBeforePriority(_ action: @escaping @Sendable (Int) throws -> Void) { beforePriority = action }
 
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        ClauseBoundaryResponse(
+        boundaryRequests.append(request)
+        return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.95) }),
             continuationProbability: request.next.map { _ in 0.05 },
+            fillerRanges: [],
             inputTokens: 5
         )
     }
@@ -686,6 +689,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
     let before = try #require(try store.load())
     #expect(before.pendingDecisionTargets == [])
+    let usageBeforeRetry = await counter.snapshot()
     let writer = try SessionWriter(sessionURL: fixture.sessionURL)
     _ = try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: fixture.sessionID, processingRunID: "boundary_retry_unpublished",
@@ -698,8 +702,9 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
             source: SegmentTextReference(
                 segmentationRunID: "missing", segmentID: "missing", asrRunID: "missing", asrEventSeq: 999
             ),
-            candidates: [], probabilities: [:], nextHead: nil, continuationProbability: nil, request: nil,
-            sourceDecision: .terminalWithoutQuestions
+            candidates: [], probabilities: [:], nextHead: nil, continuationProbability: nil,
+            fillerRanges: [], request: try DecisionRequestRecord(requestID: "decisionreq_unpublished", inputTokens: 1),
+            sourceDecision: .assessed
         )
     ))
     await fixture.processor.retryContentPrioritySession(
@@ -712,6 +717,20 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     #expect(after.pendingDecisionTargets == [])
     #expect(try fixture.rows()[0].clauseSlices.map(\.priority) == [.lowPriority])
     #expect(await provider.requests == [["保存済み本文。"]])
-    #expect(await counter.snapshot().sendCount == 1)
+    let boundaryRequests = await provider.boundaryRequests
+    #expect(boundaryRequests.count == 1)
+    let boundaryRequest = try #require(boundaryRequests.first)
+    #expect(boundaryRequest.text == "保存済み本文。")
+    #expect(boundaryRequest.candidates == [])
+    #expect(boundaryRequest.next == nil)
+    #expect(boundaryRequest.source.segmentID == "final")
+    #expect(boundaryRequest.source.segmentationRunID == before.activeRuns?.segmentation)
+    #expect(boundaryRequest.source.asrRunID == before.activeRuns?.asr)
+    // Terminal boundary F inference and priority run once; retry carries results without sending.
+    let usage = await counter.snapshot()
+    #expect(usage.sendCount == 2)
+    #expect(usage.boundaryRequests.sendCount == 1)
+    #expect(usage.priorityRequests.sendCount == 1)
+    #expect(usage == usageBeforeRetry)
     #expect(await fixture.asr.callCount == 1)
 }

@@ -14,7 +14,7 @@ func everyFailedPriorityBatchIsPendingOnItsOwnInBoundedBatches(retry: Bool) asyn
     if retry {
         let previous = try await buildAndPublish(
             root: root, sessionID: id,
-            provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+            provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
                 throw DecisionResponseError.missingAnswer
             }),
             scope: .all
@@ -25,7 +25,7 @@ func everyFailedPriorityBatchIsPendingOnItsOwnInBoundedBatches(retry: Bool) asyn
         scope = .all
         boundaryRunID = nil
     }
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
         throw DecisionResponseError.missingAnswer
     })
     let counter = DecisionUsageCounter()
@@ -91,7 +91,7 @@ private actor PriorityAvailabilityGate {
 @Test(.timeLimit(.minutes(1)))
 func cancellationDuringPriorityAvailabilityDoesNotSendOrConsumeTheBatch() async throws {
     let gate = PriorityAvailabilityGate()
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let reference = try ClauseReference(boundaryRunID: "boundary", clauseID: "c1_0")
@@ -126,7 +126,7 @@ func failedBoundaryRequestLeavesOnlyItsSourcePendingAndPrioritiesContinue() asyn
     _ = try publishLocal(root: root, events: try await writeTranscript([raw, "後続。失敗"], root: root, sessionID: id))
     let provider = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s02" { throw DecisionResponseError.missingAnswer }
-        return try punctuationBoundaries(continuing: [])(request)
+        return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
     }, priority: lowForBackchannel)
     let result = try await buildAndPublish(root: root, sessionID: id, provider: provider, scope: .all)
     let payloads = result.events.compactMap { event -> ContentPriorityAssignedPayload? in
@@ -150,7 +150,7 @@ func priorityBatchesResumeAfterAnUnsentAvailabilityBatch() async throws {
     let targets = try (1...41).map {
         (reference: try ClauseReference(boundaryRunID: "boundary", clauseID: "c\($0)_0"), text: "本文\($0)")
     }
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let failure = "判定エンジンを初期化できませんでした: モデルがありません"

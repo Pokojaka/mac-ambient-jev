@@ -110,12 +110,15 @@ func invalidPriorityDecisionLeavesDurablePriorityPendingWithoutRetry(
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { targets in
-        let decision = try ContentPriorityDecision(
-            priority: .lowPriority, confidence: confidence, probabilities: ["PRIMARY": primary, "LOW_PRIORITY": low]
-        )
-        return PriorityBatchResponse(decisions: [targets[0].key: decision], inputTokens: testInputTokens)
-    })
+    let provider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+        priority: { targets in
+            let decision = try ContentPriorityDecision(
+                priority: .lowPriority, confidence: confidence, probabilities: ["PRIMARY": primary, "LOW_PRIORITY": low]
+            )
+            return PriorityBatchResponse(decisions: [targets[0].key: decision], inputTokens: testInputTokens)
+        }
+    )
     let counter = DecisionUsageCounter()
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
     #expect(result.pendingPriorityClauses.count == 1)
@@ -123,8 +126,21 @@ func invalidPriorityDecisionLeavesDurablePriorityPendingWithoutRetry(
     #expect(published.first?.clauseState == .priorityPending)
     #expect(published.first?.clauseSlices.first?.priority == nil)
     #expect(published.first?.clauseSlices.first?.needsRetry == true)
+    #expect(await provider.boundaryRequests.count == 1)
+    let boundaryRequest = await provider.boundaryRequests.first
+    #expect(boundaryRequest?.candidates.isEmpty == true)
+    #expect(boundaryRequest?.next == nil)
     #expect(await provider.priorityRequests.count == 1)
     let usage = await counter.snapshot()
+    #expect(usage.sendCount == 2)
+    #expect(usage.inputTokens == testInputTokens)
+    #expect(usage.successCount == 1)
+    #expect(usage.failureCount == 1)
+    #expect(usage.boundaryRequests.sendCount == 1)
+    #expect(usage.boundaryRequests.successCount == 1)
+    #expect(usage.boundaryRequests.inputTokens == testInputTokens)
+    #expect(usage.priorityRequests.sendCount == 1)
     #expect(usage.priorityRequests.failureCount == 1)
     #expect(usage.priorityRequests.successCount == 0)
+    #expect(usage.priorityRequests.inputTokens == 0)
 }

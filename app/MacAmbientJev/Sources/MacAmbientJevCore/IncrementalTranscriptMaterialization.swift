@@ -146,6 +146,7 @@ public final class IncrementalTranscriptMaterializer {
         var addedClauses: [ClauseReference] = []
         var addedAssignments: [ClauseReference] = []
         var replacedClauses: [(ClauseReference, MaterializedClause)] = []
+        var sourceJournal: [SegmentTextReference: Source] = [:]
         var dirty: Set<SegmentTextReference> = []
         let previousSeq = lastBoundarySeq
         let previousProvisional = provisionalStreamEnd
@@ -173,6 +174,13 @@ public final class IncrementalTranscriptMaterializer {
                     if context.missingPredecessor { dirty.formUnion(try assembly.beginAfterASRGap().affectedSources) }
                     let delta = try assembly.consume(ClauseAssemblyInput(source: source, text: entry.text, state: state))
                     dirty.formUnion(delta.affectedSources)
+                    if case .assessed(let assessment) = state {
+                        if sourceJournal.index(forKey: source) == nil { sourceJournal[source] = entry }
+                        composer.setFillerRanges(assessment.fillerRanges, for: source)
+                        let projection = try composer.projection(of: source, text: entry.text)
+                        sources[source] = Source(text: entry.text, projection: projection)
+                        dirty.insert(source)
+                    }
                     for unit in delta.closed {
                         assembled[unit.reference] = unit
                         addedAssembled.append(unit.reference)
@@ -243,6 +251,10 @@ public final class IncrementalTranscriptMaterializer {
                 for (index, row) in replacements { rows[index] = row }
             }
         } catch {
+            for (source, entry) in sourceJournal {
+                sources[source] = entry
+                composer.setFillerRanges([], for: source)
+            }
             for source in addedBoundaries { boundaries.removeValue(forKey: source) }
             for reference in addedAssembled { assembled.removeValue(forKey: reference) }
             for (reference, clause) in replacedClauses { clauses[reference] = clause }

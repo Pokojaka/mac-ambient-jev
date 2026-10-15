@@ -446,7 +446,13 @@ public struct TranscriptMaterializer: Sendable {
             for unit in try finished.finish().closed { assembled[unit.reference] = unit }
         }
 
+        // Only saved boundary assessments define filler removal; validate each range against raw ASR.
         var composer = ClauseTextComposer()
+        for input in boundaryInputs {
+            guard case .assessed(let assessment) = input.state else { continue }
+            composer.setFillerRanges(assessment.fillerRanges, for: input.source)
+            _ = try composer.projection(of: input.source, text: text(of: input.source))
+        }
         var clauses: [ClauseReference: MaterializedClause] = [:]
         var slicesBySource: [SegmentTextReference: [ClauseRowSlice]] = [:]
         for unit in storedClauses {

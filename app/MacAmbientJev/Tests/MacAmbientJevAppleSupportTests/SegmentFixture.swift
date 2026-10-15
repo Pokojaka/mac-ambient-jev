@@ -5,7 +5,7 @@ extension MaterializedTranscriptSegment {
     /// A materialized row built directly, as the materializer would for an ASR event `asrEventSeq`.
     static func fixture(
         segmentID: String, startMilliseconds: Int64, endMilliseconds: Int64,
-        text: String, speakers: [MaterializedSpeakerSpan], isDiarized: Bool,
+        text: String, fillerRanges: [TextUTF16Range], speakers: [MaterializedSpeakerSpan], isDiarized: Bool,
         asrEventSeq: UInt64 = 1,
         clauseState: TranscriptClauseState? = nil,
         clauseSlices: [ClauseRowSlice] = []
@@ -18,7 +18,7 @@ extension MaterializedTranscriptSegment {
             startMilliseconds: startMilliseconds,
             endMilliseconds: endMilliseconds,
             text: text,
-            textProjection: try TranscriptTextProjector(detector: FillerTextSpanDetector()).project(sourceText: text),
+            textProjection: try TranscriptTextProjector().project(sourceText: text, fillerRanges: fillerRanges),
             speakers: speakers,
             clauseState: clauseState ?? (ASRRecognitionOutcome(text: text) == .recognized ? .boundaryPending : nil),
             clauseSlices: clauseSlices,

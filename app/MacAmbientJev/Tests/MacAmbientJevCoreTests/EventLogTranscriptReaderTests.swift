@@ -203,7 +203,8 @@ func readersAndWriterRejectAnyOtherEnvelopeVersion(version: Int?) async throws {
 /// Writes a live ASR run and a live decision run where every segment is one clause that does not
 /// continue, with the given priority results in order. A nil result is a pending assignment.
 func writeLiveRun(
-    root: URL, sessionID: UUID, texts: [String], results: [(index: Int, priority: ContentPriority?)], complete: Bool
+    root: URL, sessionID: UUID, texts: [String], fillerRangesByIndex: [Int: [TextUTF16Range]],
+    results: [(index: Int, priority: ContentPriority?)], complete: Bool
 ) async throws {
     let writer = try SessionWriter(sessionURL: root)
     let provenance = RunProvenance(engine: "test", model: nil, version: "1", configuration: [:])
@@ -228,9 +229,9 @@ func writeLiveRun(
         let assessment = try ClauseBoundaryAssessment(
             source: source, candidates: candidates,
             probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, 0.1) }),
-            nextHead: next, continuationProbability: next.map { _ in 0.1 },
-            request: next == nil && candidates.isEmpty ? nil : DecisionRequestRecord(requestID: "b\(index)", inputTokens: testInputTokens),
-            sourceDecision: next == nil && candidates.isEmpty ? .terminalWithoutQuestions : .assessed
+            nextHead: next, continuationProbability: next.map { _ in 0.1 }, fillerRanges: fillerRangesByIndex[index] ?? [],
+            request: DecisionRequestRecord(requestID: "b\(index)", inputTokens: testInputTokens),
+            sourceDecision: .assessed
         )
         try await writer.append(EventDraft(eventType: ClauseEventType.boundaryAssessed, sessionID: sessionID,
                                            processingRunID: "boundary_live", payload: assessment))
@@ -277,6 +278,7 @@ func liveReuseKeepsTheLatestClassifiedTextAndIgnoresLaterPendingResults(complete
     defer { try? FileManager.default.removeItem(at: root) }
     try await writeLiveRun(
         root: root, sessionID: UUID(), texts: ["えー、同じ本文", "同じ本文", "同じ本文", "別の本文"],
+        fillerRangesByIndex: [0: [try TextUTF16Range(start: 0, end: 2)]],
         results: [(0, .lowPriority), (1, .primary), (2, nil), (3, nil)], complete: complete
     )
 
@@ -296,7 +298,7 @@ func liveReuseKeepsTheLatestClassifiedTextAndIgnoresLaterPendingResults(complete
 func liveReuseSkipsRunsOfAnotherTaggerRevision() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["同じ本文"], results: [(0, .lowPriority)], complete: true)
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["同じ本文"], fillerRangesByIndex: [:], results: [(0, .lowPriority)], complete: true)
     let log = try Data(contentsOf: root.appending(path: "events.jsonl"))
 
     let current = try EventLogTranscriptReader().liveContentPriorityDecisions(
@@ -315,7 +317,7 @@ func liveReuseRejectsAClauseThatTheSavedBoundariesDoNotProduce() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["一つ"], results: [], complete: false)
+    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["一つ"], fillerRangesByIndex: [:], results: [], complete: false)
     let asr = try requireValue(try eventObjects(root).first { $0["event_type"] as? String == "asr.completed" })
     let source = try SegmentTextReference(segmentationRunID: "live_seg", segmentID: "live0", asrRunID: "live_asr",
                                           asrEventSeq: try requireValue(asr["event_seq"] as? UInt64))
@@ -341,13 +343,54 @@ func liveReuseRejectsAClauseThatTheSavedBoundariesDoNotProduce() async throws {
 }
 
 @Test
+func savedFillerRangeRemovesOnlyDisplayText() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionID = UUID()
+    let events = try await writeTranscript(["えー本文"], root: root, sessionID: sessionID)
+    _ = try publishLocal(root: root, events: events)
+    let fillerRange = try TextUTF16Range(start: 0, end: 2)
+    let provider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: ["s01": [fillerRange]]),
+        priority: lowForBackchannel
+    )
+    _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
+
+    let segment = try #require(try readPublished(root: root).first)
+    #expect(segment.text == "えー本文")
+    #expect(segment.displayText == "本文")
+}
+
+@Test
+func eventLogTranscriptReaderRejectsSavedFillerRangeOutsideSourceText() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["えー本文"], fillerRangesByIndex: [:], results: [], complete: false)
+    var objects = try eventObjects(root)
+    let assessmentIndex = try #require(objects.firstIndex {
+        $0["event_type"] as? String == ClauseEventType.boundaryAssessed
+    })
+    var payload = try #require(objects[assessmentIndex]["payload"] as? [String: Any])
+    payload["filler_ranges"] = [["start": 0, "end": 5]]
+    objects[assessmentIndex]["payload"] = payload
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let activeRuns = ActiveRuns(
+        segmentation: "live_seg", asr: "live_asr", clauseBoundary: "boundary_live", contentPriority: "priority_live"
+    )
+
+    #expect(throws: (any Error).self) {
+        _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
+    }
+}
+
+@Test
 func publishedSnapshotRejectsAPendingListThatContradictsTheLog() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["一。二"], root: root, sessionID: sessionID)
     _ = try publishLocal(root: root, events: events)
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
         throw DecisionResponseError.missingAnswer
     })
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
@@ -373,7 +416,7 @@ func readerRejectsAPublishedClauseRunWhoseClausesDoNotMatchItsBoundaries() async
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["一。二"], root: root, sessionID: sessionID))
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     #expect(try readPublished(root: root).map(\.clauseState) == [.classified])
 
@@ -394,7 +437,7 @@ func malformedUnrelatedRunsDoNotInvalidatePublishedClauseSnapshot() async throws
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     _ = try publishLocal(root: root, events: try await writeTranscript(["一。二"], root: root, sessionID: sessionID))
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel)
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let snapshot = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     let url = root.appending(path: "events.jsonl")
     var bytes = try Data(contentsOf: url)
@@ -420,7 +463,7 @@ func everyClauseConsumerRejectsCorruptDurableSnapshot(kind: String) async throws
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     try await writeLiveRun(root: root, sessionID: UUID(), texts: ["えー、👩🏽‍💻。後", "本文"],
-                           results: [(0, .primary), (1, .lowPriority)], complete: true)
+                           fillerRangesByIndex: [:], results: [(0, .primary), (1, .lowPriority)], complete: true)
     var objects = try eventObjects(root)
     let index = try #require(objects.firstIndex {
         $0["event_type"] as? String == (kind == "coverageGap" ? ClauseEventType.clauseClosed
@@ -500,7 +543,7 @@ func appendRejectsMissingClauseFieldsWithoutChangingTheLog() async throws {
 func liveReuseRejectsUnfinishedFinalRunAsACarryOrigin() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["本文"], results: [(0, .primary)], complete: false)
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["本文"], fillerRangesByIndex: [:], results: [(0, .primary)], complete: false)
     var objects = try eventObjects(root)
     let index = try #require(objects.firstIndex { $0["event_type"] as? String == "processing.run.started" })
     var payload = try #require(objects[index]["payload"] as? [String: Any])
@@ -522,7 +565,7 @@ func liveReuseDoesNotInventAStreamEndForAnUnassessedSuccessor() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["先頭", "続き"], results: [], complete: false)
+    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["先頭", "続き"], fillerRangesByIndex: [:], results: [], complete: false)
     var objects = try eventObjects(root)
     let assessmentIndex = try #require(objects.firstIndex { $0["event_type"] as? String == ClauseEventType.boundaryAssessed })
     var payload = try #require(objects[assessmentIndex]["payload"] as? [String: Any])

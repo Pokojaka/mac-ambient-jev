@@ -194,10 +194,11 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `probabilities` | 候補 ID → Double | 各候補のモデルによる境界確率 |
 | `next_head` | object または null | 判定に用いた次区間の `source` と先頭 `text`（60 Character 以内）。終端は null |
 | `continuation_probability` | Double または null | `next_head` があるときだけ値を持つ |
-| `request` | リクエスト記録または null | 成功した判定呼出しの記録。失敗・未判定・terminal・引き継ぎは null |
-| `source_decision` | object | `{"kind":"assessed"}`、`{"kind":"terminal_without_questions"}`、または `{"kind":"carried_over","source_boundary_run_id":…,"source_event_seq":…}` |
+| `filler_ranges` | `{start,end}` object 配列 | 必須。原文 ASR text 上の F 判定範囲。該当なしも `[]` を保存し、token 確率・token label・投影済み本文は保存しない |
+| `request` | object または null | `assessed` は成功した判定呼出しの記録を持つ（候補なしの終端区間も F 範囲判定のため呼び出す）。`carried_over` は判定呼出しを行わず null |
+| `source_decision` | object | `{"kind":"assessed"}` または `{"kind":"carried_over","source_boundary_run_id":…,"source_event_seq":…}` |
 
-候補なしの terminal と判定の失敗は区別します。失敗は `clause_boundaries.pending` で、`reason` は次のいずれかです。保留に架空の確率や発話文を入れません。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭であることを検証し、元の判定呼出しを再 request として扱いません。
+`filler_ranges` の各範囲は原文 ASR text の UTF-16 code unit 半開区間で、`start < end`、原文内 bounds、両端 Character 境界を満たします。配列は原文順でソートされ、範囲間に重なりや隣接はありません（直前の `end` は次の `start` より小さい）。値の形は `[ {"start":0,"end":2} ]`、該当なしは `[]` です。境界 assessment は `source_decision.kind` が `assessed` の場合に成功呼出しの `request` を必須とし、`carried_over` の場合は呼出しを行わず `request: null` とします。未判定・初期化失敗・呼出し失敗は assessment でなく `clause_boundaries.pending` に記録し、架空の確率や F 範囲を入れません。`source_decision` は assessment 自身の判定を示す `assessed` または request を持たない `carried_over` だけです。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭・F 範囲であることを検証し、元の判定呼出しを再 request として扱いません。`filler_ranges` は decoder の必須キーで、欠落・型違い・不正範囲は読取エラーです。
 
 | `reason` | 意味 |
 | --- | --- |
@@ -215,9 +216,9 @@ optional の nil は writer の JSON から省略します。音声区間の共�
  "termination":{"kind":"internal_boundary","source":{"segmentation_run_id":"seg_example","segment_id":"seg_000002","asr_run_id":"asr_example","asr_event_seq":15},"candidate_id":"b0001"}}
 ```
 
-persisted `節` / `clause` はモデルが判定する BTSJ 発話文単位の識別名で、別 splitter の節を意味しません。両境界・継続確率は厳密に `> 0.5` の場合だけ採用します。候補 offset は原文 `、。？！?!` 直後の UTF-16 offset（原文末尾を除く）です。発話文 ID は `c<最初の part の asr_event_seq>_<開始 offset>` で、本文 hash や行内連番ではありません。parts は時間順で、二つ目以降は区間先頭から始まります。`termination.kind` は `internal_boundary`（採用候補）、`not_continued`（継続 no）、`stream_end`（録音停止・最後の区間・空の次区間。文法的な境界ではない）です。発話文本文は保存せず、原文とフィラー削除範囲から導きます。
+persisted `節` / `clause` はモデルが判定する BTSJ 発話文単位の識別名で、別 splitter の節を意味しません。両境界・継続確率は厳密に `> 0.5` の場合だけ採用します。候補 offset は原文 `、。？！?!` 直後の UTF-16 offset（原文末尾を除く）です。発話文 ID は `c<最初の part の asr_event_seq>_<開始 offset>` で、本文 hash や行内連番ではありません。parts は時間順で、二つ目以降は区間先頭から始まります。`termination.kind` は `internal_boundary`（採用候補）、`not_continued`（継続 no）、`stream_end`（録音停止・最後の区間・空の次区間。文法的な境界ではない）です。発話文本文は保存せず、原文とその区間の `clause_boundaries.assessed.filler_ranges` から導きます。
 
-`content_priority.assigned` は一回の判定呼出しの全結果を一イベントに保存し、`request` は成功した結果に一回だけ付けます。request record の decoder に default はなく、必須キーの欠落・型不一致・不正値は読み取りエラーです。
+`clause_boundaries.assessed` と `content_priority.assigned` の `request` record は `request_id` と `input_tokens` だけを持ちます。境界では候補が空でも成功した判定呼出しに record を付け、優先度では一回の判定呼出しの全結果を一イベントに保存して record を一度だけ付けます。request record の decoder に default はなく、必須キーの欠落・型不一致・不正値は読み取りエラーです。
 
 | request key | 型 | 保存値 |
 | --- | --- | --- |
@@ -240,7 +241,7 @@ request を処理したモデルは、そのイベントの run の `processing.
 | `retry_pending` | null | true | `reason`（境界保留と同じ値）、`message` |
 | `carried_over` | 元の値 | `source_needs_retry` と同じ | `source_priority_run_id`、`source_event_seq`、`source_clause`、`source_needs_retry` |
 
-`request` が null でも判定呼出しがなかったとは限りません。record は成功した結果だけに付けるため、呼出し失敗の保留も null です。carry-over、terminal、未判定 pending は判定呼出し自体がなく、利用計数にも加えません。carry-over は元 run・イベント・発話文が実在し、優先度と保留状態、本文 UTF-8 bytes が一致することを検証します。保留のまま引き継いだ発話文は保留のままです。
+`content_priority.assigned.request` は成功した結果だけに付けるため、呼出し失敗の保留も null です。carry-over と未判定 pending は呼出し自体がなく、利用計数にも加えません。carry-over は元 run・イベント・発話文が実在し、優先度と保留状態が一致することを検証します。本文比較は各 boundary run の保存 F 範囲をそれぞれの ASR 原文に適用した UTF-8 bytes で行い、parts の一致だけでは引き継ぎません。保留のまま引き継いだ発話文は保留のままです。
 
 新しい優先度判定と保留は、ライブ・確定・再試行とも原文順に最大40発話文ずつ `content_priority.assigned` に保存します。一回の `classifyPriorities` 呼出しで1〜40 sequence を処理し、失敗した batch は全対象を `request: null` の保留にします。未判定 batch にも同じ粒度を使います。取り消しには保留イベントを作りません。判定呼出しのない carry-over event は batch 上限に含めません。
 
@@ -257,15 +258,15 @@ request を処理したモデルは、そのイベントの run の `processing.
 | `version` | String | 実装または依存 package の version / revision |
 | `configuration` | String → String の object | その run の設定。数値も文字列で保存 |
 
-判定 run は開始時に読み込んだモデル、または読み込めなかったことの provenance を `processing.run.started` に保存します。run の `configuration` は全て string 値です。
+判定 run は開始時に読み込んだモデル、または読み込めなかったことの provenance を `processing.run.started` に保存します。run の `configuration` は全て string 値です。境界判定の `span_policy` は、F 範囲の投影方針を識別します。
 
 | 段階 | engine / model / version | configuration |
 | --- | --- | --- |
 | segmentation | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`vad_threshold` = `0.5`、`split_search_window_seconds` = `2.0`、`split_energy_frame_seconds` = `0.02`、`minimum_independent_segment_seconds` = `0.5` |
 | asr | `qwen3-asr-swift` / 外部モデル ID aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language=ja`、`minimum_input_seconds=0.02` |
 | diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default、`embedding.min_segment_duration_seconds` = `0.3` |
-| clauseBoundary | `coreml-clause-tagger` / 外部 model ID sbintuitions/modernbert-ja-30m-multitagger / version = model の64桁 state-hash revision | `model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`window_content_tokens=190`、`window_policy=whole-piece-max-min-context`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`filler_projection_revision=1`、`text_policy=neutral-punctuation-piecewise` |
-| contentPriority | `coreml-clause-tagger` / 外部 model ID sbintuitions/modernbert-ja-30m-multitagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`filler_projection_revision=1`、`text_policy=filler-removed-neutral-punctuation-piecewise` |
+| clauseBoundary | `coreml-clause-tagger` / 外部 model ID sbintuitions/modernbert-ja-30m-multitagger / version = model の64桁 state-hash revision | `model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`window_content_tokens=190`、`window_policy=whole-piece-max-min-context`、`span_policy=argmax-o-f-d-f-only`、`span_window_policy=whole-piece-max-min-context`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=neutral-punctuation-piecewise` |
+| contentPriority | `coreml-clause-tagger` / 外部 model ID sbintuitions/modernbert-ja-30m-multitagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=filler-removed-neutral-punctuation-piecewise` |
 | decision unavailable | `unavailable` / `model=nil` / version `1` | `mode=live`、`unit_policy=btsj-utterance-sentence` |
 
 判定 run の `model`、configuration の `model_id` / `model_revision`、`version` は実際にロードした外部 model ID と state-hash revision です。`unavailable` は、ライブ run の開始時にモデルを読み込めなかった、または ASR gap などでモデルを取得しないまま run を始めた場合です。成功 request record はモデルを記録せず、その run の provenance が request を処理したモデルを示します。
@@ -353,7 +354,7 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 `EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、発話文イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [DecisionRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した発話文 decoder を持ちません。
 
-`TranscriptMaterializer` が公開 run の区間・ASR・話者・節の境界・優先度を適用します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
+`TranscriptMaterializer` が公開 run の区間・ASR・話者・節の境界・優先度を適用します。materialization はモデルを読み込み・実行せず、保存済み assessment の `filler_ranges` だけを原文へ投影します。assessment がまだない区間、境界 pending / failed、判定を無効にした CLI では原文をそのまま表示本文に使います。assessment がある区間は F 範囲を除去した後、保存済み LOW の clause slice をさらに除去します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
 
 | キー | 型 |
 | --- | --- |

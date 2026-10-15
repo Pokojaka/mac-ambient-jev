@@ -2,13 +2,15 @@
 
 ## 文字起こしの行集合
 
-画面と `transcript.txt` は `LiveTranscriptProjection` が選んだ同じ発話と同じ表示本文を使う。表示本文はフィラーと保存済み LOW 発話文を除いた本文で、表示本文が空、または空白・改行だけの発話だけを除き、非空白の認識済み発話をすべて含める。
+画面、`transcript.txt`、キャプチャ CLI の `transcriptText`、CLI `segments.json` の `display_text` は、同じ `MaterializedTranscriptSegment.displayText` を使う。画面と `transcript.txt` は表示本文が空、または空白・改行だけの発話だけを除き、非空白の認識済み発話をすべて含める。
 
-LOW 発話文の本文は画面と同じく書き出しからも除く。フィラーだけの行と全発話文が LOW の行は省く。未判定・保留の発話文は本文を書き出す。「聞き取れませんでした」などの文字列だけで発話を除外しない。認識不能は ASR の構造化状態 `outcome: empty` で扱う。イベントには空本文を含む区間が残る。
+フィラー除去には、active event log の保存済み `clause_boundaries.assessed.filler_ranges` だけを使う。範囲は同じ ASR 原文に対する境界判定の source-only window の span head から作る raw UTF-16 範囲で、ラベルは argmax の `O=0, F=1, D=2`。F の範囲だけをフィラーとして除き、D と O は保持する。対象 source の評価が未保存、pending、または失敗している場合はフィラー範囲がないため原文を表示する。materialization 時にモデル推論は行わない。保存イベントに記録された LOW priority slice は、フィラー範囲を適用した後に別途表示本文から除く。未判定・保留・失敗の priority slice は除かない。
 
-`SavedTranscriptLoader` は保存済み active run のイベントから原文とフィラー除去写像、節の行内 slice を materialize し、画面と書き出しは共通 projection を適用する。読み込み・書き出しは ASR イベントを書き換えない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は画面と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラーだけ・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
+「聞き取れませんでした」などの文字列だけで発話を除外しない。認識不能は ASR の構造化状態 `outcome: empty` で扱う。イベントには空本文を含む区間が残る。
 
-処理 CLI とキャプチャ CLI は発話区間検出・音声認識・話者分離の3段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に発話文判定を再実行しない。キャプチャ CLI の `transcriptText` は画面と同じ projection の表示本文を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の判定再試行待ちセッションの resume は判定せず、公開済みの raw/display JSON を書き出す。
+`SavedTranscriptLoader` は保存済み active run のイベントと原文から本文・行内 slice を materialize し、保存された境界評価の `filler_ranges` を使う。別の辞書から範囲を取得したり、読取時に判定を再実行したりしない。読み込み・書き出しは ASR イベントと原文を変更しない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は上記と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラーだけ・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
+
+処理 CLI とキャプチャ CLI は発話区間検出・音声認識・話者分離の3段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に発話文判定を再実行しない。キャプチャ CLI の `transcriptText` は `displayText` を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の `ContentPriorityAccess.disabled` は判定を実行しないため、その CLI 処理で保存する `display_text` は ASR 原文のまま。判定再試行待ちセッションの resume も判定せず、公開済みの原文・表示本文を含む JSON を書き出す。
 
 イベントログと `processing_metadata.json` は `schema_version: 3` を必須とする。欠損・未対応の version は読取エラーとして拒否し、明示的な再処理でも metadata を置換しない。
 

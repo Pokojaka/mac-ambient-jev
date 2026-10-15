@@ -119,7 +119,7 @@ struct LocalClauseTaggerTests {
     }
 
     @Test
-    func tokenizerPreservesByteOrderMarkVocabularyToken() throws {
+    func tokenizerPreservesVocabularyAndByteFallbackTokenRanges() throws {
         let byteOrderMark = "\u{FEFF}"
         var vocabulary = (0..<276).map { "fixture-\($0)" }
         vocabulary[0] = "<unk>"
@@ -127,6 +127,7 @@ struct LocalClauseTaggerTests {
         vocabulary[6] = "<cls>"
         vocabulary[275] = "、"
         vocabulary.append(byteOrderMark)
+        vocabulary.append("▁")
         vocabulary.append(contentsOf: (0..<256).map { String(format: "<0x%02X>", $0) })
 
         let entries = vocabulary.enumerated().map { id, token in
@@ -137,7 +138,7 @@ struct LocalClauseTaggerTests {
         {"normalizer":null,"pre_tokenizer":{"type":"Metaspace","replacement":"▁","prepend_scheme":"never","split":false},"post_processor":null,"decoder":null,"model":{"type":"Unigram","unk_id":0,"vocab":[\(entries)],"byte_fallback":true},"added_tokens":[]}
         """
         let tokenizerURL = FileManager.default.temporaryDirectory
-            .appending(path: "clause-tagger-bom-\(UUID().uuidString).json")
+            .appending(path: "clause-tagger-token-ranges-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: tokenizerURL) }
         let tokenizerData = Data(tokenizerJSON.utf8)
         try tokenizerData.write(to: tokenizerURL)
@@ -146,8 +147,46 @@ struct LocalClauseTaggerTests {
             .joined()
 
         let tokenizer = try ClauseTaggerTokenizer(tokenizerURL: tokenizerURL, expectedSHA256: expectedSHA256)
-        let encoded = try tokenizer.encodePiece(byteOrderMark)
-        #expect(encoded == [276])
+        let encodedByteOrderMark = try tokenizer.encodePiece(byteOrderMark)
+        #expect(encodedByteOrderMark.map(\.id) == [276])
+        #expect(encodedByteOrderMark.map(\.range) == [try TextUTF16Range(start: 0, end: 1)])
+
+        let encodedSpacesAndEmoji = try tokenizer.encodePiece(" 😀 ")
+        #expect(encodedSpacesAndEmoji.map(\.id) == [277, 518, 437, 430, 406, 277])
+        #expect(encodedSpacesAndEmoji.map(\.range) == [
+            try TextUTF16Range(start: 0, end: 1),
+            try TextUTF16Range(start: 1, end: 3),
+            try TextUTF16Range(start: 1, end: 3),
+            try TextUTF16Range(start: 1, end: 3),
+            try TextUTF16Range(start: 1, end: 3),
+            try TextUTF16Range(start: 3, end: 4)
+        ])
+
+        let encodedRepeatedEmoji = try tokenizer.encodePiece("😀😀")
+        #expect(encodedRepeatedEmoji.map(\.id) == [518, 437, 430, 406, 518, 437, 430, 406])
+        #expect(encodedRepeatedEmoji.map(\.range) == Array(repeating: try TextUTF16Range(start: 0, end: 4), count: 8))
+
+        let encodedSeparatedUnknownRuns = try tokenizer.encodePiece(" 😀😀 😀 ")
+        #expect(encodedSeparatedUnknownRuns.map(\.id) == [
+            277, 518, 437, 430, 406, 518, 437, 430, 406, 277, 518, 437, 430, 406, 277
+        ])
+        #expect(encodedSeparatedUnknownRuns.map(\.range) == [
+            try TextUTF16Range(start: 0, end: 1),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 1, end: 5),
+            try TextUTF16Range(start: 5, end: 6),
+            try TextUTF16Range(start: 6, end: 8),
+            try TextUTF16Range(start: 6, end: 8),
+            try TextUTF16Range(start: 6, end: 8),
+            try TextUTF16Range(start: 6, end: 8),
+            try TextUTF16Range(start: 8, end: 9)
+        ])
     }
 
     @Test
@@ -370,6 +409,9 @@ struct LocalClauseTaggerTests {
             return
         }
         let continuationRequest = try Self.boundaryRequest(text: continuationFixture.text, next: nextText)
+        let continuationBoundaryInputs = try ClauseTaggerEncoding.boundaryInputs(continuationRequest) { piece in
+            try tokenizer.encodePiece(piece)
+        }
         let continuationInput = try ClauseTaggerEncoding.continuationInput(continuationRequest) { piece in
             try tokenizer.encodePiece(piece)
         }
@@ -381,7 +423,10 @@ struct LocalClauseTaggerTests {
             continuationResponse.continuationProbability
                 == 1 - continuationPrediction.boundaryProbabilities[continuationTokenIndex][1]
         )
-        #expect(continuationResponse.inputTokens == continuationInput.inputIDs.count)
+        #expect(
+            continuationResponse.inputTokens
+                == continuationBoundaryInputs.reduce(0) { $0 + $1.inputIDs.count } + continuationInput.inputIDs.count
+        )
 
         let longNextText = "続きです"
         let longContinuationRequest = try Self.boundaryRequest(text: longBoundaryText, next: longNextText)
@@ -395,12 +440,12 @@ struct LocalClauseTaggerTests {
         let lastPiece = try #require(
             longBoundaryText.split(whereSeparator: { ClauseTaggerEncoding.punctuation.contains($0) }).last
         )
-        let lastPieceTokens = try tokenizer.encodePiece(String(lastPiece))
+        let lastPieceTokenIDs = try tokenizer.encodePiece(String(lastPiece)).map(\.id)
         #expect(longContinuationInput.inputIDs.count <= ClauseTaggerEncoding.maximumTokens)
         #expect(longContinuationInput.inputIDs[longJunctionIndex] == ClauseTaggerEncoding.commaTokenID)
-        #expect(longContinuationInput.inputIDs[longJunctionIndex - 1] == lastPieceTokens.last)
-        let longNextTokens = try tokenizer.encodePiece(longNextText)
-        #expect(Array(longContinuationInput.inputIDs.dropLast().suffix(longNextTokens.count)) == longNextTokens)
+        #expect(longContinuationInput.inputIDs[longJunctionIndex - 1] == lastPieceTokenIDs.last)
+        let longNextTokenIDs = try tokenizer.encodePiece(longNextText).map(\.id)
+        #expect(Array(longContinuationInput.inputIDs.dropLast().suffix(longNextTokenIDs.count)) == longNextTokenIDs)
 
         let longBoundaryTokens = longContinuationBoundaryInputs.reduce(0) { $0 + $1.inputIDs.count }
         let longContinuationPrediction = try model.predict(inputIDs: longContinuationInput.inputIDs)
@@ -439,7 +484,7 @@ struct LocalClauseTaggerTests {
         )
         #expect(
             syntheticResponse.inputTokens
-                == baseInput.inputIDs.count + syntheticContinuationInput.inputIDs.count
+                == baseInputs.reduce(0) { $0 + $1.inputIDs.count } + syntheticContinuationInput.inputIDs.count
         )
 
         let noNextFixtures = document.fixtures.enumerated().filter { $0.element.next == nil }
@@ -533,6 +578,27 @@ struct LocalClauseTaggerTests {
         try Self.expectInvalidModelInput(model, inputIDs: [6, 102_400, 4])
         try Self.expectInvalidModelInput(model, inputIDs: [2, 4])
 
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RUN_CLAUSE_TAGGER_TESTS"] == "1"))
+    func realModelProjectsFillersAndCountsTerminalBoundaryInputWhenEnabled() async throws {
+        let modelDirectory = try Self.requiredModelDirectory()
+        let tagger = try LocalClauseTagger(modelDirectory: modelDirectory)
+
+        let request = try Self.boundaryRequest(text: "まあ、あの、今日は損失関数の話をします。")
+        let response = try await tagger.assessBoundaries(request)
+        #expect(!response.fillerRanges.isEmpty)
+        let projected = try TranscriptTextProjector().project(
+            sourceText: request.text,
+            fillerRanges: response.fillerRanges
+        )
+        #expect(projected.text == "今日は損失関数の話をします。")
+
+        let terminalRequest = try Self.boundaryRequest(text: "まあ。")
+        #expect(terminalRequest.candidates.isEmpty)
+        #expect(terminalRequest.next == nil)
+        let terminalResponse = try await tagger.assessBoundaries(terminalRequest)
+        #expect(terminalResponse.inputTokens > 0)
     }
 
     private static func loadFixture() throws -> ClauseTaggerFixtureDocument {

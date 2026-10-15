@@ -390,7 +390,13 @@ struct ClauseEventLog {
                 throw fail("境界判定の区間 coverage が欠落・逆転しています")
             }
         }
+        // Only saved boundary assessments define filler removal; validate each range against raw ASR.
         var composer = ClauseTextComposer()
+        for entry in inputs {
+            guard case .assessed(let assessment) = entry.input.state else { continue }
+            composer.setFillerRanges(assessment.fillerRanges, for: entry.input.source)
+            _ = try composer.projection(of: entry.input.source, text: text(of: entry.input.source))
+        }
         var texts: [ClauseReference: String] = [:]
         for unit in storedUnits {
             texts[unit.reference] = try composer.text(of: unit.parts, sourceText: text(of:))
@@ -452,17 +458,16 @@ struct ClauseEventLog {
                     guard sourceSeq < seq, runs[sourceRunID]?.stage == .contentPriority,
                           let origin = priorityEvents[sourceRunID]?.first(where: { $0.seq == sourceSeq })?.payload
                             .assignments.first(where: { $0.reference == sourceClause }),
-                          origin.needsRetry == sourceNeedsRetry, origin.priority == assignment.priority,
-                          let originUnit = clauseEvents[sourceClause.boundaryRunID]?
-                            .first(where: { $0.unit.reference == sourceClause })?.unit else {
+                          origin.needsRetry == sourceNeedsRetry, origin.priority == assignment.priority else {
                         throw fail("引き継いだ優先度の元がありません")
                     }
-                    var composer = ClauseTextComposer()
-                    let originText = try composer.text(of: originUnit.parts, sourceText: self.text(of:))
+                    let originBoundary = try boundaryRun(sourceClause.boundaryRunID)
+                    guard let originText = originBoundary.clauseTexts[sourceClause] else {
+                        throw fail("引き継いだ優先度の元がありません")
+                    }
                     guard ExactClauseTextKey(text: originText) == ExactClauseTextKey(text: text) else {
                         throw fail("引き継いだ優先度の節本文が一致しません")
                     }
-                    let originBoundary = try boundaryRun(sourceClause.boundaryRunID)
                     _ = try priorityRun(sourceRunID, boundary: originBoundary)
                 }
             }

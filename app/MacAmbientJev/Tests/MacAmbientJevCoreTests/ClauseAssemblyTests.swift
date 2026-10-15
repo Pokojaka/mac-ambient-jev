@@ -15,12 +15,12 @@ private func assessed(
     var probabilities: [String: Double] = [:]
     for (index, candidate) in candidates.enumerated() { probabilities[candidate.id] = accepted.contains(index) ? 0.9 : 0.5 }
     let head = try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(60))) }
-    let decision: BoundaryDecisionSource = candidates.isEmpty && head == nil ? .terminalWithoutQuestions : .assessed
     let assessment = try ClauseBoundaryAssessment(
         source: source, candidates: candidates, probabilities: probabilities, nextHead: head,
         continuationProbability: head.map { _ in continues ? 0.51 : 0.5 },
-        request: decision == .assessed ? DecisionRequestRecord(requestID: "r-\(source.segmentID)", inputTokens: testInputTokens) : nil,
-        sourceDecision: decision
+        fillerRanges: [],
+        request: DecisionRequestRecord(requestID: "r-\(source.segmentID)", inputTokens: testInputTokens),
+        sourceDecision: .assessed
     )
     return ClauseAssemblyInput(source: source, text: text, state: .assessed(assessment))
 }

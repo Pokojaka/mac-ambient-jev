@@ -151,11 +151,18 @@ public struct DecisionModelIdentity: Sendable, Equatable {
 public struct ClauseBoundaryResponse: Sendable, Equatable {
     public let probabilities: [String: Double]
     public let continuationProbability: Double?
+    public let fillerRanges: [TextUTF16Range]
     /// Token count of every sequence the model ran for this request.
     public let inputTokens: Int
-    public init(probabilities: [String: Double], continuationProbability: Double?, inputTokens: Int) {
+    public init(
+        probabilities: [String: Double],
+        continuationProbability: Double?,
+        fillerRanges: [TextUTF16Range],
+        inputTokens: Int
+    ) {
         self.probabilities = probabilities
         self.continuationProbability = continuationProbability
+        self.fillerRanges = fillerRanges
         self.inputTokens = inputTokens
     }
 }

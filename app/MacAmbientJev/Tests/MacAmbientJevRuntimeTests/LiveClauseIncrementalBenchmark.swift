@@ -67,7 +67,7 @@ func liveClauseIncrementalBenchmark() async throws {
             let row = initialRows[index]
             let next: (SegmentTextReference, String)? = index + 1 < count
                 ? (initialRows[index + 1].source, initialRows[index + 1].text) : nil
-            let assessment = try incrementalAssessment(source: row.source, text: row.text, next: next)
+            let assessment = try incrementalAssessment(source: row.source, text: row.text, next: next, fillerRanges: [])
             seed.append(.clause(seq: seq, runID: boundaryRun, kind: .clauseBoundaryAssessed(assessment)))
             seq += 1
             let delta = try assembly.consume(ClauseAssemblyInput(source: row.source, text: row.text, state: .assessed(assessment)))
@@ -89,7 +89,7 @@ func liveClauseIncrementalBenchmark() async throws {
             let row = initialRows[index]
             let next: (SegmentTextReference, String)? = index + 1 < count
                 ? (initialRows[index + 1].source, initialRows[index + 1].text) : nil
-            let assessment = try incrementalAssessment(source: row.source, text: row.text, next: next)
+            let assessment = try incrementalAssessment(source: row.source, text: row.text, next: next, fillerRanges: [])
             let delta = try assembly.consume(ClauseAssemblyInput(source: row.source, text: row.text, state: .assessed(assessment)))
             let unit = try #require(delta.closed.first)
             let payload = try ClausePriorityBatch.pending(references: [unit.reference], reason: .requestFailed, message: "synthetic priority pending")

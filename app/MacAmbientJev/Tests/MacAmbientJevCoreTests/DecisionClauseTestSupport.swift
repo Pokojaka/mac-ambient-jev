@@ -33,7 +33,10 @@ let testInputTokens = 10
 
 /// Accepts a candidate after `。？！?!` and rejects one after `、`; continues into the next
 /// segment only for sources whose segment ID is in `continuing`.
-func punctuationBoundaries(continuing: Set<String>) -> ScriptedDecisionProvider.BoundaryAnswer {
+func punctuationBoundaries(
+    continuing: Set<String>,
+    fillerRangesBySegment: [String: [TextUTF16Range]]
+) -> ScriptedDecisionProvider.BoundaryAnswer {
     { request in
         var probabilities: [String: Double] = [:]
         let utf16 = Array(request.text.utf16)
@@ -41,9 +44,12 @@ func punctuationBoundaries(continuing: Set<String>) -> ScriptedDecisionProvider.
             let previous = utf16[candidate.offsetUTF16 - 1]
             probabilities[candidate.id] = previous == "、".utf16.first! ? 0.1 : 0.9
         }
+        // An omitted segment explicitly has no F ranges in this fixture.
+        let fillerRanges = fillerRangesBySegment[request.source.segmentID] ?? []
         return ClauseBoundaryResponse(
             probabilities: probabilities,
             continuationProbability: request.next.map { _ in continuing.contains(request.source.segmentID) ? 0.9 : 0.1 },
+            fillerRanges: fillerRanges,
             inputTokens: testInputTokens
         )
     }

@@ -8,21 +8,21 @@ func speakerHeadingsUseTheRenderedRowSnapshotAfterRowsClear() throws {
     var currentRows = try [
         LiveTranscriptRow(
             segment: .fixture(
-                segmentID: "first", startMilliseconds: 0, endMilliseconds: 1_000, text: "最初",
+                segmentID: "first", startMilliseconds: 0, endMilliseconds: 1_000, text: "最初", fillerRanges: [],
                 speakers: [], isDiarized: true
             ),
             displaySpeakerLabels: ["Speaker 1"]
         ),
         LiveTranscriptRow(
             segment: .fixture(
-                segmentID: "second", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "続き",
+                segmentID: "second", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "続き", fillerRanges: [],
                 speakers: [], isDiarized: true
             ),
             displaySpeakerLabels: ["Speaker 1"]
         ),
         LiveTranscriptRow(
             segment: .fixture(
-                segmentID: "third", startMilliseconds: 2_000, endMilliseconds: 3_000, text: "次",
+                segmentID: "third", startMilliseconds: 2_000, endMilliseconds: 3_000, text: "次", fillerRanges: [],
                 speakers: [], isDiarized: true
             ),
             displaySpeakerLabels: ["Speaker 2"]
@@ -51,7 +51,8 @@ func waitingAndPendingRowsDescribeTheirDecisionStateWithoutHidingText() throws {
     let row = try LiveTranscriptRow(
         segment: .fixture(
             segmentID: "waiting", startMilliseconds: 0, endMilliseconds: 1_000, text: "えー、続く",
-            speakers: [], isDiarized: false, clauseState: .awaitingNextSegment
+            fillerRanges: [try TextUTF16Range(start: 0, end: 2)], speakers: [], isDiarized: false,
+            clauseState: .awaitingNextSegment
         ),
         displaySpeakerLabels: []
     )

@@ -44,24 +44,43 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
     let raw = "えー、今日は公開鍵暗号を説明します。"
+    let cleaned = "今日は公開鍵暗号を説明します。"
     let session = try await fixture.writeLiveSession(firstText: raw)
     let layout = SessionLayout(sessionURL: session.sessionURL)
-    let eventsBefore = try Data(contentsOf: layout.eventsURL)
-    let transcript = try SavedTranscriptLoader.load(
+    let asrEventsBefore = try asrEventLines(at: layout.eventsURL)
+
+    let beforeResponse = try SavedTranscriptLoader.load(
         sessionURL: session.sessionURL,
         audioSource: try #require(session.audioSource)
     )
-    guard case .segments(let segments) = transcript else {
-        Issue.record("expected saved transcript segments")
+    guard case .segments(let rawSegments) = beforeResponse else {
+        Issue.record("expected saved transcript segments before boundary response")
+        return
+    }
+    #expect(rawSegments.first?.text == raw)
+    #expect(try LiveTranscriptProjection().rows(for: rawSegments).first?.text == raw)
+    #expect(try TranscriptTextRenderer.render(rawSegments)
+        == "[00:00] Speaker 1: \(raw)\n[01:05] Speaker 2: 今日の議題です\n")
+
+    let assessedSession = try await fixture.saveFillerAssessment(session: session, rawText: raw)
+    let afterResponse = try SavedTranscriptLoader.load(
+        sessionURL: assessedSession.sessionURL,
+        audioSource: try #require(assessedSession.audioSource)
+    )
+    guard case .segments(let segments) = afterResponse else {
+        Issue.record("expected saved transcript segments after boundary response")
         return
     }
 
     #expect(segments.first?.text == raw)
     let rows = try LiveTranscriptProjection().rows(for: segments)
-    #expect(rows.first?.text == "今日は公開鍵暗号を説明します。")
-    #expect(try TranscriptTextRenderer.render(segments)
-        == "[00:00] Speaker 1: 今日は公開鍵暗号を説明します。\n[01:05] Speaker 2: 今日の議題です\n")
-    #expect(try Data(contentsOf: layout.eventsURL) == eventsBefore)
+    #expect(rows.first?.text == cleaned)
+    let exportedText = "[00:00] Speaker 1: \(cleaned)\n[01:05] Speaker 2: 今日の議題です\n"
+    #expect(try TranscriptTextRenderer.render(segments) == exportedText)
+
+    let folder = try SessionExporter().export(session: assessedSession, to: fixture.exportRoot)
+    #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8) == exportedText)
+    #expect(try asrEventLines(at: layout.eventsURL) == asrEventsBefore)
 }
 
 @Test
@@ -156,6 +175,13 @@ private func fileBytes(in directory: URL) throws -> [String: Data] {
         }
     }
     return result
+}
+
+private func asrEventLines(at eventsURL: URL) throws -> [Data] {
+    let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL))
+    return try EventLogLine.decode(recovered.lines)
+        .filter { $0.header.eventType == "asr.completed" }
+        .map(\.data)
 }
 
 @Test
@@ -476,6 +502,168 @@ struct ExportFixture {
             pendingContentPriorityClauses: []
         ))
     }
+
+    func saveFillerAssessment(session: SavedSession, rawText: String) async throws -> SavedSession {
+        let layout = SessionLayout(sessionURL: session.sessionURL)
+        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
+        let recognized = try EventLogLine.decode(recovered.lines)
+            .filter { $0.header.eventType == "asr.completed" }
+            .map { line -> (source: SegmentTextReference, text: String) in
+                let body = try line.body(ASRCompletedBody.self)
+                return (
+                    try SegmentTextReference(
+                        segmentationRunID: "seg-run", segmentID: body.segmentID,
+                        asrRunID: "asr-run", asrEventSeq: line.header.eventSeq
+                    ),
+                    body.text
+                )
+            }
+            .filter { ASRRecognitionOutcome(text: $0.text) == .recognized }
+        guard recognized.count == 2, recognized[0].text == rawText else {
+            throw EventLogTranscriptReaderError.inconsistentClauseRun(
+                runID: "asr-run", reason: "fixture ASR sources do not match the boundary assessment"
+            )
+        }
+
+        let boundaryRunID = "boundary-run"
+        let priorityRunID = "priority-run"
+        let identity = try DecisionModelIdentity(model: "fixture", modelRevision: String(repeating: "a", count: 64))
+        let writer = try SessionWriter(sessionURL: session.sessionURL)
+        try await writer.append(EventDraft(
+            eventType: "processing.run.started",
+            sessionID: session.sessionID,
+            processingRunID: boundaryRunID,
+            payload: ProcessingRunStartedPayload(
+                stage: .clauseBoundary,
+                provenance: DecisionRunProvenance.boundary(mode: "live", identity: identity)
+            )
+        ))
+
+        var assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
+        var clauses: [ClauseUnit] = []
+        for index in recognized.indices {
+            let input = recognized[index]
+            let candidates = try ClauseBoundaryCandidate.candidates(in: input.text)
+            let next: NextSegmentHead?
+            let continuationProbability: Double?
+            if index + 1 < recognized.count {
+                let successor = recognized[index + 1]
+                next = try NextSegmentHead(
+                    source: successor.source,
+                    text: String(successor.text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))
+                )
+                continuationProbability = 0.1
+            } else {
+                next = nil
+                continuationProbability = nil
+            }
+            let assessment = try ClauseBoundaryAssessment(
+                source: input.source,
+                candidates: candidates,
+                probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, 0.1) }),
+                nextHead: next,
+                continuationProbability: continuationProbability,
+                fillerRanges: index == 0 ? [try TextUTF16Range(start: 0, end: 2)] : [],
+                request: try DecisionRequestRecord(requestID: "boundary-request-\(index + 1)", inputTokens: 1),
+                sourceDecision: .assessed
+            )
+            try await writer.append(EventDraft(
+                eventType: ClauseEventType.boundaryAssessed,
+                sessionID: session.sessionID,
+                processingRunID: boundaryRunID,
+                payload: assessment
+            ))
+            let delta = try assembly.consume(ClauseAssemblyInput(
+                source: input.source, text: input.text, state: .assessed(assessment)
+            ))
+            for clause in delta.closed {
+                try await writer.append(EventDraft(
+                    eventType: ClauseEventType.clauseClosed,
+                    sessionID: session.sessionID,
+                    processingRunID: boundaryRunID,
+                    payload: clause
+                ))
+                clauses.append(clause)
+            }
+        }
+        for clause in try assembly.finish().closed {
+            try await writer.append(EventDraft(
+                eventType: ClauseEventType.clauseClosed,
+                sessionID: session.sessionID,
+                processingRunID: boundaryRunID,
+                payload: clause
+            ))
+            clauses.append(clause)
+        }
+        guard clauses.count == recognized.count else {
+            throw EventLogTranscriptReaderError.inconsistentClauseRun(
+                runID: boundaryRunID, reason: "fixture boundary run did not close every recognized source"
+            )
+        }
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed",
+            sessionID: session.sessionID,
+            processingRunID: boundaryRunID,
+            payload: ProcessingRunCompletedPayload(
+                stage: .clauseBoundary, succeeded: true, completedCount: recognized.count, failedCount: 0
+            )
+        ))
+
+        try await writer.append(EventDraft(
+            eventType: "processing.run.started",
+            sessionID: session.sessionID,
+            processingRunID: priorityRunID,
+            payload: ProcessingRunStartedPayload(
+                stage: .contentPriority,
+                provenance: DecisionRunProvenance.priority(mode: "live", identity: identity)
+            )
+        ))
+        let priorityRequestID = "priority-request"
+        let assignments = try clauses.enumerated().map { index, clause in
+            let decision = try ContentPriorityDecision(
+                priority: .primary, confidence: 1.0,
+                probabilities: ["PRIMARY": 1.0, "LOW_PRIORITY": 0.0]
+            )
+            return try ClausePriorityAssignment(
+                reference: clause.reference,
+                priority: .primary,
+                needsRetry: false,
+                decision: .classified(
+                    requestID: priorityRequestID,
+                    answerKey: String(format: "u%04d", index + 1),
+                    response: decision
+                )
+            )
+        }
+        try await writer.append(EventDraft(
+            eventType: ClauseEventType.priorityAssigned,
+            sessionID: session.sessionID,
+            processingRunID: priorityRunID,
+            payload: try ContentPriorityAssignedPayload(
+                assignments: assignments,
+                request: try DecisionRequestRecord(requestID: priorityRequestID, inputTokens: 1)
+            )
+        ))
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed",
+            sessionID: session.sessionID,
+            processingRunID: priorityRunID,
+            payload: ProcessingRunCompletedPayload(
+                stage: .contentPriority, succeeded: true, completedCount: assignments.count, failedCount: 0
+            )
+        ))
+
+        let metadataStore = ProcessingMetadataStore(sessionURL: session.sessionURL)
+        let metadata = try #require(try metadataStore.load())
+        let localRuns = try #require(metadata.activeRuns)
+        try metadataStore.save(ProcessingMetadata(
+            finalizationAttempt: metadata.finalizationAttempt,
+            activeRuns: localRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID),
+            pendingClauseBoundarySegments: [],
+            pendingContentPriorityClauses: []
+        ))
+        return try readable(session.sessionID)
+    }
 }
 
 private enum ExportFixtureError: Error {
@@ -487,6 +675,7 @@ private func segment(
     _ id: String,
     startMilliseconds: Int64,
     text: String,
+    fillerRanges: [TextUTF16Range],
     speakers: [(id: String, start: Int64, end: Int64)] = [],
     priority: ContentPriority? = nil,
     isDiarized: Bool = true
@@ -505,6 +694,7 @@ private func segment(
         startMilliseconds: startMilliseconds,
         endMilliseconds: end,
         text: text,
+        fillerRanges: fillerRanges,
         speakers: speakers.map {
             MaterializedSpeakerSpan(
                 id: $0.id, startMilliseconds: $0.start, endMilliseconds: $0.end,
@@ -520,17 +710,20 @@ private func segment(
 @Test
 func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
     let segments = [
-        try segment("kept", startMilliseconds: 0, text: "残る発話", speakers: [("A", 0, 1_000)]),
-        try segment("empty", startMilliseconds: 1_000, text: " \n", speakers: [("A", 1_000, 2_000)]),
+        try segment("kept", startMilliseconds: 0, text: "残る発話", fillerRanges: [], speakers: [("A", 0, 1_000)]),
+        try segment("empty", startMilliseconds: 1_000, text: " \n", fillerRanges: [], speakers: [("A", 1_000, 2_000)]),
         try segment(
-            "conversation", startMilliseconds: 2_000, text: "別の会話",
+            "conversation", startMilliseconds: 2_000, text: "別の会話", fillerRanges: [],
             speakers: [("A", 2_000, 3_000)]
         ),
         try segment(
-            "low", startMilliseconds: 3_000, text: "えーと、低優先度本文", speakers: [("B", 3_000, 4_000)],
+            "low", startMilliseconds: 3_000, text: "えーと、低優先度本文",
+            fillerRanges: [try TextUTF16Range(start: 0, end: 3)], speakers: [("B", 3_000, 4_000)],
             priority: .lowPriority
         ),
-        try segment("filler-only", startMilliseconds: 4_000, text: "えー、", speakers: [("A", 4_000, 5_000)]),
+        try segment(
+            "filler-only", startMilliseconds: 4_000, text: "えー、",
+            fillerRanges: [try TextUTF16Range(start: 0, end: 2)], speakers: [("A", 4_000, 5_000)]),
     ]
 
     let rows = try LiveTranscriptProjection().rows(for: segments)
@@ -555,6 +748,7 @@ func mixedClausePrioritiesExportOnlyTheNonLowText() throws {
     let mixed = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
         text: raw,
+        fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
         speakers: [MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)],
         isDiarized: true, clauseState: .classified, clauseSlices: slices
     )
@@ -567,10 +761,10 @@ func mixedClausePrioritiesExportOnlyTheNonLowText() throws {
 @Test
 func transcriptTextJoinsSpeakersBelowTheEightyPercentRuleAndKeepsOneAbove() throws {
     let mixed = try segment(
-        "mixed", startMilliseconds: 0, text: "会話", speakers: [("A", 0, 600), ("B", 600, 1_000)]
+        "mixed", startMilliseconds: 0, text: "会話", fillerRanges: [], speakers: [("A", 0, 600), ("B", 600, 1_000)]
     )
     let dominant = try segment(
-        "dominant", startMilliseconds: 2_000, text: "講義", speakers: [("A", 2_000, 2_850), ("B", 2_850, 3_000)]
+        "dominant", startMilliseconds: 2_000, text: "講義", fillerRanges: [], speakers: [("A", 2_000, 2_850), ("B", 2_850, 3_000)]
     )
 
     #expect(try TranscriptTextRenderer.render([mixed, dominant])
@@ -579,7 +773,7 @@ func transcriptTextJoinsSpeakersBelowTheEightyPercentRuleAndKeepsOneAbove() thro
 
 @Test
 func transcriptTextWritesUnknownForADiarizedUtteranceWithoutSpeakers() throws {
-    #expect(try TranscriptTextRenderer.render([try segment("lonely", startMilliseconds: 61_000, text: "誰か")])
+    #expect(try TranscriptTextRenderer.render([try segment("lonely", startMilliseconds: 61_000, text: "誰か", fillerRanges: [])])
         == "[01:01] UNKNOWN: 誰か\n")
 }
 
@@ -587,7 +781,7 @@ func transcriptTextWritesUnknownForADiarizedUtteranceWithoutSpeakers() throws {
 func transcriptTextReplacesLineBreaksSoEachUtteranceIsOneLine() throws {
     let text = "一行目\r\n二行目\n三行目\r四行目\u{2028}五行目\u{2029}六行目"
     let rendered = try TranscriptTextRenderer.render([
-        try segment("multi", startMilliseconds: 0, text: text, speakers: [("A", 0, 1_000)])
+        try segment("multi", startMilliseconds: 0, text: text, fillerRanges: [], speakers: [("A", 0, 1_000)])
     ])
 
     #expect(rendered == "[00:00] Speaker 1: 一行目 二行目 三行目 四行目 五行目 六行目\n")
@@ -596,7 +790,7 @@ func transcriptTextReplacesLineBreaksSoEachUtteranceIsOneLine() throws {
 @Test
 func transcriptTextRejectsAnUtteranceWithoutDiarization() {
     #expect(throws: TranscriptTextRendererError.missingSpeakerHeading(segmentID: "live")) {
-        try TranscriptTextRenderer.render([try segment("live", startMilliseconds: 0, text: "暫定", isDiarized: false)])
+        try TranscriptTextRenderer.render([try segment("live", startMilliseconds: 0, text: "暫定", fillerRanges: [], isDiarized: false)])
     }
 }
 

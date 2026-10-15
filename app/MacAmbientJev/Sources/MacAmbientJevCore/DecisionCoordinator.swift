@@ -73,6 +73,15 @@ public actor DecisionCoordinator {
             if request.next == nil, response.continuationProbability != nil {
                 throw DecisionResponseError.unexpectedAnswers
             }
+            guard response.fillerRanges.allSatisfy({ $0.start < $0.end }),
+                  zip(response.fillerRanges, response.fillerRanges.dropFirst()).allSatisfy({ previous, next in
+                      previous.end < next.start
+                  }) else {
+                throw DecisionResponseError.unexpectedAnswers
+            }
+            _ = try TranscriptTextProjector().project(
+                sourceText: request.text, fillerRanges: response.fillerRanges
+            )
             return (response, response.inputTokens)
         }
     }

@@ -50,11 +50,11 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     let barrier = BlockedLiveUpdate()
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "late", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "取り消した音声", speakers: [], isDiarized: false
+        text: "取り消した音声", fillerRanges: [], speakers: [], isDiarized: false
     )
     let current = try MaterializedTranscriptSegment.fixture(
         segmentID: "current", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "録音中の音声", speakers: [], isDiarized: false
+        text: "録音中の音声", fillerRanges: [], speakers: [], isDiarized: false
     )
     await handler([current], .running)
     let beforeCancellation = state.transcriptViewModel.rows
@@ -99,7 +99,7 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     let liveHandler = state.liveUpdateHandler(sessionID: sessionID)
     let live = try MaterializedTranscriptSegment.fixture(
         segmentID: "live", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "ライブ原文", speakers: [], isDiarized: false
+        text: "ライブ原文", fillerRanges: [], speakers: [], isDiarized: false
     )
     await liveHandler([live], .running)
     #expect(state.transcriptViewModel.rows.map(\.text) == ["ライブ原文"])
@@ -109,7 +109,7 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     state.currentlyProcessingSessionID = sessionID
     let final = try MaterializedTranscriptSegment.fixture(
         segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "確定本文", speakers: [], isDiarized: true
+        text: "確定本文", fillerRanges: [], speakers: [], isDiarized: true
     )
     try state.transcriptViewModel.update(segments: [final])
     state.transcriptViewModel.setDisplayState(.finalized)

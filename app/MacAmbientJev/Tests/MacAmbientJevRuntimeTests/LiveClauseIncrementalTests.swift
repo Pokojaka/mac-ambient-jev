@@ -12,17 +12,16 @@ private let incrementalRuns = ActiveRuns(segmentation: incrementalSegmentationRu
     clauseBoundary: incrementalBoundaryRun, contentPriority: incrementalPriorityRun)
 
 func incrementalAssessment(source: SegmentTextReference, text: String,
-                           next: (SegmentTextReference, String)?, continues: Bool = false,
-                           acceptBoundaries: Bool = true) throws -> ClauseBoundaryAssessment {
+                           next: (SegmentTextReference, String)?, fillerRanges: [TextUTF16Range],
+                           continues: Bool = false, acceptBoundaries: Bool = true) throws -> ClauseBoundaryAssessment {
     let candidates = try ClauseBoundaryCandidate.candidates(in: text)
-    let asks = !candidates.isEmpty || next != nil
     return try ClauseBoundaryAssessment(source: source, candidates: candidates,
         probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, acceptBoundaries ? 0.95 : 0.05) }),
         nextHead: try next.map { try NextSegmentHead(source: $0.0, text: String($0.1.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))) },
         continuationProbability: next.map { _ in continues ? 0.95 : 0.05 },
-        request: asks ? DecisionRequestRecord(requestID: "boundary_\(source.asrEventSeq)",
-            inputTokens: 1) : nil,
-        sourceDecision: asks ? .assessed : .terminalWithoutQuestions)
+        fillerRanges: fillerRanges,
+        request: DecisionRequestRecord(requestID: "boundary_\(source.asrEventSeq)", inputTokens: 1),
+        sourceDecision: .assessed)
 }
 
 private func incrementalCoreFixture(_ texts: [String?]) throws -> (
@@ -68,15 +67,21 @@ func incrementalClausesMatchRebuildAcrossContinuationPendingAndStreamEnd() throw
     let fixture = try incrementalCoreFixture(texts.map(Optional.some))
     var events = fixture.events
     var assembly = ClauseBoundaryAssembly(boundaryRunID: incrementalBoundaryRun)
+    var assessments: [ClauseBoundaryAssessment] = []
     let heldSnapshot = fixture.materializer.materializedSegments
     for index in texts.indices where !texts[index].isEmpty {
         let source = try #require(fixture.sources[index])
         if index == 5 { _ = try assembly.endTextStream() }
         let next: (SegmentTextReference, String)? = index + 1 < texts.count && !texts[index + 1].isEmpty
             ? (try #require(fixture.sources[index + 1]), texts[index + 1]) : nil
-        let state: ClauseBoundaryState = index == 2
-            ? .pending(reason: .requestFailed, message: "synthetic boundary pending")
-            : .assessed(try incrementalAssessment(source: source, text: texts[index], next: next, continues: index < 3))
+        let state: ClauseBoundaryState
+        if index == 2 {
+            state = .pending(reason: .requestFailed, message: "synthetic boundary pending")
+        } else {
+            let assessment = try incrementalAssessment(source: source, text: texts[index], next: next, fillerRanges: [], continues: index < 3)
+            assessments.append(assessment)
+            state = .assessed(assessment)
+        }
         let kind: TranscriptEventKind
         switch state {
         case .assessed(let assessment): kind = .clauseBoundaryAssessed(assessment)
@@ -92,7 +97,9 @@ func incrementalClausesMatchRebuildAcrossContinuationPendingAndStreamEnd() throw
         try fixture.materializer.applyClauseEvents(Array(batch.reversed()))
         events.append(contentsOf: batch.reversed())
         try expectIncrementalParity(fixture.materializer, events: events)
-        if let unit = delta.closed.first, !ClauseTextComposer.isBlank(try ClauseTextComposer().textForTest(unit: unit, texts: texts, sources: fixture.sources)) {
+        if let unit = delta.closed.first,
+           !ClauseTextComposer.isBlank(try ClauseTextComposer().textForTest(unit: unit, texts: texts,
+               sources: fixture.sources, assessments: assessments)) {
             let payload: ContentPriorityAssignedPayload
             if index == 1 {
                 let response = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.95,
@@ -117,13 +124,44 @@ func incrementalClausesMatchRebuildAcrossContinuationPendingAndStreamEnd() throw
 }
 
 private extension ClauseTextComposer {
-    func textForTest(unit: ClauseUnit, texts: [String], sources: [SegmentTextReference?]) throws -> String {
+    func textForTest(unit: ClauseUnit, texts: [String], sources: [SegmentTextReference?],
+                     assessments: [ClauseBoundaryAssessment]) throws -> String {
         var composer = self
+        for assessment in assessments {
+            composer.setFillerRanges(assessment.fillerRanges, for: assessment.source)
+        }
         return try composer.text(of: unit.parts) { source in
             let index = try #require(sources.firstIndex(of: source))
             return texts[index]
         }
     }
+}
+
+@Test
+func incrementalSavedAssessmentReplacesRawDisplayWithoutClosingClause() throws {
+    let text = "えー、資料を配ります。"
+    let fixture = try incrementalCoreFixture([text, "次"])
+    var events = fixture.events
+    let source = try #require(fixture.sources[0])
+    let next = try #require(fixture.sources[1])
+    #expect(fixture.materializer.materializedSegments[0].displayText == text)
+
+    let assessment = try incrementalAssessment(source: source, text: text,
+        next: (next, "次"), fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
+        continues: true, acceptBoundaries: false)
+    var assembly = ClauseBoundaryAssembly(boundaryRunID: incrementalBoundaryRun)
+    let delta = try assembly.consume(ClauseAssemblyInput(source: source, text: text, state: .assessed(assessment)))
+    #expect(delta.closed.isEmpty)
+
+    let event = TranscriptEvent.clause(seq: 100, runID: incrementalBoundaryRun,
+        kind: .clauseBoundaryAssessed(assessment))
+    try fixture.materializer.applyClauseEvents([event])
+    events.append(event)
+    let row = fixture.materializer.materializedSegments[0]
+    #expect(row.displayText == "資料を配ります。")
+    #expect(row.clauseState == .awaitingNextSegment)
+    #expect(row.clauseSlices.isEmpty)
+    try expectIncrementalParity(fixture.materializer, events: events)
 }
 
 @Test
@@ -136,7 +174,7 @@ func incrementalLongTailClosesEverySourceWithoutTruncation() throws {
     for index in 0..<count {
         let source = try #require(fixture.sources[index])
         let next: (SegmentTextReference, String)? = index + 1 < count ? (try #require(fixture.sources[index + 1]), "続く") : nil
-        let assessment = try incrementalAssessment(source: source, text: "続く", next: next, continues: true)
+        let assessment = try incrementalAssessment(source: source, text: "続く", next: next, fillerRanges: [], continues: true)
         var batch = [TranscriptEvent.clause(seq: UInt64(1_000 + index * 2), runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(assessment))]
         let delta = try assembly.consume(ClauseAssemblyInput(source: source, text: "続く", state: .assessed(assessment)))
         if let unit = delta.closed.first {
@@ -167,7 +205,7 @@ func incrementalFailedASRGapMatchesCanonicalPendingHead() throws {
         _ = try assembly.beginAfterASRGap()
         let text = index == 1 ? "未確定。確定" : "後続"
         let source = try #require(fixture.sources[index])
-        let assessment = try incrementalAssessment(source: source, text: text, next: nil)
+        let assessment = try incrementalAssessment(source: source, text: text, next: nil, fillerRanges: [])
         let delta = try assembly.consume(ClauseAssemblyInput(source: source, text: text, state: .assessed(assessment)))
         var batch = [TranscriptEvent.clause(seq: UInt64(100 + index * 10), runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(assessment))]
         batch.append(contentsOf: delta.closed.enumerated().map { .clause(seq: UInt64(101 + index * 10 + $0.offset), runID: incrementalBoundaryRun, kind: .clauseClosed($0.element)) })
@@ -180,24 +218,30 @@ func incrementalFailedASRGapMatchesCanonicalPendingHead() throws {
 
 @Test
 func incrementalInvalidBatchRollsBackAssemblyClausesAndPriorityIndexes() throws {
-    let fixture = try incrementalCoreFixture(["第一", "第二"])
+    let firstText = "えー、第一"
+    let fixture = try incrementalCoreFixture([firstText, "第二"])
     let first = try #require(fixture.sources[0])
     let second = try #require(fixture.sources[1])
-    let assessment = try incrementalAssessment(source: first, text: "第一", next: (second, "第二"))
+    let assessment = try incrementalAssessment(source: first, text: firstText,
+        next: (second, "第二"), fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
+        acceptBoundaries: false)
     var assembly = ClauseBoundaryAssembly(boundaryRunID: incrementalBoundaryRun)
-    let delta = try assembly.consume(ClauseAssemblyInput(source: first, text: "第一", state: .assessed(assessment)))
+    let delta = try assembly.consume(ClauseAssemblyInput(source: first, text: firstText, state: .assessed(assessment)))
     let unit = try #require(delta.closed.first)
     let good = [TranscriptEvent.clause(seq: 100, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(assessment)),
                 .clause(seq: 101, runID: incrementalBoundaryRun, kind: .clauseClosed(unit))]
     let unknown = try ClauseReference(boundaryRunID: incrementalBoundaryRun, clauseID: "c999_0")
     let invalidPriority = try ClausePriorityBatch.pending(references: [unknown], reason: .requestFailed, message: "unknown clause")
     let before = fixture.materializer.materializedSegments
+    #expect(before[0].displayText == firstText)
     #expect(throws: TranscriptMaterializationError.self) {
         try fixture.materializer.applyClauseEvents(good + [.clause(seq: 102, runID: incrementalPriorityRun, kind: .contentPriorityAssigned(invalidPriority))])
     }
     #expect(fixture.materializer.materializedSegments == before)
+    #expect(fixture.materializer.materializedSegments[0].displayText == firstText)
     try fixture.materializer.applyClauseEvents(good)
     var events = fixture.events + good
+    #expect(fixture.materializer.materializedSegments[0].displayText == "第一")
     try expectIncrementalParity(fixture.materializer, events: events)
     let pending = try ClausePriorityBatch.pending(references: [unit.reference], reason: .requestFailed, message: "pending")
     let assignment = TranscriptEvent.clause(seq: 103, runID: incrementalPriorityRun, kind: .contentPriorityAssigned(pending))
@@ -207,11 +251,11 @@ func incrementalInvalidBatchRollsBackAssemblyClausesAndPriorityIndexes() throws 
     try expectIncrementalParity(fixture.materializer, events: events)
     #expect(throws: (any Error).self) { try fixture.materializer.applyClauseEvents([good[0]]) }
     try expectIncrementalParity(fixture.materializer, events: events)
-    let reordered = try incrementalAssessment(source: second, text: "第二", next: nil)
+    let reordered = try incrementalAssessment(source: second, text: "第二", next: nil, fillerRanges: [])
     #expect(throws: (any Error).self) {
         try fixture.materializer.applyClauseEvents([.clause(seq: 99, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(reordered))])
     }
-    let wrongCandidates = try incrementalAssessment(source: second, text: "第二。追加", next: nil)
+    let wrongCandidates = try incrementalAssessment(source: second, text: "第二。追加", next: nil, fillerRanges: [])
     #expect(throws: ClauseAssemblyError.self) {
         try fixture.materializer.applyClauseEvents([.clause(seq: 104, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(wrongCandidates))])
     }
@@ -226,7 +270,7 @@ func incrementalASRAfterClauseUpdatePreservesClassifiedHistory() throws {
     let fixture = try incrementalCoreFixture(["第一", "第二"])
     let first = try #require(fixture.sources[0])
     let second = try #require(fixture.sources[1])
-    let assessment = try incrementalAssessment(source: first, text: "第一", next: (second, "第二"))
+    let assessment = try incrementalAssessment(source: first, text: "第一", next: (second, "第二"), fillerRanges: [])
     var assembly = ClauseBoundaryAssembly(boundaryRunID: incrementalBoundaryRun)
     let delta = try assembly.consume(ClauseAssemblyInput(source: first, text: "第一", state: .assessed(assessment)))
     let unit = try #require(delta.closed.first)
@@ -295,12 +339,12 @@ func liveIncrementalForeignAndMalformedEventsNeverPublishPartialBatch() async th
     let before = await fixture.session.snapshot()
     let rows = before.progress.materializedSegments
     let assessment = try incrementalAssessment(source: rows[0].source, text: rows[0].text,
-        next: (rows[1].source, rows[1].text))
+        next: (rows[1].source, rows[1].text), fillerRanges: [])
     let event = TranscriptEvent.clause(seq: 100, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(assessment))
     let foreign = TranscriptEvent.clause(seq: 101, runID: "foreign-boundary", kind: .clauseBoundaryAssessed(assessment))
     await #expect(throws: LiveASRSessionError.self) { try await fixture.session.applyClauseEvents([event, foreign]) }
     #expect(await fixture.session.snapshot() == before)
-    let wrongSuccessor = try incrementalAssessment(source: rows[1].source, text: rows[1].text, next: nil)
+    let wrongSuccessor = try incrementalAssessment(source: rows[1].source, text: rows[1].text, next: nil, fillerRanges: [])
     await #expect(throws: ClauseAssemblyError.self) {
         try await fixture.session.applyClauseEvents([event, .clause(seq: 101, runID: incrementalBoundaryRun, kind: .clauseBoundaryAssessed(wrongSuccessor))])
     }

@@ -270,8 +270,10 @@ public actor LiveContentPrioritySession {
         var events: [TranscriptEvent] = []
         switch state {
         case .assessed(let assessment):
-            events.append(try await append(ClauseEventType.boundaryAssessed, stage: .clauseBoundary, payload: assessment,
-                                           kind: .clauseBoundaryAssessed(assessment)))
+            let event = try await append(ClauseEventType.boundaryAssessed, stage: .clauseBoundary, payload: assessment,
+                                         kind: .clauseBoundaryAssessed(assessment))
+            events.append(event)
+            composer.setFillerRanges(assessment.fillerRanges, for: assessment.source)
             boundaryCounts.assessed += 1
         case .pending(let reason, let message):
             let payload = ClauseBoundaryPendingPayload(source: step.source, reason: reason, message: message)

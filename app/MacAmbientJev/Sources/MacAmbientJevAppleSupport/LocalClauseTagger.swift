@@ -29,17 +29,8 @@ public actor LocalClauseTagger: DecisionProvider {
     }
 
     public func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        guard !request.candidates.isEmpty || request.next != nil else {
-            throw ClauseValidationError.invalidTargets
-        }
-
-        let boundaryInputs: [ClauseTaggerEncodedInput]
-        if request.candidates.isEmpty {
-            boundaryInputs = []
-        } else {
-            boundaryInputs = try ClauseTaggerEncoding.boundaryInputs(request) { piece in
-                try tokenizer.encodePiece(piece)
-            }
+        let boundaryInputs = try ClauseTaggerEncoding.boundaryInputs(request) { piece in
+            try tokenizer.encodePiece(piece)
         }
 
         let continuationInput: ClauseTaggerEncodedInput?
@@ -53,9 +44,35 @@ public actor LocalClauseTagger: DecisionProvider {
         }
 
         var candidateProbabilities: [String: Double] = [:]
+        var spanPredictions: [(ordinal: Int, range: TextUTF16Range, probabilities: [Double])] = []
+        var spanOrdinals = Set<Int>()
         for encoded in boundaryInputs {
             try Task.checkCancellation()
             let prediction = try model.predict(inputIDs: encoded.inputIDs)
+            guard encoded.contentStartTokenIndex >= 0,
+                  encoded.sourceTokenRanges.count == encoded.inputIDs.count,
+                  prediction.spanProbabilities.count == encoded.inputIDs.count else {
+                throw ClauseTaggerModelError.invalidOutput
+            }
+            for tokenIndex in encoded.spanTokenIndices {
+                guard tokenIndex > 0,
+                      encoded.inputIDs.indices.contains(tokenIndex),
+                      encoded.sourceTokenRanges.indices.contains(tokenIndex),
+                      prediction.spanProbabilities.indices.contains(tokenIndex),
+                      let range = encoded.sourceTokenRanges[tokenIndex] else {
+                    throw ClauseTaggerModelError.invalidOutput
+                }
+                let probabilities = prediction.spanProbabilities[tokenIndex]
+                guard probabilities.count == 3 else {
+                    throw ClauseTaggerModelError.invalidOutput
+                }
+                let (ordinal, overflow) = encoded.contentStartTokenIndex
+                    .addingReportingOverflow(tokenIndex - 1)
+                guard !overflow, spanOrdinals.insert(ordinal).inserted else {
+                    throw ClauseTaggerModelError.invalidOutput
+                }
+                spanPredictions.append((ordinal: ordinal, range: range, probabilities: probabilities))
+            }
             for candidate in request.candidates {
                 guard let tokenIndex = encoded.candidateTokenIndices[candidate.offsetUTF16] else {
                     continue
@@ -69,6 +86,13 @@ public actor LocalClauseTagger: DecisionProvider {
         for candidate in request.candidates where candidateProbabilities[candidate.id] == nil {
             throw ClauseTaggerEncodingError.missingCandidate(offsetUTF16: candidate.offsetUTF16)
         }
+
+        spanPredictions.sort { $0.ordinal < $1.ordinal }
+        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
+            sourceText: request.text,
+            tokenRanges: spanPredictions.map { $0.range },
+            spanProbabilities: spanPredictions.map { $0.probabilities }
+        )
 
         var continuationProbability: Double?
         if let encoded = continuationInput {
@@ -89,6 +113,7 @@ public actor LocalClauseTagger: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: candidateProbabilities,
             continuationProbability: continuationProbability,
+            fillerRanges: fillerRanges,
             inputTokens: inputTokens
         )
     }

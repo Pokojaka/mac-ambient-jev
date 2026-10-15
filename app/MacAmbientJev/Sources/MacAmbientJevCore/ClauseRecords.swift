@@ -184,23 +184,18 @@ public enum ClausePendingReason: String, Codable, Sendable {
 public enum BoundaryDecisionSource: Codable, Sendable, Equatable {
     /// The decision engine answered this boundary request in this run.
     case assessed
-    /// The last text segment had no candidate and no successor, so no request was needed.
-    case terminalWithoutQuestions
     /// A retry run reused the published assessment of this source.
     case carriedOver(sourceBoundaryRunID: String, sourceEventSeq: UInt64)
 
     private enum CodingKeys: String, CodingKey {
         case kind, sourceBoundaryRunID = "source_boundary_run_id", sourceEventSeq = "source_event_seq"
     }
-    private enum Kind: String, Codable {
-        case assessed, terminalWithoutQuestions = "terminal_without_questions", carriedOver = "carried_over"
-    }
+    private enum Kind: String, Codable { case assessed, carriedOver = "carried_over" }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(Kind.self, forKey: .kind) {
         case .assessed: self = .assessed
-        case .terminalWithoutQuestions: self = .terminalWithoutQuestions
         case .carriedOver:
             let runID = try c.decode(String.self, forKey: .sourceBoundaryRunID)
             guard isNonblankIdentifier(runID) else { throw ClauseRecordError.invalidAssessment }
@@ -212,7 +207,6 @@ public enum BoundaryDecisionSource: Codable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .assessed: try c.encode(Kind.assessed, forKey: .kind)
-        case .terminalWithoutQuestions: try c.encode(Kind.terminalWithoutQuestions, forKey: .kind)
         case .carriedOver(let runID, let seq):
             try c.encode(Kind.carriedOver, forKey: .kind)
             try c.encode(runID, forKey: .sourceBoundaryRunID)
@@ -228,6 +222,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
     public let probabilities: [String: Double]
     public let nextHead: NextSegmentHead?
     public let continuationProbability: Double?
+    public let fillerRanges: [TextUTF16Range]
     public let request: DecisionRequestRecord?
     public let sourceDecision: BoundaryDecisionSource
 
@@ -237,17 +232,22 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         probabilities: [String: Double],
         nextHead: NextSegmentHead?,
         continuationProbability: Double?,
+        fillerRanges: [TextUTF16Range],
         request: DecisionRequestRecord?,
         sourceDecision: BoundaryDecisionSource
     ) throws {
         guard Set(probabilities.keys) == Set(candidates.map(\.id)),
               Set(candidates.map(\.id)).count == candidates.count,
               probabilities.values.allSatisfy(isValidProbability),
+              fillerRanges.allSatisfy({ $0.start < $0.end }),
               (nextHead == nil) == (continuationProbability == nil),
               continuationProbability.map(isValidProbability) ?? true else {
             throw ClauseRecordError.invalidAssessment
         }
         for (previous, next) in zip(candidates, candidates.dropFirst()) where next.offsetUTF16 <= previous.offsetUTF16 {
+            throw ClauseRecordError.invalidAssessment
+        }
+        for (previous, next) in zip(fillerRanges, fillerRanges.dropFirst()) where previous.end >= next.start {
             throw ClauseRecordError.invalidAssessment
         }
         if let nextHead {
@@ -258,9 +258,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         }
         switch sourceDecision {
         case .assessed:
-            guard request != nil, !candidates.isEmpty || nextHead != nil else { throw ClauseRecordError.invalidAssessment }
-        case .terminalWithoutQuestions:
-            guard request == nil, candidates.isEmpty, nextHead == nil else { throw ClauseRecordError.invalidAssessment }
+            guard request != nil else { throw ClauseRecordError.invalidAssessment }
         case .carriedOver(let sourceBoundaryRunID, let sourceEventSeq):
             guard request == nil, isNonblankIdentifier(sourceBoundaryRunID), sourceEventSeq > 0 else {
                 throw ClauseRecordError.invalidAssessment
@@ -271,6 +269,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         self.probabilities = probabilities
         self.nextHead = nextHead
         self.continuationProbability = continuationProbability
+        self.fillerRanges = fillerRanges
         self.request = request
         self.sourceDecision = sourceDecision
     }
@@ -292,6 +291,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         try ClauseBoundaryAssessment(
             source: source, candidates: candidates, probabilities: probabilities,
             nextHead: nextHead, continuationProbability: continuationProbability,
+            fillerRanges: fillerRanges,
             request: nil, sourceDecision: .carriedOver(sourceBoundaryRunID: runID, sourceEventSeq: eventSeq)
         )
     }
@@ -300,7 +300,8 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
     public func hasSameDecisions(as other: ClauseBoundaryAssessment) -> Bool {
         guard source == other.source, candidates == other.candidates,
               probabilities == other.probabilities,
-              continuationProbability == other.continuationProbability else { return false }
+              continuationProbability == other.continuationProbability,
+              fillerRanges == other.fillerRanges else { return false }
         switch (nextHead, other.nextHead) {
         case (nil, nil):
             return true
@@ -315,6 +316,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         case source, candidates, probabilities
         case nextHead = "next_head"
         case continuationProbability = "continuation_probability"
+        case fillerRanges = "filler_ranges"
         case request
         case sourceDecision = "source_decision"
     }
@@ -327,6 +329,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
             probabilities: c.decode([String: Double].self, forKey: .probabilities),
             nextHead: c.decode(NextSegmentHead?.self, forKey: .nextHead),
             continuationProbability: c.decode(Double?.self, forKey: .continuationProbability),
+            fillerRanges: c.decode([TextUTF16Range].self, forKey: .fillerRanges),
             request: c.decode(DecisionRequestRecord?.self, forKey: .request),
             sourceDecision: c.decode(BoundaryDecisionSource.self, forKey: .sourceDecision)
         )
@@ -339,6 +342,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
         try c.encode(probabilities, forKey: .probabilities)
         try c.encode(nextHead, forKey: .nextHead)
         try c.encode(continuationProbability, forKey: .continuationProbability)
+        try c.encode(fillerRanges, forKey: .fillerRanges)
         try c.encode(request, forKey: .request)
         try c.encode(sourceDecision, forKey: .sourceDecision)
     }
@@ -565,15 +569,24 @@ public enum DecisionPendingTarget: Sendable, Hashable {
 
 /// Builds the filler-removed text of clauses from the raw ASR text of their parts.
 public struct ClauseTextComposer: Sendable {
-    private let projector = TranscriptTextProjector(detector: FillerTextSpanDetector())
+    private let projector = TranscriptTextProjector()
+    private var fillerRangesBySource: [SegmentTextReference: [TextUTF16Range]] = [:]
     private var projections: [SegmentTextReference: CleanedTranscriptText] = [:]
     private var displayCursors: [SegmentTextReference: (offset: Int, index: String.Index)] = [:]
 
     public init() {}
 
+    /// Filler ranges become available only after the assessment is saved.
+    public mutating func setFillerRanges(_ ranges: [TextUTF16Range], for source: SegmentTextReference) {
+        fillerRangesBySource[source] = ranges
+        projections.removeValue(forKey: source)
+        displayCursors.removeValue(forKey: source)
+    }
+
     public mutating func projection(of source: SegmentTextReference, text: String) throws -> CleanedTranscriptText {
         if let cached = projections[source] { return cached }
-        let projected = try projector.project(sourceText: text)
+        let fillerRanges = fillerRangesBySource[source] ?? []
+        let projected = try projector.project(sourceText: text, fillerRanges: fillerRanges)
         projections[source] = projected
         return projected
     }

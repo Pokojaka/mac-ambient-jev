@@ -129,6 +129,7 @@ private struct SyntheticLocalDecisionProvider: DecisionProvider {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.75) }),
             continuationProbability: request.next == nil ? nil : 0.5,
+            fillerRanges: [],
             inputTokens: inputTokens
         )
     }

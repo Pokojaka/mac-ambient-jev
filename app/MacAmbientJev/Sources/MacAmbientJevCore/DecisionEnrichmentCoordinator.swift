@@ -9,7 +9,6 @@ public enum ClauseEventType {
 
 /// What each decision run records about the clause tagger and policy.
 public enum DecisionRunProvenance {
-    public static let fillerProjectionRevision = "1"
     private static let engine = "coreml-clause-tagger"
     private static let unitPolicy = "btsj-utterance-sentence"
     private static let encodingRevision = "1"
@@ -25,6 +24,8 @@ public enum DecisionRunProvenance {
         configuration["next_head_character_limit"] = String(ClauseBoundaryPolicy.nextHeadCharacterLimit)
         configuration["window_content_tokens"] = "190"
         configuration["window_policy"] = "whole-piece-max-min-context"
+        configuration["span_policy"] = "argmax-o-f-d-f-only"
+        configuration["span_window_policy"] = "whole-piece-max-min-context"
         configuration["text_policy"] = "neutral-punctuation-piecewise"
         return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
@@ -54,7 +55,6 @@ public enum DecisionRunProvenance {
             "encoding_revision": encodingRevision,
             "max_tokens": maximumTokens,
             "compute_units": computeUnits,
-            "filler_projection_revision": fillerProjectionRevision,
         ]
     }
 }
@@ -66,7 +66,6 @@ public enum DecisionPendingMessage {
 
 /// One boundary request for one source, or the pending state when it cannot be sent.
 public enum ClauseBoundaryStep {
-    /// A source with no candidate at the end of the text needs no request.
     public static func assess(
         source: SegmentTextReference,
         text: String,
@@ -74,18 +73,12 @@ public enum ClauseBoundaryStep {
         decisions: DecisionCoordinator
     ) async throws -> ClauseBoundaryState {
         let request = try ClauseBoundaryRequest(source: source, text: text, next: next)
-        if request.candidates.isEmpty && next == nil {
-            return .assessed(try ClauseBoundaryAssessment(
-                source: source, candidates: [], probabilities: [:], nextHead: nil,
-                continuationProbability: nil, request: nil, sourceDecision: .terminalWithoutQuestions
-            ))
-        }
         switch await decisions.assessBoundaries(request) {
         case .answered(let response, let record):
             return .assessed(try ClauseBoundaryAssessment(
                 source: source, candidates: request.candidates, probabilities: response.probabilities,
                 nextHead: next, continuationProbability: response.continuationProbability,
-                request: record, sourceDecision: .assessed
+                fillerRanges: response.fillerRanges, request: record, sourceDecision: .assessed
             ))
         case .failed(let message):
             return .pending(reason: .requestFailed, message: message)
@@ -403,13 +396,25 @@ public actor DecisionEnrichmentCoordinator {
             kind: nil
         )
         var composer = ClauseTextComposer()
+        for event in self.events {
+            guard event.processingRunID == boundaryRunID,
+                  case .clauseBoundaryAssessed(let assessment) = event.kind else { continue }
+            composer.setFillerRanges(assessment.fillerRanges, for: assessment.source)
+        }
         var reusablePublished: [ExactClauseTextKey: (seq: UInt64, assignment: ClausePriorityAssignment)] = [:]
+        var publishedTextKeys: [ClauseReference: ExactClauseTextKey] = [:]
         if case .retry = scope, rebuildsBoundaries {
             var publishedComposer = ClauseTextComposer()
+            for (source, saved) in published.boundaryStates {
+                if case .assessed(let assessment) = saved.state {
+                    publishedComposer.setFillerRanges(assessment.fillerRanges, for: source)
+                }
+            }
             for unit in published.clauses {
-                guard let origin = published.assignments[unit.reference], !origin.assignment.needsRetry else { continue }
                 let text = try publishedComposer.text(of: unit.parts, sourceText: timeline.text(of:))
                 let key = ExactClauseTextKey(text: text)
+                publishedTextKeys[unit.reference] = key
+                guard let origin = published.assignments[unit.reference], !origin.assignment.needsRetry else { continue }
                 if reusablePublished[key].map({ $0.seq < origin.seq }) ?? true {
                     reusablePublished[key] = origin
                 }
@@ -420,10 +425,11 @@ public actor DecisionEnrichmentCoordinator {
         for unit in clauses {
             let text = try composer.text(of: unit.parts, sourceText: timeline.text(of:))
             guard !ClauseTextComposer.isBlank(text) else { continue }
+            let key = ExactClauseTextKey(text: text)
             let origin: (seq: UInt64, assignment: ClausePriorityAssignment)?
             switch scope {
             case .all:
-                if let reuse = reusableDecisions[ExactClauseTextKey(text: text)] {
+                if let reuse = reusableDecisions[key] {
                     carried.append(try ClausePriorityAssignment(
                         reference: unit.reference, priority: reuse.visiblePriority, needsRetry: false,
                         decision: .carriedOver(
@@ -435,9 +441,16 @@ public actor DecisionEnrichmentCoordinator {
                 }
                 origin = nil
             case .retry:
-                origin = rebuildsBoundaries
-                    ? (published.assignment(forClauseWithParts: unit.parts) ?? reusablePublished[ExactClauseTextKey(text: text)])
-                    : published.assignments[unit.reference]
+                if rebuildsBoundaries {
+                    let partsOrigin = published.assignment(forClauseWithParts: unit.parts)
+                    if let partsOrigin, publishedTextKeys[partsOrigin.assignment.reference] == key {
+                        origin = partsOrigin
+                    } else {
+                        origin = reusablePublished[key]
+                    }
+                } else {
+                    origin = published.assignments[unit.reference]
+                }
             }
             if let origin, !(origin.assignment.needsRetry && clauseTargets.contains(origin.assignment.reference)) {
                 carried.append(try ClausePriorityAssignment(

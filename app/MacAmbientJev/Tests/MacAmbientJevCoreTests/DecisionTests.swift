@@ -72,7 +72,10 @@ private func boundarySource(_ id: String, _ seq: UInt64) throws -> SegmentTextRe
 @Test
 func oneBoundaryRequestCarriesEveryCandidateAndTheContinuationAndCountsOnce() async throws {
     let counter = DecisionUsageCounter()
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: ["a"]), priority: lowForBackchannel)
+    let provider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: ["a"], fillerRangesBySegment: [:]),
+        priority: lowForBackchannel
+    )
     let coordinator = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     let request = try ClauseBoundaryRequest(
         source: boundarySource("a", 1), text: "一。二、三。四",
@@ -95,10 +98,47 @@ func oneBoundaryRequestCarriesEveryCandidateAndTheContinuationAndCountsOnce() as
 }
 
 @Test
+func terminalCandidateFreeBoundaryRequestIsSentAndCountedOnce() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+        priority: lowForBackchannel
+    )
+    let coordinator = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let source = try boundarySource("a", 1)
+
+    guard case .assessed(let assessment) = try await ClauseBoundaryStep.assess(
+        source: source, text: "本文", next: nil, decisions: coordinator
+    ) else {
+        Issue.record("expected an assessed terminal boundary without candidates")
+        return
+    }
+    #expect(assessment.source == source)
+    #expect(assessment.candidates.isEmpty)
+    #expect(assessment.probabilities.isEmpty)
+    #expect(assessment.continuationProbability == nil)
+    #expect(assessment.fillerRanges.isEmpty)
+    #expect(assessment.request?.inputTokens == testInputTokens)
+    let requests = await provider.boundaryRequests
+    #expect(requests.count == 1)
+    #expect(requests.first?.source == source)
+    #expect(requests.first?.candidates.isEmpty == true)
+    #expect(requests.first?.next == nil)
+    let snapshot = await counter.snapshot()
+    #expect(snapshot.boundaryRequests.sendCount == 1)
+    #expect(snapshot.boundaryRequests.successCount == 1)
+    #expect(snapshot.boundaryRequests.inputTokens == testInputTokens)
+    #expect(snapshot.priorityRequests.sendCount == 0)
+}
+
+@Test
 func fortyPriorityTargetsAreOneRequestWithOneTokenReport() async throws {
     let counter = DecisionUsageCounter()
     let coordinator = DecisionCoordinator(
-        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel),
+        provider: ScriptedDecisionProvider(
+            boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+            priority: lowForBackchannel
+        ),
         identity: testDecisionIdentity,
         usageCounter: counter
     )
@@ -120,7 +160,9 @@ private struct MismatchedPriorityKeysProvider: DecisionProvider {
     let keys: [String]
 
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
-        ClauseBoundaryResponse(probabilities: [:], continuationProbability: nil, inputTokens: testInputTokens)
+        ClauseBoundaryResponse(
+            probabilities: [:], continuationProbability: nil, fillerRanges: [], inputTokens: testInputTokens
+        )
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {

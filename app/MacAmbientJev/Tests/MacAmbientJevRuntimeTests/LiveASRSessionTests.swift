@@ -210,6 +210,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         source: source, candidates: [], probabilities: [:],
         nextHead: NextSegmentHead(source: nextSource, text: nextText),
         continuationProbability: 0.05,
+        fillerRanges: [],
         request: DecisionRequestRecord(requestID: "boundary_req", inputTokens: 3),
         sourceDecision: .assessed
     )

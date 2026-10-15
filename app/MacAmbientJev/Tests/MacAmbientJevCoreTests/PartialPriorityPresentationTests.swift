@@ -7,7 +7,7 @@ private actor PartialPriorityProvider: DecisionProvider {
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
-            continuationProbability: request.next.map { _ in 0.1 }, inputTokens: testInputTokens
+            continuationProbability: request.next.map { _ in 0.1 }, fillerRanges: [], inputTokens: testInputTokens
         )
     }
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {

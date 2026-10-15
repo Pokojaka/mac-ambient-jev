@@ -51,6 +51,7 @@ private actor RecordingTagger: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
             continuationProbability: request.next.map { _ in 0.1 },
+            fillerRanges: [],
             inputTokens: 5
         )
     }
@@ -152,6 +153,10 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
         // The saved LOW sentence leaves the screen; the waiting row keeps its text.
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話2"])
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.awaitingNextSegment])
+        // Resuming the suspended classifier completes row 1; row 2 is assessed only when input ends.
+        #expect(await provider.boundaryTexts == ["録音の発話1"])
+        #expect(await provider.texts == ["録音の発話1"])
+        // These are pre-finish counts; the terminal row is assessed when recording input ends.
         let usage = await state.decisionUsageCounter.snapshot()
         #expect(usage.boundaryRequests.sendCount == 1)
         #expect(usage.priorityRequests.sendCount == 1)

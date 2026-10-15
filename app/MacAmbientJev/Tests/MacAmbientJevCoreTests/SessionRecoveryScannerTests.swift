@@ -215,10 +215,17 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
         boundarySegments: [try source("s01", in: events), try source("s02", in: events)], clauses: []
     ))
 
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: { _ in
+    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
         throw DecisionResponseError.missingAnswer
     })
-    let result = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all)
+    let counter = DecisionUsageCounter()
+    let result = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all, counter: counter)
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02"])
+    let boundaryUsage = await counter.snapshot().boundaryRequests
+    #expect(boundaryUsage.sendCount == 2)
+    #expect(boundaryUsage.successCount == 2)
+    #expect(boundaryUsage.inputTokens == 2 * testInputTokens)
+    #expect(result.pendingBoundarySegments.isEmpty)
     // An interrupted retry run that was never published is not adopted; launch recovery requests the published pendings again.
     _ = try await SessionWriter(sessionURL: url).append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "priority_unpublished",
@@ -426,9 +433,22 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
     _ = try publishLocal(root: url, events: try await writeTranscript(["本文"], root: url, sessionID: id))
-    _ = try await buildAndPublish(root: url, sessionID: id,
-                                  provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
-                                                                     priority: lowForBackchannel), scope: .all)
+    let provider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+        priority: lowForBackchannel
+    )
+    let counter = DecisionUsageCounter()
+    _ = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all, counter: counter)
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01"])
+    let boundaryUsage = await counter.snapshot().boundaryRequests
+    #expect(boundaryUsage.sendCount == 1)
+    #expect(boundaryUsage.successCount == 1)
+    #expect(boundaryUsage.inputTokens == testInputTokens)
+    let assessment = try #require(try eventObjects(url).first {
+        $0["event_type"] as? String == ClauseEventType.boundaryAssessed
+    })
+    let assessmentPayload = try #require(assessment["payload"] as? [String: Any])
+    #expect(assessmentPayload["filler_ranges"] as? [Any] != nil)
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
     let metadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
     let active = try #require(metadata.activeRuns)
@@ -446,11 +466,19 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
         == .recoverDecisionRun(boundarySegments: [], clauses: []))
-    _ = try await buildAndPublish(
-        root: url, sessionID: id,
-        provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []), priority: lowForBackchannel),
-        scope: .retry(boundarySegments: [], clauses: [])
+    let retryProvider = ScriptedDecisionProvider(
+        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+        priority: lowForBackchannel
     )
+    let retryCounter = DecisionUsageCounter()
+    _ = try await buildAndPublish(
+        root: url, sessionID: id, provider: retryProvider,
+        scope: .retry(boundarySegments: [], clauses: []), counter: retryCounter
+    )
+    #expect(await retryProvider.boundaryRequests.isEmpty)
+    let retryBoundaryUsage = await retryCounter.snapshot().boundaryRequests
+    #expect(retryBoundaryUsage.sendCount == 0)
+    #expect(retryBoundaryUsage.inputTokens == 0)
     let replaced = try #require(try ProcessingMetadataStore(sessionURL: url).load()?.activeRuns)
     #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: replaced))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
@@ -464,7 +492,7 @@ func recoveryRejectsCorruptionEvenWhenMetadataHasNoPendingTargets() async throws
     let url = try writeRecording(id: id, root: root)
     _ = try publishLocal(root: url, events: try await writeTranscript(["本文"], root: url, sessionID: id))
     _ = try await buildAndPublish(root: url, sessionID: id,
-                                  provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: []),
+                                  provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
                                                                      priority: lowForBackchannel), scope: .all)
     let eventsURL = url.appending(path: "events.jsonl")
     var objects = try eventObjects(url)
