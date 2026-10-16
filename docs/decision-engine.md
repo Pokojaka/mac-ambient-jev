@@ -49,7 +49,7 @@ ASR gap の後に空の ASR 結果が保存された場合も、そこでテキ�
 
 モデルを更新する手順:
 
-1. 新しいモデルを書き出し、`clause-tagger` ディレクトリに ClauseTagger.mlpackage と tokenizer.json を置いて tar.gz にまとめる。asset 名と tag は model revision の先頭8桁を使う（例: tag `clause-tagger-bd9e94bd`）。
+1. 新しいモデルを書き出し、`clause-tagger` ディレクトリに ClauseTagger.mlpackage と tokenizer.json を置いて tar.gz にまとめる。asset 名と tag は model revision の先頭8桁を使う（例: tag `clause-tagger-90501ea3`）。
 2. その tag で GitHub release を作り、archive を asset として登録する。
 3. build_app.sh の tag、asset 名、SHA-256（`shasum -a 256` の値）の3定数を書き換える。
 4. 実モデル parity テストの fixture を新しいモデルで作り直す（[検証と計測](testing.md)）。

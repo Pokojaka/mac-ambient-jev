@@ -54,7 +54,7 @@ RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/export
 
 `/absolute/path/to/exported-model` は例示用 placeholder です。学習済み ClauseTagger.mlpackage と tokenizer.json が直下にある実在ディレクトリの絶対パスへ置き換えてください。`scripts/build_app.sh` の後は、app bundle の Contents/Resources/clause-tagger の絶対パスを指定すると同梱モデルを検証できます。テストを有効にした状態で環境変数が未設定、相対パス、存在しないパス、またはディレクトリでないパスを指定するとセットアップエラーになります。既定パス、モデルの自動取得、fallback はありません。モデル package と tokenizer は Git に含めません。
 
-[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/Resources/ClauseTaggerFixtures.json) は SwiftPM の小さな test resource で、13件の入力文、厳密な token ID、boundary・span・priority の参照確率を持ちます。現在の学習済み model revision は `bd9e94bdf0e921b6045fa13a0ad63323759d46859dda8f39f6a5e375a089f38e` です。fixture の `model_revision` と `tokenizer_sha256` はテスト対象の学習済み package と tokenizer に一致しなければなりません。新しい学習済み export を作ったら、その export から fixture を再生成します。Swift の誤った tokenization を観測した値に合わせて期待 ID を書き換えてはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
+[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/Resources/ClauseTaggerFixtures.json) は SwiftPM の小さな test resource で、13件の入力文、厳密な token ID、boundary・span・priority の参照確率を持ちます。現在の学習済み model revision は `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9` です。fixture の `model_revision` と `tokenizer_sha256` はテスト対象の学習済み package と tokenizer に一致しなければなりません。新しい学習済み export を作ったら、その export から fixture を再生成します。Swift の誤った tokenization を観測した値に合わせて期待 ID を書き換えてはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
 
 Parity の受け入れ基準は次のとおりです。
 

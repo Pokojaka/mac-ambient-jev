@@ -78,7 +78,7 @@ struct LocalClauseTaggerTests {
         let document = try Self.loadFixture()
 
         #expect(document.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
-        #expect(document.modelRevision == "bd9e94bdf0e921b6045fa13a0ad63323759d46859dda8f39f6a5e375a089f38e")
+        #expect(document.modelRevision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
         #expect(document.trainingStatus == "trained")
         #expect(Self.isLowercaseSHA256(document.tokenizerSHA256))
         #expect(document.unitPolicy == "btsj-utterance-sentence")
