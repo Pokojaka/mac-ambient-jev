@@ -78,7 +78,7 @@ struct LocalClauseTaggerTests {
         let document = try Self.loadFixture()
 
         #expect(document.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
-        #expect(document.modelRevision == "54443a6a0f48b8c8638caed9b4dd88c001988f03b7d5cb629bf0d9773e192d01")
+        #expect(document.modelRevision == "bd9e94bdf0e921b6045fa13a0ad63323759d46859dda8f39f6a5e375a089f38e")
         #expect(document.trainingStatus == "trained")
         #expect(Self.isLowercaseSHA256(document.tokenizerSHA256))
         #expect(document.unitPolicy == "btsj-utterance-sentence")
@@ -97,7 +97,7 @@ struct LocalClauseTaggerTests {
             #expect(fixture.spanProbabilities.count == length)
             #expect(fixture.priorityProbabilities.count == 2)
             #expect(fixture.boundaryProbabilities.allSatisfy { $0.count == 2 })
-            #expect(fixture.spanProbabilities.allSatisfy { $0.count == 3 })
+            #expect(fixture.spanProbabilities.allSatisfy { $0.count == 4 })
             #expect(fixture.boundaryProbabilities.allSatisfy(Self.isProbabilityDistribution))
             #expect(fixture.spanProbabilities.allSatisfy(Self.isProbabilityDistribution))
             #expect(Self.isProbabilityDistribution(fixture.priorityProbabilities))
@@ -306,6 +306,7 @@ struct LocalClauseTaggerTests {
             let prediction = try model.predict(inputIDs: fixture.inputIDs)
             #expect(prediction.boundaryProbabilities.count == fixture.inputIDs.count)
             #expect(prediction.spanProbabilities.count == fixture.inputIDs.count)
+            #expect(prediction.spanProbabilities.allSatisfy { $0.count == 4 })
             #expect(prediction.priorityProbabilities.count == 2)
             maxBoundaryDifference = max(
                 maxBoundaryDifference,
@@ -574,6 +575,7 @@ struct LocalClauseTaggerTests {
         let twoTokenPrediction = try model.predict(inputIDs: [6, 4])
         #expect(twoTokenPrediction.boundaryProbabilities.count == 2)
         #expect(twoTokenPrediction.spanProbabilities.count == 2)
+        #expect(twoTokenPrediction.spanProbabilities.allSatisfy { $0.count == 4 })
         #expect(twoTokenPrediction.priorityProbabilities.count == 2)
         try Self.expectInvalidModelInput(model, inputIDs: [6, 102_400, 4])
         try Self.expectInvalidModelInput(model, inputIDs: [2, 4])
