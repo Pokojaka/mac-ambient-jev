@@ -412,11 +412,10 @@ import Testing
         AudioGapEvent(startFrame: 24, frameCount: 20, reason: .missingCallback),
         AudioGapEvent(startFrame: 46, frameCount: 20, reason: .missingCallback)
     ])
-    #expect(try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
-        .readSamples(frameRange: 0..<68) ==
-        [1, 2] + Array(repeating: Float(0), count: 20) +
-        [3, 4] + Array(repeating: Float(0), count: 20) +
-        [5, 6] + Array(repeating: Float(0), count: 20) + [7, 8])
+    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
+    let silence = Array(repeating: Float(0), count: 20)
+    let expected: [Float] = [1, 2] + silence + [3, 4] + silence + [5, 6] + silence + [7, 8]
+    #expect(try reader.readSamples(frameRange: 0..<68) == expected)
 }
 
 @Test func stopAfterOneFramePTSJitterDoesNotAppendFalseTailSilence() async throws {

@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 public enum SessionRecoveryError: Error, Equatable {
     case corruptIntermediateLine(index: Int)
@@ -46,7 +47,7 @@ public enum SessionRecovery {
             if let value = dictionary["event_seq"] {
                 guard let number = value as? NSNumber,
                       CFGetTypeID(number) == CFNumberGetTypeID(),
-                      !CFNumberIsFloatType(number),
+                      !["f", "d"].contains(String(cString: number.objCType)),
                       number.int64Value > 0,
                       number == NSNumber(value: number.int64Value) else {
                     throw SessionRecoveryError.invalidEventSequence(index: index)

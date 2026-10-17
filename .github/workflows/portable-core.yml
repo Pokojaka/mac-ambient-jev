@@ -1,0 +1,58 @@
+name: Portable Core
+
+on:
+  push:
+    branches: [main, work/windows-portable-core]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Python
+        run: apt-get update && apt-get install -y python3
+      - name: Check portability and documentation
+        run: |
+          python3 -B scripts/test_portable_core.py
+          python3 -B scripts/check_portable_core.py
+          python3 scripts/test_doc_references.py
+          python3 scripts/check_doc_references.py
+      - name: Build Core and all three evaluators
+        run: swift build --package-path app/MacAmbientJev
+      - name: Test Core
+        run: swift test --package-path app/MacAmbientJev
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+      - uses: compnerd/gha-setup-swift@775d3f4111c5be58a0f62f2efdd353bb8fac15c7
+        with:
+          swift-version: swift-6.2-release
+          swift-build: 6.2-RELEASE
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check portability and documentation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -B scripts/test_portable_core.py
+          python -B scripts/check_portable_core.py
+          python scripts/test_doc_references.py
+          python scripts/check_doc_references.py
+      - name: Build Core and all three evaluators
+        run: swift build --package-path app/MacAmbientJev
+      - name: Test Core
+        run: swift test --package-path app/MacAmbientJev
