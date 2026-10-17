@@ -1,0 +1,30 @@
+name: Windows storage API probe
+on:
+  push:
+    branches: [work/windows-portable-core]
+    paths: [.github/workflows/windows-storage-probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: |
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public class StorageProbe {
+            [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+            public static extern IntPtr CreateFileW(string path, uint access, uint sharing, IntPtr security, uint disposition, uint flags, IntPtr template);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FlushFileBuffers(IntPtr handle);
+            [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+          }
+          '@
+          $path = Join-Path $env:RUNNER_TEMP 'storage-probe'
+          New-Item -ItemType Directory $path -Force | Out-Null
+          $handle = [StorageProbe]::CreateFileW($path, 0xC0000000, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+          Write-Output "directory handle=$handle error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          $result = [StorageProbe]::FlushFileBuffers($handle)
+          Write-Output "flush=$result error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          [StorageProbe]::CloseHandle($handle) | Out-Null
