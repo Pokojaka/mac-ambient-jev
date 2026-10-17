@@ -24,8 +24,11 @@ MacAmbientJevEvaluateDiarization をビルドします。macOS 専用の framewo
 評価 CLI の参照文・artifact の形式は [testing.md](testing.md) と [linux.md](linux.md) を参照してください。
 参照文のファイル指定は相対パスと Windows の絶対パスを扱います。
 
-[portable-core.yml](../.github/workflows/portable-core.yml) は main への push、pull request、手動実行で
-Linux と Windows のビルド・Core テストを実行します。Windows のテストには symlink の作成権限が必要です。
+[portable-core.yml](../.github/workflows/portable-core.yml) は共通コア関連の変更を含む main への push と
+レビュー可能な pull request で Linux と Windows のビルド・Core テストを実行します。
+Draft PR では portable と macOS の CI を起動せず、作業中の Linux 検証はローカルにまとめます。
+手動実行は Windows のみが既定で、run_linux を有効にすると Linux も実行します。
+同じブランチ・PR の古い実行は自動で取り消します。Windows のテストには symlink の作成権限が必要です。
 macOS の app bundle と録音・GUI の検証は [ci.yml](../.github/workflows/ci.yml) と Mac で行います。
 
 ## 保存先と境界

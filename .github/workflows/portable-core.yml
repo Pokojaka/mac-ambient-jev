@@ -3,14 +3,41 @@ name: Portable Core
 on:
   push:
     branches: [main]
+    paths:
+      - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
+      - 'app/MacAmbientJev/Sources/CWindowsSession/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
+      - 'app/MacAmbientJev/Package.swift'
+      - 'scripts/*portable*'
+      - '.github/workflows/portable-core.yml'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
+      - 'app/MacAmbientJev/Sources/CWindowsSession/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
+      - 'app/MacAmbientJev/Package.swift'
+      - 'scripts/*portable*'
+      - '.github/workflows/portable-core.yml'
   workflow_dispatch:
+    inputs:
+      run_linux:
+        description: Also run Linux (normally verified locally during development)
+        type: boolean
+        default: false
+
+concurrency:
+  group: portable-core-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   linux:
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name != 'workflow_dispatch' || inputs.run_linux)
     runs-on: ubuntu-latest
     container: swift:6.2-noble
     timeout-minutes: 20
@@ -30,6 +57,7 @@ jobs:
         run: swift test --package-path app/MacAmbientJev
 
   windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -41,6 +69,7 @@ jobs:
         with:
           swift-version: swift-6.2-release
           swift-build: 6.2-RELEASE
+          cache: true
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
