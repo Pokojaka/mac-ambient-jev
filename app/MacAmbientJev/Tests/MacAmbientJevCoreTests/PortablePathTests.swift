@@ -2,6 +2,17 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+@Test(arguments: [39, 112])
+func windowsDiskFullErrorsKeepTheirUserFacingCause(code: Int) {
+    let underlying = NSError(domain: "NSWin32ErrorDomain", code: code)
+    let wrapped = CocoaError(.fileReadUnknown, userInfo: [NSUnderlyingErrorKey: underlying])
+    for error: any Error in [underlying, wrapped] {
+        #expect(throws: DurableAudioWriterError.outOfSpace("audio")) {
+            try DurableAudioWriterError.writing("audio") { throw error }
+        }
+    }
+}
+
 @Test(arguments: [
     (#"a<b>c\d|e?f*g"h.wav"#, "a-b-c-d-e-f-g-h"),
     ("lecture. .wav", "lecture--"),
@@ -32,6 +43,22 @@ func audioCheckpointRejectsWindowsPathEscapes(filename: String) {
         chunkFiles: [filename], chunkFrameCounts: [1], gapEvents: []
     )
     #expect(!checkpoint.hasPlainUniqueChunkFiles)
+}
+
+@Test func caseAliasedChunksCannotDuplicateAudio() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try [Float(0.25)].withUnsafeBytes { try Data($0).write(to: root.appending(path: "chunk-a.f32le")) }
+    try [Float(0.25)].withUnsafeBytes { try Data($0).write(to: root.appending(path: "CHUNK-A.f32le")) }
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 2, sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE,
+        chunkFiles: ["chunk-a.f32le", "CHUNK-A.f32le"], chunkFrameCounts: [1, 1], gapEvents: []
+    )
+    #expect(!checkpoint.hasPlainUniqueChunkFiles)
+    #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
+        _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<2)
+    }
 }
 
 @Test func manifestReadsAbsoluteReferencePath() throws {

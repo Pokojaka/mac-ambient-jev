@@ -32,15 +32,33 @@ uint32_t msj_kind(MSJHandle handle, int *directory) {
     return ERROR_SUCCESS;
 }
 
-uint32_t msj_open_root(const wchar_t *path, int create, MSJHandle *result) {
-    if (create && !CreateDirectoryW(path, NULL)) {
-        DWORD error = GetLastError();
-        if (error != ERROR_ALREADY_EXISTS) return error;
+uint32_t msj_open_root(const wchar_t *path, int create, int writable, MSJHandle *result) {
+    /* CreateFileW must not truncate a long boundary to Win32's MAX_PATH. */
+    DWORD needed = GetFullPathNameW(path, 0, NULL, NULL);
+    if (!needed) return GetLastError();
+    wchar_t *absolute = calloc(needed, sizeof(wchar_t));
+    wchar_t *extended = calloc((size_t)needed + 8, sizeof(wchar_t));
+    if (!absolute || !extended) { free(absolute); free(extended); return ERROR_NOT_ENOUGH_MEMORY; }
+    DWORD length = GetFullPathNameW(path, needed, absolute, NULL);
+    if (!length || length >= needed) {
+        DWORD error = length ? ERROR_FILENAME_EXCED_RANGE : GetLastError();
+        free(absolute); free(extended); return error;
     }
-    HANDLE handle = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+    if (!wcsncmp(absolute, L"\\\\?\\", 4)) wmemcpy(extended, absolute, length + 1);
+    else if (!wcsncmp(absolute, L"\\\\", 2)) {
+        wmemcpy(extended, L"\\\\?\\UNC\\", 8); wmemcpy(extended + 8, absolute + 2, length - 1);
+    } else { wmemcpy(extended, L"\\\\?\\", 4); wmemcpy(extended + 4, absolute, length + 1); }
+    free(absolute);
+    if (create && !CreateDirectoryW(extended, NULL)) {
+        DWORD error = GetLastError();
+        if (error != ERROR_ALREADY_EXISTS) { free(extended); return error; }
+    }
+    HANDLE handle = CreateFileW(extended, GENERIC_READ | (writable ? GENERIC_WRITE : 0),
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, NULL);
-    if (handle == INVALID_HANDLE_VALUE) return GetLastError();
+    DWORD open_error = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    free(extended);
+    if (open_error) return open_error;
     int directory = 0;
     DWORD error = msj_kind(handle, &directory);
     if (!error && !directory) error = ERROR_DIRECTORY;
@@ -60,7 +78,7 @@ uint32_t msj_open_at(MSJHandle parent, const wchar_t *name, int kind, int writab
     IO_STATUS_BLOCK io;
     HANDLE handle;
     ACCESS_MASK access = GENERIC_READ | SYNCHRONIZE;
-    if (writable || kind == 1) access |= GENERIC_WRITE;
+    if (writable) access |= GENERIC_WRITE;
     if (deletable) access |= DELETE;
     ULONG options = 0x00200000 /* FILE_OPEN_REPARSE_POINT */
                   | 0x00000020 /* FILE_SYNCHRONOUS_IO_NONALERT */

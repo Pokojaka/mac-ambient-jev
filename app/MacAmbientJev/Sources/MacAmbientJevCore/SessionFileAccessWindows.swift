@@ -1,6 +1,7 @@
 #if os(Windows)
 import Foundation
 import CWindowsSession
+import ucrt
 
 /// Windows equivalent of the POSIX descriptor-relative session boundary.
 public enum SessionFileAccess {
@@ -61,7 +62,8 @@ public enum SessionFileAccess {
         return Handle(raw)
     }
 
-    private static func directory(_ url: URL, relativeTo root: URL, create: Bool = false) throws -> Handle {
+    private static func directory(_ url: URL, relativeTo root: URL, create: Bool = false,
+                                  writable: Bool = false) throws -> Handle {
         let boundary = root.pathComponents
         let parts = url.pathComponents
         guard root.isFileURL, url.isFileURL,
@@ -74,27 +76,28 @@ public enum SessionFileAccess {
         guard let path else { throw unsafe(root) }
         var raw: UnsafeMutableRawPointer?
         try path.withCString(encodedAs: UTF16.self) {
-            try check(msj_open_root($0, create ? 1 : 0, &raw), url: root)
+            try check(msj_open_root($0, create ? 1 : 0, (writable || create) ? 1 : 0, &raw), url: root)
         }
         guard let raw else { throw unsafe(root) }
         var current = Handle(raw)
         var currentURL = root
         for name in parts.dropFirst(boundary.count) {
             currentURL.appendPathComponent(name)
-            current = try child(current, name: name, url: currentURL, kind: 1, create: create)
+            current = try child(current, name: name, url: currentURL, kind: 1,
+                                writable: writable || create, create: create)
         }
         return current
     }
 
-    private static func parent(of url: URL, relativeTo root: URL) throws -> Handle {
+    private static func parent(of url: URL, relativeTo root: URL, writable: Bool = false) throws -> Handle {
         guard url.pathComponents.count > root.pathComponents.count,
               PortableFileName.isValid(url.lastPathComponent) else { throw unsafe(url) }
-        return try directory(url.deletingLastPathComponent(), relativeTo: root)
+        return try directory(url.deletingLastPathComponent(), relativeTo: root, writable: writable)
     }
 
     public static func openHandle(_ url: URL, relativeTo root: URL, writable: Bool = false,
                                    create: Bool = false, exclusive: Bool = false) throws -> FileHandle {
-        let parent = try parent(of: url, relativeTo: root)
+        let parent = try parent(of: url, relativeTo: root, writable: writable || create || exclusive)
         return try child(parent, name: url.lastPathComponent, url: url, kind: 0,
                          writable: writable, create: create, exclusive: exclusive)
             .fileHandle(writable: writable, url: url)
@@ -125,7 +128,7 @@ public enum SessionFileAccess {
     }
 
     public static func createExclusiveDirectory(_ url: URL, relativeTo root: URL) throws {
-        let parent = try parent(of: url, relativeTo: root)
+        let parent = try parent(of: url, relativeTo: root, writable: true)
         _ = try child(parent, name: url.lastPathComponent, url: url, kind: 1, create: true, exclusive: true)
     }
 
@@ -172,7 +175,7 @@ public enum SessionFileAccess {
     }
 
     public static func removeIfPresent(_ url: URL, relativeTo root: URL) throws {
-        do { try remove(url, from: parent(of: url, relativeTo: root)) }
+        do { try remove(url, from: parent(of: url, relativeTo: root, writable: true)) }
         catch { if isMissing(error) { return }; throw error }
     }
 
@@ -192,7 +195,7 @@ public enum SessionFileAccess {
     }
 
     public static func writeAtomically(_ data: Data, to url: URL, relativeTo root: URL) throws {
-        let parent = try parent(of: url, relativeTo: root)
+        let parent = try parent(of: url, relativeTo: root, writable: true)
         try validate(url, in: parent, allowMissing: true)
         let temporary = ".\(UUID().uuidString).tmp"
         let staged = try child(parent, name: temporary, url: url, kind: 0,
@@ -212,8 +215,8 @@ public enum SessionFileAccess {
     }
 
     public static func rename(_ source: URL, to destination: URL, relativeTo root: URL) throws {
-        let sourceParent = try parent(of: source, relativeTo: root)
-        let destinationParent = try parent(of: destination, relativeTo: root)
+        let sourceParent = try parent(of: source, relativeTo: root, writable: true)
+        let destinationParent = try parent(of: destination, relativeTo: root, writable: true)
         let entry = try child(sourceParent, name: source.lastPathComponent, url: source,
                               kind: 0, writable: true, deletable: true)
         try validate(destination, in: destinationParent, allowMissing: true)
@@ -227,7 +230,7 @@ public enum SessionFileAccess {
 
     public static func synchronize(_ url: URL, relativeTo root: URL, isDirectory: Bool = false) throws {
         if isDirectory {
-            let handle = try directory(url, relativeTo: root)
+            let handle = try directory(url, relativeTo: root, writable: true)
             try check(msj_flush(handle.raw), url: url)
         } else {
             let handle = try openHandle(url, relativeTo: root, writable: true)

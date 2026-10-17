@@ -4,7 +4,7 @@
 #include <wchar.h>
 
 typedef void *MSJHandle;
-uint32_t msj_open_root(const wchar_t *path, int create, MSJHandle *result);
+uint32_t msj_open_root(const wchar_t *path, int create, int writable, MSJHandle *result);
 /* kind: -1 either, 0 regular file, 1 directory. Never follows a reparse point. */
 uint32_t msj_open_at(MSJHandle parent, const wchar_t *name, int kind, int writable,
                      int create, int exclusive, int deletable, MSJHandle *result);

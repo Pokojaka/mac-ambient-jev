@@ -3,6 +3,56 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+private func setDirectoryWriteDenial(_ directory: URL, deny: Bool) throws {
+    let environment = ProcessInfo.processInfo.environment
+    let systemRoot = try #require(environment["SystemRoot"])
+    let user = try #require(environment["USERNAME"])
+    let domain = try #require(environment["USERDOMAIN"])
+    let account = "\(domain)\\\(user)"
+    let path = directory.withUnsafeFileSystemRepresentation { String(cString: $0!) }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: systemRoot).appending(path: "System32/icacls.exe")
+    process.arguments = [path, deny ? "/deny" : "/remove:d", deny ? "\(account):(WD,AD,WEA,WA)" : account]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    _ = try output.fileHandleForReading.readToEnd()
+    process.waitUntilExit()
+    try #require(process.terminationStatus == 0)
+}
+
+@Test func windowsReadOnlyBoundaryAllowsReadsAndRejectsWrites() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try SessionWriter(sessionURL: root)
+    try await writer.append(EventDraft(eventType: "test", sessionID: UUID(), payload: "read-only"))
+    let events = root.appending(path: "events.jsonl")
+    let bytes = try SessionFileAccess.read(events, relativeTo: root)
+    try setDirectoryWriteDenial(root, deny: true)
+    defer {
+        do { try setDirectoryWriteDenial(root, deny: false) }
+        catch { Issue.record(error) }
+    }
+    #expect(try SessionFileAccess.read(events, relativeTo: root) == bytes)
+    #expect(try SessionWriter.readDurableLog(eventsURL: events) == bytes)
+    #expect(try SessionFileAccess.fileSize(events, relativeTo: root) == bytes.count)
+    #expect(try SessionFileAccess.contentsOfDirectory(root, relativeTo: root).map(\.lastPathComponent).contains("events.jsonl"))
+    #expect(throws: CocoaError.self) { try SessionFileAccess.writeAtomically(Data(), to: events, relativeTo: root) }
+    #expect(try SessionFileAccess.read(events, relativeTo: root) == bytes)
+}
+
+@Test func windowsLongUnicodeBoundaryRoundTrips() throws {
+    let temporary = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    let root = temporary.appending(path: String(repeating: "x", count: 230) + "講義")
+    try SessionFileAccess.createDirectory(root, relativeTo: root)
+    let file = root.appending(path: "文字起こし.json")
+    let bytes = Data("長いパスの日本語".utf8)
+    try SessionFileAccess.writeAtomically(bytes, to: file, relativeTo: root)
+    #expect(try SessionFileAccess.read(file, relativeTo: root) == bytes)
+}
+
 private func makeJunction(_ link: URL, to destination: URL) throws {
     let systemRoot = try #require(ProcessInfo.processInfo.environment["SystemRoot"])
     let process = Process()
