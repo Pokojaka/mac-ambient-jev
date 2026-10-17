@@ -1,5 +1,7 @@
 # ドキュメント一覧
 
+- [windows.md](windows.md): Windows の共通コア、評価 CLI、保存先とファイルアクセス境界。
+
 - [architecture.md](architecture.md): ターゲット、モジュール、データフロー、portable Core の規則。
 - [storage.md](storage.md): セッション配置、JSON、イベント、音声 timeline、run の来歴。
 - [live.md](live.md): ライブ認識、表示、熱制御、遅延指標。

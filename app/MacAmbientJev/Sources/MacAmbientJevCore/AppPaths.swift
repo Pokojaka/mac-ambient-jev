@@ -1,4 +1,7 @@
 import Foundation
+#if os(Windows)
+import CWindowsSession
+#endif
 
 public enum AppPathsError: Error, LocalizedError, Equatable {
     case directoryUnavailable(String)
@@ -28,9 +31,11 @@ public enum SessionsRootPolicy {
         func resolve(_ url: URL) -> URL {
             var ancestor = url.standardizedFileURL
             var missing: [String] = []
-            while !fileManager.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+            while !fileManager.fileExists(atPath: ancestor.path) {
+                let parent = ancestor.deletingLastPathComponent()
+                guard parent.path != ancestor.path else { break }
                 missing.append(ancestor.lastPathComponent)
-                ancestor.deleteLastPathComponent()
+                ancestor = parent
             }
             var resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL
             for component in missing.reversed() { resolved.appendPathComponent(component) }
@@ -65,11 +70,21 @@ public struct AppPaths: Sendable {
     }
 
     public static func systemDefault(fileManager: FileManager) throws -> AppPaths {
-        AppPaths(
+        #if os(Windows)
+        var pointer: UnsafeMutablePointer<UInt16>?
+        guard msj_local_app_data(&pointer) == 0, let pointer else {
+            throw AppPathsError.directoryUnavailable("LocalAppData")
+        }
+        defer { msj_free_path(pointer) }
+        let local = URL(fileURLWithPath: String(decodingCString: pointer, as: UTF16.self), isDirectory: true)
+        return AppPaths(applicationSupportURL: local, cacheURL: local.appending(path: "Caches"), sessionsRootOverride: nil)
+        #else
+        return AppPaths(
             applicationSupportURL: try userDirectory(.applicationSupportDirectory, fileManager: fileManager),
             cacheURL: try userDirectory(.cachesDirectory, fileManager: fileManager),
             sessionsRootOverride: nil
         )
+        #endif
     }
 
     private static func userDirectory(
@@ -100,6 +115,7 @@ public struct AppPaths: Sendable {
             .appending(path: "mac-ambient-jev", directoryHint: .isDirectory)
     }
     public var protectedSessionsRoots: [URL] {
+        #if os(macOS)
         let container = applicationSupportURL.deletingLastPathComponent()
             .appending(path: "Containers/app.mac-ambient-jev/Data/Library")
         return [
@@ -108,5 +124,8 @@ public struct AppPaths: Sendable {
             container.appending(path: "Application Support/mac-ambient-jev"),
             container.appending(path: "Caches/mac-ambient-jev")
         ]
+        #else
+        return [root, cachesRoot]
+        #endif
     }
 }

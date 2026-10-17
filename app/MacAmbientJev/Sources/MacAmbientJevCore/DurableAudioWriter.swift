@@ -90,9 +90,7 @@ public struct AudioCheckpoint: Codable, Sendable, Equatable {
 extension AudioCheckpoint {
     public var hasPlainUniqueChunkFiles: Bool {
         Set(chunkFiles).count == chunkFiles.count
-            && chunkFiles.allSatisfy {
-                !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/")
-            }
+            && chunkFiles.allSatisfy(PortableFileName.isValid)
     }
 
     /// Rebuilds the latest committed timeline from the JSON snapshot, the chunk

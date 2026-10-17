@@ -1,4 +1,7 @@
 import Foundation
+#if os(Windows)
+import CWindowsSession
+#endif
 
 public actor SessionWriter {
     public let sessionURL: URL
@@ -20,11 +23,19 @@ public actor SessionWriter {
 
     private static func lockedHandle(_ url: URL, create: Bool = false, writable: Bool = true) throws -> FileHandle {
         let handle = try SessionFileAccess.openHandle(url, relativeTo: url.deletingLastPathComponent(), writable: writable, create: create)
+        #if os(Windows)
+        let code = msj_lock(handle._handle)
+        guard code == 0 else {
+            try? handle.close()
+            throw NSError(domain: "NSWin32ErrorDomain", code: Int(code))
+        }
+        #else
         guard flock(handle.fileDescriptor, LOCK_EX) == 0 else {
             let code = POSIXErrorCode(rawValue: errno) ?? .EIO
             try? handle.close()
             throw POSIXError(code)
         }
+        #endif
         return handle
     }
 

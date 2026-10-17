@@ -8,17 +8,19 @@ Mac Ambient Jev は、保存音声を基にローカルで文字起こしを作�
 
 ### 共通ターゲット
 
-macOS 以外でも定義されるターゲットには外部 Swift パッケージ依存がありません。
+macOS 以外でも定義されるターゲットには外部 Swift パッケージ依存がありません。Windows の Core は、リポジトリ内の CWindowsSession target を使って OS のファイル API を呼び出します。
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、`DecisionProvider` protocol と共有判定型、段階 coordinator、materialization、判定 batch と優先度処理、純粋な `ClauseTaggerEncoding`、CER・話者分離の評価。外部ターゲット依存なし |
+| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、`DecisionProvider` protocol と共有判定型、段階 coordinator、materialization、判定 batch と優先度処理、純粋な `ClauseTaggerEncoding`、CER・話者分離の評価。Windows でのみ CWindowsSession に依存 |
 | `MacAmbientJevEvaluateSession` | executable | 参照文付きセッションの ASR 評価。Core に依存 |
 | `MacAmbientJevEvaluateASR` | executable | ASR artifact の CER 評価。Core に依存 |
 | `MacAmbientJevEvaluateDiarization` | executable | 話者分離 artifact の評価。Core に依存 |
 | `MacAmbientJevCoreTests` | test | Core に依存 |
 
 ### macOS 限定ターゲット
+
+Windows の OS adapter は [CWindowsSession.c](../app/MacAmbientJev/Sources/CWindowsSession/CWindowsSession.c) と [SessionFileAccessWindows.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccessWindows.swift) にあります。共通コアと評価 CLI の実行範囲・ビルド手順は [windows.md](windows.md) を参照してください。
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |

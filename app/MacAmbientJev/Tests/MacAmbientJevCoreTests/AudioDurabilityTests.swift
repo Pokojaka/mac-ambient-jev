@@ -414,7 +414,11 @@ import Testing
     ])
     let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     let silence = Array(repeating: Float(0), count: 20)
-    let expected: [Float] = [1, 2] + silence + [3, 4] + silence + [5, 6] + silence + [7, 8]
+    var expected: [Float] = [1, 2]
+    for speech: [Float] in [[3, 4], [5, 6], [7, 8]] {
+        expected.append(contentsOf: silence)
+        expected.append(contentsOf: speech)
+    }
     #expect(try reader.readSamples(frameRange: 0..<68) == expected)
 }
 
