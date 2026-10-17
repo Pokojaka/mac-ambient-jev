@@ -45,7 +45,7 @@ var targets: [Target] = [
 ]
 
 #if os(Windows)
-targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32")]))
+targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
 #endif
 
 #if os(macOS)

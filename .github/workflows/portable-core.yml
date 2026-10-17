@@ -2,7 +2,7 @@ name: Portable Core
 
 on:
   push:
-    branches: [main, work/windows-portable-core]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

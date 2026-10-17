@@ -38,7 +38,7 @@ macOS の外部依存は FluidAudio 0.15.8、speech-swift の revision `c4c2fabb
 
 ## Portable Core の境界
 
-Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI の import を禁止しています。Foundation、Synchronization による保存・同期は Core に置かれます。`DecisionProvider` は Core ML tagger が実装する判定 protocol で、Core 内の `ClauseTaggerEncoding` は tokenizer を受け取る純粋な符号化ロジックです。Core ML と tokenizer の実装・依存は AppleSupport に置き、Core は portable のまま維持します。**portable は「純粋関数だけ」という意味ではありません。**
+Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI、AudioToolbox、CryptoKit、IOKit、CoreMedia の import を禁止しています。Darwin・Glibc・WinSDK は対応する OS / canImport の正の条件分岐内に限ります。Windows の OS API は条件付きの CWindowsSession target に隔離します。Foundation、Synchronization による保存・同期は Core に置かれます。`DecisionProvider` は Core ML tagger が実装する判定 protocol で、Core 内の `ClauseTaggerEncoding` は tokenizer を受け取る純粋な符号化ロジックです。Core ML と tokenizer の実装・依存は AppleSupport に置き、Core は portable のまま維持します。**portable は「純粋関数だけ」という意味ではありません。**
 
 実推論は Core の `ASREngine` と `DiarizationEngine` に対する Runtime の実装です。確定 VAD の `FinalTranscriptVADSegmenter` は Runtime の protocol です。Core の drain は Foundation-only の `CanonicalAudioConverting` を受け取り、stateful AVAudioConverter adapter は AppleSupport に置きます。入力装置や権限は Capture、SwiftUI の状態は App に分離します。Linux のモデル runner は [tools/linux-audio](../tools/linux-audio) にあり、Swift アプリの Runtime 依存には入りません。
 

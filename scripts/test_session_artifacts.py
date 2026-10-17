@@ -3,6 +3,7 @@
 import ast
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,33 @@ class ArtifactTests(unittest.TestCase):
         changed = folder.with_name(f"2024-02-29_23-59-59_{stem}e_31ac3491")
         folder.rename(changed)
         self.assertEqual(self.measurement().returncode, 1)
+
+    def test_import_windows_name_rules_match_swift(self):
+        for original, stem in [("CON.wav", "-CON"), ("com1.part.wav", "-com1.part"),
+                               ("a<b>c\\d|e?f*g\"h.wav", "a-b-c-d-e-f-g-h"),
+                               ("lecture. .wav", "lecture--")]:
+            with self.subTest(original=original):
+                folder = self.session(f"2024-02-29_23-59-59_{stem}_31ac3491",
+                                      source_kind="imported", original_filename=original)
+                try:
+                    result = self.measurement()
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                finally:
+                    shutil.rmtree(folder)
+
+    def test_stored_windows_unsafe_names_are_rejected(self):
+        folder = self.session()
+        for stem in ["CON", "trailing.", "trailing ", "back\\slash", "stream:name", "bad?name"]:
+            with self.subTest(stem=stem):
+                changed = folder.with_name(f"2024-02-29_23-59-59_{stem}_31ac3491")
+                folder.rename(changed)
+                manifest = json.loads((changed / "session.json").read_text())
+                manifest.update(source_kind="imported", original_filename=stem + ".wav")
+                (changed / "session.json").write_text(json.dumps(manifest))
+                try:
+                    self.assertEqual(self.measurement().returncode, 1)
+                finally:
+                    changed.rename(folder)
 
     def test_import_without_session_id_keeps_missing_artifacts(self):
         result = self.measurement(resume="")
