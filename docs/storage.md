@@ -30,11 +30,11 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 
 `sessionsRoot` 自体と直下のセッションフォルダー、セッション以下の全ディレクトリ・ファイルに symlink は使えません。`session.json`、`events.jsonl`、`processing_metadata.json`、audio ディレクトリの `storage.json`、checkpoint・chunk index・gap log・PCM chunk、保存済み original・FLAC、処理中の CAF・FLAC partial も同じ規則です。末尾ファイルだけでなく `audio`・`processing`・`derived` などの親ディレクトリの symlink も、読み書き・列挙・復旧・削除で明示エラーにします。catalog と復旧はリンクされたセッションをエラー行として扱い、リンク先をセッションとして処理しません。
 
-`SessionFileAccess` は呼出し元が明示した実 root を `O_DIRECTORY | O_NOFOLLOW` で開き、子ディレクトリを固定した descriptor から `openat` でたどります。通常ファイルは `O_NOFOLLOW` で開いた descriptor を使い、書込み用一時ファイルは同じ実ディレクトリに排他的に作成して `renameat` で公開します。公開前にファイルと公開後にディレクトリを同期します。音声 encoder・decoder は `SessionFileAccess` が session root に固定して開いた handle を使うため、URL を事前検証してから AVAudioFile 等で開き直す経路はありません。開いた後でパスが置き換わっても、その操作は開いた元のファイルを使い、symlink の外部対象を変更しません。
+`SessionFileAccess` は呼出し元が明示した実 root を `O_DIRECTORY | O_NOFOLLOW` で開き、子ディレクトリを固定した descriptor から `openat` でたどります。通常ファイルは `O_NOFOLLOW` で開いた descriptor を使い、書込み用一時ファイルは同じ実ディレクトリに排他的に作成して `renameat` で公開します。公開前にファイルと公開後にディレクトリを同期します。Apple と Windows の音声 decoder は `SessionFileAccess` が session root に固定して開いた handle を decode の全期間使います。URL を事前検証した後に path から開き直す経路はありません。Windows の decoder が CRT descriptor や Media Foundation の byte stream を使う場合も、元の固定 handle の duplicate から作られます。開いた後でパスが置き換わっても、その操作は開いた元のファイルを使い、symlink の外部対象を変更しません。
 
 音声 API は所有する `sessionURL` を明示的に受け取り、処理ディレクトリだけを root にして親の検査を省きません。境界より上の、呼出し元が選んだ保存場所の ancestry（macOS の `/var` などの OS alias を含む）はこの規則の対象外です。CLI の保護領域の重なり検査は別途 symlink 解決後にも行い、選択した root 自体をリンク先へ置き換えません。外部から選んだ import 元と、書き出し先のフォルダー・`segments.json` 等の外部 artifact はセッション内アクセス境界の対象外ですが、書き出すセッション側の original・FLAC は descriptor から読みます。
 
-根拠: [SessionFileAccess.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccess.swift)、[DescriptorAudioFile.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DescriptorAudioFile.swift)。
+根拠: [SessionFileAccess.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccess.swift)、[DescriptorAudioFile.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DescriptorAudioFile.swift)、[Windows AudioImportDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioImportDecoder.swift)。
 
 セッションの構成は次のとおりです。これは生成されるファイル配置であり、リポジトリ内のファイルではありません。
 
@@ -88,7 +88,14 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 - 録音は `recordingPCM` の間、処理タイムライン自体が保存音声です。入力の全 channel を平均し、連続 SRC を通した **16,000 Hz・mono・32-bit float PCM** を保存します。
 - import では元ファイルを無再圧縮コピーした `original` または original に元の拡張子を付けたファイルが保存音声です。audio 直下の該当する通常ファイルは **ちょうど 1 つ**必要です。0 個または複数個ならエラーです。元の外部ファイルを再処理の入力にはしません。
 - import の処理タイムラインは **16,000 Hz・mono・32-bit float PCM** の派生物です。保存済み original を bounded buffer で読み、全 channel の平均後に連続 SRC を行います。`processSession` は確定処理のたびに処理タイムラインを削除して original から作り直します。original の bytes は変更しません。予期しない EOF・不正 PCM・変換失敗は明示エラーです。
+- Apple と Windows の import builder は共有の `ImportedAudioPCM.downmix` で全 channel の算術平均を作り、共有の `ImportedAudioTimelineWriter` で canonical timeline を書きます。import は両方とも 5 秒単位の chunk を使い、chunk index は 0 始まりです。したがって PCM chunk・audio-chunks.jsonl・checkpoint の形式と index 規則は同じです。
+- Windows は WAV・FLAC・MP3 を miniaudio 0.11.23 で、M4A・AAC を Media Foundation Source Reader で decode します。M4A/AAC は session handle の read-only IStream を IMFByteStream に包んで Source Reader に渡し、pathname を再度開きません。Windows の canonical 境界は累積 source frame 数 `n` ごとに `round(n × 16000 / sourceRate)`（最も近い整数、ちょうど中間はゼロから離れる方向）で決めます。EOS では bounded zero input で変換器を進め、丸めた終端境界までを出力し、それを越える filter tail は捨てます。
+- macOS の AVAudioConverter は通常の priming 後に EOS まで drain し、正確な変換長の floor または ceil にあたる出力を全て保持します。Windows の境界丸め・tail trimming と macOS の EOS 出力長は同じ規則ではありません。また、異なる converter の出力 sample 値は bit-identical ではありません。
+- Windows の Media Foundation AAC decode は Source Reader が返す PCM を EOS まで消費します。platform codec padding が decoded frames に含まれる場合もそのまま source timeline に含め、再生時間等から推定した padding trimming は行いません。
+- 各 platform の timeline builder は checkpoint を返すだけで、`storage.json` は書きません。macOS の現行 caller は checkpoint を reader に渡して検証した後、`importedOriginal` と timeline metadata を公開します（[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)）。この説明は保存済み original から確定処理用 timeline を作る経路であり、live pipeline の挙動を約束するものではありません。
 - `derived` の CAF は処理用の派生音声で、確定処理がセッション情報を読めない開始失敗を除く全ての結果（完了・失敗・一時停止・その他の開始失敗）で削除します。import の処理タイムラインと `recording.flac.partial` も同じ扱いです。録音の PCM は一時ファイルではなく、FLAC 状態を保存するまで権威です。録音の書き出し音声は `recording.flac` のコピー、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
+
+根拠: [共有 ImportedAudioTimelineWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineWriter.swift)、[CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[macOS AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[macOS CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)、[Windows AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioFileTimelineBuilder.swift)、[Windows AudioImportDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioImportDecoder.swift)、[Windows CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/CanonicalAudioResampler.swift)、[CWindowsAudio.cpp](../app/MacAmbientJev/Sources/CWindowsAudio/CWindowsAudio.cpp)、[CMiniaudio README](../app/MacAmbientJev/Sources/CMiniaudio/README.md)。
 
 ### 録音の FLAC 化
 

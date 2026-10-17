@@ -17,6 +17,13 @@ var products: [Product] = [
     )
 ]
 
+#if os(Windows)
+products.append(.library(
+    name: "MacAmbientJevWindowsSupport",
+    targets: ["MacAmbientJevWindowsSupport"]
+))
+#endif
+
 var dependencies: [Package.Dependency] = []
 
 var coreDependencies: [Target.Dependency] = []
@@ -45,7 +52,40 @@ var targets: [Target] = [
 ]
 
 #if os(Windows)
+targets.append(.target(
+    name: "CMiniaudio",
+    exclude: ["README.md"],
+    linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("uuid")]
+))
+#elseif os(Linux)
+targets.append(.target(
+    name: "CMiniaudio",
+    exclude: ["README.md"],
+    linkerSettings: [.linkedLibrary("m"), .linkedLibrary("dl"), .linkedLibrary("pthread")]
+))
+#endif
+
+#if os(Windows)
 targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
+targets.append(.target(
+    name: "CWindowsAudio",
+    linkerSettings: [
+        .linkedLibrary("mfplat"),
+        .linkedLibrary("mfreadwrite"),
+        .linkedLibrary("mfuuid"),
+        .linkedLibrary("ole32"),
+        .linkedLibrary("uuid")
+    ]
+))
+targets.append(.target(
+    name: "MacAmbientJevWindowsSupport",
+    dependencies: ["MacAmbientJevCore", "CMiniaudio", "CWindowsAudio"]
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevWindowsSupportTests",
+    dependencies: ["MacAmbientJevWindowsSupport", "MacAmbientJevCore", "CMiniaudio"],
+    resources: [.copy("Resources")]
+))
 #endif
 
 #if os(macOS)
@@ -192,5 +232,6 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: products,
     dependencies: dependencies,
-    targets: targets
+    targets: targets,
+    cxxLanguageStandard: .cxx17
 )

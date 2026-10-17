@@ -5,9 +5,14 @@ on:
     branches: [main]
     paths:
       - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
+      - 'app/MacAmbientJev/Sources/CMiniaudio/**'
+      - 'app/MacAmbientJev/Sources/CWindowsAudio/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/**'
       - 'app/MacAmbientJev/Sources/CWindowsSession/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**'
+      - 'scripts/generate_windows_audio_fixtures.py'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
       - '.github/workflows/portable-core.yml'
@@ -15,9 +20,14 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
+      - 'app/MacAmbientJev/Sources/CMiniaudio/**'
+      - 'app/MacAmbientJev/Sources/CWindowsAudio/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/**'
       - 'app/MacAmbientJev/Sources/CWindowsSession/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**'
+      - 'scripts/generate_windows_audio_fixtures.py'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
       - '.github/workflows/portable-core.yml'
@@ -51,7 +61,7 @@ jobs:
           python3 -B scripts/check_portable_core.py
           python3 scripts/test_doc_references.py
           python3 scripts/check_doc_references.py
-      - name: Build Core and all three evaluators
+      - name: Build Core, miniaudio and all three evaluators
         run: swift build --package-path app/MacAmbientJev
       - name: Test Core
         run: swift test --package-path app/MacAmbientJev
@@ -81,7 +91,7 @@ jobs:
           python -B scripts/check_portable_core.py
           python scripts/test_doc_references.py
           python scripts/check_doc_references.py
-      - name: Build Core and all three evaluators
+      - name: Build Core, WindowsSupport and all three evaluators
         run: swift build --package-path app/MacAmbientJev
-      - name: Test Core
+      - name: Test Core and WindowsSupport
         run: swift test --package-path app/MacAmbientJev
