@@ -93,7 +93,9 @@ private struct FLACBitstreamFixture {
     defer { try? handle.close() }
 
     let boundaryOffset = UInt64(64 * 1024 - 1)
-    _ = try reader.readBytes(Int(boundaryOffset))
+    for _ in 0..<Int(boundaryOffset) {
+        _ = try reader.readByte()
+    }
     reader.beginFrame()
     let expected = Array(bytes[Int(boundaryOffset)..<(Int(boundaryOffset) + 4)])
     let expectedValue = expected.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
@@ -103,7 +105,11 @@ private struct FLACBitstreamFixture {
 
     try reader.seek(to: boundaryOffset)
     reader.beginFrame()
-    #expect(try reader.readBytes(4) == expected)
+    var actual: [UInt8] = []
+    for _ in 0..<4 {
+        actual.append(try reader.readByte())
+    }
+    #expect(actual == expected)
     #expect(reader.offset == boundaryOffset + 4)
     #expect(reader.frameCRC == FLACChecksum.crc16(expected))
 }
@@ -118,7 +124,11 @@ private struct FLACBitstreamFixture {
     defer { try? handle.close() }
 
     reader.beginFrame()
-    #expect(try reader.readBytes(frame.count) == frame)
+    var actual: [UInt8] = []
+    for _ in 0..<frame.count {
+        actual.append(try reader.readByte())
+    }
+    #expect(actual == frame)
     #expect(reader.frameCRC == 0)
     #expect(try reader.atEnd())
 }

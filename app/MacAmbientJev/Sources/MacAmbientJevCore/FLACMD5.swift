@@ -28,6 +28,7 @@ struct FLACMD5 {
     ]
 
     private var state: [UInt32] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476]
+    private var words = [UInt32](repeating: 0, count: 16)
     private var buffer: [UInt8] = []
     private var byteCount: UInt64 = 0
     private var isFinalized = false
@@ -107,7 +108,6 @@ struct FLACMD5 {
     }
 
     private mutating func processBlock(_ bytes: [UInt8], offset: Int) {
-        var words = [UInt32](repeating: 0, count: 16)
         for index in 0..<16 {
             let byteOffset = offset + index * 4
             words[index] = UInt32(bytes[byteOffset])

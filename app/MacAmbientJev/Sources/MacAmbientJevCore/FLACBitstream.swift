@@ -198,19 +198,6 @@ internal final class FLACBitReader {
         return try consumeByte()
     }
 
-    func readBytes(_ count: Int) throws -> [UInt8] {
-        precondition(count >= 0, "FLACのバイト数は負数にできません。")
-        guard isByteAligned else {
-            throw FLACTimelineReaderError.decodeFailed(frame: 0, reason: "バイト境界に揃っていません。")
-        }
-        var result: [UInt8] = []
-        result.reserveCapacity(count)
-        for _ in 0..<count {
-            result.append(try consumeByte())
-        }
-        return result
-    }
-
     func read(_ bits: Int) throws -> UInt64 {
         precondition((0...64).contains(bits), "FLACのビット幅は0から64でなければなりません。")
         var value: UInt64 = 0

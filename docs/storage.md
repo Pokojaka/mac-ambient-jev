@@ -96,7 +96,7 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 
 各 FLAC frame は公称 4,096 frame で、最後の frame だけは短くできます。STREAMINFO の total samples は `storage.json` の `committedFrames` と正確に一致します。STREAMINFO の block size 最小値・最大値は [RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html) に従って短い最終 frame を除く公称 block size（4,096）を記録し、frame size 最小値・最大値は実際に符号化した frame の byte 数から記録します。MD5 は signed 16-bit little-endian PCM 全体から計算します。
 
-符号化器は各 block で CONSTANT、VERBATIM、FIXED の次数 0〜4 を比較し、符号化 bit 数が最小の形式を選びます。FIXED の残差は Rice method 0、partition order 0〜8 を評価します。サンプルは有限値のみを受け付け、`[-1, 1]` に clamp して 32,768 倍し、最も近い整数へ丸めます（ちょうど中間の値はゼロから離れる方向）。その後 Int16 範囲へ clamp します。非有限値は明示エラーです。
+符号化器は各 block で CONSTANT、VERBATIM、FIXED の次数 0〜4 を比較し、符号化 bit 数が最小の形式を選びます。FIXED の残差は Rice method 0、partition order 0〜8 を評価します。FIXED の各予測次数について、最細 partition order の各 partition の絶対残差和・負の残差数と、`k=1〜14` の Rice quotient 和を一度だけ正確に集計し、隣接 partition を併合して粗い partition order を評価します。各 partition order で `k=0〜14` の正確な符号化コストを評価し、block 間で固定サイズの作業用 buffer 群を再利用します。サンプルは有限値のみを受け付け、`[-1, 1]` に clamp して 32,768 倍し、最も近い整数へ丸めます（ちょうど中間の値はゼロから離れる方向）。その後 Int16 範囲へ clamp します。非有限値は明示エラーです。
 
 `FLACTimelineReader` は開くときに STREAMINFO の形式（16 kHz・mono・16-bit）と total samples が `committedFrames` に一致することを検証します。全音声検証では frame を順に読み、header CRC-8、frame CRC-16、frame 数、MD5 を検証し、切り詰め・末尾の余分な bytes・長さ不一致をエラーにします。PCM との比較検証では全ての量子化済み sample が一致することも確認します。decoder は fixed-blocking の CONSTANT・VERBATIM・FIXED・LPC subframe、Rice・Rice2 residual、wasted bits を読み取ります。可変 block、対応しない format や符号化、CRC 不一致、切り詰め、余分な末尾 bytes、長さ不一致は明示エラーです。
 

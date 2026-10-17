@@ -338,7 +338,7 @@ func fullFLACValidationStopsAtTheStoredEnd(frames: Int, comparePCM: Bool) async 
 }
 
 @Test(arguments: [1, 9, 191, 4_095, 4_096, 4_097, 8_191, 8_192, 8_193, 16_384, 1_272_955])
-func aRecordingOfAnyLengthRoundTripsWithoutChangingItsLength(frames: Int) async throws {
+func aRecordingRoundTripsExactlyCommittedFrames(frames: Int) async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
     let samples = (0..<frames).map { sin(Float($0) * 0.31) * 0.9 + 0.05 }

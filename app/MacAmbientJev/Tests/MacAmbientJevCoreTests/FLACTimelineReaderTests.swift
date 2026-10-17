@@ -297,29 +297,55 @@ struct PortableFLACTimelineTests {
         }
         let fixture = try PortableFLACTimelineFixture()
         defer { fixture.cleanup() }
-        let samples = mixedReferenceSamples(count: 3 * 4_096 + 17)
-        let expected = quantizedTimelineSamples(samples)
-        let source = try DeterministicTimelineAudio(samples: samples)
-        let rawURL = fixture.file("reference-input.raw")
-        try SessionFileAccess.writeAtomically(rawSignedPCM16(samples), to: rawURL, relativeTo: fixture.root)
+        let mixedSamples = mixedReferenceSamples(count: 3 * 4_096 + 17)
+        let quantizedMixed = mixedSamples.map { sample -> Int16 in
+            guard let value = RecordingFLAC.quantize16(sample) else {
+                preconditionFailure("このフィクスチャでは有限値のサンプルが必要です")
+            }
+            return value
+        }
+        let wastedBitQuantized = quantizedMixed.map { value in (value / 8) * 8 }
+        #expect(wastedBitQuantized.allSatisfy { $0.isMultiple(of: 8) })
+        #expect(wastedBitQuantized.contains { $0 != 0 })
+        let wastedBitSamples = wastedBitQuantized.map { Float($0) / 32_768 }
 
-        for compression in ["-0", "-8"] {
-            let outputURL = fixture.file("reference-\(compression.dropFirst()).flac")
+        let cases: [(name: String, samples: [Float], arguments: [String], laxLargeBlock: Bool)] = [
+            ("mixed-fixed", mixedSamples, ["-0"], false),
+            ("mixed-lpc", mixedSamples, ["-8"], false),
+            ("wasted-bits", wastedBitSamples, ["-8"], false),
+            (
+                "lax-large-block",
+                mixedReferenceSamples(count: 65_535 + 17),
+                ["-8", "--lax", "-b", "65535", "-l", "32"],
+                true
+            ),
+        ]
+
+        for testCase in cases {
+            let source = try DeterministicTimelineAudio(samples: testCase.samples)
+            let expected = quantizedTimelineSamples(testCase.samples)
+            let rawURL = fixture.file("\(testCase.name).raw")
+            let outputURL = fixture.file("\(testCase.name).flac")
+            try SessionFileAccess.writeAtomically(rawSignedPCM16(testCase.samples), to: rawURL, relativeTo: fixture.root)
             try runReferenceFLAC(executable, arguments: [
                 "--force-raw-format", "--endian=little", "--sign=signed",
                 "--channels=1", "--bps=16", "--sample-rate=16000",
-                compression, rawURL.path, "-o", outputURL.path,
-            ])
-            let reader = try fixture.reader(at: outputURL, committedFrames: Int64(samples.count))
+            ] + testCase.arguments + [rawURL.path, "-o", outputURL.path])
+
+            let reader = try fixture.reader(at: outputURL, committedFrames: Int64(testCase.samples.count))
             try reader.validateAudio()
             try reader.validateAudio(against: source)
-            #expect(try reader.readSamples(frameRange: 0..<Int64(samples.count)) == expected)
+            #expect(try reader.readSamples(frameRange: 0..<Int64(testCase.samples.count)) == expected)
             let referenceRanges: [Range<Int64>] = [
                 4_093..<4_102,
                 8_189..<8_198,
                 2_337..<2_401,
             ]
             for range in referenceRanges {
+                #expect(try reader.readSamples(frameRange: range) == Array(expected[Int(range.lowerBound)..<Int(range.upperBound)]))
+            }
+            if testCase.laxLargeBlock {
+                let range: Range<Int64> = 65_532..<65_540
                 #expect(try reader.readSamples(frameRange: range) == Array(expected[Int(range.lowerBound)..<Int(range.upperBound)]))
             }
         }
