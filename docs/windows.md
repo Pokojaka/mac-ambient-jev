@@ -21,6 +21,10 @@ swift test --package-path app/MacAmbientJev
 
 同じ手順は [test-windows.ps1](../scripts/test-windows.ps1) にまとめてあり、失敗した段階で非 0 で終了します。
 
+ARM64 の Windows 11 では、管理者の PowerShell で [setup-winvm.ps1](../scripts/setup-winvm.ps1) を 1 回実行すると、
+Visual Studio 2022 Build Tools（MSVC と Windows SDK 26100）、Swift 6.2、Python 3.12 を入れ、
+symlink の作成に必要な開発者モードを有効にします。実行後はサインインし直してから検証します。
+
 `swift build` は共通コアと MacAmbientJevEvaluateSession、MacAmbientJevEvaluateASR、
 MacAmbientJevEvaluateDiarization をビルドします。macOS 専用の framework や推論モデルは取得しません。
 評価 CLI の参照文・artifact の形式は [testing.md](testing.md) と [linux.md](linux.md) を参照してください。
