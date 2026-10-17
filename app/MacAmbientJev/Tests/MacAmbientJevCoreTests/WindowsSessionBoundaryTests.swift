@@ -3,23 +3,33 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-private func setDirectoryWriteDenial(_ directory: URL, deny: Bool) throws {
-    let environment = ProcessInfo.processInfo.environment
-    let systemRoot = try #require(environment["SystemRoot"])
-    let user = try #require(environment["USERNAME"])
-    let domain = try #require(environment["USERDOMAIN"])
-    let account = "\(domain)\\\(user)"
-    let path = directory.withUnsafeFileSystemRepresentation { String(cString: $0!) }
+private func systemTool(_ name: String, arguments: [String]) throws -> String {
+    let systemRoot = try #require(ProcessInfo.processInfo.environment["SystemRoot"])
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: systemRoot).appending(path: "System32/icacls.exe")
-    process.arguments = [path, deny ? "/deny" : "/remove:d", deny ? "\(account):(WD,AD,WEA,WA)" : account]
+    process.executableURL = URL(fileURLWithPath: systemRoot).appending(path: "System32/\(name).exe")
+    process.arguments = arguments
     let output = Pipe()
     process.standardOutput = output
     process.standardError = output
     try process.run()
-    _ = try output.fileHandleForReading.readToEnd()
+    let data = try output.fileHandleForReading.readToEnd() ?? Data()
     process.waitUntilExit()
-    try #require(process.terminationStatus == 0)
+    let text = String(decoding: data, as: UTF8.self)
+    try #require(process.terminationStatus == 0, "\(name): \(text)")
+    return text
+}
+
+private func setDirectoryWriteDenial(_ directory: URL, deny: Bool) throws {
+    // The process token's SID avoids machine/domain account-name resolution.
+    let identity = try systemTool("whoami", arguments: ["/user", "/fo", "csv", "/nh"])
+    let field = try #require(identity.split(separator: ",").last)
+    let sid = field.trimmingCharacters(in: .whitespacesAndNewlines)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    try #require(sid.hasPrefix("S-1-"))
+    let account = "*" + sid
+    let path = directory.withUnsafeFileSystemRepresentation { String(cString: $0!) }
+    _ = try systemTool("icacls", arguments: [path, deny ? "/deny" : "/remove:d",
+                                           deny ? "\(account):(WD,AD,WEA,WA)" : account])
 }
 
 @Test func windowsReadOnlyBoundaryAllowsReadsAndRejectsWrites() async throws {

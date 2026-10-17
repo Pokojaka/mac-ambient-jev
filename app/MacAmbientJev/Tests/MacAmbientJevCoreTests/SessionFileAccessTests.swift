@@ -19,9 +19,11 @@ private struct SecureSessionFixture {
         try original.write(to: sentinel)
     }
 
-    func link(_ url: URL, to target: URL? = nil) throws {
+    @discardableResult
+    func link(_ url: URL, to target: URL? = nil) throws -> String {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target ?? sentinel)
+        return try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
@@ -49,7 +51,7 @@ private struct SecureSessionFixture {
     let fixture = try SecureSessionFixture()
     defer { fixture.cleanup() }
     try fixture.link(fixture.layout.manifestURL)
-    try fixture.link(fixture.layout.processingMetadataURL)
+    let destination = try fixture.link(fixture.layout.processingMetadataURL)
     let store = ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL)
     #expect(throws: CocoaError.self) { _ = try fixture.layout.loadManifest() }
     #expect(throws: CocoaError.self) { _ = try store.load() }
@@ -65,7 +67,7 @@ private struct SecureSessionFixture {
     #expect(throws: CocoaError.self) {
         try SessionFileAccess.writeAtomically(Data(), to: fixture.layout.manifestURL, relativeTo: fixture.layout.sessionURL)
     }
-    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: store.url.path) == fixture.sentinel.path)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: store.url.path) == destination)
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
 }
 
@@ -173,24 +175,24 @@ func processingRecoveryRefusesLinkedCheckpointAndJournals(filename: String) asyn
     _ = try await writer.finish()
     let url = fixture.layout.processingDirectory.appending(path: filename)
     try FileManager.default.removeItem(at: url)
-    try fixture.link(url)
+    let destination = try fixture.link(url)
     #expect(throws: CocoaError.self) {
         _ = try AudioCheckpoint.loadRecovered(from: fixture.layout.processingDirectory, relativeTo: fixture.layout.sessionURL)
     }
     #expect(throws: CocoaError.self) {
         _ = try DurableAudioWriter(directory: fixture.layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: fixture.layout.sessionURL)
     }
-    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: url.path) == fixture.sentinel.path)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: url.path) == destination)
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
 }
 
 @Test func audioStorageStateRejectsLinkedLeafOnReadAndAtomicSave() throws {
     let fixture = try SecureSessionFixture()
     defer { fixture.cleanup() }
-    try fixture.link(fixture.layout.audioStorageURL)
+    let destination = try fixture.link(fixture.layout.audioStorageURL)
     let store = SessionAudioStorageStore(layout: fixture.layout)
     #expect(throws: CocoaError.self) { _ = try store.load() }
     #expect(throws: CocoaError.self) { try store.save(.recordingPCM) }
-    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.layout.audioStorageURL.path) == fixture.sentinel.path)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.layout.audioStorageURL.path) == destination)
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
 }
