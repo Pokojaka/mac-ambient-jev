@@ -23,7 +23,7 @@ jobs:
           '@
           $path = Join-Path $env:RUNNER_TEMP 'storage-probe'
           New-Item -ItemType Directory $path -Force | Out-Null
-          $handle = [StorageProbe]::CreateFileW($path, 0xC0000000, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+          $handle = [StorageProbe]::CreateFileW($path, 3221225472, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
           Write-Output "directory handle=$handle error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
           $result = [StorageProbe]::FlushFileBuffers($handle)
           Write-Output "flush=$result error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
