@@ -19,6 +19,8 @@ swift build --package-path app/MacAmbientJev
 swift test --package-path app/MacAmbientJev
 ```
 
+同じ手順は [test-windows.ps1](../scripts/test-windows.ps1) にまとめてあり、失敗した段階で非 0 で終了します。
+
 `swift build` は共通コアと MacAmbientJevEvaluateSession、MacAmbientJevEvaluateASR、
 MacAmbientJevEvaluateDiarization をビルドします。macOS 専用の framework や推論モデルは取得しません。
 評価 CLI の参照文・artifact の形式は [testing.md](testing.md) と [linux.md](linux.md) を参照してください。
