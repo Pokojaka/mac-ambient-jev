@@ -1,9 +1,10 @@
 # Windows の共通コア
 
 Windows では Swift 6.2 で共通コア、評価 CLI 3 本、Core の単体テストをビルドできます。
-録音、音声ファイルのデコード、VAD・ASR・話者分離・発話文判定の実推論、GUI、
-インストーラーは Windows の実行対象に含まれません。macOS のアプリは従来どおり
+共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。これは Windows の録音・capture・finalization pipeline が実装済みであることを意味しません。一般の import 音声形式の decode は AppleSupport の AVFoundation 処理であり、Windows 実行対象には含まれません。録音・capture、VAD・ASR・話者分離・発話文判定の実推論、GUI、インストーラーも Windows の実行対象に含まれません。macOS のアプリは従来どおり
 Apple Silicon と macOS 15 以降で動作します。
+
+FLAC 形式の仕様は [RFC 9639 (December 2024)](https://www.rfc-editor.org/rfc/rfc9639.html) を参照してください。
 
 ## ビルドと検証
 
@@ -24,6 +25,8 @@ swift test --package-path app/MacAmbientJev
 ARM64 の Windows 11 では、管理者の PowerShell で [setup-winvm.ps1](../scripts/setup-winvm.ps1) を 1 回実行すると、
 Visual Studio 2022 Build Tools（MSVC と Windows SDK 26100）、Swift 6.2、Python 3.12 を入れ、
 symlink の作成に必要な開発者モードを有効にします。実行後はサインインし直してから検証します。
+
+Core の FLAC テストは codec の round-trip と破損データの拒否を検証します。参照用 `flac` CLI との比較は `PATH` から実行ファイルを解決できる場合だけ実行し、見つからない場合は Swift Testing の `enabled` trait で無効になります。`flac` はテスト専用で、実行時依存ではありません。詳細は [RecordingFLACEncoderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/RecordingFLACEncoderTests.swift) と [FLACTimelineReaderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/FLACTimelineReaderTests.swift) を参照してください。
 
 `swift build` は共通コアと MacAmbientJevEvaluateSession、MacAmbientJevEvaluateASR、
 MacAmbientJevEvaluateDiarization をビルドします。macOS 専用の framework や推論モデルは取得しません。

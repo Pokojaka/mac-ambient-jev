@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import Testing
 @testable import MacAmbientJevAppleSupport
@@ -339,46 +338,26 @@ func fullFLACValidationStopsAtTheStoredEnd(frames: Int, comparePCM: Bool) async 
 }
 
 @Test(arguments: [1, 9, 191, 4_095, 4_096, 4_097, 8_191, 8_192, 8_193, 16_384, 1_272_955])
-func aRecordingOfAnyLengthRoundTripsAndShortOnesArePaddedWithSilence(frames: Int) async throws {
+func aRecordingOfAnyLengthRoundTripsWithoutChangingItsLength(frames: Int) async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
     let samples = (0..<frames).map { sin(Float($0) * 0.31) * 0.9 + 0.05 }
     try await recordPCM(layout, samples: samples)
 
     let info = try freshCompactor.compact(layout: layout)
+    let expectedInfo = try TimelineAudioInfo(committedFrames: Int64(frames), gapEvents: [])
 
+    #expect(info == expectedInfo)
     try expectConverged(layout, info: info, samples: samples)
-    let stored = Int64(max(frames, 4_096))
-    let raw = try AVAudioFile(forReading: layout.recordingFLACURL, commonFormat: .pcmFormatFloat32, interleaved: false)
-    #expect(raw.length == stored)
-    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: raw.processingFormat, frameCapacity: AVAudioFrameCount(stored)))
-    try raw.read(into: buffer, frameCount: AVAudioFrameCount(stored))
-    let decoded = Array(UnsafeBufferPointer(start: try #require(buffer.floatChannelData?[0]), count: Int(buffer.frameLength)))
-    #expect(decoded.count == Int(stored))
-    #expect(decoded[frames...].allSatisfy { $0 == 0 })
+    let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: expectedInfo, sessionURL: layout.sessionURL)
+    #expect(reader.info == expectedInfo)
+    let decoded = try reader.readSamples(frameRange: 0..<reader.info.committedFrames)
+    #expect(decoded.count == frames)
+    #expect(decoded == quantized(samples))
 }
 
 @Test
-func nonSilentPaddingFailsValidationAndLeavesThePCM() async throws {
-    let layout = try makeLayout()
-    defer { cleanUp(layout) }
-    let scratch = try makeLayout()
-    defer { cleanUp(scratch) }
-    try await recordPCM(scratch, samples: [Float](repeating: 0.5, count: 4_096))
-    _ = try freshCompactor.compact(layout: scratch)
-    let checkpoint = try await recordPCM(layout, samples: [Float](repeating: 0.5, count: 100))
-    try FileManager.default.copyItem(at: scratch.recordingFLACURL, to: layout.recordingFLACURL)
-    try SessionAudioStorageStore(layout: layout).save(.recordingFLAC(try checkpoint.info))
-
-    #expect(throws: FLACTimelineReaderError.paddingNotSilent(frame: 100)) {
-        _ = try freshCompactor.compact(layout: layout)
-    }
-
-    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL) == checkpoint)
-}
-
-@Test
-func readingPastTheRecordedFramesOfAPaddedFLACIsRejected() async throws {
+func readingPastTheRecordedFramesIsRejected() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
     try await recordPCM(layout, samples: [Float](repeating: 0.25, count: 100))
