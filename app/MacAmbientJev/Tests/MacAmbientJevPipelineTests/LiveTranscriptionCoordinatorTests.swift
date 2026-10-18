@@ -162,6 +162,7 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     private var registeredBatches: [[SegmentReference]] = []
     private var processedBatches: [RecordedLiveASRBatch] = []
     private var processingCompletions: [ProcessingCompletion] = []
+    private var completionWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var startCount = 0
     private var cancellationCount = 0
 
@@ -231,19 +232,19 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
 
         switch step {
         case .succeed:
-            processingCompletions.append(.succeeded(taskWasCancelled: Task.isCancelled))
+            recordCompletion(.succeeded(taskWasCancelled: Task.isCancelled))
             return Self.emptyProgress()
         case .fail(let message):
-            processingCompletions.append(.failed(message, taskWasCancelled: Task.isCancelled))
+            recordCompletion(.failed(message, taskWasCancelled: Task.isCancelled))
             throw FakeExecutorError.processing(message)
         case .suspend(let gate, let outcome):
             await gate.wait()
             switch outcome {
             case .succeed:
-                processingCompletions.append(.succeeded(taskWasCancelled: Task.isCancelled))
+                recordCompletion(.succeeded(taskWasCancelled: Task.isCancelled))
                 return Self.emptyProgress()
             case .fail(let message):
-                processingCompletions.append(.failed(message, taskWasCancelled: Task.isCancelled))
+                recordCompletion(.failed(message, taskWasCancelled: Task.isCancelled))
                 throw FakeExecutorError.processing(message)
             }
         }
@@ -257,6 +258,18 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     func registrations() -> [[SegmentReference]] { registeredBatches }
     func processingRecords() -> [RecordedLiveASRBatch] { processedBatches }
     func processingResults() -> [ProcessingCompletion] { processingCompletions }
+
+    func waitForCompletions(_ count: Int) async {
+        guard processingCompletions.count < count else { return }
+        await withCheckedContinuation { completionWaiters.append((count, $0)) }
+    }
+
+    private func recordCompletion(_ completion: ProcessingCompletion) {
+        processingCompletions.append(completion)
+        let ready = completionWaiters.filter { $0.count <= processingCompletions.count }
+        completionWaiters.removeAll { $0.count <= processingCompletions.count }
+        ready.forEach { $0.continuation.resume() }
+    }
     func startCalls() -> Int { startCount }
     func cancellationCalls() -> Int { cancellationCount }
 
@@ -917,6 +930,8 @@ func cleanupOldDrainCannotReplaceStateOrRemoveNewSameSessionDrain() async throws
     #expect(state.failure(sessionID: sessionID) == nil)
 
     await oldProcessingGate.release()
+    // The old and new drains both resume inside the reentrant fake; wait for the old one to finish so completion order is fixed.
+    await processor.waitForCompletions(1)
     await newDrainGate.release()
     await oldDrainWaiter.value
 
