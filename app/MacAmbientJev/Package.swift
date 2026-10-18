@@ -214,6 +214,7 @@ targets.append(.testTarget(
         "MacAmbientJevCore",
         "MacAmbientJevVADFixtures"
     ],
+    resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
 #endif

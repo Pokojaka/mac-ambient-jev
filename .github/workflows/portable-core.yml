@@ -26,6 +26,9 @@ on:
       - 'scripts/generate_onnx_fixture.py'
       - 'scripts/fetch_silero_vad.py'
       - 'scripts/test_fetch_silero_vad.py'
+      - 'scripts/fetch_qwen3_asr_tokenizer.py'
+      - 'scripts/test_fetch_qwen3_asr_tokenizer.py'
+      - 'scripts/generate_qwen3_tokenizer_fixture.py'
       - 'scripts/pinned_download.py'
       - 'scripts/test_pinned_download.py'
       - 'scripts/generate_silero_speech_fixture.py'
@@ -60,6 +63,9 @@ on:
       - 'scripts/generate_onnx_fixture.py'
       - 'scripts/fetch_silero_vad.py'
       - 'scripts/test_fetch_silero_vad.py'
+      - 'scripts/fetch_qwen3_asr_tokenizer.py'
+      - 'scripts/test_fetch_qwen3_asr_tokenizer.py'
+      - 'scripts/generate_qwen3_tokenizer_fixture.py'
       - 'scripts/pinned_download.py'
       - 'scripts/test_pinned_download.py'
       - 'scripts/generate_silero_speech_fixture.py'
@@ -101,6 +107,12 @@ jobs:
           set -euo pipefail
           model="$(python3 scripts/fetch_silero_vad.py)"
           printf 'MAC_AMBIENT_JEV_SILERO_MODEL=%s\n' "$model" >> "$GITHUB_ENV"
+      - name: Fetch Qwen3-ASR tokenizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          tokenizer="$(python3 scripts/fetch_qwen3_asr_tokenizer.py)"
+          printf 'MAC_AMBIENT_JEV_QWEN3_TOKENIZER=%s\n' "$tokenizer" >> "$GITHUB_ENV"
       - name: Check FLAC
         run: |
           command -v flac
@@ -110,6 +122,7 @@ jobs:
           python3 -B scripts/test_portable_core.py
           python3 -B scripts/test_fetch_onnxruntime.py
           python3 -B scripts/test_fetch_silero_vad.py
+          python3 -B scripts/test_fetch_qwen3_asr_tokenizer.py
           python3 -B scripts/test_pinned_download.py
           python3 -B scripts/test_generate_silero_reference.py
           python3 -B scripts/check_portable_core.py
