@@ -106,7 +106,7 @@ class FetchTests(unittest.TestCase):
         ):
             with self.subTest(system=system), self.configured(system, machine, root_platform, suffix, data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
                 cache.mkdir(parents=True, exist_ok=True)
-                with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
+                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
                     result = fetcher.fetch()
                 self.assertEqual(result, destination.resolve())
                 self.assertTrue((destination / "include" / "onnxruntime_c_api.h").is_file())
@@ -129,7 +129,7 @@ class FetchTests(unittest.TestCase):
             with self.subTest(extra=extra), self.configured("Linux", "x86_64", "linux-x64", ".tgz", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
                 cache.mkdir(parents=True, exist_ok=True)
                 (cache / asset).write_bytes(data)
-                with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
+                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
                     with self.assertRaises((tarfile.TarError, ValueError)):
                         fetcher.fetch()
                 self.assertFalse(destination.exists())
@@ -142,7 +142,7 @@ class FetchTests(unittest.TestCase):
             with self.subTest(name=unsafe), self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
                 cache.mkdir(parents=True, exist_ok=True)
                 (cache / asset).write_bytes(data)
-                with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(zipfile.ZipFile, "extractall", wraps=zipfile.ZipFile.extractall) as extract:
+                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(zipfile.ZipFile, "extractall", wraps=zipfile.ZipFile.extractall) as extract:
                     with self.assertRaises(ValueError):
                         fetcher.fetch()
                 extract.assert_not_called()
@@ -154,7 +154,7 @@ class FetchTests(unittest.TestCase):
         data = make_zip(root, files, ())
         with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
             cache.mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
                 result = fetcher.fetch()
             self.assertEqual(result, destination.resolve())
             self.assertTrue((destination / "include" / "onnxruntime_c_api.h").is_file())
@@ -173,7 +173,7 @@ class FetchTests(unittest.TestCase):
             with self.subTest(case=label), self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
                 cache.mkdir(parents=True, exist_ok=True)
                 (cache / asset).write_bytes(data)
-                with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
+                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
                     with self.assertRaises(ValueError):
                         fetcher.fetch()
                 self.assertFalse(destination.exists())
@@ -183,7 +183,7 @@ class FetchTests(unittest.TestCase):
         data = make_tar(root, ((f"{root}/other/directory-link", "symlink", "../lib"),))
         with self.configured("Linux", "x86_64", "linux-x64", ".tgz", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
             cache.mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
                 with self.assertRaises(ValueError):
                     fetcher.fetch()
             self.assertFalse(destination.exists())
@@ -194,7 +194,7 @@ class FetchTests(unittest.TestCase):
         with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
             cache.mkdir(parents=True, exist_ok=True)
             (cache / asset).write_bytes(b"corrupt cache")
-            with mock.patch.object(fetcher.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
                 with self.assertRaises(ValueError):
                     fetcher.fetch()
             download.assert_not_called()
@@ -205,7 +205,7 @@ class FetchTests(unittest.TestCase):
         root = f"onnxruntime-win-x64-{fetcher.VERSION}"
         data = make_zip(root, WINDOWS_FILES, ())
         with self.configured("Windows", "AMD64", "win-x64", ".zip", data, expected=hashlib.sha256(b"different").hexdigest()) as (_, cache, destination, _):
-            with mock.patch.object(fetcher.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(zipfile, "ZipFile") as open_zip:
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(zipfile, "ZipFile") as open_zip:
                 with self.assertRaises(ValueError):
                     fetcher.fetch()
             open_zip.assert_not_called()
@@ -231,7 +231,7 @@ class FetchTests(unittest.TestCase):
             marker_bytes = marker.read_bytes()
             archive.write_bytes(b"corrupt archive must not be checked")
 
-            with mock.patch.object(fetcher.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
                 second = fetcher.fetch()
             download.assert_not_called()
             extract.assert_not_called()
@@ -249,7 +249,7 @@ class FetchTests(unittest.TestCase):
             destination.mkdir(parents=True)
             marker = destination / "invalid-marker"
             marker.write_text("keep invalid tree")
-            with mock.patch.object(fetcher.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
                 with self.assertRaises(RuntimeError) as raised:
                     fetcher.fetch()
             self.assertIn(str(destination.resolve()), str(raised.exception))

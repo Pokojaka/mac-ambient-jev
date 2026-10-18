@@ -18,11 +18,21 @@ if ([string]::IsNullOrWhiteSpace($runtimeRoot)) { throw 'ONNX Runtime fetch retu
 $runtimeRoot = [System.IO.Path]::GetFullPath($runtimeRoot)
 if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) { throw "ONNX Runtime root directory does not exist: $runtimeRoot" }
 
+Write-Host '==> fetch Silero VAD model'
+$sileroModelPathLines = @(& python scripts/fetch_silero_vad.py)
+$sileroModelPathExitCode = $LASTEXITCODE
+if ($sileroModelPathExitCode -ne 0) { throw "Silero VAD model fetch failed with exit code $sileroModelPathExitCode" }
+if ($sileroModelPathLines.Count -ne 1) { throw "Silero VAD model fetch returned $($sileroModelPathLines.Count) paths; expected exactly one" }
+$env:MAC_AMBIENT_JEV_SILERO_MODEL = [string]$sileroModelPathLines[0]
+
 Invoke-Step 'portable Core/Pipeline checker self-test' { python -B scripts/test_portable_core.py }
 Invoke-Step 'portable Core/Pipeline import check' { python -B scripts/check_portable_core.py }
 Invoke-Step 'doc reference checker self-test' { python scripts/test_doc_references.py }
 Invoke-Step 'doc reference check' { python scripts/check_doc_references.py }
 Invoke-Step 'ONNX Runtime fetcher self-test' { python -B scripts/test_fetch_onnxruntime.py }
+Invoke-Step 'Silero VAD fetcher self-test' { python -B scripts/test_fetch_silero_vad.py }
+Invoke-Step 'pinned download self-test' { python -B scripts/test_pinned_download.py }
+Invoke-Step 'Silero reference generator self-test' { python -B scripts/test_generate_silero_reference.py }
 Invoke-Step 'Swift build portable Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
 
 Write-Host '==> resolve Swift debug bin path'

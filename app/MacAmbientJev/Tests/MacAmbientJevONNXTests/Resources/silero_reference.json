@@ -1,0 +1,66 @@
+{
+  "modelCommit": "5cd7945676eb32225748052e2e6a0580e4686a08",
+  "modelSHA256": "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49",
+  "wrapperSHA256": "15d0f6b3ef9590e22ca2f146e1436f6901da356cb552d3183df4100862b333cb",
+  "audioSHA256": "c807432e609c0357593243253e089ae5710755ac6bd2ac30d74420fef09d9731",
+  "sampleRate": 16000,
+  "frameSamples": 512,
+  "frameCount": 141,
+  "onnxruntimeVersion": "1.31.0",
+  "numpyVersion": "2.5.4",
+  "torchVersion": "2.14.1",
+  "references": [
+    {
+      "frameIndex": 0,
+      "probability": 0.02008315920829773
+    },
+    {
+      "frameIndex": 1,
+      "probability": 0.02264469861984253
+    },
+    {
+      "frameIndex": 2,
+      "probability": 0.8645893931388855
+    },
+    {
+      "frameIndex": 4,
+      "probability": 0.9995576739311218
+    },
+    {
+      "frameIndex": 8,
+      "probability": 0.9996391534805298
+    },
+    {
+      "frameIndex": 16,
+      "probability": 0.9787005186080933
+    },
+    {
+      "frameIndex": 32,
+      "probability": 0.9999824166297913
+    },
+    {
+      "frameIndex": 48,
+      "probability": 0.9996140003204346
+    },
+    {
+      "frameIndex": 64,
+      "probability": 0.9999926090240479
+    },
+    {
+      "frameIndex": 80,
+      "probability": 0.9999954700469971
+    },
+    {
+      "frameIndex": 100,
+      "probability": 0.9999964833259583
+    },
+    {
+      "frameIndex": 120,
+      "probability": 0.8813481330871582
+    },
+    {
+      "frameIndex": 140,
+      "probability": 0.011791050434112549
+    }
+  ]
+}

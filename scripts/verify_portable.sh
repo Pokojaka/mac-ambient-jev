@@ -5,7 +5,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PACKAGE="$ROOT/app/MacAmbientJev"
 
 python3 "$ROOT/scripts/fetch_onnxruntime.py"
+model="$(python3 "$ROOT/scripts/fetch_silero_vad.py")"
+export MAC_AMBIENT_JEV_SILERO_MODEL="$model"
+printf 'Silero VAD model: %s\n' "$MAC_AMBIENT_JEV_SILERO_MODEL"
 cd "$ROOT"
+python3 -B scripts/test_fetch_silero_vad.py
+python3 -B scripts/test_pinned_download.py
+python3 -B scripts/test_generate_silero_reference.py
 python3 -B scripts/check_portable_core.py
 
 swift package --package-path "$PACKAGE" dump-package >/dev/null
