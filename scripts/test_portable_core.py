@@ -11,6 +11,7 @@ CHECK_SCRIPT = pathlib.Path(__file__).resolve().with_name("check_portable_core.p
 DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevCore",
     "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+    "app/MacAmbientJev/Sources/MacAmbientJevONNX",
 )
 
 
@@ -76,27 +77,33 @@ class PortableImportTests(unittest.TestCase):
             check=False,
         )
 
-    def test_cli_collects_violations_from_both_default_roots(self):
+    def test_cli_collects_violations_from_all_default_roots(self):
         with tempfile.TemporaryDirectory() as directory:
             self.write_fixture(directory, DEFAULT_ROOTS[0], "import Foundation")
             self.write_fixture(directory, DEFAULT_ROOTS[1], "import AVFoundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[2], "import CoreML")
 
             result = self.run_default_cli(directory)
 
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("AVFoundation", result.stderr)
+            self.assertIn("CoreML", result.stderr)
 
-    def test_cli_requires_both_default_roots(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self.write_fixture(directory, DEFAULT_ROOTS[0], "import Foundation")
+    def test_cli_requires_all_default_roots(self):
+        for missing_root in DEFAULT_ROOTS:
+            with self.subTest(missing_root=missing_root):
+                with tempfile.TemporaryDirectory() as directory:
+                    for root in DEFAULT_ROOTS:
+                        if root != missing_root:
+                            self.write_fixture(directory, root, "import Foundation")
 
-            result = self.run_default_cli(directory)
+                    result = self.run_default_cli(directory)
 
-            self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("MacAmbientJevPipeline", result.stderr)
-            self.assertIn("not found", result.stderr)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(pathlib.Path(missing_root).name, result.stderr)
+                    self.assertIn("not found", result.stderr)
 
-    def test_cli_passes_when_both_default_roots_are_valid(self):
+    def test_cli_passes_when_all_default_roots_are_valid(self):
         with tempfile.TemporaryDirectory() as directory:
             for root in DEFAULT_ROOTS:
                 self.write_fixture(directory, root, "import Foundation")
@@ -104,7 +111,10 @@ class PortableImportTests(unittest.TestCase):
             result = self.run_default_cli(directory)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Portable Core / Pipeline import check passed", result.stdout)
+            self.assertTrue(
+                result.stdout.startswith("Portable Core / Pipeline / ONNX import check passed"),
+                result.stdout,
+            )
 
 
 if __name__ == "__main__":
