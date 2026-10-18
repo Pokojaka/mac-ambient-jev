@@ -98,7 +98,7 @@ struct Qwen3ASRTokenDecoderGoldenTests {
     func transcriptMatchesTheReferenceRules() throws {
         #expect(golden.transcriptCases.count >= 8)
         for fixture in golden.transcriptCases {
-            #expect(try decoder.transcript(generatedIDs: fixture.ids) == fixture.text, "\(fixture.name)")
+            #expect(try decoder.transcript(generatedIDs: fixture.ids, endedAtTokenCap: false) == fixture.text, "\(fixture.name)")
         }
     }
 
@@ -203,9 +203,99 @@ struct Qwen3ASRTokenizerFileTests {
             vocab: #"{"a": 0, "Ċ": 1, "Ġ": 2}"#,
             addedTokens: #"[{"id": 151643, "content": "<|endoftext|>", "special": true}, {"id": 151645, "content": "<|im_end|>", "special": true}, {"id": 151704, "content": "<asr_text>", "special": false}]"#
         ))
-        #expect(try decoder.transcript(generatedIDs: [2, 1, 0, 2, 151_645]) == "a")
-        #expect(try decoder.transcript(generatedIDs: [0, 151_704, 1, 0, 151_704, 2, 0, 1, 151_643]) == "a")
-        #expect(try decoder.transcript(generatedIDs: [151_704, 151_645]) == "")
-        #expect(try decoder.transcript(generatedIDs: []) == "")
+        #expect(try decoder.transcript(generatedIDs: [2, 1, 0, 2, 151_645], endedAtTokenCap: false) == "a")
+        #expect(try decoder.transcript(generatedIDs: [0, 151_704, 1, 0, 151_704, 2, 0, 1, 151_643], endedAtTokenCap: false) == "a")
+        #expect(try decoder.transcript(generatedIDs: [151_704, 151_645], endedAtTokenCap: false) == "")
+        #expect(try decoder.transcript(generatedIDs: [], endedAtTokenCap: false) == "")
+    }
+}
+
+struct Qwen3ASRTokenDecoderCapTests {
+    private let decoder: Qwen3ASRTokenDecoder
+
+    init() throws {
+        let printable: [UInt8] = Array(33...126) + Array(161...172) + Array(174...255)
+        var vocabulary: [String: Int] = [:]
+        var nextScalar: UInt32 = 256
+        for byte in UInt8.min...UInt8.max {
+            let scalar: Unicode.Scalar
+            if printable.contains(byte) {
+                scalar = Unicode.Scalar(byte)
+            } else {
+                scalar = Unicode.Scalar(nextScalar)!
+                nextScalar += 1
+            }
+            vocabulary[String(scalar)] = Int(byte)
+        }
+        let addedTokens: [[String: Any]] = [
+            ["id": Qwen3ASRToken.imEnd, "content": "<|im_end|>", "special": true],
+            ["id": Qwen3ASRToken.endOfText, "content": "<|endoftext|>", "special": true],
+            ["id": Qwen3ASRToken.asrText, "content": "<asr_text>", "special": false],
+            ["id": 151_650, "content": "<|special|>", "special": true],
+        ]
+        let tokenizer: [String: Any] = [
+            "added_tokens": addedTokens,
+            "decoder": ["type": "ByteLevel"],
+            "model": ["type": "BPE", "vocab": vocabulary],
+        ]
+        decoder = try Qwen3ASRTokenDecoder(tokenizerJSON: JSONSerialization.data(withJSONObject: tokenizer))
+    }
+
+    private func tokenIDs(_ bytes: [UInt8]) -> [Int64] {
+        bytes.map { Int64($0) }
+    }
+
+    @Test
+    func dropsOnlyValidIncompleteTwoThreeAndFourByteSuffixesAtCap() throws {
+        let incompleteSequences: [[UInt8]] = [[0xC3], [0xE3, 0x81], [0xF0, 0x9F, 0x98]]
+        for sequence in incompleteSequences {
+            #expect(try decoder.transcript(generatedIDs: tokenIDs([0x41] + sequence), endedAtTokenCap: true) == "A")
+            #expect(try decoder.transcript(generatedIDs: tokenIDs(sequence), endedAtTokenCap: true) == "")
+            #expect(throws: Qwen3ASRError.invalidUTF8) {
+                try decoder.transcript(generatedIDs: tokenIDs(sequence), endedAtTokenCap: false)
+            }
+            #expect(throws: Qwen3ASRError.invalidUTF8) { try decoder.decode(tokenIDs(sequence)) }
+        }
+    }
+
+    @Test
+    func retainsCompleteMultibyteTextAsciiAndEmptyTextAtCap() throws {
+        #expect(try decoder.transcript(generatedIDs: tokenIDs([0xC3, 0xA9]), endedAtTokenCap: true) == "é")
+        #expect(try decoder.transcript(generatedIDs: tokenIDs([0xE3, 0x81, 0x82]), endedAtTokenCap: true) == "あ")
+        #expect(try decoder.transcript(generatedIDs: tokenIDs([0xF0, 0x9F, 0x98, 0x80]), endedAtTokenCap: true) == "😀")
+        #expect(try decoder.transcript(generatedIDs: tokenIDs([0x41, 0x42]), endedAtTokenCap: true) == "AB")
+        #expect(try decoder.transcript(generatedIDs: [], endedAtTokenCap: true) == "")
+    }
+
+    @Test
+    func malformedBytesStillFailAtCap() {
+        let malformedSequences: [[UInt8]] = [
+            [0xFF], [0x80], [0xC0], [0xC1], [0xF5], [0xE0, 0x80], [0xED, 0xA0],
+            [0xF0, 0x80], [0xF4, 0x90], [0xE3, 0x41], [0x41, 0xFF, 0x42],
+        ]
+        for sequence in malformedSequences {
+            #expect(throws: Qwen3ASRError.invalidUTF8) {
+                try decoder.transcript(generatedIDs: tokenIDs(sequence), endedAtTokenCap: true)
+            }
+        }
+        #expect(throws: Qwen3ASRError.invalidUTF8) {
+            try decoder.transcript(generatedIDs: tokenIDs([0xFF, 0xE3, 0x81]), endedAtTokenCap: true)
+        }
+    }
+
+    @Test
+    func retainsTranscriptMarkerStopSpecialAndWhitespaceRules() throws {
+        let ids: [Int64] = [
+            0x78, Qwen3ASRToken.asrText, 0x20, 0x41, 151_650, Qwen3ASRToken.imEnd,
+            0x0A, 0x42, Qwen3ASRToken.endOfText, 0x20, 0x0A,
+        ]
+        #expect(try decoder.transcript(generatedIDs: ids, endedAtTokenCap: true) == "A\nB")
+    }
+
+    @Test
+    func unknownIDsStillFailAtCap() {
+        #expect(throws: Qwen3ASRError.unknownTokenID(151_999)) {
+            try decoder.transcript(generatedIDs: [151_999], endedAtTokenCap: true)
+        }
     }
 }

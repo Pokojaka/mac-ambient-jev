@@ -62,19 +62,15 @@ struct Qwen3ASRTokenDecoder {
     /// Special tokens produce no text. An id the tokenizer does not know, or bytes that are not
     /// valid UTF-8 together, fail.
     func decode(_ ids: [Int64]) throws -> String {
-        var bytes: [UInt8] = []
-        for id in ids {
-            guard let entry = entries[id] else { throw Qwen3ASRError.unknownTokenID(id) }
-            if case let .bytes(tokenBytes) = entry { bytes.append(contentsOf: tokenBytes) }
-        }
-        guard let text = String(validating: bytes, as: UTF8.self) else { throw Qwen3ASRError.invalidUTF8 }
+        let tokenBytes = try bytes(for: ids)
+        guard let text = String(validating: tokenBytes, as: UTF8.self) else { throw Qwen3ASRError.invalidUTF8 }
         return text
     }
 
     /// The text of one generation: the ids after the last `<asr_text>` marker, without stop
     /// tokens, trimmed. The marker is matched by id because `<asr_text>` is not a special token
     /// and would otherwise decode to literal text.
-    func transcript(generatedIDs: [Int64]) throws -> String {
+    func transcript(generatedIDs: [Int64], endedAtTokenCap: Bool) throws -> String {
         let afterMarker: ArraySlice<Int64>
         if let marker = generatedIDs.lastIndex(of: Qwen3ASRToken.asrText) {
             afterMarker = generatedIDs[(marker + 1)...]
@@ -82,7 +78,57 @@ struct Qwen3ASRTokenDecoder {
             afterMarker = generatedIDs[...]
         }
         let spoken = afterMarker.filter { !Qwen3ASRToken.stopTokens.contains($0) }
-        return try decode(spoken).trimmingCharacters(in: .whitespacesAndNewlines)
+        var transcriptBytes = try bytes(for: spoken)
+        if endedAtTokenCap {
+            transcriptBytes = try droppingIncompleteUTF8Suffix(from: transcriptBytes)
+        }
+        guard let text = String(validating: transcriptBytes, as: UTF8.self) else { throw Qwen3ASRError.invalidUTF8 }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func bytes(for ids: [Int64]) throws -> [UInt8] {
+        var result: [UInt8] = []
+        for id in ids {
+            guard let entry = entries[id] else { throw Qwen3ASRError.unknownTokenID(id) }
+            if case let .bytes(tokenBytes) = entry { result.append(contentsOf: tokenBytes) }
+        }
+        return result
+    }
+
+    private func droppingIncompleteUTF8Suffix(from bytes: [UInt8]) throws -> [UInt8] {
+        var index = 0
+        while index < bytes.count {
+            let lead = bytes[index]
+            if lead <= 0x7F {
+                index += 1
+                continue
+            }
+
+            let sequenceLength: Int
+            switch lead {
+            case 0xC2...0xDF: sequenceLength = 2
+            case 0xE0...0xEF: sequenceLength = 3
+            case 0xF0...0xF4: sequenceLength = 4
+            default: throw Qwen3ASRError.invalidUTF8
+            }
+
+            let available = min(sequenceLength, bytes.count - index)
+            for offset in 1..<available {
+                let continuation = bytes[index + offset]
+                guard (0x80...0xBF).contains(continuation) else { throw Qwen3ASRError.invalidUTF8 }
+                if offset == 1 && (
+                    (lead == 0xE0 && continuation < 0xA0) ||
+                    (lead == 0xED && continuation > 0x9F) ||
+                    (lead == 0xF0 && continuation < 0x90) ||
+                    (lead == 0xF4 && continuation > 0x8F)
+                ) {
+                    throw Qwen3ASRError.invalidUTF8
+                }
+            }
+            guard available == sequenceLength else { return Array(bytes[..<index]) }
+            index += sequenceLength
+        }
+        return bytes
     }
 
     /// GPT-2 `bytes_to_unicode`: printable Latin-1 bytes map to themselves, the rest to U+0100 upward.
