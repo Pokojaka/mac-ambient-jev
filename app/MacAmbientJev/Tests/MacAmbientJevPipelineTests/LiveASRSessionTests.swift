@@ -75,6 +75,34 @@ private actor SuspendedASREngine: ASREngine {
     func unload() async {}
 }
 
+private actor RegistrationAppendGate {
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func suspendFirstAppend() async {
+        guard !entered else { return }
+        entered = true
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+            entryWaiter?.resume()
+            entryWaiter = nil
+        }
+    }
+
+    func waitUntilAppendStarts() async {
+        if entered { return }
+        await withCheckedContinuation { continuation in
+            entryWaiter = continuation
+        }
+    }
+
+    func releaseFirstAppend() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
 private final class Locked<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Value
@@ -351,7 +379,7 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     #expect(eventTypes.filter { $0 == "processing.run.completed" }.count == 1)
 }
 
-@Test
+@Test(.timeLimit(.minutes(1)))
 func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -380,7 +408,8 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     await engine.waitUntilTranscribing()
     let firstFinish = Task { try await session.finish() }
     let secondFinish = Task { try await session.finish() }
-    try await Task.sleep(for: .milliseconds(200))
+    await session.waitForFinishWaiters(2)
+    #expect(await session.finishWaiterCount == 2)
     await engine.resume()
 
     let progress = try await processing.value
@@ -549,7 +578,7 @@ func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     #expect(completion.failedCount == 0)
 }
 
-@Test
+@Test(.timeLimit(.minutes(1)))
 func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -584,7 +613,8 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     }
     await engine.waitUntilTranscribing()
     let finishing = Task { try await session.finish() }
-    try await Task.sleep(for: .milliseconds(200))
+    await session.waitForFinishWaiters(1)
+    #expect(await session.finishWaiterCount == 1)
     await engine.resume()
     let lateProgress = try await processing.value
     let completion = try await finishing.value
@@ -610,7 +640,7 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     } == ["asr.completed", "processing.run.completed"])
 }
 
-@Test
+@Test(.timeLimit(.minutes(1)))
 func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -618,10 +648,21 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
         startFrame: 0, endFrame: 4_000
     )
+    let gate = RegistrationAppendGate()
+    await fixture.session.setBeforeSegmentCreatedAppend {
+        await gate.suspendFirstAppend()
+    }
 
-    async let first = fixture.session.register(segments: [segment])
-    async let second = fixture.session.register(segments: [segment])
-    _ = try await (first, second)
+    let first = Task {
+        try await fixture.session.register(segments: [segment])
+    }
+    await gate.waitUntilAppendStarts()
+    let second = try await fixture.session.register(segments: [segment])
+    #expect(second.pendingCount == 0)
+    #expect(await fixture.session.snapshot().segments.isEmpty)
+
+    await gate.releaseFirstAppend()
+    _ = try await first.value
     let progress = await fixture.session.snapshot().progress
     #expect(progress.pendingCount == 1)
     #expect(progress.completedCount == 0)

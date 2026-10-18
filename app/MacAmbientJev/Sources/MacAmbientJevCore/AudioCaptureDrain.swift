@@ -35,6 +35,11 @@ public actor AudioCaptureDrain {
     private var operationInProgress = false
     private var waitingOperations: [CheckedContinuation<Void, Never>] = []
     private var nextWaitingOperation = 0
+    private var queuedOperationObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var queuedOperationCount: Int {
+        waitingOperations.count - nextWaitingOperation
+    }
 
     public init(ring: AudioBlockRing, writer: any AudioCaptureWriting, converter: any CanonicalAudioConverting) {
         self.ring = ring
@@ -93,14 +98,37 @@ public actor AudioCaptureDrain {
         (gapCount, totalGapFrames)
     }
 
+    func waitForQueuedOperations(_ count: Int) async {
+        precondition(count > 0)
+        guard queuedOperationCount < count else { return }
+        await withCheckedContinuation { continuation in
+            queuedOperationObservers.append((count, continuation))
+            resumeQueuedOperationObserversIfReady()
+        }
+    }
+
     private func acquire() async {
         if operationInProgress {
             await withCheckedContinuation { continuation in
                 waitingOperations.append(continuation)
+                resumeQueuedOperationObserversIfReady()
             }
         } else {
             operationInProgress = true
         }
+    }
+
+    private func resumeQueuedOperationObserversIfReady() {
+        let queuedCount = queuedOperationCount
+        var remainingObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        for observer in queuedOperationObservers {
+            if queuedCount >= observer.count {
+                observer.continuation.resume()
+            } else {
+                remainingObservers.append(observer)
+            }
+        }
+        queuedOperationObservers = remainingObservers
     }
 
     private func release() {

@@ -113,6 +113,7 @@ public actor LiveASRSession {
     private var segmentStatusIndex: [String: Int] = [:]
     private var registeredSegmentIDs: Set<String> = []
     private var registeringSegmentIDs: Set<String> = []
+    private var beforeSegmentCreatedAppend: (@Sendable () async -> Void)? = nil
     private var finishedSegmentIDs: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
@@ -126,6 +127,7 @@ public actor LiveASRSession {
     private var finishWaiters: [CheckedContinuation<LiveASRCompletion, any Error>] = []
     private var activeWorkCount = 0
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishWaitObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     public init(
         sessionID: UUID,
@@ -154,6 +156,10 @@ public actor LiveASRSession {
         )
     }
 
+    func setBeforeSegmentCreatedAppend(_ hook: @escaping @Sendable () async -> Void) {
+        beforeSegmentCreatedAppend = hook
+    }
+
     /// Durably registers newly detected speech before it enters the ASR queue.
     @discardableResult
     public func register(
@@ -177,6 +183,10 @@ public actor LiveASRSession {
             guard !finalized else { break }
             registeringSegmentIDs.insert(segment.segmentID)
             defer { registeringSegmentIDs.remove(segment.segmentID) }
+            // Keep the unset production path free of an extra suspension point.
+            if let beforeSegmentCreatedAppend {
+                await beforeSegmentCreatedAppend()
+            }
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,
@@ -333,6 +343,24 @@ public actor LiveASRSession {
         return snapshot()
     }
 
+    var finishWaiterCount: Int {
+        idleWaiters.count + finishWaiters.count
+    }
+
+    func waitForFinishWaiters(_ count: Int) async {
+        precondition(count > 0, "finish waiter count must be positive")
+        guard finishWaiterCount < count else { return }
+        await withCheckedContinuation { continuation in
+            finishWaitObservers.append((count: count, continuation: continuation))
+        }
+    }
+
+    private func resumeSatisfiedFinishWaitObservers() {
+        let satisfied = finishWaitObservers.filter { $0.count <= finishWaiterCount }
+        finishWaitObservers.removeAll { $0.count <= finishWaiterCount }
+        satisfied.forEach { $0.continuation.resume() }
+    }
+
     public func finish() async throws -> LiveASRCompletion {
         if let completedFinish {
             return completedFinish
@@ -340,6 +368,7 @@ public actor LiveASRSession {
         if finishing {
             return try await withCheckedThrowingContinuation { continuation in
                 finishWaiters.append(continuation)
+                resumeSatisfiedFinishWaitObservers()
             }
         }
         finishing = true
@@ -349,6 +378,7 @@ public actor LiveASRSession {
             if activeWorkCount > 0 {
                 await withCheckedContinuation { continuation in
                     idleWaiters.append(continuation)
+                    resumeSatisfiedFinishWaitObservers()
                 }
             }
 

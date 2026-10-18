@@ -10,6 +10,20 @@ public final class DecisionProviderFactory: @unchecked Sendable {
     private var cachedLocalTagger: Result<LocalClauseTagger, any Error>?
     private var pendingLoad: PendingLocalTaggerLoad?
 
+    var pendingLoadWaiterCount: Int {
+        let load = state.withLock { pendingLoad }
+        return load?.waiterCount ?? 0
+    }
+
+    func waitForPendingLoadWaiters(_ count: Int) async {
+        precondition(count > 0, "Pending load waiter count must be positive.")
+        let load = state.withLock { pendingLoad }
+        guard let load else {
+            preconditionFailure("Cannot wait for waiters because there is no pending local tagger load.")
+        }
+        await load.waitForWaiters(count)
+    }
+
     public init(
         usageCounter: DecisionUsageCounter,
         loadLocalTagger: @escaping @Sendable () throws -> LocalClauseTagger
@@ -67,13 +81,35 @@ public final class DecisionProviderFactory: @unchecked Sendable {
 private final class PendingLocalTaggerLoad: @unchecked Sendable {
     private let condition = NSCondition()
     private var result: Result<LocalClauseTagger, any Error>?
+    private var parkedWaiters = 0
+    private var waiterThresholdObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var waiterCount: Int {
+        condition.withLock { parkedWaiters }
+    }
+
+    func waitForWaiters(_ count: Int) async {
+        precondition(count > 0, "Pending load waiter count must be positive.")
+        await withCheckedContinuation { continuation in
+            condition.withLock {
+                if parkedWaiters >= count {
+                    continuation.resume()
+                } else {
+                    waiterThresholdObservers.append((count: count, continuation: continuation))
+                }
+            }
+        }
+    }
 
     func wait() -> Result<LocalClauseTagger, any Error> {
         condition.lock()
         defer { condition.unlock() }
         while true {
             if let result { return result }
+            parkedWaiters += 1
+            resumeSatisfiedWaiterObservers()
             condition.wait()
+            parkedWaiters -= 1
         }
     }
 
@@ -82,5 +118,17 @@ private final class PendingLocalTaggerLoad: @unchecked Sendable {
         self.result = result
         condition.broadcast()
         condition.unlock()
+    }
+
+    private func resumeSatisfiedWaiterObservers() {
+        var unsatisfiedObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        for observer in waiterThresholdObservers {
+            if parkedWaiters >= observer.count {
+                observer.continuation.resume()
+            } else {
+                unsatisfiedObservers.append(observer)
+            }
+        }
+        waiterThresholdObservers = unsatisfiedObservers
     }
 }
