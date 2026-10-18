@@ -42,7 +42,8 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
         makeLiveVADSession: { _, _, _, _ in liveVAD },
-        thermalMonitor: pressure
+        thermalMonitor: pressure,
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     let maintenanceDeadline = ContinuousClock.now + .seconds(5)
     while state.processingQueue.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {

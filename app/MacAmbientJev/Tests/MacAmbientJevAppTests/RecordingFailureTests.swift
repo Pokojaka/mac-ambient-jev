@@ -192,7 +192,8 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
@@ -258,7 +259,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
             engines: .production(paths: paths), makeLiveVADSession: { _, _, _, _ in vad },
-            thermalMonitor: TestThermalMonitor(.nominal)
+            thermalMonitor: TestThermalMonitor(.nominal),
+            liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -325,7 +327,8 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
             engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
-            thermalMonitor: TestThermalMonitor(.nominal)
+            thermalMonitor: TestThermalMonitor(.nominal),
+            liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -366,7 +369,8 @@ func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: .production(paths: paths),
         makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     let sessionID = UUID()
     state.recording.start(sessionID: sessionID)

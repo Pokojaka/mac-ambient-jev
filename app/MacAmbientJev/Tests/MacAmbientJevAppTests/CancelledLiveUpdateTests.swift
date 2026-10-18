@@ -44,7 +44,8 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     let state = AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     state.showNewSession(sessionID)
     state.recording.start(sessionID: sessionID)
@@ -95,7 +96,8 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     let state = AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     let sessionID = UUID()
     state.showNewSession(sessionID)

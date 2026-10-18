@@ -111,7 +111,9 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 `appRecordingShowsLiveRowsWhileDecisionsWait` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、判定 queue、画面用 projection を通します。capture・VAD・ASR・判定 provider は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsDecisionFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実モデル、マイク、GUI は使いません。
 
-ライブ ASR drain の完了は、独立して動く判定キューの完了を保証しません。分類器生成エラーの regression は、2 行の表示と先頭行の `boundaryPending` を同じ 5 秒の期限内で待ちます。この保留行の公開はエラー状態表示の通知後なので、その時点で理由の保持を検証します。待機間隔は 10 ms とし、固定 sleep の延長や失敗後のリトライでは同期しません。
+ライブ ASR drain の完了は、独立して動く判定キューの完了を保証しません。AppState はライブ処理の sleep を必須引数で受け取り、本番は Task.sleep、[LiveDecisionRecordingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/LiveDecisionRecordingTests.swift) と [MicInputStatusTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/MicInputStatusTests.swift) は手動で進める poll gate を渡します。ライブ判定の regression は起動時の保存整理 task を await し、VAD poll を一回進めて区間登録を確認した後、fake tagger の request 通知と画面用 rows・エラー状態の publisher 通知を待ちます。保存済み LOW 判定の反映も rows の通知で確認します。
+
+[MicInputStatusTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/MicInputStatusTests.swift) の fake VAD は指定した batch 数の到達を continuation で通知します。各 poll の次の sleep gate まで待つことで、AppState が音声レベルを取り込んだ後に状態を検証します。入力音量の書込みは fake volume の通知、poll 中の VAD 障害は状態表示の通知を待ち、開始時の VAD 障害は `startRecording` の完了で確認します。これらの待機は中断時に条件名を含むエラーを投げ、1分の `timeLimit` は hang guard としてのみ使います。実時間の待機間隔や期限は同期条件にしません。
 
 保存済みセッション catalog は active ASR run のイベントログ・payload を読み取り専用で検証し、欠損・不正・不完全な末尾を持つログを破損として表示する。合成 catalog regression は malformed / missing / directory の各ケースで非 exportable 状態、再処理可否、manifest と metadata の不変性を確認する。
 

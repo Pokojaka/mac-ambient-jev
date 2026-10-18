@@ -144,6 +144,7 @@ final class AppState: ObservableObject {
     let userDefaults: UserDefaults
     let makeLiveVADSession: LiveVADFactory
     let thermalMonitor: any ThermalMonitoring
+    let liveTranscriptionSleep: @MainActor (Duration) async throws -> Void
 
     var recordingSessionID: UUID? { recording.sessionID }
     /// Set only while the current recording captures the microphone.
@@ -160,16 +161,12 @@ final class AppState: ObservableObject {
         effects: self,
         processor: sessionProcessor,
         thermalMonitor: thermalMonitor,
-        sleep: AppState.sleepLiveTranscription
+        sleep: liveTranscriptionSleep
     )
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
+    var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
-
-    @MainActor
-    static func sleepLiveTranscription(_ duration: Duration) async throws {
-        try await Task.sleep(for: duration)
-    }
 
     init(
         paths: AppPaths,
@@ -180,6 +177,7 @@ final class AppState: ObservableObject {
         engines: SessionProcessingEngines,
         makeLiveVADSession: @escaping LiveVADFactory,
         thermalMonitor: any ThermalMonitoring,
+        liveTranscriptionSleep: @escaping @MainActor (Duration) async throws -> Void,
         makeDecisions: (@Sendable (AppPaths, DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory)? = nil
     ) {
         let decisionUsageCounter = DecisionUsageCounter()
@@ -196,6 +194,7 @@ final class AppState: ObservableObject {
         self.exportDestination = ExportDestinationStore(defaults: userDefaults)
         self.makeLiveVADSession = makeLiveVADSession
         self.thermalMonitor = thermalMonitor
+        self.liveTranscriptionSleep = liveTranscriptionSleep
         self.decisionProviderFactory = decisionProviderFactory
 
         let makeDecisionCoordinator: NativeSessionProcessor.DecisionCoordinatorFactory
@@ -221,8 +220,9 @@ final class AppState: ObservableObject {
 
         if !pausesProcessing {
             processingQueue.beginStorageMaintenance()
-            Task { [weak self] in
-                await self?.recoverPendingSessions()
+            startupMaintenanceTask = Task { [weak self] in
+                guard let self else { return }
+                await self.recoverPendingSessions()
             }
         }
     }

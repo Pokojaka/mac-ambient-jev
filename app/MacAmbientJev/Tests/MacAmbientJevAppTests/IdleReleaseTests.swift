@@ -52,7 +52,8 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(asr: asr, diarization: NoopDiarizer(), finalTranscriptVAD: NoopVAD()),
         makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
 }
 

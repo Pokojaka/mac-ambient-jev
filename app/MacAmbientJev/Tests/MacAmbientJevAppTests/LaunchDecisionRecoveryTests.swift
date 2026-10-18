@@ -59,7 +59,8 @@ private func pausedState(paths: AppPaths, defaults: UserDefaults) -> AppState {
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
         makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
 }
 
