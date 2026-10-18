@@ -11,6 +11,12 @@ public final class SileroVAD {
     private var state = [Float](repeating: 0, count: SileroVAD.stateSamples)
     private var context = [Float](repeating: 0, count: SileroVAD.contextSamples)
 
+    /// The recurrent state and context, for rolling back a partly processed run of frames.
+    public struct Snapshot: Sendable {
+        fileprivate let state: [Float]
+        fileprivate let context: [Float]
+    }
+
     public init(environment: ONNXEnvironment, modelURL: URL, intraOpThreads: Int) throws {
         self.session = try ONNXSession(
             environment: environment,
@@ -68,6 +74,15 @@ public final class SileroVAD {
         state = nextState
         context = nextContext
         return probability
+    }
+
+    public func snapshot() -> Snapshot {
+        Snapshot(state: state, context: context)
+    }
+
+    public func restore(_ snapshot: Snapshot) {
+        state = snapshot.state
+        context = snapshot.context
     }
 
     public func reset() {

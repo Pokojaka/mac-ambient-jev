@@ -137,6 +137,14 @@ class FetchTests(unittest.TestCase):
 
         self.assertEqual(outside.read_bytes(), self.payload)
 
+    def test_swift_provenance_records_the_pinned_model(self) -> None:
+        swift_model = (
+            Path(__file__).resolve().parent.parent
+            / "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroVADModel.swift"
+        ).read_text(encoding="utf-8")
+        for pinned in (fetcher.COMMIT, fetcher.MODEL_FILENAME, fetcher.SHA256):
+            self.assertIn(f'"{pinned}"', swift_model)
+
     def test_cli_rejects_unsupported_python_and_arguments(self) -> None:
         with mock.patch.object(fetcher.sys, "version_info", (3, 11, 0)), mock.patch.object(
             fetcher.sys, "argv", ["fetch_silero_vad.py"]

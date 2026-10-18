@@ -1,13 +1,14 @@
 import Foundation
 import Testing
 import MacAmbientJevONNX
+import MacAmbientJevVADFixtures
 
 struct SileroVADTests {
     private let environment: ONNXEnvironment
     private let modelURL: URL
 
     init() throws {
-        modelURL = try SileroModelPath.modelURL(environment: ProcessInfo.processInfo.environment)
+        modelURL = try SileroTestInputs.modelURL(environment: ProcessInfo.processInfo.environment)
         environment = try ONNXEnvironment(loggingID: "SileroVADTests")
     }
 
@@ -56,6 +57,19 @@ struct SileroVADTests {
         let freshVAD = try makeVAD()
         let freshSilence = try infer(silenceFrames, using: freshVAD)
         #expect(afterSpeechReset.map { $0.bitPattern } == freshSilence.map { $0.bitPattern })
+    }
+
+    @Test
+    func restoringASnapshotReplaysFollowingFramesExactly() throws {
+        let frames = try speechFrames()
+        let vad = try makeVAD()
+        _ = try infer(Array(frames.prefix(10)), using: vad)
+        let snapshot = vad.snapshot()
+
+        let firstRun = try infer(Array(frames[10..<30]), using: vad)
+        vad.restore(snapshot)
+        let secondRun = try infer(Array(frames[10..<30]), using: vad)
+        #expect(firstRun.map { $0.bitPattern } == secondRun.map { $0.bitPattern })
     }
 
     @Test
@@ -133,73 +147,10 @@ private struct SileroProbabilityReference: Decodable {
     let probability: Double
 }
 
-private enum SileroModelPath {
-    static func modelURL(environment: [String: String]) throws -> URL {
-        guard let path = environment["MAC_AMBIENT_JEV_SILERO_MODEL"], !path.isEmpty else {
-            throw modelPathError("環境変数MAC_AMBIENT_JEV_SILERO_MODELが未設定または空です。")
-        }
-
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        var isDirectory = ObjCBool(false)
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            throw modelPathError("指定されたSilero VADモデルファイルが存在しないか、通常ファイルではありません: \(url.path)。")
-        }
-        return url
-    }
-}
-
-private func modelPathError(_ reason: String) -> SileroFixtureError {
-    .invalid("\(reason) \(fetchCommand)を実行し、取得されたモデルの絶対パスを環境変数MAC_AMBIENT_JEV_SILERO_MODELに設定してください。")
-}
-
-private var fetchCommand: String {
-    #if os(Windows)
-    "python scripts/fetch_silero_vad.py"
-    #else
-    "python3 scripts/fetch_silero_vad.py"
-    #endif
-}
-
 private func speechFrames() throws -> [[Float]] {
-    guard let audioURL = Bundle.module.url(
-        forResource: "silero_speech",
-        withExtension: "wav",
-        subdirectory: "Resources"
-    ) else {
-        throw SileroFixtureError.invalid("Resources/silero_speech.wavが見つかりません。")
-    }
-    let data = try Data(contentsOf: audioURL)
-    let bytes = [UInt8](data)
-    guard bytes.count >= 44 else {
-        throw SileroFixtureError.invalid("silero_speech.wavのRIFF/WAVEヘッダーが44バイト未満です。")
-    }
-    guard fourCC(bytes, at: 0) == "RIFF",
-          littleEndianUInt32(bytes, at: 4) == UInt32(bytes.count - 8),
-          fourCC(bytes, at: 8) == "WAVE",
-          fourCC(bytes, at: 12) == "fmt ",
-          littleEndianUInt32(bytes, at: 16) == 16,
-          littleEndianUInt16(bytes, at: 20) == 1,
-          littleEndianUInt16(bytes, at: 22) == 1,
-          littleEndianUInt32(bytes, at: 24) == 16_000,
-          littleEndianUInt32(bytes, at: 28) == 32_000,
-          littleEndianUInt16(bytes, at: 32) == 2,
-          littleEndianUInt16(bytes, at: 34) == 16,
-          fourCC(bytes, at: 36) == "data" else {
-        throw SileroFixtureError.invalid("silero_speech.wavは44バイトの標準PCM16・モノラル・16kHz WAVE形式ではありません。")
-    }
-
-    let payloadByteCount = Int(littleEndianUInt32(bytes, at: 40))
-    guard payloadByteCount == bytes.count - 44,
-          payloadByteCount.isMultiple(of: 2),
-          (payloadByteCount / 2).isMultiple(of: SileroVAD.frameSamples) else {
-        throw SileroFixtureError.invalid("silero_speech.wavのdataサイズがヘッダーまたは\(SileroVAD.frameSamples)サンプル境界と一致しません。")
-    }
-
-    let sampleCount = payloadByteCount / 2
-    let samples = (0..<sampleCount).map { sampleIndex -> Float in
-        let byteOffset = 44 + sampleIndex * 2
-        let value = Int16(bitPattern: littleEndianUInt16(bytes, at: byteOffset))
-        return Float(value) / 32_768
+    let samples = try SileroTestInputs.speechClipSamples()
+    guard samples.count.isMultiple(of: SileroVAD.frameSamples) else {
+        throw SileroFixtureError.invalid("silero_speech.wavのサンプル数が\(SileroVAD.frameSamples)サンプル境界と一致しません。")
     }
     return stride(from: 0, to: samples.count, by: SileroVAD.frameSamples).map { frameStart in
         Array(samples[frameStart..<(frameStart + SileroVAD.frameSamples)])
@@ -228,21 +179,6 @@ private func isVoiced(_ frame: [Float]) -> Bool {
     return meanSquare.squareRoot() >= 0.01
 }
 
-private func fourCC(_ bytes: [UInt8], at offset: Int) -> String {
-    String(decoding: bytes[offset..<(offset + 4)], as: UTF8.self)
-}
-
-private func littleEndianUInt16(_ bytes: [UInt8], at offset: Int) -> UInt16 {
-    UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
-}
-
-private func littleEndianUInt32(_ bytes: [UInt8], at offset: Int) -> UInt32 {
-    UInt32(bytes[offset])
-        | (UInt32(bytes[offset + 1]) << 8)
-        | (UInt32(bytes[offset + 2]) << 16)
-        | (UInt32(bytes[offset + 3]) << 24)
-}
-
 private func onnxErrorMessage(_ operation: () throws -> Void) -> String {
     do {
         try operation()
@@ -255,14 +191,4 @@ private func onnxErrorMessage(_ operation: () throws -> Void) -> String {
         Issue.record("ONNX Runtimeエラーではありません: \(error)")
     }
     return ""
-}
-
-private enum SileroFixtureError: Error, LocalizedError {
-    case invalid(String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .invalid(message): message
-        }
-    }
 }

@@ -12,6 +12,7 @@ DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevCore",
     "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
     "app/MacAmbientJev/Sources/MacAmbientJevONNX",
+    "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime",
 )
 
 
@@ -82,12 +83,14 @@ class PortableImportTests(unittest.TestCase):
             self.write_fixture(directory, DEFAULT_ROOTS[0], "import Foundation")
             self.write_fixture(directory, DEFAULT_ROOTS[1], "import AVFoundation")
             self.write_fixture(directory, DEFAULT_ROOTS[2], "import CoreML")
+            self.write_fixture(directory, DEFAULT_ROOTS[3], "import FluidAudio")
 
             result = self.run_default_cli(directory)
 
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("AVFoundation", result.stderr)
             self.assertIn("CoreML", result.stderr)
+            self.assertIn("FluidAudio", result.stderr)
 
     def test_cli_requires_all_default_roots(self):
         for missing_root in DEFAULT_ROOTS:
@@ -112,7 +115,7 @@ class PortableImportTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(
-                result.stdout.startswith("Portable Core / Pipeline / ONNX import check passed"),
+                result.stdout.startswith("Portable Core / Pipeline / ONNX / PortableRuntime import check passed"),
                 result.stdout,
             )
 

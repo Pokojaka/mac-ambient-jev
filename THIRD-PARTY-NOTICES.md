@@ -8,6 +8,10 @@ Repository: `FluidInference/FluidAudio`
 
 Used for local voice activity detection and speaker diarization. Preserve the upstream license and notices for the exact pinned version.
 
+`app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime` と `MacAmbientJevPipeline` の `VADStreamingStateMachine` は、FluidAudio 0.15.8 の `Sources/FluidAudio/VAD/VadManager+Streaming.swift`（`streamingStateMachine`、Apache-2.0）の発話開始・終了判定をポートしたものです。アプリが使う経路（開始閾値 0.50、終了閾値 = 開始閾値 − 0.15、最短無音 0.75 秒、speech padding 0）だけを残し、FluidAudio の型と Core ML には依存しません。`VADChunkScoring` の chunk 集約（8 frame の noisy-OR と部分 chunk の最後の sample 反復）は、FluidAudio の Core ML model `silero-vad-unified-256ms-v6.2.1` と `VadManager.swift` の `processChunk` の動作に合わせています。
+
+FluidAudio 0.15.8 は Apache License, Version 2.0 です（<https://www.apache.org/licenses/LICENSE-2.0>）。ライセンス全文は <https://github.com/FluidInference/FluidAudio/blob/v0.15.8/LICENSE> にあります。上流の LICENSE は著作権者名を記載していません。
+
 ## speech-swift
 
 Repository: `soniqo/speech-swift`

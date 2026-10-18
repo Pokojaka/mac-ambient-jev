@@ -88,7 +88,10 @@ private func checkStatus(
     throw ONNXRuntimeError(message: "\(context): \(detail)")
 }
 
-public final class ONNXEnvironment {
+/// ONNX Runtime documents `OrtEnv` as safe to share across threads, and this wrapper never mutates it.
+public final class ONNXEnvironment: @unchecked Sendable {
+    public static let runtimeVersion = "1.31.0"
+
     fileprivate let api: UnsafePointer<OrtApi>
     fileprivate let handle: OpaquePointer
 
@@ -102,14 +105,13 @@ public final class ONNXEnvironment {
         guard let apiBase = OrtGetApiBase() else {
             throw ONNXRuntimeError(message: "ONNX Runtime APIの取得に失敗しました。")
         }
-        let pinnedVersion = "1.31.0"
         guard let versionPointer = apiBase.pointee.GetVersionString!() else {
             throw ONNXRuntimeError(message: "ONNX Runtimeのバージョン文字列を取得できませんでした。")
         }
         let loadedVersion = String(cString: versionPointer)
-        guard loadedVersion == pinnedVersion else {
+        guard loadedVersion == Self.runtimeVersion else {
             throw ONNXRuntimeError(
-                message: "ONNX Runtimeのバージョンが一致しません。期待値 \(pinnedVersion)、実際 \(loadedVersion)。"
+                message: "ONNX Runtimeのバージョンが一致しません。期待値 \(Self.runtimeVersion)、実際 \(loadedVersion)。"
             )
         }
         guard let runtimeAPI = apiBase.pointee.GetApi!(UInt32(ORT_API_VERSION)) else {
