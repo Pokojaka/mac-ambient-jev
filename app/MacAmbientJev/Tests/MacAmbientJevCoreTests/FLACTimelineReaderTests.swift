@@ -13,7 +13,7 @@ private let referenceFLACExecutable: URL? = {
     let executableName = "flac"
     let pathSeparator: Character = ":"
     #endif
-    guard let searchPath = ProcessInfo.processInfo.environment["PATH"] else { return nil }
+    guard let searchPath = flacSearchPath(in: ProcessInfo.processInfo.environment) else { return nil }
     for directory in searchPath.split(separator: pathSeparator, omittingEmptySubsequences: false) {
         let candidate = URL(fileURLWithPath: String(directory), isDirectory: true).appending(path: executableName)
         if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }

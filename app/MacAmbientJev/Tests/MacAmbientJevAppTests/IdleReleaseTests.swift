@@ -69,7 +69,8 @@ func releasesWhenQueueDrains() async throws {
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
     // The session does not exist, so the finalization fails; the queue still drains.
-    await state.startupMaintenanceTask?.value
+    let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+    await maintenance.value
     state.enqueueProcessing(.finalize(
         sessionID: UUID(),
         metadataPolicy: .reject

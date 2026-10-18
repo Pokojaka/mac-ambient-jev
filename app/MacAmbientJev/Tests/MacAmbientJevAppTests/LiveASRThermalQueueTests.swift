@@ -55,7 +55,8 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
             }
         }
     )
-    await state.startupMaintenanceTask?.value
+    let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+    await maintenance.value
     try #require(!state.processingQueue.isMaintainingStorage)
 
     await state.startRecording()

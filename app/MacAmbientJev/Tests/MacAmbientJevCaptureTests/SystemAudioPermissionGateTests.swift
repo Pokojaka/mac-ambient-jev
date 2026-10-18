@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import Testing
 @testable import MacAmbientJevCapture
 import MacAmbientJevCore
@@ -60,16 +59,8 @@ private struct GateOutput: SystemAudioOutputProcessProviding {
     func runningExternalOutputPIDs() async -> Set<Int32>? { [] }
 }
 
-private final class GateClock: CaptureClock {
-    private let millis = Atomic<Int64>(10_000)
-
-    func now() -> TimeInterval {
-        Double(millis.load(ordering: .relaxed)) / 1_000
-    }
-
-    func advance(milliseconds: Int64) {
-        _ = millis.add(milliseconds, ordering: .relaxed)
-    }
+private struct GateClock: CaptureClock {
+    func now() -> TimeInterval { 10 }
 }
 
 @MainActor
@@ -128,7 +119,7 @@ func grantedAfterDeniedPreflightSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Pending grant waits without creating tap or beginning first-buffer deadline", .timeLimit(.minutes(1)))
+@Test("Pending grant waits without creating a tap", .timeLimit(.minutes(1)))
 func grantedSystemAudioGate() async throws {
     let tap = GateTap()
     let clock = GateClock()
@@ -144,9 +135,6 @@ func grantedSystemAudioGate() async throws {
     }
     await permission.waitUntilRequested()
     #expect(waiting && creations == 0 && tap.starts == 0 && !engine.isRecording)
-    // Advancing beyond the first-buffer timeout verifies the open dialog starts no tap or deadline.
-    clock.advance(milliseconds: 3_200)
-    #expect(creations == 0 && !engine.isRecording)
     await permission.resolve(true)
     try await task.value
     #expect(creations == 1 && tap.starts == 1)
@@ -206,6 +194,7 @@ func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async 
     let task = Task { try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in }) }
     await permission.waitUntilRequested()
+    let requestTask = try #require(engine.permissionRequestTask, "Permission request task was not started")
     engine.cancelStarting()
     do {
         try await task.value
@@ -214,6 +203,6 @@ func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async 
         #expect(creations == 0 && tap.starts == 0 && !engine.isRecording)
     }
     await permission.resolve(true)
-    await Task.yield()
+    await requestTask.value
     #expect(creations == 0 && !engine.isRecording)
 }

@@ -17,9 +17,7 @@ final class LivePollSleep {
     private var pendingSleep: PendingSleep?
     private var suspensionWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
 
-    func sleep(_ duration: Duration) async throws {
-        // Duration is intentionally ignored; tests advance this suspension explicitly.
-        _ = duration
+    func sleep(_: Duration) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in

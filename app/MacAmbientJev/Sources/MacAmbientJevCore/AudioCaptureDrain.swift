@@ -99,7 +99,7 @@ public actor AudioCaptureDrain {
     }
 
     func waitForQueuedOperations(_ count: Int) async {
-        precondition(count > 0)
+        precondition(count > 0, "Queued operation count must be positive")
         guard queuedOperationCount < count else { return }
         await withCheckedContinuation { continuation in
             queuedOperationObservers.append((count, continuation))
