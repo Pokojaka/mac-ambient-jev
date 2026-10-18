@@ -7,7 +7,7 @@ import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
 @MainActor
-@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint")
+@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint", .timeLimit(.minutes(1)))
 func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -34,6 +34,8 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
     let asr = ThermalQueueASR()
     let pressure = TestThermalMonitor(.critical)
     let liveVAD = ThermalQueueLiveVAD()
+    let poll = LivePollSleep()
+    let thermalRecheck = LivePollSleep()
     let state = AppState(
         paths: paths, captureEngine: capture, microphoneAccess: { true },
         pausesProcessing: false, userDefaults: defaults,
@@ -43,12 +45,19 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         ),
         makeLiveVADSession: { _, _, _, _ in liveVAD },
         thermalMonitor: pressure,
-        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
+        liveTranscriptionSleep: { duration in
+            if duration == .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds) {
+                try await poll.sleep(duration)
+            } else if duration == .milliseconds(LiveTranscriptionCadence.thermalRecheckIntervalMilliseconds) {
+                try await thermalRecheck.sleep(duration)
+            } else {
+                throw LivePollWaitFailure(message: "Unexpected live transcription sleep duration: \(duration)")
+            }
+        }
     )
-    let maintenanceDeadline = ContinuousClock.now + .seconds(5)
-    while state.processingQueue.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    // Injected thermal control must not register an observer that reads host pressure.
+    #expect(state.thermalObserver == nil)
+    await state.startupMaintenanceTask?.value
     try #require(!state.processingQueue.isMaintainingStorage)
 
     await state.startRecording()
@@ -57,11 +66,8 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         let sessionID = try #require(state.recordingSessionID)
         let latest = try #require(capture.stopResult?.checkpoint)
 
-        let deadline = ContinuousClock.now + .seconds(5)
-        while state.processingStatusText != UserFacingStatus.liveTranscriptionThermalSuspended.text,
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await poll.advance()
+        try await thermalRecheck.waitUntilSuspended()
         #expect(state.processingStatusText == UserFacingStatus.liveTranscriptionThermalSuspended.text)
         #expect(state.transcriptViewModel.statusText == UserFacingStatus.liveTranscriptionThermalSuspended.text)
         #expect(await asr.inputs() == [])
@@ -70,6 +76,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         #expect(state.liveTranscription.latestCheckpoint(sessionID: sessionID) == latest)
 
         pressure.pressure = .fair
+        try await thermalRecheck.advance()
         await state.waitForLiveASRDrain(sessionID: sessionID)
         #expect(await asr.inputs() == expectedInputs)
         #expect(state.liveTranscription.failure(sessionID: sessionID) == nil)

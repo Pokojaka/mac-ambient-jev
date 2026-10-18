@@ -165,6 +165,8 @@ final class AppState: ObservableObject {
     )
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
+    // Keep completion awaitable until a new recording is accepted.
+    var stoppingTask: Task<Void, Never>?
     var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
 
@@ -214,10 +216,6 @@ final class AppState: ObservableObject {
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }
-        thermalObserver = MacThermalStateObservation(center: .default) { [weak self] in
-            MainActor.assumeIsolated { self?.resumeThermallyHeldProcessing() }
-        }
-
         if !pausesProcessing {
             processingQueue.beginStorageMaintenance()
             startupMaintenanceTask = Task { [weak self] in

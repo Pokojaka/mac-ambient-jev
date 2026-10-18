@@ -180,7 +180,7 @@ func testCheckpoint() -> AudioCheckpoint {
 }
 
 @MainActor
-@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix")
+@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix", .timeLimit(.minutes(1)))
 func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -214,11 +214,8 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     engine.signalFailure(message)
     #expect(state.recordingPhase == .stopping)
     #expect(state.statusText == message)
-    for _ in 0..<1_000
-        where state.recordingPhase != .idle
-            || !state.savedSessions.contains(where: { $0.sessionID == sessionID }) {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    let stopping = try #require(state.stoppingTask)
+    await stopping.value
     #expect(state.statusTone == .error)
     #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
     #expect(engine.stopped == 1)
@@ -238,7 +235,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
 }
 
 @MainActor
-@Test("automatic capture failure and normal stop finish VAD with the stopped checkpoint")
+@Test("automatic capture failure and normal stop finish VAD with the stopped checkpoint", .timeLimit(.minutes(1)))
 func automaticFailureFinalizesLikeNormalStop() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -273,10 +270,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             #expect(state.statusTone == .neutral)
         }
         if trigger != .normal {
-            for _ in 0..<1_000
-                where state.recordingPhase != .idle || state.processingQueue.pending.isEmpty {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            let stopping = try #require(state.stoppingTask)
+            await stopping.value
             #expect(state.statusTone == .error)
             #expect(state.statusText == "capture interrupted")
         }
@@ -294,6 +289,42 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         #expect(queuedCheckpoint == checkpoint)
         #expect(state.processingState == .idle)
     }
+}
+
+@MainActor
+@Test("failure stopping task is retained until the next recording starts", .timeLimit(.minutes(1)))
+func failureStoppingTaskRetentionLifecycle() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    var startedSessionID: UUID?
+    let engine = FakeAppCaptureEngine()
+    engine.onStart = { startedSessionID = $0 }
+    engine.stopResult = cleanStopResult(testCheckpoint())
+    let state = AppState(
+        paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
+        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
+    )
+
+    await state.startRecording()
+    let sessionID = try #require(startedSessionID)
+    #expect(state.recordingPhase == .recording)
+    engine.signalFailure("capture interrupted")
+    #expect(state.recordingPhase == .stopping)
+    let stopping = try #require(state.stoppingTask)
+    #expect(state.captureDidFail(sessionID: sessionID, message: "duplicate failure") == nil)
+    await stopping.value
+    #expect(state.recordingPhase == .idle)
+    #expect(state.stoppingTask != nil)
+
+    await state.startRecording()
+    #expect(state.stoppingTask == nil)
+    #expect(state.recordingPhase == .recording)
+    await state.stopRecording()
+    #expect(state.recordingPhase == .idle)
 }
 
 @MainActor

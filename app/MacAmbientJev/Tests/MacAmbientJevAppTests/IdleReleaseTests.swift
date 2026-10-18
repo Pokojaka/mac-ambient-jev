@@ -3,7 +3,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCapture
 import MacAmbientJevCore
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private actor CountingASR: ASREngine {
@@ -58,15 +58,7 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
 }
 
 @MainActor
-private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(10)
-    while await !condition(), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(20))
-    }
-}
-
-@MainActor
-@Test("the app releases the models when the processing queue drains with nothing recording")
+@Test("the app releases the models when the processing queue drains with nothing recording", .timeLimit(.minutes(1)))
 func releasesWhenQueueDrains() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -77,11 +69,14 @@ func releasesWhenQueueDrains() async throws {
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
     // The session does not exist, so the finalization fails; the queue still drains.
+    await state.startupMaintenanceTask?.value
     state.enqueueProcessing(.finalize(
         sessionID: UUID(),
         metadataPolicy: .reject
     ))
-    try await waitUntil { await asr.unloadCount == 1 }
+    await state.processingCoordinator.waitUntilIdle()
+    await state.modelPreparationTask?.value
+    await state.idleReleaseTask?.value
 
     #expect(await asr.unloadCount == 1)
     #expect(state.modelPreparation == .idle)
@@ -89,7 +84,7 @@ func releasesWhenQueueDrains() async throws {
 }
 
 @MainActor
-@Test("no release happens while recording or while items are queued")
+@Test("no release happens while recording or while items are queued", .timeLimit(.minutes(1)))
 func noReleaseWhileBusy() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -127,7 +122,7 @@ func noReleaseWhileBusy() async throws {
 }
 
 @MainActor
-@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards")
+@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards", .timeLimit(.minutes(1)))
 func reloadAfterRelease() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -146,7 +141,8 @@ func reloadAfterRelease() async throws {
     #expect(state.modelPreparation == .idle)
 
     state.prepareASRModel()
-    try await waitUntil { state.modelPreparation == .ready }
+    let preparation = try #require(state.modelPreparationTask)
+    await preparation.value
     #expect(await asr.loadCount == 2)
     #expect(state.modelPreparation == .ready)
 }
