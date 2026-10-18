@@ -75,19 +75,14 @@ private actor SuspendedASREngine: ASREngine {
     func unload() async {}
 }
 
-private actor RegistrationAppendGate {
+private actor GatedRegistrationWriter: SessionEventAppending {
+    private let writer: SessionWriter
     private var entered = false
     private var entryWaiter: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
-    func suspendFirstAppend() async {
-        guard !entered else { return }
-        entered = true
-        await withCheckedContinuation { continuation in
-            releaseContinuation = continuation
-            entryWaiter?.resume()
-            entryWaiter = nil
-        }
+    init(writer: SessionWriter) {
+        self.writer = writer
     }
 
     func waitUntilAppendStarts() async {
@@ -100,6 +95,21 @@ private actor RegistrationAppendGate {
     func releaseFirstAppend() {
         releaseContinuation?.resume()
         releaseContinuation = nil
+    }
+
+    @discardableResult
+    func append<Payload: Codable & Sendable>(
+        _ draft: EventDraft<Payload>
+    ) async throws -> EventEnvelope<Payload> {
+        if draft.eventType == "segment.created", !entered {
+            entered = true
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+                entryWaiter?.resume()
+                entryWaiter = nil
+            }
+        }
+        return try await writer.append(draft)
     }
 }
 
@@ -642,35 +652,43 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
-    let fixture = try await makeLiveASRFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let durableWriter = try SessionWriter(sessionURL: root)
+    let writer = GatedRegistrationWriter(writer: durableWriter)
+    let engine = CountingASREngine()
+    let session = LiveASRSession(
+        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
+        asrRunID: "asr_live_test", processingDirectory: root,
+        writer: writer, asr: engine, sampleRate: 16_000,
+        clauseBoundaryRunID: nil,
+        contentPriorityRunID: nil
+    )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
         startFrame: 0, endFrame: 4_000
     )
-    let gate = RegistrationAppendGate()
-    await fixture.session.setBeforeSegmentCreatedAppend {
-        await gate.suspendFirstAppend()
-    }
 
     let first = Task {
-        try await fixture.session.register(segments: [segment])
+        try await session.register(segments: [segment])
     }
-    await gate.waitUntilAppendStarts()
-    let second = try await fixture.session.register(segments: [segment])
+    await writer.waitUntilAppendStarts()
+    let second = try await session.register(segments: [segment])
     #expect(second.pendingCount == 0)
-    #expect(await fixture.session.snapshot().segments.isEmpty)
+    #expect(await session.snapshot().segments.isEmpty)
 
-    await gate.releaseFirstAppend()
+    await writer.releaseFirstAppend()
     _ = try await first.value
-    let progress = await fixture.session.snapshot().progress
+    let progress = await session.snapshot().progress
     #expect(progress.pendingCount == 1)
     #expect(progress.completedCount == 0)
     #expect(progress.failedCount == 0)
     #expect(progress.materializedSegments.isEmpty)
 
     let recovered = try SessionRecovery.recoverJSONL(
-        Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
+        Data(contentsOf: root.appending(path: "events.jsonl"))
     )
     let eventTypes = try recovered.lines.map { line in
         let event = try #require(

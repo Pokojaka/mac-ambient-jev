@@ -150,7 +150,7 @@ final class AppState: ObservableObject {
     /// Set only while the current recording captures the microphone.
     var micInputSessionID: UUID?
     var displayedSessionID: UUID?
-    var thermalObserver: MacThermalStateObservation?
+    private var thermalObservation: (any ThermalStateObservation)?
     lazy var processingCoordinator = SessionProcessingCoordinator(
         effects: self,
         processor: sessionProcessor,
@@ -165,8 +165,7 @@ final class AppState: ObservableObject {
     )
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
-    // Keep completion awaitable until a new recording is accepted.
-    var stoppingTask: Task<Void, Never>?
+    var failureStopTask: Task<Void, Never>?
     var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
 
@@ -213,6 +212,9 @@ final class AppState: ObservableObject {
             sleep: { try await Task.sleep(for: $0) }
         )
         self.exportDirectoryPath = exportDestination.path
+        thermalObservation = thermalMonitor.observeChanges { [weak self] in
+            self?.resumeThermallyHeldProcessing()
+        }
 
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }

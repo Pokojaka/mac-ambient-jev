@@ -3,7 +3,14 @@ import Foundation
 import CWindowsSession
 #endif
 
-public actor SessionWriter {
+public protocol SessionEventAppending: Sendable {
+    @discardableResult
+    func append<Payload: Codable & Sendable>(
+        _ draft: EventDraft<Payload>
+    ) async throws -> EventEnvelope<Payload>
+}
+
+public actor SessionWriter: SessionEventAppending {
     public let sessionURL: URL
     public let eventsURL: URL
     private var knownLogSize: UInt64

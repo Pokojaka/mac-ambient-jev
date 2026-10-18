@@ -102,7 +102,7 @@ public actor LiveASRSession {
     private let sessionID: UUID
     private let sessionURL: URL
     private let processingDirectory: URL
-    private let writer: SessionWriter
+    private let writer: any SessionEventAppending
     private let asr: any ASREngine
     private let materializer: IncrementalTranscriptMaterializer
 
@@ -113,7 +113,6 @@ public actor LiveASRSession {
     private var segmentStatusIndex: [String: Int] = [:]
     private var registeredSegmentIDs: Set<String> = []
     private var registeringSegmentIDs: Set<String> = []
-    private var beforeSegmentCreatedAppend: (@Sendable () async -> Void)? = nil
     private var finishedSegmentIDs: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
@@ -135,7 +134,7 @@ public actor LiveASRSession {
         segmentationRunID: String,
         asrRunID: String,
         processingDirectory: URL,
-        writer: SessionWriter,
+        writer: any SessionEventAppending,
         asr: any ASREngine,
         sampleRate: Double,
         clauseBoundaryRunID: String?,
@@ -154,10 +153,6 @@ public actor LiveASRSession {
             sampleRate: sampleRate, segmentationRunID: segmentationRunID,
             asrRunID: asrRunID, clauseBoundaryRunID: clauseBoundaryRunID
         )
-    }
-
-    func setBeforeSegmentCreatedAppend(_ hook: @escaping @Sendable () async -> Void) {
-        beforeSegmentCreatedAppend = hook
     }
 
     /// Durably registers newly detected speech before it enters the ASR queue.
@@ -183,10 +178,6 @@ public actor LiveASRSession {
             guard !finalized else { break }
             registeringSegmentIDs.insert(segment.segmentID)
             defer { registeringSegmentIDs.remove(segment.segmentID) }
-            // Keep the unset production path free of an extra suspension point.
-            if let beforeSegmentCreatedAppend {
-                await beforeSegmentCreatedAppend()
-            }
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,

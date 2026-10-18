@@ -55,8 +55,6 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
             }
         }
     )
-    // Injected thermal control must not register an observer that reads host pressure.
-    #expect(state.thermalObserver == nil)
     await state.startupMaintenanceTask?.value
     try #require(!state.processingQueue.isMaintainingStorage)
 
@@ -92,6 +90,85 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         #expect(state.liveTranscription.latestCheckpoint(sessionID: sessionID) == nil)
         #expect(!state.liveCoordinator.isDraining(sessionID: sessionID))
         #expect(await asr.inputs() == expectedInputs)
+    } catch {
+        pressure.pressure = .fair
+        await state.stopRecording()
+        await state.processingCoordinator.waitUntilIdle()
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+        throw error
+    }
+}
+
+@MainActor
+@Test("Cooling resumes thermally held finalization", .timeLimit(.minutes(1)))
+func coolingResumesThermallyHeldFinalization() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let capture = FakeAppCaptureEngine()
+    capture.onStart = { sessionID in
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let writer = try DurableAudioWriter(
+            directory: SessionLayout(sessionURL: sessionURL).processingDirectory,
+            chunkDurationSeconds: 0.5,
+            sessionURL: sessionURL
+        )
+        try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
+        capture.stopResult = cleanStopResult(try await writer.finish())
+    }
+
+    let asr = ThermalQueueASR()
+    let pressure = TestThermalMonitor(.critical)
+    let poll = LivePollSleep()
+    let state = AppState(
+        paths: paths, captureEngine: capture, microphoneAccess: { true },
+        pausesProcessing: false, userDefaults: defaults,
+        engines: SessionProcessingEngines(
+            asr: asr, diarization: UnusedThermalQueueDiarizer(),
+            finalTranscriptVAD: EmptyThermalQueueFinalVAD()
+        ),
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: pressure,
+        liveTranscriptionSleep: poll.sleep
+    )
+
+    do {
+        let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+        await maintenance.value
+        try #require(!state.processingQueue.isMaintainingStorage)
+
+        await state.startRecording()
+        try #require(state.recordingPhase == .recording)
+        let sessionID = try #require(state.recordingSessionID)
+        try await poll.waitUntilSuspended()
+
+        await state.stopRecording()
+        await state.processingCoordinator.waitUntilIdle()
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+
+        #expect(state.processingQueue.thermallyHeld.contains { $0.sessionID == sessionID })
+        #expect(state.processingQueue.pending.isEmpty)
+        #expect(state.processingState == .backlogged)
+        #expect(await asr.inputs() == [])
+
+        pressure.pressure = .fair
+        await state.processingCoordinator.waitUntilIdle()
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+
+        #expect(state.processingQueue.thermallyHeld.isEmpty)
+        #expect(state.processingState == .complete)
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+        #expect(metadata.finalizationAttempt?.state == .complete)
+        #expect(metadata.activeRuns != nil)
+        #expect(await asr.inputs() == [])
     } catch {
         pressure.pressure = .fair
         await state.stopRecording()

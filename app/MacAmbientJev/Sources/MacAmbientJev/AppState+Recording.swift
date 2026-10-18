@@ -27,7 +27,7 @@ extension AppState {
 
     func startRecording() async {
         guard recordingPhase == .idle else { return }
-        stoppingTask = nil
+        failureStopTask = nil
         captureWarningText = nil
         micInputStatus = nil
         isMicrophoneSilent = false
@@ -189,7 +189,7 @@ extension AppState {
         let task = Task {
             await finishRecording(sessionID: sessionID, failureMessage: message)
         }
-        stoppingTask = task
+        failureStopTask = task
         return task
     }
 

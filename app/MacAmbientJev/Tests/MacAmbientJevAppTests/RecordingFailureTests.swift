@@ -214,7 +214,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     engine.signalFailure(message)
     #expect(state.recordingPhase == .stopping)
     #expect(state.statusText == message)
-    let stopping = try #require(state.stoppingTask)
+    let stopping = try #require(state.failureStopTask)
     await stopping.value
     #expect(state.statusTone == .error)
     #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
@@ -270,7 +270,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             #expect(state.statusTone == .neutral)
         }
         if trigger != .normal {
-            let stopping = try #require(state.stoppingTask)
+            let stopping = try #require(state.failureStopTask)
             await stopping.value
             #expect(state.statusTone == .error)
             #expect(state.statusText == "capture interrupted")
@@ -292,8 +292,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
 }
 
 @MainActor
-@Test("failure stopping task is retained until the next recording starts", .timeLimit(.minutes(1)))
-func failureStoppingTaskRetentionLifecycle() async throws {
+@Test("duplicate capture failures do not stop or finalize twice", .timeLimit(.minutes(1)))
+func duplicateCaptureFailuresDoNotStopOrFinalizeTwice() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
     let (defaults, suiteName) = try temporaryDefaults()
@@ -312,19 +312,23 @@ func failureStoppingTaskRetentionLifecycle() async throws {
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
     #expect(state.recordingPhase == .recording)
-    engine.signalFailure("capture interrupted")
+    let stopping = try #require(state.captureDidFail(sessionID: sessionID, message: "capture interrupted"))
     #expect(state.recordingPhase == .stopping)
-    let stopping = try #require(state.stoppingTask)
+    #expect(state.statusText == "capture interrupted")
     #expect(state.captureDidFail(sessionID: sessionID, message: "duplicate failure") == nil)
+    #expect(state.statusText == "capture interrupted")
+
     await stopping.value
     #expect(state.recordingPhase == .idle)
-    #expect(state.stoppingTask != nil)
+    #expect(engine.stopped == 1)
+    #expect(state.processingQueue.pending.count == 1)
 
-    await state.startRecording()
-    #expect(state.stoppingTask == nil)
-    #expect(state.recordingPhase == .recording)
-    await state.stopRecording()
+    #expect(state.captureDidFail(sessionID: sessionID, message: "late duplicate failure") == nil)
     #expect(state.recordingPhase == .idle)
+    #expect(engine.stopped == 1)
+    #expect(state.processingQueue.pending.count == 1)
+    #expect(state.statusText == "capture interrupted")
+    #expect(state.statusTone == .error)
 }
 
 @MainActor
