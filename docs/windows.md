@@ -192,6 +192,33 @@ PortableRuntime には、実モデルを使わずにテストできる純粋 Swi
 
 `transcript(generatedIDs:endedAtTokenCap:)` は既存の marker・stop token 除外・trim 規則を保ち、`endedAtTokenCap == true` の場合に限って、有効な不完全 trailing UTF-8 byte を取り除いてから厳密に decode します。それ以外の不正 UTF-8 はエラーです。`endedAtTokenCap == false` の場合と `decode(_:)` は常に厳密です。Mac は切れた byte を U+FFFD に置換しますが、ここでは cap 到達時に限り不完全末尾を除く点が異なります。[embedding tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASREmbeddingTableTests.swift) は合成 FP16、[greedy tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRGreedyDecoderTests.swift) は scripted logits を使い、モデル重みは不要です。既存の [token decoder tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRTokenDecoderTests.swift) も参照してください。
 
+## Qwen3-ASR の log-mel 前処理
+
+PortableRuntime の [`Qwen3ASRMelFrontend`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Qwen3ASR/Qwen3ASRMelFrontend.swift) は、ONNX Runtime を使わず Qwen3-ASR encoder 用 log-mel 特徴量を計算します。公開 API は `Qwen3ASRMelFrontend.init()` と `compute(samples: [Float]) throws -> Qwen3ASRMelSpectrogram` です。入力は呼び出し側が用意する16 kHz mono 音声で、この API は resampling しません。結果の `values: [Float]` は row-major の 128×T、`frameCount: Int` は T で、encoder 入力は `[1, 128, T]` です。
+
+入力は非空・有限で、reflect padding のため最低201 sample 必要です。`T = floor(N / 160)` が120,000を超える場合は、出力確保や入力走査より前に拒否します。エラーは `Qwen3ASRMelError.emptyInput`、`inputTooShort(sampleCount:)`、`nonFiniteSample(index:)`、`tooManyFrames(Int)` で、代替処理はしません。
+
+400 sample の periodic Hann window、hop 160、中央に左右200 sample の reflect padding を使い、400点の非正規化 DFT から201個の power bin を計算します。Slaney scale、128 mel、0–8,000 Hz、HTK なし、area normalization の mel filter を適用します。filter は Swift で動的に計算し、大きな固定 table は持ちません。FFT は25個の長さ16の radix-2 FFT と25項の合成で構成し、twiddle と疎な filter を cache します。ONNX Runtime、Accelerate、外部 FFT library は使わず、中間計算は Double として、大きな有限 Float 入力でも power が overflow しないようにします。各値を `log10(max(mel, 1e-10))` に変換し、全体最大値から8を下限として `(x + 4) / 4` で正規化した後に最後の frame を落とします。最大値の計算にはこの破棄 frame も含まれます。
+
+[`Qwen3ASRMelFrontendTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRMelFrontendTests.swift) は、[`qwen3_mel_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_mel_golden.json) に対する golden 一致、入力検証、境界、正規化を検査します。golden は NumPy 2.5.4 / librosa 1.0.0 で生成し、Float32 little-endian 入力の Base64 と row-major 出力全値（小数点以下6桁に丸め）を収録します。1秒440/1,000 Hz sine mix、3,791-sample chirp、0.3秒 envelope sine、480-sample 最終 frame peak、201-sample 最小 reflect 入力の frame 数は順に100、23、30、3、1です。照合許容差は FFT の丸めと JSON の量子化を含む `1e-4` で、Torch との bitwise 一致は保証しません。
+
+fixture の再生成コマンドは次のとおりです。1つ目は非 pin の指定、2つ目は依存版を固定した再現用です（[`generate_qwen3_mel_fixture.py`](../scripts/generate_qwen3_mel_fixture.py)）。
+
+```bash
+uv run --python 3.12 --with numpy --with librosa python scripts/generate_qwen3_mel_fixture.py
+uv run --python 3.12 --with numpy==2.5.4 --with librosa==1.0.0 python scripts/generate_qwen3_mel_fixture.py
+```
+
+log-mel filter と DFT の参照は [librosa mel filter API](https://librosa.org/doc/latest/api/generated/librosa.filters.mel.html), [librosa changelog](https://librosa.org/doc/latest/changelog.html), [NumPy `rfft`](https://numpy.org/doc/stable/reference/generated/numpy.fft.rfft.html), [NumPy 2.5.4 release](https://github.com/numpy/numpy/releases/tag/v2.5.4) を参照してください。
+
+Performance test は30秒（480,000 sample）の入力を同期実行し、初回と3回の warm 実行を計測します。release build での実行コマンドは次のとおりです。
+
+```bash
+swift test --package-path app/MacAmbientJev -c release --filter Qwen3ASRMelFrontendPerformanceTests --no-parallel
+```
+
+Release / Debug の実測値、fixture 誤差、Linux test 結果は[2026-10-19 の計測記録](records/qwen3-mel-2026-10-19.md)を参照してください。
+
 ## ビルドと検証
 
 Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に設定します。
