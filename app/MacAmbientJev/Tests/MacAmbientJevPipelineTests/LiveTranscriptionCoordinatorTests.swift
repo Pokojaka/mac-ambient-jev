@@ -959,7 +959,7 @@ func cleanupOldDrainCannotReplaceStateOrRemoveNewSameSessionDrain() async throws
 
 /// Five-second utterance cadence; no capture, model load, or audio-file allocation.
 @MainActor
-@Test("Measure live backlog at 10-minute, 1-hour and 4-hour event equivalents")
+@Test("Measure live backlog at 10-minute, 1-hour and 4-hour event equivalents", .enabled(if: ProcessInfo.processInfo.environment["LIVE_ASR_BACKLOG_MEASUREMENT"] == "1"))
 func measureLatestCheckpointRetentionDuringThermalStall() async throws {
     let sessionID = UUID()
     let state = LiveTranscriptionState()

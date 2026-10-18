@@ -232,7 +232,8 @@ struct MeasureLiveLatencyCommand {
             paths: replayPaths,
             engines: .production(paths: paths),
             audioHandling: MacSessionProcessingAudio(),
-            contentPriority: .disabled
+            contentPriority: .disabled,
+            sleep: { try await Task.sleep(for: $0) }
         )
         try await processor.prepareASR { progress, message in
             FileHandle.standardError.write(Data("ASR model \(Int(progress * 100))%: \(message)\n".utf8))

@@ -150,7 +150,8 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
             finalTranscriptVAD: UnusedLiveTestVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let segmentationRunID = "seg_live_test"
 
@@ -275,7 +276,8 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
             finalTranscriptVAD: UnusedLiveTestVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "seg_live_test",
@@ -453,7 +455,8 @@ private struct NativeDecisionFixture {
             paths: paths,
             engines: SessionProcessingEngines(asr: asr, diarization: LiveProcessorFinalDiarizer(), finalTranscriptVAD: LiveProcessorFinalVAD()),
             audioHandling: RecordingTestAudioHandling(),
-            contentPriority: .localTagger(factory, usageCounter: counter)
+            contentPriority: .localTagger(factory, usageCounter: counter),
+            sleep: { _ in }
         )
     }
 

@@ -209,7 +209,8 @@ final class AppState: ObservableObject {
             paths: paths,
             engines: engines,
             audioHandling: MacSessionProcessingAudio(),
-            contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter)
+            contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter),
+            sleep: { try await Task.sleep(for: $0) }
         )
         self.exportDirectoryPath = exportDestination.path
 

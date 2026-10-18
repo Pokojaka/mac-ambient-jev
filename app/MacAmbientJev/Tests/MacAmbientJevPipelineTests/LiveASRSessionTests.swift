@@ -339,15 +339,16 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     #expect(first.completedCount == 1)
     #expect(second == first)
 
-    let eventsText = try String(
-        contentsOf: fixture.root.appending(path: "events.jsonl"),
-        encoding: .utf8
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
     )
-    #expect(
-        eventsText.components(
-            separatedBy: "\"event_type\":\"processing.run.completed\""
-        ).count - 1 == 1
-    )
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter { $0 == "processing.run.completed" }.count == 1)
 }
 
 @Test
@@ -627,18 +628,21 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     #expect(progress.failedCount == 0)
     #expect(progress.materializedSegments.isEmpty)
 
-    let log = try String(
-        contentsOf: fixture.root.appending(path: "events.jsonl"),
-        encoding: .utf8
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
     )
-    let createdCount = log.split(separator: "\n")
-        .filter { $0.contains("\"segment.created\"") }.count
-    #expect(createdCount == 1)
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter { $0 == "segment.created" }.count == 1)
 }
 
 /// Measures duplicate pending registration without inference or recognized-row updates.
 /// Five-second event cadence; uses pending references, not hours of allocated audio.
-@Test("Measure live registration cost at 10-minute, 1-hour and 4-hour event equivalents")
+@Test("Measure live registration cost at 10-minute, 1-hour and 4-hour event equivalents", .enabled(if: ProcessInfo.processInfo.environment["LIVE_ASR_REGISTRATION_MEASUREMENT"] == "1"))
 func measureLiveRegistrationCost() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
