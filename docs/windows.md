@@ -1,7 +1,14 @@
 # Windows の共通コア
 
-Windows では Swift 6.2 で共通コア、評価 CLI 3 本、WindowsSupport と Core / WindowsSupport のテストをビルドできます。
-共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。WindowsSupport は WAV / FLAC / MP3 / M4A / AAC の streaming import と canonical timeline 生成 API を提供しますが、これは Windows の録音・capture や GUI・engine を含む完全な import / finalization pipeline が実装済みであることを意味しません。録音・capture、VAD・ASR・話者分離・発話文判定の実推論、GUI、インストーラーも Windows の実行対象には含まれません。macOS のアプリは Apple Silicon と macOS 15 以降で動作します。
+Windows では Swift 6.2 で共通 Core / Pipeline、評価 CLI 3 本、WindowsSupport と Core / Pipeline / WindowsSupport のテストをビルドできます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。WindowsSupport は WAV / FLAC / MP3 / M4A / AAC の streaming import と canonical timeline 生成 API を提供しますが、これは Windows の録音・capture や GUI・engine を含む完全な import / finalization pipeline が実装済みであることを意味しません。録音・capture、VAD・ASR・話者分離・発話文判定の実推論、GUI、インストーラーも Windows の実行対象には含まれません。macOS のアプリは Apple Silicon と macOS 15 以降で動作します。
+
+Headless Pipeline consumer と P4 engine の run loop は DispatchQueue.main と MainActor executor の処理を継続して drain する必要があります。Pipeline の processing / live transcription coordinators は `@MainActor` で動作し、[`MicInputVolumeController`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/MicInputVolumeController.swift) も DispatchQueue.main.asyncAfter で timeout を進めます。どちらかを drain しないと coordinator の処理や timer callback が進みません。状態型と coordinator の責務は [architecture.md](architecture.md) を参照してください。
+
+## 熱状態
+
+Pipeline の [`ThermalMonitoring`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/ThermalMonitoring.swift) contract は `isCritical`（確定処理の pause / resume 判定）と `liveASRDecision`（live ASR の policy）です。Windows の `WindowsNoThermalMonitoring` は thermal state を読み取らず、`isCritical == false` と `.processNow` を返します。Windows では熱状態を測定・推定せず、nominal state を設定することもありません。Windows では熱状態によるライブ ASR 待機・確定処理一時停止を行いません（[製品ルールの熱状態](decisions.md#熱状態)）。
+
+Mac の [`MacThermalMonitor`](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/MacThermalMonitor.swift) は `ProcessInfo.thermalState` を使う具体実装です。Mac の nonoptional `state` / `pressure` と live/finalization の policy 境界は [architecture.md](architecture.md#portable-core-の境界) を参照してください。Mac app とファイル処理・システム音声・遅延計測 CLI が同じ監視元を使います。Windows の実推論自体は実行対象に含まれません。
 
 ## 音声 import API
 
@@ -55,13 +62,13 @@ symlink の作成に必要な開発者モードを有効にします。実行後
 
 Core の FLAC テストは codec の round-trip と破損データの拒否を検証します。参照用 `flac` CLI との比較は `PATH` から実行ファイルを解決できる場合だけ実行し、見つからない場合は Swift Testing の `enabled` trait で無効になります。`flac` はテスト専用で、実行時依存ではありません。詳細は [RecordingFLACEncoderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/RecordingFLACEncoderTests.swift) と [FLACTimelineReaderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/FLACTimelineReaderTests.swift) を参照してください。
 
-Windows の `swift build` は共通コア、WindowsSupport、CMiniaudio、CWindowsAudio と MacAmbientJevEvaluateSession、MacAmbientJevEvaluateASR、
-MacAmbientJevEvaluateDiarization をビルドします。macOS 専用の framework や推論モデルは取得しません。
+Windows の `swift build` は共通 Core / Pipeline、WindowsSupport、CMiniaudio、CWindowsAudio と MacAmbientJevEvaluateSession、MacAmbientJevEvaluateASR、
+MacAmbientJevEvaluateDiarization をビルドします。swift test は Core、Pipeline、WindowsSupport の各 test target の全テストを filter 指定なしで実行します。これは [`test-windows.ps1`](../scripts/test-windows.ps1) と [portable CI](../.github/workflows/portable-core.yml) の実行内容です。macOS 専用の framework や推論モデルは取得しません。
 評価 CLI の参照文・artifact の形式は [testing.md](testing.md) と [linux.md](linux.md) を参照してください。
 参照文のファイル指定は相対パスと Windows の絶対パスを扱います。
 
-[portable-core.yml](../.github/workflows/portable-core.yml) は、共通 Core、Windows 音声関連ソースとテスト、fixture 生成スクリプトの変更を含む main への push とレビュー可能な pull request で、Linux と Windows の build/test を実行します。
-Linux は CMiniaudio・Core・評価 CLI 3 本を build し、Core tests を実行します。Windows は Core・WindowsSupport・評価 CLI 3 本を build し、Core と WindowsSupport の tests を実行します。
+[portable-core.yml](../.github/workflows/portable-core.yml) は、共通 Core / Pipeline、Windows 音声関連ソースとテスト、fixture 生成スクリプトの変更を含む main への push とレビュー可能な pull request で、Linux と Windows の build/test を実行します。
+Linux は CMiniaudio・Core・Pipeline・評価 CLI 3 本を build し、Core と Pipeline の tests を実行します。Windows は Core・Pipeline・WindowsSupport・評価 CLI 3 本を build し、Core、Pipeline、WindowsSupport の tests を実行します。Windows の [test-windows.ps1](../scripts/test-windows.ps1) は Package の全適用 target を `swift build` し、全適用 test target を `swift test` します。
 Draft PR では portable と macOS の CI を起動せず、作業中の Linux 検証はローカルにまとめます。
 手動実行は Windows のみが既定で、run_linux を有効にすると Linux も実行します。
 同じブランチ・PR の古い実行は自動で取り消します。Windows のテストには symlink の作成権限が必要です。

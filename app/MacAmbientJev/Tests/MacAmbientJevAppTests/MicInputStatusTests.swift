@@ -5,6 +5,7 @@ import Testing
 @testable import MacAmbientJevCapture
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 private struct InjectedLiveVADFailure: Error {}
@@ -209,7 +210,8 @@ private func makeState(
 ) -> AppState {
     AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: makeLiveVADSession
+        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: makeLiveVADSession,
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
 }
 

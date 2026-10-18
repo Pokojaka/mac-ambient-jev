@@ -1,5 +1,6 @@
 import CoreAudio
 import Darwin
+import MacAmbientJevPipeline
 
 /// Polls Core Audio process state without creating a tap or starting capture.
 struct CoreAudioOutputProcesses: SystemAudioOutputProcessProviding {

@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCore
+@testable import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private let testDecisionIdentity = try! DecisionModelIdentity(model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
@@ -99,27 +100,27 @@ private func withLiveDecisionRecording(
             diarization: FluidOfflineDiarizationEngine(paths: paths),
             finalTranscriptVAD: RecordingFinalVAD()),
         makeLiveVADSession: { _, _, _, _ in RecordingVAD() },
+        thermalMonitor: TestThermalMonitor(.nominal),
         makeDecisions: { _, counter in makeDecisions(counter) }
     )
-    state.readLiveThermalPressure = { .nominal }
     let maintenanceDeadline = ContinuousClock.now + .seconds(5)
-    while state.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {
+    while state.processingQueue.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {
         try await Task.sleep(for: .milliseconds(10))
     }
-    try #require(!state.isMaintainingStorage)
+    try #require(!state.processingQueue.isMaintainingStorage)
     await state.startRecording()
     do {
         try #require(state.recordingPhase == .recording)
         try await body(state)
     } catch {
         await state.stopRecording()
-        await state.processingTask?.value
+        await state.processingCoordinator.waitUntilIdle()
         await state.modelPreparationTask?.value
         await state.idleReleaseTask?.value
         throw error
     }
     await state.stopRecording()
-    await state.processingTask?.value
+    await state.processingCoordinator.waitUntilIdle()
     await state.modelPreparationTask?.value
     await state.idleReleaseTask?.value
 }
@@ -140,7 +141,7 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
         #expect(await provider.texts == ["録音の発話1"])
         let sessionID = try #require(state.recordingSessionID)
         await state.waitForLiveASRDrain(sessionID: sessionID)
-        #expect(state.liveASRFailures[sessionID] == nil)
+        #expect(state.liveTranscription.failure(sessionID: sessionID) == nil)
         // Rows never wait for decisions: both are shown as normal text while priority is in flight.
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
@@ -182,11 +183,11 @@ func appRecordingShowsDecisionFactoryFailureReason() async throws {
         let sessionID = try #require(state.recordingSessionID)
         await state.waitForLiveASRDrain(sessionID: sessionID)
         #expect(state.isRecording)
-        #expect(state.liveASRFailures[sessionID] == nil)
+        #expect(state.liveTranscription.failure(sessionID: sessionID) == nil)
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話1", "録音の発話2"])
         #expect(state.transcriptViewModel.rows.first?.clauseState == .boundaryPending)
         #expect(state.processingStatusText?.contains(description) == true)
         #expect(state.transcriptViewModel.statusText.contains(description))
-        #expect(state.liveContentPriorityStatus[sessionID]?.contains(description) == true)
+        #expect(state.liveTranscription.contentPriorityStatus[sessionID]?.contains(description) == true)
     }
 }

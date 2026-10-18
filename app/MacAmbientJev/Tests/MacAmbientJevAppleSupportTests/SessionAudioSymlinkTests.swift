@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MacAmbientJevPipeline
 import Testing
 @testable import MacAmbientJevAppleSupport
 @testable import MacAmbientJevCore

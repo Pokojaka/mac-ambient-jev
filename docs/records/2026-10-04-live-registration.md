@@ -41,7 +41,7 @@ python3 scripts/check_doc_references.py
 A throwaway standalone Swift executable compiled the changed `LiveASRSession.swift` against the built Core library, not the test runner:
 
 ```bash
-swiftc -parse-as-library -I app/MacAmbientJev/.build/out/Products/Debug -L app/MacAmbientJev/.build/out/Products/Debug -lMacAmbientJevCore app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift /tmp/luna-live-registration-smoke.swift -o /tmp/luna-live-registration-smoke
+swiftc -parse-as-library -I app/MacAmbientJev/.build/out/Products/Debug -L app/MacAmbientJev/.build/out/Products/Debug -lMacAmbientJevCore app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift /tmp/luna-live-registration-smoke.swift -o /tmp/luna-live-registration-smoke
 /tmp/luna-live-registration-smoke
 ```
 

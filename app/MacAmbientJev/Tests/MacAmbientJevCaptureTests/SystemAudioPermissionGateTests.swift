@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCapture
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 
 private actor GatePermission: SystemAudioPermissionProviding {
     /// nil models an absent SPI or an unknown TCC status.

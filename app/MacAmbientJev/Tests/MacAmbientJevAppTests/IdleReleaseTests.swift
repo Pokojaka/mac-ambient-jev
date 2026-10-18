@@ -3,6 +3,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCapture
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private actor CountingASR: ASREngine {
@@ -50,7 +51,8 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(asr: asr, diarization: NoopDiarizer(), finalTranscriptVAD: NoopVAD()),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
 }
 
@@ -82,7 +84,7 @@ func releasesWhenQueueDrains() async throws {
 
     #expect(await asr.unloadCount == 1)
     #expect(state.modelPreparation == .idle)
-    #expect(state.processingTask == nil)
+    #expect(!state.processingCoordinator.isDraining)
 }
 
 @MainActor
@@ -96,25 +98,27 @@ func noReleaseWhileBusy() async throws {
     let asr = CountingASR()
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
-    state.markRecordingStarted(sessionID: UUID())
+    let sessionID = UUID()
+    state.recording.start(sessionID: sessionID)
+    state.markRecordingStarted(sessionID: sessionID)
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.recordingPhase = .idle
-    state.thermallyHeldProcessing = [.finalize(
+    state.recording.finish()
+    state.processingQueue.holdForHeat(.finalize(
         sessionID: UUID(), metadataPolicy: .reject
-    )]
+    ))
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.thermallyHeldProcessing = []
-    state.pendingProcessing = [.finalize(
+    state.processingQueue = SessionProcessingQueue()
+    state.processingQueue.enqueue(.finalize(
         sessionID: UUID(), metadataPolicy: .reject
-    )]
+    ))
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.pendingProcessing = []
+    state.processingQueue = SessionProcessingQueue()
     state.releaseIdleResourcesIfIdle()
     let release = try #require(state.idleReleaseTask)
     await release.value

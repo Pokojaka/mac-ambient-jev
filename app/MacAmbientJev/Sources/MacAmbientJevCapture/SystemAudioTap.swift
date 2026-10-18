@@ -1,6 +1,7 @@
 import AudioToolbox
 import CoreAudio
 import Foundation
+import MacAmbientJevPipeline
 import Synchronization
 
 @MainActor

@@ -1,6 +1,7 @@
 import Foundation
 import MacAmbientJevCapture
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 enum CaptureSystemAudioError: LocalizedError, Equatable {
@@ -218,12 +219,13 @@ struct CaptureSystemAudioCommand {
         var transcriptText: String?
         if options.transcribe, let result, errors.isEmpty {
             let processor = NativeSessionProcessor(
-                paths: paths, engines: .production(paths: paths), contentPriority: .disabled
+                paths: paths, engines: .production(paths: paths),
+                audioHandling: MacSessionProcessingAudio(), contentPriority: .disabled
             )
             let processing = await processor.processSession(
                 sessionID: sessionID,
                 pacingMode: .normal,
-                shouldPause: { ProcessInfo.processInfo.thermalState == .critical },
+                shouldPause: { MacThermalMonitor().isCritical },
                 onPhase: { _ in },
                 metadataPolicy: .reject,
                 onStatus: { _ in },
