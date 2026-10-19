@@ -1,8 +1,13 @@
 import Foundation
 import MacAmbientJevONNX
 
+internal struct Qwen3ASRTranscription: Sendable, Equatable {
+    let text: String
+    let generatedIDs: [Int64]
+}
+
 protocol Qwen3ASRTranscribingModel: Sendable {
-    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> String
+    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> Qwen3ASRTranscription
 }
 
 /// Immutable model assets and sessions. The ONNX sessions, embedding table, and tokenizer are
@@ -34,7 +39,8 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         let encoderSession = try ONNXSession(
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.encoderFilename),
-            intraOpThreads: intraOpThreads
+            intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: false
         )
         try Self.validateMetadata(
             graph: .encoder,
@@ -46,7 +52,8 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         let decoderInitSession = try ONNXSession(
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.decoderInitFilename),
-            intraOpThreads: intraOpThreads
+            intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: false
         )
         try Self.validateMetadata(
             graph: .decoderInit,
@@ -58,7 +65,8 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         let decoderStepSession = try ONNXSession(
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.decoderStepFilename),
-            intraOpThreads: intraOpThreads
+            intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: false
         )
         try Self.validateMetadata(
             graph: .decoderStep,
@@ -90,7 +98,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         self.frontend = Qwen3ASRMelFrontend()
     }
 
-    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> String {
+    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> Qwen3ASRTranscription {
         let mel = try frontend.compute(samples: samples)
         let melValue = try ONNXValue(
             environment: environment,
@@ -143,9 +151,12 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
             maxNewTokens: maxNewTokens,
             noRepeatNgramSize: noRepeatNgramSize
         )
-        return try tokenizer.transcript(
-            generatedIDs: generation.generatedIDs,
-            endedAtTokenCap: generation.endedAtTokenCap
+        return Qwen3ASRTranscription(
+            text: try tokenizer.transcript(
+                generatedIDs: generation.generatedIDs,
+                endedAtTokenCap: generation.endedAtTokenCap
+            ),
+            generatedIDs: generation.generatedIDs
         )
     }
 

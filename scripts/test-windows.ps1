@@ -42,6 +42,7 @@ Invoke-Step 'Qwen3-ASR tokenizer fetcher self-test' { python -B scripts/test_fet
 Invoke-Step 'Qwen3-ASR model fetcher self-test' { python -B scripts/test_fetch_qwen3_asr_model.py }
 Invoke-Step 'pinned download self-test' { python -B scripts/test_pinned_download.py }
 Invoke-Step 'Silero reference generator self-test' { python -B scripts/test_generate_silero_reference.py }
+Invoke-Step 'Qwen3-ASR token reference generator self-test' { python -B scripts/test_generate_qwen3_asr_token_reference.py }
 Invoke-Step 'Swift build portable Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
 
 Write-Host '==> resolve Swift debug bin path'

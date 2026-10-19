@@ -1,5 +1,9 @@
 import Foundation
+#if os(Windows)
+import WinSDK
+#endif
 import MacAmbientJevCore
+import MacAmbientJevONNX
 import Testing
 @testable import MacAmbientJevPortableRuntime
 
@@ -83,6 +87,7 @@ enum Qwen3ASRModelTestConfigurationError: Error, LocalizedError {
     }
 }
 
+@Suite(.serialized)
 struct ONNXQwen3ASRModelTests {
     @Test(
         .enabled(
@@ -209,6 +214,303 @@ struct ONNXQwen3ASRModelTests {
             throw error
         }
     }
+
+    @Test(
+        .enabled(
+            if: ProcessInfo.processInfo.environment["RUN_MODEL_TESTS"] == "1"
+                && ProcessInfo.processInfo.environment[Qwen3ASRModelTestConfiguration.sizeEnvironmentKey] != "1.7b",
+            "Set RUN_MODEL_TESTS=1 with the 0.6b ONNX model to run exact token parity."
+        )
+    )
+    func exactTokenParity() async throws {
+        let configuration = try Qwen3ASRModelTestConfiguration(
+            environment: ProcessInfo.processInfo.environment
+        )
+        let reference = try loadQwen3ASRTokenReference()
+        #expect(configuration.size == .small)
+        #expect(reference.schemaVersion == 1)
+        #expect(reference.model.size == configuration.size.rawValue)
+        #expect(reference.model.commit == configuration.size.commit)
+        #expect(reference.reference.packages["onnxruntime"] == "1.31.0")
+        #expect(ONNXEnvironment.runtimeVersion == "1.31.0")
+        #expect(reference.reference.packages["numpy"] == "2.2.6")
+        #expect(reference.reference.packages["transformers"] == "4.57.1")
+        #expect(reference.reference.packages["tokenizers"] == "0.22.2")
+
+        let expectedFiles = configuration.size.files.map {
+            Qwen3ASRTokenReference.ModelFile(name: $0.name, sha256: $0.sha256, byteCount: $0.byteCount)
+        }.sorted { $0.name < $1.name }
+        #expect(reference.model.files.sorted { $0.name < $1.name } == expectedFiles)
+        #expect(reference.clips.map(\.id) == ["short", "long"])
+
+        let engine = ONNXQwen3ASREngine(
+            modelDirectory: configuration.directory,
+            size: configuration.size,
+            intraOpThreads: 2
+        )
+        do {
+            try await engine.prepare()
+            for clip in reference.clips {
+                let audio = try readJapaneseFixture(at: try fixtureURL(named: clip.file))
+                #expect(audio.samples.count == clip.sampleCount)
+
+                let transcription = try await engine.transcribeWithTokens(audio.input)
+                let expectedIDs = clip.generatedIds
+                let actualIDs = transcription.generatedIDs
+                if expectedIDs != actualIDs {
+                    let sharedLength = min(expectedIDs.count, actualIDs.count)
+                    let firstDifference: Int? = (0..<sharedLength).first {
+                        expectedIDs[$0] != actualIDs[$0]
+                    } ?? (expectedIDs.count == actualIDs.count ? nil : sharedLength)
+                    if let firstDifference {
+                        let expectedID = firstDifference < expectedIDs.count
+                            ? String(expectedIDs[firstDifference]) : "<end>"
+                        let actualID = firstDifference < actualIDs.count
+                            ? String(actualIDs[firstDifference]) : "<end>"
+                        print(
+                            "Qwen3-ASR token parity FAIL clip_id=\(clip.id) "
+                                + "first_difference_index=\(firstDifference) expected_id=\(expectedID) "
+                                + "actual_id=\(actualID) expected_length=\(expectedIDs.count) "
+                                + "actual_length=\(actualIDs.count)"
+                        )
+                    }
+                } else {
+                    print("Qwen3-ASR token parity PASS clip_id=\(clip.id) tokens=\(actualIDs.count)")
+                }
+                #expect(actualIDs == expectedIDs)
+                #expect(transcription.text == clip.text)
+            }
+        } catch {
+            await engine.unload()
+            throw error
+        }
+        await engine.unload()
+    }
+
+    @Test(
+        .enabled(
+            if: ProcessInfo.processInfo.environment["QWEN3_ASR_MEMORY_BENCHMARK"] == "1"
+                && ProcessInfo.processInfo.environment["RUN_MODEL_TESTS"] == "1",
+            "Set QWEN3_ASR_MEMORY_BENCHMARK=1 and RUN_MODEL_TESTS=1 to run the memory benchmark."
+        )
+    )
+    func memoryOverManyCalls() async throws {
+        let configuration = try Qwen3ASRModelTestConfiguration(
+            environment: ProcessInfo.processInfo.environment
+        )
+        let audio = try readJapaneseFixture(
+            at: fixtureURL(named: "qwen3_asr_voicevox_long.wav")
+        )
+        let input = audio.input
+        let audioSeconds = Double(audio.samples.count) / Double(audio.sampleRate)
+        let engine = ONNXQwen3ASREngine(
+            modelDirectory: configuration.directory,
+            size: configuration.size,
+            intraOpThreads: 2
+        )
+
+        do {
+            try await engine.prepare()
+            try printResidentMemory(label: "after_prepare")
+
+            let clock = ContinuousClock()
+            let totalStart = clock.now
+            var expectedText: String?
+            for call in 1...50 {
+                let callStart = clock.now
+                let result = try await engine.transcribe(input)
+                let elapsed = callStart.duration(to: clock.now)
+                #expect(!result.text.isEmpty)
+                if let expectedText {
+                    #expect(result.text == expectedText)
+                } else {
+                    expectedText = result.text
+                }
+                let elapsedSeconds = seconds(elapsed)
+                print(
+                    "Qwen3-ASR memory call=\(call) elapsed_seconds=\(elapsedSeconds) "
+                        + "rtf=\(elapsedSeconds / audioSeconds)"
+                )
+                if [1, 10, 25, 50].contains(call) {
+                    try printResidentMemory(label: "after_call_\(call)")
+                }
+            }
+            let totalElapsed = totalStart.duration(to: clock.now)
+            print(
+                "Qwen3-ASR memory summary calls=50 total_elapsed_seconds=\(seconds(totalElapsed)) "
+                    + "rtf=\(seconds(totalElapsed) / (50 * audioSeconds))"
+            )
+        } catch {
+            await engine.unload()
+            throw error
+        }
+        await engine.unload()
+        try printResidentMemory(label: "after_unload")
+    }
+}
+
+struct Qwen3ASRResidentMemoryTests {
+    @Test
+    func parsesAlignedWhitespaceAndTabs() throws {
+        #expect(try parseLinuxResidentMemoryBytes("VmRSS:\t  123456 kB\n") == 126_418_944)
+    }
+
+    @Test
+    func parsesOrdinarySpaces() throws {
+        #expect(try parseLinuxResidentMemoryBytes("VmRSS: 123456 kB\n") == 126_418_944)
+    }
+
+    @Test
+    func rejectsMissingOrDuplicateVmRSS() {
+        #expect(throws: ResidentMemoryError.self) {
+            try parseLinuxResidentMemoryBytes("Name:\tprocess\n")
+        }
+        #expect(throws: ResidentMemoryError.self) {
+            try parseLinuxResidentMemoryBytes("VmRSS: 1 kB\nVmRSS: 2 kB\n")
+        }
+    }
+
+    @Test
+    func rejectsInvalidValues() {
+        for status in [
+            "VmRSS: 0 kB\n",
+            "VmRSS: -1 kB\n",
+            "VmRSS: not-an-integer kB\n",
+            "VmRSS: 12 MB\n",
+            "VmRSS: 18446744073709551615 kB\n",
+        ] {
+            #expect(throws: ResidentMemoryError.self) {
+                try parseLinuxResidentMemoryBytes(status)
+            }
+        }
+    }
+
+    #if os(Linux)
+    @Test
+    func readsCurrentProcessResidentMemory() throws {
+        #expect(try residentMemoryBytes() > 0)
+    }
+    #endif
+}
+
+private struct Qwen3ASRTokenReference: Decodable {
+    struct Model: Decodable {
+        let size: String
+        let commit: String
+        let files: [ModelFile]
+    }
+
+    struct ModelFile: Decodable, Equatable {
+        let name: String
+        let sha256: String
+        let byteCount: Int64
+    }
+
+    struct Reference: Decodable {
+        let packages: [String: String]
+    }
+
+    struct Clip: Decodable {
+        let id: String
+        let file: String
+        let sampleCount: Int
+        let generatedIds: [Int64]
+        let text: String
+    }
+
+    let schemaVersion: Int
+    let model: Model
+    let reference: Reference
+    let clips: [Clip]
+}
+
+private func loadQwen3ASRTokenReference() throws -> Qwen3ASRTokenReference {
+    let url = try #require(
+        Bundle.module.url(
+            forResource: "qwen3_asr_token_reference",
+            withExtension: "json",
+            subdirectory: "Resources"
+        )
+    )
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return try decoder.decode(Qwen3ASRTokenReference.self, from: Data(contentsOf: url))
+}
+
+private func fixtureURL(named filename: String) throws -> URL {
+    let file = URL(fileURLWithPath: filename)
+    return try #require(
+        Bundle.module.url(
+            forResource: file.deletingPathExtension().lastPathComponent,
+            withExtension: file.pathExtension,
+            subdirectory: "Resources"
+        )
+    )
+}
+
+private enum ResidentMemoryError: Error, LocalizedError {
+    case invalidLinuxStatus(String)
+    case windowsAPI(UInt32)
+    case unsupportedPlatform
+
+    var errorDescription: String? {
+        switch self {
+        case let .invalidLinuxStatus(reason):
+            "Invalid /proc/self/status VmRSS value: \(reason)"
+        case let .windowsAPI(code):
+            "K32GetProcessMemoryInfo failed with GetLastError()=\(code)"
+        case .unsupportedPlatform:
+            "Resident-memory measurements are supported only on Linux and Windows."
+        }
+    }
+}
+
+private func printResidentMemory(label: String) throws {
+    print("Qwen3-ASR memory phase=\(label) resident_bytes=\(try residentMemoryBytes())")
+}
+
+private func parseLinuxResidentMemoryBytes(_ status: String) throws -> UInt64 {
+    let rssLines = status.split(whereSeparator: \.isNewline).filter { line in
+        guard let colon = line.firstIndex(of: ":") else { return false }
+        return line[..<colon] == "VmRSS"
+    }
+    guard rssLines.count == 1 else {
+        throw ResidentMemoryError.invalidLinuxStatus("expected one VmRSS line, found \(rssLines.count)")
+    }
+
+    let line = String(rssLines[0])
+    let fullRange = NSRange(line.startIndex..<line.endIndex, in: line)
+    let pattern = try NSRegularExpression(pattern: #"^VmRSS:[\t ]+([0-9]+)[\t ]+kB[\t ]*$"#)
+    guard let match = pattern.firstMatch(in: line, range: fullRange),
+          match.range == fullRange,
+          let valueRange = Range(match.range(at: 1), in: line),
+          let kilobytes = UInt64(line[valueRange]),
+          kilobytes > 0
+    else {
+        throw ResidentMemoryError.invalidLinuxStatus("expected exactly 'VmRSS: <positive integer> kB', found '\(line)'")
+    }
+    let (bytes, overflow) = kilobytes.multipliedReportingOverflow(by: 1024)
+    guard !overflow else {
+        throw ResidentMemoryError.invalidLinuxStatus("VmRSS kilobyte value overflows bytes: \(kilobytes)")
+    }
+    return bytes
+}
+
+private func residentMemoryBytes() throws -> UInt64 {
+    #if os(Linux)
+    let status = try String(contentsOfFile: "/proc/self/status", encoding: .utf8)
+    return try parseLinuxResidentMemoryBytes(status)
+    #elseif os(Windows)
+    var counters = PROCESS_MEMORY_COUNTERS()
+    let byteCount = DWORD(MemoryLayout<PROCESS_MEMORY_COUNTERS>.size)
+    counters.cb = byteCount
+    guard K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, byteCount) else {
+        throw ResidentMemoryError.windowsAPI(UInt32(GetLastError()))
+    }
+    return UInt64(counters.WorkingSetSize)
+    #else
+    throw ResidentMemoryError.unsupportedPlatform
+    #endif
 }
 
 private struct JapaneseFixtureDescriptor {

@@ -36,6 +36,24 @@ struct ONNXSessionTests {
         ])
     }
 
+    @Test(arguments: [true, false])
+    func cpuMemoryArenaModesPreserveAffineSessionBehavior(cpuMemoryArenaEnabled: Bool) throws {
+        let session = try ONNXSession(
+            environment: environment,
+            modelURL: fixtureURL(named: "affine"),
+            intraOpThreads: 1,
+            cpuMemoryArenaEnabled: cpuMemoryArenaEnabled
+        )
+        #expect(try session.inputMetadata() == [
+            ONNXTensorMetadata(name: "x", elementType: .float32, shape: [1, 4]),
+            ONNXTensorMetadata(name: "ids", elementType: .int64, shape: [1, 3]),
+            ONNXTensorMetadata(name: "sr", elementType: .int64, shape: []),
+        ])
+
+        let output = try session.run(inputs: fixtureInputs(sampleRate: 1), outputNames: ["y"])
+        #expect(output == [.float32(shape: [1, 4], values: [-3, 0, 1, 7.5])])
+    }
+
     @Test
     func inputAndOutputMetadataPreserveGraphOrderTypesAndShapes() throws {
         let affineSession = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
@@ -324,7 +342,8 @@ struct ONNXSessionTests {
         try ONNXSession(
             environment: environment,
             modelURL: modelURL,
-            intraOpThreads: intraOpThreads
+            intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: true
         )
     }
 }
@@ -369,8 +388,18 @@ private func fixtureInputs(sampleRate: Int64) -> [(name: String, tensor: ONNXTen
 
 private func makeSessionPair(modelURL: URL) throws -> SessionPair {
     let environment = try ONNXEnvironment(loggingID: "ONNXSessionLifetimeTests")
-    let first = try ONNXSession(environment: environment, modelURL: modelURL, intraOpThreads: 1)
-    let second = try ONNXSession(environment: environment, modelURL: modelURL, intraOpThreads: 2)
+    let first = try ONNXSession(
+        environment: environment,
+        modelURL: modelURL,
+        intraOpThreads: 1,
+        cpuMemoryArenaEnabled: true
+    )
+    let second = try ONNXSession(
+        environment: environment,
+        modelURL: modelURL,
+        intraOpThreads: 2,
+        cpuMemoryArenaEnabled: true
+    )
     return SessionPair(
         first: first,
         second: second,

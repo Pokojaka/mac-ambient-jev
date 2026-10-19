@@ -80,6 +80,25 @@ struct ONNXQwen3ASREngineTests {
     }
 
     @Test
+    func internalTranscriptionPreservesGeneratedTokensAndSkipsShortInput() async throws {
+        let recorder = ModelCallRecorder()
+        let engine = makeEngine(model: FakeQwen3ASRModel(recorder: recorder, text: "recognized"))
+        try await engine.prepare()
+
+        let short = try await engine.transcribeWithTokens(
+            ASRAudioInput(samples: Array(repeating: 0, count: 319), sampleRate: 16_000)
+        )
+        #expect(short == Qwen3ASRTranscription(text: "", generatedIDs: []))
+        #expect(recorder.calls.isEmpty)
+
+        let result = try await engine.transcribeWithTokens(
+            ASRAudioInput(samples: Array(repeating: 0, count: 320), sampleRate: 16_000)
+        )
+        #expect(result == Qwen3ASRTranscription(text: "recognized", generatedIDs: [42, 151645]))
+        #expect(recorder.calls.count == 1)
+    }
+
+    @Test
     func ngramRuleUsesStrictlyMoreThanFifteenSecondsAndForwardsTokenCap() async throws {
         let recorder = ModelCallRecorder()
         let engine = makeEngine(model: FakeQwen3ASRModel(recorder: recorder, text: "recognized"))
@@ -489,7 +508,7 @@ private final class FakeQwen3ASRModel: Qwen3ASRTranscribingModel, @unchecked Sen
         self.text = text
     }
 
-    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> String {
+    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> Qwen3ASRTranscription {
         recorder.append(
             TranscriptionCall(
                 sampleCount: samples.count,
@@ -497,7 +516,7 @@ private final class FakeQwen3ASRModel: Qwen3ASRTranscribingModel, @unchecked Sen
                 noRepeatNgramSize: noRepeatNgramSize
             )
         )
-        return text
+        return Qwen3ASRTranscription(text: text, generatedIDs: [42, 151645])
     }
 }
 
@@ -582,7 +601,7 @@ private final class RetryTranscriptionModel: Qwen3ASRTranscribingModel, @uncheck
         self.recorder = recorder
     }
 
-    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> String {
+    func transcribe(samples: [Float], maxNewTokens: Int, noRepeatNgramSize: Int?) throws -> Qwen3ASRTranscription {
         recorder.append(
             TranscriptionCall(
                 sampleCount: samples.count,
@@ -596,6 +615,6 @@ private final class RetryTranscriptionModel: Qwen3ASRTranscribingModel, @uncheck
         if attempts == 1 {
             throw TranscriptionError.firstAttempt
         }
-        return "retry"
+        return Qwen3ASRTranscription(text: "retry", generatedIDs: [43, 151645])
     }
 }

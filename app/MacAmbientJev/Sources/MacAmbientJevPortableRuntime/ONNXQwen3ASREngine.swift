@@ -104,6 +104,11 @@ public actor ONNXQwen3ASREngine: ASREngine {
     }
 
     public func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        let output = try await transcribeWithTokens(input)
+        return ASRResult(text: output.text, detectedLanguage: nil)
+    }
+
+    internal func transcribeWithTokens(_ input: ASRAudioInput) async throws -> Qwen3ASRTranscription {
         guard input.sampleRate == Int(CanonicalAudio.sampleRate) else {
             throw CanonicalAudioError.noncanonicalFormat
         }
@@ -111,18 +116,18 @@ public actor ONNXQwen3ASREngine: ASREngine {
             throw ONNXQwen3ASREngineError.notPrepared
         }
         guard !input.isShorterThanMinimumASRDuration else {
-            return ASRResult(text: "", detectedLanguage: nil)
+            return Qwen3ASRTranscription(text: "", generatedIDs: [])
         }
 
         state = .transcribing(segmentID: "")
         do {
-            let text = try model.transcribe(
+            let output = try model.transcribe(
                 samples: input.samples,
                 maxNewTokens: 448,
                 noRepeatNgramSize: input.samples.count > 15 * Int(CanonicalAudio.sampleRate) ? 3 : nil
             )
             state = .ready
-            return ASRResult(text: text, detectedLanguage: nil)
+            return output
         } catch {
             state = .failed(message: error.localizedDescription)
             throw error

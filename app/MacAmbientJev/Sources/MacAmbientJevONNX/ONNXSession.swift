@@ -111,7 +111,13 @@ public final class ONNXSession {
     private let environment: ONNXEnvironment
     private let session: OpaquePointer
 
-    public init(environment: ONNXEnvironment, modelURL: URL, intraOpThreads: Int) throws {
+    /// Explicitly selects ONNX Runtime's CPU allocator arena without changing memory patterns or other session tuning.
+    public init(
+        environment: ONNXEnvironment,
+        modelURL: URL,
+        intraOpThreads: Int,
+        cpuMemoryArenaEnabled: Bool
+    ) throws {
         guard intraOpThreads > 0, let nativeThreadCount = Int32(exactly: intraOpThreads) else {
             throw ONNXRuntimeError(message: "ONNX Runtimeの演算スレッド数はInt32の正数である必要があります。")
         }
@@ -141,6 +147,14 @@ public final class ONNXSession {
             runtimeAPI.pointee.SetInterOpNumThreads!(options, 1),
             api: runtimeAPI,
             context: "ONNX Runtimeの並列スレッド数設定に失敗しました"
+        )
+        let cpuMemoryArenaStatus = cpuMemoryArenaEnabled
+            ? runtimeAPI.pointee.EnableCpuMemArena!(options)
+            : runtimeAPI.pointee.DisableCpuMemArena!(options)
+        try checkStatus(
+            cpuMemoryArenaStatus,
+            api: runtimeAPI,
+            context: "ONNX RuntimeのCPUメモリアリーナ設定に失敗しました"
         )
 
         var createdSession: OpaquePointer?

@@ -150,7 +150,12 @@ struct ONNXValueTests {
 
     @Test
     func unsupportedOutputElementTypeFailsForValueRuns() throws {
-        let session = try ONNXSession(environment: environment, modelURL: try fixtureURL(named: "affine"), intraOpThreads: 1)
+        let session = try ONNXSession(
+            environment: environment,
+            modelURL: try fixtureURL(named: "affine"),
+            intraOpThreads: 1,
+            cpuMemoryArenaEnabled: true
+        )
         let inputs = [
             (name: "x", value: try ONNXValue(environment: environment, tensor: .float32(shape: [1, 4], values: [1, 2, 3, 4]))),
             (name: "ids", value: try ONNXValue(environment: environment, tensor: .int64(shape: [1, 3], values: [1, 2, 3]))),
@@ -171,7 +176,12 @@ struct ONNXValueTests {
     }
 
     private func makeCacheSession() throws -> ONNXSession {
-        try ONNXSession(environment: environment, modelURL: try fixtureURL(named: "cache"), intraOpThreads: 1)
+        try ONNXSession(
+            environment: environment,
+            modelURL: try fixtureURL(named: "cache"),
+            intraOpThreads: 1,
+            cpuMemoryArenaEnabled: true
+        )
     }
 }
 
