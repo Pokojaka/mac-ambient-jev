@@ -24,7 +24,7 @@ public enum DecisionRunProvenance {
         configuration["next_head_character_limit"] = String(ClauseBoundaryPolicy.nextHeadCharacterLimit)
         configuration["window_content_tokens"] = "190"
         configuration["window_policy"] = "whole-piece-max-min-context"
-        configuration["span_policy"] = "argmax-o-f-d-f-only"
+        configuration["span_policy"] = "argmax-o-f-d-b-remove-f-b"
         configuration["span_window_policy"] = "whole-piece-max-min-context"
         configuration["text_policy"] = "neutral-punctuation-piecewise"
         return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
@@ -34,7 +34,7 @@ public enum DecisionRunProvenance {
         var configuration = commonConfiguration(identity: identity, mode: mode)
         configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
         configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
-        configuration["text_policy"] = "filler-removed-neutral-punctuation-piecewise"
+        configuration["text_policy"] = "filler-backchannel-removed-neutral-punctuation-piecewise"
         return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 

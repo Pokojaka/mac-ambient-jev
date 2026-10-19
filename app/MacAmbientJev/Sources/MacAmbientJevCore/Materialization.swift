@@ -213,7 +213,7 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
     /// The ASR text as recognized.
     public let text: String
     public let textProjection: CleanedTranscriptText
-    /// The text shown on screen and in transcript.txt: fillers and saved low-priority clauses removed.
+    /// The text shown on screen and in transcript.txt: fillers, backchannels, and saved low-priority clauses removed.
     public let displayText: String
     public let speakers: [MaterializedSpeakerSpan]
     /// Nil only when the segment has no recognized text.
@@ -446,7 +446,7 @@ public struct TranscriptMaterializer: Sendable {
             for unit in try finished.finish().closed { assembled[unit.reference] = unit }
         }
 
-        // Only saved boundary assessments define filler removal; validate each range against raw ASR.
+        // Only saved boundary assessments define filler/backchannel removal; validate each range against raw ASR.
         var composer = ClauseTextComposer()
         for input in boundaryInputs {
             guard case .assessed(let assessment) = input.state else { continue }
