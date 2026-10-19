@@ -226,23 +226,34 @@ PortableRuntime の [`Qwen3ASRMelFrontend`](../app/MacAmbientJev/Sources/MacAmbi
 
 入力は非空・有限で、reflect padding のため最低201 sample 必要です。`T = floor(N / 160)` が120,000を超える場合は、出力確保や入力走査より前に拒否します。エラーは `Qwen3ASRMelError.emptyInput`、`inputTooShort(sampleCount:)`、`nonFiniteSample(index:)`、`tooManyFrames(Int)` で、代替処理はしません。
 
-400 sample の periodic Hann window、hop 160、中央に左右200 sample の reflect padding を使い、400点の非正規化 DFT から201個の power bin を計算します。Slaney scale、128 mel、0–8,000 Hz、HTK なし、area normalization の mel filter を適用します。filter は Swift で動的に計算し、大きな固定 table は持ちません。FFT は25個の長さ16の radix-2 FFT と25項の合成で構成し、twiddle と疎な filter を cache します。ONNX Runtime、Accelerate、外部 FFT library は使わず、中間計算は Double として、大きな有限 Float 入力でも power が overflow しないようにします。各値を `log10(max(mel, 1e-10))` に変換し、全体最大値から8を下限として `(x + 4) / 4` で正規化した後に最後の frame を落とします。最大値の計算にはこの破棄 frame も含まれます。
+400 sample の periodic Hann window、hop 160、中央に左右200 sample の reflect padding を使い、保持する T frame だけを計算します。各 frame は400点の非正規化 DFT から201個の power bin を作ります。Slaney scale、128 mel、0–8,000 Hz、HTK なし、area normalization の mel filter を適用します。filter は Swift で動的に計算し、大きな固定 table は持ちません。FFT は25個の長さ16の radix-2 FFT と25項の合成で構成し、twiddle と疎な filter を cache します。ONNX Runtime、Accelerate、外部 FFT library は使わず、中間計算は Double として、大きな有限 Float 入力でも power が overflow しないようにします。各 mel 値を `log10(max(mel, 1e-10))` に変換し、保持 frame 内の最大値を M として `max(x, M - 8)` に clamp した後に `(x + 4) / 4` で正規化します。出力から除外する frame は計算せず、最大値と clamp にも含めません。
 
-[`Qwen3ASRMelFrontendTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRMelFrontendTests.swift) は、[`qwen3_mel_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_mel_golden.json) に対する golden 一致、入力検証、境界、正規化を検査します。golden は NumPy 2.5.4 / librosa 1.0.0 で生成し、Float32 little-endian 入力の Base64 と row-major 出力全値（小数点以下6桁に丸め）を収録します。1秒440/1,000 Hz sine mix、3,791-sample chirp、0.3秒 envelope sine、480-sample 最終 frame peak、201-sample 最小 reflect 入力の frame 数は順に100、23、30、3、1です。照合許容差は FFT の丸めと JSON の量子化を含む `1e-4` で、Torch との bitwise 一致は保証しません。
+[`Qwen3ASRMelFrontendTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRMelFrontendTests.swift) は、[`qwen3_mel_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_mel_golden.json) に対する golden 一致、入力検証、境界、正規化を検査します。6入力は、1秒の440/1,000 Hz sine mix（16,000 sample、100 frame）、180–6,200 Hz chirp（3,791、23）、0.3秒 envelope sine（4,800、30）、最後の sample（index 479）に peak を置く `last_frame_peak`（480、3）、最小 reflect 入力（201、1）、および index 558 だけに peak を置く `dropped_only_peak`（559、3）です。480-sample peak は保持 frame の window にも入るため dropped-only ではありません。559 sample では保持 window の末尾が source index 519 なので、index 558 の peak は除外 frame のみに入り、同じ長さの無音と出力が完全一致することも検査します。golden の入力は Float32 little-endian Base64、出力は row-major 全値を丸めずに JSON に保存し、Swift 照合許容差は `2e-7` です。
 
-fixture の再生成コマンドは次のとおりです。1つ目は非 pin の指定、2つ目は依存版を固定した再現用です（[`generate_qwen3_mel_fixture.py`](../scripts/generate_qwen3_mel_fixture.py)）。
+golden は Transformers 4.57.1 の WhisperFeatureExtractor(feature_size=128, sampling_rate=16000, hop_length=160, n_fft=400, dither=0) を使い、`_np_extract_fbank_features(audio[None, :], device='cpu')[0]` を明示的に呼び出して生成します。各入力をそのまま渡すため30秒への padding / truncation はせず、Torch 実装を自動選択しません。librosa の float64 Slaney mel filter（fmax 8,000 Hz）は公式 filter と丸め誤差の範囲で一致します。NumPy DFT の実装差を別途見る openai-whisper chirp cross-check の許容差は `5e-5` で、Swift golden の `2e-7` とは別の照合です。生成元は [Transformers Whisper feature extractor v4.57.1](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/whisper/feature_extraction_whisper.py) と [openai-whisper audio.py v20250625](https://github.com/openai/whisper/blob/v20250625/whisper/audio.py) です。生成環境は Python 3.12.14、NumPy 2.2.6、librosa 0.11.0、Transformers 4.57.1、torch 2.8.0、openai-whisper 20250625 で、全47 distribution の version は fixture metadata に provenance として記録します（Swift test は version を検査しません）。librosa の変更履歴と Transformers release は [librosa 0.11.0 changelog](https://librosa.org/doc/0.11.0/changelog.html) と [Transformers v4.57.1 release](https://github.com/huggingface/transformers/releases/tag/v4.57.1) を参照してください。
+
+fixture の再生成は、macOS arm64 で記録された生成環境の依存集合を fixture metadata から pin して実行します。host によって installed distribution metadata が変わる場合があります。Python 仮想環境と uv cache は `${TMPDIR}` 内に作り、削除しません（worktree 内には作成しません）。[`generate_qwen3_mel_fixture.py`](../scripts/generate_qwen3_mel_fixture.py) は引数なしで実行します。
 
 ```bash
-uv run --python 3.12 --with numpy --with librosa python scripts/generate_qwen3_mel_fixture.py
-uv run --python 3.12 --with numpy==2.5.4 --with librosa==1.0.0 python scripts/generate_qwen3_mel_fixture.py
+set -eu
+MEL_TMP="$(mktemp -d "${TMPDIR:?}/qwen3-mel.XXXXXX")"
+export UV_CACHE_DIR="${MEL_TMP:?}/uv-cache"
+uv venv --python 3.12.14 "${MEL_TMP:?}/venv"
+python3 - "${MEL_TMP:?}/requirements.txt" <<'PY'
+import json,sys
+from pathlib import Path
+fixture=json.loads(Path('app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_mel_golden.json').read_text())
+versions=fixture['metadata']['versions']['distributions']
+Path(sys.argv[1]).write_text(''.join(f'{name}=={version}\n' for name,version in sorted(versions.items())))
+PY
+uv pip install --python "${MEL_TMP:?}/venv/bin/python" -r "${MEL_TMP:?}/requirements.txt"
+"${MEL_TMP:?}/venv/bin/python" scripts/generate_qwen3_mel_fixture.py
 ```
 
-log-mel filter と DFT の参照は [librosa mel filter API](https://librosa.org/doc/latest/api/generated/librosa.filters.mel.html), [librosa changelog](https://librosa.org/doc/latest/changelog.html), [NumPy `rfft`](https://numpy.org/doc/stable/reference/generated/numpy.fft.rfft.html), [NumPy 2.5.4 release](https://github.com/numpy/numpy/releases/tag/v2.5.4) を参照してください。
-
-Performance test は30秒（480,000 sample）の入力を同期実行し、初回と3回の warm 実行を計測します。release build での実行コマンドは次のとおりです。
+Performance test は30秒（480,000 sample）の入力を同期実行し、初回と3回の warm 実行を計測します。`QWEN3_MEL_BENCHMARK=1` を設定した場合だけ実行し、既定では skip します。release build の opt-in command は次のとおりです。
 
 ```bash
-swift test --package-path app/MacAmbientJev -c release --filter Qwen3ASRMelFrontendPerformanceTests --no-parallel
+QWEN3_MEL_BENCHMARK=1 swift test --package-path app/MacAmbientJev -c release --filter Qwen3ASRMelFrontendPerformanceTests --no-parallel
 ```
 
 Release / Debug の実測値、fixture 誤差、Linux test 結果は[2026-10-19 の計測記録](records/qwen3-mel-2026-10-19.md)を参照してください。

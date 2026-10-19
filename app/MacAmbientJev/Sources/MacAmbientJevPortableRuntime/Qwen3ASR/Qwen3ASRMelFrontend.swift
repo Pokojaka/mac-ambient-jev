@@ -116,7 +116,7 @@ public struct Qwen3ASRMelFrontend: Sendable {
         var transformedResidues = [ComplexValue](repeating: .zero, count: 25 * 16)
         var powerBins = [Double](repeating: 0, count: Self.binCount)
 
-        for frameIndex in 0...frameCount {
+        for frameIndex in 0..<frameCount {
             let frameStart = frameIndex * Self.hopSize - Self.fftSize / 2
             for index in 0..<Self.fftSize {
                 let sourceIndex = frameStart + index
@@ -189,9 +189,7 @@ public struct Qwen3ASRMelFrontend: Sendable {
                 }
                 let logPower = log10(max(melPower, 1e-10))
                 globalMaximum = max(globalMaximum, logPower)
-                if frameIndex < frameCount {
-                    output[melIndex * frameCount + frameIndex] = Float(logPower)
-                }
+                output[melIndex * frameCount + frameIndex] = Float(logPower)
             }
         }
 

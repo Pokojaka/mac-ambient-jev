@@ -7,28 +7,18 @@ private struct Qwen3ASRMelGoldenFixture: Decodable {
         let name: String
         let sampleCount: Int
         let frameCount: Int
-        let preDropFrameCount: Int
         let samplesF32LEBase64: String
         let values: [Double]
-        let droppedFrameValues: [Double]
-        let globalMaxBeforeDrop: Double
-        let globalMaxRetained: Double
 
         private enum CodingKeys: String, CodingKey {
             case name
             case sampleCount = "sample_count"
             case frameCount = "frame_count"
-            case preDropFrameCount = "pre_drop_frame_count"
             case samplesF32LEBase64 = "samples_f32le_base64"
             case values
-            case droppedFrameValues = "dropped_frame_values"
-            case globalMaxBeforeDrop = "global_max_before_drop"
-            case globalMaxRetained = "global_max_retained"
         }
     }
 
-    let numpyVersion: String
-    let librosaVersion: String
     let sampleRate: Int
     let nFFT: Int
     let hop: Int
@@ -36,8 +26,6 @@ private struct Qwen3ASRMelGoldenFixture: Decodable {
     let cases: [Case]
 
     private enum CodingKeys: String, CodingKey {
-        case numpyVersion = "numpy_version"
-        case librosaVersion = "librosa_version"
         case sampleRate = "sample_rate"
         case nFFT = "n_fft"
         case hop
@@ -70,66 +58,56 @@ private enum Qwen3ASRMelTestInputs {
 }
 
 struct Qwen3ASRMelFrontendGoldenTests {
-    @Test(arguments: ["sine_mix", "chirp", "short_0_3s", "last_frame_peak", "minimum_reflect"])
-    func matchesNumpyLibrosaGolden(name: String) throws {
+    @Test(arguments: ["sine_mix", "chirp", "short_0_3s", "last_frame_peak", "dropped_only_peak", "minimum_reflect"])
+    func matchesOfficialWhisperFeatureExtractorGolden(name: String) throws {
         let golden = try Qwen3ASRMelTestInputs.golden()
-        #expect(golden.numpyVersion == "2.5.4")
-        #expect(golden.librosaVersion == "1.0.0")
         #expect(golden.sampleRate == 16_000)
         #expect(golden.nFFT == 400)
         #expect(golden.hop == 160)
         #expect(golden.nMels == 128)
 
         let fixture = try #require(golden.cases.first { $0.name == name })
-        let expectedFrameCount: Int
-        switch name {
-        case "sine_mix": expectedFrameCount = 100
-        case "chirp": expectedFrameCount = 23
-        case "short_0_3s": expectedFrameCount = 30
-        case "last_frame_peak": expectedFrameCount = 3
-        case "minimum_reflect": expectedFrameCount = 1
-        default: Issue.record("Unexpected golden case: \(name)"); return
-        }
-
         let samples = try Qwen3ASRMelTestInputs.samples(from: fixture)
         #expect(samples.count == fixture.sampleCount)
-        #expect(fixture.frameCount == expectedFrameCount)
-        #expect(fixture.frameCount == fixture.sampleCount / 160)
-        #expect(fixture.preDropFrameCount == fixture.frameCount + 1)
+        #expect(fixture.frameCount == fixture.sampleCount / golden.hop)
         #expect(fixture.values.count == 128 * fixture.frameCount)
-        #expect(fixture.droppedFrameValues.count == 128)
 
         let actual = try Qwen3ASRMelFrontend().compute(samples: samples)
         #expect(actual.frameCount == fixture.frameCount)
         #expect(actual.values.count == 128 * fixture.frameCount)
         #expect(actual.values.allSatisfy { $0.isFinite })
 
-        // The fixture rounds final values to 1e-6 and computes with NumPy float64; this
-        // tolerance allows rounding and intermediate float32 window/FFT noise while
-        // preserving the trained Float32 frontend's meaningful numerical parity.
+        // Full-precision official WhisperFeatureExtractor output; measured max error was 1.1920928955078125e-7, with a modest rounding margin at the 2e-7 tolerance.
         let maximumError = try #require(
             zip(actual.values, fixture.values)
                 .map { abs(Double($0) - $1) }
                 .max()
         )
         print("\(name): max absolute mel error = \(maximumError)")
-        #expect(maximumError <= 1e-4, "\(name): maximum absolute error was \(maximumError)")
+        #expect(maximumError <= 2e-7, "\(name): maximum absolute error was \(maximumError)")
     }
 
     @Test
-    func droppedPeakSetsTheRetainedFramesDynamicRangeWithoutBeingEmitted() throws {
+    func droppedPeakDoesNotChangeRetainedFrames() throws {
+        // For 559 samples, retained frame windows end at source index 519; index 558 enters only the dropped frame.
         let golden = try Qwen3ASRMelTestInputs.golden()
-        let fixture = try #require(golden.cases.first { $0.name == "last_frame_peak" })
-        #expect(fixture.globalMaxBeforeDrop > fixture.globalMaxRetained)
+        let fixture = try #require(golden.cases.first { $0.name == "dropped_only_peak" })
+        let samples = try Qwen3ASRMelTestInputs.samples(from: fixture)
+        #expect(fixture.sampleCount == 559)
+        #expect(samples.count == fixture.sampleCount)
+        #expect(samples[558] == 1_000)
 
-        let actual = try Qwen3ASRMelFrontend().compute(
-            samples: Qwen3ASRMelTestInputs.samples(from: fixture)
-        )
-        #expect(actual.frameCount == fixture.frameCount)
-        #expect(actual.values.count == fixture.frameCount * 128)
-        let actualMinimum = try #require(actual.values.min())
-        let expectedMinimum = (fixture.globalMaxBeforeDrop - 8 + 4) / 4
-        #expect(abs(Double(actualMinimum) - expectedMinimum) <= 1e-4)
+        var zeroedDroppedPeakSamples = samples
+        zeroedDroppedPeakSamples[558] = 0
+
+        let frontend = Qwen3ASRMelFrontend()
+        let withDroppedPeak = try frontend.compute(samples: samples)
+        let withoutDroppedPeak = try frontend.compute(samples: zeroedDroppedPeakSamples)
+        #expect(withDroppedPeak.frameCount == fixture.frameCount)
+        #expect(withoutDroppedPeak.frameCount == fixture.frameCount)
+        #expect(withDroppedPeak.values.count == fixture.values.count)
+        #expect(withDroppedPeak.values == withoutDroppedPeak.values)
+        #expect(withDroppedPeak.values == fixture.values.map { Float($0) })
     }
 }
 
@@ -205,7 +183,7 @@ struct Qwen3ASRMelFrontendPerformanceTests {
         return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
     }
 
-    @Test
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["QWEN3_MEL_BENCHMARK"] == "1"))
     func measuresColdAndWarmThirtySecondAudio() throws {
         let samples = (0..<480_000).map { index -> Float in
             let time = Double(index) / 16_000
