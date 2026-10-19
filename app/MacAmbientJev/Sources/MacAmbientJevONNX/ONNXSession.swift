@@ -108,6 +108,8 @@ public final class ONNXEnvironment: @unchecked Sendable {
 }
 
 public final class ONNXSession {
+    public static let interOpThreads: Int32 = 1
+
     private let environment: ONNXEnvironment
     private let session: OpaquePointer
 
@@ -144,7 +146,7 @@ public final class ONNXSession {
             context: "ONNX Runtimeの演算スレッド数設定に失敗しました"
         )
         try checkStatus(
-            runtimeAPI.pointee.SetInterOpNumThreads!(options, 1),
+            runtimeAPI.pointee.SetInterOpNumThreads!(options, Self.interOpThreads),
             api: runtimeAPI,
             context: "ONNX Runtimeの並列スレッド数設定に失敗しました"
         )

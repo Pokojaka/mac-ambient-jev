@@ -42,7 +42,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
                 intraOpThreads: threadCount
             )
         }
-        self.provenanceValue = Self.makeProvenance(size: size)
+        self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
     }
 
     internal init(
@@ -55,7 +55,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
         self.size = size
         self.intraOpThreads = intraOpThreads
         self.loadModel = loadModel
-        self.provenanceValue = Self.makeProvenance(size: size)
+        self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
     }
 
     public func prepare() async throws {
@@ -153,7 +153,10 @@ public actor ONNXQwen3ASREngine: ASREngine {
         preparationTask = nil
     }
 
-    private nonisolated static func makeProvenance(size: Qwen3ASRModelSize) -> RunProvenance {
+    private nonisolated static func makeProvenance(
+        size: Qwen3ASRModelSize,
+        intraOpThreads: Int
+    ) -> RunProvenance {
         RunProvenance(
             engine: "onnxruntime-qwen3-asr",
             model: "\(size.repository)@\(size.commit)",
@@ -165,6 +168,9 @@ public actor ONNXQwen3ASREngine: ASREngine {
                 "mel_variant": "whisper-slaney-128-nfft400-hop160-reflect-global-log10",
                 "max_new_tokens": "448",
                 "no_repeat_ngram": "3 when input_seconds > 15; disabled otherwise",
+                "intra_op_threads": String(intraOpThreads),
+                "inter_op_threads": String(ONNXSession.interOpThreads),
+                "cpu_memory_arena": String(Qwen3ASRONNXModel.cpuMemoryArenaEnabled),
             ]
         )
     }

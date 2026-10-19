@@ -87,6 +87,10 @@ public enum Qwen3ASRModelSize: String, CaseIterable, Sendable {
         }
     }
 
+    public func validate(directory: URL) throws {
+        try validateModelDirectory(directory)
+    }
+
     func validateModelDirectory(_ directory: URL) throws {
         guard directory.isFileURL else {
             throw Qwen3ASRModelError.invalid("モデルディレクトリは file URL でなければなりません: \(directory.absoluteString)")

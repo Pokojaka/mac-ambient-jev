@@ -1,6 +1,6 @@
 # Windows の共通コア
 
-Windows では Swift 6.2 で共通 Core / Pipeline、WindowsSupport、ONNX、PortableRuntime、評価 CLI 3 本と Core / Pipeline / WindowsSupport / ONNX / PortableRuntime のテストをビルド・実行できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux では共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、評価 CLI 3 本と Core / Pipeline / ONNX / PortableRuntime のテストをビルド・実行します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。WindowsSupport は WAV / FLAC / MP3 / M4A / AAC の streaming import と canonical timeline 生成 API を提供しますが、これは Windows の録音・capture や GUI・engine を含む完全な import / finalization pipeline が実装済みであることを意味しません。Windows の録音・capture、GUI、インストーラーはありません。PortableRuntime の ONNX Qwen3-ASR engine は実装されていますが、Pipeline / CLI の処理経路には接続されていません。PortableRuntime は Silero VAD による確定処理用の区間検出とライブ VAD を提供しますが（[Silero VAD の区間検出](#silero-vad-の区間検出)）、これらの処理 pipeline には接続されていません。macOS のアプリは Apple Silicon と macOS 15 以降で動作します。
+Windows では Swift 6.2 で共通 Core / Pipeline、WindowsSupport、ONNX、PortableRuntime、評価 CLI 3 本と file transcription CLI 1 本、および Core / Pipeline / WindowsSupport / ONNX / PortableRuntime / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と file transcription CLI 1 本を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming import と PortableRuntime の ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter は `MacAmbientJevTranscribeFile` の standalone file processing 経路に接続されています。Windows の録音・live capture、GUI、インストーラー、および Mac app と同じ full-session finalization pipeline は Windows にはありません。Mac の finalization は diarization を含む session pipeline を使います。PortableRuntime の live VAD API はありますが、Windows live capture 経路はありません。macOS の app は Apple Silicon と macOS 15 以降で動作します。
 
 ## ONNX Runtime
 
@@ -112,6 +112,88 @@ MAC_AMBIENT_JEV_WRITE_VAD_PARITY=1 swift test --package-path app/MacAmbientJev -
 
 Mac の [VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) は、実行ごとに FluidAudio の出力が保存済み fixture と一致すること（確率差 0.05 以下、区間は完全一致）と、fixture の FluidAudio の確率を `VADProbabilitySegmenter` に通すと fixture の区間と完全に一致すること（移植した状態機械と FluidAudio の状態機械の一致）を検査します。Linux / Windows の [SileroVADParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/SileroVADParityTests.swift) は、同じ入力を Silero engine に通して上の3点を検査します。[SileroVADEngineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/SileroVADEngineTests.swift) は、ライブ VAD が durable chunk に分けた音声から同じ区間を作ること、provenance、失敗した chunk の再試行を検査します。ORT を使わない状態機械と区間組み立ては [VADStreamingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/VADStreamingTests.swift) と [VADSegmentationStateTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/VADSegmentationStateTests.swift) が検査します。
 
+## ファイル文字起こし CLI
+
+`MacAmbientJevTranscribeFile` は Linux / Windows で音声ファイルを VAD 区間ごとに文字起こしし、区間と評価 artifact を出力する計測用 portable CLI です。参照文や評価規則は受け取らず、CER は `MacAmbientJevEvaluateASR` で別途計算します。実行 helper は [`FileTranscriptionPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FileTranscriptionPipeline.swift) で、`SileroFinalTranscriptVADSegmenter`、`PipelineCoordinator`、`ASRAudioLoader` を組み合わせます。これは mandatory diarization を含む Mac の full-session `FinalTranscriptPipeline` ではありません。話者分離・speaker-turn による区間分割、話者 tagger、thermal / pacing flag はありません。録音・live capture・GUI と full-session finalization は Windows にはありません。
+
+確定処理の区間規則は [Silero VAD の区間検出](#silero-vad-の区間検出) と同じで、chunk 4,096 sample / 256 ms、開始閾値 0.50・終了閾値 0.35、pre-roll 0.10 秒、最大区間 14.0 秒、無音 0.75 秒、分割探索 2.0 秒、energy frame 0.02 秒、独立区間の最短 0.5 秒です。
+
+```text
+MacAmbientJevTranscribeFile <audio-file> --silero-model <path> --asr-model-directory <dir> --asr-model-size <0.6b|1.7b> --threads <n> --output <file.json> --artifact-output <artifact.json>
+```
+
+`--help` だけで終了コード 0 になります。音声 path は必須の先頭位置引数で、残りの6 option はすべて一度ずつ必須です。option/value の組は並べ替えできます。
+
+| option | 内容 |
+| --- | --- |
+| `--silero-model <path>` | Silero VAD ONNX model file |
+| `--asr-model-directory <dir>` | 取得済み Qwen3-ASR ONNX model directory |
+| `--asr-model-size <0.6b\|1.7b>` | model size |
+| `--threads <n>` | 正の Int32 範囲内の値。ASR / VAD の全 ONNX session で intra-op thread 数として使う |
+| `--output <file.json>` | 区間別の primary JSON |
+| `--artifact-output <artifact.json>` | `MacAmbientJevEvaluateASR` 用の評価 artifact v2 |
+
+認識言語は `ja` 固定で、detected-language field は出力しません。6 個の option に default や環境変数 override はありません。不明、重複、欠落 option、余分な引数、不正値は非 0 で拒否します。入力音声・Silero model・ASR model directory は readable な既存 file / directory、出力先の親 directory は既存 directory でなければなりません。`--output` と `--artifact-output` は既存 path を指定すると、処理開始前に非 0 で拒否されます。入力、primary 出力、artifact 出力は path 標準化と symlink 解決後に互いに異なる必要があります。
+
+音声 import と VAD の前に、CLI は Silero model の pinned SHA-256 を検証し、選択した ASR model manifest が列挙する6ファイルの存在・通常ファイル型・readability・正確な byte 数を確認します。この preflight は VAD 区間が空の場合も実行しますが、ASR model ファイルの SHA-256 は検証しません。preflight は測定時間に含まれません。invalid input / 処理失敗時に出力 JSON は作りません。import した original、processing timeline、event files は一時 scratch directory に書いて処理後に削除し、永続 session は作成しません。各 JSON file は個別に atomic write しますが、2 file の pair は transactional ではありません。
+
+Windows の入力は WindowsSupport の streaming WAV / FLAC / MP3 / M4A / AAC import と canonical 16 kHz mono float timeline conversion を使います。AAC encoder priming は保持されます（[音声 import API](#音声-import-api)）。Linux の CMiniaudio 入力は WAV / FLAC / MP3 のみで、すでに 16 kHz mono が必要です。Linux では sample-rate conversion / channel mixing をせず、未対応形式や条件外の音声を明示エラーにします。Linux で必要なら利用者が ffmpeg で事前に mono PCM16 / 16 kHz WAV に変換します（CLI の fallback ではありません）。
+
+primary JSON の exact top-level keys は `schema_version: 1`、`asr`、`vad`、`segments`、`runtime` です。`asr` / `vad` は各々 `engine`、`model`、`version`、`configuration` の provenance を持ちます。`segments` は `start_ms`、`end_ms`、`text` の配列で、canonical frame の境界を整数 millisecond に ties-to-even で丸めます。`runtime` は `audio_seconds`、`model_load_seconds`、`inference_seconds`、`rtf` です。VAD 区間が空でも成功し、segment は空、評価 artifact の hypothesis も空文字となり、ASR load / inference は行いません。評価 artifact の hypothesis は VAD 区間の認識 text を順に改行文字 `\n` で結合します。これは Mac の `ASRSessionEvaluator` と同じ規則です。artifact の一つの segment は全音声を包む CER 用 envelope であり、primary の区間境界だけが実際の segmentation 時刻です。
+
+`asr.configuration` と artifact の `engine.inference_config` にある `intra_op_threads`、`inter_op_threads`、`cpu_memory_arena` は ASR の3 ONNX session で実際に使う設定（CLI の `--threads` 値、`1`、`false`）を表します。`inference_config` のこれらの値は ASR session のみを指します。Silero session は `--threads` の値を intra-op に使い、CPU memory arena を有効にします。`model_load_seconds` は `PipelineCoordinator` が計測する `ASR.prepare()` のみ、`inference_seconds` は `segmentationSeconds + asrWallSeconds - model_load_seconds` です。後者は lazy VAD model load / inference と event persistence を含み、audio import、モデル identity preflight、ONNX environment の生成、model unload / scratch cleanup、JSON 出力を含みません。`rtf = inference_seconds / audio_seconds` です。負値または非有限の計測値・算出指標はエラーになり、0 へ clamp しません。artifact schema、ONNX の engine / configuration values、runtime の詳細は [Linux 音声評価](linux.md#ファイル文字起こし-cli) に記載しています。
+
+### Windows release build と実行
+
+Python 3.12 以上、Swift 6.2 と対応する Visual Studio C++ Build Tools / Windows SDK が必要です。Silero model fetch は `python scripts/fetch_silero_vad.py` を使います。ASR model は既存の [Qwen3-ASR ONNX model fetcher](#qwen3-asr-onnx-モデルの取得) で事前取得してください。ONNX Runtime SDK と `onnxruntime.dll` は [ビルドと検証](#ビルドと検証) の既存の取得・DLL 配置手順を使います。以下の path は置換例で、既定値ではありません。`D:\Transcripts` と各 input / model file directory は事前に作成してください。
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$runtimeRoot = python scripts/fetch_onnxruntime.py
+if ($LASTEXITCODE -ne 0) { throw 'ONNX Runtime fetch failed' }
+$sileroModelPathLines = @(python scripts/fetch_silero_vad.py)
+if ($LASTEXITCODE -ne 0) { throw 'Silero VAD fetch failed' }
+if ($sileroModelPathLines.Count -ne 1) { throw 'Silero VAD fetch must return exactly one output line' }
+$sileroModel = [string]$sileroModelPathLines[0]
+swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevTranscribeFile
+if ($LASTEXITCODE -ne 0) { throw 'Release CLI build failed' }
+$binDir = (swift build --package-path app/MacAmbientJev -c release --show-bin-path).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not resolve release binary path' }
+Copy-Item -LiteralPath (Join-Path $runtimeRoot 'lib/onnxruntime.dll') `
+  -Destination (Join-Path $binDir 'onnxruntime.dll') -Force
+& (Join-Path $binDir 'MacAmbientJevTranscribeFile.exe') `
+  'D:\Audio\interview.m4a' `
+  --silero-model $sileroModel `
+  --asr-model-directory 'D:\Models\qwen3-asr-onnx\qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd' `
+  --asr-model-size 1.7b `
+  --threads 2 `
+  --output 'D:\Transcripts\interview-segments.json' `
+  --artifact-output 'D:\Transcripts\interview-artifact.json'
+if ($LASTEXITCODE -ne 0) { throw 'File transcription failed' }
+```
+
+### Windows の実モデル CLI integration test
+
+[`test_transcribe_file_cli_model.py`](../tools/linux-audio/tests/test_transcribe_file_cli_model.py) は release CLI と evaluator を build し、長い fixture の primary JSON、評価 artifact、CER を検証します。実行には Python 3.12 と `uv` が必要です。下記は repository root から実行し、先に上記 release build 手順と同じく `onnxruntime.dll` を release binary directory に配置してください。model directory の path は実際の既存 directory に置き換えます。
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$env:RUN_MODEL_TESTS = '1'
+$env:QWEN3_ASR_ONNX_MODEL_DIRECTORY = 'D:\Models\qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4'
+$env:QWEN3_ASR_ONNX_MODEL_SIZE = '0.6b'
+$sileroModelPathLines = @(python scripts/fetch_silero_vad.py)
+if ($LASTEXITCODE -ne 0) { throw 'Silero VAD fetch failed' }
+if ($sileroModelPathLines.Count -ne 1) { throw 'Silero VAD fetch must return exactly one output line' }
+$env:MAC_AMBIENT_JEV_SILERO_MODEL = [string]$sileroModelPathLines[0]
+Push-Location tools/linux-audio
+try {
+  uv run --python 3.12 --with pytest python -m pytest -q tests/test_transcribe_file_cli_model.py
+  if ($LASTEXITCODE -ne 0) { throw 'Model CLI integration test failed' }
+} finally {
+  Pop-Location
+}
+```
+
 ## 熱状態
 
 Pipeline の [`ThermalMonitoring`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/ThermalMonitoring.swift) contract は `isCritical`（確定処理の pause / resume 判定）と `liveASRDecision`（live ASR の policy）です。Windows の `WindowsNoThermalMonitoring` は thermal state を読み取らず、`isCritical == false` と `.processNow` を返します。Windows では熱状態を測定・推定せず、nominal state を設定することもありません。Windows では熱状態によるライブ ASR 待機・確定処理一時停止を行いません（[製品ルールの熱状態](decisions.md#熱状態)）。
@@ -128,7 +210,7 @@ Mac の [`MacThermalMonitor`](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/
 
 Media Foundation AAC Source Reader は decode した native frames を canonical timeline に含め、AAC encoder priming / padding を除去しません。また、Media Foundation は AAC encoder priming を示す marker を付けません。Apple が encode した M4A は一般に 48 kHz で 2,112 frames（約 44 ms）の priming を含みます。Windows import ではこの priming を保持するため、Mac import より duration が長くなり、信号・イベント時刻も priming 分だけ後ろになります。Windows は累積 source extent を丸めた frame 境界まで出力します。一方、AVAudioConverter は EOS まで drain して正確な変換長の floor または ceil にあたる出力を保持します。同じ decoded source extent を SRC した場合、終端 frame 数は boundary rounding により Apple と Windows で最大 1 frame 異なることがあります。これは AAC priming の保持による差とは別です。sample 値も platform 間で bit-identical ではありません。
 
-`ImportedAudioTimelineWriter` は Core 共通 API で、AppleSupport と WindowsSupport の両 builder が再利用します。mono canonical PCM を 5 秒単位の durable storage chunk と checkpoint に書き込みます。timeline metadata の公開は builder の外側、呼び出し側が行います。この Windows import API は live capture、UI、session processing engine へ接続されていません。WASAPI backend は capture path 向けに CMiniaudio にコンパイルされますが、Windows の capture 実装はありません。
+`ImportedAudioTimelineWriter` は Core 共通 API で、AppleSupport と WindowsSupport の両 builder が再利用します。mono canonical PCM を 5 秒単位の durable storage chunk と checkpoint に書き込みます。timeline metadata の公開は builder の外側、呼び出し側が行います。この Windows import API は standalone file transcription CLI に使われますが、live capture、UI、full-session processing pipeline へは接続されていません。WASAPI backend は capture path 向けに CMiniaudio にコンパイルされますが、Windows の capture 実装はありません。
 
 ### WindowsSupport テスト
 
@@ -140,7 +222,7 @@ RF64 WAV / FLAC では、デコード位置が宣言 frame 数に達する前に
 
 FLAC STREAMINFO の総サンプル数が 0 の場合、timeline model が宣言済み長さを必要とするため、デコーダー作成時に `AudioImportError.missingTotalSampleCount` を返します。日本語メッセージは `FLAC の総サンプル数が記録されていません。` です。借用した CRT descriptor を write-only descriptor に置き換えて `MA_IO_ERROR` を誘発するテストでは、native I/O エラーが clean EOF として扱われず、終端エラーとして保持されることも確認します。
 
-fixture は [generate_windows_audio_fixtures.py](../scripts/generate_windows_audio_fixtures.py) が [FFmpeg 8.0](https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.0/Changelog) で生成します。resampler の仕様と miniaudio 0.11.23 の出典は [CMiniaudio README](../app/MacAmbientJev/Sources/CMiniaudio/README.md) と [miniaudio 0.11.23 release](https://github.com/mackron/miniaudio/releases/tag/0.11.23) を参照してください。Media Foundation の byte-stream API は [WinSDK 26100: MFCreateSourceReaderFromByteStream](https://learn.microsoft.com/en-us/windows/win32/api/mfreadwrite/nf-mfreadwrite-mfcreatesourcereaderfrombytestream) を参照してください。
+fixture は [generate_windows_audio_fixtures.py](../scripts/generate_windows_audio_fixtures.py) が [FFmpeg 8.0](https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.0/Changelog) で生成します。resampler の仕様と miniaudio 0.11.23 の出典は [CMiniaudio README](../app/MacAmbientJev/Sources/CMiniaudio/README.md)、[miniaudio 0.11.23 release](https://github.com/mackron/miniaudio/releases/tag/0.11.23)、[0.11.23 changes](https://raw.githubusercontent.com/mackron/miniaudio/0.11.23/CHANGES.md) を参照してください。Media Foundation の byte-stream API は [WinSDK 26100: MFCreateSourceReaderFromByteStream](https://learn.microsoft.com/en-us/windows/win32/api/mfreadwrite/nf-mfreadwrite-mfcreatesourcereaderfrombytestream) を参照してください。
 
 Resampler の連続 SRC テストは 8 / 16 / 22.05 / 44.1 / 48 / 96 kHz を使い、WAV と SRC の interior sine error を 0.025 未満、whole-buffer と異なる read partition 間の差を 1e-6 未満で検査します。別の regression test は、48 kHz の同振幅 1 kHz / 11 kHz tone を 16 kHz へ downsample し、11 kHz tone の rejection が 30 dB 以上であることを確認します。
 
@@ -503,13 +585,13 @@ symlink の作成に必要な開発者モードを有効にします。実行後
 
 Core の FLAC テストは codec の round-trip と破損データの拒否を検証します。参照用 `flac` CLI との比較は `PATH` から実行ファイルを解決できる場合だけ実行し、見つからない場合は Swift Testing の `enabled` trait で無効になります。`flac` はテスト専用で、実行時依存ではありません。詳細は [RecordingFLACEncoderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/RecordingFLACEncoderTests.swift) と [FLACTimelineReaderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/FLACTimelineReaderTests.swift) を参照してください。
 
-Windows の `swift build` は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と評価 CLI 3 本を build します。`swift test` は Core、Pipeline、WindowsSupport、ONNX、PortableRuntime の各 test target を filter 指定なしで実行します。WindowsSupport の音声 fixture と ONNX fixture（Silero speech / reference fixture を含む）も各 test target に含まれます。これは [`test-windows.ps1`](../scripts/test-windows.ps1) と [portable CI](../.github/workflows/portable-core.yml) の実行内容です。ONNX Runtime の Windows DLL はテスト実行 bin directory に配置し、Silero model を test 用に取得します。macOS 専用 framework や Mac 用モデルは取得しません。
-評価 CLI の参照文・artifact の形式は [testing.md](testing.md) と [linux.md](linux.md) を参照してください。
+Windows の `swift build` は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build します。`swift test` は Core、Pipeline、WindowsSupport、ONNX、PortableRuntime、TranscribeFile の各 test target を filter 指定なしで実行します。WindowsSupport の音声 fixture と ONNX fixture（Silero speech / reference fixture を含む）も各 test target に含まれます。これは [`test-windows.ps1`](../scripts/test-windows.ps1) と [portable CI](../.github/workflows/portable-core.yml) の実行内容です。ONNX Runtime の Windows DLL はテスト実行 bin directory に配置し、Silero model を test 用に取得します。macOS 専用 framework や Mac 用モデルは取得しません。
+評価 CLI の参照文・artifact の形式と file CLI の evaluation artifact / model test は [linux.md](linux.md) を参照してください。
 参照文のファイル指定は相対パスと Windows の絶対パスを扱います。
 
-[portable-core.yml](../.github/workflows/portable-core.yml) は、共通 Core / Pipeline、Windows 音声関連ソースとテスト、ONNX source / tests / fixture、fixture 生成スクリプト、Silero fetch / fixture script の変更を含む main への push とレビュー可能な pull request で、Linux と Windows の build/test を実行します。
-Linux は CMiniaudio、Core、Pipeline、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と評価 CLI 3 本を build し、Core、Pipeline、ONNX、PortableRuntime の tests を実行します。workflow は ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer をそれぞれ fetch し、検証した path を `MAC_AMBIENT_JEV_SILERO_MODEL` と `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` として `GITHUB_ENV` に書き込みます。`test_portable_core.py`、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator の各 self-test、`check_portable_core.py`、`test_doc_references.py`、`check_doc_references.py` は check step で実行し、`swift build` と `swift test` はそれぞれ別 step で実行します。Linux workflow は `verify_portable.sh` を実行しません。ローカルの [verify_portable.sh](../scripts/verify_portable.sh) は別の実行手順で、ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer を fetch し、path を環境変数に設定したうえで Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero と Qwen3-ASR token reference generator の依存 package・model weights 不要な self-test、portable checker、SwiftPM manifest check、build、test を実行します。full model inference は既定では実行しません。
-Windows は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と評価 CLI 3 本を build し、Core、Pipeline、WindowsSupport、ONNX、PortableRuntime の tests を実行します。Windows CI は [test-windows.ps1](../scripts/test-windows.ps1) が ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer の fetch、各 check、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator と Qwen3-ASR token reference generator の各 self-test、Package の全適用 target の `swift build`、DLL 配置、全適用 test target の `swift test` を行います。
+[portable-core.yml](../.github/workflows/portable-core.yml) は、共通 Core / Pipeline、Windows 音声関連ソースとテスト、ONNX source / tests / fixture、file transcription CLI の source / tests、fixture 生成スクリプト、Silero fetch / fixture script の変更を含む main への push とレビュー可能な pull request で、Linux と Windows の build/test を実行します。
+Linux は CMiniaudio、Core、Pipeline、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、ONNX、PortableRuntime、TranscribeFile の tests を実行します。workflow は ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer をそれぞれ fetch し、検証した path を `MAC_AMBIENT_JEV_SILERO_MODEL` と `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` として `GITHUB_ENV` に書き込みます。`test_portable_core.py`、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator の各 self-test、`check_portable_core.py`、`test_doc_references.py`、`check_doc_references.py` は check step で実行し、`swift build` と `swift test` はそれぞれ別 step で実行します。Linux workflow は `verify_portable.sh` を実行しません。ローカルの [verify_portable.sh](../scripts/verify_portable.sh) は別の実行手順で、ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer を fetch し、path を環境変数に設定したうえで Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero と Qwen3-ASR token reference generator の依存 package・model weights 不要な self-test、portable checker、SwiftPM manifest check、build、test を実行します。full model inference は既定では実行しません。
+Windows は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、WindowsSupport、ONNX、PortableRuntime、TranscribeFile の tests を実行します。Windows CI は [test-windows.ps1](../scripts/test-windows.ps1) が ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer の fetch、各 check、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator と Qwen3-ASR token reference generator の各 self-test、Package の全適用 target の `swift build`、DLL 配置、全適用 test target の `swift test` を行います。
 Draft PR では portable と macOS の CI を起動せず、作業中の Linux 検証はローカルにまとめます。
 手動実行は Windows のみが既定で、run_linux を有効にすると Linux も実行します。
 同じブランチ・PR の古い実行は自動で取り消します。Windows のテストには symlink の作成権限が必要です。

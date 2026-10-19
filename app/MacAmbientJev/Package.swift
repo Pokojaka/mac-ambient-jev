@@ -186,6 +186,26 @@ let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
 
 products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
 products.append(.library(name: "MacAmbientJevPortableRuntime", targets: ["MacAmbientJevPortableRuntime"]))
+products.append(.executable(
+    name: "MacAmbientJevTranscribeFile",
+    targets: ["MacAmbientJevTranscribeFile"]
+))
+var transcribeFileDependencies: [Target.Dependency] = [
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevPortableRuntime",
+    "MacAmbientJevONNX"
+]
+#if os(Windows)
+transcribeFileDependencies.append("MacAmbientJevWindowsSupport")
+#elseif os(Linux)
+transcribeFileDependencies.append("CMiniaudio")
+#endif
+targets.append(.executableTarget(
+    name: "MacAmbientJevTranscribeFile",
+    dependencies: transcribeFileDependencies,
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
 targets.append(.systemLibrary(name: "CONNXRuntime"))
 targets.append(.target(
     name: "MacAmbientJevONNX",
@@ -216,6 +236,16 @@ targets.append(.testTarget(
         "MacAmbientJevVADFixtures"
     ],
     resources: [.copy("Resources")],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevTranscribeFileTests",
+    dependencies: [
+        "MacAmbientJevTranscribeFile",
+        "MacAmbientJevCore",
+        "MacAmbientJevPortableRuntime",
+        "MacAmbientJevONNX"
+    ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
 #endif

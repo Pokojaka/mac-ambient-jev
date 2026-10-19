@@ -1,6 +1,6 @@
 # Linux 音声評価
 
-Linux 側は検証用の Python runner と portable Swift 評価器を使う。macOS アプリの録音・GUI・MLX 実行環境とは別であり、Python、CUDA、NeMo はアプリの依存ではない。Mac と Linux の認識文の完全一致を要求せず、参照文、評価規則、実行条件を明示して比較する。Swift の共通部分と通常検証は [testing.md](testing.md) を参照する。
+Linux では既存の検証用 Python runner と portable Swift 評価 CLI 3 本に加え、Linux / Windows 共通の `MacAmbientJevTranscribeFile` を使えます。これは単一音声ファイルを VAD 区間ごとに文字起こしし、区間と評価用 artifact を出力する計測用 CLI です。参照文や評価規則は受け取らず、CER は出力 artifact と参照文を `MacAmbientJevEvaluateASR` に渡して別途計算します。macOS アプリの録音・GUI・MLX 実行環境とは別であり、Python、CUDA、NeMo はアプリの依存ではありません。Swift の共通部分と通常検証は [testing.md](testing.md) を参照してください。
 
 ## 環境と実行範囲
 
@@ -76,9 +76,102 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
 
 推論設定は dtype `bfloat16`、batch size 1、max new tokens 4096、context は空文字。指定した device と language も来歴に保存する。評価結果は `raw`、`normalized`、`normalizer_version` を持つ。正規化は Unicode 互換合成、空白・改行・句読点の除去で、filler 除去ではない。content 評価も hypothesis に同じ CER 正規化を適用するだけなので、verbatim と同等の主判定として扱わない。
 
+## ファイル文字起こし CLI
+
+`MacAmbientJevTranscribeFile` は Linux / Windows で同じ音声ファイルに Mac の file segmentation / ASR に相当する処理を適用し、区間ごとの文字起こしと評価用 artifact を出力する CLI です。実際の helper は [`FileTranscriptionPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FileTranscriptionPipeline.swift) で、`SileroFinalTranscriptVADSegmenter`、`PipelineCoordinator`、`ASRAudioLoader` を使います。これは必須 diarization を含む `FinalTranscriptPipeline` の Windows 実装ではありません。話者分離や speaker-turn による区間分割、話者 tagger、thermal 制御、pacing flag はありません。
+
+確定処理の区間規則は [Silero VAD の区間検出](windows.md#silero-vad-の区間検出) と同じです。4,096 sample / 256 ms chunk、開始閾値 0.50・終了閾値 0.35、pre-roll 0.10 秒、最大区間 14 秒、無音 0.75 秒、分割探索 2.0 秒、energy frame 0.02 秒、独立区間の最短 0.5 秒を使います。
+
+```text
+MacAmbientJevTranscribeFile <audio-file> --silero-model <path> --asr-model-directory <dir> --asr-model-size <0.6b|1.7b> --threads <n> --output <file.json> --artifact-output <artifact.json>
+```
+
+`--help` だけを渡した場合は usage を表示して終了コード 0 で終了します。音声ファイルは必須の先頭位置引数です。6 個の option はそれぞれ必須で一度だけ指定し、option/value の組は任意の順に並べられます。
+
+| option | 内容 |
+| --- | --- |
+| `--silero-model <path>` | Silero VAD ONNX model file |
+| `--asr-model-directory <dir>` | 選択した Qwen3-ASR ONNX model の既存 directory |
+| `--asr-model-size <0.6b\|1.7b>` | 取得した model のサイズ |
+| `--threads <n>` | 正の Int32 範囲内の整数。ASR と VAD のすべての ONNX session の intra-op thread 数に使う |
+| `--output <file.json>` | 区間時刻と区間別 transcript を保存する primary JSON |
+| `--artifact-output <artifact.json>` | `MacAmbientJevEvaluateASR` 用 artifact v2 |
+
+認識言語は日本語 (`ja`) 固定で、detected-language field は出力しません。6 個の option に default や環境変数 override はありません。不明・重複・欠落 option、余分な引数、不正な値は非 0 で失敗します。入力、Silero model、ASR model directory は読み取り可能な既存の通常ファイル / directory でなければなりません。出力先の親 directory は事前に存在する必要があります。`--output` と `--artifact-output` は既存 path を指定すると、処理開始前に非 0 で拒否されます。入力、primary 出力、artifact 出力は、path 標準化と symlink 解決後に互いに異なる必要があります。
+
+音声 import と VAD の前に、CLI は Silero model の pinned SHA-256 を検証し、選択した ASR model manifest が列挙する6ファイルの存在・通常ファイル型・readability・正確な byte 数を確認します。この preflight は VAD 区間が空の場合も実行しますが、ASR model ファイルの SHA-256 は検証しません。preflight は測定時間に含まれません。VAD が空の区間一覧を返した場合も処理は成功し、primary の `segments` は空、artifact の hypothesis は空文字です。この場合 ASR model の load / inference は行いません。
+
+入力は import 後に canonical 16 kHz mono float timeline になります。Windows は WindowsSupport による streaming WAV / FLAC / MP3 / M4A / AAC import と canonical conversion を使い、AAC encoder priming も timeline に保持します（詳細は [音声 import API](windows.md#音声-import-api)）。Linux は CMiniaudio 0.11.23 で WAV / FLAC / MP3 だけを読み、入力がすでに 16 kHz mono であることを要求します。Linux では sample-rate conversion と channel mixing をしません。非対応形式や 16 kHz mono でない入力は明示エラーになります。
+
+Linux で必要なら、既存の ffmpeg を使って事前に mono PCM16 / 16 kHz WAV を作れます。これは利用者が明示的に行う前処理であり、CLI の fallback ではありません。
+
+```bash
+ffmpeg -nostdin -i "$SOURCE_AUDIO" -map_metadata -1 -vn -ac 1 -ar 16000 -c:a pcm_s16le "$NORMALIZED_WAV"
+```
+
+invalid input や処理失敗では出力 JSON を作りません。CLI は import した original、processing timeline、event files を一時 scratch directory に置き、処理後に削除します。ユーザーの永続 session は作成しません。primary JSON と artifact JSON はそれぞれ atomic file write しますが、2 ファイルの pair 全体は transactional ではありません。
+
+primary JSON の top-level keys は `schema_version`（常に `1`）、`asr`、`vad`、`segments`、`runtime` です。`asr` と `vad` はそれぞれ `RunProvenance` の `engine`、`model`、`version`、`configuration` を持ちます。`segments` は時系列の `start_ms`、`end_ms`、`text` 要素の配列で、frame 境界を最も近い整数 millisecond に ties-to-even で丸めます。`runtime` は `audio_seconds`、`model_load_seconds`、`inference_seconds`、`rtf` を持ちます。
+
+primary の区間別時刻が発話境界を表し、評価 artifact の区間は全音声を包む CER 用 envelope です。
+
+`model_load_seconds` は `PipelineCoordinator` が計測する `ASR.prepare()` のみです。`inference_seconds` は `segmentationSeconds + asrWallSeconds - model_load_seconds` で、lazy VAD model load / inference と event persistence を含みます。audio import、モデル identity preflight、ONNX environment の生成、model unload / scratch cleanup、JSON 出力は含みません。`rtf = inference_seconds / audio_seconds` です。負値または非有限の計測値・算出指標はエラーになり、0 へ clamp しません。この RTF は ASR-only warm RTF ではありません。
+
+### Linux release build と実行
+
+Python 3.12 以上、Swift 6.2 系、ONNX Runtime SDK、Silero model が必要です。Linux では入力音声を 16 kHz mono に用意してください。以下の `/absolute/path/...` は置換する例であり、既定 path ではありません。指定した入力、model directory、出力親 directory は事前に存在させます。
+
+```bash
+set -eu
+python3.12 scripts/fetch_onnxruntime.py
+SILERO_MODEL="$(python3.12 scripts/fetch_silero_vad.py)"
+swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevTranscribeFile
+BIN_DIR="$(swift build --package-path app/MacAmbientJev -c release --show-bin-path)"
+"$BIN_DIR/MacAmbientJevTranscribeFile" \
+  "/absolute/path/to/audio-16k-mono.wav" \
+  --silero-model "$SILERO_MODEL" \
+  --asr-model-directory "/absolute/path/to/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4" \
+  --asr-model-size 0.6b \
+  --threads 2 \
+  --output "/absolute/path/to/output/segments.json" \
+  --artifact-output "/absolute/path/to/output/asr-artifact.json"
+```
+
+ASR model directory は対応する固定 repository / revision の model を事前に取得した directory です（[Qwen3-ASR ONNX model fetcher](windows.md#qwen3-asr-onnx-モデルの取得)）。Silero fetcher は Python 3.12 以上を要求します。
+
+### artifact v2 の検証と CER 評価
+
+`--artifact-output` は既存の schema v2 ASR artifact です。Python validator と portable evaluator は次のように実行します。
+
+```bash
+PYTHONPATH=tools/linux-audio python3 -c 'import json,sys; from common.artifact import validate_asr_artifact; validate_asr_artifact(json.load(open(sys.argv[1], encoding="utf-8")))' \
+  "/absolute/path/to/output/asr-artifact.json"
+swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
+  "/absolute/path/to/reference.txt" \
+  "/absolute/path/to/output/asr-artifact.json" \
+  --output "/absolute/path/to/output/asr-report.json"
+```
+
+### 実モデル CLI の opt-in test
+
+[`test_transcribe_file_cli_model.py`](../tools/linux-audio/tests/test_transcribe_file_cli_model.py) は release CLI と evaluator を build し、両方の出力、artifact validator、長い fixture に対する normalized CER `<= 0.15` を検査します。既定では skip です。`RUN_MODEL_TESTS=1` のときは `QWEN3_ASR_ONNX_MODEL_DIRECTORY`（絶対 path の既存 readable directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）、`MAC_AMBIENT_JEV_SILERO_MODEL`（readable model file）が必須で、設定欠落時は test failure です。repository root から実行します。
+
+```bash
+set -eu
+cd tools/linux-audio
+export RUN_MODEL_TESTS=1
+export QWEN3_ASR_ONNX_MODEL_DIRECTORY="/absolute/path/to/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4"
+export QWEN3_ASR_ONNX_MODEL_SIZE=0.6b
+SILERO_MODEL="$(python3.12 ../../scripts/fetch_silero_vad.py)"
+export MAC_AMBIENT_JEV_SILERO_MODEL="$SILERO_MODEL"
+uv run --python 3.12 --with pytest python -m pytest -q tests/test_transcribe_file_cli_model.py
+```
+
+CLI の unit tests は引数・path・import decode に加え、モデル不要で primary JSON / artifact の完全な payload schema、VAD segment text の順序と改行 join、provenance、RTF、計測値・configuration・path の error を検査します（[`TranscribeFileTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift)）。実モデルを使う Python integration test は opt-in で、release CLI の出力と CER を検査します。pipeline helper tests は [`FileTranscriptionPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FileTranscriptionPipelineTests.swift) にあります。
+
 ## 評価 artifact のスキーマ v2
 
-厳密な Python validator は `tools/linux-audio/common/artifact.py` にある。キー集合は固定で、余分なキーも拒否する。Swift 評価器は採点に必要な部分を読むため、来歴を含む形式確認には Python validator を使う。
+厳密な Python validator は `tools/linux-audio/common/artifact.py` にある。キー集合は固定で、余分なキーも拒否する。ASR backend は `transformers` または CPU 専用 `onnxruntime`、話者分離 backend は `nemo` である。Swift 評価器は採点に必要な部分を読むため、来歴を含む形式確認には Python validator を使う。
 
 共通の `engine` は次の七つのキーをすべて持つ。
 
@@ -86,12 +179,12 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
 | --- | --- |
 | `name` | ASR は `qwen3-asr`、話者分離は `nemotron-3-diarization` |
 | `model` / `revision` | 空でないモデル ID / revision |
-| `backend` | ASR は `transformers`、話者分離は `nemo` |
+| `backend` | ASR は `transformers` または CPU 専用 `onnxruntime`、話者分離は `nemo` |
 | `device` | CPU または CUDA の device 指定 |
 | `package_versions` | 空でない package 名 → 実インストール version の辞書 |
 | `inference_config` | 空でない実推論設定の辞書 |
 
-`runtime` は `audio_seconds`、`model_load_seconds`、`inference_seconds`、`rtf`。有限の非負数で、audio の長さは正、RTF は inference/audio に一致する。cold model load とロード後の warm 推論を分ける。CUDA では `resident_vram_mb` と `peak_vram_mb` がさらに必須で、CPU ではこの二つのキーを持たない。単位は 1024² bytes。resident はモデルロード直後の PyTorch allocated memory、peak は推論中の allocated memory の最大値であり、GPU 全体の使用量ではない。
+`runtime` は `audio_seconds`、`model_load_seconds`、`inference_seconds`、`rtf`。有限の非負数で、audio の長さは正、RTF は inference/audio に一致する。Python Transformers runner では cold model load とロード後の warm 推論を分けます。file CLI の同じフィールドは [CLI の計測定義](#ファイル文字起こし-cli) に従い、ASR-only warm RTF を示しません。CUDA では `resident_vram_mb` と `peak_vram_mb` がさらに必須で、CPU ではこの二つのキーを持たない。単位は 1024² bytes。resident はモデルロード直後の PyTorch allocated memory、peak は推論中の allocated memory の最大値であり、GPU 全体の使用量ではない。
 
 ### ASR の artifact
 
@@ -100,7 +193,37 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
 - `start_ms`: 整数 0。
 - `end_ms`: audio_seconds × 1000 を round した整数。
 - `text`: 認識文。空文字も形式上は許可する。
-- `language`: エンジンが返した言語の文字列。
+- `language`: Transformers backend ではエンジンが返した言語。file CLI の ONNX backend では設定済みの `ja` であり、検出言語ではない。
+
+file CLI の評価 artifact は厳密な schema v2 です。ONNX artifact のトップレベルは `schema_version`、`engine`、`segments`、`runtime`、各 segment は4キーです。Python validator は `runtime` のキー集合・型・非負値・RTF 整合条件を含めて検証し、diarization artifact も後述の固定 schema に従って検証します。primary JSON にある VAD segment の開始・終了時刻が実際の区間境界です。v2 の単一 segment は CER 用全音声 envelope にすぎません。
+
+#### file CLI の ONNX ASR engine
+
+`engine` は `name: qwen3-asr`、`backend: onnxruntime`、`device: cpu` です。`package_versions` はロード中の runtime が返す実際の version を記録し、`onnxruntime` は固定版 `1.31.0` です。`model` と `revision` はサイズに対応する pinned repository と commit です。
+
+| size | `model` | `revision` |
+| --- | --- | --- |
+| `0.6b` | [andrewleech/qwen3-asr-0.6b-onnx](https://huggingface.co/andrewleech/qwen3-asr-0.6b-onnx/tree/4fc24a1402e74db89c4d2ef256875e71680128c4) | `4fc24a1402e74db89c4d2ef256875e71680128c4` |
+| `1.7b` | [andrewleech/qwen3-asr-1.7b-onnx](https://huggingface.co/andrewleech/qwen3-asr-1.7b-onnx/tree/df916193ac67e59347769891a21e10d81d12acdd) | `df916193ac67e59347769891a21e10d81d12acdd` |
+
+`inference_config` は次の10キーのみです。validator は余分なキーを拒否します。
+
+| key | fixed value |
+| --- | --- |
+| `language` | `ja` |
+| `quantization` | `int4` |
+| `minimum_input_seconds` | `0.02` |
+| `mel_variant` | `whisper-slaney-128-nfft400-hop160-reflect-global-log10` |
+| `max_new_tokens` | `448` |
+| `no_repeat_ngram` | `3 when input_seconds > 15; disabled otherwise` |
+| `intra_op_threads` | CLI の `--threads` 値（正の Int32） |
+| `inter_op_threads` | `1` |
+| `cpu_memory_arena` | `false` |
+| `segmentation` | `silero-final-transcript` |
+
+`asr.configuration` と `engine.inference_config` の `intra_op_threads`、`inter_op_threads`、`cpu_memory_arena` は ASR の3 ONNX session で実際に使う設定です（CLI の `--threads` 値、`1`、`false`）。`engine.inference_config` のこれらの値は ASR session のみを表します。Silero session は `--threads` の値を intra-op に使い、CPU memory arena を有効にします。
+
+`segments` は一要素だけです。`start_ms` は整数 `0`、`end_ms` は `round(audio_seconds * 1000)`、`text` は VAD 区間の認識 text を順に改行文字 `\n` で結合した文字列、`language` は設定された `ja` です。結合規則は Mac の `ASRSessionEvaluator` と同じです。これは CER の全音声 envelope であり、区間ごとの実時刻は表しません。`MacAmbientJevEvaluateASR` はこの artifact を参照文と別途評価します。
 
 ### 話者分離の artifact
 

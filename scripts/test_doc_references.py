@@ -23,6 +23,19 @@ enum RecordingMode { case ImportedRecording }
 let option = removeFlag("--keep-session")
 let value = removeOption("--sessions-root")
 ''')
+        self.put("app/MacAmbientJev/Sources/MacAmbientJevTranscribeFile/TranscribeFileCommand.swift", '''
+let documentedFlags = [
+    "--silero-model",
+    "--asr-model-directory",
+    "--asr-model-size",
+    "--threads",
+    "--output",
+    "--artifact-output",
+    "--help",
+]
+''')
+        self.put("app/MacAmbientJev/Sources/MacAmbientJevTranscribeFile/main.swift",
+                 'let mainOnlyFlag = "--main-only"\n')
         self.put("scripts/build_app.sh", 'case "$1" in --print-info-plist) ;; esac\n'
                  'swift build --product MacAmbientJev\n')
         self.put("tools/linux-audio/run_suite.py", '''
@@ -70,6 +83,19 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \\
 """)
         self.assertEqual(self.messages(), [
             "README.md:4: unknown flag for MacAmbientJevProcessRecording: --keep-sesion",
+        ])
+
+    def test_transcribe_file_flags_use_command_source_for_swift_run_and_executable(self):
+        self.put("README.md", """```bash
+swift run --package-path app/MacAmbientJev MacAmbientJevTranscribeFile --silero-model silero.onnx --asr-model-directory models --asr-model-size 0.6b --threads 4 --output transcript.json --artifact-output artifact.json
+swift run --package-path app/MacAmbientJev MacAmbientJevTranscribeFile --artifact-ouput artifact.json
+MacAmbientJevTranscribeFile --silero-model silero.onnx --asr-model-directory models --asr-model-size 0.6b --threads 4 --output transcript.json --artifact-output artifact.json
+MacAmbientJevTranscribeFile --main-only
+```
+""")
+        self.assertEqual(self.messages(), [
+            "README.md:3: unknown flag for MacAmbientJevTranscribeFile: --artifact-ouput",
+            "README.md:5: unknown flag for MacAmbientJevTranscribeFile: --main-only",
         ])
 
     def test_python_flags_use_argument_declarations_not_invoked_commands(self):

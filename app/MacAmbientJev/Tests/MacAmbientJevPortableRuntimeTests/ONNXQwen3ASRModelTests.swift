@@ -87,6 +87,57 @@ enum Qwen3ASRModelTestConfigurationError: Error, LocalizedError {
     }
 }
 
+struct Qwen3ASRModelValidationTests {
+    @Test
+    func publicValidatorReportsInvalidDirectoryMissingAssetsAndWrongSize() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(
+            "Qwen3ASRModelValidationTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let invalidDirectory = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: invalidDirectory)
+        let invalidDirectoryError = modelValidationError {
+            try Qwen3ASRModelSize.small.validate(directory: invalidDirectory)
+        }
+        #expect(invalidDirectoryError?.contains("パスがディレクトリではありません") == true)
+
+        let modelDirectory = root.appendingPathComponent("missing-assets", isDirectory: true)
+        try fileManager.createDirectory(at: modelDirectory, withIntermediateDirectories: false)
+        let modelSize = Qwen3ASRModelSize.small
+        let firstFile = try #require(modelSize.files.first)
+        let missingAssetError = modelValidationError {
+            try modelSize.validate(directory: modelDirectory)
+        }
+        #expect(missingAssetError?.contains(firstFile.name) == true)
+        #expect(missingAssetError?.contains("ファイル情報を取得できません") == true)
+
+        try Data().write(to: modelDirectory.appendingPathComponent(firstFile.name))
+        let wrongSizeError = modelValidationError {
+            try modelSize.validate(directory: modelDirectory)
+        }
+        #expect(wrongSizeError?.contains(firstFile.name) == true)
+        #expect(wrongSizeError?.contains("モデルファイルのサイズが一致しません") == true)
+        #expect(
+            wrongSizeError?.contains("期待値: \(firstFile.byteCount) bytes, 実際: 0 bytes") == true
+        )
+    }
+}
+
+private func modelValidationError(_ validate: () throws -> Void) -> String? {
+    do {
+        try validate()
+        return nil
+    } catch let Qwen3ASRModelError.invalid(message) {
+        return message
+    } catch {
+        return "unexpected error: \(error)"
+    }
+}
+
 @Suite(.serialized)
 struct ONNXQwen3ASRModelTests {
     @Test(

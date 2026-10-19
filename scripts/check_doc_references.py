@@ -31,6 +31,7 @@ CLI_SOURCES = {
     )
 }
 CLI_SOURCES.update({
+    'MacAmbientJevTranscribeFile': (f'{SWIFT_SOURCES}/MacAmbientJevTranscribeFile/TranscribeFileCommand.swift',),
     "tools/linux-audio/run_suite.py": ("tools/linux-audio/run_suite.py",),
     "tools/linux-audio/prepare_fixture.py": ("tools/linux-audio/prepare_fixture.py",),
     "asr.qwen3_asr": ("tools/linux-audio/asr/qwen3_asr.py",),

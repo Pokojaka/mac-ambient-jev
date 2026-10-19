@@ -7,28 +7,51 @@ import Testing
 @Suite(.timeLimit(.minutes(1)))
 struct ONNXQwen3ASREngineTests {
     @Test
-    func provenanceIsExactForEveryModelSizeBeforePreparation() {
-        let expectedConfiguration = [
+    func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() {
+        for size in Qwen3ASRModelSize.allCases {
+            for intraOpThreads in [2, 7] {
+                let engine = ONNXQwen3ASREngine(
+                    modelDirectory: URL(fileURLWithPath: "/not-loaded/\(size.rawValue)"),
+                    size: size,
+                    intraOpThreads: intraOpThreads
+                )
+                let provenance = engine.provenance
+                #expect(provenance.engine == "onnxruntime-qwen3-asr")
+                #expect(provenance.model == "\(size.repository)@\(size.commit)")
+                #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
+                #expect(provenance.configuration == expectedConfiguration(intraOpThreads: intraOpThreads))
+            }
+        }
+    }
+
+    @Test
+    func injectedInitializerProvenanceIncludesActualThreadConfiguration() {
+        let engine = ONNXQwen3ASREngine(
+            modelDirectory: URL(fileURLWithPath: "/injected-model"),
+            size: .large,
+            intraOpThreads: 7,
+            loadModel: { _, _, _ in FakeQwen3ASRModel(recorder: ModelCallRecorder(), text: "unused") }
+        )
+
+        let provenance = engine.provenance
+        #expect(provenance.engine == "onnxruntime-qwen3-asr")
+        #expect(provenance.model == "\(Qwen3ASRModelSize.large.repository)@\(Qwen3ASRModelSize.large.commit)")
+        #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
+        #expect(provenance.configuration == expectedConfiguration(intraOpThreads: 7))
+    }
+
+    private func expectedConfiguration(intraOpThreads: Int) -> [String: String] {
+        [
             "language": "ja",
             "minimum_input_seconds": String(ASRAudioInput.minimumDurationSeconds),
             "quantization": "int4",
             "mel_variant": "whisper-slaney-128-nfft400-hop160-reflect-global-log10",
             "max_new_tokens": "448",
             "no_repeat_ngram": "3 when input_seconds > 15; disabled otherwise",
+            "intra_op_threads": String(intraOpThreads),
+            "inter_op_threads": String(ONNXSession.interOpThreads),
+            "cpu_memory_arena": String(Qwen3ASRONNXModel.cpuMemoryArenaEnabled),
         ]
-
-        for size in Qwen3ASRModelSize.allCases {
-            let engine = ONNXQwen3ASREngine(
-                modelDirectory: URL(fileURLWithPath: "/not-loaded/\(size.rawValue)"),
-                size: size,
-                intraOpThreads: 2
-            )
-            let provenance = engine.provenance
-            #expect(provenance.engine == "onnxruntime-qwen3-asr")
-            #expect(provenance.model == "\(size.repository)@\(size.commit)")
-            #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
-            #expect(provenance.configuration == expectedConfiguration)
-        }
     }
 
     @Test

@@ -14,6 +14,7 @@ protocol Qwen3ASRTranscribingModel: Sendable {
 /// shared read-only; callers serialize transcription runs via an actor. Per-run features and KV
 /// caches stay local to `transcribe` and its decoder.
 final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
+    internal static let cpuMemoryArenaEnabled = false
     private static let vocabularySize = 151_936
     private static let layerCount: Int64 = 28
     private static let headCount: Int64 = 8
@@ -40,7 +41,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.encoderFilename),
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: false
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
         )
         try Self.validateMetadata(
             graph: .encoder,
@@ -53,7 +54,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.decoderInitFilename),
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: false
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
         )
         try Self.validateMetadata(
             graph: .decoderInit,
@@ -66,7 +67,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.decoderStepFilename),
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: false
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
         )
         try Self.validateMetadata(
             graph: .decoderStep,
