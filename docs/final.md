@@ -8,8 +8,7 @@
 保存音声の処理タイムライン
   → VAD
   → 録音全体のオフライン話者分離
-  → VAD 区間の話者 turn 分割
-  → 区間ごとの Qwen3-ASR
+  → VAD 区間ごとの Qwen3-ASR
   → 必須ローカル3段階の結果と全区間の境界保留を一括公開
   → Core ML 発話文モデルによる境界判定（任意）
   → BTSJ 発話文の組み立て
@@ -25,7 +24,7 @@
 
 VAD はライブと同じ `FluidVADSegmentationEngine` で区間を作ります。閾値、14 秒での分割位置、0.5 秒未満の独立区間の除外は[ライブ](live.md#vad-と-asr-の区切り)と同じです。
 
-エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は区間の canonical samples を変更せず Qwen に 16000 を渡します。20 ms 未満の ASR 入力を推論しない規則は変わりません。source frame は original や device ではなく保存タイムラインの座標です。
+エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は区間の canonical samples を変更せず Qwen に 16000 とモデルが定義する言語指定 `language=Japanese` を渡します。20 ms 未満の ASR 入力を推論しない規則は変わりません。source frame は original や device ではなく保存タイムラインの座標です。
 
 話者分離は既存の canonical CAF と FluidAudio の OfflineDiarizerConfig.segmentation.sampleRate を検証し、`OfflineDiarizerManager.process(audioSource:audioLoadingSeconds:progressCallback:)` を呼びます。`CanonicalCAFAudioSource` が lock 付きの bounded random read を行い、SRC や別の whole-audio raw PCM temporary file は作りません。FluidAudio が末尾で要求する固定長のモデル window には、CAF に存在する sample だけをコピーし、呼び出し元が 0 初期化した残りを変更しません。保存タイムラインの長さ・音声・区間座標には padding を加えず、実ファイルの予期しない EOF・不正 sample はエラーです。発話のある確定処理の CAF 自体は derived 内に保存します。
 
@@ -118,15 +117,13 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
 
 ID は manifest の完全 UUID から実フォルダー URL に解決します。不在・複数一致・フォルダー名の不整合はエラーで、`none` は存在する正常セッションの action がない場合に限ります。resume は実行時に実フォルダーを解決して出力先を検査し、symlink と大文字小文字の違いを考慮してセッション内部への出力を production engine の処理前に拒否します。
 
-## 話者 turn の境界
+## ASR 区間と話者時刻
 
-VAD 区間を話者 turn と同一視しません。一つの VAD 区間内で、直前・直後の話者集合がそれぞれ一人で、異なる話者である場合に分割候補を作ります。
+ASR は VAD が作った区間の音声を、そのまま一回ずつ認識します。話者交代や短い相づちの時刻で VAD 区間を細分化しません。授業の説明・質問の前後にある音声文脈を同じ認識入力へ保ちます。最大 14 秒と静音での切断、短い continuation の保持はライブと共通です。
 
-- 両側の連続した単独話者の根拠を各 0.3 秒以上要求します。
-- 話者 span が接していれば接点、間に空白があれば空白の中点で分割します。中点で二つの子区間へ配分するので、空白部分の音声サンプルは捨てません。独立した UNKNOWN gap 行は作りません。
-- 切断で生じる子区間も各 0.3 秒以上必要です。短い揺れや重なり・入れ子で境界が曖昧な場合は切らず、元の詳細 span を保持します。
-- 子区間は元 VAD 区間を欠落・重複なく覆います。VAD の 14 秒分割後の短い continuation はそのまま保持し、短いからという理由で隣の別話者へ混ぜません。
-- 負の開始位置、逆転・ゼロ長、音声全体の範囲外の話者 span は明示エラーです。FluidAudio adapter が上記の最終 window padding を処理した後も、確定パイプラインは音声範囲を厳密に検証し、範囲内へ黙って切り詰めません。
+話者分離は録音全体に対して実行し、各話者の詳細 span を保持します。一つの ASR 行に複数話者が含まれる場合は、以下の 80% ルールで話者見出しを付けます。行の開始・終了は VAD 区間の時刻であり、本文内の各語を特定話者へ対応付ける時刻ではありません。話者間の空白も VAD 区間内の音声として保持し、独立した UNKNOWN gap 行は作りません。
+
+空の話者 ID、非有限または 0〜1 の範囲外の confidence、負の開始位置、逆転・ゼロ長、音声全体の範囲外の話者 span は明示エラーです。FluidAudio adapter が最終 window padding を処理した後も、確定パイプラインは音声範囲を厳密に検証し、範囲内へ黙って切り詰めません。
 
 重なり発話を話者分離したことは、混合音声から各人の声を分離したことを意味しません。本文を文字数比で二人へ配分する処理もありません。
 
@@ -154,5 +151,5 @@ VAD 区間を話者 turn と同一視しません。一つの VAD 区間内で�
 - [確定パイプライン](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[共通入口・公開・保持](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[ASR の一時停止・失敗・計測](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[共通 VAD 区間処理](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
 - [処理 metadata](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[復旧判定](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[アプリの処理キュー](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Processing.swift)、[CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)
 - [判定 run の provenance・境界／優先度処理・batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionEnrichmentCoordinator.swift)、[provider factory とモデル cache](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift)、[Core ML tagger](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)
-- [読み込み音声のタイムライン準備](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[話者 turn 分割](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerTurnSegmenter.swift)、[話者ラベル](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift)、[FluidAudio 話者分離設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[FluidAudio 0.15.8 の OfflineDiarizerConfig](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerTypes.swift)
+- [読み込み音声のタイムライン準備](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[話者ラベル](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift)、[FluidAudio 話者分離設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[FluidAudio 0.15.8 の OfflineDiarizerConfig](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerTypes.swift)
 - [表示 projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[画面の見出し](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[テキスト書き出し](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)、[構造化 ASR 結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)

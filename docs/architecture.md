@@ -80,8 +80,7 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 保存音声
   → 新しい VAD run
   → offline diarization（保存タイムラインから CAF を生成）
-  → SpeakerTurnSegmenter（VAD 区間を話者 turn で分割）
-  → ASR
+  → VAD 区間を保持した ASR
   → 必須のローカル3段階の保存済み結果を検証・公開
   → Core ML tagger による境界判定（任意）
   → BTSJ 発話文の組み立て
@@ -91,11 +90,11 @@ Core は Apple 専用 framework の adapter を持ちません。[scripts/check_
 
 確定処理の必須ローカル段階は segmentation・diarization・ASR です。これらの成功後、同梱の Core ML tagger で境界と優先度を判定します。判定段階は任意で、モデルの初期化・判定の失敗では、必須3段階の結果を保ち、未成立の判定を保留します。
 
-区間は保存タイムラインの frame index による半開区間です。話者間 gap は中点で分割します。FluidAudio adapter だけは実音声内から最終モデル window の padding 内へ延びる終端を EOF に合わせます（[終端の規則](final.md)）。EOF 以降の開始、padding を超える終端は adapter で明示エラーにし、確定パイプラインでも全 span の実音声範囲を厳密に検証します。
+区間は保存タイムラインの frame index による半開区間です。ASR には VAD 区間を細分化せず渡し、話者の詳細 span は保持します。複数話者を含む行の見出しは 80% ルールで決めます。FluidAudio adapter だけは実音声内から最終モデル window の padding 内へ延びる終端を EOF に合わせます（[終端の規則](final.md)）。EOF 以降の開始、padding を超える終端は adapter で明示エラーにし、確定パイプラインでも全 span の実音声範囲を厳密に検証します。
 
 確定処理開始時に `finalization_attempt` を running として保存し、処理中のイベントは既存ログへ追記します。必須ローカル段階が成功するまでは公開済み `active_runs` を変更しません。ローカル段階の公開と判定結果の公開は、それぞれ一回の metadata write で行います。判定 snapshot の保存に失敗しても公開済みのローカル結果を保持します。失敗・熱による一時停止では直前の正常な結果を維持し、再開は新しい確定 run の全量実行です。原音声は後段の失敗で削除しません。
 
-根拠: [AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[SpeakerTurnSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerTurnSegmenter.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)。
+根拠: [AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)。
 
 ## 発話文判定
 
