@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from collections.abc import Mapping
 import hashlib
 import io
 import math
@@ -47,10 +48,50 @@ def make_wav(
     return output.getvalue()
 
 
+class FakeTokenizer:
+    def __init__(
+        self,
+        special_ids: Mapping[str, int | None],
+        encoded_texts: Mapping[str, tuple[int, ...]],
+    ) -> None:
+        self.special_ids = {
+            "<|im_start|>": 151644,
+            "<|im_end|>": 151645,
+            "<|audio_start|>": 151669,
+            "<|audio_pad|>": 151676,
+            "<|audio_end|>": 151670,
+            "<|endoftext|>": 151643,
+            "<asr_text>": 151704,
+        }
+        self.special_ids.update(special_ids)
+        self.encoded_texts = {
+            "system": (8948,),
+            "user": (872,),
+            "assistant": (77091,),
+            "\n": (198,),
+            "language ja": (11528, 11937),
+        }
+        self.encoded_texts.update(encoded_texts)
+        self.lookup_calls: list[str] = []
+        self.encode_calls: list[tuple[str, bool]] = []
+
+    def token_to_id(self, token: str):
+        self.lookup_calls.append(token)
+        return self.special_ids.get(token)
+
+    def encode(self, text: str, add_special_tokens: bool):
+        self.encode_calls.append((text, add_special_tokens))
+        return type("Encoding", (), {"ids": self.encoded_texts[text]})()
+
+
 class TokenReferenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tokenizer = FakeTokenizer({}, {})
+        self.prompt_tokens = reference.load_prompt_tokens(self.tokenizer)
+
     def test_prompt_ids_and_audio_offset_are_exact(self) -> None:
         self.assertEqual(
-            reference.build_prompt_ids(2),
+            reference.build_prompt_ids(2, self.prompt_tokens),
             [
                 151644,
                 8948,
@@ -74,7 +115,83 @@ class TokenReferenceTests(unittest.TestCase):
                 151704,
             ],
         )
-        self.assertEqual(reference.AUDIO_OFFSET, 9)
+        self.assertEqual(self.prompt_tokens.audio_offset, 9)
+
+    def test_prompt_tokens_use_tokenizer_lookups_and_plain_encodings(self) -> None:
+        self.assertEqual(
+            self.tokenizer.lookup_calls,
+            [
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|audio_start|>",
+                "<|audio_pad|>",
+                "<|audio_end|>",
+                "<|endoftext|>",
+                "<asr_text>",
+            ],
+        )
+        self.assertEqual(
+            self.tokenizer.encode_calls,
+            [
+                ("system", False),
+                ("user", False),
+                ("assistant", False),
+                ("\n", False),
+                ("language ja", False),
+            ],
+        )
+        custom = reference.PromptTokens((4, 5), (8,), 6, (9, 10), 11)
+        self.assertEqual(custom.audio_offset, len(custom.head))
+        self.assertEqual(reference.build_prompt_ids(1, custom), [4, 5, 6, 8])
+
+    def test_missing_special_token_is_rejected(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "<\\|audio_end\\|>"):
+            reference.load_prompt_tokens(FakeTokenizer({"<|audio_end|>": None}, {}))
+
+    def test_changed_special_token_id_is_rejected_with_expected_and_actual(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "prompt head mismatch") as raised:
+            reference.load_prompt_tokens(FakeTokenizer({"<|audio_start|>": 151668}, {}))
+        self.assertIn("expected", str(raised.exception))
+        self.assertIn("151668", str(raised.exception))
+
+    def test_changed_plain_tokenization_is_rejected(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "prompt head mismatch") as raised:
+            reference.load_prompt_tokens(FakeTokenizer({}, {"system": (42,)}))
+        self.assertIn("8948", str(raised.exception))
+        self.assertIn("42", str(raised.exception))
+
+    def test_changed_language_ja_encoding_is_rejected_with_expected_and_actual(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "prompt tail mismatch") as raised:
+            reference.load_prompt_tokens(FakeTokenizer({}, {"language ja": (11528, 42)}))
+        self.assertIn("11937", str(raised.exception))
+        self.assertIn("42", str(raised.exception))
+
+    def test_changed_endoftext_id_is_rejected(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "stop token IDs mismatch") as raised:
+            reference.load_prompt_tokens(FakeTokenizer({"<|endoftext|>": 151642}, {}))
+        self.assertIn("151643", str(raised.exception))
+        self.assertIn("151642", str(raised.exception))
+
+    def test_reference_platform_metadata_uses_platform_values(self) -> None:
+        with mock.patch.object(reference.platform, "system", return_value="SyntheticOS"), mock.patch.object(
+            reference.platform, "machine", return_value="SyntheticArch"
+        ):
+            self.assertEqual(
+                reference.reference_platform(),
+                {"platform": "SyntheticOS", "architecture": "SyntheticArch"},
+            )
+
+    def test_reference_platform_rejects_empty_metadata(self) -> None:
+        with mock.patch.object(reference.platform, "system", return_value=""), mock.patch.object(
+            reference.platform, "machine", return_value="SyntheticArch"
+        ):
+            with self.assertRaisesRegex(reference.ReferenceError, "platform.system"):
+                reference.reference_platform()
+        with mock.patch.object(reference.platform, "system", return_value="SyntheticOS"), mock.patch.object(
+            reference.platform, "machine", return_value=""
+        ):
+            with self.assertRaisesRegex(reference.ReferenceError, "platform.machine"):
+                reference.reference_platform()
 
     def test_greedy_ties_choose_lowest_token_id(self) -> None:
         self.assertEqual(reference.select_greedy_token([3.0, 4.0, 4.0, 1.0], [], False), 1)
@@ -94,18 +211,25 @@ class TokenReferenceTests(unittest.TestCase):
 
     def test_transcript_token_ids_without_marker_remove_stop_ids(self) -> None:
         self.assertEqual(
-            reference.transcript_token_ids([10, reference.STOP_TOKEN_IDS[0], 11]), [10, 11]
+            reference.transcript_token_ids(
+                [10, self.prompt_tokens.stop_token_ids[0], 11], self.prompt_tokens
+            ),
+            [10, 11],
         )
 
     def test_transcript_token_ids_after_single_marker_exclude_marker(self) -> None:
         self.assertEqual(
-            reference.transcript_token_ids([7, reference.AUDIO_TEXT_MARKER_ID, 8, 9]), [8, 9]
+            reference.transcript_token_ids(
+                [7, self.prompt_tokens.audio_text_marker_id, 8, 9], self.prompt_tokens
+            ),
+            [8, 9],
         )
 
     def test_transcript_token_ids_after_last_of_multiple_markers_exclude_markers(self) -> None:
         self.assertEqual(
             reference.transcript_token_ids(
-                [7, reference.AUDIO_TEXT_MARKER_ID, 8, reference.AUDIO_TEXT_MARKER_ID, 9]
+                [7, self.prompt_tokens.audio_text_marker_id, 8, self.prompt_tokens.audio_text_marker_id, 9],
+                self.prompt_tokens,
             ),
             [9],
         )
@@ -113,13 +237,14 @@ class TokenReferenceTests(unittest.TestCase):
     def test_transcript_token_ids_remove_all_stop_ids(self) -> None:
         self.assertEqual(
             reference.transcript_token_ids(
-                [1, reference.STOP_TOKEN_IDS[0], 2, reference.STOP_TOKEN_IDS[1], 3]
+                [1, self.prompt_tokens.stop_token_ids[0], 2, self.prompt_tokens.stop_token_ids[1], 3],
+                self.prompt_tokens,
             ),
             [1, 2, 3],
         )
 
     def test_both_stop_tokens_are_inclusive_and_do_not_trigger_an_extra_step(self) -> None:
-        for stop_token_id in reference.STOP_TOKEN_IDS:
+        for stop_token_id in self.prompt_tokens.stop_token_ids:
             with self.subTest(stop_token_id=stop_token_id):
                 calls: list[tuple[int, int]] = []
                 final_logits = SparseLogits(stop_token_id + 1, stop_token_id, 1.0)
@@ -129,7 +254,7 @@ class TokenReferenceTests(unittest.TestCase):
                     return final_logits
 
                 generated, ended_at_cap = reference.greedy_generate(
-                    [0.0, 1.0], next_logits, 52_907
+                    [0.0, 1.0], next_logits, 52_907, self.prompt_tokens
                 )
                 self.assertEqual(generated, [1, stop_token_id])
                 self.assertFalse(ended_at_cap)
@@ -142,7 +267,9 @@ class TokenReferenceTests(unittest.TestCase):
             calls.append((last_token_id, generated_count))
             return [0.0, 1.0]
 
-        generated, ended_at_cap = reference.greedy_generate([0.0, 1.0], next_logits, 52_907)
+        generated, ended_at_cap = reference.greedy_generate(
+            [0.0, 1.0], next_logits, 52_907, self.prompt_tokens
+        )
         self.assertEqual(generated, [1] * 448)
         self.assertTrue(ended_at_cap)
         self.assertEqual(len(calls), 447)
@@ -155,30 +282,35 @@ class TokenReferenceTests(unittest.TestCase):
             reference.select_greedy_token(logits, generated_completion, True), 4
         )
 
+    def test_no_repeat_trigram_rejects_out_of_range_banned_id(self) -> None:
+        with self.assertRaisesRegex(ValueError, "out-of-range token ID"):
+            reference.select_greedy_token([0.0, 1.0, 2.0], [5, 6, 99, 5, 6], True)
+
     def test_no_repeat_trigram_is_disabled_at_fifteen_seconds(self) -> None:
         self.assertIsNone(reference.no_repeat_ngram_size(15 * 16_000))
         generated, ended_at_cap = reference.greedy_generate(
-            [0.0, 2.0], lambda _last, _count: [0.0, 2.0], 15 * 16_000
+            [0.0, 2.0], lambda _last, _count: [0.0, 2.0], 15 * 16_000, self.prompt_tokens
         )
         self.assertTrue(ended_at_cap)
         self.assertEqual(generated, [1] * 448)
 
     def test_no_repeat_trigram_is_enabled_only_after_fifteen_seconds(self) -> None:
         self.assertEqual(reference.no_repeat_ngram_size(15 * 16_000 + 1), 3)
+
         def next_logits(_last: int, generated_count: int):
             if generated_count == 4:
                 return SparseLogits(
-                    reference.STOP_TOKEN_IDS[0] + 1,
-                    reference.STOP_TOKEN_IDS[0],
+                    self.prompt_tokens.stop_token_ids[0] + 1,
+                    self.prompt_tokens.stop_token_ids[0],
                     1.0,
                 )
             return [0.0, 0.0, 0.0, 2.0]
 
         generated, ended_at_cap = reference.greedy_generate(
-            [0.0, 0.0, 0.0, 2.0], next_logits, 15 * 16_000 + 1
+            [0.0, 0.0, 0.0, 2.0], next_logits, 15 * 16_000 + 1, self.prompt_tokens
         )
         self.assertFalse(ended_at_cap)
-        self.assertEqual(generated, [3, 3, 3, 0, reference.STOP_TOKEN_IDS[0]])
+        self.assertEqual(generated, [3, 3, 3, 0, self.prompt_tokens.stop_token_ids[0]])
 
     def test_empty_and_nan_logits_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "empty"):

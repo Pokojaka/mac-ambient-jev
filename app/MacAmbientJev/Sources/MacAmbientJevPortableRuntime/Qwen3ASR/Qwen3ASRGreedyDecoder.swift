@@ -29,6 +29,7 @@ enum Qwen3ASRGenerationError: Error, Equatable, CustomStringConvertible {
     case unsupportedNgramSize(Int)
     case emptyLogits
     case nanLogit(Int)
+    case outOfRangeBannedTokenID(Int64, logitsCount: Int)
     case positionOverflow
 
     var description: String {
@@ -45,6 +46,8 @@ enum Qwen3ASRGenerationError: Error, Equatable, CustomStringConvertible {
             "decoder returned an empty logits vector"
         case let .nanLogit(index):
             "decoder returned NaN at logits index \(index)"
+        case let .outOfRangeBannedTokenID(tokenID, logitsCount):
+            "no-repeat trigram token id \(tokenID) is outside logits range 0..<\(logitsCount)"
         case .positionOverflow:
             "decoder token position overflows Int64"
         }
@@ -114,11 +117,13 @@ struct Qwen3ASRGreedyDecoder<Model: Qwen3ASRDecoderModel> {
             let prefixSecond = generatedIDs[generatedIDs.count - 1]
             for index in 0...(generatedIDs.count - 3) {
                 guard generatedIDs[index] == prefixFirst,
-                      generatedIDs[index + 1] == prefixSecond,
-                      let maskedIndex = Int(exactly: generatedIDs[index + 2]),
-                      scores.indices.contains(maskedIndex)
+                      generatedIDs[index + 1] == prefixSecond
                 else {
                     continue
+                }
+                let bannedID = generatedIDs[index + 2]
+                guard let maskedIndex = Int(exactly: bannedID), scores.indices.contains(maskedIndex) else {
+                    throw Qwen3ASRGenerationError.outOfRangeBannedTokenID(bannedID, logitsCount: scores.count)
                 }
                 scores[maskedIndex] = -.infinity
             }

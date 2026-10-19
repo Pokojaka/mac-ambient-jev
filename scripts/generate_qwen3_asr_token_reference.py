@@ -9,10 +9,12 @@ import importlib.metadata
 import io
 import json
 import math
+import platform
 import struct
 import sys
 import tempfile
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -31,11 +33,8 @@ SAMPLE_RATE = 16_000
 HOP_LENGTH = 160
 MEL_FEATURES = 128
 HIDDEN_SIZE = 1024
-AUDIO_OFFSET = 9
 MAX_NEW_TOKENS = 448
 NO_REPEAT_THRESHOLD_SAMPLES = 15 * SAMPLE_RATE
-STOP_TOKEN_IDS = (151645, 151643)
-AUDIO_TEXT_MARKER_ID = 151704
 EXPECTED_CLIPS = (
     ("short", "qwen3_asr_voicevox_short.wav", 52_907, "2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9"),
     ("long", "qwen3_asr_voicevox_long.wav", 295_424, "d50f7f2a1fe9665279689e53297772aeb52c43d9068c82ab21b21fa62cac78b2"),
@@ -58,13 +57,113 @@ class ReferenceError(Exception):
     """A validation or inference failure while generating the reference."""
 
 
-def build_prompt_ids(audio_token_count: int) -> list[int]:
+@dataclass(frozen=True)
+class PromptTokens:
+    head: tuple[int, ...]
+    tail: tuple[int, ...]
+    audio_pad_id: int
+    stop_token_ids: tuple[int, int]
+    audio_text_marker_id: int
+
+    @property
+    def audio_offset(self) -> int:
+        return len(self.head)
+
+
+def load_prompt_tokens(tokenizer: Any) -> PromptTokens:
+    special_tokens = (
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|audio_start|>",
+        "<|audio_pad|>",
+        "<|audio_end|>",
+        "<|endoftext|>",
+        "<asr_text>",
+    )
+    token_ids: dict[str, int] = {}
+    for token in special_tokens:
+        try:
+            token_id = tokenizer.token_to_id(token)
+        except Exception as error:
+            raise ReferenceError(f"could not look up tokenizer token {token!r}: {error}") from error
+        if token_id is None:
+            raise ReferenceError(f"tokenizer is missing required token {token!r}")
+        token_ids[token] = token_id
+
+    plain_tokens: dict[str, tuple[int, ...]] = {}
+    for text in ("system", "user", "assistant", "\n", "language ja"):
+        try:
+            plain_tokens[text] = tuple(tokenizer.encode(text, add_special_tokens=False).ids)
+        except Exception as error:
+            raise ReferenceError(f"could not encode tokenizer text {text!r}: {error}") from error
+
+    head = (
+        token_ids["<|im_start|>"],
+        *plain_tokens["system"],
+        *plain_tokens["\n"],
+        token_ids["<|im_end|>"],
+        *plain_tokens["\n"],
+        token_ids["<|im_start|>"],
+        *plain_tokens["user"],
+        *plain_tokens["\n"],
+        token_ids["<|audio_start|>"],
+    )
+    tail = (
+        token_ids["<|audio_end|>"],
+        token_ids["<|im_end|>"],
+        *plain_tokens["\n"],
+        token_ids["<|im_start|>"],
+        *plain_tokens["assistant"],
+        *plain_tokens["\n"],
+        *plain_tokens["language ja"],
+        token_ids["<asr_text>"],
+    )
+    prompt_tokens = PromptTokens(
+        head=head,
+        tail=tail,
+        audio_pad_id=token_ids["<|audio_pad|>"],
+        stop_token_ids=(token_ids["<|im_end|>"], token_ids["<|endoftext|>"]),
+        audio_text_marker_id=token_ids["<asr_text>"],
+    )
+
+    expected_head = (151644, 8948, 198, 151645, 198, 151644, 872, 198, 151669)
+    if prompt_tokens.head != expected_head:
+        raise ReferenceError(
+            f"prompt head mismatch: expected {expected_head!r}, got {prompt_tokens.head!r}"
+        )
+    expected_tail = (151670, 151645, 198, 151644, 77091, 198, 11528, 11937, 151704)
+    if prompt_tokens.tail != expected_tail:
+        raise ReferenceError(
+            f"prompt tail mismatch: expected {expected_tail!r}, got {prompt_tokens.tail!r}"
+        )
+    if prompt_tokens.audio_pad_id != 151676:
+        raise ReferenceError(
+            f"audio pad ID mismatch: expected 151676, got {prompt_tokens.audio_pad_id!r}"
+        )
+    if prompt_tokens.stop_token_ids != (151645, 151643):
+        raise ReferenceError(
+            "stop token IDs mismatch: expected (151645, 151643), "
+            f"got {prompt_tokens.stop_token_ids!r}"
+        )
+    if prompt_tokens.audio_text_marker_id != 151704:
+        raise ReferenceError(
+            "audio text marker ID mismatch: expected 151704, "
+            f"got {prompt_tokens.audio_text_marker_id!r}"
+        )
+    if prompt_tokens.audio_offset != 9:
+        raise ReferenceError(
+            f"audio offset mismatch: expected 9, got {prompt_tokens.audio_offset}"
+        )
+    return prompt_tokens
+
+
+def build_prompt_ids(audio_token_count: int, prompt_tokens: PromptTokens) -> list[int]:
     if type(audio_token_count) is not int or audio_token_count <= 0:
         raise ValueError("audio_token_count must be a positive integer")
     return (
-        [151644, 8948, 198, 151645, 198, 151644, 872, 198, 151669]
-        + [151676] * audio_token_count
-        + [151670, 151645, 198, 151644, 77091, 198, 11528, 11937, AUDIO_TEXT_MARKER_ID]
+        list(prompt_tokens.head)
+        + [prompt_tokens.audio_pad_id] * audio_token_count
+        + list(prompt_tokens.tail)
     )
 
 
@@ -96,15 +195,17 @@ def select_greedy_token(
     return max(range(len(values)), key=values.__getitem__)
 
 
-def transcript_token_ids(generated_ids: Sequence[int]) -> list[int]:
+def transcript_token_ids(
+    generated_ids: Sequence[int], prompt_tokens: PromptTokens
+) -> list[int]:
     last_marker_index = -1
     for index, token_id in enumerate(generated_ids):
-        if token_id == AUDIO_TEXT_MARKER_ID:
+        if token_id == prompt_tokens.audio_text_marker_id:
             last_marker_index = index
     return [
         token_id
         for token_id in generated_ids[last_marker_index + 1 :]
-        if token_id not in STOP_TOKEN_IDS
+        if token_id not in prompt_tokens.stop_token_ids
     ]
 
 
@@ -112,6 +213,7 @@ def greedy_generate(
     initial_logits: Sequence[float],
     next_logits: Callable[[int, int], Sequence[float]],
     sample_count: int,
+    prompt_tokens: PromptTokens,
 ) -> tuple[list[int], bool]:
     if type(sample_count) is not int or sample_count <= 0:
         raise ValueError("sample_count must be a positive integer")
@@ -121,7 +223,7 @@ def greedy_generate(
     while len(generated_ids) < MAX_NEW_TOKENS:
         token_id = select_greedy_token(logits, generated_ids, use_no_repeat_trigram)
         generated_ids.append(token_id)
-        if token_id in STOP_TOKEN_IDS:
+        if token_id in prompt_tokens.stop_token_ids:
             return generated_ids, False
         if len(generated_ids) == MAX_NEW_TOKENS:
             return generated_ids, True
@@ -164,6 +266,16 @@ def validate_environment() -> dict[str, str]:
                 f"{package}=={required_version} is required, got {actual_version!r}"
             )
     return packages
+
+
+def reference_platform() -> dict[str, str]:
+    system = platform.system()
+    architecture = platform.machine()
+    if not isinstance(system, str) or not system.strip():
+        raise ReferenceError("platform.system() returned an empty value")
+    if not isinstance(architecture, str) or not architecture.strip():
+        raise ReferenceError("platform.machine() returned an empty value")
+    return {"platform": system, "architecture": architecture}
 
 
 def validate_model_directory(model_directory: Path) -> Path:
@@ -463,20 +575,20 @@ def extract_audio_features(
 
 def infer_clip(
     numpy_module: Any,
-    tokenizer_class: Any,
+    tokenizer: Any,
+    prompt_tokens: PromptTokens,
     embed_tokens: Any,
     decoder_init_session: Any,
     decoder_step_session: Any,
     audio_features: Any,
     sample_count: int,
-    tokenizer_path: Path,
 ) -> dict[str, Any]:
     audio_token_count = int(audio_features.shape[1])
-    prompt_ids = build_prompt_ids(audio_token_count)
+    prompt_ids = build_prompt_ids(audio_token_count, prompt_tokens)
     sequence_length = len(prompt_ids)
     input_ids = numpy_module.asarray(prompt_ids, dtype=numpy_module.int64)[numpy_module.newaxis, :]
     position_ids = numpy_module.arange(sequence_length, dtype=numpy_module.int64)[numpy_module.newaxis, :]
-    audio_offset = numpy_module.asarray([AUDIO_OFFSET], dtype=numpy_module.int64)
+    audio_offset = numpy_module.asarray([prompt_tokens.audio_offset], dtype=numpy_module.int64)
     try:
         init_outputs = decoder_init_session.run(
             ["logits", "present_keys", "present_values"],
@@ -528,14 +640,13 @@ def infer_clip(
 
     try:
         generated_ids, ended_at_token_cap = greedy_generate(
-            initial_logits, next_logits, sample_count
+            initial_logits, next_logits, sample_count, prompt_tokens
         )
     except ValueError as error:
         raise ReferenceError(f"invalid greedy decoder logits: {error}") from error
 
     try:
-        tokenizer = tokenizer_class.from_file(str(tokenizer_path))
-        transcript_ids = transcript_token_ids(generated_ids)
+        transcript_ids = transcript_token_ids(generated_ids, prompt_tokens)
         known_ids = set(tokenizer.get_vocab(with_added_tokens=True).values())
         unknown_ids = [token_id for token_id in transcript_ids if token_id not in known_ids]
         if unknown_ids:
@@ -571,6 +682,14 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
         from transformers import WhisperFeatureExtractor
     except Exception as error:
         raise ReferenceError(f"could not import pinned inference dependencies: {error}") from error
+
+    tokenizer_path = resolved_model_directory / "tokenizer.json"
+    try:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    except Exception as error:
+        raise ReferenceError(f"could not load tokenizer {tokenizer_path}: {error}") from error
+    prompt_tokens = load_prompt_tokens(tokenizer)
+    platform_metadata = reference_platform()
 
     clip_inputs: list[tuple[tuple[str, str, int, str], Any, str]] = []
     for clip in EXPECTED_CLIPS:
@@ -609,13 +728,13 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
         )
         result = infer_clip(
             np,
-            Tokenizer,
+            tokenizer,
+            prompt_tokens,
             embed_tokens,
             decoder_init_session,
             decoder_step_session,
             audio_features,
             sample_count,
-            resolved_model_directory / "tokenizer.json",
         )
         clips.append(
             {
@@ -649,11 +768,13 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
             "source_urls": SOURCE_URLS,
             "python": sys.version.split()[0],
             "packages": packages,
+            "platform": platform_metadata["platform"],
+            "architecture": platform_metadata["architecture"],
             "intra_op_threads": 2,
             "inter_op_threads": 1,
             "cpu_memory_arena": True,
             "max_new_tokens": MAX_NEW_TOKENS,
-            "audio_offset": AUDIO_OFFSET,
+            "audio_offset": prompt_tokens.audio_offset,
         },
         "clips": clips,
     }
@@ -661,12 +782,31 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
         serialized = json.dumps(
             fixture, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2
         ) + "\n"
-        resolved_output_path.write_text(serialized, encoding="utf-8", newline="\n")
-    except (OSError, TypeError, ValueError) as error:
-        raise ReferenceError(f"could not write output JSON {resolved_output_path}: {error}") from error
+    except (TypeError, ValueError) as error:
+        raise ReferenceError(f"could not serialize output JSON: {error}") from error
+    try:
+        with resolved_output_path.open("r", encoding="utf-8", newline="") as existing_file:
+            existing_serialized = existing_file.read()
+    except FileNotFoundError:
+        existing_serialized = None
+    except (OSError, UnicodeError) as error:
+        raise ReferenceError(
+            f"could not read existing output JSON {resolved_output_path}: {error}"
+        ) from error
+
+    if existing_serialized == serialized:
+        output_status = "unchanged"
+    else:
+        try:
+            resolved_output_path.write_text(serialized, encoding="utf-8", newline="\n")
+        except OSError as error:
+            raise ReferenceError(
+                f"could not write output JSON {resolved_output_path}: {error}"
+            ) from error
+        output_status = "changed"
     for clip in clips:
         print(f"{clip['id']}: tokens={len(clip['generated_ids'])} text={clip['text']!r}")
-    print(resolved_output_path)
+    print(f"{output_status}: {resolved_output_path}")
     return resolved_output_path
 
 

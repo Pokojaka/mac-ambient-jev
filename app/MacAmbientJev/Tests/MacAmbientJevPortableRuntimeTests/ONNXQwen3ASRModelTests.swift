@@ -227,6 +227,12 @@ struct ONNXQwen3ASRModelTests {
             environment: ProcessInfo.processInfo.environment
         )
         let reference = try loadQwen3ASRTokenReference()
+        try validateQwen3ASRTokenReference(reference)
+        print(
+            "Qwen3-ASR token parity reference platform=\(reference.reference.platform) "
+                + "architecture=\(reference.reference.architecture) "
+                + "intra_op_threads=\(reference.reference.intraOpThreads)"
+        )
         #expect(configuration.size == .small)
         #expect(reference.schemaVersion == 1)
         #expect(reference.model.size == configuration.size.rawValue)
@@ -243,10 +249,15 @@ struct ONNXQwen3ASRModelTests {
         #expect(reference.model.files.sorted { $0.name < $1.name } == expectedFiles)
         #expect(reference.clips.map(\.id) == ["short", "long"])
 
+        let intraOpThreads = 2
+        print(
+            "Qwen3-ASR token parity run platform=\(qwen3ASRParityPlatform) "
+                + "architecture=\(qwen3ASRParityArchitecture) intra_op_threads=\(intraOpThreads)"
+        )
         let engine = ONNXQwen3ASREngine(
             modelDirectory: configuration.directory,
             size: configuration.size,
-            intraOpThreads: 2
+            intraOpThreads: intraOpThreads
         )
         do {
             try await engine.prepare()
@@ -257,6 +268,16 @@ struct ONNXQwen3ASRModelTests {
                 let transcription = try await engine.transcribeWithTokens(audio.input)
                 let expectedIDs = clip.generatedIds
                 let actualIDs = transcription.generatedIDs
+                let lastActualID = try #require(
+                    actualIDs.last,
+                    "decoding parity FAIL clip_id=\(clip.id) actual generated IDs must be nonempty"
+                )
+                let actualEndedAtTokenCap = actualIDs.count == reference.reference.maxNewTokens
+                    && !Qwen3ASRToken.stopTokens.contains(lastActualID)
+                #expect(
+                    actualEndedAtTokenCap == clip.endedAtTokenCap,
+                    "decoding parity FAIL clip_id=\(clip.id) expected_ended_at_token_cap=\(clip.endedAtTokenCap) actual_ended_at_token_cap=\(actualEndedAtTokenCap)"
+                )
                 if expectedIDs != actualIDs {
                     let sharedLength = min(expectedIDs.count, actualIDs.count)
                     let firstDifference: Int? = (0..<sharedLength).first {
@@ -277,8 +298,8 @@ struct ONNXQwen3ASRModelTests {
                 } else {
                     print("Qwen3-ASR token parity PASS clip_id=\(clip.id) tokens=\(actualIDs.count)")
                 }
-                #expect(actualIDs == expectedIDs)
-                #expect(transcription.text == clip.text)
+                #expect(actualIDs == expectedIDs, "decoding parity FAIL clip_id=\(clip.id) generated IDs differ")
+                #expect(transcription.text == clip.text, "decoding parity FAIL clip_id=\(clip.id) transcript differs")
             }
         } catch {
             await engine.unload()
@@ -393,6 +414,13 @@ struct Qwen3ASRResidentMemoryTests {
     #endif
 }
 
+struct Qwen3ASRTokenReferenceTests {
+    @Test
+    func validatesPromptAndMetadataWithoutModel() throws {
+        try validateQwen3ASRTokenReference(loadQwen3ASRTokenReference())
+    }
+}
+
 private struct Qwen3ASRTokenReference: Decodable {
     struct Model: Decodable {
         let size: String
@@ -407,6 +435,12 @@ private struct Qwen3ASRTokenReference: Decodable {
     }
 
     struct Reference: Decodable {
+        let platform: String
+        let architecture: String
+        let intraOpThreads: Int
+        let interOpThreads: Int
+        let audioOffset: Int64
+        let maxNewTokens: Int
         let packages: [String: String]
     }
 
@@ -414,6 +448,10 @@ private struct Qwen3ASRTokenReference: Decodable {
         let id: String
         let file: String
         let sampleCount: Int
+        let promptIds: [Int64]
+        let audioTokenCount: Int
+        let noRepeatNgramSize: Int?
+        let endedAtTokenCap: Bool
         let generatedIds: [Int64]
         let text: String
     }
@@ -435,6 +473,61 @@ private func loadQwen3ASRTokenReference() throws -> Qwen3ASRTokenReference {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     return try decoder.decode(Qwen3ASRTokenReference.self, from: Data(contentsOf: url))
+}
+
+private func validateQwen3ASRTokenReference(_ reference: Qwen3ASRTokenReference) throws {
+    #expect(reference.reference.platform == "Linux", "reference parity FAIL platform")
+    #expect(reference.reference.architecture == "aarch64", "reference parity FAIL architecture")
+    #expect(reference.reference.intraOpThreads == 2, "reference parity FAIL intra-op threads")
+    #expect(reference.reference.interOpThreads == 1, "reference parity FAIL inter-op threads")
+    #expect(reference.reference.audioOffset == Qwen3ASRPrompt.audioOffset, "reference parity FAIL audio offset")
+    #expect(reference.reference.maxNewTokens == 448, "reference parity FAIL max new tokens")
+    #expect(reference.clips.map(\.id) == ["short", "long"], "prompt parity FAIL clip IDs")
+
+    let expectedAudioTokenCounts = ["short": 43, "long": 240]
+    for clip in reference.clips {
+        let expectedAudioTokenCount = try #require(
+            expectedAudioTokenCounts[clip.id],
+            "prompt parity FAIL clip_id=\(clip.id) unknown reference clip"
+        )
+        #expect(
+            clip.audioTokenCount == expectedAudioTokenCount,
+            "prompt parity FAIL clip_id=\(clip.id) expected audio token count \(expectedAudioTokenCount)"
+        )
+        #expect(clip.audioTokenCount > 0, "prompt parity FAIL clip_id=\(clip.id) audio token count must be positive")
+        let prompt = try Qwen3ASRPrompt(audioTokenCount: clip.audioTokenCount)
+        _ = try #require(
+            clip.promptIds == prompt.tokenIDs,
+            "prompt parity FAIL clip_id=\(clip.id) prompt IDs differ"
+        )
+
+        let expectedNoRepeatNgramSize: Int? = clip.sampleCount > 15 * 16_000 ? 3 : nil
+        #expect(
+            clip.noRepeatNgramSize == expectedNoRepeatNgramSize,
+            "decoding parity FAIL clip_id=\(clip.id) no-repeat n-gram size"
+        )
+        #expect(!clip.endedAtTokenCap, "decoding parity FAIL clip_id=\(clip.id) reference ended at token cap")
+    }
+}
+
+private var qwen3ASRParityPlatform: String {
+    #if os(Windows)
+    "Windows"
+    #elseif os(Linux)
+    "Linux"
+    #else
+    #error("Qwen3-ASR token parity supports only Windows and Linux")
+    #endif
+}
+
+private var qwen3ASRParityArchitecture: String {
+    #if arch(arm64)
+    "aarch64"
+    #elseif arch(x86_64)
+    "x86_64"
+    #else
+    #error("Qwen3-ASR token parity supports only arm64 and x86_64")
+    #endif
 }
 
 private func fixtureURL(named filename: String) throws -> URL {

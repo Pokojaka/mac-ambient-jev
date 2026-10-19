@@ -355,6 +355,38 @@ struct Qwen3ASRGreedyDecoderTests {
     }
 
     @Test
+    func outOfRangeBannedTrigramIDThrows() {
+        let fake = model(
+            prefill: logits(winning: 1, count: 4),
+            steps: [
+                logits(winning: 2, count: 4),
+                logits(winning: 3, count: 4),
+                logits(winning: 1, count: 4),
+                logits(winning: 2, count: 4),
+                [0, 1, 2],
+            ],
+            cache: 0,
+            failPrefill: false,
+            failAtStep: nil
+        )
+        var receivedError: Qwen3ASRGenerationError?
+        do {
+            _ = try Qwen3ASRGreedyDecoder(model: fake).generate(
+                promptIDs: [9], audioOffset: 0, maxNewTokens: 6, noRepeatNgramSize: 3
+            )
+            Issue.record("Expected generation to reject an out-of-range banned trigram token")
+        } catch let error as Qwen3ASRGenerationError {
+            receivedError = error
+        } catch {
+            Issue.record("Unexpected generation error: \(error)")
+        }
+
+        #expect(receivedError == .outOfRangeBannedTokenID(3, logitsCount: 3))
+        #expect(receivedError?.description == "no-repeat trigram token id 3 is outside logits range 0..<3")
+        #expect(fake.steps.count == 5)
+    }
+
+    @Test
     func nilNgramOptionDoesNotMaskRepeatedThreeGram() throws {
         let fake = model(
             prefill: logits(winning: 1, count: 5),

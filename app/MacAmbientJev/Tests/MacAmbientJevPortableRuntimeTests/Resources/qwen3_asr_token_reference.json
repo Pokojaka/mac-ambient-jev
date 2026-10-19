@@ -463,6 +463,7 @@
     "size": "0.6b"
   },
   "reference": {
+    "architecture": "aarch64",
     "audio_offset": 9,
     "cpu_memory_arena": true,
     "implementation": "WhisperFeatureExtractor._np_extract_fbank_features with ONNX Runtime CPU encoder/decoder sessions and tokenizers.Tokenizer.decode",
@@ -493,6 +494,7 @@
       "typing_extensions": "4.16.0",
       "urllib3": "2.8.0"
     },
+    "platform": "Linux",
     "python": "3.12.3",
     "source_urls": [
       "https://raw.githubusercontent.com/huggingface/transformers/v4.57.1/src/transformers/models/whisper/feature_extraction_whisper.py",
