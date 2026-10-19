@@ -12,11 +12,26 @@ macOS で講義や会話を録音し、音声ファイルも読み込める文�
 
 仕様とモデルの更新手順は [発話文判定](docs/decision-engine.md)、実モデル parity テストは [検証と計測](docs/testing.md) を参照してください。
 
+## 配布版を使う
+
+ビルドせずに使う場合は、[Releases](https://github.com/Pokojaka/mac-ambient-jev/releases) からビルド済みの app を入手する。macOS 15 以降、Apple Silicon の Mac が必要。
+
+1. 最新リリースの `MacAmbientJev-<version>.zip` をダウンロードして展開する。
+2. 展開した MacAmbientJev.app を「アプリケーション」フォルダへ移す。
+3. app は Apple の公証を受けていない自己署名なので、初回はそのまま開くと macOS にブロックされる。一度ダブルクリックしてブロックの表示を閉じ、「システム設定」→「プライバシーとセキュリティ」の下部に出る「このまま開く」を押して開く。ターミナルを使う場合は次のコマンドで隔離属性を外してから開いてもよい。
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/MacAmbientJev.app
+   ```
+
+4. 録音を始めるとマイクの許可を、システム音声モードではシステム音声録音の許可を求められるので許可する。
+5. Qwen3-ASR と話者分離のモデルは初回利用時にダウンロードするため、最初の一回はインターネット接続が必要。発話文判定モデルは app に同梱されている。
+
 ## ビルドと起動
 
 macOS 15 以降、Apple Silicon、Swift 6 系が必要。依存パッケージと初回のモデル取得にはインターネット接続が必要。
 
-`scripts/build_app.sh` は発話文判定モデルを GitHub release（非公開リポジトリ Pokojaka/mac-ambient-jev）から取得するため、初回ビルドの前に GitHub CLI `gh` を入れ、このリポジトリを読めるアカウントで `gh auth login` しておく。取得した archive は SHA-256 を検証してからリポジトリの .build/clause-tagger に保存し、以降のビルドでは再取得せず毎回 SHA-256 を検証する。`gh` がない、取得に失敗した、または SHA-256 が一致しない場合はエラーで止まる。
+`scripts/build_app.sh` は発話文判定モデルを GitHub release（リポジトリ Pokojaka/mac-ambient-jev）から取得するため、初回ビルドの前に GitHub CLI `gh` を入れ、`gh auth login` しておく。取得した archive は SHA-256 を検証してからリポジトリの .build/clause-tagger に保存し、以降のビルドでは再取得せず毎回 SHA-256 を検証する。`gh` がない、取得に失敗した、または SHA-256 が一致しない場合はエラーで止まる。
 
 app bundle は「MacAmbientJev Local Signing」という名前の自己署名証明書で署名する。署名が毎回同じなので、マイクとシステム音声の許可が再ビルド後も引き継がれる。証明書がないと `scripts/build_app.sh` はエラーで止まる。証明書は最初に一度だけ作る。
 
