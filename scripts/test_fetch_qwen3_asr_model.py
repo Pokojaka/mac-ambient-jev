@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -246,7 +247,7 @@ class FetchTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 ValueError,
-                rf"{target}.*期待値 {expected_size}、実際 3",
+                rf"{re.escape(str(target))}.*期待値 {expected_size}、実際 3",
             ):
                 fetcher.fetch(size, self.root)
 
