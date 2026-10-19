@@ -56,6 +56,99 @@ private final class ScriptedQwen3ASRModel: Qwen3ASRDecoderModel {
     }
 }
 
+private final class Qwen3ASRCacheLifetimeEvents {
+    private(set) var releasedCacheIDs: [Int] = []
+
+    func recordRelease(of cacheID: Int) {
+        releasedCacheIDs.append(cacheID)
+    }
+}
+
+private final class TrackedQwen3ASRCache {
+    let id: Int
+    private let events: Qwen3ASRCacheLifetimeEvents
+
+    init(id: Int, events: Qwen3ASRCacheLifetimeEvents) {
+        self.id = id
+        self.events = events
+    }
+
+    deinit {
+        events.recordRelease(of: id)
+    }
+}
+
+private final class WeakTrackedQwen3ASRCache {
+    weak var value: TrackedQwen3ASRCache?
+
+    init(_ value: TrackedQwen3ASRCache) {
+        self.value = value
+    }
+}
+
+private final class TrackedCacheQwen3ASRModel: Qwen3ASRDecoderModel {
+    struct StepObservation: Equatable {
+        let inputCacheID: Int
+        let liveCacheIDs: [Int]
+        let releasedCacheIDs: [Int]
+    }
+
+    enum ModelError: Error, Equatable {
+        case stepFailure
+        case missingStepLogits
+    }
+
+    let prefillLogits: [Float]
+    let stepLogits: [[Float]]
+    let failAtStep: Int?
+
+    private let events = Qwen3ASRCacheLifetimeEvents()
+    private var weakCaches: [WeakTrackedQwen3ASRCache] = []
+    private var nextCacheID = 0
+    private(set) var stepObservations: [StepObservation] = []
+
+    init(prefillLogits: [Float], stepLogits: [[Float]], failAtStep: Int?) {
+        self.prefillLogits = prefillLogits
+        self.stepLogits = stepLogits
+        self.failAtStep = failAtStep
+    }
+
+    var liveCacheIDs: [Int] {
+        weakCaches.compactMap { $0.value?.id }
+    }
+
+    var releasedCacheIDs: [Int] {
+        events.releasedCacheIDs
+    }
+
+    func prefill(promptIDs: [Int64], audioOffset: Int64) throws -> (lastLogits: [Float], cache: TrackedQwen3ASRCache) {
+        (prefillLogits, makeCache())
+    }
+
+    func step(
+        tokenID: Int64,
+        position: Int64,
+        cache: TrackedQwen3ASRCache
+    ) throws -> (logits: [Float], cache: TrackedQwen3ASRCache) {
+        let stepIndex = stepObservations.count
+        stepObservations.append(StepObservation(
+            inputCacheID: cache.id,
+            liveCacheIDs: liveCacheIDs,
+            releasedCacheIDs: events.releasedCacheIDs
+        ))
+        if failAtStep == stepIndex { throw ModelError.stepFailure }
+        guard stepLogits.indices.contains(stepIndex) else { throw ModelError.missingStepLogits }
+        return (stepLogits[stepIndex], makeCache())
+    }
+
+    private func makeCache() -> TrackedQwen3ASRCache {
+        let cache = TrackedQwen3ASRCache(id: nextCacheID, events: events)
+        nextCacheID += 1
+        weakCaches.append(WeakTrackedQwen3ASRCache(cache))
+        return cache
+    }
+}
+
 struct Qwen3ASRGreedyDecoderTests {
     private func logits(winning tokenID: Int, count: Int) -> [Float] {
         var scores = [Float](repeating: 0, count: count)
@@ -310,6 +403,66 @@ struct Qwen3ASRGreedyDecoderTests {
             promptIDs: [7], audioOffset: 0, maxNewTokens: 4, noRepeatNgramSize: 3
         )
         #expect(result.generatedIDs == [1, 1, 1, 2])
+    }
+
+    @Test
+    func supersededReferenceCachesAreReleasedDuringAndAfterGeneration() throws {
+        let stopID = Qwen3ASRToken.imEnd
+        let stopModel = TrackedCacheQwen3ASRModel(
+            prefillLogits: logits(winning: 1, count: 4),
+            stepLogits: [logits(winning: 2, count: 4), logits(winning: Int(stopID), count: 151_646)],
+            failAtStep: nil
+        )
+        let stopResult = try Qwen3ASRGreedyDecoder(model: stopModel).generate(
+            promptIDs: [1], audioOffset: 0, maxNewTokens: 4, noRepeatNgramSize: nil
+        )
+        #expect(stopResult == Qwen3ASRGenerationResult(
+            generatedIDs: [1, 2, stopID], end: .stopToken(stopID)
+        ))
+        #expect(stopModel.stepObservations == [
+            .init(inputCacheID: 0, liveCacheIDs: [0], releasedCacheIDs: []),
+            .init(inputCacheID: 1, liveCacheIDs: [1], releasedCacheIDs: [0]),
+        ])
+        #expect(stopModel.liveCacheIDs.isEmpty)
+        #expect(stopModel.releasedCacheIDs == [0, 1, 2])
+
+        let capModel = TrackedCacheQwen3ASRModel(
+            prefillLogits: logits(winning: 1, count: 5),
+            stepLogits: [
+                logits(winning: 2, count: 5),
+                logits(winning: 3, count: 5),
+                logits(winning: 4, count: 5),
+            ],
+            failAtStep: nil
+        )
+        let capResult = try Qwen3ASRGreedyDecoder(model: capModel).generate(
+            promptIDs: [1], audioOffset: 0, maxNewTokens: 4, noRepeatNgramSize: nil
+        )
+        #expect(capResult == Qwen3ASRGenerationResult(generatedIDs: [1, 2, 3, 4], end: .tokenCap))
+        #expect(capModel.stepObservations == [
+            .init(inputCacheID: 0, liveCacheIDs: [0], releasedCacheIDs: []),
+            .init(inputCacheID: 1, liveCacheIDs: [1], releasedCacheIDs: [0]),
+            .init(inputCacheID: 2, liveCacheIDs: [2], releasedCacheIDs: [0, 1]),
+        ])
+        #expect(capModel.liveCacheIDs.isEmpty)
+        #expect(capModel.releasedCacheIDs == [0, 1, 2, 3])
+
+        let failingModel = TrackedCacheQwen3ASRModel(
+            prefillLogits: logits(winning: 1, count: 4),
+            stepLogits: [logits(winning: 2, count: 4)],
+            failAtStep: 1
+        )
+        #expect(throws: TrackedCacheQwen3ASRModel.ModelError.stepFailure) {
+            try Qwen3ASRGreedyDecoder(model: failingModel).generate(
+                promptIDs: [1], audioOffset: 0, maxNewTokens: 4, noRepeatNgramSize: nil
+            )
+        }
+        #expect(failingModel.stepObservations == [
+            .init(inputCacheID: 0, liveCacheIDs: [0], releasedCacheIDs: []),
+            .init(inputCacheID: 1, liveCacheIDs: [1], releasedCacheIDs: [0]),
+        ])
+        #expect(failingModel.liveCacheIDs.isEmpty)
+        #expect(failingModel.releasedCacheIDs == [0, 1])
     }
 
     @Test

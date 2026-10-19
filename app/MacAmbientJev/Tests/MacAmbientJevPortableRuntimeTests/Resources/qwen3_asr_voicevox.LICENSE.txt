@@ -1,0 +1,41 @@
+VOICEVOX 音声テスト fixture — 利用条件・クレジット・生成元
+
+対象ファイル
+- qwen3_asr_voicevox_short.wav
+- qwen3_asr_voicevox_long.wav
+
+クレジット
+VOICEVOX:ずんだもん
+
+この2ファイルは、VOICEVOX:ずんだもんの音声合成出力を収録した ASR 用テスト fixture です。音声の利用・再配布には上記クレジットを明記し、以下の利用規約および規約上の義務を守ってください。再配布する場合は、この注意書きと規約へのリンクを音声ファイルとともに保持し、受領者にも同じ条件・義務が適用されることを伝えてください。
+
+適用される規約
+- VOICEVOX 利用規約: https://voicevox.hiroshiba.jp/term/
+  商用・非商用で利用できます。出力音声にもライブラリの利用規約が適用され、出力を利用・再配布する人はその条件と義務を守る必要があります。
+- 東北ずん子・ずんだもんプロジェクト「音源利用ガイドライン」音源利用規約（VOICEVOX の項、第1〜3項）: https://zunko.jp/con_ongen_kiyaku.html
+  共通の音源利用規約に従い、クレジットを表示した商用・非商用利用が認められています。この中立的な ASR テスト fixture としての音声の再配布は、許諾された音源の利用として扱います。この配布物にキャラクター画像は含まれません。
+- VOICEVOX 音声モデル・音声ライブラリ利用規約: https://raw.githubusercontent.com/VOICEVOX/voicevox_vvm/main/TERMS.txt
+  ずんだもんの音声出力について、クレジットを表示した商用・非商用利用が認められることを確認する規約です。
+
+共通の音源利用規約が禁じる用途（政治・宗教・選挙等のキャンペーンでの利用、特定の政治的・宗教的立場や個人・団体への攻撃または支持を示す利用、誤情報の発信、情報商材での利用、成人向け事業での利用、反社会的勢力・行為に関わる利用等）には使用できません。規約本文に追加条件や詳細がある場合は、リンク先の現行の正式な規約がこの要約に優先します。
+
+権利・ライセンスの範囲
+この注意書きは上記2つの WAV 出力にだけ適用されます。生成音声を本リポジトリのソフトウェアライセンスまたは CC0 で再許諾するものではありません。また、VOICEVOX ソフトウェア、音声ライブラリ、モデル、その他のソフトウェアやモデルの再配布を意味せず、それらへのライセンス付与でもありません。OSI 準拠の無制限なライセンスを主張するものではありません。
+
+生成元・再現情報
+- 生成イメージ: voicevox/voicevox_engine@sha256:52bfd61345fe6896a3d0014e0efd1931f6d2f91f501f3c27181e7bce05b47d68
+  CPU linux/arm64。タグ cpu-0.25.2 をこの digest に解決して使用。
+- Engine `/version`: 0.25.2。
+- `/speakers` の library version: 0.16.0。
+- 話者 UUID: 388f246b-8c41-4ac1-8e2d-5d79f3ff56d9。
+- 話者・スタイル: ずんだもん／ノーマル（style id 3）。
+- 入力コーパス: `tools/corpora/voicevox-ja-core-v1.json`。
+- short: `general-001` — 「今日は音声認識の動作を確認します。」
+- long: `long-001`、`statistics-001`、`question-001` の順に連結 — 「通信相手を認証したあと、セッション鍵を共有し、その鍵を使って以降の通信内容を暗号化する流れを考えます。今日の講義ではベイズ推定について説明します。この場合、公開鍵はどこで配布されるのでしょうか。」
+- 合成 query: speed 1、pitch 0、intonation 1、volume 1、pre/post phoneme length 0.1、stereo false。
+- 生成スクリプト `scripts/generate_qwen3_asr_fixtures.py` は `tools/linux-audio/common/voicevox_cli.py` を再利用。合成された mono PCM16 24 kHz 音声を、整数演算の線形サンプリングレート変換（24 kHz→16 kHz、端点クランプ、ties-to-even 丸め、出力フレーム数は ceil、パディングなし）で mono PCM16 16 kHz に変換。
+- 同じ設定で2回生成した出力はビット単位で一致。
+
+ファイル情報（最終 WAV）
+- short: 52,907 samples、3.3066875 秒、105,858 bytes、SHA-256 `2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9`
+- long: 295,424 samples、18.464 秒、590,892 bytes、SHA-256 `d50f7f2a1fe9665279689e53297772aeb52c43d9068c82ab21b21fa62cac78b2`

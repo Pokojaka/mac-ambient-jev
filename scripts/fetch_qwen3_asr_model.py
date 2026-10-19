@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import stat
 import sys
 from pathlib import Path
@@ -7,32 +8,58 @@ from pathlib import Path
 import pinned_download
 
 
+MODEL_METADATA = json.loads(
+    (
+        Path(__file__).resolve().parent.parent
+        / "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json"
+    ).read_text(encoding="utf-8")
+)
+FILE_ROLES = (
+    "encoder",
+    "decoder_init",
+    "decoder_step",
+    "decoder_weights",
+    "embed_tokens",
+    "tokenizer",
+)
+
+
+def files_by_role(metadata: dict) -> dict[str, dict[str, tuple[str, int, str]]]:
+    files: dict[str, dict[str, tuple[str, int, str]]] = {}
+    supported_roles = set(FILE_ROLES)
+    for size, model in metadata.items():
+        role_files: dict[str, tuple[str, int, str]] = {}
+        for file in model["files"]:
+            if "role" not in file:
+                raise ValueError(f"モデルサイズ {size} のファイルに role がありません")
+            role = file["role"]
+            if not isinstance(role, str):
+                raise ValueError(
+                    f"モデルサイズ {size} の role は文字列である必要があります: {role!r}"
+                )
+            if role not in supported_roles:
+                raise ValueError(f"モデルサイズ {size} の未対応 role です: {role}")
+            if role in role_files:
+                raise ValueError(f"モデルサイズ {size} の role が重複しています: {role}")
+            role_files[role] = (file["name"], file["byteCount"], file["sha256"])
+
+        missing_roles = [role for role in FILE_ROLES if role not in role_files]
+        if missing_roles:
+            raise ValueError(
+                f"モデルサイズ {size} に必要な role がありません: "
+                f"{', '.join(missing_roles)}"
+            )
+        files[size] = {role: role_files[role] for role in FILE_ROLES}
+    return files
+
+
 REPOSITORIES: dict[str, str] = {
-    "0.6b": "andrewleech/qwen3-asr-0.6b-onnx",
-    "1.7b": "andrewleech/qwen3-asr-1.7b-onnx",
+    size: model["repository"] for size, model in MODEL_METADATA.items()
 }
 COMMITS: dict[str, str] = {
-    "0.6b": "4fc24a1402e74db89c4d2ef256875e71680128c4",
-    "1.7b": "df916193ac67e59347769891a21e10d81d12acdd",
+    size: model["commit"] for size, model in MODEL_METADATA.items()
 }
-FILES: dict[str, tuple[tuple[str, int, str], ...]] = {
-    "0.6b": (
-        ("encoder.onnx", 745762694, "3c027f880f677615de85e1f6934906e1d5d77624b724096d33accef99c753eed"),
-        ("decoder_init.int4.onnx", 355390, "6d54633bbb9e6b1ecf372f218d04adb3bf6f2bfc442ce55c988526d532896faa"),
-        ("decoder_step.int4.onnx", 354888, "7eaa4f31d5eb6ae2937ff45222c32f692f2d5ac29b46cbae9046da332a9f317d"),
-        ("decoder_weights.int4.data", 962460672, "d68cd1c0695a7ba42651d06b1bc1158e2e58af5f9adbb6dba874fbbb8a4f22cf"),
-        ("embed_tokens.bin", 311164928, "e80150119fa5f7e56e85aed64c3a02d5c78eb7a37cfdcb973d0987316f15bee2"),
-        ("tokenizer.json", 11429377, "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"),
-    ),
-    "1.7b": (
-        ("encoder.onnx", 1270241779, "c19ff8d702707693877a509ba1867472b0ad964593b93751091891a143edffec"),
-        ("decoder_init.int4.onnx", 356165, "c638585ada629b3cf65ce9cb068b7b980fccc9454a7f05e2333b8813730c1999"),
-        ("decoder_step.int4.onnx", 355662, "fa138c025c26f6559e12be51cfbba5204a0b6993a1f3bb1177f80a0a65873bb5"),
-        ("decoder_weights.int4.data", 2226321408, "3f8d8fb695bcffc20ce8d8e823471e011404420785adf7678aac31057ef67333"),
-        ("embed_tokens.bin", 622329856, "1489075dbd08fcd6b87bc69c5feca278014d29fa5693bd4aa61e47c1a3a160d4"),
-        ("tokenizer.json", 11429377, "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"),
-    ),
-}
+FILES: dict[str, dict[str, tuple[str, int, str]]] = files_by_role(MODEL_METADATA)
 
 
 def validate_destination(destination: Path) -> Path:
@@ -56,7 +83,8 @@ def fetch(size: str, destination: Path) -> Path:
         canonical_destination, canonical_destination / model_name
     )
 
-    for filename, expected_size, sha256 in FILES[size]:
+    for role in FILE_ROLES:
+        filename, expected_size, sha256 = FILES[size][role]
         url = (
             f"https://huggingface.co/{REPOSITORIES[size]}/resolve/"
             f"{COMMITS[size]}/{filename}"

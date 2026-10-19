@@ -12,6 +12,23 @@ public enum ONNXTensor: Sendable, Equatable {
     case int64(shape: [Int64], values: [Int64])
 }
 
+public enum ONNXTensorElementType: Sendable, Equatable {
+    case float32
+    case int64
+}
+
+public struct ONNXTensorMetadata: Sendable, Equatable {
+    public let name: String
+    public let elementType: ONNXTensorElementType
+    public let shape: [Int64]
+
+    public init(name: String, elementType: ONNXTensorElementType, shape: [Int64]) {
+        self.name = name
+        self.elementType = elementType
+        self.shape = shape
+    }
+}
+
 func checkStatus(
     _ status: OpaquePointer?,
     api: UnsafePointer<OrtApi>,
@@ -169,6 +186,144 @@ public final class ONNXSession {
         environment.api.pointee.ReleaseSession!(session)
     }
 
+    public func inputMetadata() throws -> [ONNXTensorMetadata] {
+        try metadata(direction: .input)
+    }
+
+    public func outputMetadata() throws -> [ONNXTensorMetadata] {
+        try metadata(direction: .output)
+    }
+
+    private func metadata(direction: ONNXMetadataDirection) throws -> [ONNXTensorMetadata] {
+        let api = environment.api
+        var allocator: UnsafeMutablePointer<OrtAllocator>?
+        try checkStatus(
+            api.pointee.GetAllocatorWithDefaultOptions!(&allocator),
+            api: api,
+            context: "ONNX Runtimeアロケーターの取得に失敗しました"
+        )
+        guard let allocator else {
+            throw ONNXRuntimeError(message: "ONNX Runtimeアロケーターが返されませんでした。")
+        }
+
+        var count = 0
+        let countStatus: OpaquePointer?
+        switch direction {
+        case .input:
+            countStatus = api.pointee.SessionGetInputCount!(session, &count)
+        case .output:
+            countStatus = api.pointee.SessionGetOutputCount!(session, &count)
+        }
+        try checkStatus(
+            countStatus,
+            api: api,
+            context: "ONNX Runtimeの\(direction.label)数の取得に失敗しました"
+        )
+
+        var metadata: [ONNXTensorMetadata] = []
+        metadata.reserveCapacity(count)
+        for index in 0..<count {
+            var allocatedName: UnsafeMutablePointer<CChar>?
+            let nameStatus: OpaquePointer?
+            switch direction {
+            case .input:
+                nameStatus = api.pointee.SessionGetInputName!(session, index, allocator, &allocatedName)
+            case .output:
+                nameStatus = api.pointee.SessionGetOutputName!(session, index, allocator, &allocatedName)
+            }
+            let name: String = try {
+                defer {
+                    if let allocatedName {
+                        allocator.pointee.Free!(allocator, allocatedName)
+                    }
+                }
+                try checkStatus(
+                    nameStatus,
+                    api: api,
+                    context: "ONNX Runtimeの\(direction.label)名の取得に失敗しました"
+                )
+                guard let allocatedName else {
+                    throw ONNXRuntimeError(
+                        message: "ONNX Runtimeの\(direction.label)名が返されませんでした。"
+                    )
+                }
+                return String(cString: allocatedName)
+            }()
+
+            var typeInfo: OpaquePointer?
+            let typeInfoStatus: OpaquePointer?
+            switch direction {
+            case .input:
+                typeInfoStatus = api.pointee.SessionGetInputTypeInfo!(session, index, &typeInfo)
+            case .output:
+                typeInfoStatus = api.pointee.SessionGetOutputTypeInfo!(session, index, &typeInfo)
+            }
+            defer {
+                if let typeInfo {
+                    api.pointee.ReleaseTypeInfo!(typeInfo)
+                }
+            }
+            try checkStatus(
+                typeInfoStatus,
+                api: api,
+                context: "ONNX Runtimeの\(direction.label) \(name) の型情報取得に失敗しました"
+            )
+            guard let typeInfo else {
+                throw ONNXRuntimeError(
+                    message: "ONNX Runtimeの\(direction.label) \(name) の型情報が返されませんでした。"
+                )
+            }
+
+            var tensorInfo: OpaquePointer?
+            try checkStatus(
+                api.pointee.CastTypeInfoToTensorInfo!(typeInfo, &tensorInfo),
+                api: api,
+                context: "ONNX Runtimeの\(direction.label) \(name) のテンソル型情報取得に失敗しました"
+            )
+            guard let tensorInfo else {
+                throw ONNXRuntimeError(
+                    message: "ONNX Runtimeの\(direction.label) \(name) はテンソルではありません。"
+                )
+            }
+
+            var nativeElementType = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED
+            try checkStatus(
+                api.pointee.GetTensorElementType!(tensorInfo, &nativeElementType),
+                api: api,
+                context: "ONNX Runtimeの\(direction.label) \(name) のテンソル要素型取得に失敗しました"
+            )
+            let elementType: ONNXTensorElementType
+            switch nativeElementType {
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+                elementType = .float32
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+                elementType = .int64
+            default:
+                throw ONNXRuntimeError(
+                    message: "ONNX Runtimeの\(direction.label) \(name) はサポートされないテンソル要素型です: \(Int32(nativeElementType.rawValue))。"
+                )
+            }
+
+            var dimensionCount = 0
+            try checkStatus(
+                api.pointee.GetDimensionsCount!(tensorInfo, &dimensionCount),
+                api: api,
+                context: "ONNX Runtimeの\(direction.label) \(name) の次元数取得に失敗しました"
+            )
+            var shape = [Int64](repeating: 0, count: dimensionCount)
+            let dimensionsStatus = shape.withUnsafeMutableBufferPointer { dimensions in
+                api.pointee.GetDimensions!(tensorInfo, dimensions.baseAddress, dimensions.count)
+            }
+            try checkStatus(
+                dimensionsStatus,
+                api: api,
+                context: "ONNX Runtimeの\(direction.label) \(name) の形状取得に失敗しました"
+            )
+            metadata.append(ONNXTensorMetadata(name: name, elementType: elementType, shape: shape))
+        }
+        return metadata
+    }
+
     /// Runs the model on copies of `inputs` and copies every requested output back.
     /// Use `runValues` to keep large intermediate tensors inside ONNX Runtime.
     public func run(
@@ -281,6 +436,18 @@ public final class ONNXSession {
             outputValues[index] = nil
         }
         return results
+    }
+}
+
+private enum ONNXMetadataDirection {
+    case input
+    case output
+
+    var label: String {
+        switch self {
+        case .input: "入力"
+        case .output: "出力"
+        }
     }
 }
 

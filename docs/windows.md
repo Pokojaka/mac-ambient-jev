@@ -1,12 +1,12 @@
 # Windows の共通コア
 
-Windows では Swift 6.2 で共通 Core / Pipeline、WindowsSupport、ONNX、PortableRuntime、評価 CLI 3 本と Core / Pipeline / WindowsSupport / ONNX / PortableRuntime のテストをビルド・実行できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux では共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、評価 CLI 3 本と Core / Pipeline / ONNX / PortableRuntime のテストをビルド・実行します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。WindowsSupport は WAV / FLAC / MP3 / M4A / AAC の streaming import と canonical timeline 生成 API を提供しますが、これは Windows の録音・capture や GUI・engine を含む完全な import / finalization pipeline が実装済みであることを意味しません。録音・capture、ASR、話者分離、発話文判定を統合する Windows processing engine、GUI、インストーラーは実行対象に含まれません。PortableRuntime は Silero VAD による確定処理用の区間検出とライブ VAD を提供しますが（[Silero VAD の区間検出](#silero-vad-の区間検出)）、これらの処理 pipeline には接続されていません。macOS のアプリは Apple Silicon と macOS 15 以降で動作します。
+Windows では Swift 6.2 で共通 Core / Pipeline、WindowsSupport、ONNX、PortableRuntime、評価 CLI 3 本と Core / Pipeline / WindowsSupport / ONNX / PortableRuntime のテストをビルド・実行できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux では共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、評価 CLI 3 本と Core / Pipeline / ONNX / PortableRuntime のテストをビルド・実行します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。WindowsSupport は WAV / FLAC / MP3 / M4A / AAC の streaming import と canonical timeline 生成 API を提供しますが、これは Windows の録音・capture や GUI・engine を含む完全な import / finalization pipeline が実装済みであることを意味しません。Windows の録音・capture、GUI、インストーラーはありません。PortableRuntime の ONNX Qwen3-ASR engine は実装されていますが、Pipeline / CLI の処理経路には接続されていません。PortableRuntime は Silero VAD による確定処理用の区間検出とライブ VAD を提供しますが（[Silero VAD の区間検出](#silero-vad-の区間検出)）、これらの処理 pipeline には接続されていません。macOS のアプリは Apple Silicon と macOS 15 以降で動作します。
 
 ## ONNX Runtime
 
 Windows / Linux の ONNX 実行には Microsoft ONNX Runtime の固定版 1.31.0 を使います（[公式 v1.31.0 release](https://github.com/microsoft/onnxruntime/releases/tag/v1.31.0)、[C API](https://onnxruntime.ai/docs/get-started/with-c.html)、[OrtApi](https://onnxruntime.ai/docs/api/c/struct_ort_api.html)）。[`CONNXRuntime`](../app/MacAmbientJev/Sources/CONNXRuntime/module.modulemap) は取得した ONNX Runtime C header を読み込む `systemLibrary` module です。[`MacAmbientJevONNX`](../app/MacAmbientJev/Sources/MacAmbientJevONNX/ONNXSession.swift) はこの C module だけに直接依存し、[`MacAmbientJevONNXTests`](../app/MacAmbientJev/Tests/MacAmbientJevONNXTests/ONNXSessionTests.swift) は Windows / Linux のみで定義します。macOS は ONNX target を定義せず、ONNX Runtime SDK を取得しません。
 
-公開 API は `ONNXEnvironment(loggingID:)`、`ONNXSession(environment:modelURL:intraOpThreads:)`、`ONNXTensor`、`ONNXValue`、`ONNXRuntimeError` です。すべての引数が必須です。呼び出し側が `ONNXEnvironment` を1つ生成してプロセススコープで保持し、すべての session に共有します。ORT environment はプロセス全体で使うためのもので、wrapper は global singleton を提供しません。`ONNXEnvironment` は環境作成前に読み込まれた ONNX Runtime の版が固定 1.31.0 と一致することを確認し、一致しない場合は実際の版を含む日本語エラーを返して環境を作成しません（異なるシステム DLL は使用できません）。`ONNXEnvironment` は OrtEnv を所有して解放します。ORT は OrtEnv を複数 thread から共有できるとしており、wrapper は作成後に変更しないため `@unchecked Sendable` で、固定版は `ONNXEnvironment.runtimeVersion` として公開します。`ONNXSession` は environment を強参照で保持し、自身の native session だけを所有・解放します。モデル URL は明示し、モデルや SDK の path を環境変数・config から読み取る override はありません。`intraOpThreads` は各 session で選ぶ正の Int32 表現可能な Int で、全 session 共通の値ではありません。inter-op thread 数は 1 固定です。`ONNXTensor` は `.float32(shape:values:)` と `.int64(shape:values:)` のみを持ち、値はそれぞれ `[Float]` と `[Int64]` です。shape `[]` は値1個の scalar、0 extent を含む shape は値0個です。負の次元、要素数の不一致、要素数または byte 数の overflow は `ONNXValue` の作成時に検証します。`run(inputs:outputNames:)` は名前付き複数入力を受け取り、指定した順序の出力テンソルを返します（入力は `ONNXValue` へコピーして `runValues` に渡し、出力は `tensor()` でコピーして返す薄い層です）。出力で読み取れる要素型は float32 と int64 だけで、ほかの型は `ONNXRuntimeError` になります。空または NUL を含む入出力名、重複する入力名、空の出力一覧も拒否します。`ONNXValue` は float32 / int64 の ORT 値（OrtValue）を所有する不透明なハンドルで、deinit で解放します。`ONNXValue(environment:tensor:)` が `ONNXTensor` から作る（コピー1回）ほか、`runValues(inputs:outputNames:)` が名前付き `ONNXValue` を受け取って出力を `ONNXValue` で返します。`runValues` は入出力のテンソルデータを Swift 側へコピーしないため、ある step の出力（例: Qwen3-ASR decoder の `present_keys` / `present_values`）を次の step の入力（`past_keys` / `past_values`）へそのまま渡せ、数百 MB の KV cache が Swift 配列を往復しません。`shape` は作成時に取得済みの値を返す安価なアクセサです。`tensor()` は全体を `ONNXTensor` にコピーし、`float32LastRow()` は形状 `[1, S, V]`（`S >= 1`）の float32 テンソルの最終行だけを `[Float]`（長さ `V`）にコピーします（`[1, S, 151936]` の logits 全体をコピーしないため）。`ONNXValue` は float32 と int64 のテンソルだけを表し、出力がほかの型の場合は `runValues` が `ONNXRuntimeError` を返します。`float32LastRow()` は float32 以外または形状が `[1, S, V]`（`S >= 1`）でない値を `ONNXRuntimeError` で拒否します。別の `ONNXEnvironment` で作った値を session に渡すことも拒否します。`ONNXValue` は作成後に変更せず ORT は入力値を読み取るだけなので thread 間で受け渡せますが、1つの値を同時に複数の session run で使いません。入出力名と ORT status のエラーは `run` と同じ `ONNXRuntimeError` です。ファイル URL の native filesystem representation を使い、Windows では native UTF-8 path を UTF-16 に変換して ORT に渡します（`URL.path` は使いません）。CPU provider のみを使い telemetry を無効にし、fallback はありません。ORT status は日本語の処理状況と ORT のメッセージを含む `ONNXRuntimeError` として返します。
+公開 API は `ONNXEnvironment(loggingID:)`、`ONNXSession(environment:modelURL:intraOpThreads:)`、`ONNXTensor`、`ONNXTensorElementType`、`ONNXTensorMetadata`、`ONNXValue`、`ONNXRuntimeError` です。すべての引数が必須です。`ONNXSession.inputMetadata()` / `outputMetadata()` は graph の順序で name・element type・shape を返し、動的次元は `-1` です。metadata と実行値で扱う要素型は float32 / int64 に限られ、非 tensor または未対応型は `ONNXRuntimeError` になります。raw `ONNXSession` の呼び出し側が `ONNXEnvironment` を生成・保持して session 間で共有します。ORT environment は process-wide に共有でき、wrapper は global singleton を提供しません。ONNX Qwen3-ASR engine は独自の environment を生成し、3 session に共有します。`ONNXEnvironment` は環境作成前に読み込まれた ONNX Runtime の版が固定 1.31.0 と一致することを確認し、一致しない場合は実際の版を含む日本語エラーを返して環境を作成しません（異なるシステム DLL は使用できません）。`ONNXEnvironment` は OrtEnv を所有して解放します。ORT は OrtEnv を複数 thread から共有できるとしており、wrapper は作成後に変更しないため `@unchecked Sendable` で、固定版は `ONNXEnvironment.runtimeVersion` として公開します。`ONNXSession` は environment を強参照で保持し、自身の native session だけを所有・解放します。モデル URL は明示し、モデルや SDK の path を環境変数・config から読み取る override はありません。`intraOpThreads` は各 session で選ぶ正の Int32 表現可能な Int で、全 session 共通の値ではありません。inter-op thread 数は 1 固定です。`ONNXTensor` は `.float32(shape:values:)` と `.int64(shape:values:)` のみを持ち、値はそれぞれ `[Float]` と `[Int64]` です。shape `[]` は値1個の scalar、0 extent を含む shape は値0個です。負の次元、要素数の不一致、要素数または byte 数の overflow は `ONNXValue` の作成時に検証します。`run(inputs:outputNames:)` は名前付き複数入力を受け取り、指定した順序の出力テンソルを返します（入力は `ONNXValue` へコピーして `runValues` に渡し、出力は `tensor()` でコピーして返す薄い層です）。出力で読み取れる要素型は float32 と int64 だけで、ほかの型は `ONNXRuntimeError` になります。空または NUL を含む入出力名、重複する入力名、空の出力一覧も拒否します。`ONNXValue` は float32 / int64 の ORT 値（OrtValue）を所有する不透明なハンドルで、deinit で解放します。`ONNXValue(environment:tensor:)` が `ONNXTensor` から作る（コピー1回）ほか、`runValues(inputs:outputNames:)` が名前付き `ONNXValue` を受け取って出力を `ONNXValue` で返します。`runValues` は入出力のテンソルデータを Swift 側へコピーしないため、ある step の出力（例: Qwen3-ASR decoder の `present_keys` / `present_values`）を次の step の入力（`past_keys` / `past_values`）へそのまま渡せ、数百 MB の KV cache が Swift 配列を往復しません。`shape` は作成時に取得済みの値を返す安価なアクセサです。`tensor()` は全体を `ONNXTensor` にコピーし、`float32LastRow()` は形状 `[1, S, V]`（`S >= 1`）の float32 テンソルの最終行だけを `[Float]`（長さ `V`）にコピーします（`[1, S, 151936]` の logits 全体をコピーしないため）。`ONNXValue` は float32 と int64 のテンソルだけを表し、出力がほかの型の場合は `runValues` が `ONNXRuntimeError` を返します。`float32LastRow()` は float32 以外または形状が `[1, S, V]`（`S >= 1`）でない値を `ONNXRuntimeError` で拒否します。別の `ONNXEnvironment` で作った値を session に渡すことも拒否します。`ONNXValue` は作成後に変更せず ORT は入力値を読み取るだけなので thread 間で受け渡せますが、1つの値を同時に複数の session run で使いません。入出力名と ORT status のエラーは `run` と同じ `ONNXRuntimeError` です。ファイル URL の native filesystem representation を使い、Windows では native UTF-8 path を UTF-16 に変換して ORT に渡します（`URL.path` は使いません）。CPU provider のみを使い telemetry を無効にし、fallback はありません。ORT status は日本語の処理状況と ORT のメッセージを含む `ONNXRuntimeError` として返します。
 
 ONNX のテストは [`affine.onnx`](../app/MacAmbientJev/Tests/MacAmbientJevONNXTests/Resources/affine.onnx) を用いて、名前付き型付きテンソル推論、`ONNXValue` 作成時の検証、environment / session の寿命とエラー処理、日本語・絵文字を含むパスを確認します（[テスト](../app/MacAmbientJev/Tests/MacAmbientJevONNXTests/ONNXSessionTests.swift)）。[`cache.onnx`](../app/MacAmbientJev/Tests/MacAmbientJevONNXTests/Resources/cache.onnx)（`past` に `step` を第2軸で連結した `present` と、int64 の `count` に 1 を足した `count_out`）は、出力 `ONNXValue` を次の run の入力へ渡す連鎖、最終行の読み出し、名前と形状の誤りのエラーを確認します（[テスト](../app/MacAmbientJev/Tests/MacAmbientJevONNXTests/ONNXValueTests.swift)）。両 fixture は [`generate_onnx_fixture.py`](../scripts/generate_onnx_fixture.py) が決定的に生成します。
 
@@ -210,15 +210,138 @@ python scripts/fetch_qwen3_asr_model.py 1.7b D:\Models\qwen3-asr-onnx
 
 モデル重みの保存先は `.build` cache ではなく、指定した外部 directory です。外部の永続保存先は worktree 間で共有できます。既存の [`fetch_qwen3_asr_tokenizer.py`](../scripts/fetch_qwen3_asr_tokenizer.py) は tokenizer のみを `.build/qwen3-asr-tokenizer/<commit>/` に保存します。
 
-成功時の stdout は取得したモデル directory の絶対パス1行だけです。終了コードは成功が `0`、引数・サイズ・保存先の不正が `2`、Python version、取得、integrity、OS の失敗が `1` です。[`test_fetch_qwen3_asr_model.py`](../scripts/test_fetch_qwen3_asr_model.py) はネットワーク上のモデル重みに依存しない offline self-test で、[`verify_portable.sh`](../scripts/verify_portable.sh) と [`test-windows.ps1`](../scripts/test-windows.ps1) から実行されます。これらの runner は full model weights を自動取得しません。この取得スクリプトと helper はモデル配布用であり、Qwen3-ASR engine の統合を意味しません。
+成功時の stdout は取得したモデル directory の絶対パス1行だけです。終了コードは成功が `0`、引数・サイズ・保存先の不正が `2`、Python version、取得、integrity、OS の失敗が `1` です。[`test_fetch_qwen3_asr_model.py`](../scripts/test_fetch_qwen3_asr_model.py) はネットワーク上のモデル重みに依存しない offline self-test で、[`verify_portable.sh`](../scripts/verify_portable.sh) と [`test-windows.ps1`](../scripts/test-windows.ps1) から実行されます。これらの runner は full model weights を自動取得しません。
 
 ### Qwen3-ASR の embedding と greedy 生成
 
-PortableRuntime には、実モデルを使わずにテストできる純粋 Swift の embedding・生成・text helper があります。これらは部品であり、Qwen3-ASR engine として統合されていません。`Qwen3ASREmbeddingTable(contentsOf:vocabSize:hiddenSize:)` は `embed_tokens.bin` を FP16 little-endian、row-major として読み、実際の語彙数 `151936` と hidden size `1024` / `2048` などを呼び出し側が明示します。ファイルサイズが `vocabSize * hiddenSize * 2` と完全一致することと token ID の範囲を検証し、immutable な `Foundation.Data` を `.alwaysMapped` で memory map し、[`row(_ id: Int64) throws -> [Float]`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Qwen3ASR/Qwen3ASREmbeddingTable.swift) で選択した行だけを Float32 に変換します。ファイル全体を Swift 配列へコピーしません（[Foundation 6.2 の Data 読み込み実装](https://github.com/swiftlang/swift-foundation/blob/swift-6.2-RELEASE/Sources/FoundationEssentials/Data/Data%2BReading.swift)）。
+PortableRuntime の純粋 Swift embedding・生成・text helper は、重みなしの unit test が可能で、下記 ONNX Qwen3-ASR engine からも使われます。`Qwen3ASREmbeddingTable(contentsOf:vocabSize:hiddenSize:)` は `embed_tokens.bin` を FP16 little-endian、row-major として読み、語彙数 `151936` と hidden size を呼び出し側が指定します。ファイルサイズが `vocabSize * hiddenSize * 2` と完全一致することと token ID の範囲を検証し、immutable な `Foundation.Data` を `.alwaysMapped` で memory map し、[`row(_ id: Int64) throws -> [Float]`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Qwen3ASR/Qwen3ASREmbeddingTable.swift) で選択した行だけを Float32 に変換します。ファイル全体を Swift 配列へコピーしません（[Foundation 6.2 の Data 読み込み実装](https://github.com/swiftlang/swift-foundation/blob/swift-6.2-RELEASE/Sources/FoundationEssentials/Data/Data%2BReading.swift)）。
 
-`Qwen3ASRDecoderModel` は associated type Cache と `prefill(promptIDs:audioOffset:)` / `step(tokenID:position:cache:)` を定義します。prefill は位置 `0..<S` を使う契約で、最初の step は `S`、以降は1ずつ増加します。不透明な cache は Swift 配列へ変換せず各 step に渡します。汎用の `Qwen3ASRGreedyDecoder(model:)` の `generate(promptIDs:audioOffset:maxNewTokens:noRepeatNgramSize:)` は生成 ID、終了理由 `.stopToken(id)` / `.tokenCap`、`endedAtTokenCap` を返します。全引数を明示し、token cap は正数、no-repeat n-gram は `nil` または `3` のみです。停止 ID `151645` / `151643` は結果に含め、その後の step は行いません。同点では小さい ID を選び、空または NaN を含む logits はエラーです。3-gram 抑制は prompt ではなく生成済み ID だけを対象にします。engine 側の cap `448` と、音声が15秒を超える場合に3-gram抑制を有効にする方針は呼び出し側の責務です（[speech-swift の対応処理](https://github.com/soniqo/speech-swift/blob/c4c2fabbe825a9290c19e2f45d54ca3eae96b003/Sources/Qwen3ASR/Qwen3ASR.swift#L1093-L1108)）。
+`Qwen3ASRDecoderModel` は associated type Cache と `prefill(promptIDs:audioOffset:)` / `step(tokenID:position:cache:)` を定義します。prefill は位置 `0..<S` を使う契約で、最初の step は `S`、以降は1ずつ増加します。不透明な cache は Swift 配列へ変換せず各 step に渡します。汎用の `Qwen3ASRGreedyDecoder(model:)` の `generate(promptIDs:audioOffset:maxNewTokens:noRepeatNgramSize:)` は生成 ID、終了理由 `.stopToken(id)` / `.tokenCap`、`endedAtTokenCap` を返します。全引数を明示し、token cap は正数、no-repeat n-gram は `nil` または `3` のみです。停止 ID `151645` / `151643` は結果に含め、その後の step は行いません。同点では小さい ID を選び、空または NaN を含む logits はエラーです。3-gram 抑制は prompt ではなく生成済み ID だけを対象にします。
 
-`transcript(generatedIDs:endedAtTokenCap:)` は既存の marker・stop token 除外・trim 規則を保ち、`endedAtTokenCap == true` の場合に限って、有効な不完全 trailing UTF-8 byte を取り除いてから厳密に decode します。それ以外の不正 UTF-8 はエラーです。`endedAtTokenCap == false` の場合と `decode(_:)` は常に厳密です。Mac は切れた byte を U+FFFD に置換しますが、ここでは cap 到達時に限り不完全末尾を除く点が異なります。[embedding tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASREmbeddingTableTests.swift) は合成 FP16、[greedy tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRGreedyDecoderTests.swift) は scripted logits を使い、モデル重みは不要です。既存の [token decoder tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRTokenDecoderTests.swift) も参照してください。
+`transcript(generatedIDs:endedAtTokenCap:)` は marker・stop token 除外・trim 規則を適用し、`endedAtTokenCap == true` の場合に限って、有効な不完全 trailing UTF-8 byte を取り除いてから厳密に decode します。それ以外の不正 UTF-8 はエラーです。`endedAtTokenCap == false` の場合と `decode(_:)` は常に厳密です。Mac は切れた byte を U+FFFD に置換しますが、PortableRuntime は cap 到達時に限り不完全末尾を除きます。[embedding tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASREmbeddingTableTests.swift) は合成 FP16、[greedy tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRGreedyDecoderTests.swift) は scripted logits を使い、モデル重みは不要です。[token decoder tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRTokenDecoderTests.swift) も参照してください。
+
+## Qwen3-ASR ONNX engine と実モデル test
+
+### ONNX Qwen3-ASR engine
+
+[`ONNXQwen3ASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXQwen3ASREngine.swift) は PortableRuntime の公開 `ASREngine` actor です。公開 initializer は `init(modelDirectory:size:intraOpThreads:)` で、モデル directory、size、各 ONNX session の intra-op thread 数をすべて明示します（default 引数はありません）。公開 `Qwen3ASRModelSize.small` の raw value は `0.6b`、hidden size は1024、`.large` の raw value は `1.7b`、hidden size は2048です。
+
+[`qwen3_asr_models.json`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) は Swift engine と [`fetch_qwen3_asr_model.py`](../scripts/fetch_qwen3_asr_model.py) が共有する唯一のモデル情報源です。2サイズそれぞれの Hugging Face repository、pinned commit、hidden size、6ファイル名・正確な byte 数・SHA-256 を定義し、各ファイルには `encoder`、`decoder_init`、`decoder_step`、`decoder_weights`、`embed_tokens`、`tokenizer` のいずれかを必須かつ一意な `role` として割り当てます。Swift engine と fetcher は配列順ではなく `role` でファイルを参照します。`role` の欠落、重複、未対応値、必須 role の不在は不正です。同梱 manifest の不正は Swift engine が package 設定の欠陥として `fatalError` にし、fetcher はネットワーク取得前に ValueError で失敗します。fetcher は同じ resource を読んで取得・hash 検証に使います。`prepare()` は外部 model directory と6つすべての通常ファイルについて readable であることと manifest の正確な byte 数を検証しますが、起動時に SHA-256 は計算しません。モデルファイルや directory の不備は `prepare()` が throw します。
+
+`prepare()` は engine 所有の `ONNXEnvironment`、encoder / decoder_init / decoder_step の3 session、memory-mapped embedding table、tokenizer を用意します。環境は3 session で共有され、raw `ONNXSession` を直接使う呼び出し側のように environment を渡す API ではありません。各 graph は session 作成後、次の session を作る前に、入力・出力の数と名前、float32 / int64 型、shape metadata を検証します。静的次元は完全一致し、動的次元は `-1` として扱います。dynamic batch 軸だけは metadata が `-1` または1であることを許容します。実行時の encoder `audio_features` は `[1, N, H]`、`N > 0`、`H` が選択モデルの hidden size（1024 / 2048）と一致することも検証します。
+
+推論ごとの mel 特徴量は encoder へ渡し、`audio_features` は `ONNXValue` のまま `decoder_init` に渡すため Swift 配列への出力コピーはありません。decoder の KV cache (`present_keys` / `present_values`) も ONNX Runtime 所有の `ONNXValue` として次の step の `past_keys` / `past_values` に渡し、Swift 経由で複製しません。logits は最後の sequence row だけを Swift 配列へ読み出します。各 step で置き換えられた cache は不要になり次第解放され、run の `ONNXValue` は各 transcription 内だけで使われます。sessions、embedding、tokenizer は準備後に共有されますが、音声特徴量や cache は run 間で共有されません。
+
+Actor は同時の `prepare()` 呼び出しで1つの準備 task を共有します。準備失敗は `.failed` 状態となり、後の `prepare()` で再試行できます。`unload()` は進行中 load の generation を取り消し、モデル資産を外して load task の終了を待ちます。並行する unload も同じ準備 task の終了を待ち、unload 中に呼んだ `prepare()` は cancellation error になります。
+
+`transcribe(_:)` はまず16 kHz以外の sample rate を拒否し、次に prepared 状態を確認し、その後に最小音声長を判定します。最小長は `ASRAudioInput.minimumDurationSeconds` の0.02秒（16 kHzで320 samples）で、これ未満の入力は推論せず空 text と `detectedLanguage == nil` を返します。認識言語は日本語固定で、戻り値の `detectedLanguage` は常に `nil` です。生成は最大448 token、停止 token ID `151645` / `151643` で終了し、音声が厳密に15秒を超える場合だけ生成済み token に対する3-gram抑制を有効にします。
+
+provenance は `engine = onnxruntime-qwen3-asr`、`model = <repository>@<commit>`、`version = onnxruntime-1.31.0` です。configuration は次の値です。
+
+| key | value |
+| --- | --- |
+| `language` | `ja` |
+| `minimum_input_seconds` | `0.02` |
+| `quantization` | `int4` |
+| `mel_variant` | `whisper-slaney-128-nfft400-hop160-reflect-global-log10` |
+| `max_new_tokens` | `448` |
+| `no_repeat_ngram` | `3 when input_seconds > 15; disabled otherwise` |
+
+### 実モデルを使う opt-in test
+
+[`ONNXQwen3ASRModelTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift) の実モデル推論は、`RUN_MODEL_TESTS` が文字列としてちょうど `1` の場合だけ有効です。それ以外の値や未設定では無効です。有効時は `QWEN3_ASR_ONNX_MODEL_DIRECTORY` と `QWEN3_ASR_ONNX_MODEL_SIZE` の両方が必須で、前者は絶対 path の既存 readable directory、後者は厳密に `0.6b` または `1.7b` でなければなりません。有効時に設定が欠落・不正なら skip せず test failure になります。[`Qwen3ASRModelTestConfigurationTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Qwen3ASRModelTestConfigurationTests.swift) はこの設定検証を確認します。以下のように各サイズで別々に実行します（release build は `-c release` を追加）。
+
+```bash
+export RUN_MODEL_TESTS=1
+export QWEN3_ASR_ONNX_MODEL_DIRECTORY="/absolute/path/to/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4"
+export QWEN3_ASR_ONNX_MODEL_SIZE=0.6b
+swift test --package-path app/MacAmbientJev --filter ONNXQwen3ASRModelTests
+
+export QWEN3_ASR_ONNX_MODEL_DIRECTORY="/absolute/path/to/models/qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd"
+export QWEN3_ASR_ONNX_MODEL_SIZE=1.7b
+swift test --package-path app/MacAmbientJev --filter ONNXQwen3ASRModelTests
+```
+
+```powershell
+$env:RUN_MODEL_TESTS = '1'
+$env:QWEN3_ASR_ONNX_MODEL_DIRECTORY = 'D:\Models\qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4'
+$env:QWEN3_ASR_ONNX_MODEL_SIZE = '0.6b'
+swift test --package-path app/MacAmbientJev --filter ONNXQwen3ASRModelTests
+
+$env:QWEN3_ASR_ONNX_MODEL_DIRECTORY = 'D:\Models\qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd'
+$env:QWEN3_ASR_ONNX_MODEL_SIZE = '1.7b'
+swift test --package-path app/MacAmbientJev --filter ONNXQwen3ASRModelTests
+```
+
+Linux Docker では model directory を read-only で mount できます。次の例は小サイズの固定 commit directory を mount し、container 内で ONNX Runtime SDK を取得して test を実行します。大サイズでは model path と size をそれぞれ `qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd` と `1.7b` に置き換えます。
+
+```bash
+docker run --rm \
+  -v "$PWD:/repo" \
+  -v "$PWD/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4:/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4:ro" \
+  -w /repo swift:6.2-noble bash -lc '
+    apt-get update -qq &&
+    apt-get install -y -qq python3 curl >/dev/null &&
+    python3 scripts/fetch_onnxruntime.py &&
+    RUN_MODEL_TESTS=1 \
+    QWEN3_ASR_ONNX_MODEL_DIRECTORY=/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4 \
+    QWEN3_ASR_ONNX_MODEL_SIZE=0.6b \
+    swift test --package-path app/MacAmbientJev --filter ONNXQwen3ASRModelTests
+  '
+```
+
+### 日本語音声 fixture
+
+実モデル test は [`qwen3_asr_voicevox_short.wav`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_short.wav) と [`qwen3_asr_voicevox_long.wav`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav) を使います。両方とも mono PCM16、16 kHz WAV です。参照文は合成時に渡したコーパス文そのもので、短い音声は `general-001`、長い音声は `long-001`、`statistics-001`、`question-001` をこの順に連結しています。
+
+| fixture | 参照文 | 長さ | samples | bytes | SHA-256 |
+| --- | --- | ---: | ---: | ---: | --- |
+| short | 今日は音声認識の動作を確認します。 | 3.3066875 秒 | 52,907 | 105,858 | `2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9` |
+| long | 通信相手を認証したあと、セッション鍵を共有し、その鍵を使って以降の通信内容を暗号化する流れを考えます。今日の講義ではベイズ推定について説明します。この場合、公開鍵はどこで配布されるのでしょうか。 | 18.464 秒 | 295,424 | 590,892 | `d50f7f2a1fe9665279689e53297772aeb52c43d9068c82ab21b21fa62cac78b2` |
+
+音声は VOICEVOX ENGINE の固定 image voicevox/voicevox_engine@sha256:52bfd61345fe6896a3d0014e0efd1931f6d2f91f501f3c27181e7bce05b47d68（CPU linux/arm64）で生成します。engine `/version` は 0.25.2（[0.25.2 release](https://github.com/VOICEVOX/voicevox_engine/releases/tag/0.25.2)、[README](https://raw.githubusercontent.com/VOICEVOX/voicevox_engine/0.25.2/README.md)）、speaker library version は 0.16.0、speaker UUID は `388f246b-8c41-4ac1-8e2d-5d79f3ff56d9`、話者・style は ずんだもん／ノーマル（style ID `3`）です。クレジットは `VOICEVOX:ずんだもん` です。生成器は engine version、speaker/style と `/audio_query` の値を検証し、不一致なら fallback せず失敗します。query は speed 1、pitch 0、intonation 1、volume 1、pre/post phoneme length 0.1、24 kHz、stereo false です。生成された 24 kHz mono PCM16 を整数演算の線形変換で16 kHzへ変換します。出力 frame 数は ceil、端点は clamp、丸めは ties-to-even で、padding はしません。同じ設定で2回生成した WAV は bit-identical です。
+
+[`qwen3_asr_voicevox.LICENSE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox.LICENSE.txt) はこの2つの音声に適用される利用条件と生成元を記録します。[VOICEVOX 利用規約](https://voicevox.hiroshiba.jp/term/)、[東北ずん子・ずんだもんプロジェクト音源利用規約](https://zunko.jp/con_ongen_kiyaku.html) および [VOICEVOX 音声モデル・音声ライブラリ利用規約](https://raw.githubusercontent.com/VOICEVOX/voicevox_vvm/main/TERMS.txt) に従い、クレジットを表示した商用・非商用利用が認められる音声を、中立的な test fixture として規約上の制限を保って配布しています。この音声はリポジトリの software license や CC0 で再許諾されるものではありません。再配布時は WAV とともにこの注意書きと規約へのリンクを保持し、`VOICEVOX:ずんだもん` のクレジットと適用条件を受領者にも伝えてください。VOICEVOX software、音声 library、model、画像は同梱・再配布しません。
+
+再生成には Python 3.12 以上、`curl`、Docker が必要です。repository root で固定 image を起動し、最大120回・2秒間隔で `/version` の readiness を確認してから [`generate_qwen3_asr_fixtures.py`](../scripts/generate_qwen3_asr_fixtures.py) を実行します。終了時は trap で固定 container 名を削除します。
+
+```bash
+set -eu
+docker run -d --platform linux/arm64 \
+  -p 127.0.0.1:50021:50021 \
+  --name qwen3-fixture-voicevox \
+  voicevox/voicevox_engine@sha256:52bfd61345fe6896a3d0014e0efd1931f6d2f91f501f3c27181e7bce05b47d68
+trap 'docker rm -f qwen3-fixture-voicevox >/dev/null 2>&1 || true' EXIT
+ready=0
+for attempt in {1..120}; do
+  if curl --fail --silent http://127.0.0.1:50021/version >/dev/null; then
+    ready=1
+    break
+  fi
+  if [ "$attempt" -lt 120 ]; then sleep 2; fi
+done
+test "$ready" -eq 1
+python3 -B scripts/generate_qwen3_asr_fixtures.py --base-url http://127.0.0.1:50021
+```
+
+生成器はコーパス ID の不足・重複、engine / style の不一致、query の値の不一致、入力 WAV の形式・長さを検証してから両方の出力を公開します。生成器の offline self-test は [`test_generate_qwen3_asr_fixtures.py`](../scripts/test_generate_qwen3_asr_fixtures.py) で実行します。
+
+```bash
+python3 -B scripts/test_generate_qwen3_asr_fixtures.py
+```
+
+### 実モデル test の音声照合と計測
+
+opt-in test は合成時と同一の各参照文に対して short / long を別々に照合し、CER 計算前には空白と句読点だけを除去します。受け入れ上限は short `<= 0.05`（測定 baseline `0`、余裕5 percentage points）、long `<= 0.15`（baseline 8/91 = 0.0879121、余裕6.21 percentage points）です。両 fixture で非空の日本語 text、`detectedLanguage == nil`、WAV の正確な sample 数、および2回の認識 text の一致も検証します。long は15秒を超えるため、runtime の no-repeat 3-gram 経路を通ります。空入力と319-sample入力についても、空 text と `detectedLanguage == nil` を確認します。
+
+各 fixture の first / repeat RTF は `prepare()` 後の `transcribe()` の経過時間だけから算出し、準備時間を含みません。test は値を出力しますが、性能の上限・RTF 閾値は設けません。次は Linux aarch64、`swift:6.2-noble`、Swift 6.2.4、ONNX Runtime 1.31.0、0.6b、intra-op 2 threads、release build での測定です。short の認識文は参照文と一致しました。long の認識文は「通信アイテムを認証した後、セッション鍵を共有し、その鍵を使って以降の通信内容を暗号化する流れを考えます。今日の講義ではベース推定について説明します。この場合、公開鍵はどこで配布されるのでしょうか。」でした。
+
+| fixture | 測定 CER（上限） | first elapsed / RTF | repeat elapsed / RTF |
+| --- | ---: | ---: | ---: |
+| short | 0（0.05） | 1.343336459 秒 / 0.4062483857 | 1.638131459 秒 / 0.4953995378 |
+| long | 0.08791208791208792（0.15） | 7.885876129 秒 / 0.4270946777 | 7.837488004 秒 / 0.4244740037 |
+
+この測定値は0.6bの結果です。1.7b の実測値はありません。
 
 ## Qwen3-ASR の log-mel 前処理
 

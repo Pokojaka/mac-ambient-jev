@@ -77,9 +77,7 @@ struct Qwen3ASRGreedyDecoder<Model: Qwen3ASRDecoderModel> {
         let (_, positionOverflow) = promptCount.addingReportingOverflow(Int64(maxNewTokens - 1))
         guard !positionOverflow else { throw Qwen3ASRGenerationError.positionOverflow }
 
-        let prefill = try model.prefill(promptIDs: promptIDs, audioOffset: audioOffset)
-        var logits = prefill.lastLogits
-        var cache = prefill.cache
+        var (logits, cache) = try model.prefill(promptIDs: promptIDs, audioOffset: audioOffset)
         var generatedIDs: [Int64] = []
 
         for _ in 0..<maxNewTokens {
@@ -94,9 +92,7 @@ struct Qwen3ASRGreedyDecoder<Model: Qwen3ASRDecoderModel> {
             }
 
             let position = promptCount + Int64(generatedIDs.count - 1)
-            let step = try model.step(tokenID: tokenID, position: position, cache: cache)
-            logits = step.logits
-            cache = step.cache
+            (logits, cache) = try model.step(tokenID: tokenID, position: position, cache: cache)
         }
 
         preconditionFailure("generation loop ended without reaching a stop token or the token cap")

@@ -1,0 +1,88 @@
+{
+  "0.6b": {
+    "hiddenSize": 1024,
+    "repository": "andrewleech/qwen3-asr-0.6b-onnx",
+    "commit": "4fc24a1402e74db89c4d2ef256875e71680128c4",
+    "files": [
+      {
+        "name": "encoder.onnx",
+        "role": "encoder",
+        "byteCount": 745762694,
+        "sha256": "3c027f880f677615de85e1f6934906e1d5d77624b724096d33accef99c753eed"
+      },
+      {
+        "name": "decoder_init.int4.onnx",
+        "role": "decoder_init",
+        "byteCount": 355390,
+        "sha256": "6d54633bbb9e6b1ecf372f218d04adb3bf6f2bfc442ce55c988526d532896faa"
+      },
+      {
+        "name": "decoder_step.int4.onnx",
+        "role": "decoder_step",
+        "byteCount": 354888,
+        "sha256": "7eaa4f31d5eb6ae2937ff45222c32f692f2d5ac29b46cbae9046da332a9f317d"
+      },
+      {
+        "name": "decoder_weights.int4.data",
+        "role": "decoder_weights",
+        "byteCount": 962460672,
+        "sha256": "d68cd1c0695a7ba42651d06b1bc1158e2e58af5f9adbb6dba874fbbb8a4f22cf"
+      },
+      {
+        "name": "embed_tokens.bin",
+        "role": "embed_tokens",
+        "byteCount": 311164928,
+        "sha256": "e80150119fa5f7e56e85aed64c3a02d5c78eb7a37cfdcb973d0987316f15bee2"
+      },
+      {
+        "name": "tokenizer.json",
+        "role": "tokenizer",
+        "byteCount": 11429377,
+        "sha256": "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"
+      }
+    ]
+  },
+  "1.7b": {
+    "hiddenSize": 2048,
+    "repository": "andrewleech/qwen3-asr-1.7b-onnx",
+    "commit": "df916193ac67e59347769891a21e10d81d12acdd",
+    "files": [
+      {
+        "name": "encoder.onnx",
+        "role": "encoder",
+        "byteCount": 1270241779,
+        "sha256": "c19ff8d702707693877a509ba1867472b0ad964593b93751091891a143edffec"
+      },
+      {
+        "name": "decoder_init.int4.onnx",
+        "role": "decoder_init",
+        "byteCount": 356165,
+        "sha256": "c638585ada629b3cf65ce9cb068b7b980fccc9454a7f05e2333b8813730c1999"
+      },
+      {
+        "name": "decoder_step.int4.onnx",
+        "role": "decoder_step",
+        "byteCount": 355662,
+        "sha256": "fa138c025c26f6559e12be51cfbba5204a0b6993a1f3bb1177f80a0a65873bb5"
+      },
+      {
+        "name": "decoder_weights.int4.data",
+        "role": "decoder_weights",
+        "byteCount": 2226321408,
+        "sha256": "3f8d8fb695bcffc20ce8d8e823471e011404420785adf7678aac31057ef67333"
+      },
+      {
+        "name": "embed_tokens.bin",
+        "role": "embed_tokens",
+        "byteCount": 622329856,
+        "sha256": "1489075dbd08fcd6b87bc69c5feca278014d29fa5693bd4aa61e47c1a3a160d4"
+      },
+      {
+        "name": "tokenizer.json",
+        "role": "tokenizer",
+        "byteCount": 11429377,
+        "sha256": "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"
+      }
+    ]
+  }
+}

@@ -27,23 +27,41 @@ EXPECTED_COMMITS = {
     "1.7b": "df916193ac67e59347769891a21e10d81d12acdd",
 }
 EXPECTED_FILES = {
-    "0.6b": (
-        ("encoder.onnx", 745762694, "3c027f880f677615de85e1f6934906e1d5d77624b724096d33accef99c753eed"),
-        ("decoder_init.int4.onnx", 355390, "6d54633bbb9e6b1ecf372f218d04adb3bf6f2bfc442ce55c988526d532896faa"),
-        ("decoder_step.int4.onnx", 354888, "7eaa4f31d5eb6ae2937ff45222c32f692f2d5ac29b46cbae9046da332a9f317d"),
-        ("decoder_weights.int4.data", 962460672, "d68cd1c0695a7ba42651d06b1bc1158e2e58af5f9adbb6dba874fbbb8a4f22cf"),
-        ("embed_tokens.bin", 311164928, "e80150119fa5f7e56e85aed64c3a02d5c78eb7a37cfdcb973d0987316f15bee2"),
-        ("tokenizer.json", 11429377, "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"),
-    ),
-    "1.7b": (
-        ("encoder.onnx", 1270241779, "c19ff8d702707693877a509ba1867472b0ad964593b93751091891a143edffec"),
-        ("decoder_init.int4.onnx", 356165, "c638585ada629b3cf65ce9cb068b7b980fccc9454a7f05e2333b8813730c1999"),
-        ("decoder_step.int4.onnx", 355662, "fa138c025c26f6559e12be51cfbba5204a0b6993a1f3bb1177f80a0a65873bb5"),
-        ("decoder_weights.int4.data", 2226321408, "3f8d8fb695bcffc20ce8d8e823471e011404420785adf7678aac31057ef67333"),
-        ("embed_tokens.bin", 622329856, "1489075dbd08fcd6b87bc69c5feca278014d29fa5693bd4aa61e47c1a3a160d4"),
-        ("tokenizer.json", 11429377, "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"),
-    ),
+    "0.6b": {
+        "encoder": ("encoder.onnx", 745762694, "3c027f880f677615de85e1f6934906e1d5d77624b724096d33accef99c753eed"),
+        "decoder_init": ("decoder_init.int4.onnx", 355390, "6d54633bbb9e6b1ecf372f218d04adb3bf6f2bfc442ce55c988526d532896faa"),
+        "decoder_step": ("decoder_step.int4.onnx", 354888, "7eaa4f31d5eb6ae2937ff45222c32f692f2d5ac29b46cbae9046da332a9f317d"),
+        "decoder_weights": ("decoder_weights.int4.data", 962460672, "d68cd1c0695a7ba42651d06b1bc1158e2e58af5f9adbb6dba874fbbb8a4f22cf"),
+        "embed_tokens": ("embed_tokens.bin", 311164928, "e80150119fa5f7e56e85aed64c3a02d5c78eb7a37cfdcb973d0987316f15bee2"),
+        "tokenizer": ("tokenizer.json", 11429377, "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"),
+    },
+    "1.7b": {
+        "encoder": ("encoder.onnx", 1270241779, "c19ff8d702707693877a509ba1867472b0ad964593b93751091891a143edffec"),
+        "decoder_init": ("decoder_init.int4.onnx", 356165, "c638585ada629b3cf65ce9cb068b7b980fccc9454a7f05e2333b8813730c1999"),
+        "decoder_step": ("decoder_step.int4.onnx", 355662, "fa138c025c26f6559e12be51cfbba5204a0b6993a1f3bb1177f80a0a65873bb5"),
+        "decoder_weights": ("decoder_weights.int4.data", 2226321408, "3f8d8fb695bcffc20ce8d8e823471e011404420785adf7678aac31057ef67333"),
+        "embed_tokens": ("embed_tokens.bin", 622329856, "1489075dbd08fcd6b87bc69c5feca278014d29fa5693bd4aa61e47c1a3a160d4"),
+        "tokenizer": ("tokenizer.json", 11429377, "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92"),
+    },
 }
+
+
+def sample_metadata() -> dict[str, dict[str, list[dict[str, object]]]]:
+    return {
+        "test-size": {
+            "repository": "test/repository",
+            "commit": "test-commit",
+            "files": [
+                {
+                    "role": role,
+                    "name": f"{role}.onnx",
+                    "byteCount": len(role),
+                    "sha256": f"sha-{role}",
+                }
+                for role in fetcher.FILE_ROLES
+            ]
+        }
+    }
 
 
 class FetchTests(unittest.TestCase):
@@ -61,9 +79,12 @@ class FetchTests(unittest.TestCase):
         self.network_forbidden.start()
         self.addCleanup(self.network_forbidden.stop)
 
-    def tiny_files(self, payload: bytes) -> dict[str, tuple[tuple[str, int, str], ...]]:
+    def tiny_files(self, payload: bytes) -> dict[str, dict[str, tuple[str, int, str]]]:
         return {
-            size: (("model.bin", len(payload), hashlib.sha256(payload).hexdigest()),)
+            size: {
+                role: (f"{role}.bin", len(payload), hashlib.sha256(payload).hexdigest())
+                for role in fetcher.FILE_ROLES
+            }
             for size in EXPECTED_REPOSITORIES
         }
 
@@ -72,22 +93,82 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(fetcher.COMMITS, EXPECTED_COMMITS)
         self.assertEqual(fetcher.FILES, EXPECTED_FILES)
         for size in EXPECTED_REPOSITORIES:
+            self.assertEqual(tuple(fetcher.FILES[size]), fetcher.FILE_ROLES)
             self.assertEqual(len(fetcher.FILES[size]), 6)
+
+    def test_files_by_role_ignores_manifest_array_order(self) -> None:
+        metadata = sample_metadata()
+        reversed_metadata = sample_metadata()
+        reversed_metadata["test-size"]["files"].reverse()
+
+        expected = fetcher.files_by_role(metadata)
+        self.assertEqual(fetcher.files_by_role(reversed_metadata), expected)
+        self.assertEqual(tuple(expected["test-size"]), fetcher.FILE_ROLES)
+
+    def test_files_by_role_rejects_missing_role_entry(self) -> None:
+        metadata = sample_metadata()
+        metadata["test-size"]["files"].pop()
+        with self.assertRaisesRegex(ValueError, "test-size.*tokenizer"):
+            fetcher.files_by_role(metadata)
+
+    def test_files_by_role_rejects_duplicate_role_even_with_distinct_name(self) -> None:
+        metadata = sample_metadata()
+        metadata["test-size"]["files"].append(
+            {
+                "role": "encoder",
+                "name": "different-encoder.onnx",
+                "byteCount": 1,
+                "sha256": "different-sha",
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "test-size.*encoder"):
+            fetcher.files_by_role(metadata)
+
+    def test_files_by_role_rejects_absent_role_field(self) -> None:
+        metadata = sample_metadata()
+        del metadata["test-size"]["files"][0]["role"]
+        with self.assertRaisesRegex(ValueError, "test-size.*role"):
+            fetcher.files_by_role(metadata)
+
+    def test_files_by_role_rejects_unknown_role(self) -> None:
+        metadata = sample_metadata()
+        metadata["test-size"]["files"][0]["role"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "test-size.*unknown"):
+            fetcher.files_by_role(metadata)
+
+    def test_files_by_role_rejects_non_string_role(self) -> None:
+        metadata = sample_metadata()
+        metadata["test-size"]["files"][0]["role"] = None
+        with self.assertRaisesRegex(ValueError, "test-size.*None"):
+            fetcher.files_by_role(metadata)
+
+    def test_import_rejects_invalid_roles_before_any_network_access(self) -> None:
+        metadata = sample_metadata()
+        metadata["test-size"]["files"].pop()
+        invalid_spec = importlib.util.spec_from_file_location(
+            "fetch_qwen3_asr_model_invalid", SCRIPT
+        )
+        invalid_module = importlib.util.module_from_spec(invalid_spec)
+        with mock.patch.object(fetcher.json, "loads", return_value=metadata), mock.patch.object(
+            fetcher.pinned_download.urllib.request, "urlopen"
+        ) as urlopen:
+            with self.assertRaisesRegex(ValueError, "test-size.*tokenizer"):
+                invalid_spec.loader.exec_module(invalid_module)
+        urlopen.assert_not_called()
 
     def test_download_urls_arguments_and_output_directory_for_each_size(self) -> None:
         test_files = {
-            size: tuple(
-                (filename, index, f"sha-{size}-{index}")
-                for index, (filename, _byte_size, _sha256) in enumerate(
-                    EXPECTED_FILES[size], start=1
-                )
-            )
+            size: {
+                role: (filename, index, f"sha-{size}-{index}")
+                for index, role in enumerate(fetcher.FILE_ROLES, start=1)
+                for filename, _byte_size, _sha256 in (EXPECTED_FILES[size][role],)
+            }
             for size in EXPECTED_REPOSITORIES
         }
         sizes_by_sha = {
             sha256: byte_size
-            for rows in test_files.values()
-            for _filename, byte_size, sha256 in rows
+            for role_files in test_files.values()
+            for _filename, byte_size, sha256 in role_files.values()
         }
         calls: list[tuple[str, str, Path]] = []
 
@@ -108,7 +189,10 @@ class FetchTests(unittest.TestCase):
                 self.assertTrue(result.is_dir())
                 self.assertEqual(
                     sorted(path.name for path in result.iterdir()),
-                    sorted(filename for filename, _byte_size, _sha in test_files[size]),
+                    sorted(
+                        filename
+                        for filename, _byte_size, _sha in test_files[size].values()
+                    ),
                 )
 
         expected_calls = [
@@ -121,7 +205,8 @@ class FetchTests(unittest.TestCase):
                 / filename,
             )
             for size in ("0.6b", "1.7b")
-            for filename, _byte_size, sha256 in test_files[size]
+            for role in fetcher.FILE_ROLES
+            for filename, _byte_size, sha256 in (test_files[size][role],)
         ]
         self.assertEqual(calls, expected_calls)
         self.assertEqual(download.call_args_list, [mock.call(*call) for call in expected_calls])
@@ -183,18 +268,22 @@ class FetchTests(unittest.TestCase):
             f"qwen3-asr-{size}-int4-{EXPECTED_COMMITS[size]}"
         )
         model_directory.mkdir()
-        target = model_directory / "model.bin"
-        target.write_bytes(payload)
+        files = self.tiny_files(payload)[size]
+        original_mtimes = {}
         mtime_ns = 1_700_000_000_000_000_000
-        os.utime(target, ns=(mtime_ns, mtime_ns))
-        original_mtime = target.stat().st_mtime_ns
+        for filename, _byte_size, _sha256 in files.values():
+            target = model_directory / filename
+            target.write_bytes(payload)
+            os.utime(target, ns=(mtime_ns, mtime_ns))
+            original_mtimes[target] = target.stat().st_mtime_ns
 
         with mock.patch.object(fetcher, "FILES", self.tiny_files(payload)):
             result = fetcher.fetch(size, self.root)
 
         self.assertEqual(result, model_directory)
-        self.assertEqual(target.stat().st_mtime_ns, original_mtime)
-        self.assertEqual(target.read_bytes(), payload)
+        for target, original_mtime in original_mtimes.items():
+            self.assertEqual(target.stat().st_mtime_ns, original_mtime)
+            self.assertEqual(target.read_bytes(), payload)
 
     def test_existing_hash_mismatch_fails_without_redownload(self) -> None:
         payload = b"expected payload"
@@ -203,7 +292,7 @@ class FetchTests(unittest.TestCase):
             f"qwen3-asr-{size}-int4-{EXPECTED_COMMITS[size]}"
         )
         model_directory.mkdir()
-        target = model_directory / "model.bin"
+        target = model_directory / "encoder.bin"
         target.write_bytes(b"corrupt existing payload")
         with mock.patch.object(fetcher, "FILES", self.tiny_files(payload)):
             with self.assertRaisesRegex(ValueError, "SHA-256"):
@@ -217,7 +306,13 @@ class FetchTests(unittest.TestCase):
         model_directory = self.root / (
             f"qwen3-asr-{size}-int4-{EXPECTED_COMMITS[size]}"
         )
-        files = {model: (("model.bin", len(payload), expected_hash),) for model in EXPECTED_REPOSITORIES}
+        files = {
+            model: {
+                role: (f"{role}.bin", len(payload), expected_hash)
+                for role in fetcher.FILE_ROLES
+            }
+            for model in EXPECTED_REPOSITORIES
+        }
         with mock.patch.object(fetcher, "FILES", files), mock.patch.object(
             fetcher.pinned_download.urllib.request,
             "urlopen",
@@ -225,18 +320,24 @@ class FetchTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "SHA-256"):
                 fetcher.fetch(size, self.root)
-        self.assertFalse((model_directory / "model.bin").exists())
-        self.assertEqual(list(model_directory.glob(".model.bin.*.download")), [])
+        self.assertFalse((model_directory / "encoder.bin").exists())
+        self.assertEqual(list(model_directory.glob(".encoder.bin.*.download")), [])
 
     def test_downloaded_size_mismatch_raises_value_error_with_details(self) -> None:
         size = "0.6b"
-        filename = "model.bin"
+        filename = "encoder.bin"
         model_directory = self.root / (
             f"qwen3-asr-{size}-int4-{EXPECTED_COMMITS[size]}"
         )
         expected_size = 9
         target = model_directory / filename
-        files = {model: ((filename, expected_size, "unused-sha"),) for model in EXPECTED_REPOSITORIES}
+        files = {
+            model: {
+                role: (f"{role}.bin", expected_size, "unused-sha")
+                for role in fetcher.FILE_ROLES
+            }
+            for model in EXPECTED_REPOSITORIES
+        }
 
         def write_wrong_size(_url: str, _sha256: str, destination: Path) -> Path:
             destination.write_bytes(b"bad")
@@ -364,8 +465,14 @@ class FetchTests(unittest.TestCase):
         model_directory = self.root / (
             f"qwen3-asr-{size}-int4-{EXPECTED_COMMITS[size]}"
         )
-        target = model_directory / "model.bin"
-        files = {model: (("model.bin", 5, "unused-sha"),) for model in EXPECTED_REPOSITORIES}
+        target = model_directory / "encoder.bin"
+        files = {
+            model: {
+                role: (f"{role}.bin", 5, "unused-sha")
+                for role in fetcher.FILE_ROLES
+            }
+            for model in EXPECTED_REPOSITORIES
+        }
 
         def write_wrong_size(_url: str, _sha256: str, destination: Path) -> Path:
             destination.write_bytes(b"bad")
