@@ -218,7 +218,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 persisted `節` / `clause` はモデルが判定する BTSJ 発話文単位の識別名で、別 splitter の節を意味しません。両境界・継続確率は厳密に `> 0.5` の場合だけ採用します。候補 offset は原文 `、。？！?!` 直後の UTF-16 offset（原文末尾を除く）です。発話文 ID は `c<最初の part の asr_event_seq>_<開始 offset>` で、本文 hash や行内連番ではありません。parts は時間順で、二つ目以降は区間先頭から始まります。`termination.kind` は `internal_boundary`（採用候補）、`not_continued`（継続 no）、`stream_end`（録音停止・最後の区間・空の次区間。文法的な境界ではない）です。発話文本文は保存せず、原文とその区間の `clause_boundaries.assessed.filler_ranges`（保存済み F・B除去範囲）から導きます。
 
-`clause_boundaries.assessed` と `content_priority.assigned` の `request` record は `request_id` と `input_tokens` だけを持ちます。境界では候補が空でも成功した判定呼出しに record を付け、優先度では一回の判定呼出しの全結果を一イベントに保存して record を一度だけ付けます。request record の decoder に default はなく、必須キーの欠落・型不一致・不正値は読み取りエラーです。
+`clause_boundaries.assessed` と `content_priority.assigned` の `request` record は `request_id` と `input_tokens` だけを持ちます。境界では候補が空でも成功した判定呼出しに record を付け、優先度では一回の判定呼出しの全結果を一イベントに保存して record を一度だけ付けます。request record の decoder に default はなく、必須キーの欠落・型不一致・不正値は読み取りエラーです。読み取れない request record が `metadata` キーを持つ場合は、`input_tokens` 導入前の旧形式として「壊れています」ではなく旧形式のため確定できないことと、元の音声を読み込み直す対処を示すエラーにします。旧形式を変換して読む経路はありません。
 
 | request key | 型 | 保存値 |
 | --- | --- | --- |
