@@ -22,8 +22,16 @@ public struct AudioImporter: Sendable {
             throw AudioImporterError.destinationAlreadyExists
         }
 
-        let resolvedSource = sourceURL.resolvingSymlinksInPath()
-        try SessionFileAccess.copy(resolvedSource, relativeTo: resolvedSource.deletingLastPathComponent(), to: destinationURL, relativeTo: sessionURL)
+        // A sandboxed app is granted only the chosen file, not its folder, so the source
+        // is opened directly instead of through a pinned parent directory.
+        let input = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? input.close() }
+        let output = try SessionFileAccess.openHandle(destinationURL, relativeTo: sessionURL, writable: true, create: true, exclusive: true)
+        defer { try? output.close() }
+        while let data = try input.read(upToCount: 64 * 1024), !data.isEmpty {
+            try output.write(contentsOf: data)
+        }
+        try output.synchronize()
         return ImportedAudio(originalURL: destinationURL)
     }
 }

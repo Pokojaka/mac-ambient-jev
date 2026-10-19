@@ -60,6 +60,25 @@ import Testing
     #expect(result.originalURL.lastPathComponent == "original.wav")
 }
 
+@Test func importerReadsASourceWhoseFolderCannotBeOpened() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    let folder = root.appending(path: "chosen")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let source = folder.appending(path: "lecture.wav")
+    let bytes = Data([9, 8, 7])
+    try bytes.write(to: source)
+    // Like a sandbox grant for one chosen file: the file opens by path, its folder does not.
+    try FileManager.default.setAttributes([.posixPermissions: 0o111], ofItemAtPath: folder.path)
+
+    let result = try AudioImporter().importFile(source, into: root.appending(path: "session"))
+
+    #expect(try Data(contentsOf: result.originalURL) == bytes)
+}
+
 @Test func diskSpaceMonitorWarnsBeforeCaptureBecomesUnsafe() {
     let monitor = DiskSpaceMonitor(warningThresholdBytes: 2_000, criticalThresholdBytes: 1_000)
     #expect(monitor.level(forAvailableBytes: 3_000) == .normal)
