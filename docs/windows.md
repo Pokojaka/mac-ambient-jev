@@ -650,6 +650,13 @@ MoveFileExW のパスを再解決する方式は使いません。同期・原�
 ファイルとディレクトリの同期には書き込み権限が必要です。
 読み取り・列挙・サイズ取得・ログの durable read はディレクトリの書き込み権限を要求しません。
 root の Win32 パスは明示的な長いパス形式で開き、MAX_PATH を超える保存先も同じ境界検査を使います。
+CWindowsSession が開く handle は継承不可です（CreateFileW に SECURITY_ATTRIBUTES を渡さず、NtCreateFile に OBJ_INHERIT を付けません）。
+子プロセスが一時ファイルの handle を持ち続けて公開の改名を妨げることはありません。
+
+Windows で実行するテストは、fixture の書き込みに Foundation の `Data.write(to:options: .atomic)` を使いません。
+Swift 6.2 の Foundation は `.atomic` の一時ファイルを継承可能な CRT handle（`_wsopen_s`、FILE_SHARE_DELETE なし）で開き、閉じた直後に MoveFileExW で改名します（[Data+Writing.swift](https://github.com/swiftlang/swift-foundation/blob/swift-6.2-RELEASE/Sources/FoundationEssentials/Data/Data%2BWriting.swift)）。
+同じテストプロセスで `Process.run()` が並行すると、CreateProcessW の `bInheritHandles` が TRUE のため子プロセスがその handle を継承し（[Process.swift](https://github.com/swiftlang/swift-corelibs-foundation/blob/swift-6.2-RELEASE/Sources/Foundation/Process.swift)）、改名が ERROR_SHARING_VIOLATION（32）になり、NSCocoaErrorDomain Code=513 で失敗します。
+`.atomic` を付けない `Data.write(to:)` は継承不可の CreateFileW handle を使うため、この競合は起きません。
 
 イベントログの追記と durable read は LockFileEx で全範囲を排他ロックし、
 handle を閉じるまで保持します。復旧の途中で破損した末尾を読むことを防ぎ、

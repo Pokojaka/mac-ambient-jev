@@ -30,10 +30,7 @@ private func writeRecoveryManifest(
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
     encoder.dateEncodingStrategy = .iso8601
-    try encoder.encode(manifest).write(
-        to: sessionURL.appending(path: "session.json"),
-        options: .atomic
-    )
+    try encoder.encode(manifest).write(to: sessionURL.appending(path: "session.json"))
     if case .imported = source {
         let audioURL = sessionURL.appending(path: "audio", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
@@ -45,10 +42,7 @@ private func writeRecoveryManifest(
 private func writeRecoveryCheckpoint(_ checkpoint: AudioCheckpoint, to sessionURL: URL) throws {
     let processingURL = sessionURL.appending(path: "audio/processing", directoryHint: .isDirectory)
     try FileManager.default.createDirectory(at: processingURL, withIntermediateDirectories: true)
-    try JSONEncoder().encode(checkpoint).write(
-        to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
-        options: .atomic
-    )
+    try JSONEncoder().encode(checkpoint).write(to: processingURL.appending(path: DurableAudioWriter.checkpointFilename))
     try Data().write(to: processingURL.appending(path: DurableAudioWriter.chunkIndexFilename))
     try Data().write(to: processingURL.appending(path: DurableAudioWriter.gapEventsFilename))
     for (filename, frames) in zip(checkpoint.chunkFiles, checkpoint.chunkFrameCounts) {
@@ -281,10 +275,7 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
         chunkFrameCounts: [48_000],
         gapEvents: []
     )
-    try JSONEncoder().encode(checkpoint).write(
-        to: processingURL.appending(path: DurableAudioWriter.checkpointFilename),
-        options: .atomic
-    )
+    try JSONEncoder().encode(checkpoint).write(to: processingURL.appending(path: DurableAudioWriter.checkpointFilename))
     try Data().write(to: processingURL.appending(path: DurableAudioWriter.chunkIndexFilename))
     try Data().write(to: processingURL.appending(path: DurableAudioWriter.gapEventsFilename))
     try Data(count: 48_000 * MemoryLayout<Float>.size)
