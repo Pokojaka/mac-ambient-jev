@@ -2,6 +2,7 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import Synchronization
 import Testing
 @testable import MacAmbientJevCapture

@@ -1,49 +1,6 @@
 import FluidAudio
 import MacAmbientJevCore
-
-struct VADChunkOutput: Sendable {
-    let segments: [SegmentReference]
-    let micLevel: MicLevelWindow?
-}
-
-/// Speech-gated level evidence for one unpadded 16 kHz VAD chunk.
-enum MicSpeechLevelMeasurement {
-    static let sampleRate = Double(VadManager.sampleRate)
-    static let speechProbabilityThreshold: Float = 0.85
-
-    static func measure(
-        samples: [Float], startSeconds: Double, speechProbability: Float
-    ) -> MicLevelWindow {
-        let seconds = Double(samples.count) / sampleRate
-        let nonSpeech = MicLevelWindow(
-            startSeconds: startSeconds, endSeconds: startSeconds + seconds,
-            speechSeconds: 0, speechMeanSquare: nil, speechPeak: 0,
-            inputPeak: 0, clippedFraction: 0
-        )
-        guard !samples.isEmpty, startSeconds.isFinite, startSeconds >= 0,
-              speechProbability.isFinite, speechProbability <= 1,
-              speechProbability >= speechProbabilityThreshold else { return nonSpeech }
-        var sumOfSquares = 0.0
-        var peak: Float = 0
-        for sample in samples {
-            guard sample.isFinite else { return nonSpeech }
-            let value = Double(sample)
-            sumOfSquares += value * value
-            peak = max(peak, abs(sample))
-        }
-        guard peak > 0 else { return nonSpeech }
-        return MicLevelWindow(
-            startSeconds: startSeconds, endSeconds: startSeconds + seconds,
-            speechSeconds: seconds, speechMeanSquare: sumOfSquares / Double(samples.count),
-            speechPeak: peak, inputPeak: 0, clippedFraction: 0
-        )
-    }
-}
-
-protocol VADChunkSegmenting: Sendable {
-    func process16kChunk(_ samples: [Float]) async throws -> VADChunkOutput
-    func finish(totalCanonicalFrames: Int64) async -> [SegmentReference]
-}
+import MacAmbientJevPipeline
 
 struct VADSegmentationState: Sendable {
     private let canonicalSampleRate: Double
@@ -129,6 +86,8 @@ struct VADSegmentationState: Sendable {
 }
 
 actor FluidVADSegmentationEngine: VADChunkSegmenting {
+    nonisolated let chunkSize = VadManager.chunkSize
+
     static let speechProbabilityThreshold: Float = 0.50
     static let preRollSeconds = 0.10
     static let maxSegmentSeconds = 14.0

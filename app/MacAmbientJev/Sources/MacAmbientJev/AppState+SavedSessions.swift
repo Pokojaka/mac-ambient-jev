@@ -6,15 +6,14 @@ import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevCapture
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
 extension AppState {
     func refreshSavedSessions() {
         do {
-            savedSessions = try SavedSessionCatalog(fileManager: .default).list(
-                sessionsRoot: paths.sessionsRoot
-            )
+            try savedSessionOperations.refresh(sessionsRoot: paths.sessionsRoot)
         } catch {
             processingStatusText = "保存済み録音を読み込めませんでした: \(error.localizedDescription)"
         }
@@ -31,12 +30,12 @@ extension AppState {
     }
 
     func selectSavedSession(sessionURL: URL) {
-        guard SavedSessionSelectionPolicy.canSelect(
+        guard savedSessionOperations.select(
+            sessionURL: sessionURL,
             isRecording: recordingPhase != .idle
         ) else {
             return
         }
-        selectedSavedSessionURL = sessionURL
         let summary = savedSessions.first(where: { $0.sessionURL == sessionURL })
         displayedSessionID = summary?.sessionID
         do {
@@ -92,7 +91,7 @@ extension AppState {
             try exportDestination.save(directory: directory)
             exportDirectoryPath = exportDestination.path
             exportDestinationMessage = nil
-            sessionExports = [:]
+            savedSessionOperations.resetExportDestination()
             return true
         } catch {
             exportDestinationMessage = "書き出し先フォルダを保存できませんでした: \(error.localizedDescription)"
@@ -158,11 +157,7 @@ extension AppState {
     }
 
     func readableSavedSession(_ sessionID: UUID) -> SavedSession? {
-        let matches = savedSessions.filter { $0.sessionID == sessionID }
-        guard matches.count == 1, case .readable(let session) = matches[0] else {
-            return nil
-        }
-        return session
+        return savedSessionOperations.readableSession(sessionID)
     }
 
     func revealExport(sessionID: UUID) async {
@@ -172,7 +167,7 @@ extension AppState {
                 NSWorkspace.shared.activateFileViewerSelecting([folder])
             }
         } catch {
-            sessionExports[sessionID] = .failed(error.localizedDescription)
+            savedSessionOperations.failExport(sessionID: sessionID, message: error.localizedDescription)
         }
     }
 
@@ -198,14 +193,18 @@ extension AppState {
     }
 
     func export(_ session: SavedSession) async {
-        guard sessionExports[session.sessionID] != .exporting else { return }
-        if isMaintainingStorage, case .recordedPCM = session.audioSource {
-            let message = "保存済み録音の音声を整理しています。整理が終わってから書き出してください"
-            sessionExports[session.sessionID] = .failed(message)
+        switch savedSessionOperations.beginExport(
+            session,
+            isMaintainingStorage: processingQueue.isMaintainingStorage
+        ) {
+        case .alreadyExporting:
+            return
+        case .blocked(let message):
             processingStatusText = "書き出せませんでした: \(message)"
             return
+        case .ready:
+            break
         }
-        sessionExports[session.sessionID] = .exporting
         do {
             let folder = try await exportDestination.withAccess { directory in
                 try await Task.detached {
@@ -215,10 +214,10 @@ extension AppState {
                     )
                 }.value
             }
-            sessionExports[session.sessionID] = .exported(folder)
+            savedSessionOperations.completeExport(sessionID: session.sessionID, folder: folder)
             processingStatusText = "「\(folder.lastPathComponent)」に書き出しました"
         } catch {
-            sessionExports[session.sessionID] = .failed(error.localizedDescription)
+            savedSessionOperations.failExport(sessionID: session.sessionID, message: error.localizedDescription)
             processingStatusText = "書き出せませんでした: \(error.localizedDescription)"
         }
     }
@@ -244,8 +243,8 @@ extension AppState {
         } catch {
             state = .failed("書き出し先を確認できません: \(error.localizedDescription)")
         }
-        if let state, sessionExports[sessionID] == nil {
-            sessionExports[sessionID] = state
+        if let state {
+            savedSessionOperations.recordExistingExport(state, sessionID: sessionID)
         }
     }
 }

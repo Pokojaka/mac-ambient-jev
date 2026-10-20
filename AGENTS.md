@@ -31,3 +31,5 @@ uv run --python 3.12 --with pytest python -m pytest -q tests
 ```
 
 モデルテスト、CLI、計測の詳細は [docs/testing.md](docs/testing.md) を参照。マイク・システム音声の権限や GUI の操作確認は、ビルドと単体テストだけでは検証できない。
+
+Windows / Linux では共通コアと評価 CLI の build・test を行い、macOS 専用の `verify_v1.sh` は Mac の CI で実行する。Windows の環境と保存規則は [docs/windows.md](docs/windows.md) を参照。Core の OS 固有 import と禁止 framework は `python3 -B scripts/test_portable_core.py` と `python3 -B scripts/check_portable_core.py` で検査する。

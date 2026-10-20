@@ -31,13 +31,13 @@ public enum CanonicalAudioError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .noncanonicalFormat: "Internal audio must be 16000 Hz, mono, float32 PCM"
-        case .invalidSourceFormat: "Invalid source audio rate or frame extent"
-        case .invalidSamples: "Invalid PCM buffer or non-finite audio samples"
-        case .alreadyFinished: "Cannot feed audio after converter end-of-stream"
-        case .conversionFailed(let cause): "Canonical audio conversion failed: \(cause)"
+        case .noncanonicalFormat: "内部音声は16,000 Hz・mono・float32 PCMである必要があります"
+        case .invalidSourceFormat: "入力音声のサンプルレートまたはフレーム範囲が不正です"
+        case .invalidSamples: "PCMバッファが不正か、非有限の音声サンプルが含まれています"
+        case .alreadyFinished: "終端処理後の音声変換器には入力できません"
+        case .conversionFailed(let cause): "正規音声への変換に失敗しました: \(cause)"
         case .frameCountMismatch(let expected, let actual):
-            "Canonical converter produced \(actual) frames; expected \(expected)"
+            "正規音声の変換結果は\(actual)フレームです（期待値: \(expected)）。"
         }
     }
 }

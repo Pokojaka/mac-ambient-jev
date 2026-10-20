@@ -2,6 +2,7 @@ import struct FluidAudio.OfflineDiarizerConfig
 import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 import Testing
 
@@ -119,6 +120,7 @@ func micCaptureStopFinalizesSpeechThroughTheLastPartialDiarizationWindow(sampleR
     let layout = SessionLayout(sessionURL: url)
     let processor = NativeSessionProcessor(paths: paths,
         engines: SessionProcessingEngines(asr: TailASR(), diarization: TailWindowDiarizer(), finalTranscriptVAD: TailVAD()),
+        audioHandling: MacSessionProcessingAudio(),
         contentPriority: .disabled)
     let liveRun = "seg_live_tail"
     _ = try await processor.startLiveTranscription(sessionID: sessionID, segmentationRunID: liveRun, sampleRate: 16_000)

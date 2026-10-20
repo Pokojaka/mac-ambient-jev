@@ -4,6 +4,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 private func launchMaintenanceRecording(
@@ -54,7 +55,8 @@ private func launchMaintenanceState(paths: AppPaths, defaults: UserDefaults) -> 
     AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
 }
 
@@ -73,11 +75,11 @@ func completedLaunchMaintenanceClearsItsStatus() async throws {
 
     await state.recoverPendingSessions()
 
-    #expect(!state.isMaintainingStorage)
+    #expect(!state.processingQueue.isMaintainingStorage)
     #expect(state.processingStatusText == nil)
     #expect(state.transcriptViewModel.statusText == UserFacingStatus.idle.text)
-    #expect(state.pendingProcessing.isEmpty)
-    #expect(state.processingTask == nil)
+    #expect(state.processingQueue.pending.isEmpty)
+    #expect(!state.processingCoordinator.isDraining)
     guard case .recordingFLAC(let timeline) = try SessionAudioStorageStore(layout: layout).load() else {
         Issue.record("launch recovery did not compact the saved recording")
         return
@@ -100,7 +102,7 @@ func completedLaunchMaintenancePreservesNewProcessingStatus() async throws {
     let previousTranscriptStatus = "表示済みの文字起こし"
     state.transcriptViewModel.setStatus(previousTranscriptStatus)
     let observation = state.transcriptViewModel.$statusText.dropFirst().sink { _ in
-        guard state.isMaintainingStorage else { return }
+        guard state.processingQueue.isMaintainingStorage else { return }
         state.processingState = .running
         state.processingStatusText = ongoingStatus
     }
@@ -108,7 +110,7 @@ func completedLaunchMaintenancePreservesNewProcessingStatus() async throws {
 
     await state.recoverPendingSessions()
 
-    #expect(!state.isMaintainingStorage)
+    #expect(!state.processingQueue.isMaintainingStorage)
     #expect(state.processingState == .running)
     #expect(state.processingStatusText == ongoingStatus)
     #expect(state.transcriptViewModel.statusText == previousTranscriptStatus)
@@ -132,7 +134,7 @@ func failedLaunchMaintenanceReportsFailureWithoutStaleStatus() async throws {
 
     await state.recoverPendingSessions()
 
-    #expect(!state.isMaintainingStorage)
+    #expect(!state.processingQueue.isMaintainingStorage)
     guard case .partialFailure(let message) = state.processingState else {
         Issue.record("corrupt saved FLAC must be reported as a maintenance failure")
         return
@@ -140,7 +142,7 @@ func failedLaunchMaintenanceReportsFailureWithoutStaleStatus() async throws {
     #expect(message.contains(layout.sessionURL.lastPathComponent + ": "))
     #expect(state.processingStatusText == message)
     #expect(state.transcriptViewModel.statusText == UserFacingStatus.idle.text)
-    #expect(state.pendingProcessing.isEmpty)
-    #expect(state.processingTask == nil)
+    #expect(state.processingQueue.pending.isEmpty)
+    #expect(!state.processingCoordinator.isDraining)
     #expect(FileManager.default.fileExists(atPath: layout.processingDirectory.path))
 }

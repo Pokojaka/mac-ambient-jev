@@ -45,8 +45,7 @@ public enum SessionRecovery {
             }
             if let value = dictionary["event_seq"] {
                 guard let number = value as? NSNumber,
-                      CFGetTypeID(number) == CFNumberGetTypeID(),
-                      !CFNumberIsFloatType(number),
+                      ["s", "i", "l", "q", "S", "I", "L", "Q"].contains(String(cString: number.objCType)),
                       number.int64Value > 0,
                       number == NSNumber(value: number.int64Value) else {
                     throw SessionRecoveryError.invalidEventSequence(index: index)

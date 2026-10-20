@@ -16,14 +16,16 @@ func revealTargetsComeFromTheCatalogAndFailWhenMissing() throws {
     let state = AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     let missingRoot = root.appending(path: "absent", directoryHint: .isDirectory)
     let missingState = AppState(
         paths: AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: missingRoot),
         captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults,
-        engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
+        engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     #expect(throws: SessionFolderRevealError.sessionsRootMissing) {
         try missingState.existingSessionsRoot()

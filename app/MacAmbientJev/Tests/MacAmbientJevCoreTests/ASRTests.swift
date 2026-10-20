@@ -39,7 +39,7 @@ func modelStoreUsesManagedModelsDirectory() {
 
     #expect(
         store.qwen3ASRCacheRoot.path
-            == "/tmp/support/mac-ambient-jev/models/qwen3-asr-1.7b-mlx-8bit"
+            == paths.modelsRoot.appending(path: "qwen3-asr-1.7b-mlx-8bit").path
     )
     #expect(!store.qwen3ASRCacheRoot.path.contains("/sessions/"))
 }

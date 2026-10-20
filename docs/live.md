@@ -16,6 +16,8 @@
 - 未認識区間の新規登録・同じ ID の再登録は認識済み行を変えず、ライブセッション内の行配列を返します。登録の progress 取得は履歴全体の sort・materialization・ID 集合差の生成を行いません。待ち件数は保存済み登録 ID 数と保存済み ASR 完了・失敗 ID 数から求めます。行の更新は ASR 完了・失敗の保存後と、保存済みの発話文イベント（境界判定・発話文・優先度）の適用時に行います。ライブセッションは保存した区間の順序と ASR の結果（認識済み・空・失敗・未処理）を独立した判定キューへ渡し、空の区間や失敗した区間も次区間の判定に使えるようにします。空白・改行・句読点だけの ASR 原文は空の結果です。
 - アプリのライブ ASR 待ち行列はバッチごとの `SegmentReference` だけを保持します。`AudioCheckpoint` はセッションごとに最新の保存済み checkpoint を 1 件だけ保持し、各バッチの認識時に使います。保存範囲は単調に伸びるため、最新 checkpoint は待機中の全区間を含みます。checkpoint の chunk 一覧・フレーム数・gap 一覧をバッチごとに保持せず、区間参照はメモリ内に残します。冷却後も登録順で処理し、停止後のライブ処理終了・取消時にキューと checkpoint を解放します。
 
+`LiveTranscriptionState.enqueue` の前提条件は、区間が空でなく、失敗が記録されていないことです。VAD が空の終端区間を返す場合、coordinator は enqueue 前に空を除外します。`await registerLiveSegments` の待機中に ASR 認識失敗が記録されることがあり、登録完了後に coordinator は失敗状態を再確認し、失敗済みならキューへ追加しません。認識失敗が記録されると、既存の待機バッチも破棄します。一方、区間登録の永続化失敗は失敗を記録しても既存の未処理キューを空にせず保持します。未処理キューが残る間はアイドル時のモデル解放条件を満たさず、確定処理または取消時の後始末までモデルは解放されません。
+
 ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）です。実エンジン名は qwen3-asr-swift、モデル ID は aufklarer/Qwen3-ASR-1.7B-MLX-8bit です。この ID はモデル配布元の識別子であり、リポジトリ内のパスではありません。`asr.completed` の engine/model は実際に認識したエンジンの来歴から取得します。
 
 録音中は話者分離を行わず、話者見出しを付けません。停止後の話者境界はライブ本文から確定するのではなく、発話区間検出・話者分離・音声認識の3段階からなる共通の確定処理で計算します。
@@ -71,15 +73,17 @@ ASR drain は判定に関係なく動作します。CLI の `ContentPriorityAcce
 
 ## 発熱時の動作
 
+以下は macOS の録音中の動作です。Windows では熱監視を行わず、熱状態によるライブ ASR の待機・停止はありません（[Windows の熱状態](windows.md#熱状態)）。
+
 | 熱状態 | ライブ ASR |
 | --- | --- |
 | nominal / fair | 待機を入れず処理 |
 | serious | 次の待機バッチを取り出す前に 750 ms 待機 |
 | critical、または未知の熱状態 | 新しいバッチの認識を一時停止 |
 
-critical では「発熱のためライブ表示を一時停止中」と表示します。録音保存、VAD、区間登録、キューへの追加は継続します。滞留時間が長くても認識を強行しません。1 秒ごとに熱状態を確認し、critical を下回るとキューの最古のバッチから再開します。serious まで冷えた場合は 750 ms の待機を入れます。進行中の同期推論を途中で中断する仕組みではありません。
+`critical` または状態不明では「発熱のためライブ表示を一時停止中」と表示します。録音保存、VAD、durable な区間登録は継続し、滞留時間が長くても認識を強行しません。熱状態を 1 秒ごとに確認し、認識を再開できる状態になったらキューの最古のバッチから処理します。`serious` まで冷えた場合は 750 ms 待機します。進行中の同期推論を途中で中断する仕組みではありません。
 
-このライブ熱判定は録音中に適用します。録音停止後の残存ライブキューはこの判定では待たずに処理し、続く確定処理には独立した critical 時の一時停止があります。確定処理は保存範囲全体を認識するので、ライブ表示が停止していた時間も対象になります。
+このライブ熱判定は録音中に適用します。録音停止後の残存ライブキューはこの判定では待たずに処理します。続く確定処理は実際の `critical` の間だけ一時停止し、状態不明では一時停止しません。一時停止中は公開済み結果を保持し、冷却後は新しい run で全量を再実行します。CLI は明示的な再開操作を必要とします。[確定処理](final.md#発熱による一時停止と再開)
 
 ## ライブ処理の失敗
 
@@ -107,8 +111,8 @@ bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FI
 
 ## 実装の根拠
 
-- [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADTimelineProcessor.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
-- [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)、[Qwen3-ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[モデル ID](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)
-- [ライブキューと熱制御](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[ライブ判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveContentPrioritySession.swift)、[provider factory](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)
+- [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADTimelineProcessor.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
+- [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR セッション](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)、[Qwen3-ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[モデル ID](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)
+- [ライブ ASR の所有と熱状態ポーリング](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveTranscriptionCoordinator.swift)、[FIFO 待ち行列の状態](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveTranscriptionState.swift)、[アプリ側の UI 効果のみ](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱監視と Windows の監視なし方針](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/ThermalMonitoring.swift)（Mac は [MacThermalMonitor](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/MacThermalMonitor.swift)、[Windows の熱状態](windows.md#熱状態)）、[ライブ熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[ライブ判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveContentPrioritySession.swift)、[provider factory](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)
 - [表示 materialization](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[保存済み F・B除去範囲から表示本文への projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTextProjection.swift)、[token span から raw UTF-16 F・B除去範囲への projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerSpanProjection.swift)、[Core ML 境界・継続・優先度判定](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[文字起こし画面](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[ASR の構造化結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
 - [遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)、[実行スクリプト](../scripts/measure_live_latency.sh)

@@ -6,21 +6,20 @@ import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevCapture
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
-extension AppState {
+extension AppState: SessionProcessingEffects {
     func reprocess(sessionID: UUID) {
         guard recordingPhase == .idle,
-              !finalizationGate.sessionIDs.contains(sessionID),
-              currentlyProcessingSessionID != sessionID,
-              !pendingProcessing.contains(where: { $0.sessionID == sessionID }),
+              !processingQueue.containsForReprocessing(sessionID),
               let session = readableSavedSession(sessionID),
               session.audioSource != nil else {
             return
         }
         selectSavedSession(sessionID: sessionID)
-        guard finalizationGate.claim(sessionID) else { return }
+        guard processingQueue.claimReprocessing(sessionID) else { return }
         enqueueProcessing(.finalize(sessionID: sessionID, metadataPolicy: .replace))
     }
 
@@ -51,13 +50,12 @@ extension AppState {
     /// True when nothing uses the models: no recording, live transcription, queued, held, or running processing.
     var isIdleForRelease: Bool {
         recordingPhase == .idle
-            && pendingProcessing.isEmpty
-            && thermallyHeldProcessing.isEmpty
-            && processingTask == nil
-            && currentlyProcessingSessionID == nil
-            && finalizationGate.sessionIDs.isEmpty
-            && liveASRTasks.isEmpty
-            && liveASRQueues.values.allSatisfy(\.isEmpty)
+            && processingQueue.pending.isEmpty
+            && processingQueue.thermallyHeld.isEmpty
+            && !processingCoordinator.isDraining
+            && processingQueue.currentSessionID == nil
+            && processingQueue.claimedSessionIDs.isEmpty
+            && liveCoordinator.isASRIdle
     }
 
     /// Releases the ASR and diarization models and the MLX cache once the app is idle. Model loads, live recognition,
@@ -136,7 +134,7 @@ extension AppState {
             return
         }
 
-        recordingPhase = .importing
+        recording.beginImport()
         setCaptureStatus(UserFacingStatus.importingAudio.text, tone: .neutral)
 
         let accessed = sourceURL.startAccessingSecurityScopedResource()
@@ -160,7 +158,7 @@ extension AppState {
                 into: sessionURL
             )
 
-            recordingPhase = .idle
+            recording.finish()
             showNewSession(sessionID)
             setCaptureStatus(
                 "「\(sourceURL.lastPathComponent)」を読み込みました",
@@ -181,200 +179,107 @@ extension AppState {
                     message += "（読み込み途中のセッションを削除できませんでした: \(cleanupError.localizedDescription)）"
                 }
             }
-            recordingPhase = .idle
+            recording.finish()
             setCaptureStatus(message, tone: .error)
         }
     }
 
-    nonisolated static var isThermallyCritical: Bool {
-        ProcessInfo.processInfo.thermalState == .critical
-    }
-
     func enqueueProcessing(_ request: PendingProcessing) {
-        if !pausesProcessing, request.finalizesTranscript {
-            prepareASRModel()
-        }
-
-        pendingProcessing.append(request)
-        guard !pausesProcessing, !isMaintainingStorage else { return }
-
-        if processingTask != nil {
-            processingState = .backlogged
-            processingStatusText = "文字起こし処理が待機中です"
-            transcriptViewModel.setStatus("文字起こし処理が待機中です")
-            return
-        }
-
-        startDrainIfIdle()
-    }
-
-    private func startDrainIfIdle() {
-        guard processingTask == nil, !isMaintainingStorage else { return }
-        processingTask = Task { [weak self] in
-            await self?.drainProcessingQueue()
-        }
-    }
-
-    /// Keeps a finalization until the Mac leaves critical thermal state.
-    func holdForHeat(_ request: PendingProcessing) {
-        thermallyHeldProcessing.append(request)
-        processingState = .backlogged
-        processingStatusText = UserFacingStatus.finalizationPausedForHeat.text
-        if displayedSessionID == request.sessionID {
-            transcriptViewModel.setStatus(UserFacingStatus.finalizationPausedForHeat.text)
-        }
+        processingCoordinator.enqueue(request)
     }
 
     func resumeThermallyHeldProcessing() {
-        guard !Self.isThermallyCritical, !thermallyHeldProcessing.isEmpty, !pausesProcessing else {
-            return
-        }
-        pendingProcessing.insert(contentsOf: thermallyHeldProcessing, at: 0)
-        thermallyHeldProcessing = []
-        prepareASRModel()
-        startDrainIfIdle()
+        processingCoordinator.resumeThermallyHeldProcessing()
     }
 
-    func drainProcessingQueue() async {
+    func awaitIdleRelease() async {
         await idleReleaseTask?.value
-        while !pendingProcessing.isEmpty {
-            let request = pendingProcessing.removeFirst()
-            if request.finalizesTranscript, Self.isThermallyCritical {
-                holdForHeat(request)
-                continue
+    }
+
+    func liveASRFailure(sessionID: UUID) -> String? {
+        liveTranscription.failure(sessionID: sessionID)
+    }
+
+    func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
+        { [weak self] text in
+            await MainActor.run {
+                guard let self else { return }
+                self.processingStatusText = text
+                if self.displayedSessionID == sessionID {
+                    self.transcriptViewModel.setStatus(text)
+                }
             }
-            let requestSessionID = request.sessionID
-            currentlyProcessingSessionID = requestSessionID
+        }
+    }
+
+    func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
+        { [weak self] segments, state in
+            await MainActor.run {
+                guard let self, self.displayedSessionID == sessionID else { return }
+                do {
+                    try self.transcriptViewModel.update(segments: segments)
+                    self.processingState = state
+                    if state == .complete {
+                        self.transcriptViewModel.setDisplayState(.finalized)
+                    }
+                } catch {
+                    let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
+                    self.processingState = .partialFailure(message)
+                    self.processingStatusText = message
+                    self.transcriptViewModel.setStatus(message)
+                }
+            }
+        }
+    }
+
+    func processingDidChange(_ event: SessionProcessingEvent) {
+        switch event {
+        case .backlogged:
+            processingState = .backlogged
+            processingStatusText = "文字起こし処理が待機中です"
+            transcriptViewModel.setStatus("文字起こし処理が待機中です")
+        case .held(let request):
+            processingState = .backlogged
+            processingStatusText = UserFacingStatus.finalizationPausedForHeat.text
+            if displayedSessionID == request.sessionID {
+                transcriptViewModel.setStatus(UserFacingStatus.finalizationPausedForHeat.text)
+            }
+        case .began(let request):
             processingState = .running
-
-            let statusHandler: NativeSessionProcessor.StatusHandler = { [weak self] text in
-                await MainActor.run {
-                    guard let self else { return }
-                    self.processingStatusText = text
-                    if self.displayedSessionID == requestSessionID {
-                        self.transcriptViewModel.setStatus(text)
-                    }
-                }
-            }
-
-            let updateHandler: NativeSessionProcessor.UpdateHandler = { [weak self] segments, state in
-                await MainActor.run {
-                    guard let self, self.displayedSessionID == requestSessionID else { return }
-                    do {
-                        try self.transcriptViewModel.update(segments: segments)
-                        self.processingState = state
-                        if state == .complete {
-                            self.transcriptViewModel.setDisplayState(.finalized)
-                        }
-                    } catch {
-                        let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
-                        self.processingState = .partialFailure(message)
-                        self.processingStatusText = message
-                        self.transcriptViewModel.setStatus(message)
-                    }
-                }
-            }
-            let shouldPause: NativeSessionProcessor.PauseCheck = { Self.isThermallyCritical }
-
-            if displayedSessionID == requestSessionID, request.finalizesTranscript {
+            if displayedSessionID == request.sessionID, request.finalizesTranscript {
                 transcriptViewModel.setDisplayState(.finalizing)
             }
-
-            let finalization: SessionProcessingResult?
-            switch request {
-            case .finalize(let sessionID, let metadataPolicy):
-                let result = await sessionProcessor.processSession(
-                    sessionID: sessionID,
-                    pacingMode: .normal,
-                    shouldPause: shouldPause,
-                    onPhase: { _ in },
-                    metadataPolicy: metadataPolicy,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-                if result.disposition == .paused {
-                    holdForHeat(request)
-                } else {
-                    finalizationGate.release(sessionID)
-                }
-                refreshSavedSessions()
+        case .liveFailed(let failure):
+            processingStatusText =
+                "ライブ文字起こしは停止しました。録音全体を確定処理します: \(failure)"
+        case .finished(let request, let result):
+            if let result {
                 reportFailedFinalization(result)
-                finalization = result
-            case .finishLive(let sessionID, let checkpoint):
-                await waitForLiveASRDrain(sessionID: sessionID)
-
-                if let failure = liveASRFailures[sessionID] {
-                    await sessionProcessor.cancelLiveTranscription(
-                        sessionID: sessionID
-                    )
-                    processingStatusText =
-                        "ライブ文字起こしは停止しました。録音全体を確定処理します: \(failure)"
-                }
-                let result = await sessionProcessor.finishLiveTranscription(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    finalSegments: [],
-                    pacingMode: .normal,
-                    shouldPause: shouldPause,
-                    onPhase: { _ in },
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-                cleanupLiveASRState(sessionID: sessionID)
-                if result.disposition == .paused {
-                    // The live session has ended; resuming finalizes the saved recording.
-                    holdForHeat(.finalize(
-                        sessionID: sessionID,
-                        metadataPolicy: .reject
-                    ))
-                }
-                reportFailedFinalization(result)
-                finalization = result
-            case .retryContentPriority(
-                let sessionID,
-                let boundarySegments,
-                let clauses
-            ):
-                await sessionProcessor.retryContentPrioritySession(
-                    sessionID: sessionID,
-                    boundarySegments: boundarySegments,
-                    clauses: clauses,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-                refreshSavedSessions()
-                finalization = nil
             }
-
-            if let retained = finalization?.retainedTranscript,
-               displayedSessionID == requestSessionID {
+            if let retained = result?.retainedTranscript,
+               displayedSessionID == request.sessionID {
                 switch retained {
                 case .finalized: transcriptViewModel.setDisplayState(.finalized)
                 case .provisional: transcriptViewModel.setDisplayState(.live)
                 case .nothing: transcriptViewModel.setDisplayState(.empty)
                 }
             }
-            if !pendingProcessing.isEmpty {
-                processingState = .backlogged
-                processingStatusText = "次の文字起こし処理を開始します"
-                transcriptViewModel.setStatus("次の文字起こし処理を開始します")
+        case .next:
+            processingState = .backlogged
+            processingStatusText = "次の文字起こし処理を開始します"
+            transcriptViewModel.setStatus("次の文字起こし処理を開始します")
+        case .willFinishDrain:
+            if processingQueue.thermallyHeld.isEmpty,
+               processingState == .running || processingState == .backlogged {
+                processingState = .complete
             }
-            if finalization?.disposition == .completed {
-                await autoExportIfEnabled(sessionID: requestSessionID)
-            }
-            currentlyProcessingSessionID = nil
+        case .drained:
+            releaseIdleResourcesIfIdle()
         }
-
-        if thermallyHeldProcessing.isEmpty,
-           processingState == .running || processingState == .backlogged {
-            processingState = .complete
-        }
-        processingTask = nil
-        releaseIdleResourcesIfIdle()
     }
 
     func recoverPendingSessions() async {
-        isMaintainingStorage = true
+        processingQueue.beginStorageMaintenance()
         do {
             let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
             let maintenance = scan.maintenance.filter { $0.sessionID != recordingSessionID }
@@ -390,7 +295,7 @@ extension AppState {
                     }
                 }
             )
-            isMaintainingStorage = false
+            processingQueue.endStorageMaintenance()
             // Only remove our temporary status; recording or processing may have replaced it while awaiting.
             if !maintenance.isEmpty {
                 if processingStatusText == maintenanceStatus {
@@ -400,23 +305,12 @@ extension AppState {
                     transcriptViewModel.setStatus(previousTranscriptStatus)
                 }
             }
-            // Pending decisions of a published snapshot wait for the user's retry; the tagger is deterministic.
-            let recoveries: [PendingProcessing] = scan.candidates
-                .filter { $0.manifest.sessionID != recordingSessionID }
-                .filter { maintenanceFailures[$0.manifest.sessionID] == nil }
-                .filter { candidate in
-                    !pendingProcessing.contains { $0.sessionID == candidate.manifest.sessionID }
-                }
-                .compactMap { candidate in
-                    switch candidate.action {
-                    case .finalize:
-                        .finalize(sessionID: candidate.manifest.sessionID, metadataPolicy: .reject)
-                    case .recoverDecisionRun(let boundarySegments, let clauses):
-                        contentPriorityRetry(for: candidate, boundarySegments: boundarySegments, clauses: clauses)
-                    case .retryContentPriority:
-                        nil
-                    }
-                }
+            let recoveries = SessionProcessingCoordinator.recoveryRequests(
+                candidates: scan.candidates,
+                recordingSessionID: recordingSessionID,
+                maintenanceFailures: maintenanceFailures,
+                pending: processingQueue.pending
+            )
 
             if !recoveries.isEmpty {
                 processingStatusText = "未完了の文字起こしを復旧しています（\(recoveries.count)件）"
@@ -427,8 +321,8 @@ extension AppState {
             for recovery in recoveries {
                 enqueueProcessing(recovery)
             }
-            if !pendingProcessing.isEmpty {
-                startDrainIfIdle()
+            if !processingQueue.pending.isEmpty {
+                processingCoordinator.startDrainIfIdle()
             }
 
             var sentences: [String] = []
@@ -449,15 +343,15 @@ extension AppState {
                 processingStatusText = message
             }
         } catch {
-            isMaintainingStorage = false
+            processingQueue.endStorageMaintenance()
             processingState = .partialFailure(error.localizedDescription)
             processingStatusText =
                 "未完了セッションを復旧できませんでした: \(error.localizedDescription)"
             transcriptViewModel.setStatus(
                 "未完了セッションを復旧できませんでした"
             )
-            if !pendingProcessing.isEmpty {
-                startDrainIfIdle()
+            if !processingQueue.pending.isEmpty {
+                processingCoordinator.startDrainIfIdle()
             }
         }
     }

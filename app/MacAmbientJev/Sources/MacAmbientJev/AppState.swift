@@ -7,16 +7,8 @@ import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevCapture
 import MacAmbientJevRuntime
+import MacAmbientJevPipeline
 import UniformTypeIdentifiers
-
-/// Incremental VAD is independent of capture and consumes only durable checkpoints.
-protocol LiveVADProcessing: Sendable {
-    var segmentationRunID: String { get }
-    func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress
-    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress
-}
-
-extension LiveVADSession: LiveVADProcessing {}
 
 typealias LiveVADFactory = @MainActor (
     _ processingDirectory: URL, _ initialCheckpoint: AudioCheckpoint, _ measureMicInputLevels: Bool, _ sessionURL: URL
@@ -71,22 +63,6 @@ protocol AppCaptureEngine {
 
 extension AudioCaptureEngine: AppCaptureEngine {}
 
-final class ThermalStateObservation {
-    private let token: NSObjectProtocol
-    private let center: NotificationCenter
-
-    init(center: NotificationCenter, onChange: @escaping @Sendable () -> Void) {
-        self.center = center
-        token = center.addObserver(
-            forName: ProcessInfo.thermalStateDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { _ in onChange() }
-    }
-
-    deinit { center.removeObserver(token) }
-}
-
 final class TerminationObservation {
     private let token: NSObjectProtocol
     private let center: NotificationCenter
@@ -105,15 +81,6 @@ final class TerminationObservation {
 
 @MainActor
 final class AppState: ObservableObject {
-    enum RecordingPhase: Equatable {
-        case idle
-        case requestingPermission
-        case starting
-        case recording
-        case stopping
-        case importing
-    }
-
     enum StatusTone: Equatable {
         case neutral
         case recording
@@ -140,47 +107,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    enum PendingProcessing {
-        case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
-        case finalize(sessionID: UUID, metadataPolicy: UnreadableMetadataPolicy)
-        case retryContentPriority(
-            sessionID: UUID,
-            boundarySegments: [SegmentTextReference],
-            clauses: [ClauseReference]
-        )
-
-        var sessionID: UUID {
-            switch self {
-            case .finishLive(let sessionID, _),
-                 .finalize(let sessionID, _),
-                 .retryContentPriority(let sessionID, _, _):
-                sessionID
-            }
-        }
-
-        var finalizesTranscript: Bool {
-            switch self {
-            case .finishLive, .finalize:
-                true
-            case .retryContentPriority:
-                false
-            }
-        }
-    }
-
-    enum SessionExportState: Equatable {
-        case exporting
-        case exported(URL)
-        case failed(String)
-    }
-
-    struct LiveASRBatch {
-        let segments: [SegmentReference]
-    }
-
     @Published var statusText = UserFacingStatus.idle.text
     @Published var statusTone: StatusTone = .neutral
-    @Published var recordingPhase: RecordingPhase = .idle
+    @Published var recording = RecordingLifecycle()
+    var recordingPhase: RecordingPhase { recording.phase }
     @Published var captureSource: CaptureSource = .microphone
     @Published var captureWarningText: String?
     /// Live input-level status of the current microphone recording. Only failures outlive the recording.
@@ -190,13 +120,17 @@ final class AppState: ObservableObject {
     @Published var modelPreparation: ModelPreparation = .idle
     @Published var processingState: ProcessingState = .idle
     @Published var processingStatusText: String?
-    @Published var savedSessions: [SavedSessionSummary] = []
-    @Published var selectedSavedSessionURL: URL?
+    @Published var processingQueue = SessionProcessingQueue()
+    @Published var savedSessionOperations = SavedSessionOperations()
     @Published var exportDirectoryPath: String?
     @Published var exportDestinationMessage: String?
-    @Published var sessionExports: [UUID: SessionExportState] = [:]
+
+    var savedSessions: [SavedSessionSummary] { savedSessionOperations.sessions }
+    var selectedSavedSessionURL: URL? { savedSessionOperations.selectedSessionURL }
+    var sessionExports: [UUID: SessionExportState] { savedSessionOperations.exports }
 
     let transcriptViewModel = LiveTranscriptViewModel()
+    let liveTranscription = LiveTranscriptionState()
     let decisionUsageCounter: DecisionUsageCounter
 
     let paths: AppPaths
@@ -209,37 +143,34 @@ final class AppState: ObservableObject {
     let pausesProcessing: Bool
     let userDefaults: UserDefaults
     let makeLiveVADSession: LiveVADFactory
+    let thermalMonitor: any ThermalMonitoring
 
-    var recordingSessionID: UUID?
+    var recordingSessionID: UUID? { recording.sessionID }
     /// Set only while the current recording captures the microphone.
     var micInputSessionID: UUID?
     var displayedSessionID: UUID?
-    var pendingCaptureFailure: (sessionID: UUID, message: String)?
-    var pendingProcessing: [PendingProcessing] = []
-    /// Finalizations held while the Mac is at critical thermal state, resumed in order when it cools.
-    var thermallyHeldProcessing: [PendingProcessing] = []
-    var thermalObserver: ThermalStateObservation?
-    var currentlyProcessingSessionID: UUID?
-    var finalizationGate = SavedSessionReprocessGate()
-    var processingTask: Task<Void, Never>?
-    /// True while launch maintenance may compact recordings; the processing queue does not start.
-    var isMaintainingStorage = false
+    var thermalObserver: MacThermalStateObservation?
+    lazy var processingCoordinator = SessionProcessingCoordinator(
+        effects: self,
+        processor: sessionProcessor,
+        thermalMonitor: thermalMonitor
+    )
+    lazy var liveCoordinator: LiveTranscriptionCoordinator = LiveTranscriptionCoordinator(
+        state: liveTranscription,
+        effects: self,
+        processor: sessionProcessor,
+        thermalMonitor: thermalMonitor,
+        sleep: AppState.sleepLiveTranscription
+    )
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
     var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
 
-    var liveVADSession: (any LiveVADProcessing)?
-    var liveVADTask: Task<Void, Never>?
-    var liveVADSegmentCount = 0
-    var liveVADFailureText: String?
-
-    var liveASRQueues: [UUID: [LiveASRBatch]] = [:]
-    var liveASRLatestCheckpoints: [UUID: AudioCheckpoint] = [:]
-    var liveASRTasks: [UUID: Task<Void, Never>] = [:]
-    var liveASRFailures: [UUID: String] = [:]
-    var liveContentPriorityStatus: [UUID: String] = [:]
-    var readLiveThermalPressure: @MainActor () -> ThermalPressure = AppState.currentThermalPressure
+    @MainActor
+    static func sleepLiveTranscription(_ duration: Duration) async throws {
+        try await Task.sleep(for: duration)
+    }
 
     init(
         paths: AppPaths,
@@ -249,6 +180,7 @@ final class AppState: ObservableObject {
         userDefaults: UserDefaults,
         engines: SessionProcessingEngines,
         makeLiveVADSession: @escaping LiveVADFactory,
+        thermalMonitor: any ThermalMonitoring,
         makeDecisions: (@Sendable (AppPaths, DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory)? = nil
     ) {
         let decisionUsageCounter = DecisionUsageCounter()
@@ -264,6 +196,7 @@ final class AppState: ObservableObject {
         self.userDefaults = userDefaults
         self.exportDestination = ExportDestinationStore(defaults: userDefaults)
         self.makeLiveVADSession = makeLiveVADSession
+        self.thermalMonitor = thermalMonitor
         self.decisionProviderFactory = decisionProviderFactory
 
         let makeDecisionCoordinator: NativeSessionProcessor.DecisionCoordinatorFactory
@@ -275,6 +208,7 @@ final class AppState: ObservableObject {
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
             engines: engines,
+            audioHandling: MacSessionProcessingAudio(),
             contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter)
         )
         self.exportDirectoryPath = exportDestination.path
@@ -282,12 +216,12 @@ final class AppState: ObservableObject {
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }
-        thermalObserver = ThermalStateObservation(center: .default) { [weak self] in
+        thermalObserver = MacThermalStateObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.resumeThermallyHeldProcessing() }
         }
 
         if !pausesProcessing {
-            isMaintainingStorage = true
+            processingQueue.beginStorageMaintenance()
             startupMaintenanceTask = Task { [weak self] in
                 await self?.recoverPendingSessions()
             }
@@ -317,9 +251,6 @@ final class AppState: ObservableObject {
     }
 
     var queuedFinalizationSessionIDs: Set<UUID> {
-        finalizationGate.sessionIDs
-            .union(pendingProcessing.map(\.sessionID))
-            .union(thermallyHeldProcessing.map(\.sessionID))
-            .union(currentlyProcessingSessionID.map { [$0] } ?? [])
+        processingQueue.sessionIDs
     }
 }

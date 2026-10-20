@@ -67,7 +67,7 @@ public struct ProcessingTimelineAudioExporter: Sendable {
         }
         var destination = format.streamDescription.pointee
         let descriptorFile = try DescriptorAudioFile(
-            url: url, sessionURL: sessionURL, type: kAudioFileCAFType, format: &destination
+            url: url, sessionURL: sessionURL, format: &destination
         )
         var wrapped: ExtAudioFileRef?
         let wrapStatus = ExtAudioFileWrapAudioFileID(descriptorFile.audioFile, true, &wrapped)
