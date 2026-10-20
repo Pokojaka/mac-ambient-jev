@@ -643,7 +643,11 @@ reparse point（symlink、junction を含む）、通常ファイルでない末
 親が途中で改名されても、検査後に絶対パスから開き直すことはありません。
 
 一時ファイルは同じ親 handle 配下に排他的に作り、FlushFileBuffers 後、
-NtSetInformationFile の FileRenameInformation で開いた一時ファイル自身を原子的に公開します。
+NtSetInformationFile の FileRenameInformationEx（FILE_RENAME_POSIX_SEMANTICS と
+FILE_RENAME_REPLACE_IF_EXISTS）で開いた一時ファイル自身を原子的に公開します。
+エディタやバックアップソフトなど別のプロセスが公開先を FILE_SHARE_DELETE 付きで開いていても置換できます。
+FILE_SHARE_DELETE なしで開かれている場合や、POSIX semantics の改名に対応しないファイルシステムでは
+エラーを返し、非 POSIX の改名へ切り替えません。
 公開先も固定したディレクトリ handle で指定し、公開後にディレクトリを同期します。
 MoveFileExW のパスを再解決する方式は使いません。同期・原子置換をファイルシステムが拒否した場合は
 エラーを返し、通常のコピーや未同期の保存へ切り替えません。
