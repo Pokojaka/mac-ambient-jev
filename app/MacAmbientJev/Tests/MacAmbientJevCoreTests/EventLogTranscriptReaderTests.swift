@@ -384,6 +384,34 @@ func eventLogTranscriptReaderRejectsSavedFillerRangeOutsideSourceText() async th
 }
 
 @Test
+func eventLogTranscriptReaderNamesADecisionRecordedInTheFormatBefore20261014() async throws {
+    let root = temporarySessionRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try await writeLiveRun(root: root, sessionID: UUID(), texts: ["本文"], fillerRangesByIndex: [:], results: [], complete: false)
+    var objects = try eventObjects(root)
+    let assessmentIndex = try #require(objects.firstIndex {
+        $0["event_type"] as? String == ClauseEventType.boundaryAssessed
+    })
+    var payload = try #require(objects[assessmentIndex]["payload"] as? [String: Any])
+    payload["request"] = [
+        "request_id": "r1",
+        "metadata": ["provider": "jev", "model": "jev", "model_revision": "jev", "input_tokens": 10, "output_tokens": 2],
+    ]
+    objects[assessmentIndex]["payload"] = payload
+    let eventSeq = try #require(objects[assessmentIndex]["event_seq"] as? UInt64)
+    let lines = try objects.map { try JSONSerialization.data(withJSONObject: $0) }
+    let activeRuns = ActiveRuns(
+        segmentation: "live_seg", asr: "live_asr", clauseBoundary: "boundary_live", contentPriority: "priority_live"
+    )
+
+    #expect(throws: EventLogTranscriptReaderError.obsoleteDecisionFormat(
+        eventSeq: eventSeq, eventType: ClauseEventType.boundaryAssessed
+    )) {
+        _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
+    }
+}
+
+@Test
 func publishedSnapshotRejectsAPendingListThatContradictsTheLog() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }

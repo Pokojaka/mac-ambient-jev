@@ -381,10 +381,14 @@ func reprocessingAfterCompactionProducesTheSameTranscriptFromTheFLAC() async thr
     let processor = fixture.processor(engines(for: .success, observations: EngineObservations()))
 
     let (first, firstUpdates) = try await fixture.process(processor)
-    let pcmTranscript = transcript(await firstUpdates.last)
+    let pcmRows = await firstUpdates.last
+    let pcmTranscript = transcript(pcmRows)
 
     #expect(first.disposition == .completed)
-    #expect(pcmTranscript.count == 2)
+    #expect(pcmRows.map(\.text) == ["mean -0.100"])
+    #expect(pcmRows.map(\.startMilliseconds) == [0])
+    #expect(pcmRows.map(\.endMilliseconds) == [2_000])
+    #expect(pcmRows.flatMap(\.speakers).map(\.id) == ["S1", "S2"])
     guard case .recordedFLAC = try fixture.source() else {
         Issue.record("the stored recording is FLAC after finalization")
         return
@@ -462,6 +466,10 @@ func aSessionCompactedByMaintenanceFinalizesFromTheFLACWithoutAStaleSource() asy
     )
 
     #expect(result.disposition == .completed)
-    #expect(transcript(await updates.last).count == 2)
+    let rows = await updates.last
+    #expect(rows.map(\.text) == ["mean -0.100"])
+    #expect(rows.map(\.startMilliseconds) == [0])
+    #expect(rows.map(\.endMilliseconds) == [2_000])
+    #expect(rows.flatMap(\.speakers).map(\.id) == ["S1", "S2"])
     #expect(exists(fixture.layout.recordingFLACURL))
 }

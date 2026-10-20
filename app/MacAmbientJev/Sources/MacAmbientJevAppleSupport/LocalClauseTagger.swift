@@ -63,7 +63,7 @@ public actor LocalClauseTagger: DecisionProvider {
                     throw ClauseTaggerModelError.invalidOutput
                 }
                 let probabilities = prediction.spanProbabilities[tokenIndex]
-                guard probabilities.count == 3 else {
+                guard probabilities.count == 4 else {
                     throw ClauseTaggerModelError.invalidOutput
                 }
                 let (ordinal, overflow) = encoded.contentStartTokenIndex
@@ -88,7 +88,7 @@ public actor LocalClauseTagger: DecisionProvider {
         }
 
         spanPredictions.sort { $0.ordinal < $1.ordinal }
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
             sourceText: request.text,
             tokenRanges: spanPredictions.map { $0.range },
             spanProbabilities: spanPredictions.map { $0.probabilities }
@@ -113,7 +113,7 @@ public actor LocalClauseTagger: DecisionProvider {
         return ClauseBoundaryResponse(
             probabilities: candidateProbabilities,
             continuationProbability: continuationProbability,
-            fillerRanges: fillerRanges,
+            fillerRanges: removalRanges,
             inputTokens: inputTokens
         )
     }

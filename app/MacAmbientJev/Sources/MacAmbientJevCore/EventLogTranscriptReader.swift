@@ -5,6 +5,8 @@ public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
     case unreadableLine(index: Int)
     /// An event the reader needs is missing a required field or has a field of the wrong type.
     case malformedEvent(eventSeq: UInt64, eventType: String)
+    /// A decision event whose `request` carries `metadata`, the format used before 2026-10-14.
+    case obsoleteDecisionFormat(eventSeq: UInt64, eventType: String)
     /// An `asr.completed` event whose `outcome` contradicts its `text`.
     case asrOutcomeMismatch(eventSeq: UInt64)
     /// Clause events that do not match the ASR text, the boundary results, or each other.
@@ -16,6 +18,8 @@ public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
             "イベントログの \(index + 1) 行目を読めません"
         case .malformedEvent(let eventSeq, let eventType):
             "イベントログの \(eventType)（event_seq \(eventSeq)）が壊れています"
+        case .obsoleteDecisionFormat(let eventSeq, let eventType):
+            "このセッションは 2026-10-14 より前の判定形式（\(eventType)、event_seq \(eventSeq)）を含むため確定できません。元の音声ファイルを読み込み直してください"
         case .asrOutcomeMismatch(let eventSeq):
             "イベントログの asr.completed（event_seq \(eventSeq)）の outcome が本文と一致しません"
         case .inconsistentClauseRun(let runID, let reason):
@@ -88,7 +92,13 @@ struct EventLogLine {
     }
 
     var malformed: EventLogTranscriptReaderError {
-        .malformedEvent(eventSeq: header.eventSeq, eventType: header.eventType)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["payload"] as? [String: Any],
+              let request = payload["request"] as? [String: Any],
+              request["metadata"] != nil else {
+            return .malformedEvent(eventSeq: header.eventSeq, eventType: header.eventType)
+        }
+        return .obsoleteDecisionFormat(eventSeq: header.eventSeq, eventType: header.eventType)
     }
 
     /// The run ID a known event type is keyed by; its absence makes the event unattributable.

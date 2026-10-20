@@ -5,8 +5,8 @@ public enum ClauseTaggerSpanProjectionError: Error, Sendable, Equatable {
 }
 
 public enum ClauseTaggerSpanProjection {
-    /// Labels UTF-16 positions from scalar-aligned tokens, then projects only Characters whose scalars are all F.
-    public static func fillerRanges(
+    /// Labels UTF-16 positions from scalar-aligned tokens, then removes Characters whose positions are all F or B.
+    public static func removalRanges(
         sourceText: String,
         tokenRanges: [TextUTF16Range],
         spanProbabilities: [[Double]]
@@ -32,14 +32,14 @@ public enum ClauseTaggerSpanProjection {
                   range.end <= sourceLength,
                   scalarBoundaries.contains(range.start),
                   scalarBoundaries.contains(range.end),
-                  probabilities.count == 3,
+                  probabilities.count == 4,
                   probabilities.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
                   abs(probabilities.reduce(0, +) - 1) <= taggerProbabilitySumTolerance else {
                 throw ClauseTaggerSpanProjectionError.invalidPrediction
             }
         }
 
-        // Matches `clf/train_multi.py` training labels and `compare/local_spans.py` evaluation projection.
+        // Class order is O, F, D, B; strict-greater argmax keeps the lowest index on ties.
         var labels = Array(repeating: 0, count: sourceLength)
         for (range, probabilities) in zip(tokenRanges, spanProbabilities) {
             var label = 0
@@ -51,25 +51,25 @@ public enum ClauseTaggerSpanProjection {
             }
         }
 
-        var fillerRanges: [TextUTF16Range] = []
-        var fillerStart: Int?
+        var removalRanges: [TextUTF16Range] = []
+        var removalStart: Int?
         var offset = 0
         for character in sourceText {
             let characterEnd = offset + character.utf16.count
-            let isFiller = labels[offset..<characterEnd].allSatisfy { $0 == 1 }
-            if isFiller {
-                if fillerStart == nil {
-                    fillerStart = offset
+            let isRemoved = labels[offset..<characterEnd].allSatisfy { $0 == 1 || $0 == 3 }
+            if isRemoved {
+                if removalStart == nil {
+                    removalStart = offset
                 }
-            } else if let start = fillerStart {
-                fillerRanges.append(try TextUTF16Range(start: start, end: offset))
-                fillerStart = nil
+            } else if let start = removalStart {
+                removalRanges.append(try TextUTF16Range(start: start, end: offset))
+                removalStart = nil
             }
             offset = characterEnd
         }
-        if let start = fillerStart {
-            fillerRanges.append(try TextUTF16Range(start: start, end: offset))
+        if let start = removalStart {
+            removalRanges.append(try TextUTF16Range(start: start, end: offset))
         }
-        return fillerRanges
+        return removalRanges
     }
 }

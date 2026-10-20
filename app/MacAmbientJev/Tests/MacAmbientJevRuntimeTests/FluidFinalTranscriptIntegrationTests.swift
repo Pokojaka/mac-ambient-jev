@@ -322,7 +322,10 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
                 shouldFail: false
             ),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", startFrame: 0, endFrame: 8_000),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", startFrame: 8_000, endFrame: 16_000)
+                ],
                 log: log
             )
         ),

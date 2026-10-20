@@ -4,11 +4,11 @@
 
 画面、`transcript.txt`、キャプチャ CLI の `transcriptText`、CLI `segments.json` の `display_text` は、同じ `MaterializedTranscriptSegment.displayText` を使う。画面と `transcript.txt` は表示本文が空、または空白・改行だけの発話だけを除き、非空白の認識済み発話をすべて含める。
 
-フィラー除去には、active event log の保存済み `clause_boundaries.assessed.filler_ranges` だけを使う。範囲は同じ ASR 原文に対する境界判定の source-only window の span head から作る raw UTF-16 範囲で、ラベルは argmax の `O=0, F=1, D=2`。F の範囲だけをフィラーとして除き、D と O は保持する。対象 source の評価が未保存、pending、または失敗している場合はフィラー範囲がないため原文を表示する。materialization 時にモデル推論は行わない。保存イベントに記録された LOW priority slice は、フィラー範囲を適用した後に別途表示本文から除く。未判定・保留・失敗の priority slice は除かない。
+フィラー・相槌除去には、active event log の保存済み `clause_boundaries.assessed.filler_ranges` だけを使う。保存フィールド `filler_ranges` は `{start,end}` object の配列で、フィラー（F）と相槌（B）を表示本文から除く raw UTF-16 範囲を表す。範囲は同じ ASR 原文に対する境界判定の source-only window の span head から作る。各 token の `span_probs` は `O=0, F=1, D=2, B=3` の argmax で label を決め、同点なら添字の小さい label を選ぶ。token span が重なる scalar は後の token の label で上書きし、どの token span にも含まれない scalar は O とする。原文の各 Character は構成するすべての scalar が F または B（F/B 混在も可）の場合だけ除去し、ひとつでも O または D の scalar があれば Character 全体を保持する。隣接して除去する Character は raw UTF-16 範囲に結合する。F・B除去範囲の直後に連続して接する句読点だけを併せて除き、空白は変更・正規化しない。対象 source の境界 assessment が未保存、pending、または失敗している場合は適用する保存済み範囲がないため RAW 原文を表示する。materialization 時にモデル推論は行わない。保存イベントに記録された LOW priority slice は、F・B除去範囲を適用した後に別途表示本文から除く。未判定・保留・失敗の priority slice は除かない。
 
 「聞き取れませんでした」などの文字列だけで発話を除外しない。認識不能は ASR の構造化状態 `outcome: empty` で扱う。イベントには空本文を含む区間が残る。
 
-`SavedTranscriptLoader` は保存済み active run のイベントと原文から本文・行内 slice を materialize し、保存された境界評価の `filler_ranges` を使う。別の辞書から範囲を取得したり、読取時に判定を再実行したりしない。読み込み・書き出しは ASR イベントと原文を変更しない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は上記と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラーだけ・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
+`SavedTranscriptLoader` は保存済み active run のイベントと原文から本文・行内 slice を materialize し、保存された境界評価の `filler_ranges`（F・B除去範囲）を使う。別の辞書から範囲を取得したり、読取時に判定を再実行したりしない。読み込み・書き出しは ASR イベントと原文を変更しない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は上記と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラー・相槌除去後に空になる発話・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
 
 処理 CLI とキャプチャ CLI は発話区間検出・音声認識・話者分離の3段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に発話文判定を再実行しない。キャプチャ CLI の `transcriptText` は `displayText` を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の `ContentPriorityAccess.disabled` は判定を実行しないため、その CLI 処理で保存する `display_text` は ASR 原文のまま。判定再試行待ちセッションの resume も判定せず、公開済みの原文・表示本文を含む JSON を書き出す。
 
@@ -60,11 +60,13 @@ Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙�
 
 メインウィンドウは起動時に開く。SwiftUI の主シーンに `Window` を使うため、メインウィンドウを閉じるとアプリは終了し、Dock アイコンをクリックすると再起動してメインウィンドウを開く。`defaultLaunchBehavior(.presented)` により、復元するウィンドウがない起動時と、実行中のアプリに可視ウィンドウがない状態での Dock クリック時にもメインウィンドウを表示する。
 
+ボタン・切替・入力欄などの操作要素には、マウスオーバーで説明（`help(_:)`）を出す。文面は Apple HIG（日本語版「ヘルプの提供」）に従い、要素が行う操作を体言止めで 60 字以内にまとめ、要素名を繰り返さず、文末の句点を付けない。無効な状態では操作できない理由を出す。一行に切り詰めたパス・状態・読み込みエラーは、全文をマウスオーバーで出す。
+
 ## 保存済み録音の一覧
 
 保存済み録音はメイン画面のボタンで開く独立したウィンドウ「保存済み録音」に表示する。通常のウィンドウなので閉じるボタンと Command-W で閉じられ、開いたままでもアプリを終了できる。
 
-一覧は作成日時の新しい順。セッション情報を読めない項目は読める項目の後ろに置き、理由を表示する。入力元は「マイク」「システム音声」「読み込み音声」で区別する。
+一覧は作成日時の新しい順。セッション情報を読めない項目は読める項目の後ろに置き、理由を表示する。入力元は「マイク」「システム音声」「読み込み音声」で区別する。右側の詳細は縦にスクロールし、長い読み込みエラーでも左の一覧の高さを変えない。
 
 | 状態 | 表示 |
 | --- | --- |
