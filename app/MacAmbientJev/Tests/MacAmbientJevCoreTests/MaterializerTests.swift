@@ -93,6 +93,43 @@ func lowPrioritySentencesAreRemovedFromScreenTranscriptAndDisplayText() throws {
 }
 
 @Test
+func materializerFormatsNumeralsAfterFillerAndLowPriorityRemoval() throws {
+    let raw = "えー、😀二十八点四です。はい。"
+    let primaryRange = try TextUTF16Range(start: 0, end: 13)
+    let lowPriorityRange = try TextUTF16Range(start: 13, end: 16)
+    let segment = try MaterializedTranscriptSegment.fixture(
+        segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
+        fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [
+            try prioritySlice("c1_0", 0, 13, .primary),
+            try prioritySlice("c1_1", 13, 16, .lowPriority)
+        ]
+    )
+
+    #expect(segment.text == raw)
+    #expect(segment.source == (try SegmentTextReference(
+        segmentationRunID: "seg", segmentID: "mixed", asrRunID: "asr", asrEventSeq: 1
+    )))
+    #expect(segment.textProjection.text == "😀二十八点四です。はい。")
+    #expect(segment.textProjection.sourceUTF16Length == raw.utf16.count)
+    #expect(segment.textProjection.removedRanges == [try TextUTF16Range(start: 0, end: 3)])
+    #expect(segment.clauseSlices.map(\.sourceRange) == [primaryRange, lowPriorityRange])
+    #expect(try segment.textProjection.displayRanges(for: primaryRange) == [try TextUTF16Range(start: 0, end: 10)])
+    #expect(try segment.textProjection.displayRanges(for: lowPriorityRange) == [try TextUTF16Range(start: 10, end: 13)])
+    #expect(segment.displayText == "😀28.4です。")
+    #expect(segment.displayText.utf16.count == 9)
+    #expect(segment.textProjection.text.contains("二十八点四"))
+
+    let object = try #require(
+        JSONSerialization.jsonObject(with: try JSONEncoder().encode(segment)) as? [String: Any]
+    )
+    #expect(object["text"] as? String == raw)
+    #expect(object["display_text"] as? String == "😀28.4です。")
+    #expect(try LiveTranscriptProjection().rows(for: [segment]).map(\.text) == ["😀28.4です。"])
+}
+
+@Test
 func rowWhoseEverySentenceIsLowPriorityIsNotShown() throws {
     let lowOnly = try MaterializedTranscriptSegment.fixture(
         segmentID: "low", startMilliseconds: 0, endMilliseconds: 1_000, text: "はい。うん。",
@@ -268,6 +305,48 @@ func materializerShowsASRBeforeEnrichment() throws {
 }
 
 @Test
+func materializerFormatsNumeralsWithoutBoundaryAssessment() throws {
+    let raw = "えー、二十八点四です。"
+    let asrEvent = TranscriptEvent.asrCompleted(
+        seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "s1",
+        text: raw, detectedLanguage: nil
+    )
+    let sourceEvents: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "s1", startFrame: 0, endFrame: 1_000),
+        asrEvent
+    ]
+    let segment = try #require(try TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: sourceEvents, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    ).first)
+
+    #expect(sourceEvents[1] == asrEvent)
+    #expect(segment.text == raw)
+    #expect(segment.textProjection.text == raw)
+    #expect(segment.displayText == "えー、28.4です。")
+    #expect(segment.clauseSlices.isEmpty)
+    #expect(segment.clauseState == .boundaryPending)
+
+    let pending = TranscriptEvent.clause(
+        seq: 3, runID: "boundary",
+        kind: .clauseBoundaryPending(ClauseBoundaryPendingPayload(
+            source: try #require(try asrEvent.asrSource()), reason: .requestFailed, message: "request failed"
+        ))
+    )
+    let eventsWithPendingBoundary = sourceEvents + [pending]
+    let failed = try #require(try TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: eventsWithPendingBoundary,
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", clauseBoundary: "boundary")
+    ).first)
+
+    #expect(eventsWithPendingBoundary[1] == asrEvent)
+    #expect(failed.text == raw)
+    #expect(failed.textProjection.text == raw)
+    #expect(failed.displayText == "えー、28.4です。")
+    #expect(failed.clauseSlices.isEmpty)
+    #expect(failed.clauseState == .boundaryPending)
+}
+
+@Test
 func materializerAppliesFillerRemovalOnlyAfterSavedAssessment() throws {
     let raw = "えー、資料を配ります。"
     let sourceEvents: [TranscriptEvent] = [
@@ -331,6 +410,57 @@ func materializerAppliesFillerRemovalOnlyAfterSavedAssessment() throws {
     #expect(object["text"] as? String == raw)
     #expect(object["display_text"] as? String == "資料を配ります。")
     #expect(try LiveTranscriptProjection().rows(for: [saved]).map(\.text) == ["資料を配ります。"])
+}
+
+@Test
+func materializerFormatsNumeralsAfterSavedFillerAssessment() throws {
+    let raw = "えー、二十八点四です。"
+    let asrEvent = TranscriptEvent.asrCompleted(
+        seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "s1",
+        text: raw, detectedLanguage: nil
+    )
+    let sourceEvents: [TranscriptEvent] = [
+        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "s1", startFrame: 0, endFrame: 1_000),
+        asrEvent
+    ]
+    let source = try #require(try asrEvent.asrSource())
+    let fillerRange = try TextUTF16Range(start: 0, end: 2)
+    let fillerRanges = [fillerRange]
+    let candidates = try ClauseBoundaryCandidate.candidates(in: raw)
+    let assessment = try ClauseBoundaryAssessment(
+        source: source,
+        candidates: candidates,
+        probabilities: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, 0.1) }),
+        nextHead: nil,
+        continuationProbability: nil,
+        fillerRanges: fillerRanges,
+        request: try DecisionRequestRecord(requestID: "boundary-request", inputTokens: testInputTokens),
+        sourceDecision: .assessed
+    )
+    let assessedEvent = TranscriptEvent.clause(
+        seq: 3, runID: "boundary", kind: .clauseBoundaryAssessed(assessment)
+    )
+    let events = sourceEvents + [assessedEvent]
+    let saved = try #require(try TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: events,
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", clauseBoundary: "boundary")
+    ).first)
+
+    #expect(events[1] == asrEvent)
+    #expect(events[2] == assessedEvent)
+    #expect(assessment.fillerRanges == fillerRanges)
+    #expect(saved.text == raw)
+    #expect(saved.textProjection.text == "二十八点四です。")
+    #expect(saved.textProjection.sourceUTF16Length == raw.utf16.count)
+    #expect(raw.utf16.count == 11)
+    #expect(saved.textProjection.text.utf16.count == 8)
+    #expect(saved.textProjection.removedRanges == [try TextUTF16Range(start: 0, end: 3)])
+    let fullSourceRange = try TextUTF16Range(start: 0, end: raw.utf16.count)
+    let fullProjectedRange = try TextUTF16Range(start: 0, end: saved.textProjection.text.utf16.count)
+    #expect(try saved.textProjection.displayRanges(for: fullSourceRange) == [fullProjectedRange])
+    #expect(fullProjectedRange == (try TextUTF16Range(start: 0, end: 8)))
+    #expect(saved.clauseSlices.isEmpty)
+    #expect(saved.displayText == "28.4です。")
 }
 
 @Test

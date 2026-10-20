@@ -213,7 +213,7 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
     /// The ASR text as recognized.
     public let text: String
     public let textProjection: CleanedTranscriptText
-    /// The text shown on screen and in transcript.txt: fillers, backchannels, and saved low-priority clauses removed.
+    /// Display-only text shown on screen and in transcript.txt, with fillers, backchannels, and saved low-priority clauses removed before numeral formatting.
     public let displayText: String
     public let speakers: [MaterializedSpeakerSpan]
     /// Nil only when the segment has no recognized text.
@@ -234,9 +234,9 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         self.endMilliseconds = endMilliseconds
         self.text = text
         self.textProjection = textProjection
-        self.displayText = try Self.displayText(
+        self.displayText = JapaneseNumeralDisplayConverter.convert(try Self.displayText(
             segmentID: segmentID, source: source, text: text, projection: textProjection, clauseSlices: clauseSlices
-        )
+        ))
         self.speakers = speakers
         self.clauseState = clauseState
         self.clauseSlices = clauseSlices

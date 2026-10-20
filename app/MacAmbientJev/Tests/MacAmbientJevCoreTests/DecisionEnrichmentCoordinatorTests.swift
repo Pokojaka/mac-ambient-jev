@@ -428,8 +428,9 @@ func failedBoundaryRequestsLeaveRecognizedSourcesUnresolved() async throws {
     let published = try readPublished(root: root)
     #expect(published.map(\.clauseState) == [.boundaryPending, .boundaryPending])
     #expect(published.allSatisfy { $0.clauseSlices.isEmpty })
-    // Unsplit rows stay normal text; a failed boundary is never turned into "no".
-    #expect(try LiveTranscriptProjection().rows(for: published).map(\.text) == ["一つ目。二つ目", "三つ目"])
+    // Unsplit, unclassified rows still use display formatting; a failed boundary is never turned into "no".
+    #expect(published.map(\.text) == ["一つ目。二つ目", "三つ目"])
+    #expect(try LiveTranscriptProjection().rows(for: published).map(\.text) == ["1つ目。2つ目", "3つ目"])
     let reasons = try eventObjects(root).filter { $0["event_type"] as? String == "clause_boundaries.pending" }
         .compactMap { ($0["payload"] as? [String: Any])?["reason"] as? String }
     #expect(reasons == ["request_failed", "request_failed"])
