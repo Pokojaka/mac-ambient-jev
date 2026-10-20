@@ -7,6 +7,7 @@ import Foundation
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
     .library(name: "MacAmbientJevPipeline", targets: ["MacAmbientJevPipeline"]),
+    .library(name: "MacAmbientJevDiarization", targets: ["MacAmbientJevDiarization"]),
     .executable(
         name: "MacAmbientJevEvaluateSession",
         targets: ["MacAmbientJevEvaluateSession"]
@@ -38,6 +39,7 @@ coreDependencies.append("CWindowsSession")
 var targets: [Target] = [
     .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
+    .target(name: "MacAmbientJevDiarization", dependencies: ["MacAmbientJevCore"]),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
         dependencies: ["MacAmbientJevCore"]
@@ -64,6 +66,10 @@ var targets: [Target] = [
     .testTarget(
         name: "MacAmbientJevPipelineTests",
         dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevDiarizationTests",
+        dependencies: ["MacAmbientJevDiarization"]
     )
 ]
 
@@ -314,6 +320,7 @@ targets += [
         dependencies: [
             "MacAmbientJevCore",
             "MacAmbientJevPipeline",
+            "MacAmbientJevDiarization",
             "MacAmbientJevAppleSupport",
             .product(name: "FluidAudio", package: "FluidAudio"),
             .product(name: "Qwen3ASR", package: "speech-swift"),
