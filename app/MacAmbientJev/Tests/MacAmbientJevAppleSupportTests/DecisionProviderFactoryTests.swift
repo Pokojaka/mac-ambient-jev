@@ -5,8 +5,12 @@ import MacAmbientJevAppleSupport
 
 private struct UnexpectedLoad: Error {}
 
-private func blockingWait(_ semaphore: DispatchSemaphore) {
-    semaphore.wait()
+/// Runs a blocking call on a dispatch thread. Blocking a Swift concurrency thread instead can use up
+/// the cooperative pool, which has one thread per core (three on a CI runner), and deadlock the test.
+private func onBlockingThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async { continuation.resume(returning: body()) }
+    }
 }
 
 private final class LocalTaggerLoadFailure: Error, @unchecked Sendable {}
@@ -197,16 +201,18 @@ struct DecisionProviderFactoryTests {
 
         let factory = harness.factory
         let requests = (0..<3).map { _ in
-            Task.detached { () -> Bool in
-                do {
-                    _ = try factory.makeCoordinator()
-                    return false
-                } catch {
-                    return (error as AnyObject) === failure
+            Task {
+                await onBlockingThread { () -> Bool in
+                    do {
+                        _ = try factory.makeCoordinator()
+                        return false
+                    } catch {
+                        return (error as AnyObject) === failure
+                    }
                 }
             }
         }
-        await Task.detached { blockingWait(started) }.value
+        await onBlockingThread { started.wait() }
         try await Task.sleep(for: .milliseconds(300))
         #expect(loadCounter.loadCount == 1)
 

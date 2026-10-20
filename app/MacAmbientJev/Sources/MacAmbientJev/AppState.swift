@@ -164,6 +164,7 @@ final class AppState: ObservableObject {
     )
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
+    var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
 
     @MainActor
@@ -221,7 +222,7 @@ final class AppState: ObservableObject {
 
         if !pausesProcessing {
             processingQueue.beginStorageMaintenance()
-            Task { [weak self] in
+            startupMaintenanceTask = Task { [weak self] in
                 await self?.recoverPendingSessions()
             }
         }
