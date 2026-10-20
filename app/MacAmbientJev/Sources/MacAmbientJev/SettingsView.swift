@@ -30,6 +30,7 @@ struct SettingsView: View {
                     Button("モデルを準備") {
                         appState.prepareASRModel()
                     }
+                    .help("音声認識モデル（約2.5 GB）をダウンロードしてアプリ内に保存")
                 }
 
                 Text("初回は約2.5 GBをアプリ内にダウンロードします。録音中でも音声の保存と発話検出は続きます。")
@@ -44,11 +45,13 @@ struct SettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+                        .help(appState.paths.sessionsRoot.path)
                 }
 
                 Button("Finderで表示") {
                     appState.revealSessionsRoot()
                 }
+                .help("全録音を保存している sessions フォルダを開く")
 
                 LabeledContent("書き出し先") {
                     Text(appState.exportDirectoryPath ?? "未設定")
@@ -56,12 +59,14 @@ struct SettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+                        .help(appState.exportDirectoryPath ?? "書き出し先は未設定")
                 }
 
                 HStack {
                     Button("フォルダを選択…") {
                         appState.chooseExportDirectory()
                     }
+                    .help("文字起こしと音声の書き出し先を選択")
                     Button("Finderで表示") {
                         isRevealingExportDirectory = true
                         Task {
@@ -70,6 +75,7 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(appState.exportDirectoryPath == nil || isRevealingExportDirectory)
+                    .help(appState.exportDirectoryPath == nil ? "書き出し先を選ぶと表示可能" : "書き出し先フォルダを開く")
                     if isRevealingExportDirectory {
                         ProgressView()
                             .controlSize(.small)
@@ -79,6 +85,7 @@ struct SettingsView: View {
 
                 Toggle("処理完了後に自動で書き出す", isOn: $isAutoExportEnabled)
                     .disabled(appState.exportDirectoryPath == nil)
+                    .help(appState.exportDirectoryPath == nil ? "書き出し先を選ぶと設定可能" : "処理が終わった録音を書き出し先へ自動で保存")
 
                 Text("録音ごとにフォルダを作り、文字起こし（transcript.txt）と音声を保存します。録音した音声は可逆圧縮の FLAC、読み込んだ音声は元のファイルのままです。")
                     .font(.caption)
@@ -102,6 +109,7 @@ struct SettingsView: View {
                     Task { await checkModel() }
                 }
                 .disabled(decisionControlsDisabled)
+                .help(decisionControlsDisabled ? "録音中・処理中は確認不可" : "発話文判定モデルを読み込めるか確認")
 
                 if let checkedModelIdentity {
                     Text("モデル ID: \(checkedModelIdentity.modelID)")
@@ -121,6 +129,7 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(decisionControlsDisabled)
+                    .help(decisionControlsDisabled ? "録音中・処理中は再試行不可" : "判定できなかった発話文をもう一度判定")
                     if isRetryingDeferred {
                         ProgressView()
                             .controlSize(.small)
@@ -148,6 +157,7 @@ struct SettingsView: View {
             Section("マイク録音テスト") {
                 Toggle("マイクの入力音量を自動調整する", isOn: $automaticMicInputVolume)
                     .disabled(appState.recordingPhase != .idle)
+                    .help(appState.recordingPhase == .idle ? "マイク録音中だけシステムの入力音量を自動で変更" : "録音中は切り替え不可")
 
                 Text("マイク録音中にシステムの入力音量を変更します。録音を停止すると元に戻します。手動で変更した場合は、その音量を保ちます。")
                     .font(.caption)
@@ -162,6 +172,7 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(microphoneAccess != .notDetermined)
+                .help(microphoneAccess == .notDetermined ? "マイクの使用許可をシステムに要求" : "許可の変更はシステム設定から")
 
                 Text("メイン画面で「録音を開始」を押し、声を入れてから「録音を停止」を押してください。保存状態と文字起こしを確認できます。")
                     .font(.caption)

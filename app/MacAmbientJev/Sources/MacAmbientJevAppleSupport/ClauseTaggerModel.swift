@@ -153,13 +153,13 @@ public final class ClauseTaggerModel {
               let spanArray = Self.float32Array(named: "span_probs", in: prediction),
               let priorityArray = Self.float32Array(named: "priority_probs", in: prediction),
               Self.shape(of: boundaryArray) == [1, inputIDs.count, 2],
-              Self.shape(of: spanArray) == [1, inputIDs.count, 3],
+              Self.shape(of: spanArray) == [1, inputIDs.count, 4],
               Self.shape(of: priorityArray) == [1, 2] else {
             throw ClauseTaggerModelError.invalidOutput
         }
 
         let boundaryProbabilities = try Self.rows(from: boundaryArray, length: inputIDs.count, width: 2)
-        let spanProbabilities = try Self.rows(from: spanArray, length: inputIDs.count, width: 3)
+        let spanProbabilities = try Self.rows(from: spanArray, length: inputIDs.count, width: 4)
         let priorityProbabilities = try Self.vector(from: priorityArray, width: 2)
 
         return ClauseTaggerPrediction(

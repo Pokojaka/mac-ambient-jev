@@ -54,6 +54,7 @@ struct DiagnosticsView: View {
                     }
                 }
                 .disabled(isRefreshing)
+                .help("発話文判定のリクエスト回数と保留件数を読み直し")
             }
         }
         .formStyle(.grouped)
