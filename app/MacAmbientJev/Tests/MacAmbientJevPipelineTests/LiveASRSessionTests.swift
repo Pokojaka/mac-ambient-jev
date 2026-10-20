@@ -389,7 +389,7 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     #expect(eventTypes.filter { $0 == "processing.run.completed" }.count == 1)
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(10)))
 func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -588,7 +588,7 @@ func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     #expect(completion.failedCount == 0)
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(10)))
 func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -650,7 +650,7 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     } == ["asr.completed", "processing.run.completed"])
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(10)))
 func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

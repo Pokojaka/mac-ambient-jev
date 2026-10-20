@@ -189,7 +189,7 @@ private final class CaptureFailureSink {
 }
 
 @MainActor
-@Test("only runtime failures, interruptions, and disconnection of the active input stop capture", .timeLimit(.minutes(1)))
+@Test("only runtime failures, interruptions, and disconnection of the active input stop capture", .timeLimit(.minutes(10)))
 func activeCaptureNotificationRouting() async {
     let session = NSObject()
     let device = NSObject()

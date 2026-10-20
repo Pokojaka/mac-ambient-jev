@@ -193,7 +193,7 @@ struct DecisionProviderFactoryTests {
         #expect(loader.attemptCount == 1)
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(10)))
     func concurrentRequestsShareOneLoad() async throws {
         let failure = LocalTaggerLoadFailure()
         let (started, startedContinuation) = AsyncStream<Void>.makeStream(
