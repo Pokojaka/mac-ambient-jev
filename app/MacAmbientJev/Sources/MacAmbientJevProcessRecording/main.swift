@@ -259,7 +259,8 @@ struct ProcessRecordingCommand {
         let processor = NativeSessionProcessor(
             paths: paths, engines: .production(paths: paths),
             audioHandling: MacSessionProcessingAudio(),
-            contentPriority: .disabled
+            contentPriority: .disabled,
+            sleep: { try await Task.sleep(for: $0) }
         )
 
         print("処理を開始します: \(audioURL.path)")
@@ -369,7 +370,8 @@ struct ProcessRecordingCommand {
         let processor = NativeSessionProcessor(
             paths: paths, engines: .production(paths: paths),
             audioHandling: MacSessionProcessingAudio(),
-            contentPriority: .disabled
+            contentPriority: .disabled,
+            sleep: { try await Task.sleep(for: $0) }
         )
         let collector = ProcessingResultCollector()
         let onUpdate: NativeSessionProcessor.UpdateHandler = { segments, state in

@@ -154,7 +154,8 @@ func storageDiskUsageHarness() async throws {
             finalTranscriptVAD: StorageHarnessVAD()
         ),
         audioHandling: MacSessionProcessingAudio(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let recordingResult = await processor.processSession(
         sessionID: recordingID, pacingMode: .normal,

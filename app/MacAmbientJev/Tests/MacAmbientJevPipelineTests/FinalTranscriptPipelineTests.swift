@@ -244,7 +244,8 @@ func finalTranscriptPipelinePreservesVADContextAcrossSpeakerChanges() async thro
             finalTranscriptVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -314,7 +315,8 @@ func finalTranscriptPipelineRejectsInvalidSpeakerMetadataBeforeASR(span: Speaker
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let result = try await processFinal(
         processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
@@ -352,7 +354,8 @@ func finalTranscriptPipelinePassesOverlappingSpeakerSpansInOneASRCall() async th
             finalTranscriptVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -398,7 +401,8 @@ func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async 
             finalTranscriptVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -448,7 +452,8 @@ func decisionsSkipWhitespaceOnlyFinalTranscript() async throws {
         contentPriority: .localTagger({
             decisionFactoryCalls.recordCall()
             throw UnavailableTagger()
-        }, usageCounter: DecisionUsageCounter())
+        }, usageCounter: DecisionUsageCounter()),
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -485,7 +490,8 @@ func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched(diarization
             finalTranscriptVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -524,7 +530,8 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID,
@@ -562,7 +569,8 @@ func finalTranscriptPipelineReportsNoSpeechAsTerminalStatus() async throws {
             finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -595,7 +603,8 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
         contentPriority: .localTagger({
             decisionFactoryCalls.recordCall()
             throw UnavailableTagger()
-        }, usageCounter: DecisionUsageCounter())
+        }, usageCounter: DecisionUsageCounter()),
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -653,7 +662,8 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .localTagger({ throw UnavailableTagger() }, usageCounter: DecisionUsageCounter())
+        contentPriority: .localTagger({ throw UnavailableTagger() }, usageCounter: DecisionUsageCounter()),
+        sleep: { _ in }
     )
     let states = FinalizationStateRecorder()
     let statuses = FinalizationStatusRecorder()
@@ -717,7 +727,8 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .localTagger({
             DecisionCoordinator(provider: FailingDecisionProvider(), identity: testDecisionIdentity, usageCounter: counter)
-        }, usageCounter: counter)
+        }, usageCounter: counter),
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
 
@@ -765,7 +776,8 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -851,7 +863,8 @@ func finalTranscriptPipelineRejectsPersistedLogMissingVADSegment() async throws 
             ],
             log: log
         ),
-        audioHandling: RecordingTestAudioHandling()
+        audioHandling: RecordingTestAudioHandling(),
+        sleep: { _ in }
     )
 
     await #expect {
@@ -887,7 +900,8 @@ func persistedValidationFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics(
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let first = try await processFinal(
         processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
@@ -918,7 +932,8 @@ func persistedValidationFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics(
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let states = FinalizationStateRecorder()
     let result = try await processFinal(
@@ -952,7 +967,8 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
             finalTranscriptVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     _ = try await processFinal(
         succeeding, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
@@ -968,7 +984,8 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
             finalTranscriptVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let states = FinalizationStateRecorder()
     let result = try await processFinal(
@@ -1060,7 +1077,8 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
                 identity: testDecisionIdentity,
                 usageCounter: counter
             )
-        }, usageCounter: counter)
+        }, usageCounter: counter),
+        sleep: { _ in }
     )
     let result = try await processFinal(
         processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
@@ -1100,7 +1118,8 @@ func speakerSpanOutsideTheRecordingFailsExplicitly(boundary: Int64) async throws
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -1141,7 +1160,8 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     var startedRunsByAttempt: [[String: String]] = []
     for _ in 0..<2 {
@@ -1201,7 +1221,8 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
@@ -1327,7 +1348,8 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .localTagger({ decisions }, usageCounter: counter)
+        contentPriority: .localTagger({ decisions }, usageCounter: counter),
+        sleep: { _ in }
     )
     _ = try await processor.startLiveTranscription(
         sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate
@@ -1435,7 +1457,8 @@ func validatedEmptyVADCompletesWithoutSpeechInference(preparationFails: Bool) as
             finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
     var previousRuns: ActiveRuns?
@@ -1531,7 +1554,8 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
             finalTranscriptVAD: ThrowingFinalVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
     let result = try await processFinal(
@@ -1560,7 +1584,8 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
             finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let absent = UUID()
     do {

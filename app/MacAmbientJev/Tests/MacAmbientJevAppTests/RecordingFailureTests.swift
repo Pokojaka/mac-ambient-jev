@@ -180,7 +180,7 @@ func testCheckpoint() -> AudioCheckpoint {
 }
 
 @MainActor
-@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix")
+@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix", .timeLimit(.minutes(1)))
 func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -192,7 +192,8 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
@@ -213,11 +214,8 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     engine.signalFailure(message)
     #expect(state.recordingPhase == .stopping)
     #expect(state.statusText == message)
-    for _ in 0..<1_000
-        where state.recordingPhase != .idle
-            || !state.savedSessions.contains(where: { $0.sessionID == sessionID }) {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    let stopping = try #require(state.failureStopTask)
+    await stopping.value
     #expect(state.statusTone == .error)
     #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
     #expect(engine.stopped == 1)
@@ -237,7 +235,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
 }
 
 @MainActor
-@Test("automatic capture failure and normal stop finish VAD with the stopped checkpoint")
+@Test("automatic capture failure and normal stop finish VAD with the stopped checkpoint", .timeLimit(.minutes(1)))
 func automaticFailureFinalizesLikeNormalStop() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -258,7 +256,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
             engines: .production(paths: paths), makeLiveVADSession: { _, _, _, _ in vad },
-            thermalMonitor: TestThermalMonitor(.nominal)
+            thermalMonitor: TestThermalMonitor(.nominal),
+            liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -271,10 +270,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
             #expect(state.statusTone == .neutral)
         }
         if trigger != .normal {
-            for _ in 0..<1_000
-                where state.recordingPhase != .idle || state.processingQueue.pending.isEmpty {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            let stopping = try #require(state.failureStopTask)
+            await stopping.value
             #expect(state.statusTone == .error)
             #expect(state.statusText == "capture interrupted")
         }
@@ -292,6 +289,46 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         #expect(queuedCheckpoint == checkpoint)
         #expect(state.processingState == .idle)
     }
+}
+
+@MainActor
+@Test("duplicate capture failures do not stop or finalize twice", .timeLimit(.minutes(1)))
+func duplicateCaptureFailuresDoNotStopOrFinalizeTwice() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    var startedSessionID: UUID?
+    let engine = FakeAppCaptureEngine()
+    engine.onStart = { startedSessionID = $0 }
+    engine.stopResult = cleanStopResult(testCheckpoint())
+    let state = AppState(
+        paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
+        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
+    )
+
+    await state.startRecording()
+    let sessionID = try #require(startedSessionID)
+    #expect(state.recordingPhase == .recording)
+    let stopping = try #require(state.captureDidFail(sessionID: sessionID, message: "capture interrupted"))
+    #expect(state.recordingPhase == .stopping)
+    #expect(state.statusText == "capture interrupted")
+    #expect(state.captureDidFail(sessionID: sessionID, message: "duplicate failure") == nil)
+    #expect(state.statusText == "capture interrupted")
+
+    await stopping.value
+    #expect(state.recordingPhase == .idle)
+    #expect(engine.stopped == 1)
+    #expect(state.processingQueue.pending.count == 1)
+
+    #expect(state.captureDidFail(sessionID: sessionID, message: "late duplicate failure") == nil)
+    #expect(state.recordingPhase == .idle)
+    #expect(engine.stopped == 1)
+    #expect(state.processingQueue.pending.count == 1)
+    #expect(state.statusText == "capture interrupted")
+    #expect(state.statusTone == .error)
 }
 
 @MainActor
@@ -325,7 +362,8 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
             engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
-            thermalMonitor: TestThermalMonitor(.nominal)
+            thermalMonitor: TestThermalMonitor(.nominal),
+            liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -366,7 +404,8 @@ func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: .production(paths: paths),
         makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     let sessionID = UUID()
     state.recording.start(sessionID: sessionID)

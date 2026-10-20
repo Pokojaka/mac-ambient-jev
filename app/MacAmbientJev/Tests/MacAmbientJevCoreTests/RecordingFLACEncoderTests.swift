@@ -2,6 +2,30 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+func flacSearchPath(in environment: [String: String]) -> String? {
+    #if os(Windows)
+    return environment.first { $0.key.caseInsensitiveCompare("PATH") == .orderedSame }?.value
+    #else
+    return environment["PATH"]
+    #endif
+}
+
+@Test(arguments: ["PATH", "Path", "pAtH", "path"])
+func flacSearchPathUsesPlatformEnvironmentKeyCasing(key: String) {
+    let fixture = "explicit-flac-path"
+
+    #if os(Windows)
+    #expect(flacSearchPath(in: [key: fixture]) == fixture)
+    #else
+    #expect(flacSearchPath(in: [key: fixture]) == (key == "PATH" ? fixture : nil))
+    #endif
+}
+
+@Test func flacSearchPathRequiresPATHVariable() {
+    #expect(flacSearchPath(in: [:]) == nil)
+    #expect(flacSearchPath(in: ["PATHEXT": ".EXE"]) == nil)
+}
+
 private let flacExecutable: URL? = {
     #if os(Windows)
     let executableName = "flac.exe"
@@ -10,7 +34,7 @@ private let flacExecutable: URL? = {
     let executableName = "flac"
     let pathSeparator: Character = ":"
     #endif
-    guard let searchPath = ProcessInfo.processInfo.environment["PATH"] else { return nil }
+    guard let searchPath = flacSearchPath(in: ProcessInfo.processInfo.environment) else { return nil }
     for directory in searchPath.split(separator: pathSeparator, omittingEmptySubsequences: false) {
         let candidate = URL(fileURLWithPath: String(directory), isDirectory: true).appending(path: executableName)
         if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }

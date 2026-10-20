@@ -1,19 +1,27 @@
 import Foundation
 import Testing
 import MacAmbientJevCore
-import MacAmbientJevAppleSupport
+@testable import MacAmbientJevAppleSupport
 
 private struct UnexpectedLoad: Error {}
 
-/// Runs a blocking call on a dispatch thread. Blocking a Swift concurrency thread instead can use up
-/// the cooperative pool, which has one thread per core (three on a CI runner), and deadlock the test.
-private func onBlockingThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+private final class LocalTaggerLoadFailure: Error, @unchecked Sendable {}
+
+private func makeCoordinatorOnThread(
+    _ factory: DecisionProviderFactory,
+    failure: LocalTaggerLoadFailure
+) async -> Bool {
     await withCheckedContinuation { continuation in
-        DispatchQueue.global().async { continuation.resume(returning: body()) }
+        Thread {
+            do {
+                _ = try factory.makeCoordinator()
+                continuation.resume(returning: false)
+            } catch {
+                continuation.resume(returning: (error as AnyObject) === failure)
+            }
+        }.start()
     }
 }
-
-private final class LocalTaggerLoadFailure: Error, @unchecked Sendable {}
 
 private final class FailingLocalTaggerLoader: @unchecked Sendable {
     private let lock = NSLock()
@@ -185,41 +193,40 @@ struct DecisionProviderFactoryTests {
         #expect(loader.attemptCount == 1)
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func concurrentRequestsShareOneLoad() async throws {
         let failure = LocalTaggerLoadFailure()
-        let started = DispatchSemaphore(value: 0)
+        let (started, startedContinuation) = AsyncStream<Void>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
         let release = DispatchSemaphore(value: 0)
         let loadCounter = ThreadSafeLocalTaggerLoadCounter()
         let harness = try Self.makeHarness(loadLocalTagger: { _ in
             loadCounter.recordLoad()
-            started.signal()
+            startedContinuation.yield(())
+            startedContinuation.finish()
             release.wait()
             throw failure
         })
         defer { harness.cleanUp() }
 
         let factory = harness.factory
-        let requests = (0..<3).map { _ in
-            Task {
-                await onBlockingThread { () -> Bool in
-                    do {
-                        _ = try factory.makeCoordinator()
-                        return false
-                    } catch {
-                        return (error as AnyObject) === failure
-                    }
-                }
-            }
-        }
-        await onBlockingThread { started.wait() }
-        try await Task.sleep(for: .milliseconds(300))
+        async let firstRequest = makeCoordinatorOnThread(factory, failure: failure)
+        async let secondRequest = makeCoordinatorOnThread(factory, failure: failure)
+        async let thirdRequest = makeCoordinatorOnThread(factory, failure: failure)
+
+        var startedIterator = started.makeAsyncIterator()
+        let loadDidStart: Void? = await startedIterator.next()
+        try #require(loadDidStart != nil)
+        await factory.waitForPendingLoadWaiters(2)
+        #expect(factory.pendingLoadWaiterCount == 2)
         #expect(loadCounter.loadCount == 1)
 
-        for _ in requests { release.signal() }
-        for request in requests {
-            #expect(await request.value)
-        }
+        release.signal()
+        let results = await (firstRequest, secondRequest, thirdRequest)
+        #expect(results.0)
+        #expect(results.1)
+        #expect(results.2)
         #expect(loadCounter.loadCount == 1)
     }
 

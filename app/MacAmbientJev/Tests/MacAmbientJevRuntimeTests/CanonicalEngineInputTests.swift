@@ -137,7 +137,8 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
         engines: SessionProcessingEngines(asr: ObservingASR(log: log), diarization: ObservingDiarizer(log: log),
             finalTranscriptVAD: ObservingVAD(log: log)),
         audioHandling: MacSessionProcessingAudio(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let recordingID = UUID()

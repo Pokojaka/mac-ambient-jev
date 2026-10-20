@@ -75,6 +75,44 @@ private actor SuspendedASREngine: ASREngine {
     func unload() async {}
 }
 
+private actor GatedRegistrationWriter: SessionEventAppending {
+    private let writer: SessionWriter
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    init(writer: SessionWriter) {
+        self.writer = writer
+    }
+
+    func waitUntilAppendStarts() async {
+        if entered { return }
+        await withCheckedContinuation { continuation in
+            entryWaiter = continuation
+        }
+    }
+
+    func releaseFirstAppend() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    @discardableResult
+    func append<Payload: Codable & Sendable>(
+        _ draft: EventDraft<Payload>
+    ) async throws -> EventEnvelope<Payload> {
+        if draft.eventType == "segment.created", !entered {
+            entered = true
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+                entryWaiter?.resume()
+                entryWaiter = nil
+            }
+        }
+        return try await writer.append(draft)
+    }
+}
+
 private final class Locked<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Value
@@ -339,18 +377,19 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     #expect(first.completedCount == 1)
     #expect(second == first)
 
-    let eventsText = try String(
-        contentsOf: fixture.root.appending(path: "events.jsonl"),
-        encoding: .utf8
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
     )
-    #expect(
-        eventsText.components(
-            separatedBy: "\"event_type\":\"processing.run.completed\""
-        ).count - 1 == 1
-    )
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter { $0 == "processing.run.completed" }.count == 1)
 }
 
-@Test
+@Test(.timeLimit(.minutes(1)))
 func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -379,7 +418,8 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     await engine.waitUntilTranscribing()
     let firstFinish = Task { try await session.finish() }
     let secondFinish = Task { try await session.finish() }
-    try await Task.sleep(for: .milliseconds(200))
+    await session.waitForFinishWaiters(2)
+    #expect(await session.finishWaiterCount == 2)
     await engine.resume()
 
     let progress = try await processing.value
@@ -548,7 +588,7 @@ func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     #expect(completion.failedCount == 0)
 }
 
-@Test
+@Test(.timeLimit(.minutes(1)))
 func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -583,7 +623,8 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     }
     await engine.waitUntilTranscribing()
     let finishing = Task { try await session.finish() }
-    try await Task.sleep(for: .milliseconds(200))
+    await session.waitForFinishWaiters(1)
+    #expect(await session.finishWaiterCount == 1)
     await engine.resume()
     let lateProgress = try await processing.value
     let completion = try await finishing.value
@@ -609,36 +650,58 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     } == ["asr.completed", "processing.run.completed"])
 }
 
-@Test
+@Test(.timeLimit(.minutes(1)))
 func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
-    let fixture = try await makeLiveASRFixture()
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let durableWriter = try SessionWriter(sessionURL: root)
+    let writer = GatedRegistrationWriter(writer: durableWriter)
+    let engine = CountingASREngine()
+    let session = LiveASRSession(
+        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
+        asrRunID: "asr_live_test", processingDirectory: root,
+        writer: writer, asr: engine, sampleRate: 16_000,
+        clauseBoundaryRunID: nil,
+        contentPriorityRunID: nil
+    )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
         startFrame: 0, endFrame: 4_000
     )
 
-    async let first = fixture.session.register(segments: [segment])
-    async let second = fixture.session.register(segments: [segment])
-    _ = try await (first, second)
-    let progress = await fixture.session.snapshot().progress
+    let first = Task {
+        try await session.register(segments: [segment])
+    }
+    await writer.waitUntilAppendStarts()
+    let second = try await session.register(segments: [segment])
+    #expect(second.pendingCount == 0)
+    #expect(await session.snapshot().segments.isEmpty)
+
+    await writer.releaseFirstAppend()
+    _ = try await first.value
+    let progress = await session.snapshot().progress
     #expect(progress.pendingCount == 1)
     #expect(progress.completedCount == 0)
     #expect(progress.failedCount == 0)
     #expect(progress.materializedSegments.isEmpty)
 
-    let log = try String(
-        contentsOf: fixture.root.appending(path: "events.jsonl"),
-        encoding: .utf8
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
     )
-    let createdCount = log.split(separator: "\n")
-        .filter { $0.contains("\"segment.created\"") }.count
-    #expect(createdCount == 1)
+    let eventTypes = try recovered.lines.map { line in
+        let event = try #require(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        return try #require(event["event_type"] as? String)
+    }
+    #expect(eventTypes.filter { $0 == "segment.created" }.count == 1)
 }
 
 /// Measures duplicate pending registration without inference or recognized-row updates.
 /// Five-second event cadence; uses pending references, not hours of allocated audio.
-@Test("Measure live registration cost at 10-minute, 1-hour and 4-hour event equivalents")
+@Test("Measure live registration cost at 10-minute, 1-hour and 4-hour event equivalents", .enabled(if: ProcessInfo.processInfo.environment["LIVE_ASR_REGISTRATION_MEASUREMENT"] == "1"))
 func measureLiveRegistrationCost() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

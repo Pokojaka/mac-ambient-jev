@@ -50,7 +50,8 @@ private func makeProcessor(asr: CountingASR, diarizer: CountingDiarizer) -> Nati
         paths: paths,
         engines: SessionProcessingEngines(asr: asr, diarization: diarizer, finalTranscriptVAD: UnusedVAD()),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 }
 

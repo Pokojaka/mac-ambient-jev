@@ -44,6 +44,8 @@ private actor RecordingVAD: LiveVADProcessing {
 
 private actor RecordingTagger: DecisionProvider {
     private(set) var texts: [String] = []
+    private var priorityRequestCount = 0
+    private var priorityRequestWaiters: [UUID: (count: Int, continuation: CheckedContinuation<Void, any Error>)] = [:]
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
     private(set) var boundaryTexts: [String] = []
@@ -58,6 +60,8 @@ private actor RecordingTagger: DecisionProvider {
     }
 
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        priorityRequestCount += 1
+        resumePriorityRequestWaiters()
         texts.append(contentsOf: targets.map(\.text))
         if !released { await withCheckedContinuation { waiters.append($0) } }
         let decision = try ContentPriorityDecision(
@@ -69,6 +73,55 @@ private actor RecordingTagger: DecisionProvider {
             inputTokens: 7
         )
     }
+
+    func waitForPriorityRequests(_ count: Int) async throws {
+        guard count > 0 else {
+            throw LivePollWaitFailure(message: "Priority request count must be greater than zero; received \(count).")
+        }
+        guard !Task.isCancelled else {
+            throw LivePollWaitFailure(message: "Waiting for \(count) priority requests was cancelled before registration.")
+        }
+        guard priorityRequestCount < count else { return }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(
+                        throwing: LivePollWaitFailure(message: "Waiting for \(count) priority requests was cancelled before registration.")
+                    )
+                    return
+                }
+                guard priorityRequestCount < count else {
+                    continuation.resume()
+                    return
+                }
+                priorityRequestWaiters[id] = (count: count, continuation: continuation)
+            }
+        } onCancel: { [weak self] in
+            Task {
+                await self?.cancelPriorityRequestWaiter(id: id)
+            }
+        }
+    }
+
+    private func resumePriorityRequestWaiters() {
+        let matchingIDs = priorityRequestWaiters.compactMap { id, waiter in
+            waiter.count <= priorityRequestCount ? id : nil
+        }
+        let matchingWaiters = matchingIDs.compactMap { priorityRequestWaiters.removeValue(forKey: $0) }
+        for waiter in matchingWaiters {
+            waiter.continuation.resume()
+        }
+    }
+
+    private func cancelPriorityRequestWaiter(id: UUID) {
+        guard let waiter = priorityRequestWaiters.removeValue(forKey: id) else { return }
+        waiter.continuation.resume(
+            throwing: LivePollWaitFailure(message: "Waiting for \(waiter.count) priority requests was cancelled.")
+        )
+    }
+
     func release() {
         released = true
         waiters.forEach { $0.resume() }
@@ -79,6 +132,7 @@ private actor RecordingTagger: DecisionProvider {
 @MainActor
 private func withLiveDecisionRecording(
     makeDecisions: @escaping @Sendable (DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory,
+    beforeStop: () async -> Void,
     body: (AppState) async throws -> Void
 ) async throws {
     let (root, paths) = temporaryRecordingPaths()
@@ -86,6 +140,7 @@ private func withLiveDecisionRecording(
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let capture = FakeAppCaptureEngine()
+    let poll = LivePollSleep()
     capture.onStart = { sessionID in
         let sessionURL = try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
@@ -101,24 +156,27 @@ private func withLiveDecisionRecording(
             finalTranscriptVAD: RecordingFinalVAD()),
         makeLiveVADSession: { _, _, _, _ in RecordingVAD() },
         thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: poll.sleep,
         makeDecisions: { _, counter in makeDecisions(counter) }
     )
-    let maintenanceDeadline = ContinuousClock.now + .seconds(5)
-    while state.processingQueue.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    try #require(!state.processingQueue.isMaintainingStorage)
+    let maintenance = try #require(state.startupMaintenanceTask, "Launch maintenance task was not started")
+    await maintenance.value
+    try #require(!state.processingQueue.isMaintainingStorage, "Startup maintenance task completed while storage maintenance is still active")
     await state.startRecording()
     do {
         try #require(state.recordingPhase == .recording)
+        try await poll.advance()
+        try await poll.waitUntilSuspended()
         try await body(state)
     } catch {
+        await beforeStop()
         await state.stopRecording()
         await state.processingCoordinator.waitUntilIdle()
         await state.modelPreparationTask?.value
         await state.idleReleaseTask?.value
         throw error
     }
+    await beforeStop()
     await state.stopRecording()
     await state.processingCoordinator.waitUntilIdle()
     await state.modelPreparationTask?.value
@@ -126,16 +184,13 @@ private func withLiveDecisionRecording(
 }
 
 @MainActor
-@Test("AppState recording shows live rows at once and applies only saved decisions")
+@Test("AppState recording shows live rows at once and applies only saved decisions", .timeLimit(.minutes(1)))
 func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
     let provider = RecordingTagger()
     try await withLiveDecisionRecording(makeDecisions: { counter in
         { DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter) }
-    }) { state in
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await provider.texts.isEmpty, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+    }, beforeStop: { await provider.release() }) { state in
+        try await provider.waitForPriorityRequests(1)
         // The first row's boundary needed the second row; the second still waits for a successor.
         #expect(await provider.boundaryTexts == ["録音の発話1"])
         #expect(await provider.texts == ["録音の発話1"])
@@ -147,10 +202,11 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
 
         await provider.release()
-        let decisionDeadline = ContinuousClock.now + .seconds(5)
-        while state.transcriptViewModel.rows.count != 1, ContinuousClock.now < decisionDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitForPublishedValue(
+            state.transcriptViewModel.$rows,
+            description: "saved low-priority row to leave the live transcript",
+            matching: { $0.count == 1 }
+        )
         // The saved LOW sentence leaves the screen; the waiting row keeps its text.
         #expect(state.transcriptViewModel.rows.map(\.text) == ["録音の発話2"])
         #expect(state.transcriptViewModel.rows.map(\.clauseState) == [.awaitingNextSegment])
@@ -166,20 +222,24 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
 }
 
 @MainActor
-@Test("AppState keeps the classifier factory error visible while live ASR continues")
+@Test("AppState keeps the classifier factory error visible while live ASR continues", .timeLimit(.minutes(1)))
 func appRecordingShowsDecisionFactoryFailureReason() async throws {
     let description = "Synthetic model load failure"
     try await withLiveDecisionRecording(makeDecisions: { _ in
         { throw NSError(domain: "LiveDecisionRecordingTests", code: 1,
                         userInfo: [NSLocalizedDescriptionKey: description]) }
-    }) { state in
-        let deadline = ContinuousClock.now + .seconds(5)
-        // ASR drain does not wait for decisions. The pending row is published after the factory error status.
-        while (state.transcriptViewModel.rows.count != 2
-               || state.transcriptViewModel.rows.first?.clauseState != .boundaryPending),
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+    }, beforeStop: {}) { state in
+        // ASR drain does not wait for decisions; wait for each independently published effect.
+        try await waitForPublishedValue(
+            state.transcriptViewModel.$rows,
+            description: "two live rows with a pending first clause after the factory error",
+            matching: { rows in rows.count == 2 && rows.first?.clauseState == .boundaryPending }
+        )
+        try await waitForPublishedValue(
+            state.$processingStatusText,
+            description: "classifier factory failure status",
+            matching: { $0?.contains(description) == true }
+        )
         let sessionID = try #require(state.recordingSessionID)
         await state.waitForLiveASRDrain(sessionID: sessionID)
         #expect(state.isRecording)

@@ -145,36 +145,79 @@ func bluetoothHFPWarningPolicy() {
     #expect(!CaptureInputWarnings.isLowRateBluetooth(transportType: 0, sampleRate: 16_000))
 }
 
-@MainActor
-private final class CaptureFailureSink {
-    var messages: [String] = []
-    func append(_ message: String) { messages.append(message) }
+private final class CaptureTestNotifications: CaptureNotificationProviding {
+    let center = NotificationCenter()
+    let deliveries = Atomic<Int>(0)
+
+    func observe(
+        _ name: Notification.Name,
+        object: AnyObject?,
+        using callback: @escaping @Sendable (Notification) -> Void
+    ) -> NSObjectProtocol {
+        center.addObserver(forName: name, object: object, queue: nil) { [self] notification in
+            // queue:nil delivers synchronously, so absence can be asserted without scheduling budgets.
+            _ = deliveries.add(1, ordering: .relaxed)
+            callback(notification)
+        }
+    }
+
+    func remove(_ token: NSObjectProtocol) {
+        center.removeObserver(token)
+    }
 }
 
 @MainActor
-@Test("only runtime failures, interruptions, and disconnection of the active input stop capture")
+private final class CaptureFailureSink {
+    var messages: [String] = []
+    private var waiter: (count: Int, continuation: CheckedContinuation<Void, Never>)?
+
+    func append(_ message: String) {
+        messages.append(message)
+        if let waiter, messages.count >= waiter.count {
+            self.waiter = nil
+            waiter.continuation.resume()
+        }
+    }
+
+    func waitForMessages(_ count: Int) async {
+        guard messages.count < count else { return }
+        await withCheckedContinuation { continuation in
+            precondition(waiter == nil)
+            waiter = (count, continuation)
+        }
+    }
+}
+
+@MainActor
+@Test("only runtime failures, interruptions, and disconnection of the active input stop capture", .timeLimit(.minutes(1)))
 func activeCaptureNotificationRouting() async {
     let session = NSObject()
     let device = NSObject()
     let otherDevice = NSObject()
     let sink = CaptureFailureSink()
-    let observers = CaptureFailureObservers(provider: SystemCaptureNotifications())
+    let provider = CaptureTestNotifications()
+    let observers = CaptureFailureObservers(provider: provider)
     observers.start(session: session, device: device) { message in sink.append(message) }
-    NotificationCenter.default.post(name: AVCaptureDevice.wasDisconnectedNotification, object: otherDevice)
-    NotificationCenter.default.post(name: AVCaptureSession.wasInterruptedNotification, object: NSObject())
-    await Task.yield()
+    provider.center.post(name: AVCaptureDevice.wasDisconnectedNotification, object: otherDevice)
+    provider.center.post(name: AVCaptureSession.wasInterruptedNotification, object: NSObject())
+    provider.center.post(name: AVCaptureSession.runtimeErrorNotification, object: NSObject())
+    #expect(provider.deliveries.load(ordering: .relaxed) == 0)
     #expect(sink.messages.isEmpty)
 
-    NotificationCenter.default.post(name: AVCaptureSession.runtimeErrorNotification, object: session)
-    NotificationCenter.default.post(name: AVCaptureSession.wasInterruptedNotification, object: session)
-    NotificationCenter.default.post(name: AVCaptureDevice.wasDisconnectedNotification, object: device)
-    for _ in 0..<20 where sink.messages.count < 3 { await Task.yield() }
+    provider.center.post(name: AVCaptureSession.runtimeErrorNotification, object: session)
+    provider.center.post(name: AVCaptureSession.wasInterruptedNotification, object: session)
+    provider.center.post(name: AVCaptureDevice.wasDisconnectedNotification, object: device)
+    #expect(provider.deliveries.load(ordering: .relaxed) == 3)
+    await sink.waitForMessages(3)
+    #expect(sink.messages.count == 3)
     #expect(sink.messages.contains("マイクの動作エラーが発生しました。録音を停止しました"))
     #expect(sink.messages.contains("マイク入力が中断されました。録音を停止しました"))
     #expect(sink.messages.contains("マイクが切断されました。録音を停止しました"))
     observers.stop()
-    NotificationCenter.default.post(name: AVCaptureDevice.wasDisconnectedNotification, object: device)
-    await Task.yield()
+    provider.center.post(name: AVCaptureSession.runtimeErrorNotification, object: session)
+    provider.center.post(name: AVCaptureSession.wasInterruptedNotification, object: session)
+    provider.center.post(name: AVCaptureDevice.wasDisconnectedNotification, object: device)
+    #expect(provider.deliveries.load(ordering: .relaxed) == 3)
     #expect(sink.messages.count == 3)
 }
 

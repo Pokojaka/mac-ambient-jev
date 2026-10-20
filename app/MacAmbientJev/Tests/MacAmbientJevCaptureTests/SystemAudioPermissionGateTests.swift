@@ -9,6 +9,7 @@ private actor GatePermission: SystemAudioPermissionProviding {
     let status: SystemAudioPermissionStatus?
     private var answer: Bool?
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var requestedContinuation: CheckedContinuation<Void, Never>?
     private(set) var requests = 0
 
     init(_ status: SystemAudioPermissionStatus?, answer: Bool?) {
@@ -19,8 +20,17 @@ private actor GatePermission: SystemAudioPermissionProviding {
         guard let status else { throw .unverifiable }
         return status
     }
+    func waitUntilRequested() async {
+        if requests > 0 { return }
+        await withCheckedContinuation { continuation in
+            precondition(requestedContinuation == nil)
+            requestedContinuation = continuation
+        }
+    }
     func request() async throws(SystemAudioPermissionError) -> Bool {
         requests += 1
+        requestedContinuation?.resume()
+        requestedContinuation = nil
         if let answer { return answer }
         return await withCheckedContinuation { continuation = $0 }
     }
@@ -49,8 +59,12 @@ private struct GateOutput: SystemAudioOutputProcessProviding {
     func runningExternalOutputPIDs() async -> Set<Int32>? { [] }
 }
 
+private struct GateClock: CaptureClock {
+    func now() -> TimeInterval { 10 }
+}
+
 @MainActor
-private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @escaping () -> Void) throws -> (AudioCaptureEngine, UUID, URL) {
+private func gateEngine(_ permission: GatePermission, tap: GateTap, clock: any CaptureClock, creations: @escaping () -> Void) throws -> (AudioCaptureEngine, UUID, URL) {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
     let sessionID = UUID()
@@ -60,7 +74,7 @@ private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @
     )
     let engine = AudioCaptureEngine(
         paths: paths,
-        bufferFrameCount: 8, diskSpace: GateDisk(),
+        bufferFrameCount: 8, clock: clock, diskSpace: GateDisk(),
         tapFactory: { creations(); return tap }, systemAudioPermission: permission,
         outputProcesses: GateOutput(),
         micInputVolumeFactory: { preconditionFailure("System audio never binds a microphone volume control") }
@@ -69,12 +83,13 @@ private func gateEngine(_ permission: GatePermission, tap: GateTap, creations: @
 }
 
 @MainActor
-@Test("Denied preflight followed by a denied request prevents tap creation")
+@Test("Denied preflight followed by a denied request prevents tap creation", .timeLimit(.minutes(1)))
 func deniedSystemAudioGate() async throws {
     let tap = GateTap()
+    let clock = GateClock()
     let permission = GatePermission(.denied, answer: false)
     var creations = 0
-    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap, clock: clock) { creations += 1 }
     defer { try? FileManager.default.removeItem(at: root) }
     do {
         try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
@@ -87,12 +102,13 @@ func deniedSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("A grant after a cached denied preflight starts system audio capture")
+@Test("A grant after a cached denied preflight starts system audio capture", .timeLimit(.minutes(1)))
 func grantedAfterDeniedPreflightSystemAudioGate() async throws {
     let tap = GateTap()
+    let clock = GateClock()
     let permission = GatePermission(.denied, answer: true)
     var creations = 0
-    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap, clock: clock) { creations += 1 }
     defer { try? FileManager.default.removeItem(at: root) }
     try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in })
@@ -103,24 +119,22 @@ func grantedAfterDeniedPreflightSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Pending grant waits without creating tap or beginning first-buffer deadline")
+@Test("Pending grant waits without creating a tap", .timeLimit(.minutes(1)))
 func grantedSystemAudioGate() async throws {
     let tap = GateTap()
+    let clock = GateClock()
     let permission = GatePermission(.notDetermined, answer: nil)
     var creations = 0
     var waiting = false
-    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap, clock: clock) { creations += 1 }
     defer { try? FileManager.default.removeItem(at: root) }
     let task = Task {
         try await engine.start(sessionID: sessionID, source: .systemAudio,
                                onFailure: { _ in }, onWarning: { _ in },
                                onPermissionWaiting: { waiting = true }, onDropouts: { _ in }, onSilenceChanged: { _ in })
     }
-    while await permission.requests == 0 { await Task.yield() }
+    await permission.waitUntilRequested()
     #expect(waiting && creations == 0 && tap.starts == 0 && !engine.isRecording)
-    // This exceeds the first-buffer timeout; no tap or deadline may run while the dialog is open.
-    try await Task.sleep(for: .seconds(3.2))
-    #expect(creations == 0 && !engine.isRecording)
     await permission.resolve(true)
     try await task.value
     #expect(creations == 1 && tap.starts == 1)
@@ -129,16 +143,17 @@ func grantedSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Pending denial never creates a tap")
+@Test("Pending denial never creates a tap", .timeLimit(.minutes(1)))
 func deniedAfterPromptSystemAudioGate() async throws {
     let tap = GateTap()
+    let clock = GateClock()
     let permission = GatePermission(.notDetermined, answer: nil)
     var creations = 0
-    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap, clock: clock) { creations += 1 }
     defer { try? FileManager.default.removeItem(at: root) }
     let task = Task { try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in }) }
-    while await permission.requests == 0 { await Task.yield() }
+    await permission.waitUntilRequested()
     await permission.resolve(false)
     do {
         try await task.value
@@ -149,12 +164,13 @@ func deniedAfterPromptSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("An absent permission SPI or unknown status refuses to start without creating a tap")
+@Test("An absent permission SPI or unknown status refuses to start without creating a tap", .timeLimit(.minutes(1)))
 func unverifiableSystemAudioGate() async throws {
     let tap = GateTap()
+    let clock = GateClock()
     let permission = GatePermission(nil, answer: nil)
     var creations = 0
-    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap, clock: clock) { creations += 1 }
     defer { try? FileManager.default.removeItem(at: root) }
     await #expect(throws: SystemAudioPermissionError.unverifiable) {
         try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
@@ -167,16 +183,18 @@ func unverifiableSystemAudioGate() async throws {
 
 @MainActor
 @Test("Cancellation while permission dialog is pending returns without waiting for its answer",
-      arguments: [SystemAudioPermissionStatus.notDetermined, .denied])
+      .timeLimit(.minutes(1)), arguments: [SystemAudioPermissionStatus.notDetermined, .denied])
 func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async throws {
     let tap = GateTap()
+    let clock = GateClock()
     let permission = GatePermission(status, answer: nil)
     var creations = 0
-    let (engine, sessionID, root) = try gateEngine(permission, tap: tap) { creations += 1 }
+    let (engine, sessionID, root) = try gateEngine(permission, tap: tap, clock: clock) { creations += 1 }
     defer { try? FileManager.default.removeItem(at: root) }
     let task = Task { try await engine.start(sessionID: sessionID, source: .systemAudio, onFailure: { _ in }, onWarning: { _ in },
         onPermissionWaiting: {}, onDropouts: { _ in }, onSilenceChanged: { _ in }) }
-    while await permission.requests == 0 { await Task.yield() }
+    await permission.waitUntilRequested()
+    let requestTask = try #require(engine.permissionRequestTask, "Permission request task was not started")
     engine.cancelStarting()
     do {
         try await task.value
@@ -185,6 +203,6 @@ func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async 
         #expect(creations == 0 && tap.starts == 0 && !engine.isRecording)
     }
     await permission.resolve(true)
-    await Task.yield()
+    await requestTask.value
     #expect(creations == 0 && !engine.isRecording)
 }

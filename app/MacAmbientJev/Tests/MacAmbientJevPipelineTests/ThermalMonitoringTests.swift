@@ -9,7 +9,16 @@ private struct FixedThermalMonitor: ThermalMonitoring {
     var liveASRDecision: LiveASRThermalDecision {
         LiveASRThermalPolicy.decision(pressure: pressure)
     }
+
+    @MainActor
+    func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any ThermalStateObservation {
+        FixedThermalStateObservation()
+    }
 }
+
+private final class FixedThermalStateObservation: ThermalStateObservation {}
 
 @Test
 func windowsThermalMonitoringIsExplicitlyUnavailable() {

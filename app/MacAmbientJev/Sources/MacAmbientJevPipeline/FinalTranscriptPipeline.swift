@@ -75,6 +75,7 @@ struct FinalTranscriptPipeline: Sendable {
     let diarization: any DiarizationEngine
     let vadSegmenter: any FinalTranscriptVADSegmenter
     let audioHandling: any SessionProcessingAudioHandling
+    let sleep: @Sendable (Duration) async throws -> Void
 
     /// - Throws: `FinalTranscriptPipelineFailure`.
     func process(
@@ -233,7 +234,7 @@ struct FinalTranscriptPipeline: Sendable {
             asr: asr,
             loader: ASRAudioLoader(reader: audio),
             pacingMode: pacingMode,
-            sleep: { try await Task.sleep(for: $0) },
+            sleep: sleep,
             shouldPause: shouldPause
         )
         await onPhase(.asr)

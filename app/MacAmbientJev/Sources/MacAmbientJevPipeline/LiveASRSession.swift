@@ -102,7 +102,7 @@ public actor LiveASRSession {
     private let sessionID: UUID
     private let sessionURL: URL
     private let processingDirectory: URL
-    private let writer: SessionWriter
+    private let writer: any SessionEventAppending
     private let asr: any ASREngine
     private let materializer: IncrementalTranscriptMaterializer
 
@@ -126,6 +126,7 @@ public actor LiveASRSession {
     private var finishWaiters: [CheckedContinuation<LiveASRCompletion, any Error>] = []
     private var activeWorkCount = 0
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    private var finishWaitObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     public init(
         sessionID: UUID,
@@ -133,7 +134,7 @@ public actor LiveASRSession {
         segmentationRunID: String,
         asrRunID: String,
         processingDirectory: URL,
-        writer: SessionWriter,
+        writer: any SessionEventAppending,
         asr: any ASREngine,
         sampleRate: Double,
         clauseBoundaryRunID: String?,
@@ -333,6 +334,24 @@ public actor LiveASRSession {
         return snapshot()
     }
 
+    var finishWaiterCount: Int {
+        idleWaiters.count + finishWaiters.count
+    }
+
+    func waitForFinishWaiters(_ count: Int) async {
+        precondition(count > 0, "finish waiter count must be positive")
+        guard finishWaiterCount < count else { return }
+        await withCheckedContinuation { continuation in
+            finishWaitObservers.append((count: count, continuation: continuation))
+        }
+    }
+
+    private func resumeSatisfiedFinishWaitObservers() {
+        let satisfied = finishWaitObservers.filter { $0.count <= finishWaiterCount }
+        finishWaitObservers.removeAll { $0.count <= finishWaiterCount }
+        satisfied.forEach { $0.continuation.resume() }
+    }
+
     public func finish() async throws -> LiveASRCompletion {
         if let completedFinish {
             return completedFinish
@@ -340,6 +359,7 @@ public actor LiveASRSession {
         if finishing {
             return try await withCheckedThrowingContinuation { continuation in
                 finishWaiters.append(continuation)
+                resumeSatisfiedFinishWaitObservers()
             }
         }
         finishing = true
@@ -349,6 +369,7 @@ public actor LiveASRSession {
             if activeWorkCount > 0 {
                 await withCheckedContinuation { continuation in
                     idleWaiters.append(continuation)
+                    resumeSatisfiedFinishWaitObservers()
                 }
             }
 

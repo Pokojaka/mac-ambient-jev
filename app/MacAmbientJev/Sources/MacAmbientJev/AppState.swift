@@ -144,12 +144,13 @@ final class AppState: ObservableObject {
     let userDefaults: UserDefaults
     let makeLiveVADSession: LiveVADFactory
     let thermalMonitor: any ThermalMonitoring
+    let liveTranscriptionSleep: @MainActor (Duration) async throws -> Void
 
     var recordingSessionID: UUID? { recording.sessionID }
     /// Set only while the current recording captures the microphone.
     var micInputSessionID: UUID?
     var displayedSessionID: UUID?
-    var thermalObserver: MacThermalStateObservation?
+    private var thermalObservation: (any ThermalStateObservation)?
     lazy var processingCoordinator = SessionProcessingCoordinator(
         effects: self,
         processor: sessionProcessor,
@@ -160,17 +161,13 @@ final class AppState: ObservableObject {
         effects: self,
         processor: sessionProcessor,
         thermalMonitor: thermalMonitor,
-        sleep: AppState.sleepLiveTranscription
+        sleep: liveTranscriptionSleep
     )
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
+    var failureStopTask: Task<Void, Never>?
     var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
-
-    @MainActor
-    static func sleepLiveTranscription(_ duration: Duration) async throws {
-        try await Task.sleep(for: duration)
-    }
 
     init(
         paths: AppPaths,
@@ -181,6 +178,7 @@ final class AppState: ObservableObject {
         engines: SessionProcessingEngines,
         makeLiveVADSession: @escaping LiveVADFactory,
         thermalMonitor: any ThermalMonitoring,
+        liveTranscriptionSleep: @escaping @MainActor (Duration) async throws -> Void,
         makeDecisions: (@Sendable (AppPaths, DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory)? = nil
     ) {
         let decisionUsageCounter = DecisionUsageCounter()
@@ -197,6 +195,7 @@ final class AppState: ObservableObject {
         self.exportDestination = ExportDestinationStore(defaults: userDefaults)
         self.makeLiveVADSession = makeLiveVADSession
         self.thermalMonitor = thermalMonitor
+        self.liveTranscriptionSleep = liveTranscriptionSleep
         self.decisionProviderFactory = decisionProviderFactory
 
         let makeDecisionCoordinator: NativeSessionProcessor.DecisionCoordinatorFactory
@@ -209,21 +208,22 @@ final class AppState: ObservableObject {
             paths: paths,
             engines: engines,
             audioHandling: MacSessionProcessingAudio(),
-            contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter)
+            contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter),
+            sleep: { try await Task.sleep(for: $0) }
         )
         self.exportDirectoryPath = exportDestination.path
+        thermalObservation = thermalMonitor.observeChanges { [weak self] in
+            self?.resumeThermallyHeldProcessing()
+        }
 
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }
-        thermalObserver = MacThermalStateObservation(center: .default) { [weak self] in
-            MainActor.assumeIsolated { self?.resumeThermallyHeldProcessing() }
-        }
-
         if !pausesProcessing {
             processingQueue.beginStorageMaintenance()
             startupMaintenanceTask = Task { [weak self] in
-                await self?.recoverPendingSessions()
+                guard let self else { return }
+                await self.recoverPendingSessions()
             }
         }
     }

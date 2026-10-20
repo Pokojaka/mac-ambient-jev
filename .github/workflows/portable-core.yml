@@ -57,8 +57,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      - name: Install Python
-        run: apt-get update && apt-get install -y python3
+      - name: Install Python and FLAC
+        run: apt-get update && apt-get install -y python3 flac
+      - name: Check FLAC
+        run: |
+          command -v flac
+          flac --version
       - name: Check portability and documentation
         run: |
           python3 -B scripts/test_portable_core.py
@@ -72,7 +76,7 @@ jobs:
 
   windows:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 30
     defaults:
       run:
@@ -87,6 +91,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Install FLAC
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'flac-1.5.0-win.zip'
+          Invoke-WebRequest https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne '53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde') {
+            throw 'FLAC 1.5.0 archive SHA-256 checksum mismatch.'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'flac'
+          Expand-Archive -Path $archive -DestinationPath $destination
+          Join-Path $destination 'flac-1.5.0-win/Win64' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Check FLAC
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Command flac -CommandType Application -ErrorAction Stop
+          flac --version
+          if ($LASTEXITCODE -ne 0) { throw 'flac --version failed' }
       - name: Check portability and documentation
         run: |
           $ErrorActionPreference = 'Stop'

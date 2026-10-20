@@ -7,7 +7,7 @@ import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
 @MainActor
-@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint")
+@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint", .timeLimit(.minutes(1)))
 func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -34,6 +34,8 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
     let asr = ThermalQueueASR()
     let pressure = TestThermalMonitor(.critical)
     let liveVAD = ThermalQueueLiveVAD()
+    let poll = LivePollSleep()
+    let thermalRecheck = LivePollSleep()
     let state = AppState(
         paths: paths, captureEngine: capture, microphoneAccess: { true },
         pausesProcessing: false, userDefaults: defaults,
@@ -42,12 +44,19 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
         makeLiveVADSession: { _, _, _, _ in liveVAD },
-        thermalMonitor: pressure
+        thermalMonitor: pressure,
+        liveTranscriptionSleep: { duration in
+            if duration == .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds) {
+                try await poll.sleep(duration)
+            } else if duration == .milliseconds(LiveTranscriptionCadence.thermalRecheckIntervalMilliseconds) {
+                try await thermalRecheck.sleep(duration)
+            } else {
+                throw LivePollWaitFailure(message: "Unexpected live transcription sleep duration: \(duration)")
+            }
+        }
     )
-    let maintenanceDeadline = ContinuousClock.now + .seconds(5)
-    while state.processingQueue.isMaintainingStorage, ContinuousClock.now < maintenanceDeadline {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+    await maintenance.value
     try #require(!state.processingQueue.isMaintainingStorage)
 
     await state.startRecording()
@@ -56,11 +65,8 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         let sessionID = try #require(state.recordingSessionID)
         let latest = try #require(capture.stopResult?.checkpoint)
 
-        let deadline = ContinuousClock.now + .seconds(5)
-        while state.processingStatusText != UserFacingStatus.liveTranscriptionThermalSuspended.text,
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await poll.advance()
+        try await thermalRecheck.waitUntilSuspended()
         #expect(state.processingStatusText == UserFacingStatus.liveTranscriptionThermalSuspended.text)
         #expect(state.transcriptViewModel.statusText == UserFacingStatus.liveTranscriptionThermalSuspended.text)
         #expect(await asr.inputs() == [])
@@ -69,6 +75,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         #expect(state.liveTranscription.latestCheckpoint(sessionID: sessionID) == latest)
 
         pressure.pressure = .fair
+        try await thermalRecheck.advance()
         await state.waitForLiveASRDrain(sessionID: sessionID)
         #expect(await asr.inputs() == expectedInputs)
         #expect(state.liveTranscription.failure(sessionID: sessionID) == nil)
@@ -84,6 +91,85 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         #expect(state.liveTranscription.latestCheckpoint(sessionID: sessionID) == nil)
         #expect(!state.liveCoordinator.isDraining(sessionID: sessionID))
         #expect(await asr.inputs() == expectedInputs)
+    } catch {
+        pressure.pressure = .fair
+        await state.stopRecording()
+        await state.processingCoordinator.waitUntilIdle()
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+        throw error
+    }
+}
+
+@MainActor
+@Test("Cooling resumes thermally held finalization", .timeLimit(.minutes(1)))
+func coolingResumesThermallyHeldFinalization() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let capture = FakeAppCaptureEngine()
+    capture.onStart = { sessionID in
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let writer = try DurableAudioWriter(
+            directory: SessionLayout(sessionURL: sessionURL).processingDirectory,
+            chunkDurationSeconds: 0.5,
+            sessionURL: sessionURL
+        )
+        try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
+        capture.stopResult = cleanStopResult(try await writer.finish())
+    }
+
+    let asr = ThermalQueueASR()
+    let pressure = TestThermalMonitor(.critical)
+    let poll = LivePollSleep()
+    let state = AppState(
+        paths: paths, captureEngine: capture, microphoneAccess: { true },
+        pausesProcessing: false, userDefaults: defaults,
+        engines: SessionProcessingEngines(
+            asr: asr, diarization: UnusedThermalQueueDiarizer(),
+            finalTranscriptVAD: EmptyThermalQueueFinalVAD()
+        ),
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: pressure,
+        liveTranscriptionSleep: poll.sleep
+    )
+
+    do {
+        let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+        await maintenance.value
+        try #require(!state.processingQueue.isMaintainingStorage)
+
+        await state.startRecording()
+        try #require(state.recordingPhase == .recording)
+        let sessionID = try #require(state.recordingSessionID)
+        try await poll.waitUntilSuspended()
+
+        await state.stopRecording()
+        await state.processingCoordinator.waitUntilIdle()
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+
+        #expect(state.processingQueue.thermallyHeld.contains { $0.sessionID == sessionID })
+        #expect(state.processingQueue.pending.isEmpty)
+        #expect(state.processingState == .backlogged)
+        #expect(await asr.inputs() == [])
+
+        pressure.pressure = .fair
+        await state.processingCoordinator.waitUntilIdle()
+        await state.modelPreparationTask?.value
+        await state.idleReleaseTask?.value
+
+        #expect(state.processingQueue.thermallyHeld.isEmpty)
+        #expect(state.processingState == .complete)
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
+            .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
+        let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+        #expect(metadata.finalizationAttempt?.state == .complete)
+        #expect(metadata.activeRuns != nil)
+        #expect(await asr.inputs() == [])
     } catch {
         pressure.pressure = .fair
         await state.stopRecording()
