@@ -151,6 +151,7 @@ public struct DecisionModelIdentity: Sendable, Equatable {
 public struct ClauseBoundaryResponse: Sendable, Equatable {
     public let probabilities: [String: Double]
     public let continuationProbability: Double?
+    /// Raw UTF-16 removal ranges for fillers (F) and backchannels (B), stored as filler_ranges.
     public let fillerRanges: [TextUTF16Range]
     /// Token count of every sequence the model ran for this request.
     public let inputTokens: Int

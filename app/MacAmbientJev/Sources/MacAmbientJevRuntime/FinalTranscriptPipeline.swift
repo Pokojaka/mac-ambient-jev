@@ -70,6 +70,7 @@ enum FinalTranscriptPipelineError: LocalizedError {
     case missingRunEvent(eventType: String, stage: ProcessingStage, runID: String)
     case invalidVADRange(String)
     case invalidSpeakerSpan(speakerID: String, startFrame: Int64, endFrame: Int64, totalFrames: Int64)
+    case invalidSpeakerMetadata(String)
     case persistedSegmentsMismatch(String)
 
     var errorDescription: String? {
@@ -80,6 +81,8 @@ enum FinalTranscriptPipelineError: LocalizedError {
             "VAD 区間 \(segmentID) の範囲が不正です"
         case let .invalidSpeakerSpan(speakerID, startFrame, endFrame, totalFrames):
             "話者 \(speakerID) の区間 \(startFrame)〜\(endFrame) が音声の範囲 0〜\(totalFrames) を外れています"
+        case let .invalidSpeakerMetadata(speakerID):
+            "話者 \(speakerID) の ID または confidence が不正です"
         case let .persistedSegmentsMismatch(runID):
             "segmentation run \(runID) の保存済み区間が一致しません"
         }
@@ -161,12 +164,10 @@ struct FinalTranscriptPipeline: Sendable {
         let vadSegments = try await vadSegmenter.segment(reader: audio, runID: segmentationRunID)
         try validateVADSegments(vadSegments, runID: segmentationRunID)
 
-        let speakerSpans: [SpeakerSpan]
         var transcriptEvents: [TranscriptEvent]
         if vadSegments.isEmpty {
             try await startRun(.diarization, diarizationRunID, diarization.provenance)
             try await completeEmptyRun(.diarization, diarizationRunID)
-            speakerSpans = []
             transcriptEvents = []
         } else {
             let diarizationInputURL = layout.diarizationInputURL
@@ -195,22 +196,15 @@ struct FinalTranscriptPipeline: Sendable {
                 )
             )
             try validateSpeakerSpans(diarizationResult.speakerSpans)
-            speakerSpans = diarizationResult.speakerSpans
             transcriptEvents = diarizationResult.events
         }
 
         if !vadSegments.isEmpty {
             await onStatus(UserFacingStatus.preparingASR.text)
         }
-        let asrSegments = try SpeakerTurnSegmenter.split(
-            vadSegments,
-            speakerSpans: speakerSpans,
-            sampleRate: info.sampleRate
-        )
-        try validateVADSegments(asrSegments, runID: segmentationRunID)
         try await startRun(.asr, asrRunID, asr.provenance)
         var pendingSince: [String: Date] = [:]
-        for segment in asrSegments {
+        for segment in vadSegments {
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,
@@ -246,7 +240,7 @@ struct FinalTranscriptPipeline: Sendable {
             payload: ProcessingRunCompletedPayload(
                 stage: .segmentation,
                 succeeded: true,
-                completedCount: asrSegments.count,
+                completedCount: vadSegments.count,
                 failedCount: 0
             )
         ))
@@ -263,7 +257,7 @@ struct FinalTranscriptPipeline: Sendable {
         )
         await onPhase(.asr)
         let asrResult = try await asrCoordinator.run(
-            segments: asrSegments,
+            segments: vadSegments,
             pendingSince: pendingSince,
             existingEvents: transcriptEvents
         )
@@ -287,7 +281,7 @@ struct FinalTranscriptPipeline: Sendable {
 
         try validatePersistedRuns(
             segmentationRunID: segmentationRunID,
-            segments: asrSegments,
+            segments: vadSegments,
             expected: [
                 (.segmentation, segmentationRunID),
                 (.diarization, diarizationRunID),
@@ -325,6 +319,10 @@ struct FinalTranscriptPipeline: Sendable {
 
     private func validateSpeakerSpans(_ spans: [SpeakerSpan]) throws {
         for span in spans {
+            guard !span.speakerID.isEmpty,
+                  span.confidence.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
+                throw FinalTranscriptPipelineError.invalidSpeakerMetadata(span.speakerID)
+            }
             guard span.startFrame >= 0,
                   span.startFrame < span.endFrame,
                   span.endFrame <= audio.info.committedFrames else {
