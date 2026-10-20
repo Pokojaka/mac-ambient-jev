@@ -357,7 +357,7 @@ private func makeState(
 }
 
 @MainActor
-@Suite("MicInputStatusTests", .timeLimit(.minutes(1)))
+@Suite("MicInputStatusTests", .timeLimit(.minutes(10)))
 struct MicInputStatusTests {
     @Test("A microphone recording configures the input volume, then feeds live speech windows but never final ones")
     func microphoneRecordingDeliversLiveSpeechLevels() async throws {

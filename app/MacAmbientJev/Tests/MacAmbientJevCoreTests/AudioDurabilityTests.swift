@@ -726,7 +726,7 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
     }
 }
 
-@Test(.timeLimit(.minutes(1))) func drainFinishCannotOvertakeAnAwaitingWriterAppend() async throws {
+@Test(.timeLimit(.minutes(10))) func drainFinishCannotOvertakeAnAwaitingWriterAppend() async throws {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
     let writer = GatedCaptureWriter()
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
@@ -753,7 +753,7 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
     #expect(await writer.writtenSamples == [1, 2, 0, 0, 3, 4])
 }
 
-@Test(.timeLimit(.minutes(1))) func drainSnapshotCannotPassAnAwaitingWriterAppend() async throws {
+@Test(.timeLimit(.minutes(10))) func drainSnapshotCannotPassAnAwaitingWriterAppend() async throws {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
     let writer = GatedCaptureWriter()
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())

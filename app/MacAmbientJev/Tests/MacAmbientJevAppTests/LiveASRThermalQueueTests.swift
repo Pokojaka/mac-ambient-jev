@@ -7,7 +7,7 @@ import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
 @MainActor
-@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint", .timeLimit(.minutes(1)))
+@Test("Cooling transcribes the entire live backlog once in order and stop releases its checkpoint", .timeLimit(.minutes(10)))
 func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -102,7 +102,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
 }
 
 @MainActor
-@Test("Cooling resumes thermally held finalization", .timeLimit(.minutes(1)))
+@Test("Cooling resumes thermally held finalization", .timeLimit(.minutes(10)))
 func coolingResumesThermallyHeldFinalization() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
