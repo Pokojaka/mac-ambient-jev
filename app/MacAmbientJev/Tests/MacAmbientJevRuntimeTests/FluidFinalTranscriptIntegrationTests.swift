@@ -19,6 +19,13 @@ private actor FinalizationStatusRecorder {
     func snapshot() -> [String] { values }
 }
 
+private actor FinalizationSleepRecorder {
+    private var durations: [Duration] = []
+
+    func append(_ duration: Duration) { durations.append(duration) }
+    func snapshot() -> [Duration] { durations }
+}
+
 private actor FinalizationStateRecorder {
     struct Entry: Sendable {
         let texts: [String]
@@ -228,7 +235,8 @@ func finalTranscriptPipelineBoundsFluidPaddingBeforePublishing() async throws {
             )
         ),
         audioHandling: MacSessionProcessingAudio(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -271,7 +279,8 @@ func finalTranscriptPipelineRejectsFluidSpansOutsideFinalPadding(startFrame: Int
             )
         ),
         audioHandling: MacSessionProcessingAudio(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
 
     let result = try await processFinal(
@@ -309,6 +318,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         to: originalURL, sessionURL: importURL
     )
     let log = FinalizationCallLog()
+    let sleepRecorder = FinalizationSleepRecorder()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -330,7 +340,8 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
             )
         ),
         audioHandling: MacSessionProcessingAudio(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { await sleepRecorder.append($0) }
     )
 
     let result = await processor.processSession(
@@ -349,4 +360,5 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     #expect(result.disposition == .completed)
     #expect(result.metrics?.pacingWaitCount == 1)
     #expect(await log.snapshot() == ["vad", "diarize", "pause", "asr:0", "pause", "asr:1"])
+    #expect(await sleepRecorder.snapshot() == [.seconds(2)])
 }

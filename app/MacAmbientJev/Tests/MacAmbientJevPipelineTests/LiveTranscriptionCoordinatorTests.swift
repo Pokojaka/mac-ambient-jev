@@ -112,6 +112,7 @@ private final class CoordinatorSleepLog: Sendable {
 
 private final class CoordinatorThermalMonitor: ThermalMonitoring, Sendable {
     private let pressureStorage: Mutex<ThermalPressure>
+    private let changeObservers = TestThermalChangeObservers()
 
     init(pressure: ThermalPressure) {
         pressureStorage = Mutex(pressure)
@@ -121,8 +122,23 @@ private final class CoordinatorThermalMonitor: ThermalMonitoring, Sendable {
         pressureStorage.withLock { $0 }
     }
 
+    @MainActor
     func setPressure(_ pressure: ThermalPressure) {
-        pressureStorage.withLock { $0 = pressure }
+        let didChange = pressureStorage.withLock { current in
+            guard current != pressure else { return false }
+            current = pressure
+            return true
+        }
+        if didChange {
+            changeObservers.notify()
+        }
+    }
+
+    @MainActor
+    func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any ThermalStateObservation {
+        changeObservers.observeChanges(onChange)
     }
 
     var isCritical: Bool { pressure == .critical }
@@ -959,7 +975,7 @@ func cleanupOldDrainCannotReplaceStateOrRemoveNewSameSessionDrain() async throws
 
 /// Five-second utterance cadence; no capture, model load, or audio-file allocation.
 @MainActor
-@Test("Measure live backlog at 10-minute, 1-hour and 4-hour event equivalents")
+@Test("Measure live backlog at 10-minute, 1-hour and 4-hour event equivalents", .enabled(if: ProcessInfo.processInfo.environment["LIVE_ASR_BACKLOG_MEASUREMENT"] == "1"))
 func measureLatestCheckpointRetentionDuringThermalStall() async throws {
     let sessionID = UUID()
     let state = LiveTranscriptionState()

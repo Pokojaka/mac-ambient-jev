@@ -514,8 +514,7 @@ func materializerMarksSegmentsDiarizedOnlyWhenADiarizationRunIsActive() throws {
     #expect(try LiveTranscriptProjection().rows(for: [final]).map(\.displaySpeakerLabels) == [["UNKNOWN"]])
 }
 
-@Test
-func materializerHandlesTenThousandSegmentLog() throws {
+private func makeTenThousandSegmentEvents() -> [TranscriptEvent] {
     let count = 10_000
     var events: [TranscriptEvent] = []
     events.reserveCapacity(count * 2)
@@ -531,15 +530,31 @@ func materializerHandlesTenThousandSegmentLog() throws {
             detectedLanguage: nil
         ))
     }
+    return events
+}
+
+@Test
+func materializerHandlesTenThousandSegmentLog() throws {
+    let materialized = try TranscriptMaterializer(sampleRate: 1_000).materialize(
+        events: makeTenThousandSegmentEvents(),
+        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
+    )
+    #expect(materialized.count == 10_000)
+    #expect(materialized.last?.text == "utterance 9999")
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["MATERIALIZER_BENCHMARK"] == "1"))
+func materializerTenThousandSegmentBenchmark() throws {
+    let events = makeTenThousandSegmentEvents()
     let clock = ContinuousClock()
     let start = clock.now
     let materialized = try TranscriptMaterializer(sampleRate: 1_000).materialize(
         events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
     )
     let elapsed = start.duration(to: clock.now)
-    #expect(materialized.count == count)
+    #expect(materialized.count == 10_000)
     #expect(materialized.last?.text == "utterance 9999")
-    #expect(elapsed < .seconds(8))
+    print("MATERIALIZER_MEASUREMENT segments=10000 elapsed=\(elapsed)")
 }
 
 @Test

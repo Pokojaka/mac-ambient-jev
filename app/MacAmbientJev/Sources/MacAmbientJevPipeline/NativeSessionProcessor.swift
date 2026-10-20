@@ -127,6 +127,7 @@ public actor NativeSessionProcessor {
     private let finalTranscriptVAD: any FinalTranscriptVADSegmenter
     private let audioHandling: any SessionProcessingAudioHandling
     private let contentPriority: ContentPriorityAccess
+    private let sleep: @Sendable (Duration) async throws -> Void
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
     private(set) var liveContentPrioritySessions: [UUID: LiveContentPrioritySession] = [:]
     /// Pending live keys survive a failed/paused takeover until a published replacement clears them.
@@ -136,7 +137,8 @@ public actor NativeSessionProcessor {
         paths: AppPaths,
         engines: SessionProcessingEngines,
         audioHandling: any SessionProcessingAudioHandling,
-        contentPriority: ContentPriorityAccess
+        contentPriority: ContentPriorityAccess,
+        sleep: @escaping @Sendable (Duration) async throws -> Void
     ) {
         self.sessionsRoot = paths.sessionsRoot
         self.asr = engines.asr
@@ -144,6 +146,7 @@ public actor NativeSessionProcessor {
         self.finalTranscriptVAD = engines.finalTranscriptVAD
         self.audioHandling = audioHandling
         self.contentPriority = contentPriority
+        self.sleep = sleep
     }
 
     public func prepareASR(
@@ -668,7 +671,8 @@ public actor NativeSessionProcessor {
                 asr: asr,
                 diarization: diarization,
                 vadSegmenter: finalTranscriptVAD,
-                audioHandling: audioHandling
+                audioHandling: audioHandling,
+                sleep: sleep
             ).process(
                 onStatus: onStatus,
                 pacingMode: pacingMode,

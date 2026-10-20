@@ -24,7 +24,8 @@ struct MacAmbientJevApp: App {
             userDefaults: .standard,
             engines: .production(paths: paths),
             makeLiveVADSession: AppState.makeFluidLiveVADSession,
-            thermalMonitor: MacThermalMonitor()
+            thermalMonitor: MacThermalMonitor(),
+            liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         ))
     }
 

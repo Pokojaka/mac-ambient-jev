@@ -16,7 +16,8 @@ func exportDuringMaintenanceReportsMaintenanceForPCMRecordings() async throws {
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
         makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal),
+        liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
     let checkpoint = AudioCheckpoint(
         committedFrames: 16_000, sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE,

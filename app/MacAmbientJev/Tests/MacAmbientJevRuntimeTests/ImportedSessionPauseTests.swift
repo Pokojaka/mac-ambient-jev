@@ -79,7 +79,8 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
             finalTranscriptVAD: PausedImportVAD()
         ),
         audioHandling: MacSessionProcessingAudio(),
-        contentPriority: .disabled
+        contentPriority: .disabled,
+        sleep: { _ in }
     )
     let paused = await processor.processSession(
         sessionID: sessionID,

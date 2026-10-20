@@ -18,6 +18,7 @@ private actor ScriptedLiveVAD: LiveVADProcessing {
     private let failsProcessing: Bool
     private let beforeBatch: @Sendable (Int) -> Void
     private(set) var deliveredBatches = 0
+    private var batchWaiters: [UUID: (count: Int, continuation: CheckedContinuation<Void, any Error>)] = [:]
 
     init(
         batches: [[MicLevelWindow]], finalLevels: [MicLevelWindow] = [], failsProcessing: Bool = false,
@@ -31,16 +32,95 @@ private actor ScriptedLiveVAD: LiveVADProcessing {
 
     func append(_ more: [[MicLevelWindow]]) { batches += more }
 
+    func waitForDeliveredBatches(_ count: Int) async throws {
+        guard count > 0, count <= batches.count else {
+            throw LivePollWaitFailure(
+                message: "Cannot wait for live VAD batch \(count); available scripted batches: \(batches.count)."
+            )
+        }
+        if deliveredBatches >= count { return }
+        if failsProcessing {
+            throw LivePollWaitFailure(
+                message: "Scripted live VAD is configured to fail before delivering batch \(count)."
+            )
+        }
+        guard !Task.isCancelled else {
+            throw LivePollWaitFailure(message: "Waiting for live VAD batch \(count) was cancelled before registration.")
+        }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(
+                        throwing: LivePollWaitFailure(message: "Waiting for live VAD batch \(count) was cancelled before registration.")
+                    )
+                    return
+                }
+                if deliveredBatches >= count {
+                    continuation.resume()
+                    return
+                }
+                if failsProcessing {
+                    continuation.resume(
+                        throwing: LivePollWaitFailure(
+                            message: "Scripted live VAD is configured to fail before delivering batch \(count)."
+                        )
+                    )
+                    return
+                }
+                batchWaiters[id] = (count: count, continuation: continuation)
+            }
+        } onCancel: { [weak self] in
+            Task {
+                await self?.cancelBatchWaiter(id: id)
+            }
+        }
+    }
+
     func processAvailable(checkpoint: AudioCheckpoint) throws -> LiveVADProgress {
-        if failsProcessing { throw InjectedLiveVADFailure() }
+        if failsProcessing {
+            failBatchWaiters()
+            throw InjectedLiveVADFailure()
+        }
         var levels: [MicLevelWindow] = []
         if deliveredBatches < batches.count {
             beforeBatch(deliveredBatches)
             levels = batches[deliveredBatches]
             deliveredBatches += 1
+            resumeDeliveredBatchWaiters()
         }
         return LiveVADProgress(emittedSegments: [], totalSegmentCount: 0,
                                committedFrames: checkpoint.committedFrames, micSpeechLevels: levels)
+    }
+
+    private func resumeDeliveredBatchWaiters() {
+        let reachedIDs = batchWaiters.compactMap { id, waiter in
+            waiter.count <= deliveredBatches ? id : nil
+        }
+        let reachedWaiters = reachedIDs.compactMap { batchWaiters.removeValue(forKey: $0) }
+        for waiter in reachedWaiters {
+            waiter.continuation.resume()
+        }
+    }
+
+    private func failBatchWaiters() {
+        let waiters = Array(batchWaiters.values)
+        batchWaiters.removeAll(keepingCapacity: true)
+        for waiter in waiters {
+            waiter.continuation.resume(
+                throwing: LivePollWaitFailure(
+                    message: "Scripted live VAD polling failed before delivering batch \(waiter.count)."
+                )
+            )
+        }
+    }
+
+    private func cancelBatchWaiter(id: UUID) {
+        guard let waiter = batchWaiters.removeValue(forKey: id) else { return }
+        waiter.continuation.resume(
+            throwing: LivePollWaitFailure(message: "Waiting for live VAD batch \(waiter.count) was cancelled.")
+        )
     }
 
     func finish(checkpoint: AudioCheckpoint) -> LiveVADProgress {
@@ -76,6 +156,7 @@ private final class FakeMicVolume: MicInputVolumeControlling {
     var values: [UInt32: Float] = [0: 0.5]
     private(set) var writes: [[MicInputVolumeElement]] = []
     private var onChange: (@MainActor @Sendable (MicInputVolumeChange) -> Void)?
+    private var writeWaiters: [UUID: (count: Int, continuation: CheckedContinuation<Void, any Error>)] = [:]
 
     private var current: MicInputVolumeSnapshot {
         MicInputVolumeSnapshot(deviceUID: "mic", elements: values.keys.sorted().map {
@@ -94,9 +175,58 @@ private final class FakeMicVolume: MicInputVolumeControlling {
         async throws(MicInputVolumeWriteFailure) -> MicInputVolumeSnapshot {
         writes.append(requested)
         for value in requested { values[value.element] = value.scalar }
+        resumeWriteWaiters()
         return current
     }
     func unbind() throws(MicInputVolumeFailure) { onChange = nil }
+
+    func waitForWrites(_ count: Int) async throws {
+        guard count > 0 else {
+            throw LivePollWaitFailure(message: "Microphone volume write count must be greater than zero; received \(count).")
+        }
+        if writes.count >= count { return }
+        guard !Task.isCancelled else {
+            throw LivePollWaitFailure(message: "Waiting for \(count) microphone volume writes was cancelled before registration.")
+        }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(
+                        throwing: LivePollWaitFailure(message: "Waiting for \(count) microphone volume writes was cancelled before registration.")
+                    )
+                    return
+                }
+                if writes.count >= count {
+                    continuation.resume()
+                    return
+                }
+                writeWaiters[id] = (count: count, continuation: continuation)
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.cancelWriteWaiter(id: id)
+            }
+        }
+    }
+
+    private func resumeWriteWaiters() {
+        let reachedIDs = writeWaiters.compactMap { id, waiter in
+            waiter.count <= writes.count ? id : nil
+        }
+        let reachedWaiters = reachedIDs.compactMap { writeWaiters.removeValue(forKey: $0) }
+        for waiter in reachedWaiters {
+            waiter.continuation.resume()
+        }
+    }
+
+    private func cancelWriteWaiter(id: UUID) {
+        guard let waiter = writeWaiters.removeValue(forKey: id) else { return }
+        waiter.continuation.resume(
+            throwing: LivePollWaitFailure(message: "Waiting for \(waiter.count) microphone volume writes was cancelled.")
+        )
+    }
 
     func userMovesSlider(to scalar: Float) {
         values[0] = scalar
@@ -197,26 +327,37 @@ private func ≈ (lhs: [[Float]], rhs: [[Float]]) -> Bool {
 }
 
 @MainActor
-private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-    for _ in 0..<500 where !(await condition()) {
-        try await Task.sleep(for: .milliseconds(10))
+private func stepLivePolls(through batchCount: Int, vad: ScriptedLiveVAD, poll: LivePollSleep) async throws {
+    let current = await vad.deliveredBatches
+    guard batchCount > 0 else {
+        throw LivePollWaitFailure(message: "Live poll batch target must be greater than zero; received \(batchCount).")
+    }
+    guard batchCount >= current else {
+        throw LivePollWaitFailure(message: "Cannot step live polls back from \(current) delivered batches to \(batchCount).")
+    }
+
+    guard batchCount > current else { return }
+    for batch in (current + 1)...batchCount {
+        try await poll.advance()
+        try await vad.waitForDeliveredBatches(batch)
+        try await poll.waitUntilSuspended()
     }
 }
 
 @MainActor
 private func makeState(
-    paths: AppPaths, engine: any AppCaptureEngine, defaults: UserDefaults,
+    paths: AppPaths, engine: any AppCaptureEngine, defaults: UserDefaults, poll: LivePollSleep,
     makeLiveVADSession: @escaping LiveVADFactory
 ) -> AppState {
     AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: makeLiveVADSession,
-        thermalMonitor: TestThermalMonitor(.nominal)
+        thermalMonitor: TestThermalMonitor(.nominal), liveTranscriptionSleep: poll.sleep
     )
 }
 
 @MainActor
-@Suite("MicInputStatusTests")
+@Suite("MicInputStatusTests", .timeLimit(.minutes(1)))
 struct MicInputStatusTests {
     @Test("A microphone recording configures the input volume, then feeds live speech windows but never final ones")
     func microphoneRecordingDeliversLiveSpeechLevels() async throws {
@@ -231,17 +372,18 @@ struct MicInputStatusTests {
         let live = speechBatches(seconds: 0..<1, dBFS: -40)
         let final = speechBatches(seconds: 1..<2, dBFS: -40)[0]
         let vad = ScriptedLiveVAD(batches: live, finalLevels: final)
+        let poll = LivePollSleep()
         var measureRequests: [Bool] = []
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure, _ in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, measure, _ in
             measureRequests.append(measure)
             return vad
         }
 
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
-        #expect(state.recordingPhase == .recording)
+        try #require(state.recordingPhase == .recording)
         #expect(engine.micConfigurations == [true])
-        try await waitUntil { !engine.consumedMicSpeechLevels.isEmpty }
+        try await stepLivePolls(through: 1, vad: vad, poll: poll)
         #expect(measureRequests == [true])
         #expect(engine.consumedMicSpeechLevels.map(\.sessionID) == [sessionID])
         #expect(engine.consumedMicSpeechLevels.map(\.windows) == live)
@@ -261,7 +403,8 @@ struct MicInputStatusTests {
         engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionIDs: [UUID] = []
         engine.onStart = { startedSessionIDs.append($0) }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults,
+        let poll = LivePollSleep()
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll,
                               makeLiveVADSession: idleLiveVADFactory())
 
         await state.startRecording()
@@ -306,7 +449,8 @@ struct MicInputStatusTests {
         engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults,
+        let poll = LivePollSleep()
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll,
                               makeLiveVADSession: idleLiveVADFactory())
 
         await state.startRecording()
@@ -335,16 +479,17 @@ struct MicInputStatusTests {
         let engine = FakeAppCaptureEngine()
         engine.stopResult = cleanStopResult(testCheckpoint())
         let vad = ScriptedLiveVAD(batches: speechBatches(seconds: 0..<2, dBFS: -40))
+        let poll = LivePollSleep()
         var measureRequests: [Bool] = []
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, measure, _ in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, measure, _ in
             measureRequests.append(measure)
             return vad
         }
         state.captureSource = .systemAudio
 
         await state.startRecording()
-        #expect(state.recordingPhase == .recording)
-        try await waitUntil { await vad.deliveredBatches == 2 }
+        try #require(state.recordingPhase == .recording)
+        try await stepLivePolls(through: 2, vad: vad, poll: poll)
         #expect(await vad.deliveredBatches == 2)
         await state.stopRecording()
         #expect(measureRequests == [false])
@@ -364,14 +509,23 @@ struct MicInputStatusTests {
         engine.stopResult = cleanStopResult(testCheckpoint())
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _, _ in
+        let poll = LivePollSleep()
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _ in
             guard failsWhilePolling else { throw InjectedLiveVADFailure() }
             return ScriptedLiveVAD(batches: [], failsProcessing: true)
         }
 
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
-        try await waitUntil { !engine.micMonitoringUnavailableSessions.isEmpty }
+        try #require(state.recordingPhase == .recording)
+        if failsWhilePolling {
+            try await poll.advance()
+            try await waitForPublishedValue(
+                state.$processingStatusText,
+                description: "live VAD polling failure to report unavailable microphone monitoring",
+                matching: { $0?.contains("発話検出を停止しました") == true }
+            )
+        }
         #expect(engine.micMonitoringUnavailableSessions == [sessionID])
         #expect(state.recordingPhase == .recording)
         await state.stopRecording()
@@ -390,13 +544,15 @@ struct MicInputStatusTests {
         let vad = ScriptedLiveVAD(batches: batches) { [clock = engine.clock] index in
             clock.set(seconds: InputFreeMicCaptureEngine.clockOrigin + Double(index + 1))
         }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _, _ in vad }
+        let poll = LivePollSleep()
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _ in vad }
 
         await state.startRecording()
+        try #require(state.recordingPhase == .recording)
         #expect(state.micInputStatus == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
-        try await waitUntil { state.micInputStatus?.warning == .low }
+        try await stepLivePolls(through: 4, vad: vad, poll: poll)
         #expect(state.micInputStatus == MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
-        try await waitUntil { await vad.deliveredBatches == batches.count }
+        try await stepLivePolls(through: batches.count, vad: vad, poll: poll)
         #expect(state.micInputStatus == MicInputStatus(warning: nil, speechMonitoringUnavailable: false, adjustment: .disabledBySetting))
         await state.stopRecording()
         #expect(engine.volumeFactoryCalls == 0)
@@ -413,10 +569,13 @@ struct MicInputStatusTests {
         let vad = ScriptedLiveVAD(batches: speechBatches(seconds: 0..<4, dBFS: -40)) { [clock = engine.clock] index in
             clock.set(seconds: InputFreeMicCaptureEngine.clockOrigin + Double(index + 1))
         }
-        let state = makeState(paths: paths, engine: engine, defaults: defaults) { _, _, _, _ in vad }
+        let poll = LivePollSleep()
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _ in vad }
 
         await state.startRecording()
-        try await waitUntil { engine.volume.writes.count == 1 }
+        try #require(state.recordingPhase == .recording)
+        try await stepLivePolls(through: 4, vad: vad, poll: poll)
+        try await engine.volume.waitForWrites(1)
         #expect(scalars(engine.volume.writes) ≈ [[0.55]])
         #expect(state.micInputStatus?.adjustment == .active)
 
@@ -424,7 +583,7 @@ struct MicInputStatusTests {
             engine.volume.userMovesSlider(to: 0.3)
             #expect(state.micInputStatus?.adjustment == .pausedByExternalChange)
             await vad.append(speechBatches(seconds: 4..<12, dBFS: -40))
-            try await waitUntil { await vad.deliveredBatches == 12 }
+            try await stepLivePolls(through: 12, vad: vad, poll: poll)
             #expect(await vad.deliveredBatches == 12)
             #expect(engine.volume.writes.count == 1)
             #expect(state.micInputStatus == MicInputStatus(warning: .low, speechMonitoringUnavailable: false, adjustment: .pausedByExternalChange))

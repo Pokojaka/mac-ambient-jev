@@ -28,9 +28,18 @@ public struct MacThermalMonitor: ThermalMonitoring {
     public var liveASRDecision: LiveASRThermalDecision {
         LiveASRThermalPolicy.decision(pressure: pressure)
     }
+
+    @MainActor
+    public func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any ThermalStateObservation {
+        MacThermalStateObservation(center: .default) {
+            MainActor.assumeIsolated { onChange() }
+        }
+    }
 }
 
-public final class MacThermalStateObservation {
+public final class MacThermalStateObservation: ThermalStateObservation {
     private let center: NotificationCenter
     private let token: NSObjectProtocol
 

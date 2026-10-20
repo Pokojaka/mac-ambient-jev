@@ -152,7 +152,7 @@ public final class AudioCaptureEngine {
 
     private var checkingSystemPermission = false
     private var permissionAnswer: Result<Bool, SystemAudioPermissionError>?
-    private var permissionRequestTask: Task<Void, Never>?
+    private(set) var permissionRequestTask: Task<Void, Never>?
     public private(set) var systemAudioPermissionResult: SystemAudioPermissionResult?
     private var pendingPermissionID: UUID?
     private(set) public var activeSessionID: UUID?

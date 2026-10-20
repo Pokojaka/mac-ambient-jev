@@ -22,6 +22,7 @@ private final class CoordinatorTestEventLog: Sendable {
 
 private final class CoordinatorTestThermalMonitor: ThermalMonitoring, Sendable {
     private let pressureStorage: Mutex<ThermalPressure>
+    private let changeObservers = TestThermalChangeObservers()
 
     init(pressure: ThermalPressure) {
         pressureStorage = Mutex(pressure)
@@ -31,8 +32,23 @@ private final class CoordinatorTestThermalMonitor: ThermalMonitoring, Sendable {
         pressureStorage.withLock { $0 }
     }
 
+    @MainActor
     func setPressure(_ pressure: ThermalPressure) {
-        pressureStorage.withLock { $0 = pressure }
+        let didChange = pressureStorage.withLock { current in
+            guard current != pressure else { return false }
+            current = pressure
+            return true
+        }
+        if didChange {
+            changeObservers.notify()
+        }
+    }
+
+    @MainActor
+    func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any ThermalStateObservation {
+        changeObservers.observeChanges(onChange)
     }
 
     var isCritical: Bool { pressure == .critical }

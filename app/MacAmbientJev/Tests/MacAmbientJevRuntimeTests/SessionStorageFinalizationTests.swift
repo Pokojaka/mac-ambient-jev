@@ -155,7 +155,8 @@ private struct Fixture {
 
     func processor(_ engines: SessionProcessingEngines) -> NativeSessionProcessor {
         NativeSessionProcessor(
-            paths: paths, engines: engines, audioHandling: MacSessionProcessingAudio(), contentPriority: .disabled
+            paths: paths, engines: engines, audioHandling: MacSessionProcessingAudio(), contentPriority: .disabled,
+            sleep: { _ in }
         )
     }
 

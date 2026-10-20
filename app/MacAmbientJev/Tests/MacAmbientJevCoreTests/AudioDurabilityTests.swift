@@ -726,7 +726,7 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
     }
 }
 
-@Test func drainFinishCannotOvertakeAnAwaitingWriterAppend() async throws {
+@Test(.timeLimit(.minutes(1))) func drainFinishCannotOvertakeAnAwaitingWriterAppend() async throws {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
     let writer = GatedCaptureWriter()
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
@@ -740,7 +740,8 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
 
     // A reentrant drain would pop block two and finish with only that block
     // while append of block one is still suspended at this gate.
-    try await Task.sleep(for: .milliseconds(30))
+    await drain.waitForQueuedOperations(1)
+    #expect(await drain.queuedOperationCount == 1)
     #expect(!(await writer.hasFinished))
     await writer.releaseFirstAppend()
     #expect(try await draining.value == 2)
@@ -752,7 +753,7 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
     #expect(await writer.writtenSamples == [1, 2, 0, 0, 3, 4])
 }
 
-@Test func drainSnapshotCannotPassAnAwaitingWriterAppend() async throws {
+@Test(.timeLimit(.minutes(1))) func drainSnapshotCannotPassAnAwaitingWriterAppend() async throws {
     let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2)
     let writer = GatedCaptureWriter()
     let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
@@ -762,7 +763,8 @@ func pushMono(_ values: [Float], at frame: Int64, into ring: AudioBlockRing) -> 
     await writer.waitUntilFirstAppendStarts()
     #expect(pushMono([3, 4], at: 2, into: ring))
     let snapshotting = Task { try await drain.committedSnapshot() }
-    try await Task.sleep(for: .milliseconds(30))
+    await drain.waitForQueuedOperations(1)
+    #expect(await drain.queuedOperationCount == 1)
     await writer.releaseFirstAppend()
 
     #expect(try await draining.value == 2)

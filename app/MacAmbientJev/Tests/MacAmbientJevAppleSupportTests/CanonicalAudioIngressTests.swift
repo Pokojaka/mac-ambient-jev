@@ -118,11 +118,13 @@ func failedCanonicalAppendRetriesOutputWithoutReconversion() async throws {
     try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: false)
     await #expect(throws: (any Error).self) { _ = try await drain.drainAvailable() }
     try FileManager.default.removeItem(at: blocked)
+    let preFinish = try await drain.committedSnapshot()
+    #expect(preFinish.committedFrames > 0)
     async let finish = drain.finish()
     async let snapshot = drain.committedSnapshot()
     let final = try await finish
     let observed = try await snapshot
-    #expect(observed.committedFrames <= final.committedFrames)
+    #expect([preFinish.committedFrames, final.committedFrames].contains(observed.committedFrames))
     let converter = try CanonicalAudioResampler(sampleRate: 44_100)
     var expected = try converter.convert(mono: source)
     expected += try converter.finish()
