@@ -326,8 +326,11 @@ func incrementalLiveFixture(count: Int) async throws -> (root: URL, session: Liv
         segmentationRunID: incrementalSegmentationRun, asrRunID: incrementalASRRun, processingDirectory: root,
         writer: try SessionWriter(sessionURL: root), asr: IncrementalFixtureASR(texts: Array(repeating: "合成の発話", count: count)),
         sampleRate: checkpoint.sampleRate, clauseBoundaryRunID: incrementalBoundaryRun, contentPriorityRunID: incrementalPriorityRun)
-    let segments = (0..<count).map { SegmentReference(segmentationRunID: incrementalSegmentationRun,
-        segmentID: "segment_\($0)", startFrame: Int64($0 * 4), endFrame: Int64($0 * 4 + 4)) }
+    let segments = (0..<count).map { (index: Int) -> SegmentReference in
+        let startFrame = Int64(index) * 4
+        return SegmentReference(segmentationRunID: incrementalSegmentationRun,
+            segmentID: "segment_\(index)", startFrame: startFrame, endFrame: startFrame + 4)
+    }
     _ = try await session.process(segments: segments, checkpoint: checkpoint)
     return (root, session)
 }
