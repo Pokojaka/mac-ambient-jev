@@ -320,7 +320,7 @@ private func writeCatalogSession(
             chunkFiles: [filename],
             chunkFrameCounts: [1],
             gapEvents: []
-        )).write(to: processing.appending(path: DurableAudioWriter.checkpointFilename), options: .atomic)
+        )).write(to: processing.appending(path: DurableAudioWriter.checkpointFilename))
     }
     return session
 }
