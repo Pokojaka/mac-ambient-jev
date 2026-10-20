@@ -8,6 +8,7 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevPipeline/**'
       - 'app/MacAmbientJev/Sources/CONNXRuntime/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevONNX/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/**'
       - 'app/MacAmbientJev/Sources/CMiniaudio/**'
       - 'app/MacAmbientJev/Sources/CWindowsAudio/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/**'
@@ -16,11 +17,20 @@ on:
       - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevONNXTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevVADFixtures/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**'
       - 'scripts/generate_windows_audio_fixtures.py'
       - 'scripts/fetch_onnxruntime.py'
       - 'scripts/test_fetch_onnxruntime.py'
       - 'scripts/generate_onnx_fixture.py'
+      - 'scripts/fetch_silero_vad.py'
+      - 'scripts/test_fetch_silero_vad.py'
+      - 'scripts/pinned_download.py'
+      - 'scripts/test_pinned_download.py'
+      - 'scripts/generate_silero_speech_fixture.py'
+      - 'scripts/generate_silero_reference.py'
+      - 'scripts/test_generate_silero_reference.py'
       - 'scripts/test-windows.ps1'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
@@ -32,6 +42,7 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevPipeline/**'
       - 'app/MacAmbientJev/Sources/CONNXRuntime/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevONNX/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/**'
       - 'app/MacAmbientJev/Sources/CMiniaudio/**'
       - 'app/MacAmbientJev/Sources/CWindowsAudio/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/**'
@@ -40,11 +51,20 @@ on:
       - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevONNXTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevVADFixtures/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**'
       - 'scripts/generate_windows_audio_fixtures.py'
       - 'scripts/fetch_onnxruntime.py'
       - 'scripts/test_fetch_onnxruntime.py'
       - 'scripts/generate_onnx_fixture.py'
+      - 'scripts/fetch_silero_vad.py'
+      - 'scripts/test_fetch_silero_vad.py'
+      - 'scripts/pinned_download.py'
+      - 'scripts/test_pinned_download.py'
+      - 'scripts/generate_silero_speech_fixture.py'
+      - 'scripts/generate_silero_reference.py'
+      - 'scripts/test_generate_silero_reference.py'
       - 'scripts/test-windows.ps1'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
@@ -75,6 +95,12 @@ jobs:
         run: apt-get update && apt-get install -y python3 flac
       - name: Fetch ONNX Runtime
         run: python3 scripts/fetch_onnxruntime.py
+      - name: Fetch Silero VAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          model="$(python3 scripts/fetch_silero_vad.py)"
+          printf 'MAC_AMBIENT_JEV_SILERO_MODEL=%s\n' "$model" >> "$GITHUB_ENV"
       - name: Check FLAC
         run: |
           command -v flac
@@ -83,6 +109,9 @@ jobs:
         run: |
           python3 -B scripts/test_portable_core.py
           python3 -B scripts/test_fetch_onnxruntime.py
+          python3 -B scripts/test_fetch_silero_vad.py
+          python3 -B scripts/test_pinned_download.py
+          python3 -B scripts/test_generate_silero_reference.py
           python3 -B scripts/check_portable_core.py
           python3 scripts/test_doc_references.py
           python3 scripts/check_doc_references.py

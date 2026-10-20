@@ -8,6 +8,10 @@ Repository: `FluidInference/FluidAudio`
 
 Used for local voice activity detection and speaker diarization. Preserve the upstream license and notices for the exact pinned version.
 
+`app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime` と `MacAmbientJevPipeline` の `VADStreamingStateMachine` は、FluidAudio 0.15.8 の `Sources/FluidAudio/VAD/VadManager+Streaming.swift`（`streamingStateMachine`、Apache-2.0）の発話開始・終了判定をポートしたものです。アプリが使う経路（開始閾値 0.50、終了閾値 = 開始閾値 − 0.15、最短無音 0.75 秒、speech padding 0）だけを残し、FluidAudio の型と Core ML には依存しません。`VADChunkScoring` の chunk 集約（8 frame の noisy-OR と部分 chunk の最後の sample 反復）は、FluidAudio の Core ML model `silero-vad-unified-256ms-v6.2.1` と `VadManager.swift` の `processChunk` の動作に合わせています。
+
+FluidAudio 0.15.8 は Apache License, Version 2.0 です（<https://www.apache.org/licenses/LICENSE-2.0>）。ライセンス全文は <https://github.com/FluidInference/FluidAudio/blob/v0.15.8/LICENSE> にあります。上流の LICENSE は著作権者名を記載していません。
+
 ## speech-swift
 
 Repository: `soniqo/speech-swift`
@@ -65,6 +69,34 @@ Windows / Linux で ONNX Runtime C API の CPU Execution Provider を使用し�
 MIT License
 
 Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Silero VAD
+
+Windows / Linux のフレーム推論は、固定版 [`snakers4/silero-vad`](https://github.com/snakers4/silero-vad/tree/5cd7945676eb32225748052e2e6a0580e4686a08) v6.2.3（commit `5cd7945676eb32225748052e2e6a0580e4686a08`）の `OnnxWrapper` にある per-frame probability と recurrent state / context の契約を mirror します。使用する ONNX model は `src/silero_vad/data/silero_vad_16k_op15.onnx` で、SHA-256 は `7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49` です。1 frame は16 kHz mono の512 samples で、前 frame の末尾64 samples を context として連結します。初期 context と recurrent state はゼロで、推論の sample rate は16000です。成功した推論の state と context を次 frame に引き継ぎます。実装が参照する固定版 upstream の [utils_vad.py `OnnxWrapper`](https://github.com/snakers4/silero-vad/blob/5cd7945676eb32225748052e2e6a0580e4686a08/src/silero_vad/utils_vad.py#L103-L144) と [LICENSE](https://github.com/snakers4/silero-vad/blob/5cd7945676eb32225748052e2e6a0580e4686a08/LICENSE) を参照してください。
+
+```text
+MIT License
+
+Copyright (c) 2020-present Silero Team
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

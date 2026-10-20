@@ -11,13 +11,13 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
             model: Repo.vad.rawValue,
             version: Self.version,
             configuration: [
-                "pre_roll_seconds": String(FluidVADSegmentationEngine.preRollSeconds),
-                "max_segment_seconds": String(FluidVADSegmentationEngine.maxSegmentSeconds),
-                "min_silence_seconds": String(FluidVADSegmentationEngine.minSilenceSeconds),
-                "vad_threshold": String(FluidVADSegmentationEngine.speechProbabilityThreshold),
-                "split_search_window_seconds": String(FluidVADSegmentationEngine.splitSearchWindowSeconds),
-                "split_energy_frame_seconds": String(FluidVADSegmentationEngine.splitEnergyFrameSeconds),
-                "minimum_independent_segment_seconds": String(FluidVADSegmentationEngine.minimumIndependentSegmentSeconds),
+                "pre_roll_seconds": String(VADSegmentationParameters.preRollSeconds),
+                "max_segment_seconds": String(VADSegmentationParameters.maxSegmentSeconds),
+                "min_silence_seconds": String(VADSegmentationParameters.minSilenceSeconds),
+                "vad_threshold": String(VADSegmentationParameters.speechProbabilityThreshold),
+                "split_search_window_seconds": String(VADSegmentationParameters.splitSearchWindowSeconds),
+                "split_energy_frame_seconds": String(VADSegmentationParameters.splitEnergyFrameSeconds),
+                "minimum_independent_segment_seconds": String(VADSegmentationParameters.minimumIndependentSegmentSeconds),
             ]
         )
     }

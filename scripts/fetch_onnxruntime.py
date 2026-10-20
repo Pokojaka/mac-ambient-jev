@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import platform
 import shutil
@@ -8,9 +7,10 @@ import stat
 import sys
 import tarfile
 import tempfile
-import urllib.request
 import zipfile
 from pathlib import Path, PureWindowsPath
+
+import pinned_download
 
 
 VERSION = "1.31.0"
@@ -41,45 +41,6 @@ def _assert_within(parent: Path, path: Path) -> None:
         path.resolve().relative_to(parent.resolve())
     except ValueError as error:
         raise RuntimeError(f"対象パスが許可されたディレクトリ外です: {path}") from error
-
-
-def _ensure_directory(repository: Path, directory: Path) -> None:
-    _assert_within(repository, directory)
-    directory.mkdir(exist_ok=True)
-    if not stat.S_ISDIR(directory.lstat().st_mode):
-        raise RuntimeError(f"キャッシュ先が通常のディレクトリではありません: {directory}")
-    _assert_within(repository, directory)
-
-
-def _verify_archive(archive: Path, expected: str) -> None:
-    with archive.open("rb") as source:
-        actual = hashlib.file_digest(source, "sha256").hexdigest()
-    if actual != expected:
-        raise ValueError(f"ONNX Runtime アーカイブの SHA-256 が一致しません: 期待値 {expected}、実際 {actual}。")
-
-
-def _archive_is_regular(archive: Path) -> bool:
-    if not os.path.lexists(archive):
-        return False
-    if not stat.S_ISREG(archive.lstat().st_mode):
-        raise RuntimeError(f"キャッシュ済みアーカイブが通常ファイルではありません: {archive}")
-    return True
-
-
-def _download_archive(url: str, archive: Path, expected: str, cache: Path) -> None:
-    descriptor, name = tempfile.mkstemp(prefix=f".{archive.name}.", suffix=".download", dir=cache)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "wb") as output:
-            with urllib.request.urlopen(url, timeout=60) as response:
-                shutil.copyfileobj(response, output, length=1024 * 1024)
-        _verify_archive(temporary, expected)
-        os.replace(temporary, archive)
-    finally:
-        if os.path.lexists(temporary):
-            if not stat.S_ISREG(temporary.lstat().st_mode):
-                raise RuntimeError(f"一時アーカイブが通常ファイルではありません: {temporary}")
-            temporary.unlink()
 
 
 def _require_directory(path: Path) -> None:
@@ -157,9 +118,7 @@ def _remove_tree(path: Path) -> None:
 def fetch() -> Path:
     platform_name, asset_name, expected = choose_asset(platform.system(), platform.machine())
     repository = Path(__file__).resolve().parent.parent
-    cache = repository / ".build" / "onnxruntime" / VERSION
-    for directory in (repository / ".build", repository / ".build" / "onnxruntime", cache):
-        _ensure_directory(repository, directory)
+    cache = pinned_download.ensure_repository_directory(repository, repository / ".build" / "onnxruntime" / VERSION)
     root_name = f"onnxruntime-{platform_name}-{VERSION}"
     destination = cache / root_name
     is_zip = asset_name.endswith(".zip")
@@ -178,11 +137,7 @@ def fetch() -> Path:
                 raise RuntimeError(f"一時アーカイブが通常ファイルではありません: {temporary}")
             temporary.unlink()
 
-    archive = cache / asset_name
-    if _archive_is_regular(archive):
-        _verify_archive(archive, expected)
-    else:
-        _download_archive(f"{RELEASE_URL}/{asset_name}", archive, expected, cache)
+    archive = pinned_download.download_verified(f"{RELEASE_URL}/{asset_name}", expected, cache / asset_name)
     staging = Path(tempfile.mkdtemp(prefix=".extract-", dir=cache))
     try:
         _assert_within(cache, staging)

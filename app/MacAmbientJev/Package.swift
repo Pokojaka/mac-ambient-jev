@@ -50,6 +50,13 @@ var targets: [Target] = [
         name: "MacAmbientJevEvaluateASR",
         dependencies: ["MacAmbientJevCore"]
     ),
+    // Test inputs shared by the VAD tests of every platform; no production target depends on it.
+    .target(
+        name: "MacAmbientJevVADFixtures",
+        dependencies: ["MacAmbientJevCore"],
+        path: "Tests/MacAmbientJevVADFixtures",
+        exclude: ["vad_parity.json"]
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
         dependencies: ["MacAmbientJevCore"]
@@ -178,6 +185,7 @@ let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
 ]
 
 products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
+products.append(.library(name: "MacAmbientJevPortableRuntime", targets: ["MacAmbientJevPortableRuntime"]))
 targets.append(.systemLibrary(name: "CONNXRuntime"))
 targets.append(.target(
     name: "MacAmbientJevONNX",
@@ -186,10 +194,26 @@ targets.append(.target(
     swiftSettings: onnxRuntimeIncludeSwiftSettings,
     linkerSettings: [.unsafeFlags(onnxRuntimeLinkerFlags)]
 ))
+targets.append(.target(
+    name: "MacAmbientJevPortableRuntime",
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX"],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
 targets.append(.testTarget(
     name: "MacAmbientJevONNXTests",
-    dependencies: ["MacAmbientJevONNX"],
+    dependencies: ["MacAmbientJevONNX", "MacAmbientJevVADFixtures"],
     resources: [.copy("Resources")],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevPortableRuntimeTests",
+    dependencies: [
+        "MacAmbientJevPortableRuntime",
+        "MacAmbientJevONNX",
+        "MacAmbientJevPipeline",
+        "MacAmbientJevCore",
+        "MacAmbientJevVADFixtures"
+    ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
 #endif
@@ -352,7 +376,8 @@ targets += [
             "MacAmbientJevCore",
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
-            "MacAmbientJevRuntime"
+            "MacAmbientJevRuntime",
+            "MacAmbientJevVADFixtures"
         ]
     )
 ]
