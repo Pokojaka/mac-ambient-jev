@@ -58,6 +58,7 @@ struct LiveTranscriptView: View {
                 } label: {
                     Label("最新へ戻る", systemImage: "arrow.down")
                 }
+                .help("最新の行までスクロールし、自動追従を再開")
             }
         }
         .padding(.horizontal, AppSpacing.lg)
@@ -127,7 +128,7 @@ struct LiveTranscriptView: View {
                     .frame(width: 42, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .help("詳細")
+            .help("この行の発話文の判定状態と話者区間を表示")
             .accessibilityLabel("時刻 \(formatTime(row.startMilliseconds))、詳細を表示")
             .popover(isPresented: detailPopover(for: row.id), arrowEdge: .trailing) {
                 transcriptDetails(row)

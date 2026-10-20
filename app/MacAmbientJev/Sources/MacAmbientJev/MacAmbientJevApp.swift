@@ -91,6 +91,7 @@ private struct ContentView: View {
                     )
                 }
                 .disabled(appState.isBusy || appState.isRecording)
+                .help(importHelp)
 
                 Button {
                     appState.refreshSavedSessions()
@@ -98,13 +99,14 @@ private struct ContentView: View {
                 } label: {
                     Label("保存済み録音", systemImage: "waveform.and.mic")
                 }
+                .help("これまでの録音と読み込んだ音声を一覧で表示")
 
                 Picker("録音元", selection: $appState.captureSource) {
                     Text("マイク").tag(CaptureSource.microphone)
                     Text("システム音声").tag(CaptureSource.systemAudio)
                 }
                 .pickerStyle(.segmented)
-                .help("録音元")
+                .help(appState.recordingPhase == .idle ? "録音する音声をマイクかシステム音声から選択" : "録音中は切り替え不可")
                 .disabled(appState.recordingPhase != .idle)
 
                 Button {
@@ -123,14 +125,30 @@ private struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(appState.isBusy && appState.recordingPhase != .starting)
+                .help(recordingHelp)
 
                 Button {
                     openSettings()
                 } label: {
                     Label("設定", systemImage: "gearshape")
                 }
-                .help("設定を開く")
+                .help("音声認識モデル、保存先、マイクの設定を表示")
             }
+        }
+    }
+
+    private var importHelp: String {
+        if appState.isRecording { return "録音中は読み込み不可" }
+        if appState.isBusy { return "録音操作の処理が終わると読み込み可能" }
+        return "音声ファイルを読み込んで文字起こし"
+    }
+
+    private var recordingHelp: String {
+        if appState.isRecording || appState.recordingPhase == .starting { return "録音を終えて文字起こしを確定" }
+        if appState.isBusy { return "録音操作の処理が終わると開始可能" }
+        return switch appState.captureSource {
+        case .microphone: "マイクの音声を録音し、その場で文字起こし"
+        case .systemAudio: "Mac で再生中の音声を録音し、その場で文字起こし"
         }
     }
 
@@ -143,6 +161,7 @@ private struct ContentView: View {
                     .font(.callout)
                     .foregroundStyle(captureStatusTextStyle)
                     .lineLimit(2)
+                    .help(appState.statusText)
 
                 Spacer()
 
@@ -184,6 +203,7 @@ private struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+                        .help(processingStatusText)
 
                     Spacer()
 
