@@ -212,6 +212,72 @@ def build_asr_artifact(
     return artifact
 
 
+def _validate_onnx_asr_config(inference_config: dict) -> None:
+    expected_keys = {
+        "language",
+        "quantization",
+        "minimum_input_seconds",
+        "mel_variant",
+        "max_new_tokens",
+        "no_repeat_ngram",
+        "intra_op_threads",
+        "inter_op_threads",
+        "cpu_memory_arena",
+        "segmentation",
+    }
+    _require_keys(
+        inference_config,
+        expected_keys,
+        "engine.inference_config",
+    )
+
+    expected_values = {
+        "language": "ja",
+        "quantization": "int4",
+        "mel_variant": (
+            "whisper-slaney-128-nfft400-hop160-reflect-global-log10"
+        ),
+        "no_repeat_ngram": (
+            "3 when input_seconds > 15; disabled otherwise"
+        ),
+        "segmentation": "silero-final-transcript",
+    }
+    for key, expected in expected_values.items():
+        if inference_config[key] != expected:
+            raise ValueError(
+                f"engine.inference_config.{key} must be {expected!r}"
+            )
+
+    minimum_input_seconds = inference_config["minimum_input_seconds"]
+    if (
+        not _is_number(minimum_input_seconds)
+        or minimum_input_seconds != 0.02
+    ):
+        raise ValueError(
+            "engine.inference_config.minimum_input_seconds must be 0.02"
+        )
+
+    max_new_tokens = inference_config["max_new_tokens"]
+    if not _is_int(max_new_tokens) or max_new_tokens != 448:
+        raise ValueError("engine.inference_config.max_new_tokens must be 448")
+
+    intra_op_threads = inference_config["intra_op_threads"]
+    if not _is_int(intra_op_threads) or not 1 <= intra_op_threads <= 2**31 - 1:
+        raise ValueError(
+            "engine.inference_config.intra_op_threads must be a positive "
+            "Int32 integer"
+        )
+
+    inter_op_threads = inference_config["inter_op_threads"]
+    if not _is_int(inter_op_threads) or inter_op_threads != 1:
+        raise ValueError("engine.inference_config.inter_op_threads must be 1")
+
+    if inference_config["cpu_memory_arena"] is not False:
+        raise ValueError(
+            "engine.inference_config.cpu_memory_arena must be false"
+        )
+
+
 def validate_asr_artifact(artifact: dict[str, Any]) -> None:
     """The ASR artifact carries one segment spanning the whole audio.
 
@@ -224,15 +290,35 @@ def validate_asr_artifact(artifact: dict[str, Any]) -> None:
         {"schema_version", "engine", "segments", "runtime"},
         "ASR artifact",
     )
-    engine = validate_engine(
-        artifact["engine"],
-        name=ASR_ENGINE_NAME,
-        backend=ASR_BACKEND,
-    )
+    engine_data = _require_object(artifact["engine"], "engine")
+    backend = engine_data.get("backend")
+    if backend == ASR_BACKEND:
+        engine = validate_engine(
+            engine_data,
+            name=ASR_ENGINE_NAME,
+            backend=ASR_BACKEND,
+        )
+    elif backend == "onnxruntime":
+        engine = validate_engine(
+            engine_data,
+            name=ASR_ENGINE_NAME,
+            backend="onnxruntime",
+        )
+        if engine["device"] != "cpu":
+            raise ValueError("onnxruntime ASR requires device 'cpu'")
+        if "onnxruntime" not in engine["package_versions"]:
+            raise ValueError(
+                "onnxruntime ASR requires package_versions.onnxruntime"
+            )
+    else:
+        raise ValueError(f"unsupported ASR backend {backend!r}")
+
     runtime = _validate_runtime(
         artifact["runtime"],
         device=engine["device"],
     )
+    if backend == "onnxruntime":
+        _validate_onnx_asr_config(engine["inference_config"])
 
     segments = artifact["segments"]
     if not isinstance(segments, list) or len(segments) != 1:

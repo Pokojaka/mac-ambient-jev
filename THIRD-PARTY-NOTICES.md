@@ -18,6 +18,10 @@ Repository: `soniqo/speech-swift`
 
 Used for the local Qwen3-ASR implementation. The upstream repository identifies its license as Apache-2.0. Preserve its license and notices for the pinned revision.
 
+## Qwen3-ASR tokenizer
+
+`scripts/fetch_qwen3_asr_tokenizer.py` は Hugging Face の [`andrewleech/qwen3-asr-1.7b-onnx`](https://huggingface.co/andrewleech/qwen3-asr-1.7b-onnx/tree/df916193ac67e59347769891a21e10d81d12acdd)（commit `df916193ac67e59347769891a21e10d81d12acdd`）から `tokenizer.json`（SHA-256 `bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92`）を取得します。このファイルは Qwen (Alibaba Cloud) の Qwen3-ASR の tokenizer で、Apache License, Version 2.0 です（<https://www.apache.org/licenses/LICENSE-2.0>）。リポジトリには含めず、実行時に取得します。PortableRuntime の `Qwen3ASRTokenDecoder` は、そこから `model.vocab` と `added_tokens` を読んで token id を text に戻します。
+
 ## meeting-transcriber
 
 Repository: `pasrom/meeting-transcriber`

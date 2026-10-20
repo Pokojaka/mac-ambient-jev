@@ -21,7 +21,8 @@ public final class SileroVAD {
         self.session = try ONNXSession(
             environment: environment,
             modelURL: modelURL,
-            intraOpThreads: intraOpThreads
+            intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: true
         )
     }
 

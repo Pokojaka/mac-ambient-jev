@@ -18,3 +18,4 @@ tools/linux-audio/.pytest_cache/
 test-data/generated/
 test-data/corpora-cache/
 
+scripts/__pycache__/

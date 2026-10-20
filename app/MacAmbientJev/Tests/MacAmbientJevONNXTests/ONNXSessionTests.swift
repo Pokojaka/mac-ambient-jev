@@ -11,7 +11,7 @@ struct ONNXSessionTests {
 
     @Test
     func namedInputsAndRequestedOutputsPreserveExactValuesAcrossRuns() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let modelOrderedInputs = fixtureInputs(sampleRate: 1)
         let inputs = [modelOrderedInputs[2], modelOrderedInputs[1], modelOrderedInputs[0]]
 
@@ -36,9 +36,55 @@ struct ONNXSessionTests {
         ])
     }
 
+    @Test(arguments: [true, false])
+    func cpuMemoryArenaModesPreserveAffineSessionBehavior(cpuMemoryArenaEnabled: Bool) throws {
+        let session = try ONNXSession(
+            environment: environment,
+            modelURL: fixtureURL(named: "affine"),
+            intraOpThreads: 1,
+            cpuMemoryArenaEnabled: cpuMemoryArenaEnabled
+        )
+        #expect(try session.inputMetadata() == [
+            ONNXTensorMetadata(name: "x", elementType: .float32, shape: [1, 4]),
+            ONNXTensorMetadata(name: "ids", elementType: .int64, shape: [1, 3]),
+            ONNXTensorMetadata(name: "sr", elementType: .int64, shape: []),
+        ])
+
+        let output = try session.run(inputs: fixtureInputs(sampleRate: 1), outputNames: ["y"])
+        #expect(output == [.float32(shape: [1, 4], values: [-3, 0, 1, 7.5])])
+    }
+
+    @Test
+    func inputAndOutputMetadataPreserveGraphOrderTypesAndShapes() throws {
+        let affineSession = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
+        #expect(try affineSession.inputMetadata() == [
+            ONNXTensorMetadata(name: "x", elementType: .float32, shape: [1, 4]),
+            ONNXTensorMetadata(name: "ids", elementType: .int64, shape: [1, 3]),
+            ONNXTensorMetadata(name: "sr", elementType: .int64, shape: []),
+        ])
+
+        let unsupportedOutputMessage = onnxErrorMessage {
+            _ = try affineSession.outputMetadata()
+        }
+        #expect(unsupportedOutputMessage.contains("出力"))
+        #expect(unsupportedOutputMessage.contains("positive"))
+        #expect(unsupportedOutputMessage.contains("9"))
+
+        let cacheSession = try makeSession(modelURL: fixtureURL(named: "cache"), intraOpThreads: 1)
+        #expect(try cacheSession.inputMetadata() == [
+            ONNXTensorMetadata(name: "past", elementType: .float32, shape: [1, -1, 2]),
+            ONNXTensorMetadata(name: "step", elementType: .float32, shape: [1, 1, 2]),
+            ONNXTensorMetadata(name: "count", elementType: .int64, shape: [1]),
+        ])
+        #expect(try cacheSession.outputMetadata() == [
+            ONNXTensorMetadata(name: "present", elementType: .float32, shape: [1, -1, 2]),
+            ONNXTensorMetadata(name: "count_out", elementType: .int64, shape: [1]),
+        ])
+    }
+
     @Test
     func sessionsRetainTheirEnvironmentUntilBothAreReleased() throws {
-        let pair = try makeSessionPair(modelURL: fixtureURL())
+        let pair = try makeSessionPair(modelURL: fixtureURL(named: "affine"))
         #expect(pair.environment.value != nil)
 
         var retainedSession: ONNXSession? = pair.second
@@ -58,7 +104,7 @@ struct ONNXSessionTests {
 
     @Test
     func wrongInputShapeReportsJapaneseRuntimeContextAndORTDimensions() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let validInputs = fixtureInputs(sampleRate: 1)
         let wrongShape: ONNXTensor = .float32(
             shape: [2, 2],
@@ -88,7 +134,7 @@ struct ONNXSessionTests {
 
     @Test
     func unicodeModelDirectoryAndFilenameLoadAndRun() throws {
-        let sourceURL = try fixtureURL()
+        let sourceURL = try fixtureURL(named: "affine")
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
             .appending(path: "onnx-日本語-😀-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -117,7 +163,7 @@ struct ONNXSessionTests {
 
     @Test
     func unsupportedOutputTypeFailsAndSessionRemainsReusable() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let message = onnxErrorMessage {
             _ = try session.run(
                 inputs: fixtureInputs(sampleRate: 1),
@@ -139,7 +185,7 @@ struct ONNXSessionTests {
 
     @Test
     func zeroExtentInputsReachRuntimeForBothElementTypes() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let validInputs = fixtureInputs(sampleRate: 1)
 
         var floatZeroExtentInputs = validInputs
@@ -159,7 +205,7 @@ struct ONNXSessionTests {
 
     @Test
     func rawEnumCasesAreValidatedBeforeRuntimeInputCreation() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let validInputs = fixtureInputs(sampleRate: 1)
         let invalidFloatShape: ONNXTensor = .float32(shape: [-1], values: [])
         var invalidFloatShapeInputs = validInputs
@@ -206,7 +252,7 @@ struct ONNXSessionTests {
 
     @Test
     func invalidInputAndOutputNamesFailWithExactErrors() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let validInputs = fixtureInputs(sampleRate: 1)
 
         var emptyInputName = validInputs
@@ -240,7 +286,7 @@ struct ONNXSessionTests {
 
     @Test
     func missingAndUnknownInputsReportORTFailuresAndSessionRemainsReusable() throws {
-        let session = try makeSession(modelURL: fixtureURL(), intraOpThreads: 1)
+        let session = try makeSession(modelURL: fixtureURL(named: "affine"), intraOpThreads: 1)
         let validInputs = fixtureInputs(sampleRate: 1)
         let runContext = "ONNXモデルの実行に失敗しました"
 
@@ -267,7 +313,7 @@ struct ONNXSessionTests {
 
     @Test
     func invalidThreadCountsAndNonFileModelURLAreRejected() throws {
-        let modelURL = try fixtureURL()
+        let modelURL = try fixtureURL(named: "affine")
         for threadCount in [0, -1, Int.max] {
             let message = onnxErrorMessage {
                 _ = try makeSession(modelURL: modelURL, intraOpThreads: threadCount)
@@ -296,7 +342,8 @@ struct ONNXSessionTests {
         try ONNXSession(
             environment: environment,
             modelURL: modelURL,
-            intraOpThreads: intraOpThreads
+            intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: true
         )
     }
 }
@@ -321,9 +368,9 @@ private final class SessionPair {
     }
 }
 
-private func fixtureURL() throws -> URL {
+private func fixtureURL(named name: String) throws -> URL {
     try #require(Bundle.module.url(
-        forResource: "affine",
+        forResource: name,
         withExtension: "onnx",
         subdirectory: "Resources"
     ))
@@ -341,8 +388,18 @@ private func fixtureInputs(sampleRate: Int64) -> [(name: String, tensor: ONNXTen
 
 private func makeSessionPair(modelURL: URL) throws -> SessionPair {
     let environment = try ONNXEnvironment(loggingID: "ONNXSessionLifetimeTests")
-    let first = try ONNXSession(environment: environment, modelURL: modelURL, intraOpThreads: 1)
-    let second = try ONNXSession(environment: environment, modelURL: modelURL, intraOpThreads: 2)
+    let first = try ONNXSession(
+        environment: environment,
+        modelURL: modelURL,
+        intraOpThreads: 1,
+        cpuMemoryArenaEnabled: true
+    )
+    let second = try ONNXSession(
+        environment: environment,
+        modelURL: modelURL,
+        intraOpThreads: 2,
+        cpuMemoryArenaEnabled: true
+    )
     return SessionPair(
         first: first,
         second: second,
