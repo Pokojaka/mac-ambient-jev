@@ -60,9 +60,6 @@ enum Community1Profile {
     /// Application override of 0.3 seconds, not FluidAudio's 1.0-second embedding default; `OfflineDiarizerTypes.swift:100-105`, `design-final.md:17-18`, and `candidate-sol/design.md:99`.
     static let minimumSegmentSeconds: Double = 0.3
 
-    /// Exclude overlap from embedding masks; FluidAudio `OfflineDiarizerTypes.swift:94-105`.
-    static let excludeOverlap: Bool = true
-
     /// Compiled fbank input amplitude scale; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:11-12`.
     static let waveformScale: Float = 32_768
 
@@ -84,9 +81,6 @@ enum Community1Profile {
     /// Compiled first-sample preemphasis coefficient; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:35-42`.
     static let preemphasis: Float = 0.97
 
-    /// No dither in the frozen fbank profile; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, compiled frontend operations `FBank.mlmodelc/model.mil:11-48`, profile `candidate-sol/design.md:100`.
-    static let dither: Float = 0
-
     /// Hamming-window alpha in the frozen frontend profile; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, compiled window weights `FBank.mlmodelc/model.mil:8`, profile `candidate-sol/design.md:100`.
     static let hammingAlpha: Float = 0.54
 
@@ -98,18 +92,6 @@ enum Community1Profile {
 
     /// Compiled fbank lower energy clamp before log; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:9,80-84`.
     static let logEnergyFloor: Float = 1e-6
-
-    /// Per-frame DC removal in the compiled frontend; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:21-28`.
-    static let removeFrameDC: Bool = true
-
-    /// Replicate the first sample before preemphasis; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:30-42`.
-    static let replicateFirstSample: Bool = true
-
-    /// Use the symmetric Hamming window frozen in the compiled graph; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, window weights `FBank.mlmodelc/model.mil:8`, profile `candidate-sol/design.md:100`.
-    static let symmetricHamming: Bool = true
-
-    /// Normalize fbank features by their per-bin mean; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:85-94`.
-    static let meanNormalizeFbank: Bool = true
 
     /// Embedding L2 floor 1e-4 is a graph/profile fact, not a Swift call-site parameter; FluidAudio invokes the graph in `OfflineEmbeddingExtractor.swift:872-894`, compiled normalization is `Embedding.mlmodelc/model.mil:419-427`, and the profile policy is `design-final.md:17`, `candidate-sol/design.md:101`.
     static let embeddingL2Floor: Float = 1e-4
@@ -159,9 +141,6 @@ enum Community1Profile {
     /// Hungarian score quantization scale; FluidAudio `HungarianAssignment.swift:78-88`.
     static let hungarianQuantization: Double = 1e6
 
-    /// Explicit equivalent of Swift's default nearest-away rounding in the FluidAudio quantizer; `HungarianAssignment.swift:82-88`.
-    static let hungarianRounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-
     /// Community minimum segment gap; FluidAudio `OfflineDiarizerTypes.swift:203-215`.
     static let minimumGapSeconds: Double = 0.1
 
@@ -170,19 +149,4 @@ enum Community1Profile {
 
     /// Community minimum-off duration; FluidAudio `OfflineDiarizerTypes.swift:46-55`.
     static let minimumOffSeconds: Double = 0
-
-    /// Community output segments are exclusive; FluidAudio `OfflineDiarizerTypes.swift:203-215`.
-    static let exclusive: Bool = true
-
-    /// Zero-vote re-embedding is disabled; FluidAudio `OfflineDiarizerTypes.swift:232-245`.
-    static let zeroVoteReembedding: Bool = false
-
-    /// Expected speaker-count averages use nearest-even rounding; FluidAudio `OfflineReconstruction.swift:145-154`.
-    static let expectedSpeakerCountRounding: FloatingPointRoundingRule = .toNearestOrEven
-
-    /// Reconstruction frame placement uses nearest-away rounding; FluidAudio `OfflineReconstruction.swift:69-76`.
-    static let reconstructionFrameRounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
-
-    /// Span seconds-to-frame mapping uses nearest-away rounding; this profile policy is stated in `candidate-sol/design.md:90,132`, with FluidAudio's nearest rounding convention at `OfflineEmbeddingExtractor.swift:249-250`.
-    static let spanFrameRounding: FloatingPointRoundingRule = .toNearestOrAwayFromZero
 }

@@ -23,6 +23,57 @@ import Testing
         #expect(Community1Profile.poolingFrames == 125)
     }
 
+    @Test func profileMatchesFluidAudioParameters() throws {
+        let fixture = try DiarizationParityFixtures.load(
+            "parameters.json",
+            as: DiarizationParameterFixture.self
+        )
+        let expectedNumeric: [String: Double] = [
+            "sampleRate": Double(Community1Profile.sampleRate),
+            "windowSamples": Double(Community1Profile.windowSamples),
+            "stepSamples": Double(Community1Profile.stepSamples),
+            "windowDurationSeconds": Community1Profile.windowDurationSeconds,
+            "stepRatio": Community1Profile.stepRatio,
+            "minimumSegmentSeconds": Community1Profile.minimumSegmentSeconds,
+            "ahcThreshold": Community1Profile.ahcThreshold,
+            "fa": Community1Profile.fa,
+            "fb": Community1Profile.fb,
+            "maximumIterations": Double(Community1Profile.maximumIterations),
+            "elboTolerance": Community1Profile.elboTolerance,
+            "minimumGapSeconds": Community1Profile.minimumGapSeconds,
+            "minimumOnSeconds": Community1Profile.minimumOnSeconds,
+            "minimumOffSeconds": Community1Profile.minimumOffSeconds,
+            "activePriorThreshold": Community1Profile.activePriorThreshold,
+            // These are effective configuration observations, not portable profile selectors:
+            // execution fixes batch size to 1, powerset ignores speech thresholds, and zero-vote is disabled.
+            "embeddingBatchSize": 32,
+            "speechOnsetThreshold": 0.5,
+            "speechOffsetThreshold": 0.5,
+            "zeroVoteMinimumDurationSeconds": 0.4,
+        ]
+        #expect(Set(fixture.numeric.keys) == Set(expectedNumeric.keys))
+        for key in expectedNumeric.keys.sorted() {
+            #expect(fixture.numeric[key] == expectedNumeric[key])
+        }
+
+        let expectedFixed = [
+            "constrainedAssignment": "true",
+            "embeddingExportPath": "nil",
+            "embeddingSkipStrategy": "none",
+            "excludeOverlap": "true",
+            "exclusive": "true",
+            "exposeChunkEmbeddings": "false",
+            "maxSpeakers": "nil",
+            "minSpeakers": "nil",
+            "numSpeakers": "nil",
+            "zeroVoteReembedding": "false",
+        ]
+        #expect(Set(fixture.fixed.keys) == Set(expectedFixed.keys))
+        for key in expectedFixed.keys.sorted() {
+            #expect(fixture.fixed[key] == expectedFixed[key])
+        }
+    }
+
     @Test func powersetBitOrderIsPinned() {
         #expect(Community1Profile.powersetSpeakerBits == [0, 1, 2, 4, 3, 5, 6])
     }
@@ -46,10 +97,9 @@ import Testing
         #expect(Community1Profile.minimumEmbeddingFrames == derivedMinimumEmbeddingFrames)
         #expect(Community1Profile.minimumActiveFrames == derivedMinimumActiveFrames)
         #expect(Community1Profile.minimumEmbeddingFrames < Community1Profile.minimumActiveFrames)
-        #expect(Community1Profile.excludeOverlap)
     }
 
-    @Test func frozenNumericalFloorsAndRoundingRules() {
+    @Test func frozenNumericalFloors() {
         #expect(Community1Profile.embeddingL2Floor == 1e-4)
         #expect(Community1Profile.pldaFirstNormFloor == 1e-6)
         #expect(Community1Profile.pldaSecondNormFloor == 1e-6)
@@ -60,10 +110,5 @@ import Testing
         #expect(Community1Profile.logPriorFloor == 1e-8)
         #expect(Community1Profile.activePriorThreshold == 1e-7)
         #expect(Community1Profile.hungarianQuantization == 1e6)
-        #expect(Community1Profile.hungarianRounding == .toNearestOrAwayFromZero)
-        #expect(Community1Profile.expectedSpeakerCountRounding == .toNearestOrEven)
-        #expect(Community1Profile.reconstructionFrameRounding == .toNearestOrAwayFromZero)
-        #expect(Community1Profile.spanFrameRounding == .toNearestOrAwayFromZero)
-        #expect(Community1Profile.zeroVoteReembedding == false)
     }
 }

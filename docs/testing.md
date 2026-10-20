@@ -176,6 +176,29 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 ## 共通 Swift の検証
 
+### 話者分離の parity fixtures
+
+[test-only の fixture reader](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/DiarizationParityFixture.swift) と [portable fixture tests](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/DiarizationParityFixtureTests.swift) は、全 OS で参照データの読み込み・形式・構造を検査します。test resources は [parameters.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/parameters.json)、[reconstruction.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/reconstruction.json)、[ahc.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/ahc.json) です。portable tests は fixture の encoding / structure と [Community1ProfileTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1ProfileTests.swift) による profile parameter parity を検証します。Linux・Windows の通常 test に FluidAudio や diarization model は不要です。この target は fixture 検査用であり、portable な reconstruction / AHC algorithm や end-to-end 話者分離 parity の実装・検証を意味しません。
+
+各 JSON の metadata は FluidAudio version・revision、入力構成、比較規則を記録します。Float32 / Float64 tensor は dtype と shape を明示し、IEEE 754 の little-endian bit pattern を base64 に格納します。speaker ID・cluster label と数値 bit pattern は期待値として厳密に比較し、設定値などの numeric metadata は JSON number のままです。各 fixture は最大 1 MiB、3 ファイル合計は最大 8 MiB です。reader は不正な dtype・shape・base64、サイズ超過、非有限値を拒否します。
+
+Mac の golden generator は通常の debug `MacAmbientJevRuntimeTests` に置き、FluidAudio を `@testable import` して直接呼びます: [DiarizationParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationParityFixtureTests.swift)、[DiarizationReconstructionParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationReconstructionParityTests.swift)、[DiarizationAHCParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationAHCParityTests.swift)。Mac の package は FluidAudio `0.15.8` / revision `87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc` に直接依存し、generator は `Package.resolved` の pin も検証します。FluidAudio の package を複製せず、access level を変更せず、モデル・ONNX runtime・download を使いません。これらは FluidAudio の実装を呼ぶ Mac test oracle であり、portable algorithm の実装ではありません。
+
+- `parameters.json` は FluidAudio の OfflineDiarizerConfig.default を出発点に、embedding.minSegmentDurationSeconds だけを `0.3` に変更してから validate した有効設定を記録します。portable profile test は numeric / fixed fields を各 field で完全一致比較します。Boolean・rounding・fixed-choice・dither selectors は profile constants として公開する調整値ではなく、algorithm choices は固定です。
+- `reconstruction.json` は 13 ケースで overlap、`-2` の unassigned local speaker、複数 local speaker の同一 global cluster、nearest-even rounding の 0.5 / 1.5 / 2.5、0.1 秒 gap の Float32 境界変換の下側・上側、0.3 秒 minimum、exclusive trim による quality と drop、final padded window の EOF overrun を照合します。2.5 のケースは triple-local binary internal input を使い、segmentation graph の出力ではありません。oracle の `buildSegments` は `sampleCount` を受け取らず EOF clamp もしないため、overrun は raw output に残り、`sampleCount` は fixture metadata のみです。golden 生成前の guard は、異なる speaker の開始時刻が同じ Float32 値になる入力を拒否します。FluidAudio 内の Dictionary / Set 順序に依存して hash-dependent になるケースは fixture に含めず、FluidAudio の hash order を変更・修正する約束ではありません。
+- `ahc.json` は4ケース（seed 付き SplitMix64 で生成し入力も保存する separated groups、angular chain、threshold pairs、centroid inversion）を比較します。inversion witness は leaf distances `0.62` / `0.63` / `0.64`、最初の merge `0.62 > 0.6`、root distance `0.5542111510967639 < 0.6` です。FluidAudio の root-first labels `[0,0,0]` と monotone-cut の比較 labels `[0,1,2]` を記録します。linkage 値は export せず、portable AHC も実装・検証しません。
+
+リポジトリルートから実行します。最初のコマンドは Mac で golden を生成します。環境変数が厳密に `1` の場合だけ、test harness が canonical JSON を source fixture へ書き込みます。未設定またはそれ以外の値では FluidAudio の実出力から canonical JSON bytes を再計算し、source fixture と完全一致比較するだけで書き込みません。この環境変数は test harness 専用で、runtime は参照しません。generator と通常の Mac fixture tests に skip gate はなく、通常の Mac test run でも fixture を照合します。再現性を確認する場合は生成コマンドを再実行し、3 fixture の SHA-256 を比較します。
+
+```bash
+MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter 'MacAmbientJevRuntimeTests.DiarizationParityFixtureTests'
+swift test --package-path app/MacAmbientJev --jobs 4 --filter 'MacAmbientJevRuntimeTests.DiarizationParityFixtureTests|MacAmbientJevDiarizationTests'
+# Linux / Windows: portable fixture tests only
+swift test --package-path app/MacAmbientJev --jobs 4 --filter MacAmbientJevDiarizationTests
+```
+
+fixture 内の reconstruction ID（例: `S1`）は oracle の speaker ID であり、公開表示ラベルは別契約です。[SpeakerDisplayMapper.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift) は変更しておらず、公開ラベルは Speaker 1–7、OTHER、UNKNOWN のままです。
+
 #### F・B除去範囲と表示 projection
 
 [ClauseTaggerSpanProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerSpanProjectionTests.swift) は `span_probs` の4列を O=0、F=1、D=2、B=3 と解釈し、各 token の argmax と同率時に最小 index を選ぶことを検証する。O/F、F/D、O/B、D/B の tie と4 label 全ての tie を含み、token 範囲と生成される F・B除去範囲は原文の end-exclusive UTF-16 offset で表す。UTF-8 byte fallback の複数 token が一つの Unicode scalar を表す場合、それぞれがその scalar 全体の UTF-16 範囲を指し、UTF-8 byte offset にはしない（BOM は `[0,1)`、emoji の byte token は各々 `[1,3)`）。token 範囲を順に適用し、重なる位置は後の token の label で上書きする。純粋な B と隣接する F+B は除去し、連続する除去文字は一つの範囲にまとめる。kana・decomposed character・emoji を構成する scalar が F/B 混在でも Character 全体を除去し、O/D が含まれる Character はどちらの scalar 順でも全体を残す。テストは surrogate pair、decomposed scalar、token overlap、無効な shape・確率範囲・range も扱う。

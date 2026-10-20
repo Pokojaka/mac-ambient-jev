@@ -1,0 +1,103 @@
+{
+  "cases" : [
+    {
+      "construction" : "Twelve 4D vectors. Seed SplitMix64 state=0xC011_0000_0000_0001; each draw advances state with wrapping +=0x9E3779B97F4A7C15, then z=(z^(z>>30)) wrapping-multiplied by 0xBF58476D1CE4E5B9, z=(z^(z>>27)) wrapping-multiplied by 0x94D049BB133111EB, and returns z^(z>>31). Map each result to signed uniform 2*Double(result>>11)/9007199254740992-1. Loop order is group outer 0..<3, row inner 0..<4, coordinate inner 0..<4. Each coordinate is the one-hot group center plus 0.01 times its next signed-uniform draw. Normalize each row explicitly in Double precision by its L2 norm.",
+      "expectedLabels" : [
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2
+      ],
+      "features" : {
+        "dtype" : "float64",
+        "littleEndianBase64" : "+DzOmp7/7z/LdNZCHgVrv/JLM5FJqoC/P4pqpTxGcL9XYw0uyf/vP4lRs1Muiny/BrLx3zzWQr/PZNHfQjZevzPRSxW1/+8/ddNdfWUkdL+aNW97bDRyv3vIebqwe3U/Hizb7rn/7z9sbYjkhHdyP93iVbUZSji/EsIxJD/je78XKuPvno5vv4an1Hqc/+8/IFiwfipdfL9+2XX/VzZ3P+vroxkZDHM/mNADGqr/7z8vzm2SA5Vjv0nILW6gQn4/k3n4uVmRcD8BQafzhf/vP/556RCLNIS/wCJ2zKPlWr8eAcAWqdNTvxIjY8C6/+8/CfsMe0Bwab9pIO5Yp1t+v4wC01kqs3y/TtHBFJuHdz9iQJaPif/vP8KFaqdzwHY/ld7e3KV6Tz8zrroZZ4t0vw2ifrXi/+8/P8lL59JNVr+Ox+Nqij1PPzaTGHDPPoG/o84Y7LD/7z+k0TqNwRNfvwiULkv/Gn6/ZMZqmcyMf7/6Cho/O//vP4kO+GWKpoG/",
+        "shape" : [
+          12,
+          4
+        ]
+      },
+      "name" : "separated-groups",
+      "threshold" : 0.59999999999999998
+    },
+    {
+      "construction" : "Four analytic deterministic 2D unit vectors [cos(a),sin(a)] for angles [0,0.31,0.62,0.93] radians; no random draws. Adjacent chord lengths are below the configured 0.6 cut while the endpoint chord exceeds it, creating a near-threshold neighbor chain that can behave differently under centroid linkage than single linkage.",
+      "expectedLabels" : [
+        0,
+        0,
+        1,
+        1
+      ],
+      "features" : {
+        "dtype" : "float64",
+        "littleEndianBase64" : "AAAAAAAA8D8AAAAAAAAAAKJYMUCEee4/r8O4qBSG0z/sGknVSgvqP8euigzXl+I/gJBLu3Qh4z9UWr3c3qbpPw==",
+        "shape" : [
+          4,
+          2
+        ]
+      },
+      "name" : "angular-chain",
+      "threshold" : 0.59999999999999998
+    },
+    {
+      "construction" : "Four 4D unit vectors in two orthogonal coordinate planes. Pair 0/1 is [1,0,0,0] and [c,s,0,0], where c=1-(0.5999^2)/2 and s=sqrt(1-c^2), giving chord 0.5999. Pair 2/3 is [0,0,1,0] and [0,0,c2,s2], where c2=1-(0.6001^2)/2 and s2=sqrt(1-c2^2), giving chord 0.6001. Orthogonal planes separate the pairs.",
+      "expectedLabels" : [
+        0,
+        0,
+        1,
+        2
+      ],
+      "features" : {
+        "dtype" : "float64",
+        "littleEndianBase64" : "AAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC2DWl17j3qPyRZDAcZUOI/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2j5szyPOo/DlU0kYFR4j8=",
+        "shape" : [
+          4,
+          4
+        ]
+      },
+      "name" : "threshold-pairs",
+      "threshold" : 0.59999999999999998
+    },
+    {
+      "construction" : "Three analytic unit 3D points from scalene chord distances d01=0.62, d02=0.63, d12=0.64: v0=[1,0,0]; x1=1-d01^2/2, y1=sqrt(1-x1^2), v1=[x1,y1,0]; x2=1-d02^2/2, y2=(1-d12^2/2-x1*x2)/y1, z2=sqrt(1-x2^2-y2^2), v2=[x2,y2,z2]. Recompute distances with Double scalar squares from the actual stored coordinates: the unique first pair is 0/1, all three leaf distances exceed 0.6, but the centroid ([v0+v1]/2)-to-v2 root distance is below both 0.6 and the first merge distance. A monotone maximum-descendant-height cut at 0.6 would accept no merge and yield [0,1,2]. FluidAudio confirmation is required to be exactly [0,0,0]; this is an analytic witness, not guessed linkage data. AHCClustering.swift:150-188 starts its cut traversal at the root and accepts a node whose distance is within threshold despite the descendant-height inversion.",
+      "expectedLabels" : [
+        0,
+        0,
+        0
+      ],
+      "features" : {
+        "dtype" : "float64",
+        "littleEndianBase64" : "AAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAfa62Yn/Z6T/Q2Fw51NziPwAAAAAAAAAASnuDL0ym6T/GIFTsjQnQP9HmJ19TX+E/",
+        "shape" : [
+          3,
+          3
+        ]
+      },
+      "inversion" : {
+        "firstMergeDistance" : 0.62000000000000011,
+        "monotoneLabels" : [
+          0,
+          1,
+          2
+        ],
+        "rootDistance" : 0.55421115109676389
+      },
+      "name" : "centroid-inversion",
+      "threshold" : 0.59999999999999998
+    }
+  ],
+  "metadata" : {
+    "comparisonRule" : "For all cases, expectedLabels are obtained exclusively from FluidAudio AHCClustering().cluster(embeddingFeatures:threshold:) using the validated config.clustering.threshold (0.6); labels compare exactly after FluidAudio's first-seen remapping. Features are float64 tensors [points,dimensions], with their little-endian IEEE-754 bit payload compared byte-for-byte through the canonical generated JSON. The inversion witness is recomputed from stored vector coordinates using Double scalar squares and must agree within 1e-12; monotoneLabels is the exact comparison label vector [0,1,2]. All other fields and metadata compare exactly; no linkage values are exposed or inferred.",
+    "fluidAudioRevision" : "87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc",
+    "fluidAudioVersion" : "0.15.8",
+    "inputConstruction" : "Four deterministic cases in fixed order: separated-groups, angular-chain, threshold-pairs, centroid-inversion. All vectors are constructed in Double precision; rows are validated finite, nonzero, dimension-consistent, and unit L2 norm within 1e-12. The randomized case uses SplitMix64 seed 0xC011_0000_0000_0001 and transitions state += 0x9E3779B97F4A7C15, z=(z^(z>>30))*0xBF58476D1CE4E5B9, z=(z^(z>>27))*0x94D049BB133111EB, result=z^(z>>31), with UInt64 wrapping arithmetic; signed uniform is 2*Double(result>>11)/9007199254740992-1. Generation loops are group outer 0..<3, row inner 0..<4, coordinate inner 0..<4, with one-hot group centers plus 0.01 times signed-uniform coordinate jitter, followed by explicit Double L2 normalization. Other cases use analytic unit-circle/unit-sphere constructions, with formulas documented per case.",
+    "schemaVersion" : 1
+  }
+}

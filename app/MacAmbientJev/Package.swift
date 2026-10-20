@@ -69,7 +69,8 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "MacAmbientJevDiarizationTests",
-        dependencies: ["MacAmbientJevDiarization"]
+        dependencies: ["MacAmbientJevDiarization"],
+        resources: [.copy("Resources")]
     )
 ]
 
@@ -416,7 +417,8 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime",
-            "MacAmbientJevVADFixtures"
+            "MacAmbientJevVADFixtures",
+            .product(name: "FluidAudio", package: "FluidAudio")
         ]
     )
 ]
