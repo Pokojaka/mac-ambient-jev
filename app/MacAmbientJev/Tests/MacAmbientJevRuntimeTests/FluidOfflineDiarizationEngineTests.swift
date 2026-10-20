@@ -2,6 +2,7 @@ import Foundation
 import FluidAudio
 import Testing
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private func fluidSegment(startFrame: Int64, endFrame: Int64) -> TimedSpeakerSegment {

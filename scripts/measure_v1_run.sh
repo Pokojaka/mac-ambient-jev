@@ -151,11 +151,27 @@ def session_directory(sessions_root, session_id):
     directory, manifest = matches[0]
     try:
         name = directory.name
-        if len(name.encode('utf-8')) > 255 or '\0' in name or '/' in name or ':' in name:
+        forbidden = '<>:"/\\|?*'
+        def reserved(value):
+            base = value.split('.', 1)[0].upper()
+            return base in ('CON', 'PRN', 'AUX', 'NUL') or (
+                len(base) == 4 and base[:3] in ('COM', 'LPT') and base[3] in '123456789¹²³')
+        def valid_component(value):
+            return bool(value) and value not in ('.', '..') and not reserved(value) and (
+                not value.endswith(('.', ' '))) and all(ord(c) > 31 and c not in forbidden for c in value)
+        def sanitize(value):
+            value = ''.join('-' if ord(c) <= 31 or c in forbidden else c for c in value)
+            if value.startswith('.'): value = '-' + value[1:]
+            end = len(value.rstrip('. '))
+            value = value[:end] + '-' * (len(value) - end)
+            return '-' + value if reserved(value) else value
+        if len(name.encode('utf-8')) > 255 or not valid_component(name):
             raise ValueError('illegal folder name or UTF-8 byte limit')
         parsed = re.fullmatch(r'([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2})_(.+)_([0-9a-f]{8})', name)
         if not parsed: raise ValueError('invalid folder grammar')
         timestamp, stem, suffix = parsed.groups()
+        if not valid_component(stem) or stem.startswith('.'):
+            raise ValueError('illegal source stem')
         datetime.datetime.strptime(timestamp, '%Y-%m-%d_%H-%M-%S')
         if suffix != str(identity)[:8]: raise ValueError('UUID suffix mismatch')
         if manifest['source_kind'] == 'recording':
@@ -170,8 +186,7 @@ def session_directory(sessions_root, session_id):
             original_stem = filename[:dot] if dot > 0 else filename
         else:
             raise ValueError('invalid source kind')
-        sanitized = original_stem.replace('/', '-').replace(':', '-')
-        if sanitized.startswith('.'): sanitized = '-' + sanitized[1:]
+        sanitized = sanitize(original_stem)
         # Extended grapheme clusters preserve Swift Character truncation boundaries.
         try:
             import regex
@@ -184,6 +199,7 @@ def session_directory(sessions_root, session_id):
             if byte_count + size > 226: break
             expected += character
             byte_count += size
+        expected = sanitize(expected)
         if not expected or unicodedata.normalize('NFC', stem) != unicodedata.normalize('NFC', expected):
             raise ValueError('source stem mismatch')
     except (KeyError, TypeError, ValueError) as error:

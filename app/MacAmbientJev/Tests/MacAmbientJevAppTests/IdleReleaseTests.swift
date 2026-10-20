@@ -3,6 +3,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCapture
 import MacAmbientJevCore
+@testable import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private actor CountingASR: ASREngine {
@@ -50,20 +51,13 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(asr: asr, diarization: NoopDiarizer(), finalTranscriptVAD: NoopVAD()),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
 }
 
 @MainActor
-private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(10)
-    while await !condition(), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(20))
-    }
-}
-
-@MainActor
-@Test("the app releases the models when the processing queue drains with nothing recording")
+@Test("the app releases the models when the processing queue drains with nothing recording", .timeLimit(.minutes(1)))
 func releasesWhenQueueDrains() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -74,19 +68,23 @@ func releasesWhenQueueDrains() async throws {
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
     // The session does not exist, so the finalization fails; the queue still drains.
+    let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+    await maintenance.value
     state.enqueueProcessing(.finalize(
         sessionID: UUID(),
         metadataPolicy: .reject
     ))
-    try await waitUntil { await asr.unloadCount == 1 }
+    await state.processingCoordinator.waitUntilIdle()
+    await state.modelPreparationTask?.value
+    await state.idleReleaseTask?.value
 
     #expect(await asr.unloadCount == 1)
     #expect(state.modelPreparation == .idle)
-    #expect(state.processingTask == nil)
+    #expect(!state.processingCoordinator.isDraining)
 }
 
 @MainActor
-@Test("no release happens while recording or while items are queued")
+@Test("no release happens while recording or while items are queued", .timeLimit(.minutes(1)))
 func noReleaseWhileBusy() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -96,25 +94,27 @@ func noReleaseWhileBusy() async throws {
     let asr = CountingASR()
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
-    state.markRecordingStarted(sessionID: UUID())
+    let sessionID = UUID()
+    state.recording.start(sessionID: sessionID)
+    state.markRecordingStarted(sessionID: sessionID)
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.recordingPhase = .idle
-    state.thermallyHeldProcessing = [.finalize(
+    state.recording.finish()
+    state.processingQueue.holdForHeat(.finalize(
         sessionID: UUID(), metadataPolicy: .reject
-    )]
+    ))
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.thermallyHeldProcessing = []
-    state.pendingProcessing = [.finalize(
+    state.processingQueue = SessionProcessingQueue()
+    state.processingQueue.enqueue(.finalize(
         sessionID: UUID(), metadataPolicy: .reject
-    )]
+    ))
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.pendingProcessing = []
+    state.processingQueue = SessionProcessingQueue()
     state.releaseIdleResourcesIfIdle()
     let release = try #require(state.idleReleaseTask)
     await release.value
@@ -122,7 +122,7 @@ func noReleaseWhileBusy() async throws {
 }
 
 @MainActor
-@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards")
+@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards", .timeLimit(.minutes(1)))
 func reloadAfterRelease() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -141,7 +141,8 @@ func reloadAfterRelease() async throws {
     #expect(state.modelPreparation == .idle)
 
     state.prepareASRModel()
-    try await waitUntil { state.modelPreparation == .ready }
+    let preparation = try #require(state.modelPreparationTask)
+    await preparation.value
     #expect(await asr.loadCount == 2)
     #expect(state.modelPreparation == .ready)
 }

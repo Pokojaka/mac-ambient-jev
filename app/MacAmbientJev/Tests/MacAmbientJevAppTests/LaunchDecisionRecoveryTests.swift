@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 /// A completed recording whose published local transcript has one segment pending boundary decision.
@@ -57,14 +58,15 @@ private func pausedState(paths: AppPaths, defaults: UserDefaults) -> AppState {
     AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
 }
 
 @MainActor
 private func queuedRetry(_ state: AppState) -> (sessionID: UUID, boundarySegments: [SegmentTextReference], clauses: [ClauseReference])? {
-    guard state.pendingProcessing.count == 1,
-          case .retryContentPriority(let sessionID, let boundarySegments, let clauses) = state.pendingProcessing[0] else {
+    guard state.processingQueue.pending.count == 1,
+          case .retryContentPriority(let sessionID, let boundarySegments, let clauses) = state.processingQueue.pending[0] else {
         return nil
     }
     return (sessionID, boundarySegments, clauses)
@@ -82,7 +84,7 @@ func launchRecoveryLeavesPublishedDecisionPendingsToTheUser() async throws {
 
     await launched.recoverPendingSessions()
 
-    #expect(launched.pendingProcessing.isEmpty)
+    #expect(launched.processingQueue.pending.isEmpty)
     #expect(launched.processingStatusText == nil)
 
     await launched.retryDeferredDecisions()

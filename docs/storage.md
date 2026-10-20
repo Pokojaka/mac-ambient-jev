@@ -6,11 +6,13 @@
 
 ## 保存場所とセッションフォルダー
 
+Windows の共通コアは LocalAppData/mac-ambient-jev 配下を使い、macOS の sandbox パスは構築しません。OS ごとの取得方法と Windows の実行範囲は [windows.md](windows.md) を参照してください。
+
 GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。全てのセッション CLI は各モードで `--sessions-root DIRECTORY` を必須とし、CLI が既定保存先を選ぶことはありません。非 sandbox の `~/Library/Application Support/mac-ambient-jev/sessions` とその cache、および sandbox 側の app data/cache は CLI の保護対象です。明示 root はこれらの領域と祖先・子孫関係にならず、symlink 経由でも重ならない必要があります。各 Application Support の mac-ambient-jev 以下に sessions と音声処理モデルの models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。発話文判定モデルはここに置かず、app bundle の Resources 内 `clause-tagger` ディレクトリから読みます（[発話文判定](decision-engine.md#モデルの同梱と更新)）。`AppPaths` は sessions root のみ上書きでき、models root は上書きできません。設定の「録音データ」と保存済み録音の詳細から sessions フォルダーを Finder で開けます。App の設定は UserDefaults / AppStorage にあり、セッション JSON のフィールドではありません。
 
 フォルダー名は `YYYY-MM-DD_HH-mm-ss_<stem>_<UUID先頭8桁の小文字hex>` です。作成時に一度取得した日時を、明示した time zone のローカル時刻として Gregorian calendar・`en_US_POSIX` で表します。年は ASCII 4 桁（0001–9999）。アプリと CLI は `.current` を渡します。マイク・システム音声の録音は stem が `録音`、読み込みは元ファイル名の最後の拡張子を除いた stem です。
 
-stem の `/` と `:` は `-`、先頭の `.` は `-` に置換します。固定部分は UTF-8 29 byte、stem は Swift Character の境界で 226 byte 以下に切り詰め、全体を 255 byte 以下にします。合成文字は分割せず、manifest の元ファイル名は正規化・変更しません。NUL、空の stem、最初の Character が上限に入らない名前、形式で表せない日時は明示エラーです。同名の既存フォルダーは上書きしません。名前の辞書順は作成時に記録したローカル時刻順であり、DST や time zone の変更をまたぐ UTC 順ではありません。
+stem の Windows 禁止文字（`<>:"/\|?*` と U+0000–001F）、先頭の `.`、末尾に連続する `.` と空白は `-` に置換します。CON・PRN・AUX・NUL・COM1–9・LPT1–9（数字の上付き ¹²³ を含み、最初の拡張子より前を大文字小文字を区別せず判定）は先頭に `-` を付けます。固定部分は UTF-8 29 byte、stem は Swift Character の境界で 226 byte 以下に切り詰め、切り詰め後にも名前を検証し、全体を 255 byte 以下にします。この規則は全 OS で共通です。読み取り時には禁止文字・末尾のドットや空白・予約名を含む stem を修復せず拒否します。合成文字は分割せず、manifest の元ファイル名は正規化・変更しません。元ファイル名の NUL、空の stem、最初の Character が上限に入らない名前、形式で表せない日時は明示エラーです。同名の既存フォルダーは上書きしません。名前の辞書順は作成時に記録したローカル時刻順であり、DST や time zone の変更をまたぐ UTC 順ではありません。
 
 セッション identity は `session.json` の **完全な UUID** です。`SessionLayout` は実際の `sessionURL` だけを受け取り、ID から URL を生成しません。`SessionDirectoryLocator` は root 直下の全ディレクトリの manifest を読み、完全な UUID の一致を数えます。0 件は `notFound`、複数件は名前順のフォルダー一覧付き `multipleMatches`、1 件は名前の検証後に URL を返します。無関係な壊れた manifest は identity を提供しません。一致した manifest のフォルダー名が不正なら、その検証エラーを返します。
 
@@ -24,13 +26,15 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 ### セッション内のファイルアクセス境界
 
+Windows では root を CreateFileW で検査し、固定した親 handle から NtCreateFile で子を開きます。reparse point は全て拒否します。原子保存は同一ディレクトリの排他的な一時ファイルを FlushFileBuffers で同期し、NtSetInformationFile で開いたファイル自身を置換して親を同期します。ログは LockFileEx で排他制御します。API の失敗はエラーにし、保証の弱い経路へ切り替えません。詳細は [windows.md](windows.md) を参照してください。以下の POSIX descriptor の説明は macOS と Linux に適用します。
+
 `sessionsRoot` 自体と直下のセッションフォルダー、セッション以下の全ディレクトリ・ファイルに symlink は使えません。`session.json`、`events.jsonl`、`processing_metadata.json`、audio ディレクトリの `storage.json`、checkpoint・chunk index・gap log・PCM chunk、保存済み original・FLAC、処理中の CAF・FLAC partial も同じ規則です。末尾ファイルだけでなく `audio`・`processing`・`derived` などの親ディレクトリの symlink も、読み書き・列挙・復旧・削除で明示エラーにします。catalog と復旧はリンクされたセッションをエラー行として扱い、リンク先をセッションとして処理しません。
 
-`SessionFileAccess` は呼出し元が明示した実 root を `O_DIRECTORY | O_NOFOLLOW` で開き、子ディレクトリを固定した descriptor から `openat` でたどります。通常ファイルは `O_NOFOLLOW` で開いた descriptor を使い、書込み用一時ファイルは同じ実ディレクトリに排他的に作成して `renameat` で公開します。公開前にファイルと公開後にディレクトリを同期します。音声 encoder・decoder も descriptor callback を使うため、URL を事前検証してから AVAudioFile 等で開き直す経路はありません。開いた後でパスが置き換わっても、その操作は開いた元のファイルを使い、symlink の外部対象を変更しません。
+`SessionFileAccess` は呼出し元が明示した実 root を `O_DIRECTORY | O_NOFOLLOW` で開き、子ディレクトリを固定した descriptor から `openat` でたどります。通常ファイルは `O_NOFOLLOW` で開いた descriptor を使い、書込み用一時ファイルは同じ実ディレクトリに排他的に作成して `renameat` で公開します。公開前にファイルと公開後にディレクトリを同期します。Apple と Windows の音声 decoder は `SessionFileAccess` が session root に固定して開いた handle を decode の全期間使います。URL を事前検証した後に path から開き直す経路はありません。Windows の decoder が CRT descriptor や Media Foundation の byte stream を使う場合も、元の固定 handle の duplicate から作られます。開いた後でパスが置き換わっても、その操作は開いた元のファイルを使い、symlink の外部対象を変更しません。
 
 音声 API は所有する `sessionURL` を明示的に受け取り、処理ディレクトリだけを root にして親の検査を省きません。境界より上の、呼出し元が選んだ保存場所の ancestry（macOS の `/var` などの OS alias を含む）はこの規則の対象外です。CLI の保護領域の重なり検査は別途 symlink 解決後にも行い、選択した root 自体をリンク先へ置き換えません。外部から選んだ import 元と、書き出し先のフォルダー・`segments.json` 等の外部 artifact はセッション内アクセス境界の対象外ですが、書き出すセッション側の original・FLAC は descriptor から読みます。
 
-根拠: [SessionFileAccess.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccess.swift)、[DescriptorAudioFile.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DescriptorAudioFile.swift)。
+根拠: [SessionFileAccess.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccess.swift)、[DescriptorAudioFile.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DescriptorAudioFile.swift)、[Windows AudioImportDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioImportDecoder.swift)。
 
 セッションの構成は次のとおりです。これは生成されるファイル配置であり、リポジトリ内のファイルではありません。
 
@@ -84,15 +88,30 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 - 録音は `recordingPCM` の間、処理タイムライン自体が保存音声です。入力の全 channel を平均し、連続 SRC を通した **16,000 Hz・mono・32-bit float PCM** を保存します。
 - import では元ファイルを無再圧縮コピーした `original` または original に元の拡張子を付けたファイルが保存音声です。audio 直下の該当する通常ファイルは **ちょうど 1 つ**必要です。0 個または複数個ならエラーです。元の外部ファイルを再処理の入力にはしません。
 - import の処理タイムラインは **16,000 Hz・mono・32-bit float PCM** の派生物です。保存済み original を bounded buffer で読み、全 channel の平均後に連続 SRC を行います。`processSession` は確定処理のたびに処理タイムラインを削除して original から作り直します。original の bytes は変更しません。予期しない EOF・不正 PCM・変換失敗は明示エラーです。
+- Apple と Windows の import builder は共有の `ImportedAudioPCM.downmix` で全 channel の算術平均を作り、共有の `ImportedAudioTimelineWriter` で canonical timeline を書きます。import は両方とも 5 秒単位の chunk を使い、chunk index は 0 始まりです。したがって PCM chunk・audio-chunks.jsonl・checkpoint の形式と index 規則は同じです。
+- Windows は WAV・FLAC・MP3 を miniaudio 0.11.23 で、M4A・AAC を Media Foundation Source Reader で decode します。M4A/AAC は session handle の read-only IStream を IMFByteStream に包んで Source Reader に渡し、pathname を再度開きません。Windows の canonical 境界は累積 source frame 数 `n` ごとに `round(n × 16000 / sourceRate)`（最も近い整数、ちょうど中間はゼロから離れる方向）で決めます。EOS では bounded zero input で変換器を進め、丸めた終端境界までを出力し、それを越える filter tail は捨てます。
+- macOS の AVAudioConverter は通常の priming 後に EOS まで drain し、正確な変換長の floor または ceil にあたる出力を全て保持します。Windows の境界丸め・tail trimming と macOS の EOS 出力長は同じ規則ではありません。また、異なる converter の出力 sample 値は bit-identical ではありません。
+- Windows の Media Foundation AAC decode は Source Reader が返す PCM を EOS まで消費します。platform codec padding が decoded frames に含まれる場合もそのまま source timeline に含め、再生時間等から推定した padding trimming は行いません。
+- 各 platform の timeline builder は checkpoint を返すだけで、`storage.json` は書きません。macOS では `MacSessionProcessingAudio`（Runtime）が timeline builder を呼び、返された checkpoint で reader を作成して音声を検証した後、`importedOriginal` と timeline metadata を公開します。`NativeSessionProcessor` は Pipeline の `SessionProcessingAudioHandling` を通してこの処理を orchestrate します（[MacSessionProcessingAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/MacSessionProcessingAudio.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)）。これは保存済み original から確定処理用 timeline を作る経路の説明であり、live pipeline の挙動を約束するものでもありません。
 - `derived` の CAF は処理用の派生音声で、確定処理がセッション情報を読めない開始失敗を除く全ての結果（完了・失敗・一時停止・その他の開始失敗）で削除します。import の処理タイムラインと `recording.flac.partial` も同じ扱いです。録音の PCM は一時ファイルではなく、FLAC 状態を保存するまで権威です。録音の書き出し音声は `recording.flac` のコピー、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
+
+根拠: [共有 ImportedAudioTimelineWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineWriter.swift)、[CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[macOS AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[macOS CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)、[Windows AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioFileTimelineBuilder.swift)、[Windows AudioImportDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioImportDecoder.swift)、[Windows CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/CanonicalAudioResampler.swift)、[CWindowsAudio.cpp](../app/MacAmbientJev/Sources/CWindowsAudio/CWindowsAudio.cpp)、[CMiniaudio README](../app/MacAmbientJev/Sources/CMiniaudio/README.md)。
 
 ### 録音の FLAC 化
 
-確定処理が文字起こしを公開した後、`RecordingAudioCompactor` が `recordingPCM` の録音を `recording.flac`（16 kHz・mono・16-bit FLAC）へ変換し、PCM を削除します。符号化は ExtAudioFile で、FLAC のブロックは 4,096 フレーム固定です。Apple の FLAC エンコーダは 1 ブロック分を書くまで音声を出力しないため、4,096 フレーム未満の録音は末尾を 0 で 4,096 フレームまで埋めます。`storage.json` の `committedFrames` が録音の長さで、読み出しはその範囲だけを返し、検証は埋めたフレームが全て 0 であることも確認します。16-bit 化は float を `[-1, 1]` に clamp し、32768 倍して四捨五入した Int16 です。非有限値は変換エラーです。
+確定処理が文字起こしを公開した後、`RecordingAudioCompactor` は `recordingPCM` の録音を `recording.flac`（16 kHz・mono・16-bit FLAC）へ変換し、PCM を削除します。符号化器 `RecordingFLAC` と復号器 `FLACTimelineReader` は `MacAmbientJevCore` にある Foundation を使う portable な pure Swift 実装で、macOS・Linux・Windows で共通です。出力は native FLAC で、metadata block は STREAMINFO だけです。
 
-1. processing ディレクトリの checkpoint と PCM を検証します。長さ 0 の録音は変換対象にならず `recordingPCM` のままです（`audioSource` が nil で、変換は予定されません）。
-2. 古い `recording.flac.partial` を削除し、`recording.flac.partial` へ FLAC を書いて synchronize します。
-3. partial のコンテナ長が max(録音の長さ, 4,096) フレームと一致することを確認し、その長さの全フレームを復号します。各読み取りは最大 8,192 フレームかつ残りフレーム数以下とし、要求したフレーム数が正確に返ることを必須とします。既知の末尾では読み取りを行わず、OS の EOF 通知には依存しません。全 sample が PCM の 16-bit 量子化と完全に一致し、埋めたフレームが全て 0 であることも確認します。途中の短い読み取りや復号失敗はエラーです。
+各 FLAC frame は公称 4,096 frame で、最後の frame だけは短くできます。STREAMINFO の total samples は `storage.json` の `committedFrames` と正確に一致します。STREAMINFO の block size 最小値・最大値は [RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html) に従って短い最終 frame を除く公称 block size（4,096）を記録し、frame size 最小値・最大値は実際に符号化した frame の byte 数から記録します。MD5 は signed 16-bit little-endian PCM 全体から計算します。
+
+符号化器は各 block で CONSTANT、VERBATIM、FIXED の次数 0〜4 を比較し、符号化 bit 数が最小の形式を選びます。FIXED の残差は Rice method 0、partition order 0〜8 を評価します。FIXED の各予測次数について、最細 partition order の各 partition の絶対残差和・負の残差数と、`k=1〜14` の Rice quotient 和を一度だけ正確に集計し、隣接 partition を併合して粗い partition order を評価します。各 partition order で `k=0〜14` の正確な符号化コストを評価し、block 間で固定サイズの作業用 buffer 群を再利用します。サンプルは有限値のみを受け付け、`[-1, 1]` に clamp して 32,768 倍し、最も近い整数へ丸めます（ちょうど中間の値はゼロから離れる方向）。その後 Int16 範囲へ clamp します。非有限値は明示エラーです。
+
+`FLACTimelineReader` は開くときに STREAMINFO の形式（16 kHz・mono・16-bit）と total samples が `committedFrames` に一致することを検証します。全音声検証では frame を順に読み、header CRC-8、frame CRC-16、frame 数、MD5 を検証し、切り詰め・末尾の余分な bytes・長さ不一致をエラーにします。PCM との比較検証では全ての量子化済み sample が一致することも確認します。decoder は fixed-blocking の CONSTANT・VERBATIM・FIXED・LPC subframe、Rice・Rice2 residual、wasted bits を読み取ります。可変 block、対応しない format や符号化、CRC 不一致、切り詰め、余分な末尾 bytes、長さ不一致は明示エラーです。
+
+frame index は byte offset と先頭 sample（および小さな frame 情報）だけを保持し、最初の random read 時の構造 scan、または全音声検証時に一度だけ構築します。random read は要求範囲と交差する frame だけを復号します。音声全体の PCM は保持せず、メモリ使用量は小さな frame index を除いて録音時間に比例しません。ファイル I/O は `SessionFileAccess` が session root に固定した handle を使います。
+
+1. processing ディレクトリの checkpoint と PCM を検証します。`committedFrames` が 0 の録音は compactor の `committedFrames > 0` guard により変換対象にならず、`recordingPCM` のままで FLAC を作りません（`audioSource` は nil です）。`RecordingFLAC.write` を 0 frame で直接呼んだ場合も、出力ファイルを開く前に明確な empty-recording error を返します。
+2. 古い `recording.flac.partial` を削除し、`RecordingFLAC` で `recording.flac.partial` へ書き込み、synchronize します。
+3. partial の STREAMINFO と全 frame を検証し、total samples が `committedFrames` と正確に一致することを確認します。全 frame を順次復号して CRC と MD5 を検証し、PCM source の全 sample の量子化値とも比較します。読み書きと検証は FLAC block 単位の streaming 処理で、音声全体の PCM を保持しない bounded-memory です。短い読み取り、PCM 不一致、復号失敗はエラーです。
 4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
 5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
 
@@ -106,7 +125,7 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 どの時点で中断しても、再実行は `storage.json` を見て同じ終状態に収束します。`recordingPCM` のまま `recording.flac` が残っていれば、PCM と完全一致する場合だけ採用し、不一致や破損なら削除して PCM から作り直します。`recordingFLAC` では FLAC を全復号して検証し、失敗すれば PCM に触れずエラーにします。`importedOriginal` は変換対象外です。
 
-根拠: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[SessionLayout.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)、[AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioCaptureEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/TimestampedMonoSink.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。
+根拠: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[SessionLayout.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)、[AudioImporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift)、[AudioCaptureEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[TimestampedMonoSink.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/TimestampedMonoSink.swift)、[RecordingFLAC.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift)、[FLACTimelineReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift)、[SessionFileAccess.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccess.swift)、[AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。
 
 ## session.json
 
@@ -179,7 +198,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 検証済み VAD が0区間の確定処理では segmentation / diarization / ASR の各 run に provenance を持つ開始と、成功・完了0件・失敗0件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。3 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` はローカル必須3段階だけを新しい run へ切り替え、任意の decision pointer は nil、両保留配列は空にします。発話文判定の呼出しは0です。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
 
-根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[DiarizationCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DiarizationCoordinator.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/LiveASRSession.swift)。
+根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[DiarizationCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DiarizationCoordinator.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)。
 
 ### 発話文判定イベント
 
@@ -273,7 +292,7 @@ request を処理したモデルは、そのイベントの run の `processing.
 
 ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・diarization・ASR は実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
 
-根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)。
+根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
 ローカル判定と固定 model path の実装: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[LocalClauseTagger.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[ClauseTaggerModel.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerTokenizer.swift)、[ClauseTaggerEncoding.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)。
 
@@ -305,7 +324,7 @@ active_runs の全フィールドは optional String の `segmentation`、`asr`�
 
 復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動で無限再試行しません。complete で保留配列が空でなければ、利用者の判定再試行の対象です。起動時の復旧は保留を再試行しません。公開済み snapshot より新しい未公開の確定・再試行の判定 run がある場合だけ、起動時の復旧が保留を対象に判定 run をやり直します。どちらも両配列をイベントログで検証し、公開済み snapshot から再構築します。未公開 run の結果は使いません。破損した metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。schema_version の相違・欠落・型違いは置換の対象外で、読取・追記・復旧・再処理をエラーにします。
 
-根拠: [ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[SessionRecoveryScanner.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeSessionProcessor.swift)。
+根拠: [ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[SessionRecoveryScanner.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
 ## checkpoint と PCM タイムライン
 

@@ -11,12 +11,12 @@ final class DescriptorAudioFile {
     let audioFile: AudioFileID
     private var closed = false
 
-    init(url: URL, sessionURL: URL, type: AudioFileTypeID, format: inout AudioStreamBasicDescription) throws {
+    init(url: URL, sessionURL: URL, format: inout AudioStreamBasicDescription) throws {
         let handle = try SessionFileAccess.openHandle(url, relativeTo: sessionURL, writable: true, create: true, exclusive: true)
         var file: AudioFileID?
         let status = AudioFileInitializeWithCallbacks(
             Unmanaged.passUnretained(handle).toOpaque(), descriptorRead, descriptorWrite,
-            descriptorSize, descriptorSetSize, type, &format, [], &file
+            descriptorSize, descriptorSetSize, kAudioFileCAFType, &format, [], &file
         )
         guard status == noErr, let file else {
             try? handle.close()

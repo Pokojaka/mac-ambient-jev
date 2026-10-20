@@ -46,6 +46,7 @@ func sessionManifestRequiresTheFieldsOfItsSourceKind(_ sourceFields: String) {
     }
 }
 
+#if !os(Windows)
 @Test
 func appBundleRecipeEmitsJapaneseSystemAudioPermission() throws {
     let repository = URL(fileURLWithPath: #filePath)
@@ -67,3 +68,4 @@ func appBundleRecipeEmitsJapaneseSystemAudioPermission() throws {
     #expect(description.contains("システム音声"))
     #expect(description.contains("文字起こし"))
 }
+#endif

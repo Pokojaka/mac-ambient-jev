@@ -8,8 +8,8 @@ func sessionDirectoryLivesUnderApplicationSupport() {
     let cache = URL(fileURLWithPath: "/tmp/cache")
     let paths = AppPaths(applicationSupportURL: support, cacheURL: cache, sessionsRootOverride: nil)
 
-    #expect(paths.sessionsRoot.path == "/tmp/support/mac-ambient-jev/sessions")
-    #expect(paths.modelsRoot.path == "/tmp/support/mac-ambient-jev/models")
+    #expect(paths.sessionsRoot == support.appending(path: "mac-ambient-jev/sessions", directoryHint: .isDirectory))
+    #expect(paths.modelsRoot == support.appending(path: "mac-ambient-jev/models", directoryHint: .isDirectory))
 }
 
 @Test

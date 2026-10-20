@@ -1,5 +1,6 @@
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import Testing
 @testable import MacAmbientJevProcessRecording

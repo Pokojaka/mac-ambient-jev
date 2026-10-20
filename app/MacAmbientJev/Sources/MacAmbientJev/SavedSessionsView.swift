@@ -1,4 +1,5 @@
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import SwiftUI
 
 struct SavedSessionsView: View {
@@ -7,7 +8,7 @@ struct SavedSessionsView: View {
     let isUnavailableForReprocess: Bool
     let isSelectionUnavailable: Bool
     let queuedSessionIDs: Set<UUID>
-    let sessionExports: [UUID: AppState.SessionExportState]
+    let sessionExports: [UUID: SessionExportState]
     let hasExportDestination: Bool
     let onRefresh: () -> Void
     let onSelect: (URL) -> Void

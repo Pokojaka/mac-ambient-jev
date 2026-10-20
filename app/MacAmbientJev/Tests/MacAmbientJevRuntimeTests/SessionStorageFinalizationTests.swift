@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Synchronization
 import Testing
+import MacAmbientJevPipeline
 @testable import MacAmbientJevAppleSupport
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
@@ -153,7 +154,9 @@ private struct Fixture {
     }
 
     func processor(_ engines: SessionProcessingEngines) -> NativeSessionProcessor {
-        NativeSessionProcessor(paths: paths, engines: engines, contentPriority: .disabled)
+        NativeSessionProcessor(
+            paths: paths, engines: engines, audioHandling: MacSessionProcessingAudio(), contentPriority: .disabled
+        )
     }
 
     func process(

@@ -15,7 +15,8 @@ func exportDuringMaintenanceReportsMaintenanceForPCMRecordings() async throws {
     let state = AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     let checkpoint = AudioCheckpoint(
         committedFrames: 16_000, sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE,
@@ -27,7 +28,7 @@ func exportDuringMaintenanceReportsMaintenanceForPCMRecordings() async throws {
         duration: .seconds(1), audio: .available(.recordedPCM(checkpoint)),
         hasActiveTranscript: true, processingStatus: .complete
     )
-    state.isMaintainingStorage = true
+    state.processingQueue.beginStorageMaintenance()
 
     await state.export(session)
 

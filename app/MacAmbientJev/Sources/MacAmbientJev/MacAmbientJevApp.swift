@@ -2,6 +2,7 @@ import SwiftUI
 import MacAmbientJevCore
 import MacAmbientJevAppleSupport
 import MacAmbientJevCapture
+import MacAmbientJevRuntime
 
 @main
 struct MacAmbientJevApp: App {
@@ -22,7 +23,8 @@ struct MacAmbientJevApp: App {
             pausesProcessing: false,
             userDefaults: .standard,
             engines: .production(paths: paths),
-            makeLiveVADSession: AppState.makeFluidLiveVADSession
+            makeLiveVADSession: AppState.makeFluidLiveVADSession,
+            thermalMonitor: MacThermalMonitor()
         ))
     }
 

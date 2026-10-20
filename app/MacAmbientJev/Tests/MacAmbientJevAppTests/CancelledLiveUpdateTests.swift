@@ -3,6 +3,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCapture
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 private actor BlockedLiveUpdate {
@@ -42,9 +43,11 @@ func cancelledSessionCannotApplySuspendedLiveUpdate() async throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
-        pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
+        pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     state.showNewSession(sessionID)
+    state.recording.start(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let handler = state.liveUpdateHandler(sessionID: sessionID)
     let barrier = BlockedLiveUpdate()
@@ -91,10 +94,12 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
-        pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
+        pausesProcessing: false, userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     let sessionID = UUID()
     state.showNewSession(sessionID)
+    state.recording.start(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let liveHandler = state.liveUpdateHandler(sessionID: sessionID)
     let live = try MaterializedTranscriptSegment.fixture(
@@ -104,9 +109,8 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     await liveHandler([live], .running)
     #expect(state.transcriptViewModel.rows.map(\.text) == ["ライブ原文"])
 
-    state.recordingSessionID = nil
-    state.recordingPhase = .idle
-    state.currentlyProcessingSessionID = sessionID
+    state.recording.finish()
+    state.processingQueue.begin(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     let final = try MaterializedTranscriptSegment.fixture(
         segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
         text: "確定本文", fillerRanges: [], speakers: [], isDiarized: true

@@ -3,6 +3,7 @@ import PackageDescription
 
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
+    .library(name: "MacAmbientJevPipeline", targets: ["MacAmbientJevPipeline"]),
     .executable(
         name: "MacAmbientJevEvaluateSession",
         targets: ["MacAmbientJevEvaluateSession"]
@@ -17,10 +18,23 @@ var products: [Product] = [
     )
 ]
 
+#if os(Windows)
+products.append(.library(
+    name: "MacAmbientJevWindowsSupport",
+    targets: ["MacAmbientJevWindowsSupport"]
+))
+#endif
+
 var dependencies: [Package.Dependency] = []
 
+var coreDependencies: [Target.Dependency] = []
+#if os(Windows)
+coreDependencies.append("CWindowsSession")
+#endif
+
 var targets: [Target] = [
-    .target(name: "MacAmbientJevCore"),
+    .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
+    .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
         dependencies: ["MacAmbientJevCore"]
@@ -36,8 +50,49 @@ var targets: [Target] = [
     .testTarget(
         name: "MacAmbientJevCoreTests",
         dependencies: ["MacAmbientJevCore"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevPipelineTests",
+        dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline"]
     )
 ]
+
+#if os(Windows)
+targets.append(.target(
+    name: "CMiniaudio",
+    exclude: ["README.md"],
+    linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("uuid")]
+))
+#elseif os(Linux)
+targets.append(.target(
+    name: "CMiniaudio",
+    exclude: ["README.md"],
+    linkerSettings: [.linkedLibrary("m"), .linkedLibrary("dl"), .linkedLibrary("pthread")]
+))
+#endif
+
+#if os(Windows)
+targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
+targets.append(.target(
+    name: "CWindowsAudio",
+    linkerSettings: [
+        .linkedLibrary("mfplat"),
+        .linkedLibrary("mfreadwrite"),
+        .linkedLibrary("mfuuid"),
+        .linkedLibrary("ole32"),
+        .linkedLibrary("uuid")
+    ]
+))
+targets.append(.target(
+    name: "MacAmbientJevWindowsSupport",
+    dependencies: ["MacAmbientJevCore", "CMiniaudio", "CWindowsAudio"]
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevWindowsSupportTests",
+    dependencies: ["MacAmbientJevWindowsSupport", "MacAmbientJevCore", "CMiniaudio"],
+    resources: [.copy("Resources")]
+))
+#endif
 
 #if os(macOS)
 products += [
@@ -92,12 +147,17 @@ targets += [
     ),
     .target(
         name: "MacAmbientJevCapture",
-        dependencies: ["MacAmbientJevCore", "MacAmbientJevAppleSupport"]
+        dependencies: [
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
+            "MacAmbientJevAppleSupport"
+        ]
     ),
     .target(
         name: "MacAmbientJevRuntime",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             .product(name: "FluidAudio", package: "FluidAudio"),
             .product(name: "Qwen3ASR", package: "speech-swift"),
@@ -108,6 +168,7 @@ targets += [
         name: "MacAmbientJev",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime"
@@ -117,6 +178,7 @@ targets += [
         name: "MacAmbientJevCaptureSystemAudio",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime",
             .product(name: "MLX", package: "mlx-swift")
@@ -126,6 +188,7 @@ targets += [
         name: "MacAmbientJevProcessRecording",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime",
             .product(name: "MLX", package: "mlx-swift")
@@ -135,35 +198,51 @@ targets += [
         name: "MacAmbientJevMeasureLiveLatency",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime"
         ]
     ),
     .testTarget(
         name: "MacAmbientJevProcessRecordingTests",
-        dependencies: ["MacAmbientJevProcessRecording"]
+        dependencies: ["MacAmbientJevProcessRecording", "MacAmbientJevPipeline"]
     ),
     .testTarget(
         name: "MacAmbientJevMeasureLiveLatencyTests",
-        dependencies: ["MacAmbientJevMeasureLiveLatency"]
+        dependencies: ["MacAmbientJevMeasureLiveLatency", "MacAmbientJevPipeline"]
     ),
     .testTarget(
         name: "MacAmbientJevAppTests",
-        dependencies: ["MacAmbientJev", "MacAmbientJevCore", "MacAmbientJevCapture", "MacAmbientJevAppleSupport"]
+        dependencies: [
+            "MacAmbientJev",
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
+            "MacAmbientJevCapture",
+            "MacAmbientJevAppleSupport"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevCaptureTests",
-        dependencies: ["MacAmbientJevCapture", "MacAmbientJevCore"]
+        dependencies: [
+            "MacAmbientJevCapture",
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevCaptureSystemAudioTests",
-        dependencies: ["MacAmbientJevCaptureSystemAudio", "MacAmbientJevCore"]
+        dependencies: [
+            "MacAmbientJevCaptureSystemAudio",
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevAppleSupportTests",
         dependencies: [
             "MacAmbientJevCore",
-            "MacAmbientJevAppleSupport"
+            "MacAmbientJevAppleSupport",
+            "MacAmbientJevPipeline"
         ],
         resources: [.copy("Resources/ClauseTaggerFixtures.json")]
     ),
@@ -171,6 +250,7 @@ targets += [
         name: "MacAmbientJevRuntimeTests",
         dependencies: [
             "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime"
         ]
@@ -183,5 +263,6 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: products,
     dependencies: dependencies,
-    targets: targets
+    targets: targets,
+    cxxLanguageStandard: .cxx17
 )

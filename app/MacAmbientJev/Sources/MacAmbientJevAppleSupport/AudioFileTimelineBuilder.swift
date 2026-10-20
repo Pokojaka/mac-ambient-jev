@@ -20,9 +20,6 @@ public enum AudioFileTimelineBuilderError: LocalizedError {
 }
 
 public actor AudioFileTimelineBuilder {
-    /// Imported audio is written in one pass, so chunks only bound the size of each file.
-    static let chunkDurationSeconds: Double = 5
-
     public let readFrameCount: AVAudioFrameCount
 
     public init(readFrameCount: AVAudioFrameCount = 8_192) {
@@ -44,12 +41,12 @@ public actor AudioFileTimelineBuilder {
             throw AudioFileTimelineBuilderError.unsupportedPCMFormat
         }
 
-        try SessionFileAccess.removeIfPresent(processingDirectory, relativeTo: sessionURL)
-        let writer = try DurableAudioWriter(
-            directory: processingDirectory,
-            chunkDurationSeconds: Self.chunkDurationSeconds, sessionURL: sessionURL
-        )
         let converter = try CanonicalAudioResampler(sampleRate: format.sampleRate)
+        let writer = try ImportedAudioTimelineWriter(
+            directory: processingDirectory,
+            sessionURL: sessionURL,
+            converter: converter
+        )
 
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: format,
@@ -74,20 +71,13 @@ public actor AudioFileTimelineBuilder {
                 throw AudioFileTimelineBuilderError.missingChannelData
             }
 
-            let channelCount = Int(format.channelCount)
-            var mono = Array(repeating: Float.zero, count: frameCount)
-            for frame in 0..<frameCount {
-                var sum: Float = 0
-                for channel in 0..<channelCount {
-                    let sample = channels[channel][frame]
-                    guard sample.isFinite else { throw CanonicalAudioError.invalidSamples }
-                    sum += sample
-                }
-                mono[frame] = sum / Float(channelCount)
-            }
-            try await writer.append(samples: converter.convert(mono: mono))
+            let mono = try ImportedAudioPCM.downmix(
+                frameCount: frameCount,
+                channelCount: Int(format.channelCount),
+                sample: { frame, channel in channels[channel][frame] }
+            )
+            try await writer.append(mono: mono)
         }
-        try await writer.append(samples: converter.finish())
 
         return try await writer.finish()
     }
