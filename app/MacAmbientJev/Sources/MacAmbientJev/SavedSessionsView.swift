@@ -33,7 +33,7 @@ struct SavedSessionsView: View {
                     Button(action: onRefresh) {
                         Label("更新", systemImage: "arrow.clockwise")
                     }
-                    .help("保存済み録音一覧を更新")
+                    .help("保存済み録音の一覧を読み直し")
                 }
             }
         } detail: {
@@ -75,6 +75,7 @@ struct SavedSessionsView: View {
                         .font(.caption)
                         .foregroundStyle(hasProblem(session) ? Color.red : Color.secondary)
                         .lineLimit(2)
+                        .help(statusText(session))
                 case .unreadable(let sessionURL, _, let reason):
                     Text("日時を読み取れません")
                         .font(.headline)
@@ -85,6 +86,7 @@ struct SavedSessionsView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(2)
+                        .help("読み込みエラー: \(reason)")
                 }
             }
             Spacer(minLength: 4)
@@ -111,6 +113,15 @@ struct SavedSessionsView: View {
 
     @ViewBuilder
     private func detail(for summary: SavedSessionSummary) -> some View {
+        ScrollView {
+            detailContent(for: summary)
+                .padding(AppSpacing.lg)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
+    private func detailContent(for summary: SavedSessionSummary) -> some View {
         VStack(alignment: .leading, spacing: AppSpacing.md) {
             switch summary {
             case .readable(let session):
@@ -129,10 +140,7 @@ struct SavedSessionsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 revealSessionFolderButton(sessionURL)
             }
-            Spacer()
         }
-        .padding(AppSpacing.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -200,7 +208,7 @@ struct SavedSessionsView: View {
                 } label: {
                     Label("書き出し先を Finder で表示", systemImage: "folder")
                 }
-                .help("書き出したフォルダを Finder で表示")
+                .help("書き出したフォルダを開く")
             }
         }
         switch state {
@@ -229,7 +237,7 @@ struct SavedSessionsView: View {
         } label: {
             Label("録音データを Finder で表示", systemImage: "externaldrive")
         }
-        .help("アプリ内に保存している、この録音のフォルダを Finder で表示")
+        .help("アプリ内に保存しているこの録音のフォルダを開く")
     }
 
     private func exportUnavailableReason(_ session: SavedSession) -> String? {

@@ -57,7 +57,7 @@ protocol SystemAudioTapHardware {
     func removeFormatListener(_ tap: AudioObjectID, _ queue: DispatchQueue,
                               _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus
     func createIOProc(_ proc: inout AudioDeviceIOProcID?, _ device: AudioObjectID,
-                      _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus
+                      _ queue: DispatchQueue?, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus
     func start(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
     func stop(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
     func destroyIOProc(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus
@@ -89,7 +89,7 @@ struct CoreAudioTapHardware: SystemAudioTapHardware {
         return AudioObjectRemovePropertyListenerBlock(tap, &address, queue, listener)
     }
     func createIOProc(_ proc: inout AudioDeviceIOProcID?, _ device: AudioObjectID,
-                      _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
+                      _ queue: DispatchQueue?, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
         AudioDeviceCreateIOProcIDWithBlock(&proc, device, queue, callback)
     }
     func start(_ device: AudioObjectID, _ proc: AudioDeviceIOProcID) -> OSStatus {
@@ -121,7 +121,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
     private let tapUUID = UUID().uuidString
     private let deviceUID = UUID().uuidString
     private nonisolated(unsafe) var format: AudioStreamBasicDescription
-    private let callbackQueue = DispatchQueue(label: "app.mac-ambient-jev.system-audio-tap")
+    private let listenerQueue = DispatchQueue(label: "app.mac-ambient-jev.system-audio-tap-listener")
     private let formatInvalid = Atomic(false)
     private nonisolated(unsafe) let pointers = UnsafeMutablePointer<UnsafePointer<Float>>.allocate(capacity: 32)
     private nonisolated(unsafe) let strides = UnsafeMutablePointer<Int>.allocate(capacity: 32)
@@ -206,15 +206,19 @@ final class SystemAudioTap: SystemAudioTapProviding {
         do {
             // A global tap follows the system mix when the output device changes.
             // Only changes to the tap's audio format require stopping.
-            // Core Audio invokes these blocks on callbackQueue, not the starting actor.
+            // Property notifications are off the starting actor. They invalidate audio
+            // through the atomic flag without accessing the IO producer's mutable state.
             let formatListener: AudioObjectPropertyListenerBlock = { @Sendable [weak self] _, _ in
                 self?.notifyChange("システム音声の形式が変わったため、録音を停止しました")
             }
             self.formatListener = formatListener
-            try Self.check(hardware.addFormatListener(tapID, callbackQueue, formatListener), "タップ監視")
+            try Self.check(hardware.addFormatListener(tapID, listenerQueue, formatListener), "タップ監視")
             listening = true
             var proc: AudioDeviceIOProcID?
-            let procStatus = hardware.createIOProc(&proc, deviceID, callbackQueue) { @Sendable [weak self] _, input, timestamp, _, _ in
+            // A non-nil queue causes Core Audio to synchronously dispatch every IO cycle.
+            // Run directly on its IO thread so general dispatch scheduling cannot consume
+            // the device deadline. Only this serialized producer touches timestamps/scratch.
+            let procStatus = hardware.createIOProc(&proc, deviceID, nil) { @Sendable [weak self] _, input, timestamp, _, _ in
                 self?.receive(input: input, timestamp: timestamp, sink: sink)
             }
             ioProc = proc
@@ -287,7 +291,7 @@ final class SystemAudioTap: SystemAudioTapProviding {
         if running, let ioProc { attempt(hardware.stop(deviceID, ioProc), "録音の停止"); running = false }
         if let ioProc { attempt(hardware.destroyIOProc(deviceID, ioProc), "音声コールバックの破棄"); self.ioProc = nil }
         if listening, let formatListener {
-            attempt(hardware.removeFormatListener(tapID, callbackQueue, formatListener), "タップ監視の解除")
+            attempt(hardware.removeFormatListener(tapID, listenerQueue, formatListener), "タップ監視の解除")
         }
         listening = false
         formatListener = nil

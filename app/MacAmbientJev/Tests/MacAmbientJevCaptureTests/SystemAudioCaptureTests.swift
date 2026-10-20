@@ -22,6 +22,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     var formatListener: AudioObjectPropertyListenerBlock?
     var callback: AudioDeviceIOBlock?
     var callbackQueue: DispatchQueue?
+    var listenerQueue: DispatchQueue?
     private let proc = unsafeBitCast(UInt(0x1234), to: AudioDeviceIOProcID.self)
     private let tap: AudioObjectID = 41
     private let device: AudioObjectID = 42
@@ -69,6 +70,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
         events.append("listener")
         #expect(tap == self.tap)
         formatListener = listener
+        listenerQueue = queue
         return failure == .listener ? -50 : noErr
     }
 
@@ -81,7 +83,7 @@ private final class FakeTapHardware: SystemAudioTapHardware {
     }
 
     func createIOProc(_ result: inout AudioDeviceIOProcID?, _ device: AudioObjectID,
-                      _ queue: DispatchQueue, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
+                      _ queue: DispatchQueue?, _ callback: @escaping AudioDeviceIOBlock) -> OSStatus {
         events.append("ioProc")
         #expect(device == self.device)
         self.callback = callback
@@ -250,6 +252,74 @@ private struct TapCallbackBlocks: @unchecked Sendable {
     let formatChanged: AudioObjectPropertyListenerBlock
 }
 
+/// Models Core Audio's documented synchronous dispatch when an IO queue is supplied.
+private struct TapIOInvocation: @unchecked Sendable {
+    let callback: AudioDeviceIOBlock
+    let queue: DispatchQueue?
+
+    func deliver() {
+        let receive = {
+            var samples: [Float] = [0.25, -0.5]
+            var timestamp = AudioTimeStamp()
+            timestamp.mFlags = .sampleTimeValid
+            samples.withUnsafeMutableBytes { bytes in
+                var input = AudioBufferList(
+                    mNumberBuffers: 1,
+                    mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count),
+                                         mData: bytes.baseAddress)
+                )
+                var output = AudioBufferList()
+                withUnsafePointer(to: &timestamp) { time in
+                    callback(time, &input, time, &output, time)
+                }
+            }
+        }
+        if let queue { queue.sync(execute: receive) } else { receive() }
+    }
+}
+
+@MainActor
+@Test("A blocked format listener queue cannot delay the realtime audio callback")
+func tapIOContinuesWhileListenerQueueIsBlocked() async throws {
+    let hardware = FakeTapHardware()
+    let tap = try SystemAudioTap(hardware: hardware)
+    defer { #expect(throws: Never.self) { try tap.stop() } }
+    let ring = AudioBlockRing(capacity: 4, blockFrameCapacity: 8)
+    let sink = TimestampedMonoSink(ring: ring,
+                                   frameCapacity: 8, clock: FixedClock(), meter: nil)
+    try tap.start(sink: sink, onFailure: { _ in })
+    let listenerQueue = try #require(hardware.listenerQueue)
+    let invocation = TapIOInvocation(callback: try #require(hardware.callback),
+                                     queue: hardware.callbackQueue)
+    let release = DispatchSemaphore(value: 0)
+    let completed = DispatchSemaphore(value: 0)
+    await withCheckedContinuation { continuation in
+        listenerQueue.async {
+            continuation.resume()
+            release.wait()
+        }
+    }
+    DispatchQueue.global().async {
+        invocation.deliver()
+        completed.signal()
+    }
+    let receivedWhileBlocked = await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: completed.wait(timeout: .now() + 1) == .success)
+        }
+    }
+    let capturedEndWhileBlocked = sink.lastEndFrame
+    release.signal()
+    if !receivedWhileBlocked {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { completed.wait(); continuation.resume() }
+        }
+    }
+    #expect(receivedWhileBlocked)
+    #expect(capturedEndWhileBlocked == 2)
+    #expect(try #require(ring.pop()).samples == [0.25, -0.5])
+}
+
 @MainActor
 @Test("Background tap callbacks stop accepting matching-layout audio after format invalidation")
 func tapRejectsAudioAfterFormatInvalidation() async throws {
@@ -263,7 +333,7 @@ func tapRejectsAudioAfterFormatInvalidation() async throws {
         receive: try #require(hardware.callback),
         formatChanged: try #require(hardware.formatListener)
     )
-    let callbackQueue = try #require(hardware.callbackQueue)
+    let callbackQueue = DispatchQueue(label: "test.core-audio-io")
     await withCheckedContinuation { continuation in
         callbackQueue.async { @Sendable in
             #expect(!Thread.isMainThread)
