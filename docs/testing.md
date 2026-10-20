@@ -33,6 +33,7 @@ bash scripts/verify_v1.sh
 `verify_v1.sh` は次を行う。
 
 1. ドキュメント参照 checker の自己テストと参照検査を実行する。
+   `scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。
    `scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
 2. SwiftPM の依存を解決し、package を build する。
 3. `RUN_MODEL_TESTS` を外して通常の Swift test を実行する。
