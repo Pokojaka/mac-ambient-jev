@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-v1:
+  verify-v1-tests:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
     steps:
@@ -23,12 +23,24 @@ jobs:
           python-version: "3.13"
       - name: Install artifact validation dependency
         run: python3 -m pip install regex
-      - name: Check documentation references
-        run: |
-          python3 scripts/test_doc_references.py
-          python3 scripts/check_doc_references.py
-      - name: Check the numeral exclusion list
-        run: python3 scripts/test_japanese_numeral_exclusions.py
+      - name: Swift version
+        run: swift --version
+      - name: Cache SwiftPM sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/MacAmbientJev/.build/checkouts
+            app/MacAmbientJev/.build/repositories
+            app/MacAmbientJev/.build/artifacts
+            app/MacAmbientJev/.build/workspace-state.json
+          key: swiftpm-sources-${{ runner.os }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}
+      - name: Verify V1 tests
+        run: bash scripts/verify_v1_tests.sh
+  verify-v1-app:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
       - name: Swift version
         run: swift --version
       - name: Install the Metal toolchain
@@ -52,7 +64,16 @@ jobs:
           security import "$WORK/identity.p12" -k "$KEYCHAIN" -P ci -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-      - name: Verify V1
+      - name: Cache SwiftPM sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/MacAmbientJev/.build/checkouts
+            app/MacAmbientJev/.build/repositories
+            app/MacAmbientJev/.build/artifacts
+            app/MacAmbientJev/.build/workspace-state.json
+          key: swiftpm-sources-${{ runner.os }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}
+      - name: Verify V1 app
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/verify_v1.sh
+        run: bash scripts/verify_v1_app.sh
