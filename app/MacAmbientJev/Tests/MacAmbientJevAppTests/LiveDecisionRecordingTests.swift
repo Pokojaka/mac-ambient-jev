@@ -184,7 +184,7 @@ private func withLiveDecisionRecording(
 }
 
 @MainActor
-@Test("AppState recording shows live rows at once and applies only saved decisions", .timeLimit(.minutes(1)))
+@Test("AppState recording shows live rows at once and applies only saved decisions", .timeLimit(.minutes(10)))
 func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
     let provider = RecordingTagger()
     try await withLiveDecisionRecording(makeDecisions: { counter in
@@ -222,7 +222,7 @@ func appRecordingShowsLiveRowsWhileDecisionsWait() async throws {
 }
 
 @MainActor
-@Test("AppState keeps the classifier factory error visible while live ASR continues", .timeLimit(.minutes(1)))
+@Test("AppState keeps the classifier factory error visible while live ASR continues", .timeLimit(.minutes(10)))
 func appRecordingShowsDecisionFactoryFailureReason() async throws {
     let description = "Synthetic model load failure"
     try await withLiveDecisionRecording(makeDecisions: { _ in

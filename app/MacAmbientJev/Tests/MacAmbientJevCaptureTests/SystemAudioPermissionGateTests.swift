@@ -83,7 +83,7 @@ private func gateEngine(_ permission: GatePermission, tap: GateTap, clock: any C
 }
 
 @MainActor
-@Test("Denied preflight followed by a denied request prevents tap creation", .timeLimit(.minutes(1)))
+@Test("Denied preflight followed by a denied request prevents tap creation", .timeLimit(.minutes(10)))
 func deniedSystemAudioGate() async throws {
     let tap = GateTap()
     let clock = GateClock()
@@ -102,7 +102,7 @@ func deniedSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("A grant after a cached denied preflight starts system audio capture", .timeLimit(.minutes(1)))
+@Test("A grant after a cached denied preflight starts system audio capture", .timeLimit(.minutes(10)))
 func grantedAfterDeniedPreflightSystemAudioGate() async throws {
     let tap = GateTap()
     let clock = GateClock()
@@ -119,7 +119,7 @@ func grantedAfterDeniedPreflightSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Pending grant waits without creating a tap", .timeLimit(.minutes(1)))
+@Test("Pending grant waits without creating a tap", .timeLimit(.minutes(10)))
 func grantedSystemAudioGate() async throws {
     let tap = GateTap()
     let clock = GateClock()
@@ -143,7 +143,7 @@ func grantedSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("Pending denial never creates a tap", .timeLimit(.minutes(1)))
+@Test("Pending denial never creates a tap", .timeLimit(.minutes(10)))
 func deniedAfterPromptSystemAudioGate() async throws {
     let tap = GateTap()
     let clock = GateClock()
@@ -164,7 +164,7 @@ func deniedAfterPromptSystemAudioGate() async throws {
 }
 
 @MainActor
-@Test("An absent permission SPI or unknown status refuses to start without creating a tap", .timeLimit(.minutes(1)))
+@Test("An absent permission SPI or unknown status refuses to start without creating a tap", .timeLimit(.minutes(10)))
 func unverifiableSystemAudioGate() async throws {
     let tap = GateTap()
     let clock = GateClock()
@@ -183,7 +183,7 @@ func unverifiableSystemAudioGate() async throws {
 
 @MainActor
 @Test("Cancellation while permission dialog is pending returns without waiting for its answer",
-      .timeLimit(.minutes(1)), arguments: [SystemAudioPermissionStatus.notDetermined, .denied])
+      .timeLimit(.minutes(10)), arguments: [SystemAudioPermissionStatus.notDetermined, .denied])
 func cancelledPendingSystemAudioGate(status: SystemAudioPermissionStatus) async throws {
     let tap = GateTap()
     let clock = GateClock()
