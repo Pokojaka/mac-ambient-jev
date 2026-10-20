@@ -130,18 +130,21 @@ uint32_t msj_remove(MSJHandle handle) {
 uint32_t msj_rename(MSJHandle handle, MSJHandle destination, const wchar_t *name) {
     SetInfoFn set_info = (SetInfoFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile");
     if (!set_info) return ERROR_PROC_NOT_FOUND;
-    /* Native FILE_RENAME_INFORMATION has a BOOLEAN, unlike the Win32 BOOL. */
-    struct RenameInfo { BOOLEAN replace; HANDLE root; ULONG length; WCHAR name[1]; };
+    /* FILE_RENAME_INFORMATION_EX. POSIX semantics replace a destination that
+     * another process holds open with FILE_SHARE_DELETE; file systems without
+     * them fail the call instead of falling back to the non-POSIX replace. */
+    struct RenameInfo { ULONG flags; HANDLE root; ULONG length; WCHAR name[1]; };
     size_t bytes = wcslen(name) * sizeof(wchar_t);
     size_t size = offsetof(struct RenameInfo, name) + bytes;
     struct RenameInfo *info = calloc(1, size);
     if (!info) return ERROR_NOT_ENOUGH_MEMORY;
-    info->replace = TRUE;
+    info->flags = 0x00000001 /* FILE_RENAME_REPLACE_IF_EXISTS */
+                | 0x00000002 /* FILE_RENAME_POSIX_SEMANTICS */;
     info->root = destination;
     info->length = (ULONG)bytes;
     memcpy(info->name, name, bytes);
     IO_STATUS_BLOCK io;
-    NTSTATUS status = set_info(handle, &io, info, (ULONG)size, (FILE_INFORMATION_CLASS)10);
+    NTSTATUS status = set_info(handle, &io, info, (ULONG)size, (FILE_INFORMATION_CLASS)65 /* FileRenameInformationEx */);
     free(info);
     return status < 0 ? dos_error(status) : ERROR_SUCCESS;
 }

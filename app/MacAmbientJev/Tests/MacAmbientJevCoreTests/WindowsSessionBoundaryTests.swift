@@ -1,6 +1,7 @@
 #if os(Windows)
 import Foundation
 import Testing
+import WinSDK
 @testable import MacAmbientJevCore
 
 private func systemTool(_ name: String, arguments: [String]) throws -> String {
@@ -59,6 +60,24 @@ private func setDirectoryWriteDenial(_ directory: URL, deny: Bool) throws {
     try SessionFileAccess.createDirectory(root, relativeTo: root)
     let file = root.appending(path: "文字起こし.json")
     let bytes = Data("長いパスの日本語".utf8)
+    try SessionFileAccess.writeAtomically(bytes, to: file, relativeTo: root)
+    #expect(try SessionFileAccess.read(file, relativeTo: root) == bytes)
+}
+
+@Test func windowsAtomicWriteReplacesFileHeldOpenWithShareDelete() throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try SessionFileAccess.createDirectory(root, relativeTo: root)
+    let file = root.appending(path: "checkpoint.json")
+    try SessionFileAccess.writeAtomically(Data("old".utf8), to: file, relativeTo: root)
+    let path = file.withUnsafeFileSystemRepresentation { String(cString: $0!) }
+    let reader = path.withCString(encodedAs: UTF16.self) {
+        CreateFileW($0, GENERIC_READ, DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE),
+                    nil, DWORD(OPEN_EXISTING), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+    }
+    try #require(reader != INVALID_HANDLE_VALUE)
+    defer { CloseHandle(reader) }
+    let bytes = Data("new".utf8)
     try SessionFileAccess.writeAtomically(bytes, to: file, relativeTo: root)
     #expect(try SessionFileAccess.read(file, relativeTo: root) == bytes)
 }
