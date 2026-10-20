@@ -222,6 +222,7 @@ public struct ClauseBoundaryAssessment: Codable, Sendable, Equatable {
     public let probabilities: [String: Double]
     public let nextHead: NextSegmentHead?
     public let continuationProbability: Double?
+    /// Raw UTF-16 removal ranges for fillers (F) and backchannels (B), encoded as `filler_ranges`.
     public let fillerRanges: [TextUTF16Range]
     public let request: DecisionRequestRecord?
     public let sourceDecision: BoundaryDecisionSource
@@ -523,7 +524,7 @@ public struct ContentPriorityAssignedPayload: Codable, Sendable, Equatable {
     }
 }
 
-/// Exact filler-removed clause text. Equality and hashing use the UTF-8 bytes, not
+/// Exact filler-and-backchannel-removed clause text. Equality and hashing use the UTF-8 bytes, not
 /// Swift's canonical string equivalence.
 public struct ExactClauseTextKey: Sendable, Hashable {
     public let text: String
@@ -567,26 +568,26 @@ public enum DecisionPendingTarget: Sendable, Hashable {
     case priority(ClauseReference)
 }
 
-/// Builds the filler-removed text of clauses from the raw ASR text of their parts.
+/// Builds the filler-and-backchannel-removed text of clauses from the raw ASR text of their parts.
 public struct ClauseTextComposer: Sendable {
     private let projector = TranscriptTextProjector()
-    private var fillerRangesBySource: [SegmentTextReference: [TextUTF16Range]] = [:]
+    private var removalRangesBySource: [SegmentTextReference: [TextUTF16Range]] = [:]
     private var projections: [SegmentTextReference: CleanedTranscriptText] = [:]
     private var displayCursors: [SegmentTextReference: (offset: Int, index: String.Index)] = [:]
 
     public init() {}
 
-    /// Filler ranges become available only after the assessment is saved.
+    /// Sets the persisted `filler_ranges` removal ranges for fillers (F) and backchannels (B).
     public mutating func setFillerRanges(_ ranges: [TextUTF16Range], for source: SegmentTextReference) {
-        fillerRangesBySource[source] = ranges
+        removalRangesBySource[source] = ranges
         projections.removeValue(forKey: source)
         displayCursors.removeValue(forKey: source)
     }
 
     public mutating func projection(of source: SegmentTextReference, text: String) throws -> CleanedTranscriptText {
         if let cached = projections[source] { return cached }
-        let fillerRanges = fillerRangesBySource[source] ?? []
-        let projected = try projector.project(sourceText: text, fillerRanges: fillerRanges)
+        let removalRanges = removalRangesBySource[source] ?? []
+        let projected = try projector.project(sourceText: text, fillerRanges: removalRanges)
         projections[source] = projected
         return projected
     }
