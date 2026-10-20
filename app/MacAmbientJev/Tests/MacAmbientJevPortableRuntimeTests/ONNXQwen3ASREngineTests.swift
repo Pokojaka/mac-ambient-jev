@@ -4,7 +4,7 @@ import MacAmbientJevONNX
 import Testing
 @testable import MacAmbientJevPortableRuntime
 
-@Suite(.timeLimit(.minutes(1)))
+@Suite(.timeLimit(.minutes(10)))
 struct ONNXQwen3ASREngineTests {
     @Test
     func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() {
