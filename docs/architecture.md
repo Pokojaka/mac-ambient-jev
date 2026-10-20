@@ -8,23 +8,43 @@ Mac Ambient Jev は、保存音声を基にローカルで文字起こしを作�
 
 ### 共通ターゲット
 
-macOS 以外でも定義されるターゲットには外部 Swift パッケージ依存がありません。Windows の Core は、リポジトリ内の CWindowsSession target を使って OS のファイル API を呼び出します。
+macOS 以外でも定義されるターゲットには外部 Swift パッケージ依存がありません。Windows の Core は、リポジトリ内の `CWindowsSession` target を使って OS のファイル API を呼び出します。Windows / Linux の target 構成は後述します。
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、`DecisionProvider` protocol と共有判定型、段階 coordinator、materialization、判定 batch と優先度処理、純粋な `ClauseTaggerEncoding`、CER・話者分離の評価、純粋な Swift / Foundation による録音 FLAC（16 kHz mono 16-bit）の streaming encoder / decoder、CRC / MD5 検証、bounded random-access frame index。Windows でのみ CWindowsSession に依存 |
+| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、`DecisionProvider` protocol と共有判定型、段階 coordinator、materialization、判定 batch と優先度処理、純粋な `ClauseTaggerEncoding`、CER・話者分離の評価、純粋な Swift / Foundation による録音 FLAC（16 kHz mono 16-bit）の streaming encoder / decoder、CRC / MD5 検証、bounded random-access frame index、共通の `CanonicalAudioConverting` contract と `ImportedAudioTimelineWriter`。Windows でのみ `CWindowsSession` に依存 |
 | `MacAmbientJevEvaluateSession` | executable | 参照文付きセッションの ASR 評価。Core に依存 |
 | `MacAmbientJevEvaluateASR` | executable | ASR artifact の CER 評価。Core に依存 |
 | `MacAmbientJevEvaluateDiarization` | executable | 話者分離 artifact の評価。Core に依存 |
 | `MacAmbientJevCoreTests` | test | Core に依存 |
 
-### macOS 限定ターゲット
+### Windows ターゲット
 
-Windows の OS adapter は [CWindowsSession.c](../app/MacAmbientJev/Sources/CWindowsSession/CWindowsSession.c) と [SessionFileAccessWindows.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccessWindows.swift) にあります。共通コアと評価 CLI の実行範囲・ビルド手順は [windows.md](windows.md) を参照してください。
+Windows の OS file adapter は [CWindowsSession.c](../app/MacAmbientJev/Sources/CWindowsSession/CWindowsSession.c) と [SessionFileAccessWindows.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFileAccessWindows.swift) にあります。audio decoder / resampler の詳細と実行範囲は [windows.md](windows.md) を参照してください。
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevAppleSupport` | library | 判定 provider factory、Core ML 発話文 tagger と tokenizer、AVFoundation による import 音声（CAF を含む）の bounded decode と stateful canonical SRC、録音 FLAC compactor、session audio reader factory、保存済み文字起こし読取と書き出し。FLAC codec は Core を利用。Core と swift-transformers Tokenizers / Hub に依存 |
+| `CWindowsSession` | C target | 固定した Windows handle を基点にした session file access と storage API。Windows の Core が利用 |
+| `CWindowsAudio` | C++ target | read-only IStream byte stream 上で Media Foundation AAC Source Reader を動かす。`CWindowsAudio` から元 URL を再オープンしない |
+| `CMiniaudio` | C target | 同梱 miniaudio 0.11.23 と狭い C wrapper。WindowsSupport が WAV / FLAC / MP3 decode と linear LPF8 SRC に利用。Linux にも同 target を定義し、macOS では定義しない |
+| `MacAmbientJevWindowsSupport` | library | bounded streaming audio import / canonical timeline builder と miniaudio resampler。Core、`CMiniaudio`、`CWindowsAudio` に依存 |
+| `MacAmbientJevWindowsSupportTests` | test | WindowsSupport の decoder、timeline writer、SRC のテスト。Core、WindowsSupport、`CMiniaudio` に依存 |
+
+WindowsSupport は import API までで、live capture、UI、engine を含む処理 pipeline には接続されていません。WASAPI backend は capture path 向けに `CMiniaudio` にコンパイルされますが、Windows capture 実装はありません。
+
+### Linux ターゲット
+
+| ターゲット | 種類 | 責務・直接依存 |
+| --- | --- | --- |
+| `CMiniaudio` | C target | `Package.swift` が Linux でも定義する miniaudio target。macOS 固有 framework に依存しない。WindowsSupport / `CWindowsSession` / `CWindowsAudio` は Linux target では定義しない |
+
+### macOS 限定ターゲット
+
+macOS の Package は `CMiniaudio` と Windows targets を定義せず、AVFoundation の decoder / converter を AppleSupport に保持します。共通コアと評価 CLI の実行範囲・ビルド手順は [windows.md](windows.md) を参照してください。
+
+| ターゲット | 種類 | 責務・直接依存 |
+| --- | --- | --- |
+| `MacAmbientJevAppleSupport` | library | 判定 provider factory、Core ML 発話文 tagger と tokenizer、AVFoundation による import 音声（CAF を含む）の bounded decode と stateful canonical SRC、録音 FLAC compactor、session audio reader factory、保存済み文字起こし読取と書き出し。FLAC codec と import timeline writer は Core を利用。Core と swift-transformers Tokenizers / Hub に依存 |
 | `MacAmbientJevCapture` | library | マイク・システム音声入力、Core Audio tap、権限、入力音量制御、タイムスタンプ付き mono 入力と録音寿命管理。Core と AppleSupport に依存 |
 | `MacAmbientJevRuntime` | library | FluidAudio VAD・offline diarization、Qwen3-ASR、ライブ認識、共通確定処理。Core、AppleSupport、FluidAudio、Qwen3ASR、MLX に依存 |
 | `MacAmbientJev` | executable | SwiftUI 画面、`AppState`、録音・処理キュー・設定・保存済みセッション操作。Core、AppleSupport、Capture、Runtime に依存 |
@@ -38,9 +58,9 @@ macOS の外部依存は FluidAudio 0.15.8、speech-swift の revision `c4c2fabb
 
 ## Portable Core の境界
 
-Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI、AudioToolbox、CryptoKit、IOKit、CoreMedia の import を禁止しています。Darwin・Glibc・WinSDK は対応する OS / canImport の正の条件分岐内に限ります。Windows の OS API は条件付きの CWindowsSession target に隔離します。Foundation、Synchronization による保存・同期は Core に置かれます。録音 FLAC codec の `RecordingFLAC`、`FLACTimelineReader` と bitstream / frame decoder / MD5 実装も Core にあり、Foundation と `SessionFileAccess` を使い、Apple framework や外部 Swift package に依存しません。Encoder は bounded block 単位で書き込み、reader は CRC / MD5 を検証し bounded random-access frame index を構築します。`DecisionProvider` は Core ML tagger が実装する判定 protocol で、Core 内の `ClauseTaggerEncoding` は tokenizer を受け取る純粋な符号化ロジックです。Core ML と tokenizer の実装・依存は AppleSupport に置き、Core は portable のまま維持します。**portable は「純粋関数だけ」という意味ではありません。**
+Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI、AudioToolbox、CryptoKit、IOKit、CoreMedia の import を禁止しています。Darwin・Glibc・WinSDK は対応する OS / canImport の正の条件分岐内に限ります。Windows の OS file API は条件付きの `CWindowsSession` target に隔離します。Foundation、Synchronization による保存・同期は Core に置かれます。録音 FLAC codec の `RecordingFLAC`、`FLACTimelineReader` と bitstream / frame decoder / MD5 実装も Core にあり、Foundation と `SessionFileAccess` を使い、Apple framework や外部 Swift package に依存しません。Encoder は bounded block 単位で書き込み、reader は CRC / MD5 を検証し bounded random-access frame index を構築します。Core に置く音声 import API は platform-neutral な `CanonicalAudioConverting` contract、mean-channel `ImportedAudioPCM.downmix`、5 秒 chunk を使う `ImportedAudioTimelineWriter` です。音声 decoder / SRC 実装は Core に OS import を追加せず、AppleSupport の AVFoundation converter と WindowsSupport の miniaudio converter に分離します。`DecisionProvider` は Core ML tagger が実装する判定 protocol で、Core 内の `ClauseTaggerEncoding` は tokenizer を受け取る純粋な符号化ロジックです。Core ML と tokenizer の実装・依存は AppleSupport に置き、Core は portable のまま維持します。**portable は「純粋関数だけ」という意味ではありません。**
 
-実推論は Core の `ASREngine` と `DiarizationEngine` に対する Runtime の実装です。確定 VAD の `FinalTranscriptVADSegmenter` は Runtime の protocol です。Core の drain は Foundation-only の `CanonicalAudioConverting` を受け取り、stateful AVAudioConverter adapter は AppleSupport に置きます。入力装置や権限は Capture、SwiftUI の状態は App に分離します。Linux のモデル runner は [tools/linux-audio](../tools/linux-audio) にあり、Swift アプリの Runtime 依存には入りません。
+実推論は Core の `ASREngine` と `DiarizationEngine` に対する Runtime の実装です。確定 VAD の `FinalTranscriptVADSegmenter` は Runtime の protocol です。Core の音声 ingress は Foundation-only の `CanonicalAudioConverting` を受け取り、stateful AVAudioConverter adapter は AppleSupport、Windows import の miniaudio resampler は WindowsSupport に置きます。入力装置や権限は Capture、SwiftUI の状態は App に分離します。Linux のモデル runner は [tools/linux-audio](../tools/linux-audio) にあり、Swift アプリの Runtime 依存には入りません。
 
 根拠: [CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)、[Diarization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Diarization.swift)、[ClauseTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[ClauseTaggerEncoding.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)、[LocalClauseTagger.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerTokenizer.swift)、[ClauseTaggerModel.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)。
 

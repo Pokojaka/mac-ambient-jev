@@ -1,0 +1,4 @@
+module CMiniaudio {
+    header "CMiniaudio.h"
+    export *
+}
