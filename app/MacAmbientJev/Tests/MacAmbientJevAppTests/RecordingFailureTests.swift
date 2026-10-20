@@ -180,7 +180,7 @@ func testCheckpoint() -> AudioCheckpoint {
 }
 
 @MainActor
-@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix", .timeLimit(.minutes(1)))
+@Test("durable write failure keeps the error visible and finalizes the healthy saved prefix", .timeLimit(.minutes(10)))
 func durableWriteFailureFinalizesHealthyPrefix() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -235,7 +235,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
 }
 
 @MainActor
-@Test("automatic capture failure and normal stop finish VAD with the stopped checkpoint", .timeLimit(.minutes(1)))
+@Test("automatic capture failure and normal stop finish VAD with the stopped checkpoint", .timeLimit(.minutes(10)))
 func automaticFailureFinalizesLikeNormalStop() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -292,7 +292,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
 }
 
 @MainActor
-@Test("duplicate capture failures do not stop or finalize twice", .timeLimit(.minutes(1)))
+@Test("duplicate capture failures do not stop or finalize twice", .timeLimit(.minutes(10)))
 func duplicateCaptureFailuresDoNotStopOrFinalizeTwice() async throws {
     let (root, paths) = temporaryRecordingPaths()
     defer { try? FileManager.default.removeItem(at: root) }

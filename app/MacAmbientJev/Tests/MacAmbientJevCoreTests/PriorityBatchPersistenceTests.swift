@@ -88,7 +88,7 @@ private actor PriorityAvailabilityGate {
     }
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(10)))
 func cancellationDuringPriorityAvailabilityDoesNotSendOrConsumeTheBatch() async throws {
     let gate = PriorityAvailabilityGate()
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)

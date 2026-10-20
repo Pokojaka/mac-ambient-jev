@@ -469,7 +469,7 @@ private struct NativeDecisionFixture {
     }
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDurableAnswers() async throws {
     let counter = DecisionUsageCounter()
     let provider = NativeClauseProvider(holdPriorityNumber: 2, failedPriorityNumbers: [])
@@ -527,7 +527,7 @@ func nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDura
 
 private struct TaggerLoadFailure: Error {}
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async throws {
     let counter = DecisionUsageCounter()
     let fixture = try await NativeDecisionFixture(

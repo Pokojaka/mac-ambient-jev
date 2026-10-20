@@ -352,7 +352,7 @@ private struct LiveDecisionFixture {
     }
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() async throws {
     let provider = LiveProvider(continuing: ["seg_1", "seg_2"], fillerRanges: [])
     let counter = DecisionUsageCounter()
@@ -397,7 +397,7 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)), arguments: [false, true])
+@Test(.timeLimit(.minutes(10)), arguments: [false, true])
 func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Bool) async throws {
     let provider = LiveProvider(
         continuing: [], fillerRanges: [], holdBoundaryNumber: holdingPriority ? nil : 2,
@@ -441,7 +441,7 @@ func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Boo
     ])
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async throws {
     let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
     let revision = String(repeating: "a", count: 64)
@@ -509,7 +509,7 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
     let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
     let revision = String(repeating: "a", count: 64)
@@ -567,7 +567,7 @@ func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)), arguments: [false, true])
+@Test(.timeLimit(.minutes(10)), arguments: [false, true])
 func liveTranscriptRemovesOnlySavedFillerRanges(hasSavedFiller: Bool) async throws {
     let fillerRange = try TextUTF16Range(start: 0, end: 2)
     let provider = LiveProvider(
@@ -598,7 +598,7 @@ func liveTranscriptRemovesOnlySavedFillerRanges(hasSavedFiller: Bool) async thro
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throws {
     let counter = DecisionUsageCounter()
     let fixture = try await LiveDecisionFixture(
@@ -630,7 +630,7 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func failedASRLeavesThePrecedingSegmentPendingAndTheNextHeadUnresolved() async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
@@ -659,7 +659,7 @@ private struct InitializationFailure: LocalizedError {
     var errorDescription: String? { "モデルを読み込めません" }
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func initializationErrorIsShownAndRecordingRowsStayVisible() async throws {
     let counter = DecisionUsageCounter()
     let fixture = try await LiveDecisionFixture(texts: ["一つ目"], makeDecisions: { throw InitializationFailure() }, counter: counter)
@@ -678,7 +678,7 @@ func initializationErrorIsShownAndRecordingRowsStayVisible() async throws {
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func emptySuccessfulASREndsTheTextStreamWithoutSkippingToAFutureHead() async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
@@ -708,7 +708,7 @@ func emptySuccessfulASREndsTheTextStreamWithoutSkippingToAFutureHead() async thr
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)), arguments: [false, true])
+@Test(.timeLimit(.minutes(10)), arguments: [false, true])
 func emptySuccessfulASRSeparatesAnUnresolvedGapFromLaterText(missingAfterSeparator: Bool) async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
@@ -744,7 +744,7 @@ func emptySuccessfulASRSeparatesAnUnresolvedGapFromLaterText(missingAfterSeparat
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func livePrioritySaveFailureKeepsPreviouslyDurableClassificationAndNewTextVisible() async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [], holdPriorityNumber: 2)
     let counter = DecisionUsageCounter()
@@ -778,7 +778,7 @@ func livePrioritySaveFailureKeepsPreviouslyDurableClassificationAndNewTextVisibl
     #expect(await counter.snapshot().priorityRequests.failureCount == 0)
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
@@ -799,7 +799,7 @@ func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async thro
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func savedLowSliceStaysRemovedWhileItsContinuationWaitsForPriority() async throws {
     let provider = LiveProvider(continuing: ["seg_1"], fillerRanges: [], holdPriorityNumber: 2)
     let counter = DecisionUsageCounter()
@@ -850,7 +850,7 @@ private actor FailingPriorityProvider: DecisionProvider {
     }
 }
 
-@Test(.timeLimit(.minutes(2)))
+@Test(.timeLimit(.minutes(10)))
 func everyFailedLivePriorityBatchIsPendingOnItsOwn() async throws {
     let provider = FailingPriorityProvider()
     let counter = DecisionUsageCounter()

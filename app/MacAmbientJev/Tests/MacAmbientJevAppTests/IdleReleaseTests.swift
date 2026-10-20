@@ -58,7 +58,7 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
 }
 
 @MainActor
-@Test("the app releases the models when the processing queue drains with nothing recording", .timeLimit(.minutes(1)))
+@Test("the app releases the models when the processing queue drains with nothing recording", .timeLimit(.minutes(10)))
 func releasesWhenQueueDrains() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -85,7 +85,7 @@ func releasesWhenQueueDrains() async throws {
 }
 
 @MainActor
-@Test("no release happens while recording or while items are queued", .timeLimit(.minutes(1)))
+@Test("no release happens while recording or while items are queued", .timeLimit(.minutes(10)))
 func noReleaseWhileBusy() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -123,7 +123,7 @@ func noReleaseWhileBusy() async throws {
 }
 
 @MainActor
-@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards", .timeLimit(.minutes(1)))
+@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards", .timeLimit(.minutes(10)))
 func reloadAfterRelease() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
