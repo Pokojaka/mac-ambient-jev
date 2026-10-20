@@ -18,9 +18,7 @@ public struct ASRSessionManifest: Decodable, Sendable, Equatable {
         case .text(let text):
             return text
         case .file(let path):
-            let url = path.hasPrefix("/")
-                ? URL(fileURLWithPath: path)
-                : manifestURL.deletingLastPathComponent().appending(path: path)
+            let url = URL(fileURLWithPath: path, relativeTo: manifestURL.deletingLastPathComponent())
             return try String(contentsOf: url.standardizedFileURL, encoding: .utf8)
         }
     }

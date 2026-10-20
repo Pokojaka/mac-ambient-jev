@@ -6,11 +6,13 @@
 
 ## 保存場所とセッションフォルダー
 
+Windows の共通コアは LocalAppData/mac-ambient-jev 配下を使い、macOS の sandbox パスは構築しません。OS ごとの取得方法と Windows の実行範囲は [windows.md](windows.md) を参照してください。
+
 GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。全てのセッション CLI は各モードで `--sessions-root DIRECTORY` を必須とし、CLI が既定保存先を選ぶことはありません。非 sandbox の `~/Library/Application Support/mac-ambient-jev/sessions` とその cache、および sandbox 側の app data/cache は CLI の保護対象です。明示 root はこれらの領域と祖先・子孫関係にならず、symlink 経由でも重ならない必要があります。各 Application Support の mac-ambient-jev 以下に sessions と音声処理モデルの models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。発話文判定モデルはここに置かず、app bundle の Resources 内 `clause-tagger` ディレクトリから読みます（[発話文判定](decision-engine.md#モデルの同梱と更新)）。`AppPaths` は sessions root のみ上書きでき、models root は上書きできません。設定の「録音データ」と保存済み録音の詳細から sessions フォルダーを Finder で開けます。App の設定は UserDefaults / AppStorage にあり、セッション JSON のフィールドではありません。
 
 フォルダー名は `YYYY-MM-DD_HH-mm-ss_<stem>_<UUID先頭8桁の小文字hex>` です。作成時に一度取得した日時を、明示した time zone のローカル時刻として Gregorian calendar・`en_US_POSIX` で表します。年は ASCII 4 桁（0001–9999）。アプリと CLI は `.current` を渡します。マイク・システム音声の録音は stem が `録音`、読み込みは元ファイル名の最後の拡張子を除いた stem です。
 
-stem の `/` と `:` は `-`、先頭の `.` は `-` に置換します。固定部分は UTF-8 29 byte、stem は Swift Character の境界で 226 byte 以下に切り詰め、全体を 255 byte 以下にします。合成文字は分割せず、manifest の元ファイル名は正規化・変更しません。NUL、空の stem、最初の Character が上限に入らない名前、形式で表せない日時は明示エラーです。同名の既存フォルダーは上書きしません。名前の辞書順は作成時に記録したローカル時刻順であり、DST や time zone の変更をまたぐ UTC 順ではありません。
+stem の Windows 禁止文字（`<>:"/\|?*` と U+0000–001F）、先頭の `.`、末尾に連続する `.` と空白は `-` に置換します。CON・PRN・AUX・NUL・COM1–9・LPT1–9（数字の上付き ¹²³ を含み、最初の拡張子より前を大文字小文字を区別せず判定）は先頭に `-` を付けます。固定部分は UTF-8 29 byte、stem は Swift Character の境界で 226 byte 以下に切り詰め、切り詰め後にも名前を検証し、全体を 255 byte 以下にします。この規則は全 OS で共通です。読み取り時には禁止文字・末尾のドットや空白・予約名を含む stem を修復せず拒否します。合成文字は分割せず、manifest の元ファイル名は正規化・変更しません。元ファイル名の NUL、空の stem、最初の Character が上限に入らない名前、形式で表せない日時は明示エラーです。同名の既存フォルダーは上書きしません。名前の辞書順は作成時に記録したローカル時刻順であり、DST や time zone の変更をまたぐ UTC 順ではありません。
 
 セッション identity は `session.json` の **完全な UUID** です。`SessionLayout` は実際の `sessionURL` だけを受け取り、ID から URL を生成しません。`SessionDirectoryLocator` は root 直下の全ディレクトリの manifest を読み、完全な UUID の一致を数えます。0 件は `notFound`、複数件は名前順のフォルダー一覧付き `multipleMatches`、1 件は名前の検証後に URL を返します。無関係な壊れた manifest は identity を提供しません。一致した manifest のフォルダー名が不正なら、その検証エラーを返します。
 
@@ -23,6 +25,8 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 根拠: [SessionFolderName.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFolderName.swift)、[SessionDirectoryLocator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionDirectoryLocator.swift)、[SavedSessionCatalog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SavedSessionCatalog.swift)。
 
 ### セッション内のファイルアクセス境界
+
+Windows では root を CreateFileW で検査し、固定した親 handle から NtCreateFile で子を開きます。reparse point は全て拒否します。原子保存は同一ディレクトリの排他的な一時ファイルを FlushFileBuffers で同期し、NtSetInformationFile で開いたファイル自身を置換して親を同期します。ログは LockFileEx で排他制御します。API の失敗はエラーにし、保証の弱い経路へ切り替えません。詳細は [windows.md](windows.md) を参照してください。以下の POSIX descriptor の説明は macOS と Linux に適用します。
 
 `sessionsRoot` 自体と直下のセッションフォルダー、セッション以下の全ディレクトリ・ファイルに symlink は使えません。`session.json`、`events.jsonl`、`processing_metadata.json`、audio ディレクトリの `storage.json`、checkpoint・chunk index・gap log・PCM chunk、保存済み original・FLAC、処理中の CAF・FLAC partial も同じ規則です。末尾ファイルだけでなく `audio`・`processing`・`derived` などの親ディレクトリの symlink も、読み書き・列挙・復旧・削除で明示エラーにします。catalog と復旧はリンクされたセッションをエラー行として扱い、リンク先をセッションとして処理しません。
 

@@ -1,0 +1,87 @@
+name: Portable Core
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
+      - 'app/MacAmbientJev/Sources/CWindowsSession/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
+      - 'app/MacAmbientJev/Package.swift'
+      - 'scripts/*portable*'
+      - '.github/workflows/portable-core.yml'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
+      - 'app/MacAmbientJev/Sources/CWindowsSession/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
+      - 'app/MacAmbientJev/Package.swift'
+      - 'scripts/*portable*'
+      - '.github/workflows/portable-core.yml'
+  workflow_dispatch:
+    inputs:
+      run_linux:
+        description: Also run Linux (normally verified locally during development)
+        type: boolean
+        default: false
+
+concurrency:
+  group: portable-core-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name != 'workflow_dispatch' || inputs.run_linux)
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Python
+        run: apt-get update && apt-get install -y python3
+      - name: Check portability and documentation
+        run: |
+          python3 -B scripts/test_portable_core.py
+          python3 -B scripts/check_portable_core.py
+          python3 scripts/test_doc_references.py
+          python3 scripts/check_doc_references.py
+      - name: Build Core and all three evaluators
+        run: swift build --package-path app/MacAmbientJev
+      - name: Test Core
+        run: swift test --package-path app/MacAmbientJev
+
+  windows:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+      - uses: compnerd/gha-setup-swift@775d3f4111c5be58a0f62f2efdd353bb8fac15c7
+        with:
+          swift-version: swift-6.2-release
+          swift-build: 6.2-RELEASE
+          cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check portability and documentation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -B scripts/test_portable_core.py
+          python -B scripts/check_portable_core.py
+          python scripts/test_doc_references.py
+          python scripts/check_doc_references.py
+      - name: Build Core and all three evaluators
+        run: swift build --package-path app/MacAmbientJev
+      - name: Test Core
+        run: swift test --package-path app/MacAmbientJev

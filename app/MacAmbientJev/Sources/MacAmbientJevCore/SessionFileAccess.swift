@@ -1,9 +1,11 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
-#else
+#elseif canImport(Glibc)
 import Glibc
 #endif
+
+#if !os(Windows)
 
 /// Files beneath a session boundary are opened relative to pinned directory descriptors.
 /// The caller-selected root's ancestry may include OS aliases; the root itself and every
@@ -281,3 +283,4 @@ public enum SessionFileAccess {
         ])
     }
 }
+#endif

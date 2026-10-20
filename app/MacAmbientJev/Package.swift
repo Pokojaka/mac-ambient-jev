@@ -19,8 +19,13 @@ var products: [Product] = [
 
 var dependencies: [Package.Dependency] = []
 
+var coreDependencies: [Target.Dependency] = []
+#if os(Windows)
+coreDependencies.append("CWindowsSession")
+#endif
+
 var targets: [Target] = [
-    .target(name: "MacAmbientJevCore"),
+    .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
         dependencies: ["MacAmbientJevCore"]
@@ -38,6 +43,10 @@ var targets: [Target] = [
         dependencies: ["MacAmbientJevCore"]
     )
 ]
+
+#if os(Windows)
+targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
+#endif
 
 #if os(macOS)
 products += [

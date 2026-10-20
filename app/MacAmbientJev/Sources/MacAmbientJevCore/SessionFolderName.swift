@@ -32,7 +32,7 @@ public enum SessionFolderName {
     public static func parse(_ name: String) throws -> ParsedSessionFolderName {
         let bytes = Array(name.utf8)
         guard bytes.count <= 255, bytes.count > 29, bytes[19] == 95,
-              !bytes.contains(0), !name.contains("/"), !name.contains(":"),
+              PortableFileName.isValid(name),
               let separator = name.lastIndex(of: "_") else {
             throw SessionFolderNameError.invalidName(name)
         }
@@ -46,7 +46,8 @@ public enum SessionFolderName {
         let stemStart = name.utf8.index(name.utf8.startIndex, offsetBy: 20)
         guard separator > stemStart else { throw SessionFolderNameError.invalidName(name) }
         let stem = String(name[stemStart..<separator])
-        guard stem.unicodeScalars.first?.value != 46, stem.utf8.count <= 226 else {
+        guard stem.unicodeScalars.first?.value != 46, stem.utf8.count <= 226,
+              PortableFileName.isValid(stem) else {
             throw SessionFolderNameError.invalidName(name)
         }
         return ParsedSessionFolderName(datetimePrefix: timestamp, stem: stem, sessionIDPrefix: suffix)
@@ -75,12 +76,7 @@ public enum SessionFolderName {
                 original = filename
             }
         }
-        var sanitized = original.replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-        if sanitized.unicodeScalars.first?.value == 46 {
-            let dotEnd = sanitized.unicodeScalars.index(after: sanitized.unicodeScalars.startIndex)
-            sanitized.replaceSubrange(sanitized.startIndex..<dotEnd, with: "-")
-        }
+        let sanitized = PortableFileName.sanitize(original)
         var result = ""
         var byteCount = 0
         for character in sanitized {
@@ -89,7 +85,8 @@ public enum SessionFolderName {
             result.append(character)
             byteCount += size
         }
-        guard !result.isEmpty, !result.contains("\0") else {
+        result = PortableFileName.sanitize(result)
+        guard PortableFileName.isValid(result) else {
             throw SessionFolderNameError.invalidSource(original)
         }
         return result

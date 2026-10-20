@@ -1,4 +1,7 @@
 import Foundation
+#if os(Windows)
+import ucrt
+#endif
 
 public enum DurableAudioWriterError: LocalizedError, Equatable {
     case incompatibleCheckpoint
@@ -32,10 +35,16 @@ public enum DurableAudioWriterError: LocalizedError, Equatable {
             throw error
         } catch {
             let nsError = error as NSError
-            let outOfSpace = (nsError.domain == NSCocoaErrorDomain
-                    && nsError.code == NSFileWriteOutOfSpaceError)
-                || (nsError.domain == NSPOSIXErrorDomain
-                    && (nsError.code == Int(ENOSPC) || nsError.code == Int(EDQUOT)))
+            var posixSpaceErrors = [Int(ENOSPC)]
+            #if !os(Windows)
+            posixSpaceErrors.append(Int(EDQUOT))
+            #endif
+            let causes = [nsError, nsError.userInfo[NSUnderlyingErrorKey] as? NSError].compactMap { $0 }
+            let outOfSpace = causes.contains {
+                ($0.domain == NSCocoaErrorDomain && $0.code == NSFileWriteOutOfSpaceError)
+                    || ($0.domain == NSPOSIXErrorDomain && posixSpaceErrors.contains($0.code))
+                    || ($0.domain == "NSWin32ErrorDomain" && [39, 112].contains($0.code))
+            }
             throw outOfSpace ? DurableAudioWriterError.outOfSpace(filename)
                 : DurableAudioWriterError.writeFailed(filename)
         }
@@ -89,10 +98,8 @@ public struct AudioCheckpoint: Codable, Sendable, Equatable {
 
 extension AudioCheckpoint {
     public var hasPlainUniqueChunkFiles: Bool {
-        Set(chunkFiles).count == chunkFiles.count
-            && chunkFiles.allSatisfy {
-                !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("/")
-            }
+        Set(chunkFiles.map { $0.uppercased() }).count == chunkFiles.count
+            && chunkFiles.allSatisfy(PortableFileName.isValid)
     }
 
     /// Rebuilds the latest committed timeline from the JSON snapshot, the chunk

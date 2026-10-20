@@ -1,5 +1,7 @@
 # 検証と計測
 
+共通コアと評価 CLI は Windows・Linux の常設 CI でもビルドし、Core の全単体テストを実行します。Windows の手順と対象外のアプリ機能は [windows.md](windows.md) を参照してください。macOS app bundle の plist 生成を確認する Bash テストは Windows では実行しません。
+
 自動検証、実モデルによるファイル処理、計測結果の意味を分けて扱う。マイク・システム音声の実キャプチャや画面の確認は、ファイル入力の結果だけでは検証できない。Linux の artifact・corpus・CI 実推論は [linux.md](linux.md)、処理経路は [final.md](final.md)、保存と公開結果は [storage.md](storage.md) を参照する。
 
 以下のコマンドはリポジトリルートから実行する。実データのファイル名、セッション ID、保存先を示す環境変数には、自分の実在するデータを設定する。個人録音は Git に入れず、ローカル録音用の領域に置く。配置の案内は `test-data/recordings/README.md` にある。
