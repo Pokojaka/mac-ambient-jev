@@ -12,7 +12,7 @@ macOS 以外でも定義されるターゲットには外部 Swift パッケー�
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、`DecisionProvider` protocol と共有判定型、段階 coordinator、materialization、判定 batch と優先度処理、純粋な `ClauseTaggerEncoding`、CER・話者分離の評価。Windows でのみ CWindowsSession に依存 |
+| `MacAmbientJevCore` | library | セッション・イベント・タイムラインの型、保存と復旧、`DecisionProvider` protocol と共有判定型、段階 coordinator、materialization、判定 batch と優先度処理、純粋な `ClauseTaggerEncoding`、CER・話者分離の評価、純粋な Swift / Foundation による録音 FLAC（16 kHz mono 16-bit）の streaming encoder / decoder、CRC / MD5 検証、bounded random-access frame index。Windows でのみ CWindowsSession に依存 |
 | `MacAmbientJevEvaluateSession` | executable | 参照文付きセッションの ASR 評価。Core に依存 |
 | `MacAmbientJevEvaluateASR` | executable | ASR artifact の CER 評価。Core に依存 |
 | `MacAmbientJevEvaluateDiarization` | executable | 話者分離 artifact の評価。Core に依存 |
@@ -24,7 +24,7 @@ Windows の OS adapter は [CWindowsSession.c](../app/MacAmbientJev/Sources/CWin
 
 | ターゲット | 種類 | 責務・直接依存 |
 | --- | --- | --- |
-| `MacAmbientJevAppleSupport` | library | 判定 provider factory、Core ML 発話文 tagger と tokenizer、AVFoundation による bounded ファイルデコードと stateful canonical SRC、保存済み文字起こし読取と書き出し。Core と swift-transformers Tokenizers / Hub に依存 |
+| `MacAmbientJevAppleSupport` | library | 判定 provider factory、Core ML 発話文 tagger と tokenizer、AVFoundation による import 音声（CAF を含む）の bounded decode と stateful canonical SRC、録音 FLAC compactor、session audio reader factory、保存済み文字起こし読取と書き出し。FLAC codec は Core を利用。Core と swift-transformers Tokenizers / Hub に依存 |
 | `MacAmbientJevCapture` | library | マイク・システム音声入力、Core Audio tap、権限、入力音量制御、タイムスタンプ付き mono 入力と録音寿命管理。Core と AppleSupport に依存 |
 | `MacAmbientJevRuntime` | library | FluidAudio VAD・offline diarization、Qwen3-ASR、ライブ認識、共通確定処理。Core、AppleSupport、FluidAudio、Qwen3ASR、MLX に依存 |
 | `MacAmbientJev` | executable | SwiftUI 画面、`AppState`、録音・処理キュー・設定・保存済みセッション操作。Core、AppleSupport、Capture、Runtime に依存 |
@@ -38,11 +38,13 @@ macOS の外部依存は FluidAudio 0.15.8、speech-swift の revision `c4c2fabb
 
 ## Portable Core の境界
 
-Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI、AudioToolbox、CryptoKit、IOKit、CoreMedia の import を禁止しています。Darwin・Glibc・WinSDK は対応する OS / canImport の正の条件分岐内に限ります。Windows の OS API は条件付きの CWindowsSession target に隔離します。Foundation、Synchronization による保存・同期は Core に置かれます。`DecisionProvider` は Core ML tagger が実装する判定 protocol で、Core 内の `ClauseTaggerEncoding` は tokenizer を受け取る純粋な符号化ロジックです。Core ML と tokenizer の実装・依存は AppleSupport に置き、Core は portable のまま維持します。**portable は「純粋関数だけ」という意味ではありません。**
+Core は Apple 専用 framework の adapter を持ちません。[scripts/check_portable_core.py](../scripts/check_portable_core.py) は Core 内の Swift ファイルを走査し、AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI、AudioToolbox、CryptoKit、IOKit、CoreMedia の import を禁止しています。Darwin・Glibc・WinSDK は対応する OS / canImport の正の条件分岐内に限ります。Windows の OS API は条件付きの CWindowsSession target に隔離します。Foundation、Synchronization による保存・同期は Core に置かれます。録音 FLAC codec の `RecordingFLAC`、`FLACTimelineReader` と bitstream / frame decoder / MD5 実装も Core にあり、Foundation と `SessionFileAccess` を使い、Apple framework や外部 Swift package に依存しません。Encoder は bounded block 単位で書き込み、reader は CRC / MD5 を検証し bounded random-access frame index を構築します。`DecisionProvider` は Core ML tagger が実装する判定 protocol で、Core 内の `ClauseTaggerEncoding` は tokenizer を受け取る純粋な符号化ロジックです。Core ML と tokenizer の実装・依存は AppleSupport に置き、Core は portable のまま維持します。**portable は「純粋関数だけ」という意味ではありません。**
 
 実推論は Core の `ASREngine` と `DiarizationEngine` に対する Runtime の実装です。確定 VAD の `FinalTranscriptVADSegmenter` は Runtime の protocol です。Core の drain は Foundation-only の `CanonicalAudioConverting` を受け取り、stateful AVAudioConverter adapter は AppleSupport に置きます。入力装置や権限は Capture、SwiftUI の状態は App に分離します。Linux のモデル runner は [tools/linux-audio](../tools/linux-audio) にあり、Swift アプリの Runtime 依存には入りません。
 
 根拠: [CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)、[Diarization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Diarization.swift)、[ClauseTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[ClauseTaggerEncoding.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)、[LocalClauseTagger.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerTokenizer.swift)、[ClauseTaggerModel.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FinalTranscriptPipeline.swift)、[CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)。
+
+録音 FLAC codec の Core 実装: [RecordingFLAC.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift)、[FLACTimelineReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift)、[FLACFrameDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACFrameDecoder.swift)、[FLACBitstream.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACBitstream.swift)、[FLACMD5.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACMD5.swift)。Compactor、session reader factory、export は引き続き AppleSupport にあり、Core API を利用します: [RecordingAudioCompactor.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/RecordingAudioCompactor.swift)、[SessionAudioReaders.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionAudioReaders.swift)、[SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift)。FLAC format specification: [RFC 9639 (December 2024)](https://www.rfc-editor.org/rfc/rfc9639.html).
 
 ## 録音とライブ表示のデータフロー
 
