@@ -1,6 +1,7 @@
 import CoreAudio
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 
 /// Every AudioObject call used for input volume. Tests replace it so no real HAL call runs.
 @MainActor
@@ -168,15 +169,21 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
 
     private let hal: any MicInputVolumeHAL
     private let acknowledgementTimeout: TimeInterval
+    private let scheduleAcknowledgementTimeout: @MainActor (TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
     private let queue = DispatchQueue(label: "app.mac-ambient-jev.mic-input-volume")
     private var binding: Binding?
     private var listeners: [Listener] = []
     private var generation: UInt64 = 0
     private var ownWrite: OwnWrite?
 
-    init(hal: any MicInputVolumeHAL, acknowledgementTimeout: TimeInterval) {
+    init(
+        hal: any MicInputVolumeHAL,
+        acknowledgementTimeout: TimeInterval,
+        scheduleAcknowledgementTimeout: @escaping @MainActor (TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
+    ) {
         self.hal = hal
         self.acknowledgementTimeout = acknowledgementTimeout
+        self.scheduleAcknowledgementTimeout = scheduleAcknowledgementTimeout
     }
 
     func bind(captureDeviceUID: String,
@@ -423,11 +430,9 @@ final class CoreAudioMicInputVolume: MicInputVolumeControlling {
     private func waitForAcknowledgement(token: UInt64) async -> Bool {
         await withCheckedContinuation { continuation in
             ownWrite?.continuation = continuation
-            DispatchQueue.main.asyncAfter(deadline: .now() + acknowledgementTimeout) { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, self.ownWrite?.token == token else { return }
-                    self.resolveOwnWrite(acknowledged: false)
-                }
+            scheduleAcknowledgementTimeout(acknowledgementTimeout) { [weak self] in
+                guard let self, self.ownWrite?.token == token else { return }
+                self.resolveOwnWrite(acknowledged: false)
             }
         }
     }

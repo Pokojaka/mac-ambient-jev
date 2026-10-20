@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import MLX
 
@@ -37,6 +38,7 @@ actor RunMonitor {
     let memoryURL: URL
     private var phase: RunPhase = .preparing
     private var samplingFailure: RunMonitorError?
+    private let thermalMonitor = MacThermalMonitor()
 
     init(runID: String, metricsURL: URL, thermalURL: URL, memoryURL: URL) throws {
         let destinations = [metricsURL, thermalURL, memoryURL].map { url in
@@ -65,7 +67,7 @@ actor RunMonitor {
     }
 
     func shouldPause() -> Bool {
-        ProcessInfo.processInfo.thermalState == .critical
+        thermalMonitor.isCritical
     }
 
     func run() async {
@@ -89,11 +91,16 @@ actor RunMonitor {
     private func sample() {
         guard samplingFailure == nil else { return }
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let thermal: [String: Any] = [
-            "run_id": runID, "timestamp": timestamp,
-            "state": String(describing: ProcessInfo.processInfo.thermalState)
-        ]
-        guard append(thermal, to: thermalURL) else { return }
+        let thermalData: Data
+        do {
+            thermalData = try Self.thermalLine(
+                runID: runID, timestamp: timestamp, state: thermalMonitor.state
+            )
+        } catch {
+            recordSamplingFailure(error, to: thermalURL)
+            return
+        }
+        guard append(thermalData, to: thermalURL) else { return }
         let mlx = Memory.snapshot()
         var memory: [String: Any] = [
             "run_id": runID, "timestamp": timestamp, "phase": phase.rawValue,
@@ -116,12 +123,29 @@ actor RunMonitor {
     @discardableResult
     private func append(_ value: [String: Any], to url: URL) -> Bool {
         do {
-            try Self.appendLine(value, to: url)
-            return true
+            var data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+            data.append(0x0A)
+            return append(data, to: url)
         } catch {
-            samplingFailure = .samplingFailed(path: url.path, reason: error.localizedDescription)
+            recordSamplingFailure(error, to: url)
             return false
         }
+    }
+
+    @discardableResult
+    private func append(_ data: Data, to url: URL) -> Bool {
+        do {
+            try Self.appendLine(data, to: url)
+            return true
+        } catch {
+            recordSamplingFailure(error, to: url)
+            return false
+        }
+    }
+
+    private func recordSamplingFailure(_ error: Error, to url: URL) {
+        guard samplingFailure == nil else { return }
+        samplingFailure = .samplingFailed(path: url.path, reason: error.localizedDescription)
     }
 
     private static func footprint() -> Result<UInt64, TaskInfoError> {
@@ -138,11 +162,25 @@ actor RunMonitor {
         return .success(info.phys_footprint)
     }
 
-    private static func appendLine(_ value: [String: Any], to url: URL) throws {
-        var data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+    internal static func thermalLine(
+        runID: String,
+        timestamp: String,
+        state: ProcessInfo.ThermalState
+    ) throws -> Data {
+        var data = try JSONSerialization.data(
+            withJSONObject: [
+                "run_id": runID,
+                "timestamp": timestamp,
+                "state": String(describing: state)
+            ],
+            options: [.sortedKeys]
+        )
         data.append(0x0A)
+        return data
+    }
+
+    private static func appendLine(_ data: Data, to url: URL) throws {
         let handle = try SessionFileAccess.openHandle(url, relativeTo: url.deletingLastPathComponent(), writable: true, create: true)
-        defer { try? handle.close() }
         let written = Result {
             try handle.seekToEnd()
             try handle.write(contentsOf: data)

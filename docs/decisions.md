@@ -1,6 +1,6 @@
 # 製品ルール
 
-Windows で実行する共通コア・評価 CLI と、保存先・ファイルアクセスの規則は [windows.md](windows.md) に記載します。Windows では録音・GUI・実推論のアプリ機能は提供していません。
+Windows で実行する共通 Core / Pipeline と評価 CLI、および保存先・ファイルアクセスの規則は [windows.md](windows.md) に記載します。Windows では録音・GUI・実推論のアプリ機能は提供していません。
 
 - Dock と Finder には、暗い角丸タイルに白い紙のしおりと橙色の波形・文字の行を組み合わせたアプリアイコンを表示する。[アプリのウィンドウ](export.md#アプリのウィンドウ)
 - 画面全体で「ライブ（暫定）」「確定処理中」「確定済み」を区別し、行ごとの確定印は付けない。[ライブ](live.md)
@@ -24,7 +24,6 @@ Windows で実行する共通コア・評価 CLI と、保存先・ファイル�
 - 録音保存エラーは原因別の日本語で報告し、破損 chunk 名などの識別情報を保つ。入力停止はマイク・システム音声に応じた文言で伝える。[音声入力](capture.md)
 - writer 障害でも健全な checkpoint 範囲を確定処理へ送り、録音障害の表示は残す。書き出し・録音開始の後始末失敗は元のエラーと併記する。[音声入力](capture.md)・[書き出し](export.md)
 - 停止後、読み込み、再処理、クラッシュ復旧は同じ確定パイプラインを使う。ローカル必須3段階（発話区間検出・話者分離・音声認識）の成功を検証して run と境界保留を一括公開し、その後に Core ML 発話文モデルによる任意の境界・優先度判定と両保留を一括公開する。ローカル失敗・一時停止では直前の正常表示を保持し、判定保留はローカル公開を取り消さない。[確定処理](final.md)・[アーキテクチャ](architecture.md)
-- 確定処理と読み込みは critical で paused として保持する。アプリは冷却後に再開し、CLI は明示的な再開操作を使う。[確定処理](final.md)
 - 復旧は確定 run の全量再実行。途中失敗した run も取得済み ASR 計測値を保持する。[確定処理](final.md)
 - 派生 metadata の一般的な破損は明示し、原音声が無傷なら再処理を許可する。読めない metadata の置換は利用者による明示的な再処理に限る。イベントログと processing_metadata は schema version 3 を必須とし、version の欠損・未対応は明示的な再処理でも拒否する。[確定処理](final.md)・[書き出し](export.md)
 - 話者 span が負または音声範囲外なら明示エラー。VAD 区間内の話者間 gap の音声を保持し、独立した UNKNOWN gap 行は作らない。[確定処理](final.md)
@@ -45,3 +44,9 @@ Windows で実行する共通コア・評価 CLI と、保存先・ファイル�
 - VOICEVOX の 10 話者 corpus は異なる人物 identity を選び、engine・query・音声 hash を保存する。配置係数と実重複率を分離し、DER 正解は実発話 activity とする。[Linux 評価](linux.md)
 - 自然会話の CER は verbatim を主、content を補助とする。cold load・warm 推論・常駐メモリを分け、baseline に再現条件を含める。cache の SHA 不一致は即失敗。[Linux 評価](linux.md)
 - Linux ASR artifact は CER 用に全音声を 1 segment とし、run 計測は recording_id と completed・failed・paused を使う。メモリ取得失敗は値なしと理由を記録する。[Linux 評価](linux.md)・[検証](testing.md)
+
+## 熱状態
+
+- Mac は `nominal` / `fair` でライブ ASR を処理し、`serious` では 750 ms 待機する。`critical` または状態不明ではライブ ASR を待機し、録音と durable な区間登録は継続する。[ライブ](live.md)
+- Mac の確定処理（読み込みを含む）は実際の `critical` の間だけ一時停止し、状態不明では一時停止しない。一時停止中も公開済み結果を保持し、冷却後は新しい確定 run で全量を再実行する。CLI は明示的な再開操作を必要とする。[確定処理](final.md)
+- Windows では熱監視を行わず、熱状態によるライブ ASR の待機・確定処理の一時停止も行わない。`nominal` を仮定しない。[Windows の共通コア](windows.md)

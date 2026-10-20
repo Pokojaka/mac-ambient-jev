@@ -1,5 +1,6 @@
 import FluidAudio
 import Testing
+import MacAmbientJevPipeline
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 

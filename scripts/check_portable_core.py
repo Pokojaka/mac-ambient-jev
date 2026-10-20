@@ -17,6 +17,17 @@ FORBIDDEN_IMPORTS = {
     "CryptoKit",
     "IOKit",
     "CoreMedia",
+    "Combine",
+    "ScreenCaptureKit",
+    "FluidAudio",
+    "MLX",
+    "MLXNN",
+    "MLXFast",
+    "MLXRandom",
+    "Qwen3ASR",
+    "MacAmbientJevRuntime",
+    "MacAmbientJevAppleSupport",
+    "MacAmbientJevCapture",
 }
 
 IMPORT_RE = re.compile(
@@ -61,23 +72,28 @@ def scan(root: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "core",
-        nargs="?",
-        default="app/MacAmbientJev/Sources/MacAmbientJevCore",
+        "roots",
+        nargs="*",
+        default=[
+            "app/MacAmbientJev/Sources/MacAmbientJevCore",
+            "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+        ],
     )
     args = parser.parse_args()
-    root = pathlib.Path(args.core)
-    if not root.is_dir():
-        print(f"portable core directory not found: {root}", file=sys.stderr)
+    roots = [pathlib.Path(root) for root in args.roots]
+    missing_roots = [root for root in roots if not root.is_dir()]
+    if missing_roots:
+        for root in missing_roots:
+            print(f"portable core/pipeline directory not found: {root}", file=sys.stderr)
         return 2
 
-    violations = scan(root)
+    violations = [violation for root in roots for violation in scan(root)]
     if violations:
         for path, module in violations:
             print(f"{path}: forbidden or unguarded platform import: {module}", file=sys.stderr)
         return 1
 
-    print(f"Portable Core import check passed ({root})")
+    print(f"Portable Core / Pipeline import check passed ({', '.join(args.roots)})")
     return 0
 
 

@@ -3,6 +3,7 @@ import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevRuntime
+import MacAmbientJevPipeline
 import Testing
 
 private let storageHarnessProvenance = RunProvenance(
@@ -152,6 +153,7 @@ func storageDiskUsageHarness() async throws {
             asr: StorageHarnessASR(), diarization: StorageHarnessDiarizer(),
             finalTranscriptVAD: StorageHarnessVAD()
         ),
+        audioHandling: MacSessionProcessingAudio(),
         contentPriority: .disabled
     )
     let recordingResult = await processor.processSession(

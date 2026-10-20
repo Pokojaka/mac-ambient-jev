@@ -1,6 +1,7 @@
 import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import MLX
 
@@ -202,7 +203,7 @@ struct ProcessRecordingCommand {
     }
 
     private static func checkStart(pacingMode: ASRPacingMode) throws {
-        let thermal = ProcessInfo.processInfo.thermalState
+        let thermal = MacThermalMonitor().pressure
         if thermal != .nominal && thermal != .fair {
             throw ProcessRecordingError.processingFailed("熱状態が落ち着くまで開始できません")
         }
@@ -256,7 +257,9 @@ struct ProcessRecordingCommand {
 
         let collector = ProcessingResultCollector()
         let processor = NativeSessionProcessor(
-            paths: paths, engines: .production(paths: paths), contentPriority: .disabled
+            paths: paths, engines: .production(paths: paths),
+            audioHandling: MacSessionProcessingAudio(),
+            contentPriority: .disabled
         )
 
         print("処理を開始します: \(audioURL.path)")
@@ -364,7 +367,9 @@ struct ProcessRecordingCommand {
             sessionsRootOverride: root
         )
         let processor = NativeSessionProcessor(
-            paths: paths, engines: .production(paths: paths), contentPriority: .disabled
+            paths: paths, engines: .production(paths: paths),
+            audioHandling: MacSessionProcessingAudio(),
+            contentPriority: .disabled
         )
         let collector = ProcessingResultCollector()
         let onUpdate: NativeSessionProcessor.UpdateHandler = { segments, state in
@@ -404,7 +409,7 @@ struct ProcessRecordingCommand {
         if let monitor {
             return { await monitor.shouldPause() }
         }
-        return { ProcessInfo.processInfo.thermalState == .critical }
+        return { MacThermalMonitor().isCritical }
     }
 
     private static func export(sessionURL: URL, outputURL: URL) throws {

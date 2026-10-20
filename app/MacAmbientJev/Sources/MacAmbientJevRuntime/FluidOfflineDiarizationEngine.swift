@@ -1,6 +1,7 @@
 @preconcurrency import FluidAudio
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 
 actor FluidOfflineDiarizationEngine: DiarizationEngine {
     static let version = "FluidAudio@0.15.8"

@@ -1,5 +1,6 @@
 import Foundation
 import MacAmbientJevAppleSupport
+import MacAmbientJevPipeline
 import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
@@ -77,6 +78,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
             diarization: PausedImportDiarizer(),
             finalTranscriptVAD: PausedImportVAD()
         ),
+        audioHandling: MacSessionProcessingAudio(),
         contentPriority: .disabled
     )
     let paused = await processor.processSession(

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 @MainActor
@@ -19,7 +20,8 @@ import MacAmbientJevRuntime
     let state = AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     state.refreshSavedSessions()
     state.selectSavedSession(sessionURL: firstBroken)
@@ -48,11 +50,13 @@ import MacAmbientJevRuntime
     #expect(state.selectedSavedSessionURL == secondBroken)
     #expect(state.readableSavedSession(id) == nil)
     state.reprocess(sessionID: id)
-    #expect(state.pendingProcessing.isEmpty)
+    #expect(state.processingQueue.pending.isEmpty)
     state.selectSavedSession(sessionURL: second)
     #expect(state.selectedSavedSessionURL == second)
     #expect(state.displayedSessionID == id)
-    state.recordingPhase = .recording
+    let sessionID = UUID()
+    state.recording.start(sessionID: sessionID)
+    state.markRecordingStarted(sessionID: sessionID)
     state.selectSavedSession(sessionURL: firstBroken)
     #expect(state.selectedSavedSessionURL == second)
 }

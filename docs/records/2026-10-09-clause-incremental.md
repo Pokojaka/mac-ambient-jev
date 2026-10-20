@@ -4,7 +4,7 @@
 
 - 実施日: 2026-10-09。
 - macOS 27.0.1（26A434）、arm64、SwiftPM debug 構成。
-- [LiveClauseIncrementalBenchmark.swift](../../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/LiveClauseIncrementalBenchmark.swift) を使用。
+- [LiveClauseIncrementalBenchmark.swift](../../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveClauseIncrementalBenchmark.swift) を使用。
 - 一時ディレクトリの実 PCM、SessionWriter、注入 ASR で 40・400・2500 区間の LiveASRSession を用意する。実モデル・Jev HTTP・Keychain・UserDefaults・音声デバイス・GUI・利用者の保存済みセッションを使わない。
 - 変更前の比較対象はテスト専用 actor に再現した、全イベントの結合 → TranscriptMaterializer の全履歴 materialization → snapshot 公開。変更後は実 LiveASRSession.applyClauseEvents。旧コミットを別プロセスで実行した数値ではない。
 - 各規模で先行区間の境界・節を登録した後、末尾 21 区間について境界イベント・節閉鎖イベント・優先度保留イベントの 3 件を一 batch で反映する。warmup 1 回を除外し、20 回を計測する。全履歴側と増分側で source とイベント履歴を同一にし、各 snapshot の完全一致を計測区間外で検証する。

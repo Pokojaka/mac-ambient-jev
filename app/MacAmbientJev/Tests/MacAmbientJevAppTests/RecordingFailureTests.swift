@@ -3,6 +3,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCapture
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 @MainActor
@@ -190,7 +191,8 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
+        userDefaults: defaults, engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     await state.startRecording()
     let sessionID = try #require(startedSessionID)
@@ -219,8 +221,8 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     #expect(state.statusTone == .error)
     #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
     #expect(engine.stopped == 1)
-    #expect(state.pendingProcessing.count == 1)
-    guard case .finalize(let queuedSession, .reject)? = state.pendingProcessing.first else {
+    #expect(state.processingQueue.pending.count == 1)
+    guard case .finalize(let queuedSession, .reject)? = state.processingQueue.pending.first else {
         Issue.record("Expected the healthy prefix to be queued for finalization")
         return
     }
@@ -255,7 +257,8 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            engines: .production(paths: paths), makeLiveVADSession: { _, _, _, _ in vad }
+            engines: .production(paths: paths), makeLiveVADSession: { _, _, _, _ in vad },
+            thermalMonitor: TestThermalMonitor(.nominal)
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -269,7 +272,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         }
         if trigger != .normal {
             for _ in 0..<1_000
-                where state.recordingPhase != .idle || state.pendingProcessing.isEmpty {
+                where state.recordingPhase != .idle || state.processingQueue.pending.isEmpty {
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(state.statusTone == .error)
@@ -279,9 +282,9 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         #expect(state.recordingPhase == .idle)
         // A failure reported while starting ends the recording before live VAD exists.
         #expect(await vad.finishedCheckpoints == (trigger == .startingFailure ? [] : [checkpoint]))
-        #expect(state.pendingProcessing.count == 1)
-        guard state.pendingProcessing.count == 1,
-              case .finishLive(let queuedID, let queuedCheckpoint) = state.pendingProcessing[0] else {
+        #expect(state.processingQueue.pending.count == 1)
+        guard state.processingQueue.pending.count == 1,
+              case .finishLive(let queuedID, let queuedCheckpoint) = state.processingQueue.pending[0] else {
             Issue.record("stop did not enqueue live finalization")
             continue
         }
@@ -321,7 +324,8 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory()
+            engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+            thermalMonitor: TestThermalMonitor(.nominal)
         )
         await state.startRecording()
         let sessionID = try #require(startedSessionID)
@@ -332,7 +336,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         #expect(state.statusTone == .error)
         #expect(state.statusText == "startup failed")
         #expect(state.savedSessions.contains(where: { $0.sessionID == sessionID }) == containsCapture)
-        #expect(state.pendingProcessing.isEmpty)
+        #expect(state.processingQueue.pending.isEmpty)
     }
 }
 
@@ -361,9 +365,11 @@ func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: .production(paths: paths),
-        makeLiveVADSession: idleLiveVADFactory()
+        makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal)
     )
     let sessionID = UUID()
+    state.recording.start(sessionID: sessionID)
     state.markRecordingStarted(sessionID: sessionID)
     let stopping = try #require(state.captureDidFail(sessionID: sessionID, message: original))
     await stopping.value
@@ -371,5 +377,5 @@ func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
     #expect(state.statusTone == .error)
     #expect(state.statusText.contains(original))
     #expect(state.statusText.contains(release))
-    if kind != "throw" { #expect(state.pendingProcessing.count == 1) }
+    if kind != "throw" { #expect(state.processingQueue.pending.count == 1) }
 }

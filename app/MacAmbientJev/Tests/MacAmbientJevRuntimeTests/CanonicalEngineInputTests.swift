@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 import Synchronization
 import Testing
@@ -135,6 +136,7 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
         paths: paths,
         engines: SessionProcessingEngines(asr: ObservingASR(log: log), diarization: ObservingDiarizer(log: log),
             finalTranscriptVAD: ObservingVAD(log: log)),
+        audioHandling: MacSessionProcessingAudio(),
         contentPriority: .disabled
     )
 

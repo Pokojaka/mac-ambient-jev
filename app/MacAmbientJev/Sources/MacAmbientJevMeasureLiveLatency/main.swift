@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import MacAmbientJevCore
 import MacAmbientJevAppleSupport
+import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 enum ReplayError: LocalizedError {
@@ -230,6 +231,7 @@ struct MeasureLiveLatencyCommand {
         let processor = NativeSessionProcessor(
             paths: replayPaths,
             engines: .production(paths: paths),
+            audioHandling: MacSessionProcessingAudio(),
             contentPriority: .disabled
         )
         try await processor.prepareASR { progress, message in
@@ -241,7 +243,7 @@ struct MeasureLiveLatencyCommand {
             segmentationRunID: segmentationRunID,
             sampleRate: CanonicalAudio.sampleRate
         )
-        let vadSession = try await LiveVADSession.make(
+        let vadSession = try await MacLiveVADSessionFactory.make(
             processingDirectory: processingDirectory,
             sessionURL: sessionDirectory,
             initialCheckpoint: checkpoint,
@@ -323,7 +325,7 @@ struct MeasureLiveLatencyCommand {
             checkpoint: checkpoint,
             finalSegments: [],
             pacingMode: .normal,
-            shouldPause: { ProcessInfo.processInfo.thermalState == .critical },
+            shouldPause: { MacThermalMonitor().isCritical },
             onPhase: { _ in },
             onStatus: { _ in },
             onUpdate: { segments, state in
