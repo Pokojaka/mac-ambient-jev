@@ -32,19 +32,19 @@ swift test --package-path app/MacAmbientJev
 bash scripts/verify_v1.sh
 ```
 
-`verify_v1.sh` は次を行う。
+`verify_v1.sh` は `RUN_MODEL_TESTS` と `ASR_SMOKE_AUDIO` を引き継ぎ、`scripts/verify_v1_tests.sh`、続けて `scripts/verify_v1_app.sh` の順に実行する。`RUN_MODEL_TESTS=1` の場合は、Swift コマンドを始める前に `ASR_SMOKE_AUDIO` が読み取り可能な絶対パスであることを検査する。`scripts/verify_v1_tests.sh` は次の1〜6を行い、`scripts/verify_v1_app.sh` は7を行う。
 
-1. ドキュメント参照 checker の自己テストと参照検査を実行する。
-   `scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。
-   `scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
-2. SwiftPM の依存を解決し、package を build する。
-3. `RUN_MODEL_TESTS` を外して通常の Swift test を実行する。
+1. `scripts/test_doc_references.py` でドキュメント参照 checker の自己テストを、`scripts/check_doc_references.py` で参照検査を実行する。`scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。`scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
+2. SwiftPM の依存を解決し、`swift build --build-tests` で package とテストをまとめて build する。
+3. `env -u RUN_MODEL_TESTS swift test --skip-build` で、事前に build したテストを再利用して通常の Swift test を実行する。
 4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル3段階の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
-6. モデル検証を指定した場合は Runtime test bundle を実行する。
-7. `scripts/build_app.sh` で発話文判定モデルを取得・SHA-256 検証して同梱した app bundle を作り（MLX の Metal shader library は Swift Build backend だけが作るため、このスクリプトは `swift build` を Swift Build backend で実行する。アプリは Apple Silicon 専用のため arm64 だけを build する）、アプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの2ファイル、署名の検証、利用者が選んだファイルへの read/write・app-scope bookmark entitlement を確認する。
+6. モデル検証を指定した場合は Swift test 一覧に ASRIntegrationTests があることと Runtime test bundle の存在を確認し、その bundle を `xcrun xctest` で実行する。
+7. `scripts/build_app.sh` で発話文判定モデルを release asset から取得して SHA-256 を検証し、app bundle に同梱する。MLX の Metal shader library は Swift Build backend で生成するため、その backend で build し、Apple Silicon 専用の arm64 のみを対象にする。続けてアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの2ファイル、codesign の検証、利用者が選んだファイルへの read/write と app-scope bookmark の2つの entitlement を確認する。
 
-アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` の macos-26 job も通常の `verify_v1.sh` を実行する。この job は MLX の Metal shader library を build するため Xcode の Metal toolchain を `xcodebuild -downloadComponent MetalToolchain` で入れ、実行ごとに「MacAmbientJev Local Signing」という自己署名のコード署名証明書を一時 keychain に作り、`scripts/build_app.sh` の署名に使う。発話文判定モデルの release asset は job の `GH_TOKEN`（`github.token`）で `gh` から取得する。
+アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` の2 job を並列に実行する。前者は Python 3.13 と `regex` package を用意して `bash scripts/verify_v1_tests.sh` を実行し、後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は GitHub Actions の cache で、SwiftPM の依存ソース（`.build/checkouts/`、`.build/repositories/`、`.build/artifacts/`、`.build/workspace-state.json`）を cache する。key は runner OS と `Package.resolved` の hash で、`restore-keys` は指定しないため、完全一致する cache だけを復元する。build products は 4 GB を超えるため cache しない。
+
+cache の有無にかかわらず依存解決と build・test は実行する。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。発話文判定モデルの release asset は `GH_TOKEN`（`github.token`）を使い `gh` から取得する。
 
 ライブ判定の regression は注入した判定 coordinator factory を使います。
 
