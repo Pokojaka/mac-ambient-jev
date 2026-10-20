@@ -433,7 +433,9 @@ func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Boo
         ? [["うん。"], (1...40).map { "本文\($0)。" }]
         : [["うん。"]]
     #expect(await provider.priorityRequests == expectedRequests)
-    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.text) == [second, "三つ目。"])
+    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.text)
+        == [holdingPriority ? second : "2つ目。", "3つ目。"])
+    #expect(await fixture.recorder.latest.map(\.text) == ["うん。", second, "三つ目。"])
     #expect(await fixture.recorder.latest.map(\.clauseState) == [
         .classified, holdingPriority ? .priorityPending : .awaitingNextSegment, .awaitingNextSegment
     ])
@@ -609,7 +611,8 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
     try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
     try await fixture.recorder.wait { $0.map(\.clauseState) == [.boundaryPending, .boundaryPending] }
 
-    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.text) == ["一つ目。二つ目", "三つ目"])
+    #expect(try LiveTranscriptProjection().rows(for: await fixture.recorder.latest).map(\.text) == ["1つ目。2つ目", "3つ目"])
+    #expect(await fixture.recorder.latest.map(\.text) == ["一つ目。二つ目", "三つ目"])
     let snapshot = await counter.snapshot()
     #expect(snapshot.sendCount == 0)
     #expect(snapshot.pendingBoundarySegmentCount == 2)
