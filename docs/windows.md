@@ -143,6 +143,8 @@ primary JSON の exact top-level keys は `schema_version: 1`、`asr`、`vad`、
 
 `asr.configuration` と artifact の `engine.inference_config` にある `intra_op_threads`、`inter_op_threads`、`cpu_memory_arena` は ASR の3 ONNX session で実際に使う設定（CLI の `--threads` 値、`1`、`false`）を表します。`inference_config` のこれらの値は ASR session のみを指します。Silero session は `--threads` の値を intra-op に使い、CPU memory arena を有効にします。`model_load_seconds` は `PipelineCoordinator` が計測する `ASR.prepare()` のみ、`inference_seconds` は `segmentationSeconds + asrWallSeconds - model_load_seconds` です。後者は lazy VAD model load / inference と event persistence を含み、audio import、モデル identity preflight、ONNX environment の生成、model unload / scratch cleanup、JSON 出力を含みません。`rtf = inference_seconds / audio_seconds` です。負値または非有限の計測値・算出指標はエラーになり、0 へ clamp しません。artifact schema、ONNX の engine / configuration values、runtime の詳細は [Linux 音声評価](linux.md#ファイル文字起こし-cli) に記載しています。
 
+Qwen3-ASR ONNX の品質判定（Linux は CER を実測、Windows は Linux との token parity から導出）は [2026-10-20 の記録](records/qwen3-asr-onnx-cer-2026-10-20.md) にあります。
+
 ### Windows release build と実行
 
 Python 3.12 以上、Swift 6.2 と対応する Visual Studio C++ Build Tools / Windows SDK が必要です。Silero model fetch は `python scripts/fetch_silero_vad.py` を使います。ASR model は既存の [Qwen3-ASR ONNX model fetcher](#qwen3-asr-onnx-モデルの取得) で事前取得してください。ONNX Runtime SDK と `onnxruntime.dll` は [ビルドと検証](#ビルドと検証) の既存の取得・DLL 配置手順を使います。以下の path は置換例で、既定値ではありません。`D:\Transcripts` と各 input / model file directory は事前に作成してください。
@@ -234,7 +236,7 @@ FLAC 形式の仕様は [RFC 9639 (December 2024)](https://www.rfc-editor.org/rf
 
 Linux / Windows の ONNX ASR engine は、PortableRuntime の [Qwen3ASR](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Qwen3ASR) ディレクトリにある prompt 生成と token id から text への復元を使います。どちらも ONNX Runtime を呼ばない純粋な Swift で、モデルの入出力は別の層が扱います。
 
-`Qwen3ASRPrompt(audioTokenCount:)` は、encoder の出力 token 数 N（1以上）から decoder に渡す `input_ids`（Int64）を作ります。N が0以下なら `Qwen3ASRError.invalidAudioTokenCount` で失敗します。言語は日本語に固定し、引数にしません。prompt tail は Mac の speech-swift と同じ `language ja`（IDs `[11528, 11937]`）であり、[公式 qwen-asr 実装](https://github.com/QwenLM/Qwen3-ASR/blob/main/qwen_asr/inference/qwen3_asr.py) は完全な言語名 `language Japanese` を prefill します。
+`Qwen3ASRPrompt(audioTokenCount:)` は、encoder の出力 token 数 N（1以上）から decoder に渡す `input_ids`（Int64）を作ります。N が0以下なら `Qwen3ASRError.invalidAudioTokenCount` で失敗します。言語は日本語に固定し、引数にしません。prompt tail は Mac の speech-swift と同じ `language ja`（IDs `[11528, 11937]`）であり、[公式 qwen-asr 実装](https://raw.githubusercontent.com/QwenLM/Qwen3-ASR/main/qwen_asr/inference/qwen3_asr.py) の `_build_text_prompt` は完全な言語名 `language Japanese` を prefill します。
 
 ```text
 [151644, 8948, 198, 151645, 198, 151644, 872, 198, 151669]
@@ -242,7 +244,7 @@ Linux / Windows の ONNX ASR engine は、PortableRuntime の [Qwen3ASR](../app/
 + [151670, 151645, 198, 151644, 77091, 198, 11528, 11937, 151704]
 ```
 
-先頭の9個が `<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>`、末尾が `<|audio_end|><|im_end|>\n<|im_start|>assistant\nlanguage ja<asr_text>` です。decoder graph の `audio_offset` は `Qwen3ASRPrompt.audioOffset`（9、最初の `<|audio_pad|>` の位置）です。Python reference generator は tokenizer の special token を `token_to_id` で引き、`system`、`user`、`assistant`、改行、`language ja` は `add_special_tokens=False` で個別に encode して prompt IDs を組み立て、文書の literal ID 列と照合します。不一致なら推論前に失敗します。
+先頭の9個が `<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>`、末尾が `<|audio_end|><|im_end|>\n<|im_start|>assistant\nlanguage ja<asr_text>` です。decoder graph の `audio_offset` は `Qwen3ASRPrompt.audioOffset`（9、最初の `<|audio_pad|>` の位置）です。
 
 `Qwen3ASRTokenDecoder` は Hugging Face 形式の tokenizer.json から、復元に必要な `model.vocab` と `added_tokens`（`id`、`content`、`special`）だけを読みます。vocab の各 token は文字ごとに GPT-2 の ByteLevel の byte-unicode 表で byte に戻し、id ごとの byte 列にします。`special` の added token は text を出さず、それ以外の added token（`<think>`、`<asr_text>` など）は `content` をそのまま UTF-8 として使います。復元した byte 列全体は厳密に UTF-8 として解釈し、不正な列（1文字が複数 token に分かれた途中で終わる場合を含む）はエラーです。次の場合は明確なエラーで失敗します。
 
@@ -418,11 +420,37 @@ opt-in test は合成時と同一の各参照文に対して short / long を別
 
 ### 独立 token reference と完全一致 test
 
-[`generate_qwen3_asr_token_reference.py`](../scripts/generate_qwen3_asr_token_reference.py) は、実モデルの生成 token ID と復元 text の独立した参照 fixture を作ります。同梱先は [`qwen3_asr_token_reference.json`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_token_reference.json) で、対象は0.6b、model commit は `4fc24a1402e74db89c4d2ef256875e71680128c4` だけです。fixture には model の6ファイルそれぞれの実 byte 数と SHA-256、commit、短・長 WAV の SHA-256、Python と全 installed distribution の version、参照実行の設定を記録します。reference metadata は `platform=Linux`、`architecture=aarch64`、`intra_op_threads=2`、`inter_op_threads=1` を示します。各 clip には `prompt_ids`、`audio_token_count`、`no_repeat_ngram_size`、`ended_at_token_cap`、生成 ID と text が含まれます。生成器は Python 3.12、NumPy 2.2.6、Transformers 4.57.1、tokenizers 0.22.2、ONNX Runtime 1.31.0 を要求します。NumPy と Transformers は log-mel golden と同じ版です。必須 package version、manifest の model commit と6ファイルの byte 数・SHA-256、WAV の SHA-256・形式・sample 数が合わない場合は、推論や出力 JSON の書き込み前に失敗します。
+[`generate_qwen3_asr_token_reference.py`](../scripts/generate_qwen3_asr_token_reference.py) は、実モデルの生成 token ID と復元 text の独立した参照 fixture を作ります。同梱の [`qwen3_asr_token_reference.json`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_token_reference.json) は0.6b model commit `4fc24a1402e74db89c4d2ef256875e71680128c4` と `ja` で生成した固定 parity fixture です。生成器は `--model-size` に `0.6b` または `1.7b`、`--language-tag` に `ja` または `"Japanese"` を受け取ります。prompt は tokenizer の special token を `token_to_id` で引き、`system`、`user`、`assistant`、改行、`language <tag>` を `add_special_tokens=False` で encode して組み立て、tag ごとの literal ID（`ja` は `[11528, 11937]`、`"Japanese"` は `[11528, 10769]`）と照合します。不一致なら推論前に失敗します。`ja` の prompt は製品の `Qwen3ASRPrompt` と一致し、`"Japanese"` では language token だけが変わります。出力 metadata は model の hidden size（0.6b は1024、1.7b は2048）と `reference.language_tag` を記録します。同梱 fixture にはこの2つの field はありません。
 
-参照の mel は Transformers の公式 Whisper NumPy 経路 `_np_extract_fbank_features`（`feature_size=128`、16 kHz、`n_fft=400`、`hop_length=160`、`dither=0`）を使い、WAV 全体をそのまま渡します。30秒への padding / truncation はしません。ONNX Runtime の encoder / decoder session は CPUExecutionProvider のみ、intra-op 2、inter-op 1、CPU memory arena 有効で動作します。生成 prompt と `audio_offset=9` は上記 [prompt と token decoder](#qwen3-asr-の-prompt-と-token-decoder) と同じです。FP16 little-endian の embedding row を選択して Float32 に変換し、greedy 同点は最小 token ID を選びます。stop token `151645` / `151643` は生成 ID 配列に含めてその位置で停止し、最大生成数は448です。15秒を超える音声だけ生成済み ID に対する no-repeat 3-gram を使います。text は tokenizers の decode で special token を除いて復元します。
+生成器の `--model-directory`、`--output` に加えて `--model-size`、`--audio-manifest`、`--language-tag` はすべて必須です。`--audio-manifest` は絶対 JSON path で、root object の key は厳密に `{schema_version, clips}`、`schema_version` は1です。各 `clips` entry の key も厳密に `{id, file, sample_count, sha256}` です。`id` は重複のない空でない文字列、`file` は manifest と同じ directory に置く symlink でない通常 WAV file の basename（traversal 不可）、`sample_count` は正の整数、`sha256` は小文字16進64文字でなければなりません。各 WAV は mono PCM16・16 kHz で、hash と sample count を検証します。
 
-`exactTokenParity` は固定 fixture の各 clip について、`Qwen3ASRPrompt(audioTokenCount:)` と `prompt_ids`、`audio_token_count`、`no_repeat_ngram_size`、`ended_at_token_cap` を照合し、実モデル実行では生成 ID と text も完全一致で検証します。prompt と decoding の診断は区別され、fixture と実行環境それぞれの platform / architecture / intra-op thread 数をログに出力します（Swift parity は intra-op 2 / inter-op 1）。独立した [metadata test](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift) は model なしで fixture の prompt と metadata を検証します。parity は固定 fixture と実際に実行した platform に限り、任意の platform への保証でも mel / logits の bit identity でもありません。この固定 fixture で token ID と text の完全一致を確認した platform は Linux aarch64（Swift 6.2.4 release）と Windows ARM64（Swift 6.2.0 debug）です。両者とも ONNX Runtime 1.31.0、intra-op 2 / inter-op 1 での結果であり、任意の platform への保証ではありません（[Linux parity 記録](records/qwen3-asr-token-memory-2026-10-20.md#parity)、[Windows ARM64 記録](records/qwen3-asr-token-memory-2026-10-20.md#windows-arm64-vm-2026-10-20)）。
+同梱の short / long WAV を再生成入力に使う場合、Docker 外の `/absolute/path/to/short-long-inputs` に2つの WAV をコピーし、次の manifest を manifest.json として置きます。
+
+```json
+{
+  "schema_version": 1,
+  "clips": [
+    {
+      "id": "short",
+      "file": "qwen3_asr_voicevox_short.wav",
+      "sample_count": 52907,
+      "sha256": "2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9"
+    },
+    {
+      "id": "long",
+      "file": "qwen3_asr_voicevox_long.wav",
+      "sample_count": 295424,
+      "sha256": "d50f7f2a1fe9665279689e53297772aeb52c43d9068c82ab21b21fa62cac78b2"
+    }
+  ]
+}
+```
+
+fixture には model の6ファイルそれぞれの実 byte 数と SHA-256、commit、短・長 WAV の SHA-256、Python と全 installed distribution の version、参照実行の設定を記録します。同梱 fixture の reference metadata は `platform=Linux`、`architecture=aarch64`、`intra_op_threads=2`、`inter_op_threads=1` を示します。この platform / architecture は同梱 fixture の参照実行環境を表し、生成器の全出力に共通する値ではありません。各 clip には `prompt_ids`、`audio_token_count`、`no_repeat_ngram_size`、`ended_at_token_cap`、生成 ID と text が含まれます。生成器は Python 3.12、NumPy 2.2.6、Transformers 4.57.1、tokenizers 0.22.2、ONNX Runtime 1.31.0 を要求します。NumPy と Transformers は log-mel golden と同じ版です。必須 package version、選択 model size に対応する model metadata と6ファイルの byte 数・SHA-256、WAV manifest の形式・sample 数・SHA-256 が合わない場合は、推論や出力 JSON の書き込み前に失敗します。
+
+参照の mel は Transformers の公式 Whisper NumPy 経路 `_np_extract_fbank_features`（`feature_size=128`、16 kHz、`n_fft=400`、`hop_length=160`、`dither=0`）を使い、WAV 全体をそのまま渡します。30秒への padding / truncation はしません。ONNX Runtime の encoder / decoder session は CPUExecutionProvider のみ、intra-op 2、inter-op 1、CPU memory arena 有効で動作します。`audio_offset` は常に9です。prompt は選択した language tag に従い、`ja` だけが製品 prompt literal `language ja` と一致します。`"Japanese"` にすると language token だけが変わります（上記 [prompt と token decoder](#qwen3-asr-の-prompt-と-token-decoder)）。FP16 little-endian の embedding row を選択して Float32 に変換し、greedy 同点は最小 token ID を選びます。stop token `151645` / `151643` は生成 ID 配列に含めてその位置で停止し、最大生成数は448です。15秒を超える音声だけ生成済み ID に対する no-repeat 3-gram を使います。text は tokenizers の decode で special token を除いて復元します。
+
+`exactTokenParity` は固定 fixture の各 clip について、`Qwen3ASRPrompt(audioTokenCount:)` と `prompt_ids`、`audio_token_count`、`no_repeat_ngram_size`、`ended_at_token_cap` を照合し、実モデル実行では生成 ID と text も完全一致で検証します。prompt と decoding の診断は区別され、fixture と実行環境それぞれの platform / architecture / intra-op thread 数をログに出力します（Swift parity は intra-op 2 / inter-op 1）。独立した [metadata test](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift) は model なしで fixture の prompt と metadata を検証します。parity は固定 fixture と実際に実行した platform に限り、任意の platform への保証でも mel / logits の bit identity でもありません。この固定 fixture で token ID と text の完全一致を確認した platform は Linux aarch64（Swift 6.2.4 release）と Windows ARM64（Swift 6.2.0 debug）です。両者とも ONNX Runtime 1.31.0、intra-op 2 / inter-op 1 での結果であり、任意の platform への保証ではありません（[Linux parity 記録](records/qwen3-asr-token-memory-2026-10-20.md#parity)、[Windows ARM64 記録](records/qwen3-asr-token-memory-2026-10-20.md#windows-arm64-vm2026-10-20)）。
 
 [ONNXQwen3ASRModelTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift) の `exactTokenParity` test は `RUN_MODEL_TESTS` が文字列として `1` で、既存の必須 `QWEN3_ASR_ONNX_MODEL_DIRECTORY` / `QWEN3_ASR_ONNX_MODEL_SIZE` 設定が有効な場合に実行します。reference は0.6bだけなので、size が明示的に `1.7b` の場合は skip します。その他の欠落・不正な model 設定は skip や別 model への fallback ではなく test failure です。test は `@testable` の内部 `transcribeWithTokens` 結果から、同じ推論 run の `generatedIDs` と `text` を取得し、生成 ID の配列全体を許容差なしで比較します。この内部結果はその推論 run の比較にのみ使い、後続の推論 run へ保持しません。不一致時は最初の差の0-based index、expected / actual ID と配列長を出力して失敗します。public API の追加や token の永続保存はありません。
 
@@ -432,7 +460,7 @@ Python 3.12 の virtual environment をコンテナ内の `/tmp` に作り、4 p
 docker run --rm \
   -v "$PWD:/src" \
   -v "/absolute/path/to/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4:/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4:ro" \
-  -w /src swift:6.2-noble bash -lc '
+  -v "/absolute/path/to/short-long-inputs:/inputs:ro" -w /src swift:6.2-noble bash -lc '
     apt-get update -qq &&
     apt-get install -y -qq python3-venv >/dev/null &&
     export TMPDIR=/tmp &&
@@ -442,6 +470,9 @@ docker run --rm \
       numpy==2.2.6 transformers==4.57.1 tokenizers==0.22.2 onnxruntime==1.31.0 &&
     "${TOKEN_TMP:?}/venv/bin/python" scripts/generate_qwen3_asr_token_reference.py \
       --model-directory /models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4 \
+      --model-size 0.6b \
+      --audio-manifest /inputs/manifest.json \
+      --language-tag ja \
       --output /src/app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_token_reference.json
   '
 ```

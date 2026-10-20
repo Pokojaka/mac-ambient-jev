@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import io
+import json
 import math
 import struct
 import tempfile
@@ -70,6 +71,7 @@ class FakeTokenizer:
             "assistant": (77091,),
             "\n": (198,),
             "language ja": (11528, 11937),
+            "language Japanese": (11528, 10769),
         }
         self.encoded_texts.update(encoded_texts)
         self.lookup_calls: list[str] = []
@@ -84,10 +86,44 @@ class FakeTokenizer:
         return type("Encoding", (), {"ids": self.encoded_texts[text]})()
 
 
+def write_audio_manifest(path: Path, clips: list[dict]) -> Path:
+    path.write_text(
+        json.dumps({"schema_version": 1, "clips": clips}), encoding="utf-8"
+    )
+    return path
+
+
+def manifest_clip(clip_id: str, filename: str, wav_data: bytes, sample_count: int) -> dict:
+    return {
+        "id": clip_id,
+        "file": filename,
+        "sample_count": sample_count,
+        "sha256": hashlib.sha256(wav_data).hexdigest(),
+    }
+
+
+class FakeSamples:
+    def __init__(self, values, dtype) -> None:
+        self.shape = (len(values),)
+        self.dtype = dtype
+
+
+class FakeNumpy:
+    float32 = "float32"
+
+    @staticmethod
+    def asarray(values, dtype):
+        return FakeSamples(values, dtype)
+
+    @staticmethod
+    def isfinite(_samples):
+        return type("FiniteValues", (), {"all": staticmethod(lambda: True)})()
+
+
 class TokenReferenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tokenizer = FakeTokenizer({}, {})
-        self.prompt_tokens = reference.load_prompt_tokens(self.tokenizer)
+        self.prompt_tokens = reference.load_prompt_tokens(self.tokenizer, "ja")
 
     def test_prompt_ids_and_audio_offset_are_exact(self) -> None:
         self.assertEqual(
@@ -144,31 +180,52 @@ class TokenReferenceTests(unittest.TestCase):
         self.assertEqual(custom.audio_offset, len(custom.head))
         self.assertEqual(reference.build_prompt_ids(1, custom), [4, 5, 6, 8])
 
+    def test_japanese_language_prompt_uses_pinned_token_ids(self) -> None:
+        tokenizer = FakeTokenizer({}, {})
+        prompt_tokens = reference.load_prompt_tokens(tokenizer, "Japanese")
+        self.assertEqual(
+            prompt_tokens.tail,
+            (151670, 151645, 198, 151644, 77091, 198, 11528, 10769, 151704),
+        )
+        self.assertIn(("language Japanese", False), tokenizer.encode_calls)
+
+    def test_invalid_language_tag_is_rejected(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "unsupported language tag"):
+            reference.load_prompt_tokens(self.tokenizer, "japanese")
+
     def test_missing_special_token_is_rejected(self) -> None:
         with self.assertRaisesRegex(reference.ReferenceError, "<\\|audio_end\\|>"):
-            reference.load_prompt_tokens(FakeTokenizer({"<|audio_end|>": None}, {}))
+            reference.load_prompt_tokens(FakeTokenizer({"<|audio_end|>": None}, {}), "ja")
 
     def test_changed_special_token_id_is_rejected_with_expected_and_actual(self) -> None:
         with self.assertRaisesRegex(reference.ReferenceError, "prompt head mismatch") as raised:
-            reference.load_prompt_tokens(FakeTokenizer({"<|audio_start|>": 151668}, {}))
+            reference.load_prompt_tokens(FakeTokenizer({"<|audio_start|>": 151668}, {}), "ja")
         self.assertIn("expected", str(raised.exception))
         self.assertIn("151668", str(raised.exception))
 
     def test_changed_plain_tokenization_is_rejected(self) -> None:
         with self.assertRaisesRegex(reference.ReferenceError, "prompt head mismatch") as raised:
-            reference.load_prompt_tokens(FakeTokenizer({}, {"system": (42,)}))
+            reference.load_prompt_tokens(FakeTokenizer({}, {"system": (42,)}), "ja")
         self.assertIn("8948", str(raised.exception))
         self.assertIn("42", str(raised.exception))
 
     def test_changed_language_ja_encoding_is_rejected_with_expected_and_actual(self) -> None:
         with self.assertRaisesRegex(reference.ReferenceError, "prompt tail mismatch") as raised:
-            reference.load_prompt_tokens(FakeTokenizer({}, {"language ja": (11528, 42)}))
+            reference.load_prompt_tokens(FakeTokenizer({}, {"language ja": (11528, 42)}), "ja")
         self.assertIn("11937", str(raised.exception))
+        self.assertIn("42", str(raised.exception))
+
+    def test_changed_language_japanese_encoding_is_rejected_with_expected_and_actual(self) -> None:
+        with self.assertRaisesRegex(reference.ReferenceError, "prompt tail mismatch") as raised:
+            reference.load_prompt_tokens(
+                FakeTokenizer({}, {"language Japanese": (11528, 42)}), "Japanese"
+            )
+        self.assertIn("10769", str(raised.exception))
         self.assertIn("42", str(raised.exception))
 
     def test_changed_endoftext_id_is_rejected(self) -> None:
         with self.assertRaisesRegex(reference.ReferenceError, "stop token IDs mismatch") as raised:
-            reference.load_prompt_tokens(FakeTokenizer({"<|endoftext|>": 151642}, {}))
+            reference.load_prompt_tokens(FakeTokenizer({"<|endoftext|>": 151642}, {}), "ja")
         self.assertIn("151643", str(raised.exception))
         self.assertIn("151642", str(raised.exception))
 
@@ -330,13 +387,211 @@ class TokenReferenceTests(unittest.TestCase):
             [-1.0, -1.0 / 32_768, 0.0, 1.0 / 32_768, 32_767.0 / 32_768],
         )
 
-    def test_fixed_voicevox_wavs_match_hashes_and_sample_counts(self) -> None:
-        for clip_id, filename, sample_count, expected_sha256 in reference.EXPECTED_CLIPS:
-            with self.subTest(clip_id=clip_id):
-                wav_data = (reference.AUDIO_DIRECTORY / filename).read_bytes()
+    def test_bundled_voicevox_clips_load_from_explicit_manifest(self) -> None:
+        fixture_directory = (
+            reference.REPOSITORY_ROOT
+            / "app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources"
+        )
+        historical_clips = (
+            ("short", "qwen3_asr_voicevox_short.wav", 52_907,
+             "2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9"),
+            ("long", "qwen3_asr_voicevox_long.wav", 295_424,
+             "d50f7f2a1fe9665279689e53297772aeb52c43d9068c82ab21b21fa62cac78b2"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            audio_directory = Path(directory)
+            manifest_clips = []
+            for clip_id, filename, sample_count, expected_sha256 in historical_clips:
+                wav_data = (fixture_directory / filename).read_bytes()
                 self.assertEqual(hashlib.sha256(wav_data).hexdigest(), expected_sha256)
-                pcm_bytes = reference.parse_pcm16_wav(wav_data, sample_count, clip_id)
-                self.assertEqual(len(reference.normalize_pcm16_samples(pcm_bytes)), sample_count)
+                (audio_directory / filename).write_bytes(wav_data)
+                manifest_clips.append(manifest_clip(clip_id, filename, wav_data, sample_count))
+            manifest_path = write_audio_manifest(
+                audio_directory / "historical-clips.json", manifest_clips
+            )
+            resolved_directory, clips = reference.load_audio_manifest(manifest_path)
+            self.assertEqual([clip[0] for clip in clips], ["short", "long"])
+            for clip in clips:
+                samples, digest, sample_count = reference.load_clip_samples(
+                    resolved_directory, clip, FakeNumpy
+                )
+                self.assertEqual(samples.shape, (clip[2],))
+                self.assertEqual(digest, clip[3])
+                self.assertEqual(sample_count, clip[2])
+
+    def test_audio_manifest_rejects_duplicate_ids_and_files(self) -> None:
+        wav_data = make_wav((1, 2), channels=1, sample_rate=reference.SAMPLE_RATE)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "clip.wav").write_bytes(wav_data)
+            valid = manifest_clip("first", "clip.wav", wav_data, 2)
+            cases = (
+                ([valid, {**valid, "file": "second.wav"}], "duplicate clip id"),
+                ([valid, {**valid, "id": "second"}], "duplicate clip file"),
+            )
+            for index, (clips, message) in enumerate(cases):
+                with self.subTest(message=message):
+                    path = write_audio_manifest(root / f"duplicate-{index}.json", clips)
+                    with self.assertRaisesRegex(reference.ReferenceError, message):
+                        reference.load_audio_manifest(path)
+
+    def test_audio_manifest_rejects_path_traversal_and_invalid_counts_or_hashes(self) -> None:
+        wav_data = make_wav((1, 2), channels=1, sample_rate=reference.SAMPLE_RATE)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "clip.wav").write_bytes(wav_data)
+            valid = manifest_clip("clip", "clip.wav", wav_data, 2)
+            cases = (
+                ({**valid, "file": "../clip.wav"}, "non-basename"),
+                ({**valid, "file": "nested/clip.wav"}, "non-basename"),
+                ({**valid, "file": r"..\\clip.wav"}, "non-basename"),
+                ({**valid, "sample_count": 0}, "positive integer"),
+                ({**valid, "sample_count": -1}, "positive integer"),
+                ({**valid, "sample_count": True}, "positive integer"),
+                ({**valid, "sha256": "a" * 63}, "invalid SHA-256"),
+                ({**valid, "sha256": "A" * 64}, "invalid SHA-256"),
+            )
+            for index, (clip, message) in enumerate(cases):
+                with self.subTest(clip=clip):
+                    path = write_audio_manifest(root / f"invalid-{index}.json", [clip])
+                    with self.assertRaisesRegex(reference.ReferenceError, message):
+                        reference.load_audio_manifest(path)
+
+    def test_audio_manifest_requires_exact_schema_and_nonempty_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid_documents = (
+                ({"schema_version": 2, "clips": [{}]}, "schema_version"),
+                ({"schema_version": 1, "clips": [], "extra": True}, "exactly"),
+                ({"schema_version": 1, "clips": []}, "nonempty"),
+            )
+            for index, (document, message) in enumerate(invalid_documents):
+                path = root / f"schema-{index}.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.subTest(document=document):
+                    with self.assertRaisesRegex(reference.ReferenceError, message):
+                        reference.load_audio_manifest(path)
+
+    def test_audio_manifest_files_are_checked_by_existing_wav_loader(self) -> None:
+        stereo_wav = make_wav((1, 2), channels=2, sample_rate=reference.SAMPLE_RATE)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "stereo.wav").write_bytes(stereo_wav)
+            manifest = write_audio_manifest(
+                root / "clips.json", [manifest_clip("stereo", "stereo.wav", stereo_wav, 2)]
+            )
+            resolved_directory, clips = reference.load_audio_manifest(manifest)
+            with self.assertRaisesRegex(reference.ReferenceError, "mono PCM16"):
+                reference.load_clip_samples(resolved_directory, clips[0], FakeNumpy)
+
+    def test_model_metadata_selects_both_hidden_sizes(self) -> None:
+        for model_size, hidden_size in (("0.6b", 1024), ("1.7b", 2048)):
+            with self.subTest(model_size=model_size):
+                model = reference.load_model_metadata(reference.MANIFEST_PATH, model_size)
+                self.assertEqual(model["hiddenSize"], hidden_size)
+
+    def test_cli_requires_model_manifest_and_language_arguments(self) -> None:
+        arguments = [
+            "generator",
+            "--model-directory", "/model",
+            "--output", "/output.json",
+            "--model-size", "1.7b",
+            "--audio-manifest", "/clips.json",
+            "--language-tag", "ja",
+        ]
+        required_options = ("--model-size", "--audio-manifest", "--language-tag")
+        for option in required_options:
+            reduced = list(arguments)
+            option_index = reduced.index(option)
+            del reduced[option_index : option_index + 2]
+            with self.subTest(missing=option), mock.patch.object(reference.sys, "argv", reduced):
+                with mock.patch("sys.stderr", new_callable=io.StringIO):
+                    with mock.patch.object(reference, "generate_reference") as generate_reference:
+                        with self.assertRaises(SystemExit) as raised:
+                            reference.main()
+                self.assertEqual(raised.exception.code, 2)
+                generate_reference.assert_not_called()
+
+    def test_cli_forwards_all_arguments_for_both_language_tags(self) -> None:
+        cases = (("0.6b", "ja"), ("1.7b", "Japanese"))
+        for model_size, language_tag in cases:
+            arguments = [
+                "generator",
+                "--model-directory", "/model",
+                "--output", "/output.json",
+                "--model-size", model_size,
+                "--audio-manifest", "/clips.json",
+                "--language-tag", language_tag,
+            ]
+            with self.subTest(language_tag=language_tag), mock.patch.object(
+                reference.sys, "argv", arguments
+            ), mock.patch.object(reference, "generate_reference") as generate_reference:
+                self.assertEqual(reference.main(), 0)
+            generate_reference.assert_called_once_with(
+                Path("/model"),
+                Path("/output.json"),
+                model_size,
+                Path("/clips.json"),
+                language_tag,
+            )
+
+    def test_cli_rejects_invalid_language_tag_before_generation(self) -> None:
+        arguments = [
+            "generator",
+            "--model-directory", "/model",
+            "--output", "/output.json",
+            "--model-size", "0.6b",
+            "--audio-manifest", "/clips.json",
+            "--language-tag", "japanese",
+        ]
+        with mock.patch.object(reference.sys, "argv", arguments), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ), mock.patch.object(reference, "generate_reference") as generate_reference:
+            with self.assertRaises(SystemExit) as raised:
+                reference.main()
+        self.assertEqual(raised.exception.code, 2)
+        generate_reference.assert_not_called()
+
+    def test_cli_rejects_invalid_model_size_before_generation(self) -> None:
+        arguments = [
+            "generator",
+            "--model-directory", "/model",
+            "--output", "/output.json",
+            "--model-size", "6b",
+            "--audio-manifest", "/clips.json",
+            "--language-tag", "ja",
+        ]
+        with mock.patch.object(reference.sys, "argv", arguments), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ), mock.patch.object(reference, "generate_reference") as generate_reference:
+            with self.assertRaises(SystemExit) as raised:
+                reference.main()
+        self.assertEqual(raised.exception.code, 2)
+        generate_reference.assert_not_called()
+
+    def test_cli_returns_one_when_reference_generation_fails(self) -> None:
+        arguments = [
+            "generator",
+            "--model-directory", "/model",
+            "--output", "/output.json",
+            "--model-size", "1.7b",
+            "--audio-manifest", "/clips.json",
+            "--language-tag", "Japanese",
+        ]
+        with mock.patch.object(reference.sys, "argv", arguments), mock.patch(
+            "sys.stderr", new_callable=io.StringIO
+        ) as stderr, mock.patch.object(
+            reference, "generate_reference", side_effect=reference.ReferenceError("failed")
+        ) as generate_reference:
+            self.assertEqual(reference.main(), 1)
+        generate_reference.assert_called_once_with(
+            Path("/model"),
+            Path("/output.json"),
+            "1.7b",
+            Path("/clips.json"),
+            "Japanese",
+        )
+        self.assertIn("error: failed", stderr.getvalue())
 
     def test_invalid_wav_format_and_incomplete_pcm_are_rejected(self) -> None:
         stereo_wav = make_wav((1, 2), channels=2, sample_rate=reference.SAMPLE_RATE)

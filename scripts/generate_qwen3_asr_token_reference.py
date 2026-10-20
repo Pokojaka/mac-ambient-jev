@@ -15,7 +15,7 @@ import sys
 import tempfile
 import wave
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
 
@@ -24,21 +24,12 @@ MANIFEST_PATH = (
     REPOSITORY_ROOT
     / "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json"
 )
-AUDIO_DIRECTORY = (
-    REPOSITORY_ROOT
-    / "app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources"
-)
-MODEL_SIZE = "0.6b"
 SAMPLE_RATE = 16_000
 HOP_LENGTH = 160
 MEL_FEATURES = 128
-HIDDEN_SIZE = 1024
 MAX_NEW_TOKENS = 448
 NO_REPEAT_THRESHOLD_SAMPLES = 15 * SAMPLE_RATE
-EXPECTED_CLIPS = (
-    ("short", "qwen3_asr_voicevox_short.wav", 52_907, "2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9"),
-    ("long", "qwen3_asr_voicevox_long.wav", 295_424, "d50f7f2a1fe9665279689e53297772aeb52c43d9068c82ab21b21fa62cac78b2"),
-)
+MODEL_HIDDEN_SIZES = {"0.6b": 1024, "1.7b": 2048}
 REQUIRED_PACKAGES = {
     "numpy": "2.2.6",
     "transformers": "4.57.1",
@@ -46,6 +37,7 @@ REQUIRED_PACKAGES = {
     "onnxruntime": "1.31.0",
 }
 SOURCE_URLS = [
+    "https://raw.githubusercontent.com/QwenLM/Qwen3-ASR/main/qwen_asr/inference/qwen3_asr.py",
     "https://raw.githubusercontent.com/huggingface/transformers/v4.57.1/src/transformers/models/whisper/feature_extraction_whisper.py",
     "https://github.com/microsoft/onnxruntime/releases/tag/v1.31.0",
     "https://onnxruntime.ai/docs/api/python/api_summary.html",
@@ -70,7 +62,9 @@ class PromptTokens:
         return len(self.head)
 
 
-def load_prompt_tokens(tokenizer: Any) -> PromptTokens:
+def load_prompt_tokens(tokenizer: Any, language_tag: str) -> PromptTokens:
+    if language_tag not in ("ja", "Japanese"):
+        raise ReferenceError(f"unsupported language tag: {language_tag!r}")
     special_tokens = (
         "<|im_start|>",
         "<|im_end|>",
@@ -90,8 +84,9 @@ def load_prompt_tokens(tokenizer: Any) -> PromptTokens:
             raise ReferenceError(f"tokenizer is missing required token {token!r}")
         token_ids[token] = token_id
 
+    language_text = f"language {language_tag}"
     plain_tokens: dict[str, tuple[int, ...]] = {}
-    for text in ("system", "user", "assistant", "\n", "language ja"):
+    for text in ("system", "user", "assistant", "\n", language_text):
         try:
             plain_tokens[text] = tuple(tokenizer.encode(text, add_special_tokens=False).ids)
         except Exception as error:
@@ -115,7 +110,7 @@ def load_prompt_tokens(tokenizer: Any) -> PromptTokens:
         token_ids["<|im_start|>"],
         *plain_tokens["assistant"],
         *plain_tokens["\n"],
-        *plain_tokens["language ja"],
+        *plain_tokens[language_text],
         token_ids["<asr_text>"],
     )
     prompt_tokens = PromptTokens(
@@ -131,7 +126,20 @@ def load_prompt_tokens(tokenizer: Any) -> PromptTokens:
         raise ReferenceError(
             f"prompt head mismatch: expected {expected_head!r}, got {prompt_tokens.head!r}"
         )
-    expected_tail = (151670, 151645, 198, 151644, 77091, 198, 11528, 11937, 151704)
+    expected_language_ids = {
+        "ja": (11528, 11937),
+        "Japanese": (11528, 10769),
+    }[language_tag]
+    expected_tail = (
+        151670,
+        151645,
+        198,
+        151644,
+        77091,
+        198,
+        *expected_language_ids,
+        151704,
+    )
     if prompt_tokens.tail != expected_tail:
         raise ReferenceError(
             f"prompt tail mismatch: expected {expected_tail!r}, got {prompt_tokens.tail!r}"
@@ -309,27 +317,35 @@ def validate_output_path(output_path: Path) -> Path:
     return resolved
 
 
-def load_model_metadata(manifest_path: Path) -> dict[str, Any]:
+def load_model_metadata(manifest_path: Path, model_size: str) -> dict[str, Any]:
+    if model_size not in MODEL_HIDDEN_SIZES:
+        raise ReferenceError(f"unsupported model size: {model_size!r}")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ReferenceError(f"could not read model manifest {manifest_path}: {error}") from error
-    model = manifest.get(MODEL_SIZE) if isinstance(manifest, dict) else None
+    model = manifest.get(model_size) if isinstance(manifest, dict) else None
     if not isinstance(model, dict):
-        raise ReferenceError(f"model manifest has no {MODEL_SIZE!r} entry")
+        raise ReferenceError(f"model manifest has no {model_size!r} entry")
+    hidden_size = model.get("hiddenSize")
+    if type(hidden_size) is not int or hidden_size != MODEL_HIDDEN_SIZES[model_size]:
+        raise ReferenceError(
+            f"{model_size} model manifest hiddenSize must be {MODEL_HIDDEN_SIZES[model_size]}, "
+            f"got {hidden_size!r}"
+        )
     repository = model.get("repository")
     commit = model.get("commit")
     files = model.get("files")
     if not isinstance(repository, str) or not repository:
-        raise ReferenceError("0.6b model manifest has an invalid repository")
+        raise ReferenceError(f"{model_size} model manifest has an invalid repository")
     if not isinstance(commit, str) or not commit:
-        raise ReferenceError("0.6b model manifest has an invalid commit")
+        raise ReferenceError(f"{model_size} model manifest has an invalid commit")
     if not isinstance(files, list) or len(files) != 6:
-        raise ReferenceError("0.6b model manifest must list exactly six files")
+        raise ReferenceError(f"{model_size} model manifest must list exactly six files")
     names: set[str] = set()
     for entry in files:
         if not isinstance(entry, dict):
-            raise ReferenceError("0.6b model manifest contains an invalid file entry")
+            raise ReferenceError(f"{model_size} model manifest contains an invalid file entry")
         name = entry.get("name")
         byte_count = entry.get("byteCount")
         sha256 = entry.get("sha256")
@@ -337,10 +353,13 @@ def load_model_metadata(manifest_path: Path) -> dict[str, Any]:
             not isinstance(name, str)
             or not name
             or Path(name).name != name
+            or PureWindowsPath(name).name != name
             or name in (".", "..")
             or name in names
         ):
-            raise ReferenceError(f"0.6b model manifest contains an invalid or duplicate file name: {name!r}")
+            raise ReferenceError(
+                f"{model_size} model manifest contains an invalid or duplicate file name: {name!r}"
+            )
         if type(byte_count) is not int or byte_count < 0:
             raise ReferenceError(f"invalid expected byte count for model file {name}")
         if not isinstance(sha256, str) or len(sha256) != 64 or any(
@@ -349,6 +368,77 @@ def load_model_metadata(manifest_path: Path) -> dict[str, Any]:
             raise ReferenceError(f"invalid expected SHA-256 for model file {name}")
         names.add(name)
     return model
+
+
+def load_audio_manifest(
+    manifest_path: Path,
+) -> tuple[Path, list[tuple[str, str, int, str]]]:
+    if not manifest_path.is_absolute():
+        raise ReferenceError(f"audio manifest path must be absolute: {manifest_path}")
+    if manifest_path.suffix.lower() != ".json":
+        raise ReferenceError(f"audio manifest path must name a JSON file: {manifest_path}")
+    try:
+        resolved_path = manifest_path.resolve(strict=True)
+        if not resolved_path.is_file():
+            raise ReferenceError(f"audio manifest is not a regular file: {resolved_path}")
+        manifest = json.loads(resolved_path.read_text(encoding="utf-8"))
+    except ReferenceError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ReferenceError(f"could not read audio manifest {manifest_path}: {error}") from error
+    if not isinstance(manifest, dict) or set(manifest) != {"schema_version", "clips"}:
+        raise ReferenceError("audio manifest must contain exactly schema_version and clips")
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+        raise ReferenceError("audio manifest schema_version must be 1")
+    clips_data = manifest["clips"]
+    if not isinstance(clips_data, list) or not clips_data:
+        raise ReferenceError("audio manifest clips must be a nonempty array")
+
+    expected_clip_keys = {"id", "file", "sample_count", "sha256"}
+    clip_ids: set[str] = set()
+    filenames: set[str] = set()
+    clips: list[tuple[str, str, int, str]] = []
+    for index, clip in enumerate(clips_data):
+        if not isinstance(clip, dict) or set(clip) != expected_clip_keys:
+            raise ReferenceError(
+                f"audio manifest clip {index} must contain exactly id, file, sample_count, and sha256"
+            )
+        clip_id = clip["id"]
+        filename = clip["file"]
+        sample_count = clip["sample_count"]
+        sha256 = clip["sha256"]
+        if not isinstance(clip_id, str) or not clip_id.strip() or clip_id in clip_ids:
+            raise ReferenceError(f"audio manifest contains an empty or duplicate clip id: {clip_id!r}")
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or filename in (".", "..")
+            or "/" in filename
+            or "\\" in filename
+            or "\x00" in filename
+            or Path(filename).is_absolute()
+            or PureWindowsPath(filename).is_absolute()
+            or PureWindowsPath(filename).drive
+            or filename in filenames
+        ):
+            raise ReferenceError(
+                f"audio manifest contains a non-basename or duplicate clip file: {filename!r}"
+            )
+        if type(sample_count) is not int or sample_count <= 0:
+            raise ReferenceError(
+                f"audio manifest clip {clip_id!r} sample_count must be a positive integer"
+            )
+        if not isinstance(sha256, str) or len(sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in sha256
+        ):
+            raise ReferenceError(f"audio manifest clip {clip_id!r} has an invalid SHA-256")
+        clip_path = resolved_path.parent / filename
+        if clip_path.is_symlink() or not clip_path.is_file():
+            raise ReferenceError(f"audio manifest clip file is missing or not regular: {clip_path}")
+        clip_ids.add(clip_id)
+        filenames.add(filename)
+        clips.append((clip_id, filename, sample_count, sha256))
+    return resolved_path.parent, clips
 
 
 def sha256_file(path: Path) -> str:
@@ -537,6 +627,7 @@ def extract_audio_features(
     encoder_session: Any,
     samples: Any,
     sample_count: int,
+    hidden_size: int,
 ) -> Any:
     expected_frame_count = sample_count // HOP_LENGTH
     try:
@@ -561,11 +652,11 @@ def extract_audio_features(
         audio_features.ndim != 3
         or audio_features.shape[0] != 1
         or audio_features.shape[1] <= 0
-        or audio_features.shape[2] != HIDDEN_SIZE
+        or audio_features.shape[2] != hidden_size
         or audio_features.dtype != numpy_module.float32
     ):
         raise ReferenceError(
-            "encoder audio_features must be float32[1,N,1024] with N > 0, "
+            f"encoder audio_features must be float32[1,N,{hidden_size}] with N > 0, "
             f"got shape={audio_features.shape}, dtype={audio_features.dtype}"
         )
     if not numpy_module.isfinite(audio_features).all():
@@ -582,6 +673,7 @@ def infer_clip(
     decoder_step_session: Any,
     audio_features: Any,
     sample_count: int,
+    hidden_size: int,
 ) -> dict[str, Any]:
     audio_token_count = int(audio_features.shape[1])
     prompt_ids = build_prompt_ids(audio_token_count, prompt_tokens)
@@ -614,7 +706,7 @@ def infer_clip(
         input_embeds = (
             embed_tokens[last_token_id]
             .astype(numpy_module.float32)
-            .reshape(1, 1, HIDDEN_SIZE)
+            .reshape(1, 1, hidden_size)
         )
         step_position_ids = numpy_module.asarray([[position]], dtype=numpy_module.int64)
         previous_cache_length = cache_keys.shape[3]
@@ -668,11 +760,19 @@ def infer_clip(
     }
 
 
-def generate_reference(model_directory: Path, output_path: Path) -> Path:
+def generate_reference(
+    model_directory: Path,
+    output_path: Path,
+    model_size: str,
+    audio_manifest: Path,
+    language_tag: str,
+) -> Path:
     resolved_model_directory = validate_model_directory(model_directory)
     resolved_output_path = validate_output_path(output_path)
+    model = load_model_metadata(MANIFEST_PATH, model_size)
+    audio_directory, audio_clips = load_audio_manifest(audio_manifest)
+    hidden_size = model["hiddenSize"]
     packages = validate_environment()
-    model = load_model_metadata(MANIFEST_PATH)
     verified_model_files = validate_model_files(resolved_model_directory, model)
 
     try:
@@ -688,12 +788,12 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
     except Exception as error:
         raise ReferenceError(f"could not load tokenizer {tokenizer_path}: {error}") from error
-    prompt_tokens = load_prompt_tokens(tokenizer)
+    prompt_tokens = load_prompt_tokens(tokenizer, language_tag)
     platform_metadata = reference_platform()
 
     clip_inputs: list[tuple[tuple[str, str, int, str], Any, str]] = []
-    for clip in EXPECTED_CLIPS:
-        samples, wav_sha256, sample_count = load_clip_samples(AUDIO_DIRECTORY, clip, np)
+    for clip in audio_clips:
+        samples, wav_sha256, sample_count = load_clip_samples(audio_directory, clip, np)
         clip_inputs.append((clip, samples, wav_sha256))
 
     try:
@@ -715,7 +815,7 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
             resolved_model_directory / "embed_tokens.bin",
             dtype="<f2",
             mode="r",
-            shape=(151_936, 1024),
+            shape=(151_936, hidden_size),
         )
     except (OSError, ValueError) as error:
         raise ReferenceError(f"could not memory-map embed_tokens.bin: {error}") from error
@@ -724,7 +824,7 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
     for clip, samples, wav_sha256 in clip_inputs:
         clip_id, filename, sample_count, _expected_sha256 = clip
         audio_features = extract_audio_features(
-            np, extractor, encoder_session, samples, sample_count
+            np, extractor, encoder_session, samples, sample_count, hidden_size
         )
         result = infer_clip(
             np,
@@ -735,6 +835,7 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
             decoder_step_session,
             audio_features,
             sample_count,
+            hidden_size,
         )
         clips.append(
             {
@@ -755,7 +856,8 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
     fixture = {
         "schema_version": 1,
         "model": {
-            "size": MODEL_SIZE,
+            "size": model_size,
+            "hidden_size": hidden_size,
             "repository": model["repository"],
             "commit": model["commit"],
             "files": verified_model_files,
@@ -766,6 +868,7 @@ def generate_reference(model_directory: Path, output_path: Path) -> Path:
                 "encoder/decoder sessions and tokenizers.Tokenizer.decode"
             ),
             "source_urls": SOURCE_URLS,
+            "language_tag": language_tag,
             "python": sys.version.split()[0],
             "packages": packages,
             "platform": platform_metadata["platform"],
@@ -814,9 +917,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-directory", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--model-size", required=True, choices=tuple(MODEL_HIDDEN_SIZES))
+    parser.add_argument("--audio-manifest", required=True, type=Path)
+    parser.add_argument("--language-tag", required=True, choices=("ja", "Japanese"))
     arguments = parser.parse_args()
     try:
-        generate_reference(arguments.model_directory, arguments.output)
+        generate_reference(
+            arguments.model_directory,
+            arguments.output,
+            arguments.model_size,
+            arguments.audio_manifest,
+            arguments.language_tag,
+        )
     except ReferenceError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
