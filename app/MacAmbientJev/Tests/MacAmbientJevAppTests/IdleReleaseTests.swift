@@ -55,15 +55,7 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
 }
 
 @MainActor
-private func waitUntil(_ condition: @MainActor () async -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(10)
-    while await !condition(), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(20))
-    }
-}
-
-@MainActor
-@Test("the app releases the models when the processing queue drains with nothing recording")
+@Test("the app releases the models when the processing queue drains with nothing recording", .timeLimit(.minutes(1)))
 func releasesWhenQueueDrains() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -74,11 +66,16 @@ func releasesWhenQueueDrains() async throws {
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
     // The session does not exist, so the finalization fails; the queue still drains.
+    let maintenance = try #require(state.startupMaintenanceTask, "Startup maintenance task was not started")
+    await maintenance.value
     state.enqueueProcessing(.finalize(
         sessionID: UUID(),
         metadataPolicy: .reject
     ))
-    try await waitUntil { await asr.unloadCount == 1 }
+    let processing = try #require(state.processingTask)
+    await processing.value
+    await state.modelPreparationTask?.value
+    await state.idleReleaseTask?.value
 
     #expect(await asr.unloadCount == 1)
     #expect(state.modelPreparation == .idle)
@@ -141,7 +138,8 @@ func reloadAfterRelease() async throws {
     #expect(state.modelPreparation == .idle)
 
     state.prepareASRModel()
-    try await waitUntil { state.modelPreparation == .ready }
+    let preparation = try #require(state.modelPreparationTask)
+    await preparation.value
     #expect(await asr.loadCount == 2)
     #expect(state.modelPreparation == .ready)
 }

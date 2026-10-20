@@ -226,6 +226,7 @@ final class AppState: ObservableObject {
     var isMaintainingStorage = false
     var modelPreparationTask: Task<Void, Never>?
     var idleReleaseTask: Task<Void, Never>?
+    var startupMaintenanceTask: Task<Void, Never>?
     var terminationObserver: TerminationObservation?
 
     var liveVADSession: (any LiveVADProcessing)?
@@ -287,7 +288,7 @@ final class AppState: ObservableObject {
 
         if !pausesProcessing {
             isMaintainingStorage = true
-            Task { [weak self] in
+            startupMaintenanceTask = Task { [weak self] in
                 await self?.recoverPendingSessions()
             }
         }
