@@ -218,6 +218,18 @@ func japaneseNumeralDisplayNeverMatchesAPhraseInsideALongerNumeralRun() {
 }
 
 @Test
+func japaneseNumeralDisplayNeverJoinsRunsAcrossRemovedText() {
+    // 二えー三 shown as 二三 once the filler is removed.
+    #expect(JapaneseNumeralDisplayConverter.convert("二三です", removalJoins: [1]) == "二三です")
+    #expect(JapaneseNumeralDisplayConverter.convert("二点三です", removalJoins: [1]) == "二点三です")
+    #expect(JapaneseNumeralDisplayConverter.convert("二点三です", removalJoins: [2]) == "二点三です")
+    // A join next to a non-numeral keeps the usual neighbour rules on the shown text.
+    #expect(JapaneseNumeralDisplayConverter.convert("二つと三つ", removalJoins: [2]) == "2つと3つ")
+    #expect(JapaneseNumeralDisplayConverter.convert("二人", removalJoins: [1]) == "二人")
+    #expect(JapaneseNumeralDisplayConverter.convert("𠮟二と三", removalJoins: [2, 4, 5]) == "𠮟二と3")
+}
+
+@Test
 func japaneseNumeralDisplayProtectsBothRunsOfFractionExpressions() {
     let unchanged = [
         "三分の一", "十二分の五", "二分の一の確率", "十十分の一",
@@ -244,8 +256,8 @@ func japaneseNumeralDisplayPreservesOtherScalarsAndEmptyInput() {
 
 @discardableResult
 private func expectJapaneseNumeralDisplay(_ input: String, _ expected: String) -> String {
-    let converted = JapaneseNumeralDisplayConverter.convert(input)
+    let converted = JapaneseNumeralDisplayConverter.convert(input, removalJoins: [])
     #expect(converted == expected)
-    #expect(JapaneseNumeralDisplayConverter.convert(converted) == converted)
+    #expect(JapaneseNumeralDisplayConverter.convert(converted, removalJoins: []) == converted)
     return converted
 }

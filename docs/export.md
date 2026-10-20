@@ -4,7 +4,7 @@
 
 画面、コピー、アクセシビリティ、`transcript.txt`、キャプチャ CLI の `transcriptText`、CLI `segments.json` の `display_text` は、同じ `MaterializedTranscriptSegment.displayText` を使う。画面と `transcript.txt` は表示本文が空、または空白・改行だけの発話だけを除き、非空白の認識済み発話をすべて含める。
 
-表示本文は保存済みフィラー・相槌範囲と LOW slice の除去後、表示専用で有効な漢数字 run を ASCII 算用数字に保守的に整形する。run の隣接文字に漢字（`々` を含む）、ASCII／全角数字、`.`／`．` があれば変換せず、`run点run` は小数として変換し（`二十八点四` → `28.4`）、`run分のrun` は分数として両方の漢数字を保持する。固定語句は全文一致した句中の数字だけを保持し、部分一致では除外しない。ASR 原文・イベント、`textProjection`、raw UTF-16 範囲、モデル入力・発話文判定への入力は変更しない。詳細は[発話文判定](decision-engine.md#優先度の採用と表示)を参照。
+表示本文は保存済みフィラー・相槌範囲と LOW slice の除去後、表示専用で有効な漢数字 run を ASCII 算用数字に保守的に整形する。run の隣接文字に漢字（`々` を含む）、ASCII／全角数字、`.`／`．` があれば変換せず、`run点run` は小数として変換し（`二十八点四` → `28.4`）、`run分のrun` は分数として両方の漢数字を保持する。除去した範囲の両側の漢数字はつなげず、どちらも変換しない。固定語句は全文一致した句中の数字だけを保持し、部分一致では除外しない。ASR 原文・イベント、`textProjection`、raw UTF-16 範囲、モデル入力・発話文判定への入力は変更しない。詳細は[発話文判定](decision-engine.md#優先度の採用と表示)を参照。
 
 フィラー・相槌除去には、active event log の保存済み `clause_boundaries.assessed.filler_ranges` だけを使う。保存フィールド `filler_ranges` は `{start,end}` object の配列で、フィラー（F）と相槌（B）を表示本文から除く raw UTF-16 範囲を表す。範囲は同じ ASR 原文に対する境界判定の source-only window の span head から作る。各 token の `span_probs` は `O=0, F=1, D=2, B=3` の argmax で label を決め、同点なら添字の小さい label を選ぶ。token span が重なる scalar は後の token の label で上書きし、どの token span にも含まれない scalar は O とする。原文の各 Character は構成するすべての scalar が F または B（F/B 混在も可）の場合だけ除去し、ひとつでも O または D の scalar があれば Character 全体を保持する。隣接して除去する Character は raw UTF-16 範囲に結合する。F・B除去範囲の直後に連続して接する句読点だけを併せて除き、空白は変更・正規化しない。対象 source の境界 assessment が未保存、pending、または失敗している場合は、フィラー・相槌除去範囲を適用しない。未判定・保留・失敗の priority slice も除去しないが、表示専用の漢数字から算用数字への整形は適用する。materialization 時にモデル推論は行わない。保存イベントに記録された LOW priority slice は、F・B除去範囲を適用した後に別途表示本文から除く。
 

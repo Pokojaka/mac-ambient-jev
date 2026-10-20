@@ -130,6 +130,37 @@ func materializerFormatsNumeralsAfterFillerAndLowPriorityRemoval() throws {
 }
 
 @Test
+func numeralsOnBothSidesOfRemovedTextAreNotReadAsOneNumber() throws {
+    let filler = try MaterializedTranscriptSegment.fixture(
+        segmentID: "filler", startMilliseconds: 0, endMilliseconds: 1_000, text: "二えー三です。",
+        fillerRanges: [try TextUTF16Range(start: 1, end: 3)],
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [try prioritySlice("c1_0", 0, 7, .primary)]
+    )
+    #expect(filler.displayText == "二三です。")
+
+    let lowPriority = try MaterializedTranscriptSegment.fixture(
+        segmentID: "low", startMilliseconds: 0, endMilliseconds: 1_000, text: "二はい三です。",
+        fillerRanges: [],
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [
+            try prioritySlice("c1_0", 0, 1, .primary),
+            try prioritySlice("c1_1", 1, 3, .lowPriority),
+            try prioritySlice("c1_2", 3, 7, .primary)
+        ]
+    )
+    #expect(lowPriority.displayText == "二三です。")
+
+    let separated = try MaterializedTranscriptSegment.fixture(
+        segmentID: "separated", startMilliseconds: 0, endMilliseconds: 1_000, text: "二つえーと三つ",
+        fillerRanges: [try TextUTF16Range(start: 2, end: 5)],
+        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseSlices: [try prioritySlice("c1_0", 0, 7, .primary)]
+    )
+    #expect(separated.displayText == "2つ3つ")
+}
+
+@Test
 func rowWhoseEverySentenceIsLowPriorityIsNotShown() throws {
     let lowOnly = try MaterializedTranscriptSegment.fixture(
         segmentID: "low", startMilliseconds: 0, endMilliseconds: 1_000, text: "はい。うん。",

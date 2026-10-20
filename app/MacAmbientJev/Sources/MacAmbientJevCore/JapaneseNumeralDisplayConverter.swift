@@ -2,9 +2,15 @@
 // descend through 千/百/十; 万 and 億 require explicit nonempty coefficients. Kanji block
 // boundaries follow Unicode 17.0: https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-18/.
 internal enum JapaneseNumeralDisplayConverter {
-    static func convert(_ text: String) -> String {
+    /// `removalJoins` are the UTF-16 offsets in `text` where removed text used to be. A numeral
+    /// run never continues across a join, and runs that a join separates stay unchanged.
+    static func convert(_ text: String, removalJoins: [Int]) -> String {
         let characters = Array(text)
         guard characters.contains(where: isNumeral) else { return text }
+        let joins = joinPositions(removalJoins, in: characters)
+        func continuesRun(at index: Int) -> Bool {
+            index < characters.count && isNumeral(characters[index]) && !joins[index]
+        }
         let protectedPositions = precomputeProtectedPositions(in: characters)
         var output: [Character] = []
         var index = 0
@@ -18,24 +24,27 @@ internal enum JapaneseNumeralDisplayConverter {
 
             let runStart = index
             var runEnd = index + 1
-            while runEnd < characters.count && isNumeral(characters[runEnd]) {
+            while continuesRun(at: runEnd) {
                 runEnd += 1
             }
 
             var candidateEnd = runEnd
             var fractionalRange: Range<Int>?
             if runEnd + 1 < characters.count,
+               !joins[runEnd],
                isDecimalPoint(characters[runEnd]),
-               isNumeral(characters[runEnd + 1]) {
+               continuesRun(at: runEnd + 1) {
                 var fractionalEnd = runEnd + 2
-                while fractionalEnd < characters.count && isNumeral(characters[fractionalEnd]) {
+                while continuesRun(at: fractionalEnd) {
                     fractionalEnd += 1
                 }
                 fractionalRange = (runEnd + 1)..<fractionalEnd
                 candidateEnd = fractionalEnd
             }
 
-            let hasBlockingBoundary = hasBlockingBoundary(
+            let splitByRemoval = (runStart > 0 && joins[runStart] && isNumeral(characters[runStart - 1]))
+                || (candidateEnd < characters.count && joins[candidateEnd] && isNumeral(characters[candidateEnd]))
+            let hasBlockingBoundary = splitByRemoval || hasBlockingBoundary(
                 in: characters,
                 before: runStart,
                 after: candidateEnd
@@ -66,6 +75,25 @@ internal enum JapaneseNumeralDisplayConverter {
         }
 
         return String(output)
+    }
+
+    /// Marks each character that starts right after a join; index `characters.count` is the end.
+    private static func joinPositions(_ offsets: [Int], in characters: [Character]) -> [Bool] {
+        var positions = Array(repeating: false, count: characters.count + 1)
+        var characterStarts: [Int: Int] = [:]
+        var utf16Offset = 0
+        for (index, character) in characters.enumerated() {
+            characterStarts[utf16Offset] = index
+            utf16Offset += character.utf16.count
+        }
+        characterStarts[utf16Offset] = characters.count
+        for offset in offsets {
+            guard let index = characterStarts[offset] else {
+                preconditionFailure("A removal join at UTF-16 offset \(offset) is not a character boundary")
+            }
+            positions[index] = true
+        }
+        return positions
     }
 
     private static let phraseIndex: [Character: [[Character]]] = {

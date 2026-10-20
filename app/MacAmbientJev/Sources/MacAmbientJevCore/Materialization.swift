@@ -234,9 +234,9 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         self.endMilliseconds = endMilliseconds
         self.text = text
         self.textProjection = textProjection
-        self.displayText = JapaneseNumeralDisplayConverter.convert(try Self.displayText(
+        self.displayText = try Self.displayText(
             segmentID: segmentID, source: source, text: text, projection: textProjection, clauseSlices: clauseSlices
-        ))
+        )
         self.speakers = speakers
         self.clauseState = clauseState
         self.clauseSlices = clauseSlices
@@ -286,7 +286,15 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
             if slice.priority == .lowPriority, !slice.needsRetry { removed += ranges }
             cursor = slice.sourceRange.end
         }
-        guard !removed.isEmpty else { return projection.text }
+        // Where removed text used to be, so numerals on both sides are never read as one number.
+        var fillerJoins: [Int] = []
+        for (previous, run) in zip(projection.retainedRuns, projection.retainedRuns.dropFirst())
+        where run.sourceRange.start > previous.sourceRange.end {
+            fillerJoins.append(run.displayRange.start)
+        }
+        guard !removed.isEmpty else {
+            return JapaneseNumeralDisplayConverter.convert(projection.text, removalJoins: fillerJoins)
+        }
         let cleaned = projection.text
         let utf16 = cleaned.utf16
         var kept = ""
@@ -302,7 +310,22 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
             index = utf16.index(keptEnd, offsetBy: range.end - range.start)
             offset = range.end
         }
-        return kept
+        var joins: [Int] = []
+        var removedBefore = 0
+        var pendingFillerJoins = fillerJoins[...]
+        for range in removed {
+            while let join = pendingFillerJoins.first, join < range.start {
+                joins.append(join - removedBefore)
+                pendingFillerJoins.removeFirst()
+            }
+            while let join = pendingFillerJoins.first, join <= range.end {
+                pendingFillerJoins.removeFirst()
+            }
+            joins.append(range.start - removedBefore)
+            removedBefore += range.end - range.start
+        }
+        joins += pendingFillerJoins.map { $0 - removedBefore }
+        return JapaneseNumeralDisplayConverter.convert(kept, removalJoins: joins)
     }
 }
 
