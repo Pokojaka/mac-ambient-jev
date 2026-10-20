@@ -15,70 +15,168 @@ private func scalarRanges(_ text: String) throws -> [TextUTF16Range] {
 @Suite
 struct ClauseTaggerSpanProjectionTests {
     @Test
-    func labelsAreOZeroFOneDTwoAndArgmaxTiesChooseTheFirstIndex() throws {
+    func labelsAreOZeroFOneDTwoBThreeAndTiesChooseTheLowestIndex() throws {
         let ranges = try (0..<4).map { try TextUTF16Range(start: $0, end: $0 + 1) }
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
             sourceText: "abcd",
             tokenRanges: ranges,
             spanProbabilities: [
-                [0.5, 0.5, 0],
-                [0, 0.5, 0.5],
-                [0, 0, 1],
-                [0, 1, 0]
+                [0.5, 0.5, 0, 0],
+                [0, 0.5, 0.5, 0],
+                [0.5, 0, 0, 0.5],
+                [0, 0, 0.5, 0.5]
             ]
         )
 
-        #expect(fillerRanges == [
-            try TextUTF16Range(start: 1, end: 2),
-            try TextUTF16Range(start: 3, end: 4)
-        ])
+        #expect(removalRanges == [try TextUTF16Range(start: 1, end: 2)])
     }
 
     @Test
-    func onlyAdjacentFLabelsCoalesceAndDOStayOutsideFillerRanges() throws {
-        let ranges = try (0..<6).map { try TextUTF16Range(start: $0, end: $0 + 1) }
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: "abcdef",
+    func allFourWayTiesChooseO() throws {
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+            sourceText: "a",
+            tokenRanges: [try TextUTF16Range(start: 0, end: 1)],
+            spanProbabilities: [[0.25, 0.25, 0.25, 0.25]]
+        )
+
+        #expect(removalRanges.isEmpty)
+    }
+
+    @Test
+    func tiesWithinAMixedCharacterKeepTheDAndBScalar() throws {
+        let sourceText = "e\u{301}"
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+            sourceText: sourceText,
+            tokenRanges: try scalarRanges(sourceText),
+            spanProbabilities: [
+                [0, 0.5, 0, 0.5],
+                [0, 0, 0.5, 0.5]
+            ]
+        )
+
+        #expect(removalRanges.isEmpty)
+    }
+
+    @Test
+    func pureBLabelsAreRemoved() throws {
+        let ranges = try (0..<3).map { try TextUTF16Range(start: $0, end: $0 + 1) }
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+            sourceText: "abc",
             tokenRanges: ranges,
             spanProbabilities: [
-                [0, 1, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-                [0, 1, 0],
-                [1, 0, 0],
-                [0, 1, 0]
+                [0, 0, 0, 1],
+                [1, 0, 0, 0],
+                [0, 0, 0, 1]
             ]
         )
 
-        #expect(fillerRanges == [
-            try TextUTF16Range(start: 0, end: 2),
-            try TextUTF16Range(start: 3, end: 4),
-            try TextUTF16Range(start: 5, end: 6)
+        #expect(removalRanges == [
+            try TextUTF16Range(start: 0, end: 1),
+            try TextUTF16Range(start: 2, end: 3)
         ])
     }
 
     @Test
-    func laterOverlappingOAndDLabelsOverwriteFIncludingDuplicateScalarRanges() throws {
-        let firstScalar = try TextUTF16Range(start: 0, end: 1)
-        let secondScalar = try TextUTF16Range(start: 1, end: 2)
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: "ab",
-            tokenRanges: [firstScalar, firstScalar, secondScalar, secondScalar],
+    func alternatingFAndBLabelsCoalesceIntoOneRemovalRange() throws {
+        let ranges = try (0..<4).map { try TextUTF16Range(start: $0, end: $0 + 1) }
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+            sourceText: "abcd",
+            tokenRanges: ranges,
             spanProbabilities: [
-                [0, 1, 0],
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1]
+                [0, 1, 0, 0],
+                [0, 0, 0, 1],
+                [0, 1, 0, 0],
+                [0, 0, 0, 1]
             ]
         )
 
-        #expect(fillerRanges.isEmpty)
+        #expect(removalRanges == [try TextUTF16Range(start: 0, end: 4)])
     }
 
     @Test
-    func supplementaryAndDecomposedScalarsUseEvaluationUTF16Offsets() throws {
+    func mixedFAndBScalarsRemoveDecomposedKanaAndEmojiCharacters() throws {
+        for sourceText in ["e\u{301}", "ｶﾞ", "👍🏻"] {
+            let ranges = try scalarRanges(sourceText)
+            #expect(sourceText.count == 1)
+            #expect(ranges.count == 2)
+
+            let labelOrders: [[[Double]]] = [
+                [[0, 1, 0, 0], [0, 0, 0, 1]],
+                [[0, 0, 0, 1], [0, 1, 0, 0]]
+            ]
+            for spanProbabilities in labelOrders {
+                let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+                    sourceText: sourceText,
+                    tokenRanges: ranges,
+                    spanProbabilities: spanProbabilities
+                )
+
+                #expect(removalRanges == [try TextUTF16Range(start: 0, end: sourceText.utf16.count)])
+            }
+        }
+    }
+
+    @Test
+    func anyORetainedDMixtureWithEitherFOrBKeepsTheWholeCharacterInEitherScalarOrder() throws {
+        let removableRows: [[Double]] = [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ]
+        let retainedRows = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0]
+        ]
+
+        for sourceText in ["e\u{301}", "ｶﾞ", "👍🏻"] {
+            let ranges = try scalarRanges(sourceText)
+            #expect(sourceText.count == 1)
+            #expect(ranges.count == 2)
+
+            for removableRow in removableRows {
+                for retainedRow in retainedRows {
+                    for spanProbabilities in [
+                        [removableRow, retainedRow],
+                        [retainedRow, removableRow]
+                    ] {
+                        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+                            sourceText: sourceText,
+                            tokenRanges: ranges,
+                            spanProbabilities: spanProbabilities
+                        )
+                        #expect(removalRanges.isEmpty)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    func laterOverlappingLabelsOverwriteEarlierLabelsInBothDirections() throws {
+        let scalarRanges = try (0..<4).map { try TextUTF16Range(start: $0, end: $0 + 1) }
+        let tokenRanges = [
+            scalarRanges[0], scalarRanges[0],
+            scalarRanges[1], scalarRanges[1],
+            scalarRanges[2], scalarRanges[2],
+            scalarRanges[3], scalarRanges[3]
+        ]
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
+            sourceText: "abcd",
+            tokenRanges: tokenRanges,
+            spanProbabilities: [
+                [0, 0, 0, 1], [1, 0, 0, 0],
+                [0, 0, 0, 1], [0, 0, 1, 0],
+                [1, 0, 0, 0], [0, 0, 0, 1],
+                [0, 0, 1, 0], [0, 0, 0, 1]
+            ]
+        )
+
+        #expect(removalRanges == [try TextUTF16Range(start: 2, end: 4)])
+    }
+
+    @Test
+    func supplementaryAndDecomposedScalarsUseUTF16Offsets() throws {
         let sourceText = "😀e\u{301}!"
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
             sourceText: sourceText,
             tokenRanges: [
                 try TextUTF16Range(start: 0, end: 2),
@@ -87,164 +185,68 @@ struct ClauseTaggerSpanProjectionTests {
                 try TextUTF16Range(start: 4, end: 5)
             ],
             spanProbabilities: [
-                [0, 1, 0],
-                [0, 1, 0],
-                [0, 1, 0],
-                [1, 0, 0]
+                [0, 0, 0, 1],
+                [0, 1, 0, 0],
+                [0, 0, 0, 1],
+                [1, 0, 0, 0]
             ]
         )
 
-        #expect(fillerRanges == [try TextUTF16Range(start: 0, end: 4)])
-        #expect(String(try fillerRanges[0].substring(in: sourceText)) == "😀e\u{301}")
+        #expect(removalRanges == [try TextUTF16Range(start: 0, end: 4)])
+        #expect(String(try removalRanges[0].substring(in: sourceText)) == "😀e\u{301}")
     }
 
     @Test
-    func everyScalarInAnFillerCharacterMustBeF() throws {
-        let sourceText = "えｶﾞ"
-        let ranges = try scalarRanges(sourceText)
-        #expect(ranges == [
-            try TextUTF16Range(start: 0, end: 1),
-            try TextUTF16Range(start: 1, end: 2),
-            try TextUTF16Range(start: 2, end: 3)
-        ])
-
-        let fillerThenO = try ClauseTaggerSpanProjection.fillerRanges(
+    func uncoveredTextRemainsO() throws {
+        let sourceText = "まあ、"
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
             sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[0, 1, 0], [0, 1, 0], [1, 0, 0]]
-        )
-        #expect(fillerThenO == [try TextUTF16Range(start: 0, end: 1)])
-        let fillerThenOProjection = try TranscriptTextProjector().project(
-            sourceText: sourceText,
-            fillerRanges: fillerThenO
-        )
-        #expect(fillerThenOProjection.text == "ｶﾞ")
-
-        let mixedCluster = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[0, 1, 0], [1, 0, 0], [0, 1, 0]]
-        )
-        #expect(mixedCluster == [try TextUTF16Range(start: 0, end: 1)])
-        let mixedClusterProjection = try TranscriptTextProjector().project(
-            sourceText: sourceText,
-            fillerRanges: mixedCluster
-        )
-        #expect(mixedClusterProjection.text == "ｶﾞ")
-
-        let fillerThenD = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[0, 1, 0], [0, 0, 1], [0, 1, 0]]
-        )
-        #expect(fillerThenD == [try TextUTF16Range(start: 0, end: 1)])
-        let fillerThenDProjection = try TranscriptTextProjector().project(
-            sourceText: sourceText,
-            fillerRanges: fillerThenD
-        )
-        #expect(fillerThenDProjection.text == "ｶﾞ")
-
-        let allF = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[0, 1, 0], [0, 1, 0], [0, 1, 0]]
-        )
-        #expect(allF == [try TextUTF16Range(start: 0, end: 3)])
-    }
-
-    @Test
-    func allScalarsInAnEmojiCharacterMustBeF() throws {
-        let sourceText = "👍🏻"
-        let ranges = try scalarRanges(sourceText)
-        #expect(ranges == [
-            try TextUTF16Range(start: 0, end: 2),
-            try TextUTF16Range(start: 2, end: 4)
-        ])
-
-        let fillerThenO = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[0, 1, 0], [1, 0, 0]]
-        )
-        #expect(fillerThenO.isEmpty)
-        let fillerThenOProjection = try TranscriptTextProjector().project(
-            sourceText: sourceText,
-            fillerRanges: fillerThenO
-        )
-        #expect(fillerThenOProjection.text == sourceText)
-
-        let oThenFiller = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[1, 0, 0], [0, 1, 0]]
-        )
-        #expect(oThenFiller.isEmpty)
-        let oThenFillerProjection = try TranscriptTextProjector().project(
-            sourceText: sourceText,
-            fillerRanges: oThenFiller
-        )
-        #expect(oThenFillerProjection.text == sourceText)
-
-        let allF = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: sourceText,
-            tokenRanges: ranges,
-            spanProbabilities: [[0, 1, 0], [0, 1, 0]]
-        )
-        #expect(allF == [try TextUTF16Range(start: 0, end: 4)])
-        let allFProjection = try TranscriptTextProjector().project(
-            sourceText: sourceText,
-            fillerRanges: allF
-        )
-        #expect(allFProjection.text.isEmpty)
-    }
-
-    @Test
-    func uncoveredTextAndTrailingPunctuationRemainO() throws {
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
-            sourceText: "まあ、",
             tokenRanges: [
                 try TextUTF16Range(start: 0, end: 1),
                 try TextUTF16Range(start: 1, end: 2)
             ],
-            spanProbabilities: [[0, 1, 0], [0, 1, 0]]
+            spanProbabilities: [
+                [0, 1, 0, 0],
+                [0, 0, 0, 1]
+            ]
         )
 
-        #expect(fillerRanges == [try TextUTF16Range(start: 0, end: 2)])
-        #expect(String(try fillerRanges[0].substring(in: "まあ、")) == "まあ")
+        #expect(removalRanges == [try TextUTF16Range(start: 0, end: 2)])
+        #expect(String(try removalRanges[0].substring(in: sourceText)) == "まあ")
     }
 
     @Test
-    func fillerProjectionKeepsTheLiteralTargetAndDRepair() throws {
+    func removalProjectionKeepsTheLiteralTargetAndDRepair() throws {
         let sourceText = "まあ、あの、今日は損失関数の話をします。"
         let sourceRanges = try scalarRanges(sourceText)
         let spanProbabilities = sourceRanges.indices.map { index in
-            index < 6 ? [0.0, 1.0, 0.0] : [1.0, 0.0, 0.0]
+            index < 6 ? [0.0, 1.0, 0.0, 0.0] : [1.0, 0.0, 0.0, 0.0]
         }
-        let fillerRanges = try ClauseTaggerSpanProjection.fillerRanges(
+        let removalRanges = try ClauseTaggerSpanProjection.removalRanges(
             sourceText: sourceText,
             tokenRanges: sourceRanges,
             spanProbabilities: spanProbabilities
         )
 
-        #expect(fillerRanges == [try TextUTF16Range(start: 0, end: 6)])
-        let projected = try TranscriptTextProjector().project(sourceText: sourceText, fillerRanges: fillerRanges)
+        #expect(removalRanges == [try TextUTF16Range(start: 0, end: 6)])
+        let projected = try TranscriptTextProjector().project(sourceText: sourceText, fillerRanges: removalRanges)
         #expect(projected.text == "今日は損失関数の話をします。")
 
         let repairText = "今日は今日は損失関数の話をします。"
         let repairRanges = try scalarRanges(repairText)
         let repairProbabilities = repairRanges.indices.map { index in
-            index < 3 ? [0.0, 0.0, 1.0] : [1.0, 0.0, 0.0]
+            index < 3 ? [0.0, 0.0, 1.0, 0.0] : [1.0, 0.0, 0.0, 0.0]
         }
-        let repairFillers = try ClauseTaggerSpanProjection.fillerRanges(
+        let repairRemovalRanges = try ClauseTaggerSpanProjection.removalRanges(
             sourceText: repairText,
             tokenRanges: repairRanges,
             spanProbabilities: repairProbabilities
         )
 
-        #expect(repairFillers.isEmpty)
+        #expect(repairRemovalRanges.isEmpty)
         let repairProjected = try TranscriptTextProjector().project(
             sourceText: repairText,
-            fillerRanges: repairFillers
+            fillerRanges: repairRemovalRanges
         )
         #expect(repairProjected.text == "今日は今日は損失関数の話をします。")
     }
@@ -253,59 +255,59 @@ struct ClauseTaggerSpanProjectionTests {
     func invalidPredictionShapeProbabilitiesAndRangesFail() throws {
         let validRange = try TextUTF16Range(start: 0, end: 1)
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [validRange],
                 spanProbabilities: []
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [validRange],
                 spanProbabilities: [[1, 0]]
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [validRange],
-                spanProbabilities: [[0.4, 0.4, 0.0]]
+                spanProbabilities: [[0.4, 0.4, 0, 0]]
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [validRange],
-                spanProbabilities: [[1.1, -0.1, 0.0]]
+                spanProbabilities: [[1.1, -0.1, 0, 0]]
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [validRange],
-                spanProbabilities: [[.nan, 0, 1]]
+                spanProbabilities: [[.nan, 0, 1, 0]]
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [try TextUTF16Range(start: 0, end: 0)],
-                spanProbabilities: [[1, 0, 0]]
+                spanProbabilities: [[1, 0, 0, 0]]
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "😀",
                 tokenRanges: [try TextUTF16Range(start: 1, end: 2)],
-                spanProbabilities: [[1, 0, 0]]
+                spanProbabilities: [[1, 0, 0, 0]]
             )
         }
         #expect(throws: ClauseTaggerSpanProjectionError.invalidPrediction) {
-            try ClauseTaggerSpanProjection.fillerRanges(
+            try ClauseTaggerSpanProjection.removalRanges(
                 sourceText: "a",
                 tokenRanges: [try TextUTF16Range(start: 0, end: 2)],
-                spanProbabilities: [[1, 0, 0]]
+                spanProbabilities: [[1, 0, 0, 0]]
             )
         }
     }
