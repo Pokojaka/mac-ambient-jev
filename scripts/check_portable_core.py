@@ -77,6 +77,7 @@ def main() -> int:
         default=[
             "app/MacAmbientJev/Sources/MacAmbientJevCore",
             "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+            "app/MacAmbientJev/Sources/MacAmbientJevONNX",
         ],
     )
     args = parser.parse_args()
@@ -84,7 +85,7 @@ def main() -> int:
     missing_roots = [root for root in roots if not root.is_dir()]
     if missing_roots:
         for root in missing_roots:
-            print(f"portable core/pipeline directory not found: {root}", file=sys.stderr)
+            print(f"portable Core/Pipeline/ONNX directory not found: {root}", file=sys.stderr)
         return 2
 
     violations = [violation for root in roots for violation in scan(root)]
@@ -93,7 +94,7 @@ def main() -> int:
             print(f"{path}: forbidden or unguarded platform import: {module}", file=sys.stderr)
         return 1
 
-    print(f"Portable Core / Pipeline import check passed ({', '.join(args.roots)})")
+    print(f"Portable Core / Pipeline / ONNX import check passed ({', '.join(args.roots)})")
     return 0
 
 

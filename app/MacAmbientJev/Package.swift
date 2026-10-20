@@ -1,5 +1,8 @@
 // swift-tools-version: 6.0
 import PackageDescription
+#if os(Linux) || os(Windows)
+import Foundation
+#endif
 
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
@@ -91,6 +94,103 @@ targets.append(.testTarget(
     name: "MacAmbientJevWindowsSupportTests",
     dependencies: ["MacAmbientJevWindowsSupport", "MacAmbientJevCore", "CMiniaudio"],
     resources: [.copy("Resources")]
+))
+#endif
+
+#if os(Linux) || os(Windows)
+let onnxRuntimeVersion = "1.31.0"
+let onnxRuntimePlatform: String
+#if os(Linux)
+#if arch(x86_64)
+onnxRuntimePlatform = "linux-x64"
+#elseif arch(arm64)
+onnxRuntimePlatform = "linux-aarch64"
+#else
+fatalError("ONNX Runtime \(onnxRuntimeVersion) は Linux x86_64 / arm64 のみ対応します。")
+#endif
+#elseif os(Windows)
+#if arch(x86_64)
+onnxRuntimePlatform = "win-x64"
+#elseif arch(arm64)
+onnxRuntimePlatform = "win-arm64"
+#else
+fatalError("ONNX Runtime \(onnxRuntimeVersion) は Windows x86_64 / arm64 のみ対応します。")
+#endif
+#endif
+
+let repositoryRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+let onnxRuntimeRoot = repositoryRoot
+    .appendingPathComponent(".build", isDirectory: true)
+    .appendingPathComponent("onnxruntime", isDirectory: true)
+    .appendingPathComponent(onnxRuntimeVersion, isDirectory: true)
+    .appendingPathComponent("onnxruntime-\(onnxRuntimePlatform)-\(onnxRuntimeVersion)", isDirectory: true)
+let onnxRuntimeIncludeDirectory = onnxRuntimeRoot.appendingPathComponent("include", isDirectory: true)
+let onnxRuntimeHeader = onnxRuntimeIncludeDirectory.appendingPathComponent("onnxruntime_c_api.h")
+let onnxRuntimeLibraryDirectory = onnxRuntimeRoot.appendingPathComponent("lib", isDirectory: true)
+#if os(Windows)
+let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime.lib")
+let requiredONNXRuntimeFiles = [
+    onnxRuntimeHeader,
+    onnxRuntimeLibrary,
+    onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime.dll")
+]
+#else
+let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so.\(onnxRuntimeVersion)")
+let requiredONNXRuntimeFiles = [
+    onnxRuntimeHeader,
+    onnxRuntimeLibrary,
+    onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so.1")
+]
+#endif
+let missingONNXRuntimeFiles = requiredONNXRuntimeFiles
+    .filter { !FileManager.default.fileExists(atPath: $0.path) }
+    .map { $0.path }
+if !missingONNXRuntimeFiles.isEmpty {
+    #if os(Windows)
+    let fetchCommand = "python scripts/fetch_onnxruntime.py"
+    #else
+    let fetchCommand = "python3 scripts/fetch_onnxruntime.py"
+    #endif
+    fatalError(
+        "ONNX Runtime \(onnxRuntimeVersion) の必須ファイルがありません: \(missingONNXRuntimeFiles.joined(separator: ", "))。"
+            + "リポジトリルートで `\(fetchCommand)` を実行してください。"
+    )
+}
+
+#if os(Windows)
+let onnxRuntimeLinkerFlags = [onnxRuntimeLibrary.path]
+#else
+let onnxRuntimeLinkerFlags = [
+    onnxRuntimeLibrary.path,
+    "-Xlinker",
+    "-rpath",
+    "-Xlinker",
+    onnxRuntimeLibraryDirectory.path
+]
+#endif
+
+// The systemLibrary has no cSettings, so pass the include directory to each Swift importer.
+let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
+    .unsafeFlags(["-Xcc", "-I\(onnxRuntimeIncludeDirectory.path)"])
+]
+
+products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
+targets.append(.systemLibrary(name: "CONNXRuntime"))
+targets.append(.target(
+    name: "MacAmbientJevONNX",
+    dependencies: ["CONNXRuntime"],
+    // A local pinned SDK cannot use SwiftPM's binaryTarget format on Linux or Windows.
+    swiftSettings: onnxRuntimeIncludeSwiftSettings,
+    linkerSettings: [.unsafeFlags(onnxRuntimeLinkerFlags)]
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevONNXTests",
+    dependencies: ["MacAmbientJevONNX"],
+    resources: [.copy("Resources")],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
 #endif
 
