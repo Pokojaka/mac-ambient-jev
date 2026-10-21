@@ -114,7 +114,7 @@ enum Community1Profile {
     /// Portable eigensolver and generalized-eigen residual tolerance, a design-only policy rather than a FluidAudio constant; graph boundary `PLDATransform.swift:149-159`, `candidate-sol/design.md:102`.
     static let pldaEigenRelativeTolerance: Double = 1e-12
 
-    /// Community AHC cut threshold; FluidAudio `OfflineDiarizerTypes.swift:120-126,155-163`.
+    /// Community AHC cut threshold; FluidAudio `OfflineDiarizerTypes.swift:120-126,155-163`, with Euclidean cut and subtree traversal in `AHCClustering.swift:107-120,150-188`.
     static let ahcThreshold: Double = 0.6
 
     /// VBx initialization smoothing; FluidAudio passes 7.0 at `VBxClustering.swift:120-133`.

@@ -10,7 +10,27 @@ Used for local voice activity detection and speaker diarization. Preserve the up
 
 `app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime` と `MacAmbientJevPipeline` の `VADStreamingStateMachine` は、FluidAudio 0.15.8 の `Sources/FluidAudio/VAD/VadManager+Streaming.swift`（`streamingStateMachine`、Apache-2.0）の発話開始・終了判定をポートしたものです。アプリが使う経路（開始閾値 0.50、終了閾値 = 開始閾値 − 0.15、最短無音 0.75 秒、speech padding 0）だけを残し、FluidAudio の型と Core ML には依存しません。`VADChunkScoring` の chunk 集約（8 frame の noisy-OR と部分 chunk の最後の sample 反復）は、FluidAudio の Core ML model `silero-vad-unified-256ms-v6.2.1` と `VadManager.swift` の `processChunk` の動作に合わせています。
 
+`app/MacAmbientJev/Sources/MacAmbientJevDiarization` は、FluidAudio 0.15.8 の offline 話者分離（`Sources/FluidAudio/Diarizer/Offline/`、Apache-2.0）の reconstruction、Hungarian assignment、centroid、VBx、PLDA、mask 選択の計算をポートしたものです。Core ML と FluidAudio の型には依存しません。
+
 FluidAudio 0.15.8 は Apache License, Version 2.0 です（<https://www.apache.org/licenses/LICENSE-2.0>）。ライセンス全文は <https://github.com/FluidInference/FluidAudio/blob/v0.15.8/LICENSE> にあります。上流の LICENSE は著作権者名を記載していません。
+
+## fastcluster
+
+FluidAudio 0.15.8 は `Sources/FastClusterWrapper/fastcluster_internal.hpp` に fastcluster を同梱しています。`app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1AHC.swift` は、その `binary_min_heap` と `generic_linkage_vector_alternative` を Swift にポートしたもので、ソース先頭に、FluidAudio 0.15.8 の `ThirdPartyLicenses/fastcluster-LICENSE.md` と同じ次の BSD 2-Clause License 表記を保持しています。
+
+```text
+Copyright:
+  * Until package version 1.1.23: © 2011 Daniel Müllner <https://danifold.net>
+  * All changes from version 1.1.24 on: © Google Inc. <https://www.google.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## speech-swift
 

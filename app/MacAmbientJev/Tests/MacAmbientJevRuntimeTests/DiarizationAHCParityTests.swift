@@ -15,6 +15,7 @@ private enum AHCParityLabelAssertion {
     case exact([Int])
     case atLeastTwoClusters
     case centroidInversion
+    case oracleOnly
 }
 
 private struct AHCParityInversion {
@@ -47,12 +48,23 @@ extension DiarizationParityFixtureTests {
         let angularChain = angularChainInput()
         let thresholdPairs = try thresholdPairsInput()
         let centroidInversion = try centroidInversionInput()
-        let inputs = [separated, angularChain, thresholdPairs, centroidInversion]
+        let addedInputs = try [
+            singletonInput(),
+            twoMergeInput(),
+            twoNoMergeInput(),
+            allMergeInput(),
+            noMergeInput(),
+            tiedNeighborsInput(),
+            tiedDuplicatesInput(),
+            realistic256DInput(),
+        ]
+        let stressInputs = try stressAHCInputs()
+        let inputs = [separated, angularChain, thresholdPairs, centroidInversion] + addedInputs + stressInputs
+        try #require(inputs.count == 36, "AHC parity fixture must contain 36 cases")
 
-        try validateUnitVectors(separated.vectors)
-        try validateUnitVectors(angularChain.vectors)
-        try validateUnitVectors(thresholdPairs.vectors)
-        try validateUnitVectors(centroidInversion.vectors)
+        for input in inputs {
+            try validateUnitVectors(input.vectors)
+        }
 
         let adjacentChainDistances = try zip(angularChain.vectors, angularChain.vectors.dropFirst())
             .map { try euclideanDistance($0.0, $0.1) }
@@ -103,6 +115,15 @@ extension DiarizationParityFixtureTests {
                     labels == [0, 0, 0],
                     "FluidAudio AHC must merge the centroid-inversion witness into one cluster; refusing to write a non-discriminating fixture"
                 )
+            case .oracleOnly:
+                var firstSeenLabels: [Int] = []
+                for label in labels where !firstSeenLabels.contains(label) {
+                    firstSeenLabels.append(label)
+                }
+                try #require(
+                    firstSeenLabels == Array(0..<firstSeenLabels.count),
+                    "FluidAudio AHC labels must be contiguous in first-seen order for \(input.name)"
+                )
             }
 
             let pointCount = input.vectors.count
@@ -142,10 +163,27 @@ extension DiarizationParityFixtureTests {
             fixtureCases.append(fixtureCase)
         }
 
+        let stressFixtureCases = fixtureCases.filter { ($0["name"] as? String)?.hasPrefix("stress-") == true }
+        try #require(stressFixtureCases.count == 24, "AHC stress fixture must contain 24 cases")
+        let stressExpectedLabels = try stressFixtureCases.map { fixtureCase in
+            try #require(
+                fixtureCase["expectedLabels"] as? [Int],
+                "AHC stress fixture expectedLabels must be an integer array"
+            )
+        }
+        try #require(
+            Set(stressExpectedLabels).count >= 2,
+            "AHC stress cases must collectively contain at least two distinct expectedLabels arrays"
+        )
+        try #require(
+            stressExpectedLabels.allSatisfy { Set($0).count >= 2 },
+            "Every AHC stress case must contain at least two distinct labels"
+        )
+
         let fixture: [String: Any] = [
             "metadata": DiarizationParityOracle.metadata(
-                inputConstruction: "Four deterministic cases in fixed order: separated-groups, angular-chain, threshold-pairs, centroid-inversion. All vectors are constructed in Double precision; rows are validated finite, nonzero, dimension-consistent, and unit L2 norm within 1e-12. The randomized case uses SplitMix64 seed 0xC011_0000_0000_0001 and transitions state += 0x9E3779B97F4A7C15, z=(z^(z>>30))*0xBF58476D1CE4E5B9, z=(z^(z>>27))*0x94D049BB133111EB, result=z^(z>>31), with UInt64 wrapping arithmetic; signed uniform is 2*Double(result>>11)/9007199254740992-1. Generation loops are group outer 0..<3, row inner 0..<4, coordinate inner 0..<4, with one-hot group centers plus 0.01 times signed-uniform coordinate jitter, followed by explicit Double L2 normalization. Other cases use analytic unit-circle/unit-sphere constructions, with formulas documented per case.",
-                comparisonRule: "For all cases, expectedLabels are obtained exclusively from FluidAudio AHCClustering().cluster(embeddingFeatures:threshold:) using the validated config.clustering.threshold (0.6); labels compare exactly after FluidAudio's first-seen remapping. Features are float64 tensors [points,dimensions], with their little-endian IEEE-754 bit payload compared byte-for-byte through the canonical generated JSON. The inversion witness is recomputed from stored vector coordinates using Double scalar squares and must agree within 1e-12; monotoneLabels is the exact comparison label vector [0,1,2]. All other fields and metadata compare exactly; no linkage values are exposed or inferred."
+                inputConstruction: "Thirty-six deterministic cases in fixed order: separated-groups, angular-chain, threshold-pairs, centroid-inversion; singleton, two-merge, two-no-merge, all-merge, no-merge, tied-neighbors, tied-duplicates, realistic-256d; stress-00 through stress-23. The original four constructions are unchanged. All rows are validated finite, nonzero, dimension-consistent, and unit L2 norm within 1e-12. The original randomized case uses SplitMix64 seed 0xC011_0000_0000_0001 and group/row/coordinate loop nesting; realistic-256d uses seed 0xC011_0000_0000_0008, with 8 groups outer, 6 rows per group, and 256 coordinates inner, one-hot group centers plus 0.025 times each next signed-uniform draw, then explicit Double L2 normalization. Both use the SplitMix64 transition and signed-uniform mapping documented on the original case. The 24 stress cases share one SplitMix64 stream seeded 0xC011_0000_0000_0010 across all cases in increasing case index; for each of 8 rows, draw angle jitter then elevation jitter, use angle=0.4*(row%4)+0.04*draw and elevation=0.12*draw in [cos(angle)*cos(elevation),sin(angle)*cos(elevation),sin(elevation)], normalize explicitly, and reverse row order for odd case indices. The added analytic cases and randomized formulas are documented in each case's construction.",
+                comparisonRule: "Every expectedLabels vector is obtained exclusively by calling FluidAudio AHCClustering().cluster(embeddingFeatures:threshold:) with the validated config.clustering.threshold (0.6). Exact assertions are used for specified cases; tied-neighbors and stress-00 through stress-23 retain oracle-only labels while requiring matching point count and contiguous first-seen labels. Features are float64 tensors [points,dimensions], with their little-endian IEEE-754 bit payload compared byte-for-byte through the canonical generated JSON. The inversion witness is recomputed from stored vector coordinates using Double scalar squares and must agree within 1e-12; monotoneLabels is the exact comparison label vector [0,1,2]. All other fields and metadata compare exactly; no portable output or inferred linkage values are used."
             ),
             "cases": fixtureCases,
         ]
@@ -251,6 +289,147 @@ private func centroidInversionInput() throws -> AHCParityInput {
         labelAssertion: .centroidInversion,
         inversion: witness
     )
+}
+
+private func singletonInput() -> AHCParityInput {
+    AHCParityInput(
+        name: "singleton",
+        construction: "One analytic 2D unit vector [1,0]; no random draws.",
+        vectors: [[1, 0]],
+        labelAssertion: .exact([0]),
+        inversion: nil
+    )
+}
+
+private func twoMergeInput() -> AHCParityInput {
+    let angles = [0.0, 0.3]
+    return AHCParityInput(
+        name: "two-merge",
+        construction: "Two analytic 2D unit-circle vectors [cos(a),sin(a)] at angles [0,0.3] radians; no random draws.",
+        vectors: angles.map { angle in [cos(angle), sin(angle)] },
+        labelAssertion: .exact([0, 0]),
+        inversion: nil
+    )
+}
+
+private func twoNoMergeInput() -> AHCParityInput {
+    AHCParityInput(
+        name: "two-no-merge",
+        construction: "Two analytic 2D unit vectors [1,0] and [-1,0]; no random draws.",
+        vectors: [[1, 0], [-1, 0]],
+        labelAssertion: .exact([0, 1]),
+        inversion: nil
+    )
+}
+
+private func allMergeInput() -> AHCParityInput {
+    AHCParityInput(
+        name: "all-merge",
+        construction: "Six identical analytic 2D unit vectors [1,0]; no random draws.",
+        vectors: Array(repeating: [1, 0], count: 6),
+        labelAssertion: .exact([0, 0, 0, 0, 0, 0]),
+        inversion: nil
+    )
+}
+
+private func noMergeInput() -> AHCParityInput {
+    AHCParityInput(
+        name: "no-merge",
+        construction: "Four analytic positive one-hot 4D unit vectors, in coordinate order e0,e1,e2,e3; no random draws.",
+        vectors: [
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ],
+        labelAssertion: .exact([0, 1, 2, 3]),
+        inversion: nil
+    )
+}
+
+private func tiedNeighborsInput() -> AHCParityInput {
+    let side = sqrt(0.75)
+    return AHCParityInput(
+        name: "tied-neighbors",
+        construction: "Three analytic 2D unit vectors [sqrt(0.75),0.5], [1,0], [sqrt(0.75),-0.5], in that row order; no random draws. Labels are recorded only from the FluidAudio oracle because tie handling is intentionally not guessed.",
+        vectors: [[side, 0.5], [1, 0], [side, -0.5]],
+        labelAssertion: .oracleOnly,
+        inversion: nil
+    )
+}
+
+private func tiedDuplicatesInput() -> AHCParityInput {
+    AHCParityInput(
+        name: "tied-duplicates",
+        construction: "Four analytic 2D unit vectors [1,0], [0,1], [1,0], [0,1] in that row order; no random draws.",
+        vectors: [[1, 0], [0, 1], [1, 0], [0, 1]],
+        labelAssertion: .exact([0, 1, 0, 1]),
+        inversion: nil
+    )
+}
+
+private func realistic256DInput() throws -> AHCParityInput {
+    var generator = AHCParitySplitMix64(state: 0xC011_0000_0000_0008)
+    var vectors: [[Double]] = []
+    vectors.reserveCapacity(48)
+    for group in 0..<8 {
+        for _ in 0..<6 {
+            var vector: [Double] = []
+            vector.reserveCapacity(256)
+            for coordinate in 0..<256 {
+                let center = coordinate == group ? 1.0 : 0.0
+                vector.append(center + 0.025 * generator.nextSignedUniform())
+            }
+            vectors.append(try l2Normalized(vector, context: "realistic-256d"))
+        }
+    }
+    return AHCParityInput(
+        name: "realistic-256d",
+        construction: "Forty-eight 256D vectors. Seed SplitMix64 state=0xC011_0000_0000_0008; one stream advances for every jitter draw. Loop order is group outer 0..<8, row inner 0..<6, coordinate inner 0..<256. Each coordinate is the positive one-hot group center plus 0.025 times its next signed-uniform draw; normalize each row explicitly in Double precision by its L2 norm.",
+        vectors: vectors,
+        labelAssertion: .exact((0..<8).flatMap { group in Array(repeating: group, count: 6) }),
+        inversion: nil
+    )
+}
+
+private func stressAHCInputs() throws -> [AHCParityInput] {
+    var generator = AHCParitySplitMix64(state: 0xC011_0000_0000_0010)
+    var inputs: [AHCParityInput] = []
+    inputs.reserveCapacity(24)
+    for caseIndex in 0..<24 {
+        var vectors: [[Double]] = []
+        vectors.reserveCapacity(8)
+        for row in 0..<8 {
+            let angleDraw = generator.nextSignedUniform()
+            let elevationDraw = generator.nextSignedUniform()
+            let angle = 0.4 * Double(row % 4) + 0.04 * angleDraw
+            let elevation = 0.12 * elevationDraw
+            let elevationCosine = cos(elevation)
+            let vector = [
+                cos(angle) * elevationCosine,
+                sin(angle) * elevationCosine,
+                sin(elevation),
+            ]
+            vectors.append(try l2Normalized(vector, context: "stress-\(caseIndex)"))
+        }
+        if caseIndex % 2 == 1 {
+            vectors.reverse()
+        }
+        let name = String(format: "stress-%02d", caseIndex)
+        let rowOrderDescription = caseIndex % 2 == 1
+            ? "Stored rows are reversed for this odd case index."
+            : "Stored rows retain generated order for this even case index."
+        inputs.append(
+            AHCParityInput(
+                name: name,
+                construction: "Eight 3D vectors from one SplitMix64 stream seeded 0xC011_0000_0000_0010, shared across all 24 increasing case indices. In each case generate rows 0..<8; for each row draw angle jitter then elevation jitter, angle=0.4*Double(row%4)+0.04*angleDraw and elevation=0.12*elevationDraw, then form [cos(angle)*cos(elevation),sin(angle)*cos(elevation),sin(elevation)] and explicitly normalize in Double precision. \(rowOrderDescription)",
+                vectors: vectors,
+                labelAssertion: .oracleOnly,
+                inversion: nil
+            )
+        )
+    }
+    return inputs
 }
 
 private func l2Normalized(_ vector: [Double], context: String) throws -> [Double] {

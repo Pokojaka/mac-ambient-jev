@@ -370,12 +370,20 @@ import Testing
 
     @Test func ahcFixturesHaveValidStructureAndInversionWitness() throws {
         let fixture = try DiarizationParityFixtures.load("ahc.json", as: DiarizationAHCFixture.self)
-        let expectedNames: Set<String> = [
+        let expectedNames = Set([
             "separated-groups",
             "angular-chain",
             "threshold-pairs",
             "centroid-inversion",
-        ]
+            "singleton",
+            "two-merge",
+            "two-no-merge",
+            "all-merge",
+            "no-merge",
+            "tied-neighbors",
+            "tied-duplicates",
+            "realistic-256d",
+        ]).union((0..<24).map { "stress-\(String(format: "%02d", $0))" })
         #expect(fixture.cases.count == expectedNames.count)
         #expect(Set(fixture.cases.map(\.name)) == expectedNames)
 
