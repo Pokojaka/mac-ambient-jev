@@ -90,6 +90,57 @@ struct DiarizationParityTensor: Decodable {
         return values
     }
 
+    func float64Matrix(nonfinite patches: [DiarizationNonfinitePatch]) throws -> [[Double]] {
+        guard shape.count == 2 else {
+            throw DiarizationParityFixtureError.invalidTensor(
+                field: "shape",
+                reason: "float64 matrix must have exactly two dimensions"
+            )
+        }
+        guard shape[0] > 0, shape[1] > 0 else {
+            throw DiarizationParityFixtureError.invalidTensor(
+                field: "shape",
+                reason: "float64 matrix dimensions must be positive"
+            )
+        }
+
+        var values = try float64()
+        var patchedIndices: Set<Int> = []
+        for patch in patches {
+            guard patch.index >= 0, patch.index < values.count else {
+                throw DiarizationParityFixtureError.invalidTensor(
+                    field: "nonfinite",
+                    reason: "patch index \(patch.index) is outside the flattened matrix"
+                )
+            }
+            guard patchedIndices.insert(patch.index).inserted else {
+                throw DiarizationParityFixtureError.invalidTensor(
+                    field: "nonfinite",
+                    reason: "patch index \(patch.index) is duplicated"
+                )
+            }
+            guard values[patch.index] == 0 else {
+                throw DiarizationParityFixtureError.invalidTensor(
+                    field: "nonfinite",
+                    reason: "patch index \(patch.index) must contain base value 0"
+                )
+            }
+            switch patch.kind {
+            case .nan:
+                values[patch.index] = .nan
+            case .positiveInfinity:
+                values[patch.index] = .infinity
+            case .negativeInfinity:
+                values[patch.index] = -.infinity
+            }
+        }
+
+        let columns = shape[1]
+        return (0..<shape[0]).map { row in
+            Array(values[(row * columns)..<((row + 1) * columns)])
+        }
+    }
+
     private func validatedBytes(expectedDtype: String, bytesPerElement: Int) throws -> Data {
         guard dtype == expectedDtype else {
             throw DiarizationParityFixtureError.invalidTensor(
@@ -195,8 +246,61 @@ struct DiarizationAHCInversion: Decodable {
     let monotoneLabels: [Int]
 }
 
+enum DiarizationNonfiniteKind: String, Decodable {
+    case nan
+    case positiveInfinity
+    case negativeInfinity
+}
+
+struct DiarizationNonfinitePatch: Decodable {
+    let index: Int
+    let kind: DiarizationNonfiniteKind
+}
+
+struct DiarizationAssignmentFixture: Decodable {
+    let metadata: DiarizationParityMetadata
+    let scoreCases: [DiarizationAssignmentScoreCase]
+    let exhaustiveBinary: [DiarizationAssignmentBinaryCase]
+    let centroidCases: [DiarizationAssignmentCentroidCase]
+    let embeddingCases: [DiarizationAssignmentEmbeddingCase]
+}
+
+struct DiarizationAssignmentScoreCase: Decodable {
+    let name: String
+    let construction: String
+    let scores: DiarizationParityTensor
+    let nonfinite: [DiarizationNonfinitePatch]
+    let expectedAssignments: [Int]
+}
+
+struct DiarizationAssignmentBinaryCase: Decodable {
+    let rows: Int
+    let columns: Int
+    let expectedAssignments: [[Int]]
+}
+
+struct DiarizationAssignmentCentroidCase: Decodable {
+    let name: String
+    let construction: String
+    let trainingEmbeddings: DiarizationParityTensor
+    let gamma: DiarizationParityTensor
+    let pi: DiarizationParityTensor
+    let expectedSourceClusterIndices: [Int]
+    let expectedCentroids: DiarizationParityTensor
+}
+
+struct DiarizationAssignmentEmbeddingCase: Decodable {
+    let name: String
+    let construction: String
+    let embeddings: DiarizationParityTensor
+    let nonfinite: [DiarizationNonfinitePatch]
+    let activeSlots: [Int]
+    let centroids: DiarizationParityTensor
+    let expectedAssignments: [Int]
+}
+
 enum DiarizationParityFixtures {
-    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json"]
+    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json"]
 
     static func data(named name: String) throws -> Data {
         guard filenames.contains(name) else {

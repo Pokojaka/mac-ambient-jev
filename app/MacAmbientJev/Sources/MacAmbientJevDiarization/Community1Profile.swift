@@ -135,7 +135,7 @@ enum Community1Profile {
     /// VBx log-prior lower bound; FluidAudio `VBxClustering.swift:497-516`.
     static let logPriorFloor: Double = 1e-8
 
-    /// Active VBx prior cutoff, with activity requiring pi strictly greater than epsilon; FluidAudio `OfflineDiarizerTypes.swift:663-677`.
+    /// Active VBx prior cutoff, with activity requiring pi strictly greater than epsilon; FluidAudio `OfflineDiarizerManager.swift:720-725` and `OfflineDiarizerTypes.swift:663-677`.
     static let activePriorThreshold: Double = 1e-7
 
     /// Hungarian score quantization scale; FluidAudio `HungarianAssignment.swift:78-88`.

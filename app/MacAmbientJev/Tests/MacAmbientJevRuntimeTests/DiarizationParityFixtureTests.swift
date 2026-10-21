@@ -32,7 +32,7 @@ enum DiarizationParityOracleError: Error, CustomStringConvertible {
 enum DiarizationParityOracle {
     static let version = "0.15.8"
     static let revision = "87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc"
-    private static let fixtureNames = ["parameters.json", "reconstruction.json", "ahc.json"]
+    private static let fixtureNames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json"]
     private static let maximumFixtureBytes = 1_048_576
 
     static func config() throws -> OfflineDiarizerConfig {
