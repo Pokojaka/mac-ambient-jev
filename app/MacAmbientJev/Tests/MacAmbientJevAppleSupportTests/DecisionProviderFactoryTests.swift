@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MacAmbientJevCore
+import MacAmbientJevClauseTaggerFixtures
 @testable import MacAmbientJevAppleSupport
 
 private struct UnexpectedLoad: Error {}
@@ -98,16 +99,6 @@ private struct FactoryTestHarness {
         }
         let identifier = String(standardizedRoot.lastPathComponent.dropFirst(namePrefix.count))
         return UUID(uuidString: identifier) != nil
-    }
-}
-
-private struct LocalMetadataFixtureIdentity: Decodable {
-    let modelID: String
-    let modelRevision: String
-
-    enum CodingKeys: String, CodingKey {
-        case modelID = "model_id"
-        case modelRevision = "model_revision"
     }
 }
 
@@ -415,9 +406,8 @@ struct DecisionProviderFactoryTests {
         return URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
     }
 
-    private static func loadModelFixtureIdentity() throws -> LocalMetadataFixtureIdentity {
-        let fixtureURL = try #require(Bundle.module.url(forResource: "ClauseTaggerFixtures", withExtension: "json"))
-        return try JSONDecoder().decode(LocalMetadataFixtureIdentity.self, from: Data(contentsOf: fixtureURL))
+    private static func loadModelFixtureIdentity() throws -> ClauseTaggerFixtureDocument {
+        try ClauseTaggerFixtures.loadOriginal()
     }
 
     private static func isAtOrBelow(_ candidate: URL, root: URL) -> Bool {

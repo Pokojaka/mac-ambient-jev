@@ -3,56 +3,7 @@ import Foundation
 import Testing
 import MacAmbientJevCore
 import MacAmbientJevAppleSupport
-
-private struct ClauseTaggerFixtureDocument: Decodable {
-    let modelID: String
-    let modelRevision: String
-    let trainingStatus: String
-    let tokenizerSHA256: String
-    let unitPolicy: String
-    let encodingRevision: String
-    let clsTokenID: Int
-    let sepTokenID: Int
-    let commaTokenID: Int
-    let fixtures: [ClauseTaggerFixture]
-
-    enum CodingKeys: String, CodingKey {
-        case modelID = "model_id"
-        case modelRevision = "model_revision"
-        case trainingStatus = "training_status"
-        case tokenizerSHA256 = "tokenizer_sha256"
-        case unitPolicy = "unit_policy"
-        case encodingRevision = "encoding_revision"
-        case clsTokenID = "cls_token_id"
-        case sepTokenID = "sep_token_id"
-        case commaTokenID = "comma_token_id"
-        case fixtures
-    }
-}
-
-private struct ClauseTaggerFixture: Decodable {
-    let text: String
-    let inputIDs: [Int]
-    let boundaryProbabilities: [[Double]]
-    let spanProbabilities: [[Double]]
-    let priorityProbabilities: [Double]
-    let candidateTokenIndices: [String: Int]
-    let coreMLMaxAbsDiff: Double
-    let next: String?
-    let junctionIndex: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case text
-        case inputIDs = "input_ids"
-        case boundaryProbabilities = "boundary_probs"
-        case spanProbabilities = "span_probs"
-        case priorityProbabilities = "priority_probs"
-        case candidateTokenIndices = "candidate_token_indices"
-        case coreMLMaxAbsDiff = "coreml_max_abs_diff"
-        case next
-        case junctionIndex = "junction_index"
-    }
-}
+import MacAmbientJevClauseTaggerFixtures
 
 private enum LocalClauseTaggerTestSetupError: LocalizedError {
     case missingModelDirectoryEnvironment
@@ -604,8 +555,7 @@ struct LocalClauseTaggerTests {
     }
 
     private static func loadFixture() throws -> ClauseTaggerFixtureDocument {
-        let resourceURL = try #require(Bundle.module.url(forResource: "ClauseTaggerFixtures", withExtension: "json"))
-        return try JSONDecoder().decode(ClauseTaggerFixtureDocument.self, from: Data(contentsOf: resourceURL))
+        try ClauseTaggerFixtures.loadOriginal()
     }
 
     private static func temporaryDirectoryURL() -> URL {

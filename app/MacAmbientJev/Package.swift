@@ -73,6 +73,11 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevCAFFixtures",
         resources: [.copy("Resources")]
     ),
+    .target(
+        name: "MacAmbientJevClauseTaggerFixtures",
+        path: "Tests/MacAmbientJevClauseTaggerFixtures",
+        resources: [.copy("Resources")]
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
         dependencies: ["MacAmbientJevCore", "MacAmbientJevCAFFixtures"]
@@ -447,9 +452,9 @@ targets += [
             "MacAmbientJevCore",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevPipeline",
-            "MacAmbientJevCAFFixtures"
-        ],
-        resources: [.copy("Resources/ClauseTaggerFixtures.json")]
+            "MacAmbientJevCAFFixtures",
+            "MacAmbientJevClauseTaggerFixtures"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevRuntimeTests",
