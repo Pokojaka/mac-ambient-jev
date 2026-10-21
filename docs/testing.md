@@ -108,7 +108,7 @@ MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TA
 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter ClauseTaggerParityFixtureTests
 ```
 
-Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、この入出力契約を満たす必要があります。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
+Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、この入出力契約を満たす必要があります。ポータブル ONNX の書き出しは次節の repository script で行います。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
 
 [DecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionProviderFactoryTests.swift) は全 platform の CoreTests にある model-free 7件で、fake providers を使い、環境変数・filesystem・モデルなしで実行します。成功・失敗時の single-flight と同時要求での identity/coordinator 共有、同じ failure と load の CancellationError の cache、完全な identity/provenance、identity の lookup/確認だけでは判定 request も usage も発生しないこと、synthetic token accounting、provider cancellation が attempt-only で cache を再利用することを検証します。実 token usage や実モデル推論を測るテストではありません。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。
 
@@ -599,6 +599,28 @@ Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間�
 ### 保存整理のテスト
 
 Runtime の保存整理テストは、確定処理の全結果（成功・発話なし・VAD／話者分離／ASR の失敗・話者分離中のキャンセル・一時停止）と録音・import の組で、話者分離入力 CAF と import の処理タイムラインが残らないこと、開始失敗でも古い一時ファイルが消えること、削除失敗・変換失敗のメッセージ、変換後の再処理が PCM 由来と同じ文字起こしを返し FLAC を変えないこと、失敗した再処理が公開結果と FLAC を保つことを、音声から結果を導く fake engine で確認する。AppleSupport の起動時整理テストは、全セッションの整理が収束し、整理に失敗したセッションをフォルダー名付きで返し、録音中のセッションに触れないことを確認する。App テストは、起動時の保存整理中に、音声がまだ `recordingPCM` の録音の書き出しが、書き出し先へ触れる前に整理中のメッセージで止まることを確認する。
+
+## ポータブル ONNX の書き出しと受入
+
+[export_clause_tagger_onnx.py](../scripts/export_clause_tagger_onnx.py) の純粋な helper（引数・入力 path・出力先の検証、入出力契約、入力 ID、fixture document、license 文、state revision）は [test_export_clause_tagger_onnx.py](../scripts/test_export_clause_tagger_onnx.py) が torch なしで検証します。このテストは portable-core workflow の Linux と Windows で実行します。
+
+```bash
+python3 -B scripts/test_export_clause_tagger_onnx.py
+```
+
+実際の書き出しと受入は、モデルと checkpoint が必要なためリポジトリのルートで手動実行します。重い処理なので、他の重い job と同時に動かさないでください。出力先は存在しない新規ディレクトリで、親ディレクトリは先に作ります。`<models>` は modernbert-ja-30m と multi-30m-bc2 を置いたディレクトリの絶対パスに置き換えます。
+
+```bash
+mkdir -p .build/clause-tagger-onnx-export
+uv run --project tools/clause-tagger-export python scripts/export_clause_tagger_onnx.py \
+  --base-dir <models>/modernbert-ja-30m \
+  --checkpoint <models>/multi-30m-bc2/multitagger.pt \
+  --tokenizer <models>/modernbert-ja-30m/tokenizer.json \
+  --fixture app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerFixtures.json \
+  --output-dir .build/clause-tagger-onnx-export/clause-tagger-onnx
+```
+
+`--tokenizer` には SHA-256 `0a94ac9a...` の tokenizer.json を指定します。multi-30m-bc2 ディレクトリの tokenizer.json は再保存された別 bytes なので使えません。受入検査の内容は [判定](decision-engine.md) の「ポータブル ONNX の書き出し」に従い、失敗した検査と測定値を標準エラーに出して非 0 で終了します。成功時は stdout の最後の行に ClauseTagger.onnx の SHA-256・サイズと head ごとの最大誤差を JSON で出し、全長の誤差は export.json の `parity` に残ります。
 
 ## Linux Python の単体テストと suite
 

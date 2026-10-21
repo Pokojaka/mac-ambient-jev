@@ -54,6 +54,21 @@ ASR gap の後に空の ASR 結果が保存された場合も、そこでテキ�
 3. build_app.sh の tag、asset 名、SHA-256（`shasum -a 256` の値）の3定数を書き換える。
 4. 実モデル parity テストの fixture を新しいモデルで作り直す（[検証と計測](testing.md)）。
 
+## ポータブル ONNX の書き出し
+
+Windows・Linux 向けの ONNX モデルは [export_clause_tagger_onnx.py](../scripts/export_clause_tagger_onnx.py) で書き出します。実行環境は [tools/clause-tagger-export](../tools/clause-tagger-export/pyproject.toml) の uv project（Python 3.12、torch 2.12.0、transformers 5.12.0、onnx 1.21.0、onnxscript 0.7.0、onnxruntime 1.31.0、`uv.lock` で固定）です。引数は `--base-dir`（modernbert-ja-30m）、`--checkpoint`（multitagger.pt。同じディレクトリの config.json も読む）、`--tokenizer`（base model と同じ bytes の tokenizer.json）、`--fixture`（ClauseTaggerFixtures.json）、`--output-dir` の5つで、すべて必須です。出力先は存在しない新規ディレクトリで、上書きしません。script はネットワークを使わず、既定パスも持ちません。
+
+書き出しは `torch.onnx.export` の dynamo exporter、opset 18、batch 1、動的 `seq`（`2...192`）、fp32 で、重みは単一の ClauseTagger.onnx に埋め込みます。入力は `input_ids` int64 `[1,seq]`、出力は `boundary_probs` float32 `[1,seq,2]`、`span_probs` float32 `[1,seq,4]`、`priority_probs` float32 `[1,2]` です。Core ML 変換器と同じ推論 wrapper（`full_attention=None`、`config.sliding_window`（64）を半幅とする `abs(i-j) <= 64` の加算 mask、許可しない位置は `-1e4`）を使います。変換元の Core ML 変換 script（clf/convert.py）の SHA-256 は export.json に記録します。
+
+次の受入検査を一つでも満たさなければ失敗します。
+
+- 二つの独立な CPU fp32 モデルへ checkpoint を strict load し、state revision が `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9`、tokenizer SHA-256 が `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` に一致すること。
+- onnx checker と、入出力名・dtype・shape の完全一致、標準 operator のみ、外部 data・fp16・bf16・fp64 を含まないこと。
+- ORT 1.31.0 CPU の出力を、独立に作った mask の eager PyTorch と比較し、長さ 2〜192 のすべてで tokenizer 由来 ID と seed 固定の乱数 ID の両方、各 head の最大絶対誤差が `1e-3` 以下であること。fixture 13件の literal `input_ids` も保存済み確率と `1e-3` 以下で一致すること。
+- mask を長さ 2・64・65・66・128・192 で Transformers の sliding mask と照合し、mask あり・なしの出力差が長い入力で `1e-3` を超えること（mask が効いている証拠）。
+
+出力ディレクトリは ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt の4ファイルです。export.json は hash、パッケージ version、opset、入出力契約、seed、head ごとの最大誤差、通過した検査を記録し、個人の絶対パスを含みません。LICENSE.txt は modernbert-ja-30m（revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`）の MIT license 全文の前に、base model と license URL を1行で記します。
+
 ## モデルの検証と推論
 
 モデルをロードすると macOS 15 で Core ML に compile し、compute units は CPU only、tensor dtype は float32 です。入力 `input_ids` は int32、形状 `[1,N]`（`2...192`）です。N は入力 token 数と厳密に一致します。モデル出力は `boundary_probs` `[1,N,2]`、`span_probs` `[1,N,4]`、`priority_probs` `[1,2]` の float32 です。各出力の形状・dtype・値は仕様に一致しなければならず、不正な出力は当該 request 全体を失敗させます。`span_probs` は境界要求の F・B 除去範囲投影に使います。
