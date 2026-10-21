@@ -150,6 +150,73 @@ public final class LiveTranscriptionCoordinator {
         state.resetVAD()
     }
 
+    public func finishRecording(
+        sessionID: UUID,
+        failureMessage: String?,
+        processing: SessionProcessingCoordinator,
+        effects: any RecordingFinishEffects
+    ) async {
+        do {
+            let result = try await effects.stopCapture()
+            await stopVADPolling()
+            effects.captureStopped(dropoutCount: result.dropoutCount)
+            let checkpoint = result.checkpoint
+
+            if let writerFailure = result.writerFailure {
+                let message = Self.combinedFailureMessage(
+                    writerFailure, result.systemAudioReleaseFailure
+                ) ?? writerFailure
+                resetVAD()
+                cleanup(sessionID: sessionID)
+                await processor.cancelLiveTranscription(sessionID: sessionID)
+                effects.recordingDidFinish(.failed(message))
+                processing.enqueue(
+                    .finalize(sessionID: sessionID, metadataPolicy: .reject)
+                )
+                effects.refreshSavedSessions()
+                return
+            }
+
+            let stopFailureMessage = Self.combinedFailureMessage(
+                failureMessage, result.systemAudioReleaseFailure
+            )
+            await finishVAD(sessionID: sessionID, checkpoint: checkpoint)
+            effects.recordingDidFinish(
+                .saved(
+                    result: result,
+                    failureMessage: stopFailureMessage,
+                    vadFailureText: state.vadFailureText,
+                    vadSegmentCount: state.vadSegmentCount
+                )
+            )
+
+            if state.vadFailureText == nil {
+                processing.enqueue(
+                    .finishLive(sessionID: sessionID, checkpoint: checkpoint)
+                )
+            } else {
+                cleanup(sessionID: sessionID)
+                await processor.cancelLiveTranscription(sessionID: sessionID)
+                processing.enqueue(
+                    .finalize(sessionID: sessionID, metadataPolicy: .reject)
+                )
+            }
+
+            if failureMessage != nil { effects.refreshSavedSessions() }
+            resetVAD()
+        } catch {
+            await stopVADPolling()
+            resetVAD()
+            cleanup(sessionID: sessionID)
+            await processor.cancelLiveTranscription(sessionID: sessionID)
+            effects.recordingDidFinish(
+                .failed(Self.combinedFailureMessage(failureMessage, error.localizedDescription))
+            )
+            if failureMessage != nil { effects.refreshSavedSessions() }
+            effects.releaseIdleResourcesIfIdle()
+        }
+    }
+
     public func enqueue(
         sessionID: UUID,
         segments: [SegmentReference],
@@ -205,6 +272,16 @@ public final class LiveTranscriptionCoordinator {
         asrTasks.removeValue(forKey: sessionID)
         asrTaskIDs.removeValue(forKey: sessionID)
         state.cleanup(sessionID: sessionID)
+    }
+
+    private static func combinedFailureMessage(
+        _ primary: String?, _ additional: String?
+    ) -> String? {
+        let messages = [primary, additional].compactMap { $0 }.filter { !$0.isEmpty }
+        guard !messages.isEmpty else { return nil }
+        return messages.reduce(into: [String]()) { unique, message in
+            if !unique.contains(message) { unique.append(message) }
+        }.joined(separator: "。")
     }
 
     private var requiredEffects: any LiveTranscriptionEffects {

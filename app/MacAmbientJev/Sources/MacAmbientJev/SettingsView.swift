@@ -2,6 +2,7 @@ import AVFoundation
 import SwiftUI
 import MacAmbientJevCore
 import MacAmbientJevAppleSupport
+import MacAmbientJevPipeline
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
@@ -124,7 +125,12 @@ struct SettingsView: View {
                     Button("保留中の判定を再試行") {
                         isRetryingDeferred = true
                         Task {
-                            await appState.retryDeferredDecisions()
+                            await appState.processingCoordinator.retryDeferredDecisions(
+                                effects: appState,
+                                scan: {
+                                    try SessionRecoveryScanner(sessionsRoot: appState.paths.sessionsRoot).pendingSessions()
+                                }
+                            )
                             isRetryingDeferred = false
                         }
                     }

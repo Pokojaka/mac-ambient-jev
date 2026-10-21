@@ -10,7 +10,7 @@ import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
-extension AppState {
+extension AppState: RecordingFinishEffects {
     func toggleRecording() async {
         switch recordingPhase {
         case .starting:
@@ -187,7 +187,12 @@ extension AppState {
         guard recording.beginStopping(sessionID: sessionID) else { return nil }
         setCaptureStatus(message, tone: .error)
         let task = Task {
-            await finishRecording(sessionID: sessionID, failureMessage: message)
+            await liveCoordinator.finishRecording(
+                sessionID: sessionID,
+                failureMessage: message,
+                processing: processingCoordinator,
+                effects: self
+            )
         }
         failureStopTask = task
         return task
@@ -200,42 +205,41 @@ extension AppState {
         }
 
         setCaptureStatus("録音を保存しています", tone: .neutral)
-        await finishRecording(sessionID: sessionID, failureMessage: nil)
+        await liveCoordinator.finishRecording(
+            sessionID: sessionID,
+            failureMessage: nil,
+            processing: processingCoordinator,
+            effects: self
+        )
     }
 
-    func finishRecording(sessionID: UUID, failureMessage: String?) async {
-        do {
-            let result = try await captureEngine.stop()
-            await stopLiveVADPolling()
-            let checkpoint = result.checkpoint
-            dropoutCount = result.dropoutCount
-            if let writerFailure = result.writerFailure {
-                let message = Self.combinedFailureMessage(
-                    writerFailure, result.systemAudioReleaseFailure
-                ) ?? writerFailure
-                await finishAfterWriterFailure(
-                    sessionID: sessionID, checkpoint: checkpoint, message: message
-                )
-                return
+    func stopCapture() async throws -> AudioCaptureStopResult {
+        try await captureEngine.stop()
+    }
+
+    func captureStopped(dropoutCount: UInt64) {
+        self.dropoutCount = dropoutCount
+    }
+
+    func recordingDidFinish(_ outcome: RecordingFinishOutcome) {
+        recording.finish()
+        endMicInputSession()
+        captureWarningText = nil
+        isMicrophoneSilent = false
+
+        switch outcome {
+        case .failed(let message):
+            if let message {
+                setCaptureStatus(message, tone: .error)
             }
-
-            let stopFailureMessage = Self.combinedFailureMessage(
-                failureMessage, result.systemAudioReleaseFailure
-            )
-
-            await liveCoordinator.finishVAD(sessionID: sessionID, checkpoint: checkpoint)
-
+        case .saved(let result, let failureMessage, let vadFailureText, let vadSegmentCount):
+            let checkpoint = result.checkpoint
             let durationSeconds = checkpoint.sampleRate > 0
                 ? Double(checkpoint.committedFrames) / checkpoint.sampleRate
                 : 0
 
-            recording.finish()
-            endMicInputSession()
-            captureWarningText = nil
-            isMicrophoneSilent = false
-
-            if let stopFailureMessage {
-                setCaptureStatus(stopFailureMessage, tone: .error)
+            if let failureMessage {
+                setCaptureStatus(failureMessage, tone: .error)
             } else if let resultReleaseFailure = result.systemAudioReleaseFailure {
                 setCaptureStatus("録音は保存しましたが、\(resultReleaseFailure)", tone: .warning)
             } else if result.didOverflow {
@@ -243,94 +247,21 @@ extension AppState {
                     "録音は保存しましたが、一部の音声が欠落した可能性があります。",
                     tone: .warning
                 )
-            } else if let liveVADFailureText = liveTranscription.vadFailureText {
+            } else if let vadFailureText {
                 setCaptureStatus(
-                    "録音を保存しました。発話検出を後で再実行します: \(liveVADFailureText)",
+                    "録音を保存しました。発話検出を後で再実行します: \(vadFailureText)",
                     tone: .warning
                 )
             } else {
-                let segmentSuffix = liveTranscription.vadSegmentCount > 0
-                    ? "・発話 \(liveTranscription.vadSegmentCount)区間"
+                let segmentSuffix = vadSegmentCount > 0
+                    ? "・発話 \(vadSegmentCount)区間"
                     : ""
                 setCaptureStatus(
                     "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
                     tone: .neutral
                 )
             }
-
-            if liveTranscription.vadFailureText == nil {
-                enqueueProcessing(
-                    .finishLive(
-                        sessionID: sessionID,
-                        checkpoint: checkpoint
-                    )
-                )
-            } else {
-                cleanupLiveASRState(sessionID: sessionID)
-                await sessionProcessor.cancelLiveTranscription(
-                    sessionID: sessionID
-                )
-                enqueueProcessing(
-                    .finalize(
-                        sessionID: sessionID,
-                        metadataPolicy: .reject
-                    )
-                )
-            }
-
-            if failureMessage != nil { refreshSavedSessions() }
-            liveCoordinator.resetVAD()
-        } catch {
-            await stopLiveVADPolling()
-            liveCoordinator.resetVAD()
-            cleanupLiveASRState(sessionID: sessionID)
-            await sessionProcessor.cancelLiveTranscription(
-                sessionID: sessionID
-            )
-            recording.finish()
-            endMicInputSession()
-            captureWarningText = nil
-            isMicrophoneSilent = false
-            if let stopFailureMessage = Self.combinedFailureMessage(
-                failureMessage, error.localizedDescription
-            ) {
-                setCaptureStatus(stopFailureMessage, tone: .error)
-            }
-            if failureMessage != nil { refreshSavedSessions() }
-            releaseIdleResourcesIfIdle()
         }
-    }
-
-    /// The storage failure stays on screen; the healthy durable prefix is finalized from the
-    /// timeline because live results past that prefix were never saved.
-    private func finishAfterWriterFailure(
-        sessionID: UUID, checkpoint: AudioCheckpoint, message: String
-    ) async {
-        liveCoordinator.resetVAD()
-        cleanupLiveASRState(sessionID: sessionID)
-        await sessionProcessor.cancelLiveTranscription(sessionID: sessionID)
-        recording.finish()
-        endMicInputSession()
-        captureWarningText = nil
-        isMicrophoneSilent = false
-        setCaptureStatus(message, tone: .error)
-        enqueueProcessing(
-            .finalize(
-                sessionID: sessionID,
-                metadataPolicy: .reject
-            )
-        )
-        refreshSavedSessions()
-    }
-
-    private static func combinedFailureMessage(
-        _ primary: String?, _ additional: String?
-    ) -> String? {
-        let messages = [primary, additional].compactMap { $0 }.filter { !$0.isEmpty }
-        guard !messages.isEmpty else { return nil }
-        return messages.reduce(into: [String]()) { unique, message in
-            if !unique.contains(message) { unique.append(message) }
-        }.joined(separator: "。")
     }
 
     func reportMicSpeechMonitoringUnavailable(sessionID: UUID) {

@@ -42,10 +42,6 @@ extension AppState {
         )
     }
 
-    func stopLiveVADPolling() async {
-        await liveCoordinator.stopVADPolling()
-    }
-
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
         { [weak self] text in
             await MainActor.run {

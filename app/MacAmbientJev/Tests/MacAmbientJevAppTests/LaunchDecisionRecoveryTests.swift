@@ -83,12 +83,25 @@ func launchRecoveryLeavesPublishedDecisionPendingsToTheUser() async throws {
     let saved = try await pendingDecisionRecording(paths: paths)
     let launched = pausedState(paths: paths, defaults: defaults)
 
-    await launched.recoverPendingSessions()
+    await launched.processingCoordinator.recoverPendingSessions(
+        effects: launched,
+        scan: {
+            try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+        },
+        maintain: { items, willMaintain in
+            await SessionStorageMaintainer.maintain(items, willMaintain: willMaintain)
+        }
+    )
 
     #expect(launched.processingQueue.pending.isEmpty)
     #expect(launched.processingStatusText == nil)
 
-    await launched.retryDeferredDecisions()
+    await launched.processingCoordinator.retryDeferredDecisions(
+        effects: launched,
+        scan: {
+            try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+        }
+    )
 
     let retry = try #require(queuedRetry(launched))
     #expect(retry.sessionID == saved.sessionID)
@@ -112,7 +125,15 @@ func launchRecoveryFinishesAnUnpublishedDecisionRun() async throws {
     ))
     let launched = pausedState(paths: paths, defaults: defaults)
 
-    await launched.recoverPendingSessions()
+    await launched.processingCoordinator.recoverPendingSessions(
+        effects: launched,
+        scan: {
+            try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+        },
+        maintain: { items, willMaintain in
+            await SessionStorageMaintainer.maintain(items, willMaintain: willMaintain)
+        }
+    )
 
     let retry = try #require(queuedRetry(launched))
     #expect(retry.sessionID == saved.sessionID)
