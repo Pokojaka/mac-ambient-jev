@@ -28,6 +28,9 @@ on:
       - 'scripts/generate_onnx_fixture.py'
       - 'scripts/fetch_silero_vad.py'
       - 'scripts/test_fetch_silero_vad.py'
+      - 'scripts/fetch_community1_diarization.py'
+      - 'scripts/test_fetch_community1_diarization.py'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/**'
       - 'scripts/fetch_qwen3_asr_tokenizer.py'
       - 'scripts/test_fetch_qwen3_asr_tokenizer.py'
       - 'scripts/generate_qwen3_tokenizer_fixture.py'
@@ -67,6 +70,9 @@ on:
       - 'scripts/generate_onnx_fixture.py'
       - 'scripts/fetch_silero_vad.py'
       - 'scripts/test_fetch_silero_vad.py'
+      - 'scripts/fetch_community1_diarization.py'
+      - 'scripts/test_fetch_community1_diarization.py'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/**'
       - 'scripts/fetch_qwen3_asr_tokenizer.py'
       - 'scripts/test_fetch_qwen3_asr_tokenizer.py'
       - 'scripts/generate_qwen3_tokenizer_fixture.py'
@@ -126,6 +132,7 @@ jobs:
           python3 -B scripts/test_portable_core.py
           python3 -B scripts/test_fetch_onnxruntime.py
           python3 -B scripts/test_fetch_silero_vad.py
+          python3 -B scripts/test_fetch_community1_diarization.py
           python3 -B scripts/test_fetch_qwen3_asr_tokenizer.py
           python3 -B scripts/test_pinned_download.py
           python3 -B scripts/test_generate_silero_reference.py

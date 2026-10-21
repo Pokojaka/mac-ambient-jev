@@ -14,7 +14,6 @@ import Testing
         #expect(fixture.pldaSHA256 == "38ee28d4269c076cef254ee760bbd811f0738a92e0f01f9699ad372828c5de8f")
         #expect(fixture.xvectorSHA256 == "f7cd5cc16e63e2d89db052a23018ecfc47a311998ed1e9e39838fbac65048688")
         #expect(fixture.modelWeightsSHA256 == "80f7d229202636d372428c90596f11a91545f07da77259f07153aaf225914a36")
-        #expect(fixture.coordinateSigns.count == 128)
         #expect(fixture.cases.count == 3)
         for item in fixture.cases {
             try #require(item.embeddings.shape.count == 2)
@@ -40,10 +39,11 @@ import Testing
         try #require(referenceProjection.count == 128 * 128)
         try #require(referenceSqrtSpectrum.count == 128)
 
+        let coordinateSigns = try Community1Manifest.bundled().coordinateSigns
         let model = try Community1PLDA(
             pldaData: pldaData,
             xvectorData: xvectorData,
-            coordinateSigns: fixture.coordinateSigns
+            coordinateSigns: coordinateSigns
         )
         #expect(model.phi == widenedJSONPsi)
         #expect(model.phi != model.setupEigenvalues)
@@ -73,7 +73,7 @@ import Testing
                 #expect(abs(row[coordinate] - expected) <= 1e-5)
             }
             let observedSign = row[largestCoordinate] < 0 ? -1 : 1
-            #expect(observedSign == fixture.coordinateSigns[rowIndex])
+            #expect(observedSign == coordinateSigns[rowIndex])
             let computedRoot = Float(sqrt(model.setupEigenvalues[rowIndex]))
             #expect(abs(Double(computedRoot) - Double(referenceSqrtSpectrum[rowIndex])) <= 1e-6)
         }

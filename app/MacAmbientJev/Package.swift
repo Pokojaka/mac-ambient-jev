@@ -39,7 +39,11 @@ coreDependencies.append("CWindowsSession")
 var targets: [Target] = [
     .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
-    .target(name: "MacAmbientJevDiarization", dependencies: ["MacAmbientJevCore"]),
+    .target(
+        name: "MacAmbientJevDiarization",
+        dependencies: ["MacAmbientJevCore"],
+        resources: [.copy("Resources")]
+    ),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
         dependencies: ["MacAmbientJevCore"]
@@ -417,6 +421,7 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime",
+            "MacAmbientJevDiarization",
             "MacAmbientJevVADFixtures",
             .product(name: "FluidAudio", package: "FluidAudio")
         ]

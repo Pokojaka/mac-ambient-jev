@@ -4,6 +4,7 @@ import CryptoKit
 import Foundation
 import Testing
 @testable import FluidAudio
+@testable import MacAmbientJevDiarization
 
 private enum DiarizationPLDAParityError: Error, CustomStringConvertible {
     case invalidModelDirectory(String)
@@ -38,17 +39,20 @@ extension DiarizationParityFixtureTests {
         let weightURL = modelURL.appendingPathComponent("weights/weight.bin", isDirectory: false)
         let modelMILURL = modelURL.appendingPathComponent("model.mil", isDirectory: false)
 
+        let manifest = try Community1Manifest.bundled()
+        let pinnedPLDA = try manifest.file(.plda)
+        let pinnedXVector = try manifest.file(.xvector)
         let pldaJSON = try Data(contentsOf: pldaJSONURL)
         let xvectorJSON = try Data(contentsOf: xvectorJSONURL)
         let pldaSHA256 = sha256Hex(pldaJSON)
         let xvectorSHA256 = sha256Hex(xvectorJSON)
         try #require(
-            pldaSHA256 == "38ee28d4269c076cef254ee760bbd811f0738a92e0f01f9699ad372828c5de8f",
-            "plda-parameters.json SHA-256 must match the pinned FluidInference asset; found \(pldaSHA256)"
+            pldaSHA256 == pinnedPLDA.sha256,
+            "plda-parameters.json SHA-256 must match the manifest pin; found \(pldaSHA256)"
         )
         try #require(
-            xvectorSHA256 == "f7cd5cc16e63e2d89db052a23018ecfc47a311998ed1e9e39838fbac65048688",
-            "xvector-transform.json SHA-256 must match the pinned FluidInference asset; found \(xvectorSHA256)"
+            xvectorSHA256 == pinnedXVector.sha256,
+            "xvector-transform.json SHA-256 must match the manifest pin; found \(xvectorSHA256)"
         )
 
         let pldaAssets = try parsePLDAAssets(pldaJSON)
@@ -85,6 +89,10 @@ extension DiarizationParityFixtureTests {
         try #require(pldaAssets.psi.allSatisfy { $0.isFinite && $0 >= 0 }, "PLDA psi must be finite and nonnegative")
 
         let coordinateSigns = try projectionCoordinateSigns(referenceProjection)
+        try #require(
+            coordinateSigns == manifest.coordinateSigns,
+            "community1_diarization_models.json coordinateSigns must equal the signs derived from PldaRho.mlmodelc"
+        )
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuOnly
         let model = try MLModel(contentsOf: modelURL, configuration: configuration)
@@ -130,13 +138,12 @@ extension DiarizationParityFixtureTests {
         let fixture: [String: Any] = [
             "metadata": DiarizationParityOracle.metadata(
                 inputConstruction: "The oracle loads only the caller-provided PldaRho.mlmodelc using MLModel(contentsOf:configuration:) with .cpuOnly, then runs the pinned FluidAudio 0.15.8 PLDATransform.transform. The input assets are plda-parameters.json and xvector-transform.json from FluidInference revision df2625ac79a7ac6b65ad868fee6d80f320da4232; their SHA-256 values are recorded at the top level. Every stored embedding is the exact Float32 value passed to FluidAudio. normalized-vectors has six deterministic sin/cos plus small-jitter rows normalized after Float32 rounding. first-norm-floor starts from the graph's exact Float32 mean1 and includes it unchanged, coordinate-0 perturbations of both signs at 0.5e-6, 1e-6, and 2e-6, and one all-coordinate 0.5e-6/16 perturbation (all values Float32-rounded). edge-vectors contains zero and positive/negative coordinate unit vectors for axes 0, 1, 63, 127, 128, and 255. Reference projection and sqrt spectrum are decoded from the Core ML BLOBFILE records after their 64-byte headers; graph declarations, shapes, offsets, and JSON parameter correspondence are checked. No alternate or portable inference implementation is used as the oracle.",
-                comparisonRule: "psi is the JSON float32 tensor widened to float64 without transformation; referenceProjection and referenceSqrtSpectrum are exact float32 tensors read from the model's weights. coordinateSigns is sign(row[argmax(abs(row))]) for each reference projection row, scanning left-to-right and replacing a maximum only on strict greater-than so ties retain the lowest coordinate. rho is stored as float64 values widened from the model's float32 output. Portable comparison uses signed per-coordinate absolute error <= 1e-4 with the stored coordinate orientation; sign-invariant comparison is not accepted. The cases exercise the first normalization floor only; they do not claim to exercise the second normalization floor."
+                comparisonRule: "psi is the JSON float32 tensor widened to float64 without transformation; referenceProjection and referenceSqrtSpectrum are exact float32 tensors read from the model's weights. The coordinate orientation signs live only in the community1_diarization_models.json manifest; the oracle check requires them to equal sign(row[argmax(abs(row))]) of each reference projection row, scanning left-to-right and replacing a maximum only on strict greater-than so ties retain the lowest coordinate. rho is stored as float64 values widened from the model's float32 output. Portable comparison uses signed per-coordinate absolute error <= 1e-4 with the stored coordinate orientation; sign-invariant comparison is not accepted. The cases exercise the first normalization floor only; they do not claim to exercise the second normalization floor."
             ),
             "modelRevision": "df2625ac79a7ac6b65ad868fee6d80f320da4232",
             "pldaSHA256": pldaSHA256,
             "xvectorSHA256": xvectorSHA256,
             "modelWeightsSHA256": modelWeightsSHA256,
-            "coordinateSigns": coordinateSigns,
             "psi": try DiarizationParityOracle.tensor(pldaAssets.psi.map(Double.init), shape: [128]),
             "referenceProjection": try DiarizationParityOracle.tensor(referenceProjection, shape: [128, 128]),
             "referenceSqrtSpectrum": try DiarizationParityOracle.tensor(referenceSqrtSpectrum, shape: [128]),

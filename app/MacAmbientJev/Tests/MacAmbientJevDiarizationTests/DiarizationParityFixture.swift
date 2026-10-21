@@ -323,7 +323,6 @@ struct DiarizationPLDAFixture: Decodable {
     let pldaSHA256: String
     let xvectorSHA256: String
     let modelWeightsSHA256: String
-    let coordinateSigns: [Int]
     let psi: DiarizationParityTensor
     let referenceProjection: DiarizationParityTensor
     let referenceSqrtSpectrum: DiarizationParityTensor
@@ -401,11 +400,11 @@ enum DiarizationParityFixtures {
         guard filenames.contains(name) else {
             throw DiarizationParityFixtureError.invalidFilename(name)
         }
-        guard let resourceDirectory = Bundle.module.resourceURL?.appendingPathComponent("Resources", isDirectory: true) else {
-            throw DiarizationParityFixtureError.missingResource(name)
-        }
-        let url = resourceDirectory.appendingPathComponent(name, isDirectory: false)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard let url = Bundle.module.url(
+            forResource: (name as NSString).deletingPathExtension,
+            withExtension: "json",
+            subdirectory: "Resources"
+        ) else {
             throw DiarizationParityFixtureError.missingResource(name)
         }
         guard let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {

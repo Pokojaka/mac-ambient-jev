@@ -42,6 +42,13 @@ Used for the local Qwen3-ASR implementation. The upstream repository identifies 
 
 `scripts/fetch_qwen3_asr_tokenizer.py` は Hugging Face の [`andrewleech/qwen3-asr-1.7b-onnx`](https://huggingface.co/andrewleech/qwen3-asr-1.7b-onnx/tree/df916193ac67e59347769891a21e10d81d12acdd)（commit `df916193ac67e59347769891a21e10d81d12acdd`）から `tokenizer.json`（SHA-256 `bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92`）を取得します。このファイルは Qwen (Alibaba Cloud) の Qwen3-ASR の tokenizer で、Apache License, Version 2.0 です（<https://www.apache.org/licenses/LICENSE-2.0>）。リポジトリには含めず、実行時に取得します。PortableRuntime の `Qwen3ASRTokenDecoder` は、そこから `model.vocab` と `added_tokens` を読んで token id を text に戻します。
 
+## Community-1 話者分離モデル
+
+`scripts/fetch_community1_diarization.py` は、次の4ファイルを固定 revision から取得します。2つの ONNX はこのリポジトリに同梱しません。pin は `app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json` にあります。
+
+- `plda-parameters.json` と `xvector-transform.json`: [FluidInference/speaker-diarization-coreml](https://huggingface.co/FluidInference/speaker-diarization-coreml/tree/df2625ac79a7ac6b65ad868fee6d80f320da4232) の revision `df2625ac79a7ac6b65ad868fee6d80f320da4232`。同 revision の [NOTICE.md](https://huggingface.co/FluidInference/speaker-diarization-coreml/resolve/df2625ac79a7ac6b65ad868fee6d80f320da4232/NOTICE.md) は、同梱の CC-BY-4.0 license text が Community-1 由来のこの2ファイルを含む成果物に適用されると述べています。[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) の条件で、元の Community-1 の attribution（pyannote、WeSpeaker、BUT Speech@FIT、Fluid Inference）を表示します。上流 [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) の表示も同様です。テスト資源 `app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/plda-parameters.json` と `xvector-transform.json` は、これらのファイルを変更せずにコピーしたものです。
+- `segmentation-3.0.onnx` と `wespeaker-multimask-tail.onnx`: [avencera/speakrs-models](https://huggingface.co/avencera/speakrs-models/tree/67f963b6a1d94fcd4678948237b3cc8bd69bf1d8) の revision `67f963b6a1d94fcd4678948237b3cc8bd69bf1d8`。この model card には license 欄がなく、リポジトリにも `LICENSE` ファイルがありません。成果物の license はこのリポジトリでは宣言されていません。README は pyannote Community-1 の segmentation と WeSpeaker からの export / 変換だと説明し、上流 model の利用条件が適用されると注意しています。speakrs crate 自体の Apache-2.0 は model の重みを許諾しません。ONNX の再配布と license は、リリース前に確認が必要な未解決事項です。
+
 ## meeting-transcriber
 
 Repository: `pasrom/meeting-transcriber`

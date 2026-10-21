@@ -139,6 +139,8 @@ BIN_DIR="$(swift build --package-path app/MacAmbientJev -c release --show-bin-pa
 
 ASR model directory は対応する固定 repository / revision の model を事前に取得した directory です（[Qwen3-ASR ONNX model fetcher](windows.md#qwen3-asr-onnx-モデルの取得)）。Silero fetcher は Python 3.12 以上を要求します。
 
+話者分離の固定 model（segmentation と embedding の ONNX、PLDA の JSON 2ファイル）は `MODELS="$(python3.12 scripts/fetch_community1_diarization.py)"` で取得します。stdout の検証済み directory を Swift の `Community1Assets` に渡します。取得元、pin、検証、manifest の詳細は [windows.md](windows.md#community-1-話者分離モデルの取得) を参照してください。Linux でも同じ manifest と fetcher を使います。
+
 ### artifact v2 の検証と CER 評価
 
 `--artifact-output` は既存の schema v2 ASR artifact です。Python validator と portable evaluator は次のように実行します。

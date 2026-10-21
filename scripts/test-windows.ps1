@@ -38,6 +38,7 @@ Invoke-Step 'doc reference checker self-test' { python scripts/test_doc_referenc
 Invoke-Step 'doc reference check' { python scripts/check_doc_references.py }
 Invoke-Step 'ONNX Runtime fetcher self-test' { python -B scripts/test_fetch_onnxruntime.py }
 Invoke-Step 'Silero VAD fetcher self-test' { python -B scripts/test_fetch_silero_vad.py }
+Invoke-Step 'Community-1 diarization fetcher self-test' { python -B scripts/test_fetch_community1_diarization.py }
 Invoke-Step 'Qwen3-ASR tokenizer fetcher self-test' { python -B scripts/test_fetch_qwen3_asr_tokenizer.py }
 Invoke-Step 'Qwen3-ASR model fetcher self-test' { python -B scripts/test_fetch_qwen3_asr_model.py }
 Invoke-Step 'pinned download self-test' { python -B scripts/test_pinned_download.py }

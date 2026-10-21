@@ -126,7 +126,7 @@ import Testing
     @Test func accumulatorMemoryBoundedByWindowCoverage() throws {
         func run(windowCount: Int) throws -> ReconstructionResult {
             let bits = [UInt8](repeating: 7, count: Community1Profile.segmentationFrames)
-            let windows = (0..<windowCount).map { index in
+            let windows: [ReconstructionWindow] = (0..<windowCount).map { index -> ReconstructionWindow in
                 ReconstructionWindow(
                     offsetSeconds: Double(index) * 2.0,
                     speakerBits: bits,
