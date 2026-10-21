@@ -433,6 +433,12 @@ python3 scripts/compare_diarization_runs.py --runs "$WORK/mac-1.json" "$WORK/mac
 
 `--min-clean-speech-ms` は計測者が指定する値で、既定値はありません。比較 script は評価器を `swift run` で呼ぶため、Swift toolchain が必要です。2 つの run の音声 SHA-256 またはサンプル数が違う場合は失敗します。出力ファイルも既存ファイルを置き換えません。
 
+### VOICEVOX シナリオの生成と実測
+
+[`generate_voicevox_diarization_scenarios.py`](../tools/linux-audio/generate_voicevox_diarization_scenarios.py) は、起動済みの VOICEVOX engine から `voicevox-ja-core-v1.json` の `diarization_scenarios` を生成する。`--base-url`、`--manifest`、`--output-root`、`--scenario`（複数指定可）はすべて必須で、既定値はない。出力は `<output-root>/<scenario_id>/audio.wav` と `scenario.json` で、`audio.wav` を `prepare_canonical_caf.py` に渡す。
+
+2026-10-22 の実測（2 / 4 / 7 / 8 / 10 話者、Mac 3 回の self-disagreement、Mac 対 Linux / Windows の DER と raw 話者数、実行時間とピーク RSS、1 時間 run）は [p33-diarization-der-2026-10-22.md](records/p33-diarization-der-2026-10-22.md) にある。
+
 ### run ファイルの形式
 
 `schema_version: 1`。`audio`（`sha256`、`sample_count`、`sample_rate`）、`provenance`（engine 自身が報告する `engine`、`model`、`version`、`configuration`）、`raw_spans`（`speaker_id`、`start_frame`、`end_frame`、`confidence`。表示用の畳み込み前の raw cluster ID とサンプル位置）、`raw_speaker_count`、`prepare_seconds`（モデル読み込み）、`wall_time_seconds`（diarize 1 回）、`peak_rss_bytes`（プロセス全体のピーク。macOS は `getrusage`、Linux は `getrusage` の KiB 換算、Windows は process memory counters のピーク working set）を持ちます。`wall_time_seconds` はモデルの読み込みを含みません。
