@@ -390,6 +390,57 @@ bash scripts/verify_portable.sh
 
 `verify_portable.sh` は `scripts/check_portable_core.py` による Apple framework import 検査、SwiftPM manifest 評価、`MacAmbientJevCoreTests` を実行する。禁止 import は AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI。これは Core の境界検査であり、Linux 上で macOS runtime が実行できることを意味しない。
 
+## 話者分離 DER の計測
+
+Mac の FluidAudio と Linux / Windows の `ONNXCommunity1DiarizationEngine` を、同一の canonical CAF バイト列に対して比較します。比較には標準 DER（`MacAmbientJevEvaluateDiarization` の `standard`）と raw 話者数だけを使います。表示用に畳んだ `collapsed` は、公開ラベルの仮説を持たないため採点しません。
+
+| 道具 | 対象 OS | 役割 |
+| --- | --- | --- |
+| [`prepare_canonical_caf.py`](../scripts/prepare_canonical_caf.py) | 全 OS | 16 kHz mono 16-bit PCM の WAV を、`CanonicalCAFReader` と Mac の `CanonicalCAFAudioSource` が読む 16 kHz mono Float32 CAF（値は `sample / 32768`）に変換し、出力先が存在すれば失敗する。パス、サンプル数、CAF の SHA-256 を JSON で表示する |
+| `MacAmbientJevDiarizeFileOracle` | macOS | 本番と同じ `FluidOfflineDiarizationEngine`（FluidAudio の既定 config、最小 0.3 秒、アプリの span 変換）で実行する |
+| `MacAmbientJevDiarizeFile` | Linux / Windows | `ONNXCommunity1DiarizationEngine` で実行する |
+| [`compare_diarization_runs.py`](../scripts/compare_diarization_runs.py) | 全 OS | 2 つの run を採点する。`--runs` を使うと同じ engine の複数回実行の全組み合わせを採点し、self-disagreement を出す |
+
+両 CLI は canonical CAF だけを受け取り、VAD や ASR は使いません。オプションはそれぞれ 1 回ずつ必須で、`--help` だけが単独で使えます。
+
+```text
+MacAmbientJevDiarizeFile --audio <canonical.caf> --model-directory <dir> --threads <n> --output <run.json>
+MacAmbientJevDiarizeFileOracle --audio <canonical.caf> --coreml-directory <dir> --output <run.json>
+```
+
+Linux / Windows 側のモデル directory は fetcher が表示する directory を渡します。Mac 側は FluidAudio の Core ML diarizer モデル（Segmentation、Embedding、FBank、PldaRho の各 mlmodelc と `plda-parameters.json`、`xvector-transform.json`）を直接含む directory を渡します。`--output` は存在しないファイルでなければならず、一時ファイルに書いてから移動するため既存ファイルを置き換えません。不正な引数、存在しない入力、非 canonical な CAF、モデルの欠落・破損は 0 以外の終了コードとメッセージで失敗します。
+
+### 手順
+
+```bash
+# 1. シナリオ WAV（generate_scenario が <output_root>/<scenario_id>/audio.wav を作る）を canonical CAF にする
+python3 scripts/prepare_canonical_caf.py --wav "$SCENARIO/audio.wav" --output "$WORK/speakers-4.caf"
+
+# 2. Mac: 同じ CAF で oracle を 3 回実行する
+swift run --package-path app/MacAmbientJev -c release MacAmbientJevDiarizeFileOracle \
+  --audio "$WORK/speakers-4.caf" --coreml-directory "$COREML" --output "$WORK/mac-1.json"
+
+# 3. Linux / Windows: 同じ CAF を使う
+swift run --package-path app/MacAmbientJev -c release MacAmbientJevDiarizeFile \
+  --audio "$WORK/speakers-4.caf" --model-directory "$MODELS" --threads 2 --output "$WORK/portable.json"
+
+# 4. 採点する
+python3 scripts/compare_diarization_runs.py --reference-run "$WORK/mac-1.json" \
+  --hypothesis-run "$WORK/portable.json" --min-clean-speech-ms 500 --output "$WORK/parity.json"
+python3 scripts/compare_diarization_runs.py --runs "$WORK/mac-1.json" "$WORK/mac-2.json" "$WORK/mac-3.json" \
+  --min-clean-speech-ms 500 --output "$WORK/mac-self.json"
+```
+
+`--min-clean-speech-ms` は計測者が指定する値で、既定値はありません。比較 script は評価器を `swift run` で呼ぶため、Swift toolchain が必要です。2 つの run の音声 SHA-256 またはサンプル数が違う場合は失敗します。出力ファイルも既存ファイルを置き換えません。
+
+### run ファイルの形式
+
+`schema_version: 1`。`audio`（`sha256`、`sample_count`、`sample_rate`）、`provenance`（engine 自身が報告する `engine`、`model`、`version`、`configuration`）、`raw_spans`（`speaker_id`、`start_frame`、`end_frame`、`confidence`。表示用の畳み込み前の raw cluster ID とサンプル位置）、`raw_speaker_count`、`prepare_seconds`（モデル読み込み）、`wall_time_seconds`（diarize 1 回）、`peak_rss_bytes`（プロセス全体のピーク。macOS は `getrusage`、Linux は `getrusage` の KiB 換算、Windows は process memory counters のピーク working set）を持ちます。`wall_time_seconds` はモデルの読み込みを含みません。
+
+比較では frame を 16 で割った整数 ms（半分は偶数側へ丸める）に変換して評価器へ渡します。話者数は変換前の raw span から数えます。出力は `audio`、両 provenance、`reference_speaker_count`、`hypothesis_speaker_count`、`standard`（DER と内訳）です。ミリ秒に変換して長さ 0 になる span はエラーです。
+
+CLI の単体テストは [DiarizationMeasurementTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationMeasurementTests/DiarizationMeasurementTests.swift) にあり、引数の検査、run の形式、音声 identity、不正 span の拒否、既存出力を置き換えないことを、モデルなしで全 OS で検査します。Python 側は `python3 -B scripts/test_compare_diarization_runs.py` と `python3 -B scripts/test_prepare_canonical_caf.py` です。`MacAmbientJevDiarizeFile` は ONNX Runtime を使うため macOS では build されず、`MacAmbientJevDiarizeFileOracle` は FluidAudio を使うため Linux / Windows では build されません。
+
 ## ファイル入力 CLI の smoke
 
 `MacAmbientJevProcessRecording` は macOS 専用で、マイクや GUI を使わず既存の音声を処理する。発話文判定は無効で、Core ML tagger をロードしない。

@@ -44,6 +44,10 @@ var targets: [Target] = [
         dependencies: ["MacAmbientJevCore"],
         resources: [.copy("Resources")]
     ),
+    .target(
+        name: "MacAmbientJevDiarizationMeasurement",
+        dependencies: ["MacAmbientJevCore"]
+    ),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
         dependencies: ["MacAmbientJevCore"]
@@ -76,6 +80,14 @@ var targets: [Target] = [
     .testTarget(
         name: "MacAmbientJevPipelineTests",
         dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevDiarizationMeasurementTests",
+        dependencies: [
+            "MacAmbientJevDiarizationMeasurement",
+            "MacAmbientJevCore",
+            "MacAmbientJevCAFFixtures"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevDiarizationTests",
@@ -201,6 +213,15 @@ let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-Xcc", "-I\(onnxRuntimeIncludeDirectory.path)"])
 ]
 
+products.append(.executable(
+    name: "MacAmbientJevDiarizeFile",
+    targets: ["MacAmbientJevDiarizeFile"]
+))
+targets.append(.executableTarget(
+    name: "MacAmbientJevDiarizeFile",
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevDiarizationMeasurement", "MacAmbientJevPortableRuntime"],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
 products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
 products.append(.library(name: "MacAmbientJevPortableRuntime", targets: ["MacAmbientJevPortableRuntime"]))
 products.append(.executable(
@@ -278,6 +299,10 @@ products += [
     .library(name: "MacAmbientJevCapture", targets: ["MacAmbientJevCapture"]),
     .executable(name: "MacAmbientJev", targets: ["MacAmbientJev"]),
     .executable(
+        name: "MacAmbientJevDiarizeFileOracle",
+        targets: ["MacAmbientJevDiarizeFileOracle"]
+    ),
+    .executable(
         name: "MacAmbientJevCaptureSystemAudio",
         targets: ["MacAmbientJevCaptureSystemAudio"]
     ),
@@ -348,6 +373,10 @@ targets += [
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime"
         ]
+    ),
+    .executableTarget(
+        name: "MacAmbientJevDiarizeFileOracle",
+        dependencies: ["MacAmbientJevCore", "MacAmbientJevDiarizationMeasurement", "MacAmbientJevRuntime"]
     ),
     .executableTarget(
         name: "MacAmbientJevCaptureSystemAudio",

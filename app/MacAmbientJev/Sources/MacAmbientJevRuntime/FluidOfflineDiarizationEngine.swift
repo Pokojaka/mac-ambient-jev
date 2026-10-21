@@ -4,7 +4,7 @@ import MacAmbientJevCore
 import MacAmbientJevDiarization
 import MacAmbientJevPipeline
 
-actor FluidOfflineDiarizationEngine: DiarizationEngine {
+public actor FluidOfflineDiarizationEngine: DiarizationEngine {
     static let version = "FluidAudio@0.15.8"
     static let configuration: OfflineDiarizerConfig = {
         var config = OfflineDiarizerConfig.default
@@ -12,7 +12,7 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         return config
     }()
 
-    nonisolated var provenance: RunProvenance {
+    public nonisolated var provenance: RunProvenance {
         RunProvenance(
             engine: "fluidaudio-offline-diarizer",
             model: Repo.diarizer.rawValue,
@@ -29,17 +29,22 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
     private let config = FluidOfflineDiarizationEngine.configuration
 
     init(paths: AppPaths) {
-        self.modelDirectory = paths.modelsRoot.appending(
+        self.init(modelDirectory: paths.modelsRoot.appending(
             path: "fluidaudio-offline-diarizer",
             directoryHint: .isDirectory
-        )
+        ))
     }
 
-    func prepare() async throws {
+    /// `modelDirectory` holds the FluidAudio Core ML diarizer models.
+    public init(modelDirectory: URL) {
+        self.modelDirectory = modelDirectory
+    }
+
+    public func prepare() async throws {
         _ = try await preparedManager()
     }
 
-    func unload() async {
+    public func unload() async {
         manager = nil
     }
 
@@ -60,7 +65,7 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         return loading
     }
 
-    func diarize(
+    public func diarize(
         fileURL: URL,
         canonicalSampleRate: Double,
         sessionURL: URL

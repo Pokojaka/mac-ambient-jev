@@ -599,6 +599,16 @@ python3 -B scripts/test_fetch_community1_diarization.py
 
 test は4ファイルの pin、既存の破損ファイルの拒否、中断したダウンロードからの復旧、再実行での再利用、空白・非 ASCII を含む path、script が Swift と同じ manifest ファイルを読む（複製がない）ことを検査します。ネットワークには接続せず、取得元は mock した小さな fixture です。attribution と license は [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#community-1-話者分離モデル) にあります。
 
+### 話者分離の計測 CLI
+
+`MacAmbientJevDiarizeFile` は Linux / Windows で canonical CAF を `ONNXCommunity1DiarizationEngine` により話者分離し、run JSON を出力します。Windows のピークメモリは process memory counters のピーク working set です。Mac の oracle との比較手順は [testing.md](testing.md#話者分離-der-の計測) にあります。モデル directory には [Community-1 話者分離モデルの取得](#community-1-話者分離モデルの取得) の出力を渡します。
+
+```powershell
+swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevDiarizeFile
+$binDir = (swift build --package-path app/MacAmbientJev -c release --show-bin-path)
+& (Join-Path $binDir 'MacAmbientJevDiarizeFile.exe') --audio $caf --model-directory $models --threads 2 --output $run
+```
+
 ### ONNX 話者分離 engine のモデルテスト
 
 `ONNXCommunity1DiarizationEngine` と `Community1ONNXInference` の model テストは、fetcher が出力した directory を `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` に、`RUN_MODEL_TESTS` を `1` にして実行します。この環境変数に既定値はなく、未設定・空・相対 path・存在しない directory のときは skip せず失敗します。
@@ -672,8 +682,8 @@ Windows の `swift build` は Core、Pipeline、CWindowsSession、CMiniaudio、C
 参照文のファイル指定は相対パスと Windows の絶対パスを扱います。
 
 [portable-core.yml](../.github/workflows/portable-core.yml) は、共通 Core / Pipeline、Windows 音声関連ソースとテスト、ONNX source / tests / fixture、file transcription CLI の source / tests、fixture 生成スクリプト、Silero fetch / fixture script の変更を含む main への push とレビュー可能な pull request で、Linux と Windows の build/test を実行します。
-Linux は CMiniaudio、Core、Pipeline、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、ONNX、PortableRuntime、TranscribeFile の tests を実行します。workflow は ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer をそれぞれ fetch し、検証した path を `MAC_AMBIENT_JEV_SILERO_MODEL` と `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` として `GITHUB_ENV` に書き込みます。`test_portable_core.py`、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator の各 self-test、`check_portable_core.py`、`test_doc_references.py`、`check_doc_references.py` は check step で実行し、`swift build` と `swift test` はそれぞれ別 step で実行します。Linux workflow は `verify_portable.sh` を実行しません。ローカルの [verify_portable.sh](../scripts/verify_portable.sh) は別の実行手順で、ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer を fetch し、path を環境変数に設定したうえで Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero と Qwen3-ASR token reference generator の依存 package・model weights 不要な self-test、portable checker、SwiftPM manifest check、build、test を実行します。full model inference は既定では実行しません。
-Windows は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、WindowsSupport、ONNX、PortableRuntime、TranscribeFile の tests を実行します。Windows CI は [test-windows.ps1](../scripts/test-windows.ps1) が ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer の fetch、各 check、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator と Qwen3-ASR token reference generator の各 self-test、Package の全適用 target の `swift build`、DLL 配置、全適用 test target の `swift test` を行います。
+Linux は CMiniaudio、Core、Pipeline、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、ONNX、PortableRuntime、TranscribeFile の tests を実行します。workflow は ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer をそれぞれ fetch し、検証した path を `MAC_AMBIENT_JEV_SILERO_MODEL` と `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` として `GITHUB_ENV` に書き込みます。`test_portable_core.py`、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator の各 self-test、`check_portable_core.py`、`test_compare_diarization_runs.py`、`test_prepare_canonical_caf.py`、`test_doc_references.py`、`check_doc_references.py` は check step で実行し、`swift build` と `swift test` はそれぞれ別 step で実行します。Linux workflow は `verify_portable.sh` を実行しません。ローカルの [verify_portable.sh](../scripts/verify_portable.sh) は別の実行手順で、ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer を fetch し、path を環境変数に設定したうえで Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero と Qwen3-ASR token reference generator の依存 package・model weights 不要な self-test、portable checker、SwiftPM manifest check、build、test を実行します。full model inference は既定では実行しません。
+Windows は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、WindowsSupport、ONNX、PortableRuntime、TranscribeFile の tests を実行します。Windows CI は [test-windows.ps1](../scripts/test-windows.ps1) が ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer の fetch、各 check、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator と Qwen3-ASR token reference generator、diarization run 比較、canonical CAF 変換の各 self-test、Package の全適用 target の `swift build`、DLL 配置、全適用 test target の `swift test` を行います。
 Draft PR では portable と macOS の CI を起動せず、作業中の Linux 検証はローカルにまとめます。
 手動実行は Windows のみが既定で、run_linux を有効にすると Linux も実行します。
 同じブランチ・PR の古い実行は自動で取り消します。Windows のテストには symlink の作成権限が必要です。

@@ -89,6 +89,7 @@ def main() -> int:
             "app/MacAmbientJev/Sources/MacAmbientJevCore",
             "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
             "app/MacAmbientJev/Sources/MacAmbientJevDiarization",
+            "app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement",
             "app/MacAmbientJev/Sources/MacAmbientJevONNX",
             "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime",
         ],

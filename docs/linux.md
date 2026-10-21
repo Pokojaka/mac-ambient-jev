@@ -181,6 +181,14 @@ uv run --python 3.12 --with pytest python -m pytest -q tests/test_transcribe_fil
 
 CLI の unit tests は引数・path・import decode に加え、モデル不要で primary JSON / artifact の完全な payload schema、VAD segment text の順序と改行 join、provenance、RTF、計測値・configuration・path の error を検査します（[`TranscribeFileTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift)）。実モデルを使う Python integration test は opt-in で、release CLI の出力と CER を検査します。pipeline helper tests は [`FileTranscriptionPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FileTranscriptionPipelineTests.swift) にあります。
 
+## 話者分離の計測 CLI
+
+`MacAmbientJevDiarizeFile` は canonical CAF を `ONNXCommunity1DiarizationEngine` で話者分離し、raw span、engine の provenance、処理時間、プロセスのピーク RSS を持つ run JSON を出力します。Mac の `MacAmbientJevDiarizeFileOracle` と同じ形式で、標準 DER と話者数の比較は [testing.md](testing.md#話者分離-der-の計測) の手順で行います。Linux の release build は次のとおりです。
+
+```bash
+swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevDiarizeFile
+```
+
 ## 評価 artifact のスキーマ v2
 
 厳密な Python validator は `tools/linux-audio/common/artifact.py` にある。キー集合は固定で、余分なキーも拒否する。ASR backend は `transformers` または CPU 専用 `onnxruntime`、話者分離 backend は `nemo` である。Swift 評価器は採点に必要な部分を読むため、来歴を含む形式確認には Python validator を使う。

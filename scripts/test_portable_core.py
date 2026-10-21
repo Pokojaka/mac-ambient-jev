@@ -12,6 +12,7 @@ DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevCore",
     "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
     "app/MacAmbientJev/Sources/MacAmbientJevDiarization",
+    "app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement",
     "app/MacAmbientJev/Sources/MacAmbientJevONNX",
     "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime",
 )
@@ -98,6 +99,7 @@ class PortableImportTests(unittest.TestCase):
             self.write_fixture(directory, DEFAULT_ROOTS[2], "import CoreML")
             self.write_fixture(directory, DEFAULT_ROOTS[3], "import FluidAudio")
             self.write_fixture(directory, DEFAULT_ROOTS[4], "import Foundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[5], "import Foundation")
 
             result = self.run_default_cli(directory)
 
