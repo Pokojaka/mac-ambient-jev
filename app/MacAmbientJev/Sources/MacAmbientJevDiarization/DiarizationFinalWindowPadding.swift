@@ -20,7 +20,13 @@ public enum DiarizationFinalWindowPadding {
             return endFrame == 0 ? 0 : nil
         }
 
-        let availableFinalWindowSamples = ((sampleCount - 1) % stepSamples) + 1
+        guard let finalWindowStart = finalWindowStartFrame(
+            sampleCount: sampleCount,
+            stepSamples: stepSamples
+        ) else {
+            return nil
+        }
+        let availableFinalWindowSamples = sampleCount - finalWindowStart
         let paddingSamples = windowSamples > availableFinalWindowSamples
             ? windowSamples - availableFinalWindowSamples
             : 0
@@ -28,5 +34,11 @@ public enum DiarizationFinalWindowPadding {
         guard endFrame > sampleCount else { return endFrame }
         guard endFrame - sampleCount <= paddingSamples else { return nil }
         return sampleCount
+    }
+
+    /// Returns the last scheduled window start for positive audio and step geometry.
+    public static func finalWindowStartFrame(sampleCount: Int64, stepSamples: Int64) -> Int64? {
+        guard sampleCount > 0, stepSamples > 0 else { return nil }
+        return ((sampleCount - 1) / stepSamples) * stepSamples
     }
 }

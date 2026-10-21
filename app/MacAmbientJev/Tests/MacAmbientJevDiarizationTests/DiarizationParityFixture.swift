@@ -337,8 +337,49 @@ struct DiarizationPLDACase: Decodable {
     let expectedRho: DiarizationParityTensor
 }
 
+struct DiarizationFrontendFixture: Decodable {
+    let metadata: DiarizationParityMetadata
+    let modelRevision: String
+    let modelSHA256: [String: String]
+    let decodeCases: [DiarizationFrontendDecodeCase]
+    let windowCases: [DiarizationFrontendWindowCase]
+    let maskCases: [DiarizationFrontendMaskCase]
+    let interpolationCases: [DiarizationFrontendInterpolationCase]
+}
+
+struct DiarizationFrontendDecodeCase: Decodable {
+    let name: String
+    let logits: DiarizationParityTensor
+    let expectedSpeakerBits: [Int]
+}
+
+struct DiarizationFrontendWindowCase: Decodable {
+    let sampleCount: Int
+    let expectedStarts: [Int]
+    let expectedAvailable: [Int]
+    let expectedPadding: [Int]
+}
+
+struct DiarizationFrontendMaskCase: Decodable {
+    let name: String
+    let speakerWeights: DiarizationParityTensor
+    let expectedSlots: [Int]
+    let expectedStartFrames: [Int]
+    let expectedEndFrames: [Int]
+    let expectedMasks: DiarizationParityTensor
+    let expectedResampledMasks: DiarizationParityTensor
+}
+
+struct DiarizationFrontendInterpolationCase: Decodable {
+    let name: String
+    let input: DiarizationParityTensor
+    let expectedIdentity: DiarizationParityTensor
+    let expectedHalfPixel: DiarizationParityTensor
+    let expectedPooling: DiarizationParityTensor
+}
+
 enum DiarizationParityFixtures {
-    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json", "plda-rho.json", "plda-parameters.json", "xvector-transform.json"]
+    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json", "plda-rho.json", "plda-parameters.json", "xvector-transform.json", "frontend.json"]
 
     static func data(named name: String) throws -> Data {
         guard filenames.contains(name) else {

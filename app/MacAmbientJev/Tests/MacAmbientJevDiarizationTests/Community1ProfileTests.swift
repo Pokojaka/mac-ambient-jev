@@ -81,22 +81,29 @@ import Testing
     @Test func minimumMaskThresholdsAndUnreachableFallbackRelation() {
         let frameDuration = Community1Profile.windowDurationSeconds
             / Double(Community1Profile.segmentationFrames)
-        let derivedMinimumEmbeddingFrames = Int(ceil(
+        let derivedMinimumEmbeddingFrames = max(1, Int(ceil(
             Community1Profile.minimumSegmentSeconds / frameDuration
-        ))
+        )))
         let derivedMinimumActiveFrames = Int(ceil(
             Double(Community1Profile.minimumActiveRatio)
                 * Double(Community1Profile.segmentationFrames)
         ))
+        let minimumCleanWeight = Float(Community1Profile.segmentationFrames)
+            * Community1Profile.minimumActiveRatio
 
         #expect(Community1Profile.overlapThreshold == 1e-3)
         #expect(Community1Profile.minimumActiveRatio == 0.2)
         #expect(Community1Profile.minimumSegmentSeconds == 0.3)
         #expect(derivedMinimumEmbeddingFrames == 18)
         #expect(derivedMinimumActiveFrames == 118)
+        #expect(Double(17) * frameDuration < Community1Profile.minimumSegmentSeconds)
+        #expect(Double(18) * frameDuration >= Community1Profile.minimumSegmentSeconds)
         #expect(Community1Profile.minimumEmbeddingFrames == derivedMinimumEmbeddingFrames)
         #expect(Community1Profile.minimumActiveFrames == derivedMinimumActiveFrames)
         #expect(Community1Profile.minimumEmbeddingFrames < Community1Profile.minimumActiveFrames)
+        // The clean-mask 20% gate dominates the 18-frame duration gate, so an original-mask
+        // fallback cannot make a mask with too little clean weight eligible.
+        #expect(minimumCleanWeight > Float(Community1Profile.minimumEmbeddingFrames))
     }
 
     @Test func frozenNumericalFloors() {

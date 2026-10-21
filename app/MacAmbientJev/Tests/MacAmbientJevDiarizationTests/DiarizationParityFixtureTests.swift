@@ -38,7 +38,11 @@ import Testing
             "plda-rho.json",
             as: DiarizationPLDAFixture.self
         )
-        #expect(DiarizationParityFixtures.filenames.count == 8)
+        let frontend = try DiarizationParityFixtures.load(
+            "frontend.json",
+            as: DiarizationFrontendFixture.self
+        )
+        #expect(DiarizationParityFixtures.filenames.count == 9)
         for metadata in [
             parameters.metadata,
             reconstruction.metadata,
@@ -46,12 +50,130 @@ import Testing
             assignment.metadata,
             vbx.metadata,
             plda.metadata,
+            frontend.metadata,
         ] {
             #expect(metadata.schemaVersion == 1)
             #expect(metadata.fluidAudioVersion == expectedMetadataVersion)
             #expect(metadata.fluidAudioRevision == expectedMetadataRevision)
             #expect(!metadata.inputConstruction.isEmpty)
             #expect(!metadata.comparisonRule.isEmpty)
+        }
+    }
+
+    @Test func frontendFixtureHasValidStructure() throws {
+        let fixture = try DiarizationParityFixtures.load(
+            "frontend.json",
+            as: DiarizationFrontendFixture.self
+        )
+        #expect(fixture.modelRevision == "df2625ac79a7ac6b65ad868fee6d80f320da4232")
+        #expect(fixture.modelSHA256.count == 9)
+        for digest in fixture.modelSHA256.values {
+            #expect(digest.count == 64)
+            #expect(digest.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) })
+        }
+
+        #expect(fixture.decodeCases.count == 1)
+        for item in fixture.decodeCases {
+            #expect(item.logits.dtype == "float32")
+            #expect(item.logits.shape == [589, 7])
+            let logits = try item.logits.float32()
+            #expect(logits.count == 589 * 7)
+            #expect(logits.allSatisfy { $0.isFinite })
+            #expect(item.expectedSpeakerBits.count == 589)
+            #expect(item.expectedSpeakerBits.allSatisfy { (0...6).contains($0) && $0 != 7 })
+        }
+
+        let expectedSampleCounts = [1, 31_999, 32_000, 32_001, 159_999, 160_000, 160_001, 192_000]
+        #expect(fixture.windowCases.count == 8)
+        #expect(fixture.windowCases.map(\.sampleCount) == expectedSampleCounts)
+        for item in fixture.windowCases {
+            #expect(item.sampleCount > 0)
+            #expect(!item.expectedStarts.isEmpty)
+            #expect(item.expectedStarts.count == item.expectedAvailable.count)
+            #expect(item.expectedStarts.count == item.expectedPadding.count)
+            #expect(item.expectedStarts.allSatisfy { $0 >= 0 && $0 < item.sampleCount })
+            #expect(zip(item.expectedStarts, item.expectedStarts.dropFirst()).allSatisfy { $0.0 < $0.1 })
+            #expect(item.expectedAvailable.allSatisfy { (1...160_000).contains($0) })
+            #expect(item.expectedPadding.allSatisfy { (0...159_999).contains($0) })
+            #expect(zip(item.expectedAvailable, item.expectedPadding).allSatisfy { $0.0 + $0.1 == 160_000 })
+        }
+
+        let expectedMaskNames: Set<String> = [
+            "zero-active",
+            "one-active",
+            "two-active",
+            "three-active",
+            "overlap-all",
+            "overlap-excluded",
+            "overlap-nextDown",
+            "overlap-exact",
+            "overlap-nextUp",
+            "clean-17",
+            "clean-18",
+            "clean-117",
+            "clean-118",
+            "ratio-below",
+            "ratio-exact",
+            "ratio-above",
+        ]
+        #expect(fixture.maskCases.count == 16)
+        #expect(Set(fixture.maskCases.map(\.name)) == expectedMaskNames)
+        for item in fixture.maskCases {
+            #expect(item.speakerWeights.dtype == "float32")
+            #expect(item.speakerWeights.shape == [589, 3])
+            let speakerWeights = try item.speakerWeights.float32()
+            #expect(speakerWeights.allSatisfy { (0...1).contains($0) })
+
+            #expect(item.expectedSlots == item.expectedSlots.sorted())
+            #expect(Set(item.expectedSlots).count == item.expectedSlots.count)
+            #expect(item.expectedSlots.allSatisfy { (0...2).contains($0) })
+            #expect(item.expectedStartFrames.count == item.expectedSlots.count)
+            #expect(item.expectedEndFrames.count == item.expectedSlots.count)
+            #expect(item.expectedStartFrames.allSatisfy { (0...588).contains($0) })
+            #expect(item.expectedEndFrames.allSatisfy { (0...588).contains($0) })
+            #expect(zip(item.expectedStartFrames, item.expectedEndFrames).allSatisfy { $0.0 <= $0.1 })
+
+            let expectedMaskShape = [item.expectedSlots.count, 589]
+            #expect(item.expectedMasks.dtype == "float32")
+            #expect(item.expectedMasks.shape == expectedMaskShape)
+            let masks = try item.expectedMasks.float32()
+            #expect(masks.allSatisfy { (0...1).contains($0) })
+            #expect(item.expectedResampledMasks.dtype == "float32")
+            #expect(item.expectedResampledMasks.shape == expectedMaskShape)
+            let resampledMasks = try item.expectedResampledMasks.float32()
+            #expect(resampledMasks.allSatisfy { (0...1).contains($0) })
+        }
+
+        let expectedInterpolationNames: Set<String> = [
+            "zero",
+            "ones",
+            "ramp",
+            "alternating",
+            "scattered",
+            "endpoints",
+        ]
+        #expect(fixture.interpolationCases.count == 6)
+        #expect(Set(fixture.interpolationCases.map(\.name)) == expectedInterpolationNames)
+        let poolingScatterIndices = Set((0..<125).map { $0 * 589 / 125 })
+        for item in fixture.interpolationCases {
+            #expect(item.input.dtype == "float32")
+            #expect(item.input.shape == [589])
+            let input = try item.input.float32()
+            #expect(item.expectedIdentity.dtype == "float32")
+            #expect(item.expectedIdentity.shape == [589])
+            let identity = try item.expectedIdentity.float32()
+            #expect(identity == input)
+
+            #expect(item.expectedHalfPixel.dtype == "float32")
+            #expect(item.expectedHalfPixel.shape == [125])
+            _ = try item.expectedHalfPixel.float32()
+
+            #expect(item.expectedPooling.dtype == "float32")
+            #expect(item.expectedPooling.shape == [589])
+            let pooling = try item.expectedPooling.float32()
+            #expect(pooling.enumerated().allSatisfy { entry in
+                poolingScatterIndices.contains(entry.offset) || entry.element == 0
+            })
         }
     }
 
