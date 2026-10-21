@@ -439,7 +439,7 @@ extension DiarizationParityFixtureTests {
 
 /// Always exercises FluidAudio's public loader through its expected cache layout while keeping
 /// every caller-owned model asset read-only. Only this UUID-owned temporary root is removed.
-private func loadOfflineDiarizerModelsUsingStaging(
+func loadOfflineDiarizerModelsUsingStaging(
     modelURLs: [String: URL],
     pldaJSONURL: URL
 ) async throws -> OfflineDiarizerModels {

@@ -296,6 +296,25 @@ swift test --package-path app/MacAmbientJev --jobs 4 --filter 'Community1Reconst
 
 fixture 内の reconstruction ID（例: `S1`）は oracle の speaker ID であり、公開表示ラベルは別契約です。[SpeakerDisplayMapper.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift) は変更しておらず、公開ラベルは Speaker 1–7、OTHER、UNKNOWN のままです。
 
+#### Community-1 kernel の全体動作
+
+[Community1Diarizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Diarizer.swift) の `diarize(sampleCount:readFrames:inference:)` は、window ごとに segmentation、powerset decode、mask 選択、fbank、embedding を実行し、結果を run 単位の観測表 [Community1Observations.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Observations.swift) に1回ずつ追加します。観測表は各 window の589個の speaker bitmask と3 slot の結果（未抽出、非有限、有限 embedding）を時系列順に持ち、有限 embedding と rho は row-major の flat table に `(window, slot)` と1対1で置きます。学習集合は有限 row の全体で、第2のコピーを持ちません。
+
+embedding の2操作は `Community1Inference` が持ちます。実装が返す256次元 vector は未正規化でよく、kernel が profile の floor 1e-4 で L2 正規化してから PLDA rho を計算します。`SpeakerMask` は cleaned activity（segmentation 解像度）と pooling 位置に sample 済みの `PoolingMask` を両方持ち、内部で補間する graph（Core ML の Embedding.mlmodelc）は前者、補間しない graph（ONNX tail）は後者を使います。非有限 vector の slot は学習に使わず、assignment では最下位に順位付けして残します。window 内の slot 位置は assignment まで保持します。
+
+終了条件は次のとおりです。サンプル数0、またはどの window のどの slot も embedding を抽出しなかった場合は `noSpeechDetected`、抽出はあるが有限 embedding が1つもない場合は `noFiniteTrainingEmbeddings` で失敗します。embedding の個数や次元が要求と合わない場合は `invalidModelOutput`、reader が要求と異なるサンプル数を返す場合は `FrontendError` で失敗し、いずれも代替経路を持ちません。有限 embedding が2個以上のとき AHC を実行し、1個のときは全 row を cluster 0 とします。centroid が1個のときは FluidAudio と同じく制約付き assignment を使わず、抽出済みの全 slot を cluster 0 に割り当てます。cluster 数は pi が active の centroid 数で、cluster ID は centroid の並び順です。
+
+キャンセルは window 境界、AHC の merge、VBx の iteration、centroid の row、reconstruction の flush 境界で確認し、途中の spans は返しません。`diarize` は呼び出しごとに観測表を作り、呼び出し間で状態を共有しないため、同じ入力と同じ inference の2回の実行は同一の spans を返します。spans は FluidAudio の Float 秒を `SpeakerSpanMapper` で frame に丸め、最終 window の padding 内に収まる終端だけを音声長へ切り詰め、開始・終端が音声外の span は `invalidSpeakerSpan` で失敗します。
+
+[Community1DiarizerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1DiarizerTests.swift) は全 OS で、決定的な fake inference（サンプル振幅で2つの声を区別し、声ごとの local slot を window の偶奇で入れ替える）を使い、slot の入れ替えを越えた話者の同一性、2回の実行と別入力を挟んだ実行の同一性、短い入力の padding と終端 clamp、無音・非有限・構造不一致の失敗、window 境界と最終 window 後のキャンセル、観測表の対応関係を検証します。
+
+Mac では [Community1DiarizerCoreMLParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/Community1DiarizerCoreMLParityTests.swift) が portable kernel と FluidAudio の OfflineDiarizerManager を、同じ Core ML model（公開 loader を offline mode で使い、同じ MLModel を共有）と同じサンプルで比較します。test 専用の Core ML inference は portable fbank の出力を Embedding.mlmodelc へ mask ごとに1回ずつ渡します。入力は MacAmbientJevPortableRuntimeTests の Resources にある `qwen3_asr_voicevox_long.wav`（16 kHz mono PCM16 を /32768 で Float にする。test は `#filePath` から辿り、無ければ失敗する）と、test 実行時に `/usr/bin/say`（Kyoko と Rocko の日本語 voice）で作る2話者の clip です。後者は一時 directory に交互の4発話を合成し、`/usr/bin/afconvert` で 16 kHz mono PCM16 にして連結し、終了後に削除します。voice が無ければ `say` が失敗してそのまま test が失敗し、代わりの voice は使いません。Apple の合成音声は再配布の可否を確認していないため repository には置きません。VOICEVOX の clip は1話者だったため、2話者の clip を足しています。比較は、話者数の一致、最適なラベル対応の後の時間分割の一致（不一致の長さ）、span 数と各境界の差が1 frame（10/589 秒、272 sample）以内であることを確認します。
+
+```bash
+swift test --package-path app/MacAmbientJev --jobs 4 --filter 'Community1DiarizerTests|Community1ObservationTableTests'
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter portableKernelMatchesFluidAudio
+```
+
 #### F・B除去範囲と表示 projection
 
 [ClauseTaggerSpanProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerSpanProjectionTests.swift) は `span_probs` の4列を O=0、F=1、D=2、B=3 と解釈し、各 token の argmax と同率時に最小 index を選ぶことを検証する。O/F、F/D、O/B、D/B の tie と4 label 全ての tie を含み、token 範囲と生成される F・B除去範囲は原文の end-exclusive UTF-16 offset で表す。UTF-8 byte fallback の複数 token が一つの Unicode scalar を表す場合、それぞれがその scalar 全体の UTF-16 範囲を指し、UTF-8 byte offset にはしない（BOM は `[0,1)`、emoji の byte token は各々 `[1,3)`）。token 範囲を順に適用し、重なる位置は後の token の label で上書きする。純粋な B と隣接する F+B は除去し、連続する除去文字は一つの範囲にまとめる。kana・decomposed character・emoji を構成する scalar が F/B 混在でも Character 全体を除去し、O/D が含まれる Character はどちらの scalar 順でも全体を残す。テストは surrogate pair、decomposed scalar、token overlap、無効な shape・確率範囲・range も扱う。

@@ -2,8 +2,8 @@
 import Foundation
 
 /// The 998 x 80 per-bin mean-normalized log-mel features of one Community-1 window, frame-major.
-struct Community1FbankFeatures: Sendable {
-    let values: [Float]
+public struct Community1FbankFeatures: Sendable {
+    public let values: [Float]
 
     fileprivate init(values: [Float]) {
         self.values = values

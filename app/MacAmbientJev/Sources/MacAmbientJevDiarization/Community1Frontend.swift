@@ -39,8 +39,9 @@ struct LocalActivity: Sendable {
     }
 }
 
-struct ActivityMask: Sendable {
-    let values: [Float]
+/// Cleaned per-frame activity of one speaker slot, at segmentation resolution.
+public struct ActivityMask: Sendable {
+    public let values: [Float]
 
     init(values: [Float]) throws {
         guard values.count == Community1Profile.segmentationFrames else {
