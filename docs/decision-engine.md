@@ -69,6 +69,12 @@ Windows・Linux 向けの ONNX モデルは [export_clause_tagger_onnx.py](../sc
 
 出力ディレクトリは ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt の4ファイルです。export.json は hash、パッケージ version、opset、入出力契約、seed、head ごとの最大誤差、通過した検査を記録し、個人の絶対パスを含みません。LICENSE.txt は modernbert-ja-30m（revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`）の MIT license 全文の前に、base model と license URL を1行で記します。
 
+## ポータブル ONNX の配布
+
+書き出した4ファイルは tar.gz にまとめ、このリポジトリの GitHub release asset として固定します。tag は `clause-tagger-onnx-90501ea3-v1`、asset 名は clause-tagger-onnx-90501ea3-v1.tar.gz で、`90501ea3` は model revision の先頭8桁、`v1` は書き出しの版です。公開済みの asset は置き換えず、再書き出しでは版を上げます。Mac 向けの Core ML release（`clause-tagger-90501ea3`）は別で、変更しません。archive は最上位に `clause-tagger-onnx` ディレクトリを一つだけ持ち、直下に ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt を置きます。
+
+pin は PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) が唯一の情報源です。archive の byte 数と SHA-256、4ファイルの名前・byte 数・SHA-256、model id と revision、tokenizer SHA-256、opset と入出力契約を持ちます。[fetch_clause_tagger.py](../scripts/fetch_clause_tagger.py) が同じ manifest から archive を取得して検証・厳密展開し、`.build/clause-tagger-onnx/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx` に原子的に公開します。Swift の `ClauseTaggerAssets` は caller が渡した directory の4ファイルを manifest と照合し、ONNX モデルの URL、tokenizer の URL、`ClauseTaggerModelIdentity` を返します。アプリや CLI にモデルの探索や自動取得はなく、directory は呼出し側が渡します。取得と検証の詳細は [windows.md](windows.md#発話文タガー-onnx-モデルの取得) にあります。
+
 ## モデルの検証と推論
 
 モデルをロードすると macOS 15 で Core ML に compile し、compute units は CPU only、tensor dtype は float32 です。入力 `input_ids` は int32、形状 `[1,N]`（`2...192`）です。N は入力 token 数と厳密に一致します。モデル出力は `boundary_probs` `[1,N,2]`、`span_probs` `[1,N,4]`、`priority_probs` `[1,2]` の float32 です。各出力の形状・dtype・値は仕様に一致しなければならず、不正な出力は当該 request 全体を失敗させます。`span_probs` は境界要求の F・B 除去範囲投影に使います。

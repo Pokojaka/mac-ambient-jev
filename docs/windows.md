@@ -621,6 +621,40 @@ swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
 
 `--filter ONNXCommunity1DiarizationEngine` は model を使わない lifecycle の単体テストで、環境変数なしで実行できます。内容は [testing.md](testing.md#onnx-話者分離の-stage-テスト) を参照してください。
 
+## 発話文タガー ONNX モデルの取得
+
+ポータブル ONNX の発話文タガー（Core ML 版と同じ重みと tokenizer の組）は、このリポジトリ（Pokojaka/mac-ambient-jev）の GitHub release に固定した archive です。取得元は tag `clause-tagger-onnx-90501ea3-v1`、asset clause-tagger-onnx-90501ea3-v1.tar.gz（110,829,019 byte、SHA-256 `95985c53bacb0feea79b1f627864026cd22767f44eaf330eb0e5a0b4887ac30d`）です。公開済みの bytes は置き換えず、再書き出しは suffix の `-v<N>` を上げます。pin は Swift と fetcher が共有する唯一の manifest [`clause_tagger_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) にあります。manifest は release の repository・tag・asset・byte 数・SHA-256、model の id・revision・tokenizer SHA-256、ONNX の opset と入出力契約、archive 内4ファイルの名前・byte 数・SHA-256 を持ちます。archive の hash は archive の外にある manifest だけが持ちます。
+
+| ファイル | byte 数 | SHA-256 |
+| --- | --- | --- |
+| ClauseTagger.onnx | 146,889,561 | `8f9e7d3e4f72f2b7d18db1c59bac6b9506d135f976512ae8afbff1386687b699` |
+| tokenizer.json | 6,724,873 | `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` |
+| export.json | 253,705 | `2d8d8e8585f9d34476d4e1377c8bcf90f47004c1aa4a7efe05f7d05acd292627` |
+| LICENSE.txt | 1,292 | `2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a` |
+
+[`fetch_clause_tagger.py`](../scripts/fetch_clause_tagger.py) は Python 3.12 以上の標準ライブラリのみを使う引数なし fetcher で、[`pinned_download.py`](../scripts/pinned_download.py) を使います。固定の GitHub release URL だけから取得し、retry や代替 URL は使いません。archive の byte 数と SHA-256 を検証してから、保存先の兄弟 staging directory（`.extract-*`）に厳密に展開します。archive 内のパスは最上位の clause-tagger-onnx ディレクトリ直下の4ファイル名だけを受け入れ、絶対 path、backslash、`..` と `.` の要素、symlink・hardlink・特殊ファイル、重複、manifest にないファイル、pin より大きい・小さいファイル、欠けたファイルを拒否します。展開後に各ファイルの byte 数と SHA-256 を再検証し、`os.replace` で原子的に公開して archive を削除します。保存先は `.build/clause-tagger-onnx/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx` で、これは固定の cache 位置であり、実行時のモデル探索ではありません。公開済み directory が既にあれば4ファイルの種類・byte 数・SHA-256 と余分なファイルの不在を検証し、有効ならネットワークを使わずそのまま返します。無効なら削除を促すエラーにし、再ダウンロードで上書きしません。壊れた archive が残っている場合も同様にエラーです。強制終了で残った `.extract-*` は次の実行が削除します。成功時の stdout は検証済み directory の絶対 path 1行だけです。
+
+```bash
+CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py)"
+```
+
+```powershell
+$clauseTaggerLines = @(python scripts/fetch_clause_tagger.py)
+if ($LASTEXITCODE -ne 0) { throw 'Clause tagger fetch failed' }
+if ($clauseTaggerLines.Count -ne 1) { throw 'Clause tagger fetch must return exactly one output line' }
+$clauseTagger = [string]$clauseTaggerLines[0]
+```
+
+Swift 側は PortableRuntime の `ClauseTaggerAssets(modelDirectory:)` が、caller の渡した絶対 path の既存 directory で4ファイルの通常ファイル型・byte 数・SHA-256（Core の streaming `FileSHA256`）を、他の処理より先に検証します。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名、期待値と実際の値、`python3 scripts/fetch_clause_tagger.py` を含むエラーで失敗し、修復や代替 path はありません。成功すると ONNX モデルの URL、tokenizer の URL、manifest 由来の `ClauseTaggerModelIdentity`（model id、model revision、tokenizer SHA-256）を公開します。実モデルを使うテストは、fetcher が出力した directory を指す必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` を要求します。既定値はなく、未設定・相対 path・存在しない directory は skip ではなく失敗です。
+
+自己 test は次のとおりです。
+
+```bash
+python3 -B scripts/test_fetch_clause_tagger.py
+```
+
+fetcher の test は manifest の pin、Swift と同じ manifest ファイルを読むこと（複製がない）、不正な manifest、正常な公開と archive の削除、有効な既存 cache の再利用（ネットワークなし）、破損・不足・余分・symlink の既存 cache の拒否、破損 archive の拒否、残った staging の削除、悪意ある archive（traversal・絶対 path・backslash・link・重複・想定外・サイズ違い・同サイズで内容違い）の拒否を検査します。ネットワークには接続せず、archive は test が作る小さな合成 tar.gz です。Swift の [ClauseTaggerAssetsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ClauseTaggerAssetsTests.swift) は PortableRuntime の test target（Linux / Windows）で、manifest の pin と、小さな stand-in の一時 directory による欠落・サイズ違い・hash 違い・directory・相対 path の拒否を、実モデルなしで検査します。
+
 ## ビルドと検証
 
 Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に設定します。
@@ -655,6 +689,8 @@ python -B scripts/test_fetch_silero_vad.py
 if ($LASTEXITCODE -ne 0) { throw 'Silero VAD fetcher self-test failed' }
 python -B scripts/test_fetch_community1_diarization.py
 if ($LASTEXITCODE -ne 0) { throw 'Community-1 diarization fetcher self-test failed' }
+python -B scripts/test_fetch_clause_tagger.py
+if ($LASTEXITCODE -ne 0) { throw 'Clause tagger fetcher self-test failed' }
 python -B scripts/test_fetch_qwen3_asr_tokenizer.py
 if ($LASTEXITCODE -ne 0) { throw 'Qwen3-ASR tokenizer fetcher self-test failed' }
 python -B scripts/test_pinned_download.py
