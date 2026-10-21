@@ -233,7 +233,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevPortableRuntime",
-    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX"],
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX", "MacAmbientJevDiarization"],
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -250,6 +250,7 @@ targets.append(.testTarget(
         "MacAmbientJevONNX",
         "MacAmbientJevPipeline",
         "MacAmbientJevCore",
+        "MacAmbientJevDiarization",
         "MacAmbientJevVADFixtures"
     ],
     resources: [.copy("Resources")],

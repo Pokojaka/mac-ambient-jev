@@ -126,11 +126,40 @@ struct Community1Manifest: Decodable, Equatable {
     }
 }
 
+/// The pinned sources and file hashes of the Community-1 models, for run provenance.
+public struct Community1ModelIdentity: Sendable, Equatable {
+    /// Every pinned source as `repository@revision`, sorted and joined with `+`.
+    public let model: String
+    /// SHA-256 of each pinned file, keyed by file name.
+    public let fileSHA256: [String: String]
+}
+
 /// Verified Community-1 model files in a caller-supplied directory, plus the decoded PLDA transform.
-struct Community1Assets {
-    let segmentationURL: URL
-    let embeddingURL: URL
+public struct Community1Assets {
+    public let segmentationURL: URL
+    public let embeddingURL: URL
     let plda: Community1PLDA
+
+    /// Verifies the four files the bundled manifest pins in `modelDirectory`. Any missing,
+    /// wrong-size or corrupt file throws; nothing is repaired or downloaded.
+    public init(modelDirectory: URL) throws {
+        try self.init(modelDirectory: modelDirectory, manifest: Community1Manifest.bundled())
+    }
+
+    /// The fixed diarizer built on this directory's PLDA transform.
+    public var diarizer: Community1Diarizer { Community1Diarizer(plda: plda) }
+
+    public static func pinnedIdentity() throws -> Community1ModelIdentity {
+        let manifest = try Community1Manifest.bundled()
+        let model = manifest.sources
+            .map { "\($0.value.repository)@\($0.value.revision)" }
+            .sorted()
+            .joined(separator: "+")
+        return Community1ModelIdentity(
+            model: model,
+            fileSHA256: Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.name, $0.sha256) })
+        )
+    }
 
     /// Checks size and SHA-256 of the four pinned files, then decodes the PLDA JSON files with the
     /// manifest's coordinate signs. Any missing, wrong-size or corrupt file throws; nothing is repaired.

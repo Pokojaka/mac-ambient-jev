@@ -315,6 +315,38 @@ swift test --package-path app/MacAmbientJev --jobs 4 --filter 'Community1Diarize
 RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter portableKernelMatchesFluidAudio
 ```
 
+#### ONNX 話者分離の stage テスト
+
+Linux / Windows の `ONNXCommunity1DiarizationEngine`（[ONNXCommunity1DiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXCommunity1DiarizationEngine.swift)）と ONNX 推論の [Community1ONNXInference.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Community1ONNXInference.swift) は、Core ML の stage 出力と FluidAudio の spans を保存した fixture [diarization_onnx_stages.json](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/diarization_onnx_stages.json)（1 MiB 以下、Float32 は little-endian の base64）と比較します。
+
+Mac の generator は `onnxStageFixtureMatchesCoreML`（[Community1ONNXStageFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/Community1ONNXStageFixtureTests.swift)）です。他の model-backed generator と同じ `RUN_MODEL_TESTS=1` と必須の `MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY` で動き、既定値はありません。`MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1` のときだけ fixture を書き、それ以外は Core ML と FluidAudio を再実行して committed fixture と許容誤差で照合します（バイト一致では比べません）。fixture に入れるのは、VOICEVOX の長い clip（`qwen3_asr_voicevox_long.wav`、295,424 sample）の window 0・2・4・6 の Segmentation 出力（589×7 の log-probability）、全 0 の無音 window の Segmentation 出力、kernel が選んだ各 mask の cleaned activity とその Core ML Embedding 出力、散在 mask（`(7 * frame + 3) % 10 < 3` の frame が 1、window 0 の fbank）の Embedding 出力、clip 全体に対する FluidAudio の spans です。mask の選択は FluidAudio と完全一致を検証済みの kernel の `selectMasks` で行います。照合の許容は Segmentation が最大絶対誤差 `1e-3` かつ argmax 一致、Embedding が cosine `0.999` 以上、spans が数・話者 ID の一致と各境界 272 sample 以内です。
+
+```bash
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter onnxStageFixtureMatchesCoreML
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter onnxStageFixtureMatchesCoreML
+```
+
+Linux / Windows の model テスト（[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)）は `RUN_MODEL_TESTS=1` と、`scripts/fetch_community1_diarization.py` が出力した directory を指す必須の `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` で動きます。環境変数に既定値はなく、未設定・相対 path・存在しない directory は skip ではなく失敗です。比較と許容誤差は次のとおりです。
+
+| 対象 | 許容 | 測定値（ONNX Runtime 1.31.0、Linux aarch64） |
+| --- | --- | --- |
+| 音声 window の Segmentation（log-probability） | 最大絶対誤差 `2e-4`、argmax 一致 100 % | 最大 `1.2e-4`、argmax 100 % |
+| 無音 window の Segmentation | argmax 一致 100 %、log-probability の最大絶対誤差 `3.0`、確率の最大絶対誤差 `1e-3` | log-probability `2.45`、確率 `3.1e-4`、argmax 100 % |
+| 選ばれた各 mask の Embedding | Core ML との cosine `0.995` 以上 | `0.99991` 以上 |
+| 散在 mask の Embedding | cosine `0.995` 以上 | `0.99993` |
+| end-to-end の spans | 話者数・span 数・話者 ID の一致、各境界 272 sample（1 frame）以内 | FluidAudio の spans と完全一致 |
+
+無音 window は全クラスにほぼ質量がなく、log-probability では2つの runtime が大きく食い違うため、確率での許容を併記します。散在 mask の回帰では、mask を `SpeakerMask.pooling` で pooling 位置に sample して渡すことが前提です（生の 589 frame mask を渡すと、probe では cosine が 0.89 前後まで下がった）。multimask の行の対応は、散在 mask と window mask を2個・3個で並べた呼び出しの各行が、単独呼び出しの参照と一致し、順序を入れ替えても行が追従することで検査します。mask 数が0または4以上のとき `embed` は `invalidModelOutput` で失敗します。
+
+end-to-end のテストは VOICEVOX の clip から正規 CAF を作り、engine を `prepare`（2回）、`diarize`（2回）、`unload`（2回）の順に使い、2回の `diarize` が同じ spans を返すこと、`unload` 後の `diarize` が `notPrepared` で失敗することも確認します。
+
+model を使わない単体テスト（[ONNXCommunity1DiarizationEngineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift)）は環境変数なしで実行できます。prepare の2回呼び出しで load が1回だけであること、unload の2回呼び出しと再 prepare、prepare 前・unload 後の `diarize` の失敗、canonical CAF の bounded read、非 canonical sample rate と CAF でないファイルの拒否、5本の同時 `diarize` が重ならず直列に実行されること、`unload` が実行中の `diarize` を待つこと、存在しない・破損した model directory での `prepare` の失敗（fetch command を含む）、provenance が pin の revision と4ファイルの SHA-256 を持つことを検証します。
+
+```bash
+swift test --package-path app/MacAmbientJev --jobs 4 --filter ONNXCommunity1DiarizationEngine
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="$MODELS" swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
+```
+
 #### F・B除去範囲と表示 projection
 
 [ClauseTaggerSpanProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerSpanProjectionTests.swift) は `span_probs` の4列を O=0、F=1、D=2、B=3 と解釈し、各 token の argmax と同率時に最小 index を選ぶことを検証する。O/F、F/D、O/B、D/B の tie と4 label 全ての tie を含み、token 範囲と生成される F・B除去範囲は原文の end-exclusive UTF-16 offset で表す。UTF-8 byte fallback の複数 token が一つの Unicode scalar を表す場合、それぞれがその scalar 全体の UTF-16 範囲を指し、UTF-8 byte offset にはしない（BOM は `[0,1)`、emoji の byte token は各々 `[1,3)`）。token 範囲を順に適用し、重なる位置は後の token の label で上書きする。純粋な B と隣接する F+B は除去し、連続する除去文字は一つの範囲にまとめる。kana・decomposed character・emoji を構成する scalar が F/B 混在でも Character 全体を除去し、O/D が含まれる Character はどちらの scalar 順でも全体を残す。テストは surrogate pair、decomposed scalar、token overlap、無効な shape・確率範囲・range も扱う。

@@ -141,6 +141,16 @@ ASR model directory は対応する固定 repository / revision の model を事
 
 話者分離の固定 model（segmentation と embedding の ONNX、PLDA の JSON 2ファイル）は `MODELS="$(python3.12 scripts/fetch_community1_diarization.py)"` で取得します。stdout の検証済み directory を Swift の `Community1Assets` に渡します。取得元、pin、検証、manifest の詳細は [windows.md](windows.md#community-1-話者分離モデルの取得) を参照してください。Linux でも同じ manifest と fetcher を使います。
 
+取得した directory を使う ONNX 話者分離の model テストは、リポジトリルートで次のように実行します。`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` に既定値はなく、未設定や存在しない directory では skip せず失敗します。
+
+```bash
+MODELS="$(python3.12 scripts/fetch_community1_diarization.py)"
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="$MODELS" \
+  swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
+```
+
+model を使わない engine の lifecycle テストは `--filter ONNXCommunity1DiarizationEngine` で実行できます。Core ML との比較 fixture と許容誤差は [testing.md](testing.md#onnx-話者分離の-stage-テスト) にあります。
+
 ### artifact v2 の検証と CER 評価
 
 `--artifact-output` は既存の schema v2 ASR artifact です。Python validator と portable evaluator は次のように実行します。

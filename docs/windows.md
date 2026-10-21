@@ -589,7 +589,7 @@ if ($community1Lines.Count -ne 1) { throw 'Community-1 diarization fetch must re
 $models = [string]$community1Lines[0]
 ```
 
-Swift 側は `Community1Assets(modelDirectory:manifest:)` が caller の渡した directory で4ファイルの通常ファイル型・byte 数・SHA-256 を順に検証し、2つの JSON から `Community1PLDA` を manifest の符号付きで作ります。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名と fetch command を含む明確なエラーで失敗し、修復や代替 path はありません。directory 内の無関係な追加ファイルは検査しません。検証とロードは暗黙に download しません。SHA-256 は Core の [`FileSHA256`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift) が計算します。1 MiB ずつ読む streaming 実装で、ファイル全体をメモリに載せず、Foundation のみで macOS・Linux・Windows に共通です。Silero VAD model の検証（`SileroVADModel.validate`）も同じ実装を使います。
+Swift 側は `Community1Assets(modelDirectory:)`（同梱 manifest を使う公開 init。内部の `init(modelDirectory:manifest:)` は test が manifest を差し替えるために使う）が caller の渡した directory で4ファイルの通常ファイル型・byte 数・SHA-256 を順に検証し、2つの JSON から `Community1PLDA` を manifest の符号付きで作ります。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名と fetch command を含む明確なエラーで失敗し、修復や代替 path はありません。directory 内の無関係な追加ファイルは検査しません。検証とロードは暗黙に download しません。SHA-256 は Core の [`FileSHA256`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift) が計算します。1 MiB ずつ読む streaming 実装で、ファイル全体をメモリに載せず、Foundation のみで macOS・Linux・Windows に共通です。Silero VAD model の検証（`SileroVADModel.validate`）も同じ実装を使います。
 
 自己 test は次のとおりです。
 
@@ -598,6 +598,18 @@ python3 -B scripts/test_fetch_community1_diarization.py
 ```
 
 test は4ファイルの pin、既存の破損ファイルの拒否、中断したダウンロードからの復旧、再実行での再利用、空白・非 ASCII を含む path、script が Swift と同じ manifest ファイルを読む（複製がない）ことを検査します。ネットワークには接続せず、取得元は mock した小さな fixture です。attribution と license は [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#community-1-話者分離モデル) にあります。
+
+### ONNX 話者分離 engine のモデルテスト
+
+`ONNXCommunity1DiarizationEngine` と `Community1ONNXInference` の model テストは、fetcher が出力した directory を `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` に、`RUN_MODEL_TESTS` を `1` にして実行します。この環境変数に既定値はなく、未設定・空・相対 path・存在しない directory のときは skip せず失敗します。
+
+```powershell
+$env:RUN_MODEL_TESTS = '1'
+$env:MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY = $models
+swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
+```
+
+`--filter ONNXCommunity1DiarizationEngine` は model を使わない lifecycle の単体テストで、環境変数なしで実行できます。内容は [testing.md](testing.md#onnx-話者分離の-stage-テスト) を参照してください。
 
 ## ビルドと検証
 

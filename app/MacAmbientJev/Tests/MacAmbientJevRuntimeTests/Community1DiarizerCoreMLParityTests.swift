@@ -7,7 +7,7 @@ import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 import Testing
 
-private enum Community1CoreMLError: Error, CustomStringConvertible {
+enum Community1CoreMLError: Error, CustomStringConvertible {
     case invalidEnvironment(String)
     case invalidWAV(String)
     case invalidModelIO(String)
@@ -28,7 +28,7 @@ private enum Community1CoreMLError: Error, CustomStringConvertible {
 /// Test-only Core ML implementation of the kernel's two operations. It feeds the same compiled
 /// models FluidAudio uses: the portable fbank output goes into `Embedding.mlmodelc` once per mask,
 /// with the cleaned 589-frame activity as `weights`, which the graph interpolates itself.
-private final class CoreMLCommunity1Inference: Community1Inference {
+final class CoreMLCommunity1Inference: Community1Inference {
     private let segmentation: MLModel
     private let embedding: MLModel
     private let segmentationOutputName: String
@@ -114,7 +114,7 @@ private final class CoreMLCommunity1Inference: Community1Inference {
     }
 }
 
-private func canonicalSamples(ofWAVAt url: URL) throws -> [Float] {
+func canonicalSamples(ofWAVAt url: URL) throws -> [Float] {
     let data = try Data(contentsOf: url)
     func le16(_ offset: Int) -> Int { Int(data[offset]) | Int(data[offset + 1]) << 8 }
     func le32(_ offset: Int) -> Int { le16(offset) | le16(offset + 2) << 16 }
@@ -187,7 +187,7 @@ private func synthesizedTwoSpeakerSamples() throws -> [Float] {
     return samples
 }
 
-private func clipSamples(named clip: String) throws -> [Float] {
+func clipSamples(named clip: String) throws -> [Float] {
     if clip == "two_speaker_say" { return try synthesizedTwoSpeakerSamples() }
     let url = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -199,7 +199,7 @@ private func clipSamples(named clip: String) throws -> [Float] {
     return try canonicalSamples(ofWAVAt: url)
 }
 
-private func modelDirectory() throws -> URL {
+func modelDirectory() throws -> URL {
     let name = "MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY"
     guard let path = ProcessInfo.processInfo.environment[name], path.hasPrefix("/") else {
         throw Community1CoreMLError.invalidEnvironment("is required and must name an absolute existing directory")
