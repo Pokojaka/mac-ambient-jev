@@ -139,6 +139,18 @@ BIN_DIR="$(swift build --package-path app/MacAmbientJev -c release --show-bin-pa
 
 ASR model directory は対応する固定 repository / revision の model を事前に取得した directory です（[Qwen3-ASR ONNX model fetcher](windows.md#qwen3-asr-onnx-モデルの取得)）。Silero fetcher は Python 3.12 以上を要求します。
 
+話者分離の固定 model（segmentation と embedding の ONNX、PLDA の JSON 2ファイル）は `MODELS="$(python3.12 scripts/fetch_community1_diarization.py)"` で取得します。stdout の検証済み directory を Swift の `Community1Assets` に渡します。取得元、pin、検証、manifest の詳細は [windows.md](windows.md#community-1-話者分離モデルの取得) を参照してください。Linux でも同じ manifest と fetcher を使います。
+
+取得した directory を使う ONNX 話者分離の model テストは、リポジトリルートで次のように実行します。`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` に既定値はなく、未設定や存在しない directory では skip せず失敗します。
+
+```bash
+MODELS="$(python3.12 scripts/fetch_community1_diarization.py)"
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="$MODELS" \
+  swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
+```
+
+model を使わない engine の lifecycle テストは `--filter ONNXCommunity1DiarizationEngine` で実行できます。Core ML との比較 fixture と許容誤差は [testing.md](testing.md#onnx-話者分離の-stage-テスト) にあります。
+
 ### artifact v2 の検証と CER 評価
 
 `--artifact-output` は既存の schema v2 ASR artifact です。Python validator と portable evaluator は次のように実行します。
@@ -168,6 +180,14 @@ uv run --python 3.12 --with pytest python -m pytest -q tests/test_transcribe_fil
 ```
 
 CLI の unit tests は引数・path・import decode に加え、モデル不要で primary JSON / artifact の完全な payload schema、VAD segment text の順序と改行 join、provenance、RTF、計測値・configuration・path の error を検査します（[`TranscribeFileTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift)）。実モデルを使う Python integration test は opt-in で、release CLI の出力と CER を検査します。pipeline helper tests は [`FileTranscriptionPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FileTranscriptionPipelineTests.swift) にあります。
+
+## 話者分離の計測 CLI
+
+`MacAmbientJevDiarizeFile` は canonical CAF を `ONNXCommunity1DiarizationEngine` で話者分離し、raw span、engine の provenance、処理時間、プロセスのピーク RSS を持つ run JSON を出力します。Mac の `MacAmbientJevDiarizeFileOracle` と同じ形式で、標準 DER と話者数の比較は [testing.md](testing.md#話者分離-der-の計測) の手順で行います。Linux の release build は次のとおりです。
+
+```bash
+swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevDiarizeFile
+```
 
 ## 評価 artifact のスキーマ v2
 

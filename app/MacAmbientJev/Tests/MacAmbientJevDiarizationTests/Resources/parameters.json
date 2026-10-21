@@ -1,0 +1,42 @@
+{
+  "fixed" : {
+    "constrainedAssignment" : "true",
+    "embeddingExportPath" : "nil",
+    "embeddingSkipStrategy" : "none",
+    "excludeOverlap" : "true",
+    "exclusive" : "true",
+    "exposeChunkEmbeddings" : "false",
+    "maxSpeakers" : "nil",
+    "minSpeakers" : "nil",
+    "numSpeakers" : "nil",
+    "zeroVoteReembedding" : "false"
+  },
+  "metadata" : {
+    "comparisonRule" : "Exact field-by-field equality: every numeric value and every fixed policy string must match with no tolerance, aliases, omitted fields, or inferred defaults. Numeric values are observed from the effective validated configuration except activePriorThreshold, which is observed from VBxOutput.activeClusterEpsilon. Fixed values are exact string encodings of observed effective configuration values; nil optionals are encoded as 'nil'.",
+    "fluidAudioRevision" : "87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc",
+    "fluidAudioVersion" : "0.15.8",
+    "inputConstruction" : "OfflineDiarizerConfig.default (OfflineDiarizerTypes.swift:551-553; configuration defaults at 273-291), then set only config.embedding.minSegmentDurationSeconds = 0.3 (Embedding defaults at 94-105), then validate(). No inference or audio input is used. Derived window/step samples use samplesPerWindow/samplesPerStep (347-354); activePriorThreshold uses VBxOutput.activeClusterEpsilon (663-664).",
+    "schemaVersion" : 1
+  },
+  "numeric" : {
+    "activePriorThreshold" : 9.9999999999999995e-08,
+    "ahcThreshold" : 0.59999999999999998,
+    "elboTolerance" : 0.0001,
+    "embeddingBatchSize" : 32,
+    "fa" : 0.070000000000000007,
+    "fb" : 0.80000000000000004,
+    "maximumIterations" : 20,
+    "minimumGapSeconds" : 0.10000000000000001,
+    "minimumOffSeconds" : 0,
+    "minimumOnSeconds" : 0,
+    "minimumSegmentSeconds" : 0.29999999999999999,
+    "sampleRate" : 16000,
+    "speechOffsetThreshold" : 0.5,
+    "speechOnsetThreshold" : 0.5,
+    "stepRatio" : 0.20000000000000001,
+    "stepSamples" : 32000,
+    "windowDurationSeconds" : 10,
+    "windowSamples" : 160000,
+    "zeroVoteMinimumDurationSeconds" : 0.40000000000000002
+  }
+}

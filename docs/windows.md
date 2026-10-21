@@ -42,6 +42,7 @@ set -e
 model="$(python3 scripts/fetch_silero_vad.py)"
 export MAC_AMBIENT_JEV_SILERO_MODEL="$model"
 python3 -B scripts/test_fetch_silero_vad.py
+python3 -B scripts/test_fetch_community1_diarization.py
 python3 -B scripts/test_pinned_download.py
 python3 -B scripts/test_generate_silero_reference.py
 ```
@@ -90,7 +91,7 @@ PortableRuntime は Mac の `MacAmbientJevRuntime` に対応する、Linux / Win
 
 chunk の途中で ORT がエラーを返した場合、`SileroChunkScorer` は `SileroVAD.snapshot()` で state を戻してから error を投げます。同じ chunk を再度渡しても、結果は失敗がなかった場合と一致します。
 
-確定処理の来歴は `engine = onnxruntime-silero-vad`、`model = silero_vad_16k_op15.onnx`、`version = silero-vad@<commit>+onnxruntime@1.31.0` です。configuration の値は [storage.md](storage.md#run-の来歴) にあります。固定 model の commit と SHA-256 は `SileroVADModel` に置き、`test_fetch_silero_vad.py` が `fetch_silero_vad.py` の値との一致を検査します。
+確定処理の来歴は `engine = onnxruntime-silero-vad`、`model = silero_vad_16k_op15.onnx`、`version = silero-vad@<commit>+onnxruntime@1.31.0` です。configuration の値は [storage.md](storage.md#run-の来歴) にあります。固定 model の commit と SHA-256 は `SileroVADModel` に置き、`test_fetch_silero_vad.py` が `fetch_silero_vad.py` の値との一致を検査します。`SileroVADModel.validate` の SHA-256 は Core の `FileSHA256`（streaming）で計算します。
 
 ### Mac との一致
 
@@ -562,6 +563,64 @@ QWEN3_MEL_BENCHMARK=1 swift test --package-path app/MacAmbientJev -c release --f
 
 Release / Debug の実測値、fixture 誤差、Linux test 結果は[2026-10-19 の計測記録](records/qwen3-mel-2026-10-19.md)を参照してください。
 
+## Community-1 話者分離モデルの取得
+
+話者分離の固定 model は4ファイルで、取得元・revision・byte 数・SHA-256 は1つの manifest [`community1_diarization_models.json`](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json) だけが持ちます。この JSON は `MacAmbientJevDiarization` target の resource として全 OS で同梱され、Swift の `Community1Manifest` と Python の fetcher が同じファイルを読みます。ファイル名・revision・hash を Swift や script の定数に複製しません。
+
+| role | repository（固定 revision） | ファイル | byte 数 | SHA-256 |
+| --- | --- | --- | ---: | --- |
+| segmentation | [avencera/speakrs-models](https://huggingface.co/avencera/speakrs-models/tree/67f963b6a1d94fcd4678948237b3cc8bd69bf1d8)（`67f963b6a1d94fcd4678948237b3cc8bd69bf1d8`） | `segmentation-3.0.onnx` | 5,916,308 | `038b971741ed623af9773ecafdefa4b7bc523520099c2a68f8568b24189e8ad9` |
+| embedding | 同上 | `wespeaker-multimask-tail.onnx` | 26,777,461 | `3695eeb26e875c606d5b5d82314f08dbcbb685d691837c035d7ea690863c64ea` |
+| plda | [FluidInference/speaker-diarization-coreml](https://huggingface.co/FluidInference/speaker-diarization-coreml/tree/df2625ac79a7ac6b65ad868fee6d80f320da4232)（`df2625ac79a7ac6b65ad868fee6d80f320da4232`） | `plda-parameters.json` | 89,416 | `38ee28d4269c076cef254ee760bbd811f0738a92e0f01f9699ad372828c5de8f` |
+| xvector | 同上 | `xvector-transform.json` | 177,499 | `f7cd5cc16e63e2d89db052a23018ecfc47a311998ed1e9e39838fbac65048688` |
+
+manifest はさらに、PLDA の128個の座標符号 `coordinateSigns`（各 -1 または 1）を持ちます。固有ベクトルの符号は数学的に一意でないため、移植した固有値分解が逆符号の rho を返しても有効な解になります。そこで Mac の Core ML graph（PldaRho.mlmodelc）の射影行から導いた符号（各行で絶対値が最大の座標の符号、同率は最小 index）を manifest に固定し、`Community1PLDA` が行ごとに適用します。符号はこの manifest だけが持ち、`plda-rho.json` fixture は持ちません。Mac の PLDA oracle（`RUN_MODEL_TESTS=1`）は Core ML graph から導いた符号が manifest と一致することを検査し、portable の PLDA test は manifest の符号を読みます。符号を変えるときは oracle で再導出した値で manifest を更新します。
+
+[`fetch_community1_diarization.py`](../scripts/fetch_community1_diarization.py) は Python 3.12 以上の標準ライブラリのみを使う引数なし fetcher で、`fetch_silero_vad.py` と同じ [`pinned_download.py`](../scripts/pinned_download.py) を使います。各ファイルは `https://huggingface.co/<repository>/resolve/<revision>/<ファイル名>` の固定 URL だけから取得し、retry や代替 URL は使いません。保存先は `.build/community1-diarization/<2つの revision の先頭12文字をソース名順に連結>/`（現在は `df2625ac79a7-67f963b6a1d9`）で、4ファイルをこの1 directory に置きます。ダウンロード後と既存ファイルの再利用時に SHA-256 を検証し、さらに正確な byte 数を検証します。不一致は再ダウンロードせずエラーにします。4ファイルがすべて有効なら再実行してもネットワークを使わず、更新時刻を変えずに同じ directory を返します。ダウンロードは一時ファイルに書いて検証してから `os.replace` で公開するため、中断しても最終名のファイルは作られず、次の実行は最初から取得し直します。強制終了で残った `.<ファイル名>.*.download` は次の実行が無視します（自動削除はしません）。成功時の stdout は検証済み directory の絶対 path 1行だけです。空白や非 ASCII を含むリポジトリ path も扱います。
+
+```bash
+MODELS="$(python3 scripts/fetch_community1_diarization.py)"
+```
+
+```powershell
+$community1Lines = @(python scripts/fetch_community1_diarization.py)
+if ($LASTEXITCODE -ne 0) { throw 'Community-1 diarization fetch failed' }
+if ($community1Lines.Count -ne 1) { throw 'Community-1 diarization fetch must return exactly one output line' }
+$models = [string]$community1Lines[0]
+```
+
+Swift 側は `Community1Assets(modelDirectory:)`（同梱 manifest を使う公開 init。内部の `init(modelDirectory:manifest:)` は test が manifest を差し替えるために使う）が caller の渡した directory で4ファイルの通常ファイル型・byte 数・SHA-256 を順に検証し、2つの JSON から `Community1PLDA` を manifest の符号付きで作ります。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名と fetch command を含む明確なエラーで失敗し、修復や代替 path はありません。directory 内の無関係な追加ファイルは検査しません。検証とロードは暗黙に download しません。SHA-256 は Core の [`FileSHA256`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift) が計算します。1 MiB ずつ読む streaming 実装で、ファイル全体をメモリに載せず、Foundation のみで macOS・Linux・Windows に共通です。Silero VAD model の検証（`SileroVADModel.validate`）も同じ実装を使います。
+
+自己 test は次のとおりです。
+
+```bash
+python3 -B scripts/test_fetch_community1_diarization.py
+```
+
+test は4ファイルの pin、既存の破損ファイルの拒否、中断したダウンロードからの復旧、再実行での再利用、空白・非 ASCII を含む path、script が Swift と同じ manifest ファイルを読む（複製がない）ことを検査します。ネットワークには接続せず、取得元は mock した小さな fixture です。attribution と license は [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#community-1-話者分離モデル) にあります。
+
+### 話者分離の計測 CLI
+
+`MacAmbientJevDiarizeFile` は Linux / Windows で canonical CAF を `ONNXCommunity1DiarizationEngine` により話者分離し、run JSON を出力します。Windows のピークメモリは process memory counters のピーク working set です。Mac の oracle との比較手順は [testing.md](testing.md#話者分離-der-の計測) にあります。モデル directory には [Community-1 話者分離モデルの取得](#community-1-話者分離モデルの取得) の出力を渡します。
+
+```powershell
+swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevDiarizeFile
+$binDir = (swift build --package-path app/MacAmbientJev -c release --show-bin-path)
+& (Join-Path $binDir 'MacAmbientJevDiarizeFile.exe') --audio $caf --model-directory $models --threads 2 --output $run
+```
+
+### ONNX 話者分離 engine のモデルテスト
+
+`ONNXCommunity1DiarizationEngine` と `Community1ONNXInference` の model テストは、fetcher が出力した directory を `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` に、`RUN_MODEL_TESTS` を `1` にして実行します。この環境変数に既定値はなく、未設定・空・相対 path・存在しない directory のときは skip せず失敗します。
+
+```powershell
+$env:RUN_MODEL_TESTS = '1'
+$env:MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY = $models
+swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
+```
+
+`--filter ONNXCommunity1DiarizationEngine` は model を使わない lifecycle の単体テストで、環境変数なしで実行できます。内容は [testing.md](testing.md#onnx-話者分離の-stage-テスト) を参照してください。
+
 ## ビルドと検証
 
 Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に設定します。
@@ -594,6 +653,8 @@ if ($qwen3TokenizerPathLines.Count -ne 1) { throw 'Qwen3-ASR tokenizer fetch mus
 $env:MAC_AMBIENT_JEV_QWEN3_TOKENIZER = [string]$qwen3TokenizerPathLines[0]
 python -B scripts/test_fetch_silero_vad.py
 if ($LASTEXITCODE -ne 0) { throw 'Silero VAD fetcher self-test failed' }
+python -B scripts/test_fetch_community1_diarization.py
+if ($LASTEXITCODE -ne 0) { throw 'Community-1 diarization fetcher self-test failed' }
 python -B scripts/test_fetch_qwen3_asr_tokenizer.py
 if ($LASTEXITCODE -ne 0) { throw 'Qwen3-ASR tokenizer fetcher self-test failed' }
 python -B scripts/test_pinned_download.py
@@ -621,8 +682,8 @@ Windows の `swift build` は Core、Pipeline、CWindowsSession、CMiniaudio、C
 参照文のファイル指定は相対パスと Windows の絶対パスを扱います。
 
 [portable-core.yml](../.github/workflows/portable-core.yml) は、共通 Core / Pipeline、Windows 音声関連ソースとテスト、ONNX source / tests / fixture、file transcription CLI の source / tests、fixture 生成スクリプト、Silero fetch / fixture script の変更を含む main への push とレビュー可能な pull request で、Linux と Windows の build/test を実行します。
-Linux は CMiniaudio、Core、Pipeline、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、ONNX、PortableRuntime、TranscribeFile の tests を実行します。workflow は ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer をそれぞれ fetch し、検証した path を `MAC_AMBIENT_JEV_SILERO_MODEL` と `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` として `GITHUB_ENV` に書き込みます。`test_portable_core.py`、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator の各 self-test、`check_portable_core.py`、`test_doc_references.py`、`check_doc_references.py` は check step で実行し、`swift build` と `swift test` はそれぞれ別 step で実行します。Linux workflow は `verify_portable.sh` を実行しません。ローカルの [verify_portable.sh](../scripts/verify_portable.sh) は別の実行手順で、ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer を fetch し、path を環境変数に設定したうえで Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero と Qwen3-ASR token reference generator の依存 package・model weights 不要な self-test、portable checker、SwiftPM manifest check、build、test を実行します。full model inference は既定では実行しません。
-Windows は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、WindowsSupport、ONNX、PortableRuntime、TranscribeFile の tests を実行します。Windows CI は [test-windows.ps1](../scripts/test-windows.ps1) が ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer の fetch、各 check、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator と Qwen3-ASR token reference generator の各 self-test、Package の全適用 target の `swift build`、DLL 配置、全適用 test target の `swift test` を行います。
+Linux は CMiniaudio、Core、Pipeline、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、ONNX、PortableRuntime、TranscribeFile の tests を実行します。workflow は ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer をそれぞれ fetch し、検証した path を `MAC_AMBIENT_JEV_SILERO_MODEL` と `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` として `GITHUB_ENV` に書き込みます。`test_portable_core.py`、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator の各 self-test、`check_portable_core.py`、`test_compare_diarization_runs.py`、`test_prepare_canonical_caf.py`、`test_doc_references.py`、`check_doc_references.py` は check step で実行し、`swift build` と `swift test` はそれぞれ別 step で実行します。Linux workflow は `verify_portable.sh` を実行しません。ローカルの [verify_portable.sh](../scripts/verify_portable.sh) は別の実行手順で、ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer を fetch し、path を環境変数に設定したうえで Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero と Qwen3-ASR token reference generator の依存 package・model weights 不要な self-test、portable checker、SwiftPM manifest check、build、test を実行します。full model inference は既定では実行しません。
+Windows は Core、Pipeline、CWindowsSession、CMiniaudio、CWindowsAudio、WindowsSupport、`CONNXRuntime`、MacAmbientJevONNX、PortableRuntime と既存評価 CLI 3 本、file transcription CLI 1 本を build し、Core、Pipeline、WindowsSupport、ONNX、PortableRuntime、TranscribeFile の tests を実行します。Windows CI は [test-windows.ps1](../scripts/test-windows.ps1) が ONNX Runtime SDK、Silero model、Qwen3-ASR tokenizer の fetch、各 check、ONNX Runtime / Silero / Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator と Qwen3-ASR token reference generator、diarization run 比較、canonical CAF 変換の各 self-test、Package の全適用 target の `swift build`、DLL 配置、全適用 test target の `swift test` を行います。
 Draft PR では portable と macOS の CI を起動せず、作業中の Linux 検証はローカルにまとめます。
 手動実行は Windows のみが既定で、run_linux を有効にすると Linux も実行します。
 同じブランチ・PR の古い実行は自動で取り消します。Windows のテストには symlink の作成権限が必要です。

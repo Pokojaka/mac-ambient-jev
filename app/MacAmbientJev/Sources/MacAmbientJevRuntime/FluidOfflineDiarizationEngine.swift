@@ -1,9 +1,10 @@
 @preconcurrency import FluidAudio
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevDiarization
 import MacAmbientJevPipeline
 
-actor FluidOfflineDiarizationEngine: DiarizationEngine {
+public actor FluidOfflineDiarizationEngine: DiarizationEngine {
     static let version = "FluidAudio@0.15.8"
     static let configuration: OfflineDiarizerConfig = {
         var config = OfflineDiarizerConfig.default
@@ -11,7 +12,7 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         return config
     }()
 
-    nonisolated var provenance: RunProvenance {
+    public nonisolated var provenance: RunProvenance {
         RunProvenance(
             engine: "fluidaudio-offline-diarizer",
             model: Repo.diarizer.rawValue,
@@ -28,17 +29,22 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
     private let config = FluidOfflineDiarizationEngine.configuration
 
     init(paths: AppPaths) {
-        self.modelDirectory = paths.modelsRoot.appending(
+        self.init(modelDirectory: paths.modelsRoot.appending(
             path: "fluidaudio-offline-diarizer",
             directoryHint: .isDirectory
-        )
+        ))
     }
 
-    func prepare() async throws {
+    /// `modelDirectory` holds the FluidAudio Core ML diarizer models.
+    public init(modelDirectory: URL) {
+        self.modelDirectory = modelDirectory
+    }
+
+    public func prepare() async throws {
         _ = try await preparedManager()
     }
 
-    func unload() async {
+    public func unload() async {
         manager = nil
     }
 
@@ -59,7 +65,7 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
         return loading
     }
 
-    func diarize(
+    public func diarize(
         fileURL: URL,
         canonicalSampleRate: Double,
         sessionURL: URL
@@ -86,14 +92,6 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
             sampleRate: Double(config.segmentation.sampleRate)
         )
         let totalFrames = Int64(sampleCount)
-        // FluidAudio schedules windows at every step strictly before EOF, including
-        // overlapping tail windows even when the audio length is a window multiple.
-        let finalWindowStart = sampleCount > 0
-            ? ((sampleCount - 1) / config.samplesPerStep) * config.samplesPerStep
-            : 0
-        let paddingFrames = sampleCount > 0
-            ? Int64(max(0, config.samplesPerWindow - (sampleCount - finalWindowStart)))
-            : 0
 
         return try segments
             .map { segment in
@@ -106,7 +104,12 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
                 guard span.startFrame >= 0,
                       span.startFrame < totalFrames,
                       span.endFrame > span.startFrame,
-                      span.endFrame <= totalFrames || span.endFrame - totalFrames <= paddingFrames else {
+                      let endFrame = DiarizationFinalWindowPadding.clampedEndFrame(
+                          span.endFrame,
+                          sampleCount: totalFrames,
+                          windowSamples: Int64(config.samplesPerWindow),
+                          stepSamples: Int64(config.samplesPerStep)
+                      ) else {
                     throw FinalTranscriptPipelineError.invalidSpeakerSpan(
                         speakerID: span.speakerID,
                         startFrame: span.startFrame,
@@ -114,11 +117,11 @@ actor FluidOfflineDiarizationEngine: DiarizationEngine {
                         totalFrames: totalFrames
                     )
                 }
-                guard span.endFrame > totalFrames else { return span }
+                if endFrame == span.endFrame { return span }
                 return SpeakerSpan(
                     speakerID: span.speakerID,
                     startFrame: span.startFrame,
-                    endFrame: totalFrames,
+                    endFrame: endFrame,
                     confidence: span.confidence
                 )
             }

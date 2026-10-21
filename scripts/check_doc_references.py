@@ -28,6 +28,7 @@ CLI_SOURCES = {
         "MacAmbientJevCaptureSystemAudio", "MacAmbientJevProcessRecording",
         "MacAmbientJevMeasureLiveLatency", "MacAmbientJevEvaluateSession",
         "MacAmbientJevEvaluateASR", "MacAmbientJevEvaluateDiarization",
+        "MacAmbientJevDiarizeFile", "MacAmbientJevDiarizeFileOracle",
     )
 }
 CLI_SOURCES.update({

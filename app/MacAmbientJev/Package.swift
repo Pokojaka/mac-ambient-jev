@@ -7,6 +7,7 @@ import Foundation
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
     .library(name: "MacAmbientJevPipeline", targets: ["MacAmbientJevPipeline"]),
+    .library(name: "MacAmbientJevDiarization", targets: ["MacAmbientJevDiarization"]),
     .executable(
         name: "MacAmbientJevEvaluateSession",
         targets: ["MacAmbientJevEvaluateSession"]
@@ -38,6 +39,15 @@ coreDependencies.append("CWindowsSession")
 var targets: [Target] = [
     .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
+    .target(
+        name: "MacAmbientJevDiarization",
+        dependencies: ["MacAmbientJevCore"],
+        resources: [.copy("Resources")]
+    ),
+    .target(
+        name: "MacAmbientJevDiarizationMeasurement",
+        dependencies: ["MacAmbientJevCore"]
+    ),
     .executableTarget(
         name: "MacAmbientJevEvaluateSession",
         dependencies: ["MacAmbientJevCore"]
@@ -57,13 +67,32 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevVADFixtures",
         exclude: ["vad_parity.json"]
     ),
+    // The Mac-written canonical CAF and its expected samples, read by the CAF tests of every platform.
+    .target(
+        name: "MacAmbientJevCAFFixtures",
+        path: "Tests/MacAmbientJevCAFFixtures",
+        resources: [.copy("Resources")]
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
-        dependencies: ["MacAmbientJevCore"]
+        dependencies: ["MacAmbientJevCore", "MacAmbientJevCAFFixtures"]
     ),
     .testTarget(
         name: "MacAmbientJevPipelineTests",
         dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevDiarizationMeasurementTests",
+        dependencies: [
+            "MacAmbientJevDiarizationMeasurement",
+            "MacAmbientJevCore",
+            "MacAmbientJevCAFFixtures"
+        ]
+    ),
+    .testTarget(
+        name: "MacAmbientJevDiarizationTests",
+        dependencies: ["MacAmbientJevDiarization"],
+        resources: [.copy("Resources")]
     )
 ]
 
@@ -184,6 +213,15 @@ let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-Xcc", "-I\(onnxRuntimeIncludeDirectory.path)"])
 ]
 
+products.append(.executable(
+    name: "MacAmbientJevDiarizeFile",
+    targets: ["MacAmbientJevDiarizeFile"]
+))
+targets.append(.executableTarget(
+    name: "MacAmbientJevDiarizeFile",
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevDiarizationMeasurement", "MacAmbientJevPortableRuntime"],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
 products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
 products.append(.library(name: "MacAmbientJevPortableRuntime", targets: ["MacAmbientJevPortableRuntime"]))
 products.append(.executable(
@@ -216,7 +254,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevPortableRuntime",
-    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX"],
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX", "MacAmbientJevDiarization"],
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -233,6 +271,7 @@ targets.append(.testTarget(
         "MacAmbientJevONNX",
         "MacAmbientJevPipeline",
         "MacAmbientJevCore",
+        "MacAmbientJevDiarization",
         "MacAmbientJevVADFixtures"
     ],
     resources: [.copy("Resources")],
@@ -259,6 +298,10 @@ products += [
     .library(name: "MacAmbientJevRuntime", targets: ["MacAmbientJevRuntime"]),
     .library(name: "MacAmbientJevCapture", targets: ["MacAmbientJevCapture"]),
     .executable(name: "MacAmbientJev", targets: ["MacAmbientJev"]),
+    .executable(
+        name: "MacAmbientJevDiarizeFileOracle",
+        targets: ["MacAmbientJevDiarizeFileOracle"]
+    ),
     .executable(
         name: "MacAmbientJevCaptureSystemAudio",
         targets: ["MacAmbientJevCaptureSystemAudio"]
@@ -314,6 +357,7 @@ targets += [
         dependencies: [
             "MacAmbientJevCore",
             "MacAmbientJevPipeline",
+            "MacAmbientJevDiarization",
             "MacAmbientJevAppleSupport",
             .product(name: "FluidAudio", package: "FluidAudio"),
             .product(name: "Qwen3ASR", package: "speech-swift"),
@@ -329,6 +373,10 @@ targets += [
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime"
         ]
+    ),
+    .executableTarget(
+        name: "MacAmbientJevDiarizeFileOracle",
+        dependencies: ["MacAmbientJevCore", "MacAmbientJevDiarizationMeasurement", "MacAmbientJevRuntime"]
     ),
     .executableTarget(
         name: "MacAmbientJevCaptureSystemAudio",
@@ -398,7 +446,8 @@ targets += [
         dependencies: [
             "MacAmbientJevCore",
             "MacAmbientJevAppleSupport",
-            "MacAmbientJevPipeline"
+            "MacAmbientJevPipeline",
+            "MacAmbientJevCAFFixtures"
         ],
         resources: [.copy("Resources/ClauseTaggerFixtures.json")]
     ),
@@ -409,7 +458,10 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime",
-            "MacAmbientJevVADFixtures"
+            "MacAmbientJevDiarization",
+            "MacAmbientJevVADFixtures",
+            "MacAmbientJevCAFFixtures",
+            .product(name: "FluidAudio", package: "FluidAudio")
         ]
     )
 ]

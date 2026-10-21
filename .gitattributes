@@ -1,0 +1,2 @@
+# Test resources are compared, hashed or size-pinned byte for byte, so checkout must not rewrite line endings.
+app/MacAmbientJev/Tests/*/Resources/** -text

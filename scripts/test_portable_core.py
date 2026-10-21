@@ -5,12 +5,14 @@ import sys
 import tempfile
 import unittest
 
-from check_portable_core import scan
+from check_portable_core import scan, scan_test_imports
 
 CHECK_SCRIPT = pathlib.Path(__file__).resolve().with_name("check_portable_core.py")
 DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevCore",
     "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+    "app/MacAmbientJev/Sources/MacAmbientJevDiarization",
+    "app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement",
     "app/MacAmbientJev/Sources/MacAmbientJevONNX",
     "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime",
 )
@@ -22,6 +24,17 @@ class PortableImportTests(unittest.TestCase):
             root = pathlib.Path(directory)
             (root / "Core.swift").write_text(source, encoding="utf-8")
             return [module for _, module in scan(root)]
+
+    def test_xctest_is_rejected_in_test_sources_and_swift_testing_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            test_file = root / "Community1ReconstructionTests.swift"
+            test_file.write_text("import XCTest", encoding="utf-8")
+            self.assertEqual(scan(root), [])
+            self.assertEqual(scan_test_imports(root), [(test_file, "XCTest")])
+
+            test_file.write_text("import Testing", encoding="utf-8")
+            self.assertEqual(scan_test_imports(root), [])
 
     def test_forbidden_modules_are_rejected_even_when_guarded(self):
         for module in [
@@ -70,6 +83,7 @@ class PortableImportTests(unittest.TestCase):
         (fixture_root / "Fixture.swift").write_text(source, encoding="utf-8")
 
     def run_default_cli(self, directory):
+        self.write_fixture(directory, "app/MacAmbientJev/Tests", "import Testing")
         return subprocess.run(
             [sys.executable, "-B", str(CHECK_SCRIPT)],
             cwd=directory,
@@ -84,6 +98,8 @@ class PortableImportTests(unittest.TestCase):
             self.write_fixture(directory, DEFAULT_ROOTS[1], "import AVFoundation")
             self.write_fixture(directory, DEFAULT_ROOTS[2], "import CoreML")
             self.write_fixture(directory, DEFAULT_ROOTS[3], "import FluidAudio")
+            self.write_fixture(directory, DEFAULT_ROOTS[4], "import Foundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[5], "import Foundation")
 
             result = self.run_default_cli(directory)
 
@@ -115,7 +131,7 @@ class PortableImportTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(
-                result.stdout.startswith("Portable Core / Pipeline / ONNX / PortableRuntime import check passed"),
+                result.stdout.startswith("Portable Core / Pipeline / Diarization / ONNX / PortableRuntime import check passed"),
                 result.stdout,
             )
 
