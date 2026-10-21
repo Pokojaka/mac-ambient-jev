@@ -223,7 +223,15 @@ final class AppState: ObservableObject {
             processingQueue.beginStorageMaintenance()
             startupMaintenanceTask = Task { [weak self] in
                 guard let self else { return }
-                await self.recoverPendingSessions()
+                await self.processingCoordinator.recoverPendingSessions(
+                    effects: self,
+                    scan: {
+                        try SessionRecoveryScanner(sessionsRoot: self.paths.sessionsRoot).pendingSessions()
+                    },
+                    maintain: { items, willMaintain in
+                        await SessionStorageMaintainer.maintain(items, willMaintain: willMaintain)
+                    }
+                )
             }
         }
     }

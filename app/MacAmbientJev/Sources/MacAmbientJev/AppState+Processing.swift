@@ -10,7 +10,62 @@ import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
-extension AppState: SessionProcessingEffects {
+extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
+    var recoveryStatusSnapshot: SessionRecoveryStatusSnapshot {
+        SessionRecoveryStatusSnapshot(
+            processing: processingStatusText,
+            transcript: transcriptViewModel.statusText
+        )
+    }
+
+    func recoveryDidChange(_ event: SessionRecoveryEvent) {
+        switch event {
+        case .maintenanceStarted(let count):
+            let text = "保存済み録音の音声を整理しています（\(count)件）"
+            processingStatusText = text
+            transcriptViewModel.setStatus(text)
+        case .maintenanceFinished(let count, let previous):
+            let text = "保存済み録音の音声を整理しています（\(count)件）"
+            if processingStatusText == text {
+                processingStatusText = previous.processing
+            }
+            if transcriptViewModel.statusText == text {
+                transcriptViewModel.setStatus(previous.transcript)
+            }
+        case .recovering(let count):
+            processingStatusText = "未完了の文字起こしを復旧しています（\(count)件）"
+            transcriptViewModel.setStatus("未完了の文字起こしを復旧しています")
+        case .reportedFailures(let scanFailures, let maintenanceFailures, let hasRecoveries):
+            var sentences: [String] = []
+            if !scanFailures.isEmpty {
+                sentences.append(
+                    "復旧できないセッションが\(scanFailures.count)件あります。詳細は「保存済み録音」で確認できます"
+                )
+            }
+            if !maintenanceFailures.isEmpty {
+                let details = maintenanceFailures.values.sorted().joined(separator: " / ")
+                sentences.append(
+                    "保存済み録音の音声を整理できなかったセッションが\(maintenanceFailures.count)件あります: \(details)"
+                )
+            }
+            let message = sentences.joined(separator: "。")
+            if !hasRecoveries {
+                processingState = .partialFailure(message)
+            }
+            processingStatusText = message
+        case .failed(let reason):
+            processingState = .partialFailure(reason)
+            processingStatusText = "未完了セッションを復旧できませんでした: \(reason)"
+            transcriptViewModel.setStatus("未完了セッションを復旧できませんでした")
+        case .retryEmpty:
+            processingStatusText = "再試行が必要な判定はありません"
+            transcriptViewModel.setStatus("再試行が必要な判定はありません")
+        case .retryFailed(let reason):
+            processingStatusText = "保留中の判定を確認できませんでした: \(reason)"
+            transcriptViewModel.setStatus("保留中の判定を確認できませんでした")
+        }
+    }
+
     func reprocess(sessionID: UUID) {
         guard recordingPhase == .idle,
               !processingQueue.containsForReprocessing(sessionID),
@@ -72,51 +127,6 @@ extension AppState: SessionProcessingEffects {
                 await sessionProcessor.releaseIdleResources()
             }
             idleReleaseTask = nil
-        }
-    }
-
-    func retryDeferredDecisions() async {
-        do {
-            let candidates = try SessionRecoveryScanner(
-                sessionsRoot: paths.sessionsRoot
-            ).pendingSessions().candidates
-
-            var queuedCount = 0
-            for candidate in candidates {
-                let boundarySegments: [SegmentTextReference]
-                let clauses: [ClauseReference]
-                switch candidate.action {
-                case .recoverDecisionRun(let segments, let references),
-                     .retryContentPriority(let segments, let references):
-                    boundarySegments = segments
-                    clauses = references
-                case .finalize:
-                    continue
-                }
-
-                enqueueProcessing(
-                    contentPriorityRetry(
-                        for: candidate,
-                        boundarySegments: boundarySegments,
-                        clauses: clauses
-                    )
-                )
-                queuedCount += 1
-            }
-
-            if queuedCount == 0 {
-                processingStatusText =
-                    "再試行が必要な判定はありません"
-                transcriptViewModel.setStatus(
-                    "再試行が必要な判定はありません"
-                )
-            }
-        } catch {
-            processingStatusText =
-                "保留中の判定を確認できませんでした: \(error.localizedDescription)"
-            transcriptViewModel.setStatus(
-                "保留中の判定を確認できませんでした"
-            )
         }
     }
 
@@ -278,100 +288,9 @@ extension AppState: SessionProcessingEffects {
         }
     }
 
-    func recoverPendingSessions() async {
-        processingQueue.beginStorageMaintenance()
-        do {
-            let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
-            let maintenance = scan.maintenance.filter { $0.sessionID != recordingSessionID }
-            let maintenanceStatus = "保存済み録音の音声を整理しています（\(maintenance.count)件）"
-            let previousProcessingStatus = processingStatusText
-            let previousTranscriptStatus = transcriptViewModel.statusText
-            let maintenanceFailures = await SessionStorageMaintainer.maintain(
-                maintenance,
-                willMaintain: { _ in
-                    await MainActor.run {
-                        self.processingStatusText = maintenanceStatus
-                        self.transcriptViewModel.setStatus(maintenanceStatus)
-                    }
-                }
-            )
-            processingQueue.endStorageMaintenance()
-            // Only remove our temporary status; recording or processing may have replaced it while awaiting.
-            if !maintenance.isEmpty {
-                if processingStatusText == maintenanceStatus {
-                    processingStatusText = previousProcessingStatus
-                }
-                if transcriptViewModel.statusText == maintenanceStatus {
-                    transcriptViewModel.setStatus(previousTranscriptStatus)
-                }
-            }
-            let recoveries = SessionProcessingCoordinator.recoveryRequests(
-                candidates: scan.candidates,
-                recordingSessionID: recordingSessionID,
-                maintenanceFailures: maintenanceFailures,
-                pending: processingQueue.pending
-            )
-
-            if !recoveries.isEmpty {
-                processingStatusText = "未完了の文字起こしを復旧しています（\(recoveries.count)件）"
-                transcriptViewModel.setStatus(
-                    "未完了の文字起こしを復旧しています"
-                )
-            }
-            for recovery in recoveries {
-                enqueueProcessing(recovery)
-            }
-            if !processingQueue.pending.isEmpty {
-                processingCoordinator.startDrainIfIdle()
-            }
-
-            var sentences: [String] = []
-            if !scan.failures.isEmpty {
-                sentences.append(
-                    "復旧できないセッションが\(scan.failures.count)件あります。詳細は「保存済み録音」で確認できます"
-                )
-            }
-            if !maintenanceFailures.isEmpty {
-                let details = maintenanceFailures.values.sorted().joined(separator: " / ")
-                sentences.append(
-                    "保存済み録音の音声を整理できなかったセッションが\(maintenanceFailures.count)件あります: \(details)"
-                )
-            }
-            if !sentences.isEmpty {
-                let message = sentences.joined(separator: "。")
-                if recoveries.isEmpty { processingState = .partialFailure(message) }
-                processingStatusText = message
-            }
-        } catch {
-            processingQueue.endStorageMaintenance()
-            processingState = .partialFailure(error.localizedDescription)
-            processingStatusText =
-                "未完了セッションを復旧できませんでした: \(error.localizedDescription)"
-            transcriptViewModel.setStatus(
-                "未完了セッションを復旧できませんでした"
-            )
-            if !processingQueue.pending.isEmpty {
-                processingCoordinator.startDrainIfIdle()
-            }
-        }
-    }
-
     /// A completed run that compaction or cleanup then failed is a failure the user must see.
     private func reportFailedFinalization(_ result: SessionProcessingResult) {
         guard result.disposition == .failed, let message = result.message else { return }
         processingState = .partialFailure(message)
-    }
-
-    /// Decision retries reuse the timeline the published runs were computed against.
-    func contentPriorityRetry(
-        for candidate: RecoverableSession,
-        boundarySegments: [SegmentTextReference],
-        clauses: [ClauseReference]
-    ) -> PendingProcessing {
-        .retryContentPriority(
-            sessionID: candidate.manifest.sessionID,
-            boundarySegments: boundarySegments,
-            clauses: clauses
-        )
     }
 }
