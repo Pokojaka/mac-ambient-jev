@@ -95,11 +95,11 @@ private func syntheticVBxParityCases() -> [DiarizationVBxParityInput] {
 
 private func normalizedSyntheticEmbeddings(labels: [Int], embeddingDimension: Int) -> [[Double]] {
     labels.enumerated().map { row, label in
-        let floatRoundedValues = (0..<embeddingDimension).map { coordinate in
-            Float(
-                sin(Double((label + 1) * (coordinate + 1)) * 0.17)
-                    + Double((row + coordinate) % 5 - 2) * 0.01
-            )
+        let floatRoundedValues: [Float] = (0..<embeddingDimension).map { (coordinate: Int) -> Float in
+            let phase: Double = Double((label + 1) * (coordinate + 1)) * 0.17
+            let wave: Double = sin(phase)
+            let jitter: Double = Double((row + coordinate) % 5 - 2) * 0.01
+            return Float(wave + jitter)
         }
         let squaredNorm = floatRoundedValues.reduce(0.0) { partial, value in
             partial + Double(value) * Double(value)

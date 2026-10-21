@@ -212,9 +212,11 @@ private func assignmentScoreCase(
 private func assignmentCentroidCases(manager: OfflineDiarizerManager) throws -> [[String: Any]] {
     var cases: [[String: Any]] = []
     for dimension in [1, 2, 3, 8, 256] {
-        let training = (0..<3).map { row in
-            (0..<dimension).map { coordinate in
-                Double((row + 1) * (coordinate % 7 - 3)) + Double((row * coordinate) % 5) * 0.25
+        let training: [[Double]] = (0..<3).map { (row: Int) -> [Double] in
+            (0..<dimension).map { (coordinate: Int) -> Double in
+                let base: Int = (row + 1) * (coordinate % 7 - 3)
+                let offset: Int = (row * coordinate) % 5
+                return Double(base) + Double(offset) * 0.25
             }
         }
         let gamma = [[0.1, 0.2, 0.7], [0.3, 0.2, 0.1], [0.7, 0.2, 0.3]]
