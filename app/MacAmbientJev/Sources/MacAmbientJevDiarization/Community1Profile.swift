@@ -78,6 +78,15 @@ enum Community1Profile {
     /// Upper mel-bank edge in the frozen frontend profile; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, compiled mel weights `FBank.mlmodelc/model.mil:5`, profile `candidate-sol/design.md:100`.
     static let highFrequencyHz: Float = 8_000
 
+    /// One-sided spectrum width (fftSize / 2 + 1); the compiled DFT and mel weights are `[257, 1, 512]` and `[80, 257, 1]`, `FBank.mlmodelc/model.mil:5-7`.
+    static let fftBins: Int = 257
+
+    /// Mel scale slope 1127 (Kaldi mel scale, `mel = 1127 * ln(1 + f / 700)`); the compiled mel weights `FBank.mlmodelc/model.mil:5` match this triangular bank within 1.4e-5 (checked against `weights/weight.bin`), profile `candidate-sol/design.md:100`.
+    static let melScaleSlope: Double = 1_127
+
+    /// Mel scale break frequency in Hz; same source as `melScaleSlope`.
+    static let melScaleBreakHz: Double = 700
+
     /// Compiled first-sample preemphasis coefficient; FluidAudio graph boundary `OfflineEmbeddingExtractor.swift:750-757`, `FBank.mlmodelc/model.mil:35-42`.
     static let preemphasis: Float = 0.97
 

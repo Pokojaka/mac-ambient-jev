@@ -42,7 +42,7 @@ import Testing
             "frontend.json",
             as: DiarizationFrontendFixture.self
         )
-        #expect(DiarizationParityFixtures.filenames.count == 9)
+        #expect(DiarizationParityFixtures.filenames.count == 15)
         for metadata in [
             parameters.metadata,
             reconstruction.metadata,

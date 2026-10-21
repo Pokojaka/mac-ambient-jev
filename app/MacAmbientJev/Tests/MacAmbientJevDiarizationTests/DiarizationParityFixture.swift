@@ -378,8 +378,24 @@ struct DiarizationFrontendInterpolationCase: Decodable {
     let expectedPooling: DiarizationParityTensor
 }
 
+struct DiarizationFbankGraphFixture: Decodable {
+    let metadata: DiarizationParityMetadata
+    let modelWeightsSHA256: String
+    let window: DiarizationParityTensor
+    let melWeights: DiarizationParityTensor
+}
+
+struct DiarizationFbankCaseFixture: Decodable {
+    let metadata: DiarizationParityMetadata
+    let modelWeightsSHA256: String
+    let name: String
+    let construction: String
+    let availableSampleCount: Int
+    let expectedFeatures: DiarizationParityTensor
+}
+
 enum DiarizationParityFixtures {
-    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json", "plda-rho.json", "plda-parameters.json", "xvector-transform.json", "frontend.json"]
+    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json", "plda-rho.json", "plda-parameters.json", "xvector-transform.json", "frontend.json", "fbank-graph.json", "fbank-speech.json", "fbank-clipping.json", "fbank-silence.json", "fbank-short.json", "fbank-dc-offset.json"]
 
     static func data(named name: String) throws -> Data {
         guard filenames.contains(name) else {

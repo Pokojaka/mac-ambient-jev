@@ -36,10 +36,11 @@ enum DiarizationParityOracle {
     static let version = "0.15.8"
     static let revision = "87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc"
     private static let fixtureNames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json", "plda-rho.json"]
+    static let fbankFixtureNames = ["fbank-graph.json", "fbank-speech.json", "fbank-clipping.json", "fbank-silence.json", "fbank-short.json", "fbank-dc-offset.json"]
     private static let maximumFixtureBytes = 1_048_576
     private static let pldaRhoDesignContractAbsoluteError = 1e-4 // The PLDA rho design contract permits this absolute error.
 
-    private struct DecodedPLDARho {
+    private struct DecodedTensor {
         let dtype: String
         let values: [Double]
     }
@@ -158,12 +159,14 @@ enum DiarizationParityOracle {
                 freshCase["name"] as? String,
                 "Fresh PLDA case at index \(index) must have a string name"
             )
-            let committedRho = try decodePLDARho(
+            let committedRho = try decodeTensor(
                 committedCase["expectedRho"],
+                field: "expectedRho",
                 source: "committed case \(caseName)"
             )
-            let freshRho = try decodePLDARho(
+            let freshRho = try decodeTensor(
                 freshCase["expectedRho"],
+                field: "expectedRho",
                 source: "fresh case \(caseName)"
             )
             try #require(
@@ -183,6 +186,75 @@ enum DiarizationParityOracle {
                     "PLDA rho mismatch for case \(caseName) at index \(valueIndex): committed=\(committedValue), fresh Core ML=\(freshValue), absolute error=\(absoluteError), allowed=\(pldaRhoDesignContractAbsoluteError)"
                 )
             }
+        }
+    }
+
+    /// Core ML float output differs between environments, so a committed fbank grid is compared by absolute error.
+    static let fbankCheckAbsoluteError = 1e-3
+
+    static func checkFbankOrWrite(_ object: [String: Any], named name: String) throws {
+        guard fbankFixtureNames.contains(name) else {
+            throw DiarizationParityOracleError.invalidFixtureName(name)
+        }
+        var contents = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        contents.append(0x0A)
+        guard contents.count <= maximumFixtureBytes else {
+            throw DiarizationParityOracleError.fixtureTooLarge(contents.count)
+        }
+
+        let url = sourceResourcesURL.appendingPathComponent(name, isDirectory: false)
+        if ProcessInfo.processInfo.environment["MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY"] == "1" {
+            try FileManager.default.createDirectory(
+                at: sourceResourcesURL,
+                withIntermediateDirectories: true
+            )
+            try contents.write(to: url, options: .atomic)
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw DiarizationParityOracleError.missingFixture(name)
+        }
+        let committed = try Data(contentsOf: url)
+        guard committed.count <= maximumFixtureBytes else {
+            throw DiarizationParityOracleError.fixtureTooLarge(committed.count)
+        }
+        let committedObject = try #require(
+            try JSONSerialization.jsonObject(with: committed) as? [String: Any],
+            "\(name) must contain a JSON object"
+        )
+        let toleranceFields = name == "fbank-graph.json" ? [] : ["expectedFeatures"]
+        let exactFields = Set(committedObject.keys).union(object.keys).subtracting(toleranceFields)
+        for field in exactFields.sorted() {
+            let committedField = try JSONSerialization.data(
+                withJSONObject: [committedObject[field] ?? NSNull()],
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            let freshField = try JSONSerialization.data(
+                withJSONObject: [object[field] ?? NSNull()],
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            try #require(committedField == freshField, "\(name) field \(field) must match exactly")
+        }
+        for field in toleranceFields {
+            let committedTensor = try decodeTensor(committedObject[field], field: field, source: "committed \(name)")
+            let freshTensor = try decodeTensor(object[field], field: field, source: "fresh Core ML \(name)")
+            try #require(
+                committedTensor.values.count == freshTensor.values.count,
+                "\(name) \(field) value count differs: committed=\(committedTensor.values.count), fresh=\(freshTensor.values.count)"
+            )
+            var maximumError = 0.0
+            for index in committedTensor.values.indices {
+                maximumError = max(maximumError, abs(committedTensor.values[index] - freshTensor.values[index]))
+            }
+            print("fbank check \(name) \(field): max abs error \(maximumError)")
+            try #require(
+                maximumError <= fbankCheckAbsoluteError,
+                "\(name) \(field) max abs error \(maximumError) exceeds \(fbankCheckAbsoluteError)"
+            )
         }
     }
 
@@ -211,14 +283,14 @@ enum DiarizationParityOracle {
         )
     }
 
-    private static func decodePLDARho(_ value: Any?, source: String) throws -> DecodedPLDARho {
-        let tensor = try #require(value as? [String: Any], "\(source) expectedRho must be a tensor object")
-        let dtype = try #require(tensor["dtype"] as? String, "\(source) expectedRho must have a dtype")
-        let shape = try #require(tensor["shape"] as? [Int], "\(source) expectedRho must have an integer shape")
-        try #require(!shape.isEmpty, "\(source) expectedRho shape must not be empty")
+    private static func decodeTensor(_ value: Any?, field: String, source: String) throws -> DecodedTensor {
+        let tensor = try #require(value as? [String: Any], "\(source) \(field) must be a tensor object")
+        let dtype = try #require(tensor["dtype"] as? String, "\(source) \(field) must have a dtype")
+        let shape = try #require(tensor["shape"] as? [Int], "\(source) \(field) must have an integer shape")
+        try #require(!shape.isEmpty, "\(source) \(field) shape must not be empty")
         let encoded = try #require(
             tensor["littleEndianBase64"] as? String,
-            "\(source) expectedRho must have littleEndianBase64 data"
+            "\(source) \(field) must have littleEndianBase64 data"
         )
         let itemSize: Int
         switch dtype {
@@ -228,29 +300,29 @@ enum DiarizationParityOracle {
             itemSize = MemoryLayout<UInt64>.size
         default:
             throw DiarizationParityOracleError.invalidFixtureData(
-                "\(source) expectedRho has unsupported dtype \(dtype)"
+                "\(source) \(field) has unsupported dtype \(dtype)"
             )
         }
         guard let payload = Data(base64Encoded: encoded), payload.count % itemSize == 0 else {
             throw DiarizationParityOracleError.invalidFixtureData(
-                "\(source) expectedRho has invalid base64 data or byte count for \(dtype)"
+                "\(source) \(field) has invalid base64 data or byte count for \(dtype)"
             )
         }
         let count = payload.count / itemSize
         var shapeCount = 1
         for dimension in shape {
             guard dimension >= 0 else {
-                throw DiarizationParityOracleError.invalidFixtureData("\(source) expectedRho shape has a negative dimension")
+                throw DiarizationParityOracleError.invalidFixtureData("\(source) \(field) shape has a negative dimension")
             }
             let (nextCount, overflow) = shapeCount.multipliedReportingOverflow(by: dimension)
             guard !overflow else {
-                throw DiarizationParityOracleError.invalidFixtureData("\(source) expectedRho shape product overflows Int")
+                throw DiarizationParityOracleError.invalidFixtureData("\(source) \(field) shape product overflows Int")
             }
             shapeCount = nextCount
         }
         guard shapeCount == count else {
             throw DiarizationParityOracleError.invalidFixtureData(
-                "\(source) expectedRho shape contains \(shapeCount) values, but its payload contains \(count)"
+                "\(source) \(field) shape contains \(shapeCount) values, but its payload contains \(count)"
             )
         }
         let values: [Double]
@@ -276,9 +348,9 @@ enum DiarizationParityOracle {
             }
         }
         guard values.allSatisfy(\.isFinite) else {
-            throw DiarizationParityOracleError.invalidFixtureData("\(source) expectedRho contains a non-finite value")
+            throw DiarizationParityOracleError.invalidFixtureData("\(source) \(field) contains a non-finite value")
         }
-        return DecodedPLDARho(dtype: dtype, values: values)
+        return DecodedTensor(dtype: dtype, values: values)
     }
 
     static func tensor(_ values: [Float], shape: [Int]) throws -> [String: Any] {
