@@ -1,25 +1,7 @@
-import CryptoKit
 import Foundation
-import Hub
-import MacAmbientJevCore
-import Tokenizers
-
-public enum ClauseTaggerTokenizerError: LocalizedError, Sendable {
-    case invalidConfiguration(String)
-    case unrepresentableText
-
-    public var errorDescription: String? {
-        switch self {
-        case let .invalidConfiguration(detail):
-            "トークナイザー設定が不正です: \(detail)"
-        case .unrepresentableText:
-            "入力テキストを語彙とバイトフォールバックで正確に表現できません。"
-        }
-    }
-}
 
 public struct ClauseTaggerTokenizer: Sendable {
-    private let tokenizer: PreTrainedTokenizer
+    private let tokenizer: ClauseTaggerUnigram
     private let vocabularyIDs: [Data: Int]
     private let vocabularyScalars: Set<Unicode.Scalar>
     private let byteFallbackIDs: [UInt8: Int]
@@ -45,31 +27,21 @@ public struct ClauseTaggerTokenizer: Sendable {
             )
         }
 
-        let actualSHA256 = SHA256.hash(data: tokenizerBytes)
-            .map { String(format: "%02x", $0) }
-            .joined()
+        let actualSHA256 = FileSHA256.hexDigest(of: tokenizerBytes)
         guard actualSHA256 == expectedSHA256 else {
             throw ClauseTaggerTokenizerError.invalidConfiguration(
-                "tokenizer.json の SHA-256 がモデルメタデータと一致しません。"
+                "tokenizer.json の SHA-256 が一致しません (expected: \(expectedSHA256), actual: \(actualSHA256))。"
             )
         }
 
-        let document: TokenizerDocument
-        do {
-            document = try JSONDecoder().decode(TokenizerDocument.self, from: tokenizerBytes)
-        } catch {
-            throw ClauseTaggerTokenizerError.invalidConfiguration(
-                "tokenizer.json を型付き JSON として解析できません: \(error.localizedDescription)"
-            )
-        }
-
-        let model = document.model
+        let configuration = try ClauseTaggerTokenizerConfiguration(data: tokenizerBytes)
+        let tokenizer = ClauseTaggerUnigram(configuration: configuration)
 
         var vocabularyIDs: [Data: Int] = [:]
         var vocabularyScalars: Set<Unicode.Scalar> = []
-        vocabularyIDs.reserveCapacity(model.vocab.count)
+        vocabularyIDs.reserveCapacity(configuration.vocabulary.count)
 
-        for (id, entry) in model.vocab.enumerated() {
+        for (id, entry) in configuration.vocabulary.enumerated() {
             let tokenBytes = Data(entry.token.utf8)
             vocabularyIDs[tokenBytes] = id
             vocabularyScalars.formUnion(entry.token.unicodeScalars)
@@ -78,46 +50,35 @@ public struct ClauseTaggerTokenizer: Sendable {
         var byteFallbackIDs: [UInt8: Int] = [:]
         byteFallbackIDs.reserveCapacity(256)
         for byte in 0..<256 {
-            let token = Data(String(format: "<0x%02X>", byte).utf8)
-            if let id = vocabularyIDs[token] {
-                byteFallbackIDs[UInt8(byte)] = id
+            let tokenString = String(format: "<0x%02X>", byte)
+            let token = Data(tokenString.utf8)
+            guard let id = vocabularyIDs[token] else {
+                throw ClauseTaggerTokenizerError.invalidConfiguration(
+                    "tokenizer.json の語彙にバイトフォールバックトークン \(tokenString) がありません。"
+                )
             }
+            byteFallbackIDs[UInt8(byte)] = id
         }
 
-        let addedTokens = document.addedTokens
-            .map { AddedToken(content: $0.content, scalars: $0.content.unicodeScalars.map(\.value)) }
-            .sorted { $0.scalars.count > $1.scalars.count }
+        let addedTokens = configuration.addedTokens.enumerated()
+            .map { item in
+                (
+                    index: item.offset,
+                    token: AddedToken(
+                        content: item.element.content,
+                        scalars: item.element.content.unicodeScalars.map(\.value)
+                    )
+                )
+            }
+            .sorted {
+                if $0.token.scalars.count != $1.token.scalars.count {
+                    return $0.token.scalars.count > $1.token.scalars.count
+                }
+                return $0.index < $1.index
+            }
+            .map { $0.token }
 
-        let libraryVocabulary = model.vocab.map { entry in
-            Config([
-                Config(BinaryDistinctString(Array(entry.token.utf16))),
-                Config(Float(entry.score))
-            ])
-        }
-        let libraryData = Config([
-            "model": Config([
-                "type": Config("Unigram"),
-                "unk_id": Config(model.unkID),
-                "vocab": Config(libraryVocabulary)
-            ])
-        ])
-        let tokenizerConfiguration = Config([
-            "tokenizer_class": Config("XLMRobertaTokenizer"),
-            "unk_token": Config("<unk>"),
-            "eos_token": Config("</s>")
-        ])
-
-        do {
-            tokenizer = try PreTrainedTokenizer(
-                tokenizerConfig: tokenizerConfiguration,
-                tokenizerData: libraryData
-            )
-        } catch {
-            throw ClauseTaggerTokenizerError.invalidConfiguration(
-                "Unigram トークナイザーを構築できません: \(error.localizedDescription)"
-            )
-        }
-
+        self.tokenizer = tokenizer
         self.vocabularyIDs = vocabularyIDs
         self.vocabularyScalars = vocabularyScalars
         self.byteFallbackIDs = byteFallbackIDs
@@ -240,9 +201,17 @@ public struct ClauseTaggerTokenizer: Sendable {
         _ text: String,
         sourceRanges: [TextUTF16Range]
     ) throws -> [ClauseTaggerToken] {
-        let pieces = tokenizer.tokenize(text: text)
+        let pieces = try tokenizer.tokenize(text)
         var reconstructed = Data()
+        var previousPieceIsUnknown = false
         for piece in pieces {
+            let id = vocabularyIDs[Data(piece.utf8)]
+            let isUnknown = id == nil || id == 0
+            // Adjacent unknown lattice pieces cannot satisfy unknown-fusion and byte-exact reconstruction.
+            guard !(previousPieceIsUnknown && isUnknown) else {
+                throw ClauseTaggerTokenizerError.unrepresentableText
+            }
+            previousPieceIsUnknown = isUnknown
             reconstructed.append(contentsOf: piece.utf8)
         }
         guard reconstructed == Data(text.utf8) else {
@@ -342,38 +311,4 @@ public struct ClauseTaggerTokenizer: Sendable {
         scalar.value > 0xFFFF ? 2 : 1
     }
 
-    private struct TokenizerDocument: Decodable {
-        let model: Model
-        let addedTokens: [AddedTokenDocument]
-
-        enum CodingKeys: String, CodingKey {
-            case model
-            case addedTokens = "added_tokens"
-        }
-
-        struct Model: Decodable {
-            let unkID: Int
-            let vocab: [VocabularyEntry]
-
-            enum CodingKeys: String, CodingKey {
-                case unkID = "unk_id"
-                case vocab
-            }
-        }
-
-        struct AddedTokenDocument: Decodable {
-            let content: String
-        }
-    }
-
-    private struct VocabularyEntry: Decodable {
-        let token: String
-        let score: Double
-
-        init(from decoder: Swift.Decoder) throws {
-            var container = try decoder.unkeyedContainer()
-            token = try container.decode(String.self)
-            score = try container.decode(Double.self)
-        }
-    }
 }

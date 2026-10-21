@@ -80,7 +80,11 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
-        dependencies: ["MacAmbientJevCore", "MacAmbientJevCAFFixtures"]
+        dependencies: [
+            "MacAmbientJevCore",
+            "MacAmbientJevCAFFixtures",
+            "MacAmbientJevClauseTaggerFixtures"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevPipelineTests",
@@ -333,21 +337,13 @@ dependencies += [
     .package(
         url: "https://github.com/ml-explore/mlx-swift.git",
         exact: "0.31.6"
-    ),
-    .package(
-        url: "https://github.com/huggingface/swift-transformers",
-        exact: "1.3.4"
     )
 ]
 
 targets += [
     .target(
         name: "MacAmbientJevAppleSupport",
-        dependencies: [
-            "MacAmbientJevCore",
-            .product(name: "Tokenizers", package: "swift-transformers"),
-            .product(name: "Hub", package: "swift-transformers")
-        ]
+        dependencies: ["MacAmbientJevCore"]
     ),
     .target(
         name: "MacAmbientJevCapture",
