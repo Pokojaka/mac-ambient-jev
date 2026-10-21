@@ -63,9 +63,15 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevVADFixtures",
         exclude: ["vad_parity.json"]
     ),
+    // The Mac-written canonical CAF and its expected samples, read by the CAF tests of every platform.
+    .target(
+        name: "MacAmbientJevCAFFixtures",
+        path: "Tests/MacAmbientJevCAFFixtures",
+        resources: [.copy("Resources")]
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
-        dependencies: ["MacAmbientJevCore"]
+        dependencies: ["MacAmbientJevCore", "MacAmbientJevCAFFixtures"]
     ),
     .testTarget(
         name: "MacAmbientJevPipelineTests",
@@ -410,7 +416,8 @@ targets += [
         dependencies: [
             "MacAmbientJevCore",
             "MacAmbientJevAppleSupport",
-            "MacAmbientJevPipeline"
+            "MacAmbientJevPipeline",
+            "MacAmbientJevCAFFixtures"
         ],
         resources: [.copy("Resources/ClauseTaggerFixtures.json")]
     ),
@@ -423,6 +430,7 @@ targets += [
             "MacAmbientJevRuntime",
             "MacAmbientJevDiarization",
             "MacAmbientJevVADFixtures",
+            "MacAmbientJevCAFFixtures",
             .product(name: "FluidAudio", package: "FluidAudio")
         ]
     )
