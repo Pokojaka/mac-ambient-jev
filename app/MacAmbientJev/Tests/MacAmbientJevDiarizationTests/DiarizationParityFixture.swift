@@ -317,8 +317,28 @@ struct DiarizationAssignmentEmbeddingCase: Decodable {
     let expectedAssignments: [Int]
 }
 
+struct DiarizationPLDAFixture: Decodable {
+    let metadata: DiarizationParityMetadata
+    let modelRevision: String
+    let pldaSHA256: String
+    let xvectorSHA256: String
+    let modelWeightsSHA256: String
+    let coordinateSigns: [Int]
+    let psi: DiarizationParityTensor
+    let referenceProjection: DiarizationParityTensor
+    let referenceSqrtSpectrum: DiarizationParityTensor
+    let cases: [DiarizationPLDACase]
+}
+
+struct DiarizationPLDACase: Decodable {
+    let name: String
+    let construction: String
+    let embeddings: DiarizationParityTensor
+    let expectedRho: DiarizationParityTensor
+}
+
 enum DiarizationParityFixtures {
-    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json"]
+    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json", "plda-rho.json", "plda-parameters.json", "xvector-transform.json"]
 
     static func data(named name: String) throws -> Data {
         guard filenames.contains(name) else {

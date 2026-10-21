@@ -96,16 +96,22 @@ enum Community1Profile {
     /// Embedding L2 floor 1e-4 is a graph/profile fact, not a Swift call-site parameter; FluidAudio invokes the graph in `OfflineEmbeddingExtractor.swift:872-894`, compiled normalization is `Embedding.mlmodelc/model.mil:419-427`, and the profile policy is `design-final.md:17`, `candidate-sol/design.md:101`.
     static let embeddingL2Floor: Float = 1e-4
 
-    /// First PLDA norm floor 1e-6 is graph/profile-owned, not a Swift call-site parameter; FluidAudio's graph boundary is `PLDATransform.swift:149-159`, the compiled norm stage is `PldaRho.mlmodelc/model.mil:12-21`, and the profile policy is `candidate-sol/design.md:102`.
-    static let pldaFirstNormFloor: Float = 1e-6
+    /// Squared norm clip before the first PLDA square root; compiled graph `PldaRho.mlmodelc/model.mil:12-21`.
+    static let pldaFirstSquaredNormFloor: Float = 1e-12
 
-    /// Second PLDA norm floor 1e-6 is graph/profile-owned, not a Swift call-site parameter; FluidAudio's graph boundary is `PLDATransform.swift:149-159`, the compiled norm stage is `PldaRho.mlmodelc/model.mil:27-35`, and the profile policy is `candidate-sol/design.md:102`.
-    static let pldaSecondNormFloor: Float = 1e-6
+    /// Squared norm clip before the second PLDA square root; compiled graph `PldaRho.mlmodelc/model.mil:27-35`.
+    static let pldaSecondSquaredNormFloor: Float = 1e-12
+
+    /// First transform scale sqrt(256)=16; compiled graph `PldaRho.mlmodelc/model.mil:24-26`.
+    static let pldaFirstTransformScale: Float = 16
+
+    /// Second transform scale sqrt(128), with the graph's Float32 literal; compiled graph `PldaRho.mlmodelc/model.mil:8,34-36`.
+    static let pldaSecondTransformScale: Float = 0x1.6a09e6p+3
 
     /// Portable deterministic eigensolver sweep cap (64), a design-only policy rather than a FluidAudio constant; graph boundary `PLDATransform.swift:149-159`, `candidate-sol/design.md:102`.
     static let pldaEigenMaximumSweeps: Int = 64
 
-    /// Portable eigensolver relative off-diagonal tolerance, a design-only policy rather than a FluidAudio constant; graph boundary `PLDATransform.swift:149-159`, `candidate-sol/design.md:102`.
+    /// Portable eigensolver and generalized-eigen residual tolerance, a design-only policy rather than a FluidAudio constant; graph boundary `PLDATransform.swift:149-159`, `candidate-sol/design.md:102`.
     static let pldaEigenRelativeTolerance: Double = 1e-12
 
     /// Community AHC cut threshold; FluidAudio `OfflineDiarizerTypes.swift:120-126,155-163`.

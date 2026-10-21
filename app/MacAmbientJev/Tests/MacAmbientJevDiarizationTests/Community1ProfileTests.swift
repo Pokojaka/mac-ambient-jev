@@ -101,8 +101,6 @@ import Testing
 
     @Test func frozenNumericalFloors() {
         #expect(Community1Profile.embeddingL2Floor == 1e-4)
-        #expect(Community1Profile.pldaFirstNormFloor == 1e-6)
-        #expect(Community1Profile.pldaSecondNormFloor == 1e-6)
         #expect(Community1Profile.pldaEigenMaximumSweeps == 64)
         #expect(Community1Profile.pldaEigenRelativeTolerance == 1e-12)
         #expect(Community1Profile.phiFloor == 1e-12)

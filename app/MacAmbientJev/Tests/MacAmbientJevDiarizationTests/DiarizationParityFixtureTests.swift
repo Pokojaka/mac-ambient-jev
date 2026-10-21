@@ -34,12 +34,18 @@ import Testing
             "vbx.json",
             as: DiarizationVBxFixture.self
         )
+        let plda = try DiarizationParityFixtures.load(
+            "plda-rho.json",
+            as: DiarizationPLDAFixture.self
+        )
+        #expect(DiarizationParityFixtures.filenames.count == 8)
         for metadata in [
             parameters.metadata,
             reconstruction.metadata,
             ahc.metadata,
             assignment.metadata,
             vbx.metadata,
+            plda.metadata,
         ] {
             #expect(metadata.schemaVersion == 1)
             #expect(metadata.fluidAudioVersion == expectedMetadataVersion)
