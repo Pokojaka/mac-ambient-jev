@@ -1,14 +1,24 @@
 import Foundation
-import MacAmbientJevCore
 
-/// Loads the local clause tagger once and builds decision coordinators on it.
+/// A decision provider paired with the identity of its loaded model.
+public struct LoadedDecisionProvider: Sendable {
+    public let provider: any DecisionProvider
+    public let identity: ClauseTaggerModelIdentity
+
+    public init(provider: any DecisionProvider, identity: ClauseTaggerModelIdentity) {
+        self.provider = provider
+        self.identity = identity
+    }
+}
+
+/// Loads a decision provider once and builds decision coordinators on it.
 public final class DecisionProviderFactory: @unchecked Sendable {
     private let usageCounter: DecisionUsageCounter
-    private let loadLocalTagger: @Sendable () throws -> LocalClauseTagger
+    private let loadProvider: @Sendable () throws -> LoadedDecisionProvider
 
     private let state = NSLock()
-    private var cachedLocalTagger: Result<LocalClauseTagger, any Error>?
-    private var pendingLoad: PendingLocalTaggerLoad?
+    private var cachedProvider: Result<LoadedDecisionProvider, any Error>?
+    private var pendingLoad: PendingProviderLoad?
 
     var pendingLoadWaiterCount: Int {
         let load = state.withLock { pendingLoad }
@@ -19,68 +29,68 @@ public final class DecisionProviderFactory: @unchecked Sendable {
         precondition(count > 0, "Pending load waiter count must be positive.")
         let load = state.withLock { pendingLoad }
         guard let load else {
-            preconditionFailure("Cannot wait for waiters because there is no pending local tagger load.")
+            preconditionFailure("Cannot wait for waiters because there is no pending provider load.")
         }
         await load.waitForWaiters(count)
     }
 
     public init(
         usageCounter: DecisionUsageCounter,
-        loadLocalTagger: @escaping @Sendable () throws -> LocalClauseTagger
+        loadProvider: @escaping @Sendable () throws -> LoadedDecisionProvider
     ) {
         self.usageCounter = usageCounter
-        self.loadLocalTagger = loadLocalTagger
+        self.loadProvider = loadProvider
     }
 
     public func makeCoordinator() throws -> DecisionCoordinator {
-        let tagger = try localTagger()
+        let loaded = try loadedProvider()
         return DecisionCoordinator(
-            provider: tagger,
-            identity: tagger.identity.decisionIdentity,
+            provider: loaded.provider,
+            identity: loaded.identity.decisionIdentity,
             usageCounter: usageCounter
         )
     }
 
-    /// Validates the model through the same cached load as the coordinator, without a request or usage.
+    /// Validates the model through the same cached provider load as the coordinator, without a request or usage.
     public func localModelIdentity() throws -> ClauseTaggerModelIdentity {
-        try localTagger().identity
+        try loadedProvider().identity
     }
 
-    /// Compiles and loads the model outside `state`. Concurrent callers share one load, and its
+    /// Loads a decision provider outside `state`. Concurrent callers share one provider load, and its
     /// result, success or failure, stays cached for the lifetime of the factory.
-    private func localTagger() throws -> LocalClauseTagger {
+    private func loadedProvider() throws -> LoadedDecisionProvider {
         state.lock()
-        if let cachedLocalTagger {
+        if let cachedProvider {
             state.unlock()
-            return try cachedLocalTagger.get()
+            return try cachedProvider.get()
         }
         if let pendingLoad {
             state.unlock()
             return try pendingLoad.wait().get()
         }
-        let load = PendingLocalTaggerLoad()
+        let load = PendingProviderLoad()
         pendingLoad = load
         state.unlock()
 
-        let result: Result<LocalClauseTagger, any Error>
+        let result: Result<LoadedDecisionProvider, any Error>
         do {
-            result = .success(try loadLocalTagger())
+            result = .success(try loadProvider())
         } catch {
             result = .failure(error)
         }
 
         state.lock()
         pendingLoad = nil
-        cachedLocalTagger = result
+        cachedProvider = result
         state.unlock()
         load.complete(result)
         return try result.get()
     }
 }
 
-private final class PendingLocalTaggerLoad: @unchecked Sendable {
+private final class PendingProviderLoad: @unchecked Sendable {
     private let condition = NSCondition()
-    private var result: Result<LocalClauseTagger, any Error>?
+    private var result: Result<LoadedDecisionProvider, any Error>?
     private var parkedWaiters = 0
     private var waiterThresholdObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
@@ -101,7 +111,7 @@ private final class PendingLocalTaggerLoad: @unchecked Sendable {
         }
     }
 
-    func wait() -> Result<LocalClauseTagger, any Error> {
+    func wait() -> Result<LoadedDecisionProvider, any Error> {
         condition.lock()
         defer { condition.unlock() }
         while true {
@@ -113,7 +123,7 @@ private final class PendingLocalTaggerLoad: @unchecked Sendable {
         }
     }
 
-    func complete(_ result: Result<LocalClauseTagger, any Error>) {
+    func complete(_ result: Result<LoadedDecisionProvider, any Error>) {
         condition.lock()
         self.result = result
         condition.broadcast()

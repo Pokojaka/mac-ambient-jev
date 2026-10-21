@@ -67,10 +67,10 @@ swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionCont
 
 ### ローカル発話文モデルの parity
 
-通常の `swift test` では実 Core ML モデルを使うテストは skip されます。一方、fixture 比較器、環境変数の検証、BOM を含む JSON reader の回帰テストは gated な実モデル実行なしで動きます。実モデル parity は macOS 15 以降で CPU only・float32 を使います。リポジトリルートから実行します。
+発話文判定テストでは、通常の `swift test` で実 Core ML モデルを使うテストだけが skip され、model-free tests は通常の suite で実行対象です（他の suite や benchmark の gate は別途適用されます）。fixture 比較器、環境変数の検証、BOM を含む JSON reader の回帰テストも gated な実モデル実行なしで動きます。実モデル parity は macOS 15 以降で CPU only・float32 を使います。リポジトリルートから実行します。
 
 ```bash
-RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|DecisionProviderFactoryTests|ClauseTaggerParityFixtureTests|ClauseTaggerTokenizer'
+RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|DecisionProviderFactoryTests|ClauseTaggerParityFixtureTests|ClauseTagger'
 ```
 
 `/absolute/path/to/exported-model` は placeholder です。学習済み ClauseTagger.mlpackage と tokenizer.json が直下にある実在ディレクトリの絶対パスへ置き換えてください。`scripts/build_app.sh` の後は、app bundle の Contents/Resources/clause-tagger の絶対パスを指定すると同梱モデルを検証できます。gated run では `RUN_CLAUSE_TAGGER_TESTS=1` と明示的な `CLAUSE_TAGGER_MODEL_DIRECTORY` が必要です。環境変数の未設定・空値、相対パス、存在しないパス、ディレクトリでないパスはエラーになります。`MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1` を `RUN_CLAUSE_TAGGER_TESTS=1` なしで指定する場合もエラーです。既定パス、モデルの自動取得、fallback はありません。学習済みモデル package は Git に含めず、production tokenizer はアプリ release に同梱します。test-only の hash-pinned tokenizer JSON は Git に含めます。
@@ -89,6 +89,14 @@ swift test --package-path app/MacAmbientJev --filter ClauseTaggerTokenizer
 
 [ClauseTaggerRequestFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerRequestFixtures.json) は同じモデル identity の Core ML・CPU only・float32 による request parity を保存します。6 boundary cases・10 raw model calls と、3 targets / 3 calls の priority batch を含みます。multi-window、short/long continuation、候補なしの終端 `まあ。`、filler、backchannel を扱います。filler の必須 projection は入力 `まあ、あの、今日は損失関数の話をします。` から出力 `今日は損失関数の話をします。` です。backchannel は元コーパスの F/B owned-span argmax witness を確認します。priority batch では192-token truncation も確認します。各 request の source、candidates、`next`、全 window の input IDs・ownership・UTF-16 ranges、junction/span indices、raw 3 heads、実際の `LocalClauseTagger` response と projected text を記録します。raw model snapshots は同じ既存 encoder/model sequence の決定的 replay であり、production trace hook ではありません。fixture を書く前に replay と public response を照合します。
 
+保存済み request の replay と実モデル capture は別の検証です。[ClauseTaggerDecisionLogicFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerDecisionLogicFixtureTests.swift) は CoreTests の3件で、同じ target の [ClauseTaggerRequestReplaySupport.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerRequestReplaySupport.swift) を使い、不変の request fixture 6 boundary cases・10 calls と、priority batch 3 targets・3 calls の計13 raw calls を、Core の pinned tokenizer と同期 decision logic で再生します。fake throwing closure は各 `inputID` の内容・順序・呼び出し数を照合し、想定外の呼び出しを throw します。すべての呼び出しがちょうど一度消費され、欠落・余分・未消費がないことと、fake throwing closure が記録済み snapshot の3 heads の raw 出力を返すことを確認します。唯一の request encoder を使って事前符号化した ownership・ranges・windows・junctions・candidates は完全一致で比較し、最終結果の keys・labels・counts・tokens・ranges・projected text の UTF-8 bytes も完全一致で比較します。probabilities と confidence は絶対誤差 `1e-3` 以下、raw head の shape・値と確率和（`1e-5` 以内）も検証します。filler の結果は `今日は損失関数の話をします。` と完全一致します。
+
+```bash
+swift test --package-path app/MacAmbientJev --filter 'DecisionProviderFactoryTests|ClauseTaggerDecisionLogic|ClauseTaggerEncodingTests|ClauseTaggerSpanProjectionTests'
+```
+
+[ClauseTaggerDecisionLogicTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerDecisionLogicTests.swift) の10件は不正 batch・keys・probabilities・malformed heads、primary tie と confidence、error propagation、および entry・windows 間・continuation 前・final return での cancellation と priority 処理を model-free で検証します。これらと上記 fixture replay、DecisionProviderFactoryTests の計20件は CoreTests で model・download・環境変数・OS gate を使わず、通常の `swift test` で実行対象です。
+
 [ClauseTaggerParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/ClauseTaggerParityFixtureTests.swift) は shape を確認してから値を比較します。object key sets、array counts、IDs、ranges、candidate/label/token totals、projected text などは完全一致し、文字列は UTF-8 bytes で比較して Unicode の byte-distinct 表記を区別します。確率と confidence は各値の絶対誤差 `1e-3` 以下、head の shape は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]`、各確率 row の和は `1e-5` 以内です。
 
 変換 artifact の Python 受け入れ基準では、Python reference と Core ML MLProgram を dynamic `input_ids` int32 `[1,L]` で比較し、通常入力と randomized inputs の各整数長 `L=2...192` のすべてで `boundary_probs`、`span_probs`、`priority_probs` 各 head の最大絶対誤差を `1e-3` 以下とします。mask support は長さ `2, 64, 65, 66, 128, 192` で確認します。これは Python conversion acceptance sweep の基準であり、Swift の選定 corpus が全191長を網羅するという意味ではありません。tokenizer config は Metaspace の `prepend_scheme=never` と `split=false`、正確な UTF-8 byte fallback を要求し、この契約に違反する config は拒否します。
@@ -102,7 +110,7 @@ RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/export
 
 Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、この入出力契約を満たす必要があります。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
 
-[DecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/DecisionProviderFactoryTests.swift) は tagger のロード結果（失敗を含む）を factory の寿命中 cache すること、同時要求が一つのロードを共有すること、実 token usage、request record の request ID と input token 数、provenance の model/model revision を記録することを検証します。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。
+[DecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionProviderFactoryTests.swift) は全 platform の CoreTests にある model-free 7件で、fake providers を使い、環境変数・filesystem・モデルなしで実行します。成功・失敗時の single-flight と同時要求での identity/coordinator 共有、同じ failure と load の CancellationError の cache、完全な identity/provenance、identity の lookup/確認だけでは判定 request も usage も発生しないこと、synthetic token accounting、provider cancellation が attempt-only で cache を再利用することを検証します。実 token usage や実モデル推論を測るテストではありません。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。
 
 ### 合成イベントによる回帰検証とライブ滞留計測
 

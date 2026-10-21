@@ -182,9 +182,13 @@ final class AppState: ObservableObject {
         makeDecisions: (@Sendable (AppPaths, DecisionUsageCounter) -> NativeSessionProcessor.DecisionCoordinatorFactory)? = nil
     ) {
         let decisionUsageCounter = DecisionUsageCounter()
-        let decisionProviderFactory = DecisionProviderFactory(usageCounter: decisionUsageCounter) {
-            try LocalClauseTagger(modelDirectory: LocalClauseTagger.bundledModelDirectory())
-        }
+        let decisionProviderFactory = DecisionProviderFactory(
+            usageCounter: decisionUsageCounter,
+            loadProvider: {
+                let tagger = try LocalClauseTagger(modelDirectory: LocalClauseTagger.bundledModelDirectory())
+                return LoadedDecisionProvider(provider: tagger, identity: tagger.identity)
+            }
+        )
 
         self.paths = paths
         self.decisionUsageCounter = decisionUsageCounter

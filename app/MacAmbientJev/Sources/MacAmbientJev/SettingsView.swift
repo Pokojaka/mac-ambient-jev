@@ -1,7 +1,6 @@
 import AVFoundation
 import SwiftUI
 import MacAmbientJevCore
-import MacAmbientJevAppleSupport
 import MacAmbientJevPipeline
 
 struct SettingsView: View {
