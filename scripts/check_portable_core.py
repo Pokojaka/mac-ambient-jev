@@ -69,6 +69,17 @@ def scan(root: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
     return violations
 
 
+def scan_test_imports(root: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
+    violations: list[tuple[pathlib.Path, str]] = []
+    for path in sorted(root.rglob("*.swift")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.split("//", 1)[0].strip()
+            match = IMPORT_RE.match(line)
+            if match and match.group(1) == "XCTest":
+                violations.append((path, "XCTest"))
+    return violations
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -84,16 +95,24 @@ def main() -> int:
     )
     args = parser.parse_args()
     roots = [pathlib.Path(root) for root in args.roots]
-    missing_roots = [root for root in roots if not root.is_dir()]
+    tests_root = pathlib.Path("app/MacAmbientJev/Tests")
+    missing_roots = [root for root in [*roots, tests_root] if not root.is_dir()]
     if missing_roots:
         for root in missing_roots:
             print(f"portable Core/Pipeline/Diarization/ONNX/PortableRuntime directory not found: {root}", file=sys.stderr)
         return 2
 
     violations = [violation for root in roots for violation in scan(root)]
-    if violations:
+    test_violations = scan_test_imports(tests_root)
+    if violations or test_violations:
         for path, module in violations:
             print(f"{path}: forbidden or unguarded platform import: {module}", file=sys.stderr)
+        for path, module in test_violations:
+            print(
+                f"{path}: import XCTest is forbidden; use swift-testing (import Testing) "
+                "because XCTest's async setUp deadlocks on Linux",
+                file=sys.stderr,
+            )
         return 1
 
     print(f"Portable Core / Pipeline / Diarization / ONNX / PortableRuntime import check passed ({', '.join(args.roots)})")
