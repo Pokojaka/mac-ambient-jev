@@ -74,7 +74,15 @@ func completedLaunchMaintenanceClearsItsStatus() async throws {
     try #require(scan.candidates.isEmpty)
     let state = launchMaintenanceState(paths: paths, defaults: defaults)
 
-    await state.recoverPendingSessions()
+    await state.processingCoordinator.recoverPendingSessions(
+        effects: state,
+        scan: {
+            try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+        },
+        maintain: { items, callback in
+            await SessionStorageMaintainer.maintain(items, willMaintain: callback)
+        }
+    )
 
     #expect(!state.processingQueue.isMaintainingStorage)
     #expect(state.processingStatusText == nil)
@@ -109,7 +117,15 @@ func completedLaunchMaintenancePreservesNewProcessingStatus() async throws {
     }
     defer { observation.cancel() }
 
-    await state.recoverPendingSessions()
+    await state.processingCoordinator.recoverPendingSessions(
+        effects: state,
+        scan: {
+            try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+        },
+        maintain: { items, callback in
+            await SessionStorageMaintainer.maintain(items, willMaintain: callback)
+        }
+    )
 
     #expect(!state.processingQueue.isMaintainingStorage)
     #expect(state.processingState == .running)
@@ -133,7 +149,15 @@ func failedLaunchMaintenanceReportsFailureWithoutStaleStatus() async throws {
     try #require(scan.candidates.count == 1)
     let state = launchMaintenanceState(paths: paths, defaults: defaults)
 
-    await state.recoverPendingSessions()
+    await state.processingCoordinator.recoverPendingSessions(
+        effects: state,
+        scan: {
+            try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+        },
+        maintain: { items, callback in
+            await SessionStorageMaintainer.maintain(items, willMaintain: callback)
+        }
+    )
 
     #expect(!state.processingQueue.isMaintainingStorage)
     guard case .partialFailure(let message) = state.processingState else {

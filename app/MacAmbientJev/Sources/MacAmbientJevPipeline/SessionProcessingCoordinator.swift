@@ -151,16 +151,111 @@ public final class SessionProcessingCoordinator {
                 switch candidate.action {
                 case .finalize:
                     .finalize(sessionID: candidate.manifest.sessionID, metadataPolicy: .reject)
-                case .recoverDecisionRun(let boundarySegments, let clauses):
-                    .retryContentPriority(
-                        sessionID: candidate.manifest.sessionID,
-                        boundarySegments: boundarySegments,
-                        clauses: clauses
-                    )
+                case .recoverDecisionRun:
+                    decisionRetryRequest(for: candidate)
                 case .retryContentPriority:
                     nil
                 }
             }
+    }
+
+    public func recoverPendingSessions(
+        effects recoveryEffects: any SessionRecoveryEffects,
+        scan: @MainActor () throws -> SessionRecoveryScan,
+        maintain: @Sendable (
+            [SessionMaintenanceCandidate],
+            @Sendable (Int) async -> Void
+        ) async -> [UUID: String]
+    ) async {
+        requiredEffects.processingQueue.beginStorageMaintenance()
+        do {
+            let recoveryScan = try scan()
+            let maintenance = recoveryScan.maintenance.filter {
+                $0.sessionID != recoveryEffects.recordingSessionID
+            }
+            let previousStatus = recoveryEffects.recoveryStatusSnapshot
+            let maintenanceCount = maintenance.count
+            let effects = recoveryEffects
+            let maintenanceFailures = await maintain(maintenance) { _ in
+                await MainActor.run {
+                    effects.recoveryDidChange(.maintenanceStarted(maintenanceCount))
+                }
+            }
+            requiredEffects.processingQueue.endStorageMaintenance()
+            if !maintenance.isEmpty {
+                recoveryEffects.recoveryDidChange(
+                    .maintenanceFinished(count: maintenance.count, previous: previousStatus)
+                )
+            }
+
+            let recoveries = Self.recoveryRequests(
+                candidates: recoveryScan.candidates,
+                recordingSessionID: recoveryEffects.recordingSessionID,
+                maintenanceFailures: maintenanceFailures,
+                pending: requiredEffects.processingQueue.pending
+            )
+            if !recoveries.isEmpty {
+                recoveryEffects.recoveryDidChange(.recovering(recoveries.count))
+            }
+            for recovery in recoveries {
+                enqueue(recovery)
+            }
+            if !requiredEffects.processingQueue.pending.isEmpty {
+                startDrainIfIdle()
+            }
+
+            if !recoveryScan.failures.isEmpty || !maintenanceFailures.isEmpty {
+                recoveryEffects.recoveryDidChange(
+                    .reportedFailures(
+                        scanFailures: recoveryScan.failures,
+                        maintenanceFailures: maintenanceFailures,
+                        hasRecoveries: !recoveries.isEmpty
+                    )
+                )
+            }
+        } catch {
+            requiredEffects.processingQueue.endStorageMaintenance()
+            recoveryEffects.recoveryDidChange(.failed(error.localizedDescription))
+            if !requiredEffects.processingQueue.pending.isEmpty {
+                startDrainIfIdle()
+            }
+        }
+    }
+
+    public func retryDeferredDecisions(
+        effects recoveryEffects: any SessionRecoveryEffects,
+        scan: @MainActor () throws -> SessionRecoveryScan
+    ) async {
+        do {
+            let candidates = try scan().candidates
+            let requests = candidates.compactMap {
+                Self.decisionRetryRequest(for: $0)
+            }
+            for request in requests {
+                enqueue(request)
+            }
+            if requests.isEmpty {
+                recoveryEffects.recoveryDidChange(.retryEmpty)
+            }
+        } catch {
+            recoveryEffects.recoveryDidChange(.retryFailed(error.localizedDescription))
+        }
+    }
+
+    private static func decisionRetryRequest(
+        for candidate: RecoverableSession
+    ) -> PendingProcessing? {
+        switch candidate.action {
+        case .recoverDecisionRun(let boundarySegments, let clauses),
+             .retryContentPriority(let boundarySegments, let clauses):
+            .retryContentPriority(
+                sessionID: candidate.manifest.sessionID,
+                boundarySegments: boundarySegments,
+                clauses: clauses
+            )
+        case .finalize:
+            nil
+        }
     }
 
     private var requiredEffects: any SessionProcessingEffects {
