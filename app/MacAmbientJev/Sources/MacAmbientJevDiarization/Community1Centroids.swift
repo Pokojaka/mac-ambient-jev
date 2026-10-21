@@ -30,29 +30,8 @@ enum Community1Centroids {
         gamma: [[Double]],
         pi: [Double]
     ) throws -> Community1CentroidResult {
-        guard let dimension = trainingEmbeddings.first?.count else {
-            throw CentroidError.invalidInput("training embeddings must be nonempty")
-        }
-        guard dimension > 0 else {
-            throw CentroidError.invalidInput("training embedding dimension must be positive")
-        }
-        for (row, embedding) in trainingEmbeddings.enumerated() {
-            guard embedding.count == dimension else {
-                throw CentroidError.invalidInput("training embedding row \(row) has inconsistent dimension")
-            }
-            guard embedding.allSatisfy({ $0.isFinite }) else {
-                throw CentroidError.invalidInput("training embedding row \(row) contains a nonfinite value")
-            }
-        }
-
-        guard !pi.isEmpty else {
-            throw CentroidError.invalidInput("pi must be nonempty")
-        }
-        for (cluster, prior) in pi.enumerated() {
-            guard prior.isFinite, prior >= 0 else {
-                throw CentroidError.invalidInput("pi value at cluster \(cluster) must be finite and nonnegative")
-            }
-        }
+        let dimension = try validateTrainingEmbeddings(trainingEmbeddings)
+        try validatePriors(pi, expectedCount: nil)
 
         guard gamma.count == trainingEmbeddings.count else {
             throw CentroidError.invalidInput("gamma row count must match training embeddings")
@@ -70,50 +49,142 @@ enum Community1Centroids {
             }
         }
 
-        let activeClusters = pi.enumerated().compactMap { cluster, prior in
+        let activeClusters = try activeClusters(from: pi)
+        var accumulator = CentroidAccumulator(activeClusters: activeClusters, dimension: dimension)
+        // Keep every cluster's scalar accumulation in chronological row order.
+        for row in trainingEmbeddings.indices {
+            for (activeIndex, cluster) in activeClusters.enumerated() {
+                try accumulator.add(
+                    weight: gamma[row][cluster],
+                    activeIndex: activeIndex,
+                    cluster: cluster,
+                    embedding: trainingEmbeddings[row]
+                )
+            }
+        }
+        return try accumulator.finalize()
+    }
+
+    static func compute(
+        trainingEmbeddings: [[Double]],
+        rhoFeatures: [[Double]],
+        vbx: Community1VBxResult
+    ) throws -> Community1CentroidResult {
+        try Task.checkCancellation()
+        let dimension = try validateTrainingEmbeddings(trainingEmbeddings)
+        guard rhoFeatures.count == trainingEmbeddings.count else {
+            throw CentroidError.invalidInput("rho feature row count must match training embeddings")
+        }
+        try validatePriors(vbx.pi, expectedCount: vbx.posterior.speakerCount)
+        let active = try activeClusters(from: vbx.pi)
+        var accumulator = CentroidAccumulator(activeClusters: active, dimension: dimension)
+
+        for row in trainingEmbeddings.indices {
+            try Task.checkCancellation()
+            let responsibilities = try vbx.posterior.responsibilities(rho: rhoFeatures[row])
+            for (activeIndex, cluster) in active.enumerated() {
+                try accumulator.add(
+                    weight: responsibilities[cluster],
+                    activeIndex: activeIndex,
+                    cluster: cluster,
+                    embedding: trainingEmbeddings[row]
+                )
+            }
+        }
+        return try accumulator.finalize()
+    }
+
+    private static func validateTrainingEmbeddings(_ embeddings: [[Double]]) throws -> Int {
+        guard let dimension = embeddings.first?.count else {
+            throw CentroidError.invalidInput("training embeddings must be nonempty")
+        }
+        guard dimension > 0 else {
+            throw CentroidError.invalidInput("training embedding dimension must be positive")
+        }
+        for (row, embedding) in embeddings.enumerated() {
+            guard embedding.count == dimension else {
+                throw CentroidError.invalidInput("training embedding row \(row) has inconsistent dimension")
+            }
+            guard embedding.allSatisfy({ $0.isFinite }) else {
+                throw CentroidError.invalidInput("training embedding row \(row) contains a nonfinite value")
+            }
+        }
+        return dimension
+    }
+
+    private static func validatePriors(_ pi: [Double], expectedCount: Int?) throws {
+        guard !pi.isEmpty else {
+            throw CentroidError.invalidInput("pi must be nonempty")
+        }
+        if let expectedCount, pi.count != expectedCount {
+            throw CentroidError.invalidInput("pi count must match posterior speaker count")
+        }
+        for (cluster, prior) in pi.enumerated() {
+            guard prior.isFinite, prior >= 0 else {
+                throw CentroidError.invalidInput("pi value at cluster \(cluster) must be finite and nonnegative")
+            }
+        }
+    }
+
+    private static func activeClusters(from pi: [Double]) throws -> [Int] {
+        let active = pi.enumerated().compactMap { cluster, prior in
             prior > Community1Profile.activePriorThreshold ? cluster : nil
         }
-        guard !activeClusters.isEmpty else {
+        guard !active.isEmpty else {
             throw CentroidError.invalidInput("pi contains no active clusters")
         }
+        return active
+    }
 
-        var centroids: [[Double]] = []
-        centroids.reserveCapacity(activeClusters.count)
-        for cluster in activeClusters {
-            var numerator = [Double](repeating: 0, count: dimension)
-            var denominator = 0.0
+    private struct CentroidAccumulator {
+        let activeClusters: [Int]
+        var numerators: [[Double]]
+        var denominators: [Double]
 
-            // Posterior responsibilities weight rows in chronological scalar order.
-            for row in trainingEmbeddings.indices {
-                let weight = gamma[row][cluster]
-                guard weight > 0 else { continue }
-                denominator += weight
-                guard denominator.isFinite else {
-                    throw CentroidError.numericalFailure("weight sum overflowed for cluster \(cluster)")
-                }
-                let embedding = trainingEmbeddings[row]
-                for coordinate in 0..<dimension {
-                    numerator[coordinate] = numerator[coordinate].addingProduct(weight, embedding[coordinate])
-                    guard numerator[coordinate].isFinite else {
-                        throw CentroidError.numericalFailure(
-                            "weighted sum overflowed for cluster \(cluster), coordinate \(coordinate)"
-                        )
-                    }
-                }
-            }
-
-            guard denominator.isFinite, denominator > 0 else {
-                throw CentroidError.numericalFailure("active cluster \(cluster) has no positive finite weight sum")
-            }
-            let centroid = numerator.map { $0 / denominator }
-            guard centroid.allSatisfy({ $0.isFinite }) else {
-                throw CentroidError.numericalFailure("division produced a nonfinite centroid for cluster \(cluster)")
-            }
-            // Keep weighted means unnormalized; cosine scoring normalizes them later.
-            centroids.append(centroid)
+        init(activeClusters: [Int], dimension: Int) {
+            self.activeClusters = activeClusters
+            numerators = activeClusters.map { _ in [Double](repeating: 0, count: dimension) }
+            denominators = [Double](repeating: 0, count: activeClusters.count)
         }
 
-        return Community1CentroidResult(sourceClusterIndices: activeClusters, centroids: centroids)
+        mutating func add(weight: Double, activeIndex: Int, cluster: Int, embedding: [Double]) throws {
+            guard weight > 0 else { return }
+            denominators[activeIndex] += weight
+            guard denominators[activeIndex].isFinite else {
+                throw CentroidError.numericalFailure("weight sum overflowed for cluster \(cluster)")
+            }
+            for coordinate in embedding.indices {
+                numerators[activeIndex][coordinate] = numerators[activeIndex][coordinate]
+                    .addingProduct(weight, embedding[coordinate])
+                guard numerators[activeIndex][coordinate].isFinite else {
+                    throw CentroidError.numericalFailure(
+                        "weighted sum overflowed for cluster \(cluster), coordinate \(coordinate)"
+                    )
+                }
+            }
+        }
+
+        func finalize() throws -> Community1CentroidResult {
+            var centroids: [[Double]] = []
+            centroids.reserveCapacity(activeClusters.count)
+            for (activeIndex, cluster) in activeClusters.enumerated() {
+                let denominator = denominators[activeIndex]
+                guard denominator.isFinite, denominator > 0 else {
+                    throw CentroidError.numericalFailure(
+                        "active cluster \(cluster) has no positive finite weight sum"
+                    )
+                }
+                let centroid = numerators[activeIndex].map { $0 / denominator }
+                guard centroid.allSatisfy({ $0.isFinite }) else {
+                    throw CentroidError.numericalFailure(
+                        "division produced a nonfinite centroid for cluster \(cluster)"
+                    )
+                }
+                // Keep weighted means unnormalized; cosine scoring normalizes them later.
+                centroids.append(centroid)
+            }
+            return Community1CentroidResult(sourceClusterIndices: activeClusters, centroids: centroids)
+        }
     }
 
     static func scores(embeddings: [[Double]], centroids: [[Double]]) throws -> [[Double]] {

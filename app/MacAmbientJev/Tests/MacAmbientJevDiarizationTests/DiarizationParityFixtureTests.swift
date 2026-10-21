@@ -26,7 +26,21 @@ import Testing
             "ahc.json",
             as: DiarizationAHCFixture.self
         )
-        for metadata in [parameters.metadata, reconstruction.metadata, ahc.metadata] {
+        let assignment = try DiarizationParityFixtures.load(
+            "assignment.json",
+            as: DiarizationAssignmentFixture.self
+        )
+        let vbx = try DiarizationParityFixtures.load(
+            "vbx.json",
+            as: DiarizationVBxFixture.self
+        )
+        for metadata in [
+            parameters.metadata,
+            reconstruction.metadata,
+            ahc.metadata,
+            assignment.metadata,
+            vbx.metadata,
+        ] {
             #expect(metadata.schemaVersion == 1)
             #expect(metadata.fluidAudioVersion == expectedMetadataVersion)
             #expect(metadata.fluidAudioRevision == expectedMetadataRevision)

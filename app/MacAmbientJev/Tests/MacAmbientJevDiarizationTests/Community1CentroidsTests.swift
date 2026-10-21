@@ -46,6 +46,80 @@ import Testing
         #expect(result.centroids[0][0] != 0)
     }
 
+    @Test func streamedPosteriorCentroidsMatchMatrixFixtureComputation() throws {
+        let rhoFeatures = [[-2.0], [1.0], [0.3], [-0.5], [4.0], [-1.0]]
+        let vbx = try Community1VBx.refine(
+            rhoFeatures: rhoFeatures,
+            initialClusters: [0, 1, 0, 1, 2, 2],
+            phi: [1]
+        )
+        let embeddings = [[3.0, 1], [-1, 2], [5, -2], [0.5, 4], [2, -3], [-4, 1]]
+        let gamma = try rhoFeatures.map { try vbx.posterior.responsibilities(rho: $0) }
+        let matrix = try Community1Centroids.compute(
+            trainingEmbeddings: embeddings,
+            gamma: gamma,
+            pi: vbx.pi
+        )
+        let streamed = try Community1Centroids.compute(
+            trainingEmbeddings: embeddings,
+            rhoFeatures: rhoFeatures,
+            vbx: vbx
+        )
+
+        #expect(streamed.sourceClusterIndices == matrix.sourceClusterIndices)
+        #expect(streamed.centroids == matrix.centroids)
+    }
+
+    @Test func streamedComputeRejectsRowMismatchAndNonfiniteTrainingEmbeddings() throws {
+        let rhoFeatures = [[-1.0], [1.0]]
+        let vbx = try Community1VBx.refine(
+            rhoFeatures: rhoFeatures,
+            initialClusters: [0, 1],
+            phi: [1]
+        )
+        #expect(throws: CentroidError.self) {
+            try Community1Centroids.compute(
+                trainingEmbeddings: [[1], [2]],
+                rhoFeatures: [[-1]],
+                vbx: vbx
+            )
+        }
+        #expect(throws: CentroidError.self) {
+            try Community1Centroids.compute(
+                trainingEmbeddings: [[1], [.infinity]],
+                rhoFeatures: rhoFeatures,
+                vbx: vbx
+            )
+        }
+        #expect(throws: VBxError.self) {
+            try Community1Centroids.compute(
+                trainingEmbeddings: [[1], [2]],
+                rhoFeatures: [[-1], [1, 2]],
+                vbx: vbx
+            )
+        }
+    }
+
+    @Test func streamedComputePropagatesCancellation() async throws {
+        let rhoFeatures = [[-1.0], [1.0]]
+        let vbx = try Community1VBx.refine(
+            rhoFeatures: rhoFeatures,
+            initialClusters: [0, 1],
+            phi: [1]
+        )
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            #expect(throws: CancellationError.self) {
+                try Community1Centroids.compute(
+                    trainingEmbeddings: [[1], [2]],
+                    rhoFeatures: rhoFeatures,
+                    vbx: vbx
+                )
+            }
+        }
+        await task.value
+    }
+
     @Test func cosineScoresNormalizeVectors() throws {
         let scores = try Community1Centroids.scores(
             embeddings: [[3, 4], [-1, 0]],

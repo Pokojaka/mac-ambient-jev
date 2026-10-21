@@ -246,6 +246,24 @@ struct DiarizationAHCInversion: Decodable {
     let monotoneLabels: [Int]
 }
 
+struct DiarizationVBxFixture: Decodable {
+    let metadata: DiarizationParityMetadata
+    let cases: [DiarizationVBxCase]
+}
+
+struct DiarizationVBxCase: Decodable {
+    let name: String
+    let construction: String
+    let rhoFeatures: DiarizationParityTensor
+    let phi: DiarizationParityTensor
+    let initialClusters: [Int]
+    let trainingEmbeddings: DiarizationParityTensor
+    let expectedGamma: DiarizationParityTensor
+    let expectedPi: DiarizationParityTensor
+    let expectedElbos: DiarizationParityTensor
+    let expectedIterationCount: Int
+}
+
 enum DiarizationNonfiniteKind: String, Decodable {
     case nan
     case positiveInfinity
@@ -300,7 +318,7 @@ struct DiarizationAssignmentEmbeddingCase: Decodable {
 }
 
 enum DiarizationParityFixtures {
-    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json"]
+    static let filenames = ["parameters.json", "reconstruction.json", "ahc.json", "assignment.json", "vbx.json"]
 
     static func data(named name: String) throws -> Data {
         guard filenames.contains(name) else {
