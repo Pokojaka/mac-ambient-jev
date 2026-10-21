@@ -108,6 +108,17 @@ MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TA
 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter ClauseTaggerParityFixtureTests
 ```
 
+Linux / Windows の `ONNXClauseTagger`（[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）は実モデルの parity テストを持ち、通常の portable CI で必ず実行します。`RUN_MODEL_TESTS` のような opt-in はありません。必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に `python3 scripts/fetch_clause_tagger.py` が出力する絶対 directory を設定します（`scripts/verify_portable.sh`、`scripts/test-windows.ps1`、`.github/workflows/portable-core.yml` が設定します）。未設定・空・相対 path・存在しない directory はテストの失敗で、skip しません。
+
+- `ClauseTaggerFixtures.json` の13件は literal な `input_ids` をそのまま推論し、`boundary_probs`、`span_probs`、`priority_probs` の head ごとに最大絶対誤差を `1e-3` 以下とします。head ごとの最大値は fixture ごとと全体でログに出ます。
+- `ClauseTaggerRequestFixtures.json` の境界 6 case と優先度 batch は `ONNXClauseTagger` の public API へ実 request を渡し、response を Core ML 由来の保存値と比較します。key、candidate、label、token 数、除去範囲、投影後の文字列は完全一致、確率と confidence は `1e-3` 以下です。`まあ、あの、今日は損失関数の話をします。` は `今日は損失関数の話をします。` になります。
+- model への不正入力（空、1 token、193 token、CLS・SEP 欠落、負・語彙外の ID）、最短2 token と最長192 token の推論、取り消し済み request、非正の thread 数（ロード前に失敗）、相対・存在しない directory のテストと、`DecisionProviderFactory` が一度だけロードして manifest の identity を返すテストも含みます。thread 数と directory のテストは model を使いません。
+
+```bash
+CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py)"
+MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY="$CLAUSE_TAGGER" swift test --package-path app/MacAmbientJev --filter 'ONNXClauseTagger|ClauseTaggerAssets'
+```
+
 Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、この入出力契約を満たす必要があります。ポータブル ONNX の書き出しは次節の repository script で行います。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
 
 [DecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionProviderFactoryTests.swift) は全 platform の CoreTests にある model-free 7件で、fake providers を使い、環境変数・filesystem・モデルなしで実行します。成功・失敗時の single-flight と同時要求での identity/coordinator 共有、同じ failure と load の CancellationError の cache、完全な identity/provenance、identity の lookup/確認だけでは判定 request も usage も発生しないこと、synthetic token accounting、provider cancellation が attempt-only で cache を再利用することを検証します。実 token usage や実モデル推論を測るテストではありません。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。

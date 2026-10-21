@@ -657,7 +657,7 @@ fetcher の test は manifest の pin、Swift と同じ manifest ファイルを
 
 ## ビルドと検証
 
-Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に設定します。
+Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に、`fetch_clause_tagger.py` の出力（検証済み directory）を `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に設定します。
 
 Swift 6.2 の Windows toolchain、対応する Visual Studio の C++ Build Tools と Windows SDK、Python 3.12 以上を用意し、リポジトリルートから実行します。全 check、ONNX Runtime SDK 取得、全適用 target の build、DLL 配置、全 test を行うコマンドは次のとおりです。
 
@@ -665,7 +665,7 @@ Swift 6.2 の Windows toolchain、対応する Visual Studio の C++ Build Tools
 ./scripts/test-windows.ps1
 ```
 
-各段階の失敗で非 0 終了します。runner は ONNX Runtime SDK / Silero model / Qwen3-ASR tokenizer fetch の stdout を UTF-8 として受け取り、終了コードと単一行出力を確認します。ONNX Runtime root は絶対 path の既存 directory として検証します。Silero path は fetcher が絶対 path と通常 file を検証し、runner は再検証しません。Silero path を test 専用 `MAC_AMBIENT_JEV_SILERO_MODEL` に設定し、ONNX Runtime SDK root の lib/onnxruntime.dll を Swift の実行 bin directory へコピーします。Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator、Qwen3-ASR token reference generator の各 self-test も実行します。token reference generator の self-test は依存 package や model weights を必要としません。Qwen3-ASR tokenizer の path は test 専用 `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に設定します。full model weights は自動取得せず、full model inference は既定では実行しません。手動で同じ build / test を行う場合は、次のように取得し、build 後に Swift の実行 bin directory へ DLL を配置してから `swift test` を実行します。
+各段階の失敗で非 0 終了します。runner は ONNX Runtime SDK / Silero model / Qwen3-ASR tokenizer / clause tagger fetch の stdout を UTF-8 として受け取り、終了コードと単一行出力を確認します。ONNX Runtime root は絶対 path の既存 directory として検証します。Silero path は fetcher が絶対 path と通常 file を検証し、runner は再検証しません。Silero path を test 専用 `MAC_AMBIENT_JEV_SILERO_MODEL` に、clause tagger の directory を test 必須の `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に設定し、ONNX Runtime SDK root の lib/onnxruntime.dll を Swift の実行 bin directory へコピーします。Silero fetcher、Qwen3-ASR tokenizer fetcher、pinned download helper、Silero reference generator、Qwen3-ASR token reference generator の各 self-test も実行します。token reference generator の self-test は依存 package や model weights を必要としません。Qwen3-ASR tokenizer の path は test 専用 `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に設定します。full model weights は自動取得せず、full model inference は既定では実行しません。手動で同じ build / test を行う場合は、次のように取得し、build 後に Swift の実行 bin directory へ DLL を配置してから `swift test` を実行します。
 
 ```powershell
 $env:PYTHONIOENCODING = 'utf-8'
@@ -685,6 +685,10 @@ $qwen3TokenizerPathLines = @(python scripts/fetch_qwen3_asr_tokenizer.py)
 if ($LASTEXITCODE -ne 0) { throw 'Qwen3-ASR tokenizer fetch failed' }
 if ($qwen3TokenizerPathLines.Count -ne 1) { throw 'Qwen3-ASR tokenizer fetch must return exactly one output line' }
 $env:MAC_AMBIENT_JEV_QWEN3_TOKENIZER = [string]$qwen3TokenizerPathLines[0]
+$clauseTaggerPathLines = @(python scripts/fetch_clause_tagger.py)
+if ($LASTEXITCODE -ne 0) { throw 'Clause tagger fetch failed' }
+if ($clauseTaggerPathLines.Count -ne 1) { throw 'Clause tagger fetch must return exactly one output line' }
+$env:MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY = [string]$clauseTaggerPathLines[0]
 python -B scripts/test_fetch_silero_vad.py
 if ($LASTEXITCODE -ne 0) { throw 'Silero VAD fetcher self-test failed' }
 python -B scripts/test_fetch_community1_diarization.py

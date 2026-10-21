@@ -11,6 +11,9 @@ printf 'Silero VAD model: %s\n' "$MAC_AMBIENT_JEV_SILERO_MODEL"
 tokenizer="$(python3 "$ROOT/scripts/fetch_qwen3_asr_tokenizer.py")"
 export MAC_AMBIENT_JEV_QWEN3_TOKENIZER="$tokenizer"
 printf 'Qwen3-ASR tokenizer: %s\n' "$MAC_AMBIENT_JEV_QWEN3_TOKENIZER"
+clause_tagger="$(python3 "$ROOT/scripts/fetch_clause_tagger.py")"
+export MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY="$clause_tagger"
+printf 'Clause tagger model: %s\n' "$MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY"
 cd "$ROOT"
 python3 -B scripts/test_fetch_silero_vad.py
 python3 -B scripts/test_fetch_community1_diarization.py

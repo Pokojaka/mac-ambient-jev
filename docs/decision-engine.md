@@ -1,6 +1,6 @@
 # 発話文の境界・優先度判定
 
-境界判定と優先度判定の単位は BTSJ 発話文（以下「発話文」）です。保存形式・コード上の `clause` / `節` はこの発話文単位を識別し、別の節分割器を意味しません。境界、継続、フィラー・相槌除去範囲、優先度は app bundle に同梱したローカル Core ML モデル（clause tagger）だけが判定し、ネットワークを使いません。録音、VAD、ASR、話者分離、フィラー・相槌除去、発話文判定はすべてこの Mac 上で動作します。確定処理のローカル必須段階は segmentation・diarization・ASR の3段階で、判定段階は任意です。モデルの初期化や判定が失敗した場合は判定結果を保留し、別の方式で補いません。
+境界判定と優先度判定の単位は BTSJ 発話文（以下「発話文」）です。保存形式・コード上の `clause` / `節` はこの発話文単位を識別し、別の節分割器を意味しません。境界、継続、フィラー・相槌除去範囲、優先度は app bundle に同梱したローカル Core ML モデル（clause tagger。Linux / Windows は同じ重みの ONNX モデル）だけが判定し、ネットワークを使いません。録音、VAD、ASR、話者分離、フィラー・相槌除去、発話文判定はすべてこの Mac 上で動作します。確定処理のローカル必須段階は segmentation・diarization・ASR の3段階で、判定段階は任意です。モデルの初期化や判定が失敗した場合は判定結果を保留し、別の方式で補いません。
 
 ## 処理の流れ
 
@@ -82,6 +82,20 @@ pin は PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sour
 `.mlpackage` の creator-defined metadata は次の6 key を全て必要とし、値・型を検証します。`model_id` は sbintuitions/modernbert-ja-30m-multitagger、`model_revision` は sorted state-key bytes と tensor bytes から計算した SHA-256 hash の64桁小文字 hex、`training_status` は `trained`、`tokenizer_sha256` は tokenizer.json の生 bytes の SHA-256、`unit_policy` は `btsj-utterance-sentence`、`encoding_revision` は `1` です。モデル ID は外部モデル識別子であり、ローカルのファイルパスではありません。`training_status` が `trained` 以外の package は判定に使用できません。metadata 欠損・不正、tokenizer hash 不一致、型・shape・語彙検証失敗は初期化エラーとなり、境界・優先度の表示は通常の保留状態のままとし、架空確率を記録しません。
 
 アプリの `AppState` は Core の [`DecisionProviderFactory`](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionProviderFactory.swift) に同期の `@Sendable () throws -> LoadedDecisionProvider` `loadProvider` closure を渡します。この closure が `LocalClauseTagger` とその identity を `LoadedDecisionProvider` として返します。factory の同期機構は同時要求を一つの load に集約し、load closure を lock の外で一度だけ実行します。成功・失敗のどちらも factory のプロセススコープの寿命中 cache し、throw された CancellationError も再試行せず同じ失敗として返します。`makeCoordinator()` と `localModelIdentity()` は同じ cache を使い、後者は判定 request・利用計数を発生させません。モデルと tokenizer の検証・初期化に失敗しても再ロードや fallback はありません。compile で作る一時 `.mlmodelc` ディレクトリはロード直後に削除します。
+
+### ONNX バックエンド
+
+Linux / Windows では PortableRuntime の `ONNXClauseTagger` actor（`DecisionProvider`）が同じ判定を担います。`init(modelDirectory:intraOpThreads:)` は throwing で、次の順に一度だけロードします。
+
+1. `ClauseTaggerAssets` が directory の4ファイルを bundled manifest の byte 数と SHA-256 に照合します。
+2. 検証済みの tokenizer.json から Core の `ClauseTaggerTokenizer` を、manifest の tokenizer SHA-256 を期待値にして作ります。
+3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
+
+session 作成後に graph の入出力 metadata を完全一致で検証します。入力は `input_ids` int64 `[1,-1]`、出力は `boundary_probs` float32 `[1,-1,2]`、`span_probs` float32 `[1,-1,4]`、`priority_probs` float32 `[1,2]` で、名前・dtype・rank・固定次元が一つでも違えば初期化エラーです。`identity` は manifest から作る `ClauseTaggerModelIdentity` で、ONNX ファイル内の metadata は読みません。
+
+各推論は Core ML と同じ入力検査（長さ `2...192`、先頭 CLS、末尾 SEP、全 ID が語彙 `0..<102400`）に失敗すると `invalidInput` を返します。出力は形状と要素数が入力長と厳密に一致し、全値が有限の 0..1 で、各 row の和が 1 から `1e-5` 以内でなければ `invalidOutput` です。値の clamp や再正規化はしません。ONNX Runtime 自体の失敗は `unavailable` として返します。request の組み立て、投影、優先度、キャンセル確認は Core ML 版と同じ `ClauseTaggerDecisionLogic` を通り、inference closure だけが違います。actor が session への呼出しを直列化します。
+
+`ONNXClauseTagger` を `LoadedDecisionProvider` に包んで `DecisionProviderFactory` に渡すと、Mac の `LocalClauseTagger` と同じ cache と identity の経路になります。CLI への組み込みはまだなく、既存の判定無効 CLI は tagger をロードしません。
 
 ### 符号化と推論
 

@@ -151,6 +151,12 @@ jobs:
           set -euo pipefail
           tokenizer="$(python3 scripts/fetch_qwen3_asr_tokenizer.py)"
           printf 'MAC_AMBIENT_JEV_QWEN3_TOKENIZER=%s\n' "$tokenizer" >> "$GITHUB_ENV"
+      - name: Fetch clause tagger model
+        shell: bash
+        run: |
+          set -euo pipefail
+          model="$(python3 scripts/fetch_clause_tagger.py)"
+          printf 'MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY=%s\n' "$model" >> "$GITHUB_ENV"
       - name: Check FLAC
         run: |
           command -v flac

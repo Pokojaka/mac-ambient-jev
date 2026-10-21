@@ -281,7 +281,8 @@ targets.append(.testTarget(
         "MacAmbientJevPipeline",
         "MacAmbientJevCore",
         "MacAmbientJevDiarization",
-        "MacAmbientJevVADFixtures"
+        "MacAmbientJevVADFixtures",
+        "MacAmbientJevClauseTaggerFixtures"
     ],
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
