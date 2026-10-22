@@ -1,6 +1,6 @@
 # Linux 音声評価
 
-Linux では既存の検証用 Python runner と portable Swift 評価 CLI 3 本に加え、Linux / Windows 共通の `MacAmbientJevTranscribeFile` を使えます。これは単一音声ファイルを VAD 区間ごとに文字起こしし、区間と評価用 artifact を出力する計測用 CLI です。参照文や評価規則は受け取らず、CER は出力 artifact と参照文を `MacAmbientJevEvaluateASR` に渡して別途計算します。macOS アプリの録音・GUI・MLX 実行環境とは別であり、Python、CUDA、NeMo はアプリの依存ではありません。Swift の共通部分と通常検証は [testing.md](testing.md) を参照してください。
+Linux では既存の検証用 Python runner と portable Swift 評価 CLI 3 本に加え、Linux / Windows 共通の `MacAmbientJevProcessRecording` と `MacAmbientJevTranscribeFile` を使えます。MacAmbientJevProcessRecording は音声ファイルを session に import して full-session finalization、inspection、resume を行い、MacAmbientJevTranscribeFile は単一ファイルを VAD 区間ごとに文字起こしして評価用 artifact を出力する別の CLI です。MacAmbientJevTranscribeFile は参照文や評価規則を受け取らず、CER は出力 artifact と参照文を `MacAmbientJevEvaluateASR` に渡して別途計算します。macOS アプリの録音・GUI・MLX 実行環境とは別であり、Python、CUDA、NeMo はアプリの依存ではありません。Swift の共通部分と通常検証は [testing.md](testing.md) を参照してください。
 
 ## 環境と実行範囲
 
@@ -75,6 +75,61 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
 ```
 
 推論設定は dtype `bfloat16`、batch size 1、max new tokens 4096、context は空文字。指定した device と language も来歴に保存する。評価結果は `raw`、`normalized`、`normalizer_version` を持つ。正規化は Unicode 互換合成、空白・改行・句読点の除去で、filler 除去ではない。content 評価も hypothesis に同じ CER 正規化を適用するだけなので、verbatim と同等の主判定として扱わない。
+
+## セッション全体のファイル処理 CLI
+
+`MacAmbientJevProcessRecording` は、音声ファイルを session に import し、共通の [`SessionFileProcessingService`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionFileProcessingService.swift) と [`FinalTranscriptPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift) で VAD segmentation、話者分離、ASR を含む full-session finalization を実行する portable CLI です。session の状態確認と、中断した finalization / decisions の再開も行えます。単一ファイルの評価用 CLI `MacAmbientJevTranscribeFile` とは用途・出力形式が異なります。
+
+```text
+MacAmbientJevProcessRecording --sessions-root ROOT [--keep-session] [--low-heat] [--with-decisions] --threads N AUDIO [OUTPUT]
+MacAmbientJevProcessRecording --inspect-session UUID --sessions-root ROOT
+MacAmbientJevProcessRecording --resume-session UUID --sessions-root ROOT [--low-heat] [--with-decisions] --threads N OUTPUT
+```
+
+`--sessions-root` は必須です。symlink ではなく、application support / cache の保護領域と重ならない安全な保存先を明示してください。import では必要に応じて session root を作成します。Portable の import / resume は `--threads N` が必須で、`N` は `1...min(4, 論理 CPU 数)` の整数です。ASR・diarizer・decisions 用 tagger の ONNX session は `N`、VAD は常に1 thread で動作します。model 不要の `--inspect-session` は `--threads` を受け付けず、macOS の CLI では `--threads` 自体を指定できません。Portable の resume は export-only の場合も `--threads` が必要です。
+
+Import の `AUDIO` に続く `OUTPUT` は省略でき、省略時は音声ファイルの親 directory に `segments.json` を作成します。import 時は stdout に `session_id: UUID` を出力します。`--keep-session` を指定しない import session は成功時・失敗時とも処理後に削除されます。失敗した session を調査または再開するために残す場合は、import に `--keep-session` を指定してください。`--inspect-session` と `--resume-session` の UUID にはこの `session_id` を使います。session root 直下の manifest を検索し、該当 manifest の `session_id` で folder を特定します。`--resume-session` は必須の `OUTPUT` へ export し、その path は symlink 解決後も対象 session folder の外でなければなりません。
+
+`--inspect-session` は recovery action と storage maintenance の状態だけを返し、`--low-heat`、`--with-decisions`、`--threads`、`--keep-session`、measurement options や位置引数は指定できません。JSON の object は `{ "session_id": "...", "action": "...", "maintenance": null }` の3 key のみで、maintenance がない場合は `null` です。`--run-id`、`--metrics-output`、`--thermal-output`、`--memory-output` は Mac 専用の measurement options で、Linux / Windows はこれらを filesystem/session side effect より前に拒否します。
+
+`--low-heat` は Portable では ASR の認識済み segment 間に約2秒の pacing wait を入れるだけです。Linux / Windows では thermal monitoring、thermal start gate、thermal state による pause は行いません。
+
+Decisions は既定で無効です。`--with-decisions` のとき、認識テキストがある export は clause-boundary と content-priority の両 run が公開済みで、pending decision target がない場合に限り成功します。decision request が失敗した場合は session 内の公開済み local transcript は保持されますが、成功 export は作らず CLI は非0で終了します。その失敗 session が必要なら import に `--keep-session` を指定してください。認識テキストがない場合は空の `[]` を正常に export し、decision run は不要です。完了済み decisions の session を `--with-decisions` 付きで resume する場合は、既存と同じ recognized segment 配列を export し、model resources を作らず inference event も追加しません。decisions だけを retry する resume は retry API を使い、ASR / diarizer inference を実行しませんが、portable の基本 engine bundle は構築します。
+
+成功時の import / resume output は、Linux / Windows 共通の pretty-printed・sorted JSON schema による `MaterializedTranscriptSegment` 配列です。これは `MacAmbientJevTranscribeFile` の primary JSON や CER artifact の envelope ではありません。recognized segment の `text`（ASR text）、`display_text`、`source`、`speakers`、clause 情報（`clause_state`、`clause_slices`）を保持します。
+
+### Portable inference environment
+
+`PortableProcessingConfiguration.resolve` は import と inference が必要な resume のときだけ portable model environment を読みます。inspect と export-only resume は model environment を読みません。decision-only retry は ASR / diarizer inference を行わない場合も、base engine bundle を作るため次の基本 model 設定を必要とします。
+
+| 環境変数 | 必要な値 |
+| --- | --- |
+| `MAC_AMBIENT_JEV_SILERO_MODEL` | 絶対 path の既存 Silero ONNX model file |
+| `QWEN3_ASR_ONNX_MODEL_DIRECTORY` | 絶対 path の既存 Qwen3-ASR ONNX model directory |
+| `QWEN3_ASR_ONNX_MODEL_SIZE` | `0.6b` または `1.7b` のいずれか（大文字・空白なし） |
+| `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` | 絶対 path の既存 Community-1 ONNX model directory |
+| `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` | `--with-decisions` の場合のみ必要な、絶対 path の既存 clause-tagger model directory |
+
+値に default はありません。model path を指定する CLI option、暗黙 download、path / model の fallback もありません。欠落・不正な設定は import session の bootstrap または resume の storage maintenance より前に失敗します。configuration の path/type 検査は model integrity 全体の preflight ではありません。Silero の pin 検証は engine bundle 構築時に行い、各 ONNX engine の model file / graph の検証・load は engine の prepare/load 時に行います。全 model の hash を session mutation 前に一括検証する契約ではありません。asset の取得方法は [Silero VAD](windows.md#silero-vad-フレーム推論)、[Qwen3-ASR](windows.md#qwen3-asr-onnx-モデルの取得)、[Community-1](windows.md#community-1-話者分離モデルの取得)、[clause tagger](windows.md#発話文タガー-onnx-モデルの取得) の既存手順を参照してください。CLI はそれらを自動実行しません。
+
+Linux import は既存の CMiniaudio decoder を使い、WAV / FLAC / MP3 のみを受け付け、入力は既に 16 kHz mono である必要があります。channel mixing や sample-rate conversion はしません。`--threads` や model environment は下記の `MacAmbientJevTranscribeFile` の設定とは別です。
+
+Linux での実行例です。path と `N` は実在する環境に合わせて明示してください。model assets と ONNX Runtime SDK の準備は上記リンク先と [ONNX Runtime](windows.md#onnx-runtime) の既存手順を参照してください。
+
+```bash
+export MAC_AMBIENT_JEV_SILERO_MODEL="/absolute/path/to/silero_vad_16k_op15.onnx"
+export QWEN3_ASR_ONNX_MODEL_DIRECTORY="/absolute/path/to/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4"
+export QWEN3_ASR_ONNX_MODEL_SIZE="0.6b"
+export MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="/absolute/path/to/models/community1"
+export MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY="/absolute/path/to/models/clause-tagger"
+swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
+  --sessions-root "/absolute/path/to/sessions" \
+  --keep-session --with-decisions --threads 1 \
+  "/absolute/path/to/recording-16k-mono.wav" \
+  "/absolute/path/to/output/segments.json"
+```
+
+実装と関連 test は [`ProcessRecordingArguments.swift`](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/ProcessRecordingArguments.swift)、[`main.swift`](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[`ProcessRecordingArgumentsTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevProcessRecordingTests/ProcessRecordingArgumentsTests.swift)、[`ProcessRecordingSafetyTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevProcessRecordingTests/ProcessRecordingSafetyTests.swift)、[`SessionFileProcessingServiceTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionFileProcessingServiceTests.swift)、[`FinalTranscriptPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FinalTranscriptPipelineTests.swift)、[`PortableProcessingConfiguration.swift`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableProcessingConfiguration.swift)、[`PortableProcessingConfigurationTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/PortableProcessingConfigurationTests.swift) を参照してください。
 
 ## ファイル文字起こし CLI
 

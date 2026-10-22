@@ -1,75 +1,66 @@
 import Foundation
-import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevPipeline
+#if os(macOS)
+import MacAmbientJevAppleSupport
 import MacAmbientJevRuntime
 import MLX
-
-enum ProcessRecordingError: LocalizedError {
-    case invalidArguments
-    case audioFileNotFound(String)
-    case processingFailed(String)
-    case invalidSession(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidArguments:
-            return "音声ファイルを指定してください"
-        case .audioFileNotFound(let path):
-            return "音声ファイルが見つかりません: \(path)"
-        case .processingFailed(let message):
-            return "録音データの処理に失敗しました: \(message)"
-        case .invalidSession(let message):
-            return "復旧対象が不正です: \(message)"
-        }
-    }
-}
-
-private actor ProcessingResultCollector {
-    private var segments: [MaterializedTranscriptSegment] = []
-    private var state: ProcessingState = .idle
-
-    func update(
-        segments: [MaterializedTranscriptSegment],
-        state: ProcessingState
-    ) {
-        self.segments = segments
-        self.state = state
-    }
-
-    func snapshot() -> (
-        segments: [MaterializedTranscriptSegment],
-        state: ProcessingState
-    ) {
-        (segments, state)
-    }
-}
-
-enum RecordingInput {
-    case importFile(audio: URL, output: URL, root: URL, keepSession: Bool, pacing: ASRPacingMode)
-    case inspect(sessionID: UUID, root: URL)
-    case resume(sessionID: UUID, root: URL, output: URL, pacing: ASRPacingMode)
-}
+#else
+import MacAmbientJevPortableRuntime
+#endif
 
 struct ProcessRecordingCommand {
     static func main() async throws {
-        let invocation: Invocation
+        let invocation: ProcessRecordingInvocation
         do {
-            invocation = try parseCommandLine(Array(CommandLine.arguments.dropFirst()))
+            invocation = try parseCommandLine(
+                Array(CommandLine.arguments.dropFirst()),
+                platform: .current,
+                logicalCPUCount: ProcessInfo.processInfo.processorCount
+            )
         } catch ProcessRecordingError.invalidArguments {
             printUsage()
             throw ProcessRecordingError.invalidArguments
         }
-        let input = invocation.input
+
         let root: URL
-        switch input {
+        switch invocation.input {
         case .importFile(_, _, let value, _, _), .inspect(_, let value), .resume(_, let value, _, _):
             root = value
         }
         let defaults = try AppPaths.systemDefault(fileManager: .default)
-        _ = try SessionsRootPolicy.validated(
-            root, protectedRoots: defaults.protectedSessionsRoots, fileManager: .default
+        let validatedRoot = try SessionsRootPolicy.validated(
+            root,
+            protectedRoots: defaults.protectedSessionsRoots,
+            fileManager: .default
         )
+        if case .inspect(let sessionID, _) = invocation.input {
+            try inspect(sessionID: sessionID, root: validatedRoot)
+            return
+        }
+        if case .resume(let sessionID, _, let outputURL, _) = invocation.input {
+            _ = try resolveResumeSession(
+                sessionID: sessionID,
+                root: validatedRoot,
+                outputURL: outputURL
+            )
+        }
+
+        let paths = AppPaths(
+            applicationSupportURL: defaults.applicationSupportURL,
+            cacheURL: defaults.cacheURL,
+            sessionsRootOverride: validatedRoot
+        )
+        let service = makeService(
+            paths: paths,
+            protectedRoots: defaults.protectedSessionsRoots,
+            pacingMode: pacingMode(for: invocation.input),
+            threads: invocation.threads,
+            logicalCPUCount: ProcessInfo.processInfo.processorCount
+        )
+        let eventRenderer = ProcessRecordingEventRenderer()
+        let result: SessionProcessingResult
+        #if os(macOS)
         let monitor = try invocation.measurement.map { measurement in
             try RunMonitor(
                 runID: measurement.runID,
@@ -81,9 +72,21 @@ struct ProcessRecordingCommand {
         let monitorTask: Task<Void, Never>? = monitor.map { monitor in
             Task { await monitor.run() }
         }
-        let result: SessionProcessingResult
+        let callbacks = makeCallbacks(
+            eventRenderer: eventRenderer,
+            shouldPause: {
+                if let monitor { return await monitor.shouldPause() }
+                return MacThermalMonitor().isCritical
+            },
+            onPhase: { phase in await monitor?.setPhase(phase) }
+        )
         do {
-            result = try await execute(input: input, monitor: monitor)
+            result = try await execute(
+                input: invocation.input,
+                service: service,
+                callbacks: callbacks,
+                withDecisions: invocation.withDecisions
+            )
         } catch {
             monitorTask?.cancel()
             await monitorTask?.value
@@ -97,114 +100,171 @@ struct ProcessRecordingCommand {
         monitorTask?.cancel()
         await monitorTask?.value
         if let monitor { try await monitor.write(result) }
+        #else
+        let callbacks = makeCallbacks(
+            eventRenderer: eventRenderer,
+            shouldPause: { false },
+            onPhase: { _ in }
+        )
+        result = try await execute(
+            input: invocation.input,
+            service: service,
+            callbacks: callbacks,
+            withDecisions: invocation.withDecisions
+        )
+        #endif
+
         guard result.disposition == .completed else {
             throw ProcessRecordingError.processingFailed(result.message ?? result.disposition.rawValue)
         }
+        if case .importFile(_, _, _, let keepSession, _) = invocation.input {
+            try await eventRenderer.printSuccessfulImportNotice(keepSession: keepSession)
+        }
     }
 
-    private struct Measurement {
-        let runID: String
-        let metricsPath: String
-        let thermalPath: String
-        let memoryPath: String
+    static func inspect(sessionID: UUID, root: URL) throws {
+        let defaults = try AppPaths.systemDefault(fileManager: .default)
+        let validatedRoot = try SessionsRootPolicy.validated(
+            root,
+            protectedRoots: defaults.protectedSessionsRoots,
+            fileManager: .default
+        )
+        let paths = AppPaths(
+            applicationSupportURL: defaults.applicationSupportURL,
+            cacheURL: defaults.cacheURL,
+            sessionsRootOverride: validatedRoot
+        )
+        let service = makeService(
+            paths: paths,
+            protectedRoots: defaults.protectedSessionsRoots,
+            pacingMode: .normal,
+            threads: nil,
+            logicalCPUCount: ProcessInfo.processInfo.processorCount
+        )
+        let inspection = try service.inspect(sessionID: sessionID)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(inspection)
+        print(String(decoding: data, as: UTF8.self))
     }
 
-    private struct Invocation {
-        let input: RecordingInput
-        let measurement: Measurement?
-    }
-
-    private static func parseCommandLine(_ originalArguments: [String]) throws -> Invocation {
-        var arguments = originalArguments
-        let runID = try removeOption("--run-id", from: &arguments)
-        let metricsPath = try removeOption("--metrics-output", from: &arguments)
-        let thermalPath = try removeOption("--thermal-output", from: &arguments)
-        let memoryPath = try removeOption("--memory-output", from: &arguments)
-        let provided = [runID, metricsPath, thermalPath, memoryPath].compactMap { $0 }
-        guard provided.isEmpty || provided.count == 4 else {
+    static func resolveResumeSession(sessionID: UUID, root: URL, outputURL: URL) throws -> URL {
+        do {
+            return try SessionFileProcessingService.resolveResumeSession(
+                sessionID: sessionID,
+                root: root,
+                outputURL: outputURL
+            )
+        } catch SessionFileProcessingError.invalidOutput {
             throw ProcessRecordingError.invalidArguments
         }
-        if let runID {
-            guard !runID.isEmpty, !runID.contains("/") else {
-                throw ProcessRecordingError.invalidArguments
-            }
-        }
-        let input = try parseInput(arguments, measured: runID != nil)
-        guard let runID, let metricsPath, let thermalPath, let memoryPath else {
-            return Invocation(input: input, measurement: nil)
-        }
-        return Invocation(input: input, measurement: Measurement(
-            runID: runID,
-            metricsPath: metricsPath,
-            thermalPath: thermalPath,
-            memoryPath: memoryPath
-        ))
     }
 
-    static func parseInput(_ originalArguments: [String], measured: Bool) throws -> RecordingInput {
-        var arguments = originalArguments
-        let keepSession = try removeFlag("--keep-session", from: &arguments)
-        let pacingMode: ASRPacingMode = try removeFlag("--low-heat", from: &arguments)
-            ? .lowHeat : .normal
-        let resumeID = try removeOption("--resume-session", from: &arguments)
-        let inspectID = try removeOption("--inspect-session", from: &arguments)
-        let rootPath = try removeOption("--sessions-root", from: &arguments)
-        guard let rootPath, !rootPath.isEmpty else { throw ProcessRecordingError.invalidArguments }
-        let root = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
-        guard !arguments.contains(where: { $0.hasPrefix("--") }) else {
-            throw ProcessRecordingError.invalidArguments
-        }
-        if resumeID != nil || inspectID != nil {
-            guard (resumeID == nil) != (inspectID == nil),
-                  !keepSession,
-                  let id = UUID(uuidString: resumeID ?? inspectID ?? "") else {
-                throw ProcessRecordingError.invalidArguments
-            }
-            if inspectID != nil {
-                guard !measured, pacingMode == .normal, arguments.isEmpty else {
-                    throw ProcessRecordingError.invalidArguments
-                }
-                return .inspect(sessionID: id, root: root)
-            } else {
-                guard arguments.count == 1 else { throw ProcessRecordingError.invalidArguments }
-                let output = URL(fileURLWithPath: arguments[0]).standardizedFileURL
-                return .resume(sessionID: id, root: root, output: output, pacing: pacingMode)
-            }
-        }
-        guard arguments.count == 1 || arguments.count == 2 else {
-            throw ProcessRecordingError.invalidArguments
-        }
-        let audioURL = URL(fileURLWithPath: arguments[0]).standardizedFileURL
-        let outputURL = arguments.count == 2
-            ? URL(fileURLWithPath: arguments[1]).standardizedFileURL
-            : audioURL.deletingLastPathComponent().appending(path: "segments.json")
-        if arguments.count == 2,
-           audioURL.resolvingSymlinksInPath().standardizedFileURL
-            == outputURL.resolvingSymlinksInPath().standardizedFileURL {
-            throw ProcessRecordingError.invalidArguments
-        }
-        return .importFile(audio: audioURL, output: outputURL, root: root,
-                           keepSession: keepSession, pacing: pacingMode)
-    }
-
-    private static func execute(input: RecordingInput, monitor: RunMonitor?) async throws -> SessionProcessingResult {
+    private static func execute(
+        input: RecordingInput,
+        service: SessionFileProcessingService,
+        callbacks: SessionFileProcessingService.Callbacks,
+        withDecisions: Bool
+    ) async throws -> SessionProcessingResult {
         switch input {
-        case .inspect(let id, let root):
-            try inspect(sessionID: id, root: root)
-            return .completed(metrics: nil, noSpeech: false)
-        case .resume(let id, let root, let output, let pacingMode):
-            return try await resume(sessionID: id, root: root, outputURL: output,
-                                    pacingMode: pacingMode, monitor: monitor)
-        case .importFile(let audioURL, let outputURL, let root, let keepSession, let pacingMode):
-            try checkStart(pacingMode: pacingMode)
-            return try await importFile(audioURL: audioURL, outputURL: outputURL, root: root,
-                                        keepSession: keepSession, pacingMode: pacingMode, monitor: monitor)
+        case .importFile(let audio, let output, _, let keepSession, let pacing):
+            return try await service.importFile(
+                .init(
+                    audioURL: audio,
+                    outputURL: output,
+                    keepSession: keepSession,
+                    pacingMode: pacing,
+                    withDecisions: withDecisions
+                ),
+                callbacks: callbacks
+            )
+        case .resume(let sessionID, _, let output, let pacing):
+            return try await service.resume(
+                .init(
+                    sessionID: sessionID,
+                    outputURL: output,
+                    pacingMode: pacing,
+                    withDecisions: withDecisions
+                ),
+                callbacks: callbacks
+            )
+        case .inspect:
+            throw ProcessRecordingError.invalidArguments
         }
     }
 
+    private static func makeService(
+        paths: AppPaths,
+        protectedRoots: [URL],
+        pacingMode: ASRPacingMode,
+        threads: Int?,
+        logicalCPUCount: Int
+    ) -> SessionFileProcessingService {
+        #if os(macOS)
+        let timelineBuilder: any ImportedAudioTimelineBuilding = AudioFileTimelineBuilder()
+        let makeResources: @Sendable (Bool) throws -> SessionFileProcessingResources = { withDecisions in
+            try checkStart(pacingMode: pacingMode)
+            let engines = SessionProcessingEngines.production(paths: paths)
+            let contentPriority: ContentPriorityAccess
+            let decisionProviderFactory: DecisionProviderFactory?
+            if withDecisions {
+                let modelDirectory = try localClauseTaggerModelDirectory(
+                    environment: ProcessInfo.processInfo.environment
+                )
+                let usageCounter = DecisionUsageCounter()
+                let factory = DecisionProviderFactory(
+                    usageCounter: usageCounter,
+                    loadProvider: {
+                        let tagger = try LocalClauseTagger(modelDirectory: modelDirectory)
+                        return LoadedDecisionProvider(provider: tagger, identity: tagger.identity)
+                    }
+                )
+                decisionProviderFactory = factory
+                contentPriority = .localTagger(
+                    { try factory.makeCoordinator() },
+                    usageCounter: usageCounter
+                )
+            } else {
+                decisionProviderFactory = nil
+                contentPriority = .disabled
+            }
+            return SessionFileProcessingResources(
+                engines: engines,
+                contentPriority: contentPriority,
+                decisionProviderFactory: decisionProviderFactory
+            )
+        }
+        #else
+        let timelineBuilder: any ImportedAudioTimelineBuilding = PortableImportedAudioTimelineBuilder()
+        let makeResources: @Sendable (Bool) throws -> SessionFileProcessingResources = { withDecisions in
+            guard let threads else { throw ProcessRecordingError.invalidArguments }
+            let configuration = try PortableProcessingConfiguration.resolve(
+                environment: ProcessInfo.processInfo.environment,
+                threads: threads,
+                logicalCPUCount: logicalCPUCount,
+                withDecisions: withDecisions
+            )
+            let bundle = try PortableSessionEngineBundle(configuration: configuration)
+            return SessionFileProcessingResources(
+                engines: bundle.engines,
+                contentPriority: bundle.contentPriority,
+                decisionProviderFactory: bundle.decisionProviderFactory
+            )
+        }
+        #endif
+        return SessionFileProcessingService(
+            paths: paths,
+            protectedRoots: protectedRoots,
+            timelineBuilder: timelineBuilder,
+            makeResources: makeResources,
+            sleep: { try await Task.sleep(for: $0) }
+        )
+    }
+
+    #if os(macOS)
     private static func checkStart(pacingMode: ASRPacingMode) throws {
         let thermal = MacThermalMonitor().pressure
-        if thermal != .nominal && thermal != .fair {
+        guard thermal == .nominal || thermal == .fair else {
             throw ProcessRecordingError.processingFailed("熱状態が落ち着くまで開始できません")
         }
         if pacingMode == .lowHeat {
@@ -212,267 +272,59 @@ struct ProcessRecordingCommand {
         }
     }
 
-    private static func importFile(
-        audioURL: URL,
-        outputURL: URL,
-        root: URL,
-        keepSession: Bool,
-        pacingMode: ASRPacingMode,
-        monitor: RunMonitor?
-    ) async throws -> SessionProcessingResult {
-        guard FileManager.default.fileExists(atPath: audioURL.path) else {
-            throw ProcessRecordingError.audioFileNotFound(audioURL.path)
-        }
-
-        let defaults = try AppPaths.systemDefault(fileManager: .default)
-        let paths = AppPaths(applicationSupportURL: defaults.applicationSupportURL,
-                             cacheURL: defaults.cacheURL, sessionsRootOverride: root)
-        let sessionID = UUID()
-        let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
-            paths: paths,
-            sessionID: sessionID,
-            source: .imported(originalFilename: audioURL.lastPathComponent),
-            createdAt: Date(), timeZone: .current
-        )
-        print("session_id: \(sessionID.uuidString)")
-
-        defer {
-            if !keepSession {
-                do {
-                    try SessionFileAccess.removeIfPresent(sessionURL, relativeTo: sessionURL.deletingLastPathComponent())
-                } catch {
-                    FileHandle.standardError.write(
-                        Data(
-                            "一時セッションを削除できませんでした: \(error.localizedDescription)\n".utf8
-                        )
-                    )
-                }
-            }
-        }
-
-        let imported = try AudioImporter().importFile(
-            audioURL,
-            into: sessionURL
-        )
-
-        let collector = ProcessingResultCollector()
-        let processor = NativeSessionProcessor(
-            paths: paths, engines: .production(paths: paths),
-            audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
-            contentPriority: .disabled,
-            sleep: { try await Task.sleep(for: $0) }
-        )
-
-        print("処理を開始します: \(audioURL.path)")
-
-        let processing = await processor.processSession(
-            sessionID: sessionID,
-            pacingMode: pacingMode,
-            shouldPause: pauseCheck(monitor),
-            onPhase: { phase in await monitor?.setPhase(phase) },
-            metadataPolicy: .reject,
-            onStatus: { message in
-                print(message)
-            },
-            onUpdate: { segments, state in
-                await collector.update(
-                    segments: segments,
-                    state: state
-                )
-            }
-        )
-
-        guard processing.disposition == .completed else { return processing }
-
-        let result = await collector.snapshot()
-        switch result.state {
-        case .partialFailure(let message):
-            throw ProcessRecordingError.processingFailed(message)
-        case .idle, .running, .backlogged:
+    private static func localClauseTaggerModelDirectory(environment: [String: String]) throws -> URL {
+        let key = "MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY"
+        guard let path = environment[key], !path.isEmpty,
+              (path as NSString).isAbsolutePath else {
             throw ProcessRecordingError.processingFailed(
-                "処理が完了状態へ到達しませんでした"
+                "\(key) must name a nonempty absolute directory"
             )
-        case .complete:
-            break
         }
-
-        try export(sessionURL: sessionURL, outputURL: outputURL)
-
-        print("segments.json を生成しました: \(outputURL.path)")
-        if keepSession {
-            print("セッションデータを保持しました: \(sessionURL.path)")
-        } else {
-            print("テスト用セッションは処理終了後に削除します")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw ProcessRecordingError.processingFailed("\(key) is not an existing directory: \(path)")
         }
-        return processing
+        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
+    #endif
 
-    static func inspect(sessionID: UUID, root: URL) throws {
-        let action: String
-        var maintenance: Any = NSNull()
-        do {
-            let inspection = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: sessionID)
-            switch inspection.recovery?.action {
-            case .finalize: action = "finalize"
-            case .recoverDecisionRun: action = "recoverDecisionRun"
-            case .retryContentPriority: action = "retryContentPriority"
-            case nil: action = "none"
-            }
-            if let required = inspection.maintenance {
-                maintenance = required.rawValue
-            }
-        } catch SessionRecoveryScannerError.missingAudio,
-                SessionAudioSourceError.importedOriginalMissing {
-            action = "unrecoverable"
-        }
-        let data = try JSONSerialization.data(
-            withJSONObject: ["session_id": sessionID.uuidString, "action": action, "maintenance": maintenance],
-            options: [.sortedKeys]
+    private static func makeCallbacks(
+        eventRenderer: ProcessRecordingEventRenderer,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
+        onPhase: @escaping NativeSessionProcessor.PhaseHandler
+    ) -> SessionFileProcessingService.Callbacks {
+        SessionFileProcessingService.Callbacks(
+            onEvent: { event in await eventRenderer.render(event) },
+            onStatus: { message in print(message) },
+            onUpdate: { _, _ in },
+            shouldPause: shouldPause,
+            onPhase: onPhase
         )
-        print(String(decoding: data, as: UTF8.self))
     }
 
-    static func resolveResumeSession(sessionID: UUID, root: URL, outputURL: URL) throws -> URL {
-        let sessionURL = try SessionDirectoryLocator(fileManager: .default)
-            .resolve(sessionsRoot: root, sessionID: sessionID)
-        let sessionPath = sessionURL.resolvingSymlinksInPath().pathComponents.map { $0.lowercased() }
-        let outputPath = outputURL.deletingLastPathComponent().resolvingSymlinksInPath()
-            .appending(path: outputURL.lastPathComponent).resolvingSymlinksInPath()
-            .pathComponents.map { $0.lowercased() }
-        guard !outputPath.starts(with: sessionPath) else {
-            throw ProcessRecordingError.invalidArguments
+    private static func pacingMode(for input: RecordingInput) -> ASRPacingMode {
+        switch input {
+        case .importFile(_, _, _, _, let pacing), .resume(_, _, _, let pacing): pacing
+        case .inspect: .normal
         }
-        return sessionURL
-    }
-
-    private static func resume(
-        sessionID: UUID,
-        root: URL,
-        outputURL: URL,
-        pacingMode: ASRPacingMode,
-        monitor: RunMonitor?
-    ) async throws -> SessionProcessingResult {
-        let sessionURL = try resolveResumeSession(sessionID: sessionID, root: root, outputURL: outputURL)
-        let scanner = SessionRecoveryScanner(sessionsRoot: root)
-        if let maintenance = try scanner.inspect(sessionID: sessionID).maintenance {
-            let layout = SessionLayout(sessionURL: sessionURL)
-            try SessionStorageMaintainer.run(maintenance, layout: layout, manifest: try layout.loadManifest())
-        }
-        let candidate = try scanner.inspect(sessionID: sessionID).recovery
-        try checkStart(pacingMode: pacingMode)
-
-        let defaults = try AppPaths.systemDefault(fileManager: .default)
-        let paths = AppPaths(
-            applicationSupportURL: defaults.applicationSupportURL,
-            cacheURL: defaults.cacheURL,
-            sessionsRootOverride: root
-        )
-        let processor = NativeSessionProcessor(
-            paths: paths, engines: .production(paths: paths),
-            audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
-            contentPriority: .disabled,
-            sleep: { try await Task.sleep(for: $0) }
-        )
-        let collector = ProcessingResultCollector()
-        let onUpdate: NativeSessionProcessor.UpdateHandler = { segments, state in
-            await collector.update(segments: segments, state: state)
-        }
-        let onStatus: NativeSessionProcessor.StatusHandler = { message in print(message) }
-        let onPhase: NativeSessionProcessor.PhaseHandler = { phase in await monitor?.setPhase(phase) }
-        let result: SessionProcessingResult?
-        switch candidate?.action {
-        case .recoverDecisionRun?, .retryContentPriority?:
-            // The CLI never runs decisions; the published transcript is exported as it is.
-            result = nil
-        case .finalize?:
-            result = await processor.processSession(
-                sessionID: sessionID,
-                pacingMode: pacingMode,
-                shouldPause: pauseCheck(monitor),
-                onPhase: onPhase,
-                metadataPolicy: .reject,
-                onStatus: onStatus,
-                onUpdate: onUpdate
-            )
-        case nil:
-            result = nil
-        }
-        if let result, result.disposition != .completed { return result }
-        if result != nil, await collector.snapshot().state != .complete {
-            throw ProcessRecordingError.processingFailed("後処理が完了状態へ到達しませんでした")
-        }
-        try export(sessionURL: sessionURL, outputURL: outputURL)
-        print("segments.json を生成しました: \(outputURL.path)")
-        return result ?? .completed(metrics: nil, noSpeech: false)
-    }
-
-    /// Measured runs pause on the monitor's thermal policy; others pause at critical thermal state.
-    private static func pauseCheck(_ monitor: RunMonitor?) -> NativeSessionProcessor.PauseCheck {
-        if let monitor {
-            return { await monitor.shouldPause() }
-        }
-        return { MacThermalMonitor().isCritical }
-    }
-
-    private static func export(sessionURL: URL, outputURL: URL) throws {
-        guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
-              let runs = metadata.activeRuns,
-              runs.segmentation != nil, runs.asr != nil, runs.diarization != nil else {
-            throw ProcessRecordingError.processingFailed("発話区間・音声認識・話者分離の run が完了していません")
-        }
-        let recovered = try SessionRecovery.recoverJSONL(
-            SessionFileAccess.read(sessionURL.appending(path: "events.jsonl"), relativeTo: sessionURL)
-        )
-        guard !recovered.droppedIncompleteTail else {
-            throw ProcessRecordingError.processingFailed("イベントログの末尾が不完全です")
-        }
-        _ = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
-        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-        let segments = try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate).materialize(
-            events: events, activeRuns: runs
-        ).filter(\.hasRecognizedText)
-        try FileManager.default.createDirectory(
-            at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(segments).write(to: outputURL, options: .atomic)
-    }
-
-    private static func removeOption(_ option: String, from arguments: inout [String]) throws -> String? {
-        guard let index = arguments.firstIndex(of: option) else { return nil }
-        guard index + 1 < arguments.count,
-              !arguments[index + 1].hasPrefix("--"),
-              !arguments[(index + 2)...].contains(option) else {
-            throw ProcessRecordingError.invalidArguments
-        }
-        arguments.remove(at: index)
-        return arguments.remove(at: index)
-    }
-
-    private static func removeFlag(
-        _ flag: String,
-        from arguments: inout [String]
-    ) throws -> Bool {
-        guard let index = arguments.firstIndex(of: flag) else {
-            return false
-        }
-        arguments.remove(at: index)
-        guard !arguments.contains(flag) else { throw ProcessRecordingError.invalidArguments }
-        return true
     }
 
     private static func printUsage() {
         FileHandle.standardError.write(Data(
             """
             使い方:
-              MacAmbientJevProcessRecording --sessions-root <path> [--keep-session] [--low-heat] <audio-file> [segments.json]
+              MacAmbientJevProcessRecording --sessions-root <path> [--keep-session] [--low-heat] [--with-decisions] [--threads N] <audio-file> [segments.json]
               MacAmbientJevProcessRecording --inspect-session <UUID> --sessions-root <path>
-              MacAmbientJevProcessRecording --resume-session <UUID> --sessions-root <path> [--low-heat] <segments.json>
+              MacAmbientJevProcessRecording --resume-session <UUID> --sessions-root <path> [--low-heat] [--with-decisions] [--threads N] <segments.json>
               UUID は session.json の完全 ID。保存 root 直下の実フォルダーを検索します。
               resume の出力先は解決したセッションフォルダーの外に指定してください。
 
-            計測時は import または resume に --run-id、--metrics-output、
+            Portable platform では import/resume に --threads N が必須です（1 から最大4、論理 CPU 数以下）。
+            macOS では --threads は指定できません。--with-decisions は Mac と Portable で利用できます。
+            macOS の decisions は MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY を必要とします。
+            Portable の decisions は portable model environment variables を必要とします。
+            計測は macOS の import/resume のみ対応し、--run-id、--metrics-output、
             --thermal-output、--memory-output を全て指定してください。
 
             出力先を省略すると、音声ファイルと同じディレクトリへ
@@ -484,6 +336,37 @@ struct ProcessRecordingCommand {
 
             """.utf8
         ))
+    }
+}
+
+private actor ProcessRecordingEventRenderer {
+    private var createdSessionURL: URL?
+
+    func render(_ event: SessionFileProcessingService.Event) {
+        switch event {
+        case .sessionCreated(let sessionID, let sessionURL):
+            createdSessionURL = sessionURL
+            print("session_id: \(sessionID.uuidString)")
+        case .exported(let outputURL):
+            print("segments.json を生成しました: \(outputURL.path)")
+        case .cleanupFailed(let message):
+            FileHandle.standardError.write(
+                Data("一時セッションを削除できませんでした: \(message)\n".utf8)
+            )
+        }
+    }
+
+    func printSuccessfulImportNotice(keepSession: Bool) throws {
+        guard let createdSessionURL else {
+            throw ProcessRecordingError.processingFailed(
+                "import が完了しましたが sessionCreated 通知がありません"
+            )
+        }
+        if keepSession {
+            print("セッションデータを保持しました: \(createdSessionURL.path)")
+        } else {
+            print("テスト用セッションは処理終了後に削除します")
+        }
     }
 }
 
