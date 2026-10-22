@@ -103,7 +103,9 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "MacAmbientJevEngineProtocolTests",
-        dependencies: ["MacAmbientJevEngineProtocol"]
+        dependencies: ["MacAmbientJevEngineProtocol"],
+        // The golden NDJSON is read through #filePath, so it is not a bundled resource.
+        exclude: ["Fixtures"]
     ),
     .testTarget(
         name: "MacAmbientJevEngineHostTests",

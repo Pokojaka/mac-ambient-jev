@@ -2,6 +2,190 @@
 
 Windows では Swift 6.2 で共通 Core / Pipeline、WindowsSupport、ONNX、PortableRuntime、評価 CLI 3 本、full-session file CLI `MacAmbientJevProcessRecording`、file transcription CLI `MacAmbientJevTranscribeFile`、および Core / Pipeline / WindowsSupport / ONNX / PortableRuntime / ProcessRecording / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と2つの file CLI を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。`MacAmbientJevProcessRecording` は音声ファイルを session に import して full-session finalization / recovery を実行します。`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) と ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter を使う別の評価 CLI で、WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming decoder と SRC に委譲します。Windows に microphone / system-audio live capture、GUI、インストーラーはありません。PortableRuntime の live VAD API はありますが、Windows live capture 経路はありません。macOS の app は Apple Silicon と macOS 15 以降で動作します。
 
+## MacAmbientJevEngineProtocol NDJSON v1
+
+この節は現行の portable `MacAmbientJevEngineProtocol` ライブラリの wire 仕様です。Windows の録音・GUI・engine process transport が実装済みであることを示すものではありません。型と厳密 codec は Foundation の Codable / [Foundation JSONEncoder](https://developer.apple.com/documentation/foundation/jsonencoder) / JSONDecoder を使います（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。行 framing は [NDJSON 1.0](https://raw.githubusercontent.com/ndjson/ndjson-spec/master/README.md) に従います。
+
+実装: [`EngineProtocolVersion.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineProtocolVersion.swift)、[`EngineWireSupport.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineWireSupport.swift)、[`EngineCommands.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineCommands.swift)、[`EngineEventPayloads.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineEventPayloads.swift)、[`EngineEvents.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineEvents.swift)、[`EngineCodec.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineCodec.swift)。対応 tests: [`EngineProtocolVersionTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolVersionTests.swift)、[`EngineProtocolLexicalTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolLexicalTests.swift)、[`EngineProtocolCommandTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolCommandTests.swift)、[`EngineProtocolEventPayloadTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolEventPayloadTests.swift)、[`EngineProtocolEventTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolEventTests.swift)、[`EngineProtocolCodecTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolCodecTests.swift)、[`EngineProtocolGoldenTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolGoldenTests.swift)、[`EngineProtocolDocumentationTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolDocumentationTests.swift)。
+
+### Envelope、ID、line framing
+
+Request object は正確に `{version, request_id, command, payload}`、output object は正確に `{version, sequence, request_id, event, payload}` です。wire は binary UTF-8 bytes で、BOM は使いません。全 key は snake_case、`version` は JSON integer の literal `1`。request `payload` と output `payload` は常に object です。required key の欠落、null/wrong type、unknown key/value、camelCase alias は、ネストした object を含め拒否します。nullable field も key 自体は必須で、値がないときは明示的な JSON `null` を使います。
+
+`request_id` と `sequence` は JSON number でなく、正の canonical decimal UInt64 string (`1`...`18446744073709551615`) です。先頭ゼロ、符号、空白、範囲外値は不可です。接続の最初の request は `hello` / ID `1` の組だけを受け入れ、その後の ID は厳密増加し、間の欠番は許容します。output sequence も `1` から厳密増加し、欠番は許容します。revision は同じ正の canonical decimal UInt64 string domain です。これらの envelope/ID schema と、admission order helper (`EngineRequestOrder` / `EngineSequenceOrder`) は分離されています。
+
+`session_id`、`folder_id`、`row_id` は空でない不透明文字列です。UUID 形式を要求せず、読み取れない folder に架空の session ID を割り当てません。device endpoint ID も不透明な空でない文字列です。cursor は構文を解釈しない不透明文字列で、初回は `null`、返された次ページ cursor は空でない文字列です。revision を持つ transcript query も初回 revision は `null` にします。
+
+`EngineCodec.decodeRequest(_:)` / `decodeOutput(_:)` は LF/CRLF delimiter を含まない1 record の UTF-8 bytes を受け取ります。`EngineLineFramer` が fragmented/coalesced input を分割し delimiter を除去します。LF と CRLF を受け入れ、blank line、bare CR、BOM、invalid UTF-8、partial final line を拒否します。EOF 時は buffer が空なら正常、途中の record があれば error です。framer はいずれかの framing/validation failure で terminal に閉じ、以後の append/finish は拒否します。codec の encoder は compact JSON、stable sorted keys、unescaped slash を出力し、record ごとに LF を1つ付けます。
+
+lexical validation は root object、JSON grammar、有限数値、重複 object key（escape 展開後も含む）、nesting depth を typed decode より先に検査します。typed decode はすべての object level の unknown fields と enum values を拒否します。
+
+| 定数 | 制約 |
+| --- | --- |
+| `max_line_bytes = 1048576` | CRLF delimiter を除く record は最大 1 MiB。complete envelope/page も同じ record 上限内。 |
+| `max_depth = 32` | root object を depth 1 とする object/array nesting 上限。 |
+| `max_row_bytes = 262144` | 個々の compact encoded row の上限。key と JSON escaping を含み、LF は含めない。 |
+| session list count | request `limit` は 1...100。 |
+| transcript page count | request `limit` は 1...200、`EngineTranscriptPage.rows` は最大 200。 |
+| row changes | `rows.count + removed_row_ids.count <= 200`。 |
+| state queue | `EngineState.queue` は最大 16 operation。 |
+
+host が request admission を最大 16 件に制限する場合、それは host contract であり、個別 envelope を検証する codec の機能ではありません。codec は上記の型・record・row 制約を検証します。
+
+### Commands と completed result
+
+`payload` key は各行に示すものだけで、すべて必須です。`EngineResult` は `completed` の `{command, result}` object で、result は対応する型または `{}` です。
+
+| Command | 必須 payload | completed result / 意味 |
+| --- | --- | --- |
+| `hello` | `EngineEmptyPayload` `{}` | `EngineReadyPayload`。capabilities と現在の revisioned state。最初の request のみ。 |
+| `state.get` | `EngineEmptyPayload` `{}` | `EngineState`。現在の revisioned state。 |
+| `devices.list` | `EngineDevicesListPayload` `{source: EngineSource}` | `EngineDevicesResult`。source ごとの endpoint と明示された default selection。 |
+| `recording.start` | `EngineRecordingStartPayload` `{source: EngineSource, device: EngineDevice}` | `EngineSessionPayload`。開始が成功してから session ID を返す。 |
+| `recording.stop` | `EngineSessionPayload` `{session_id: String}` | `EngineSessionPayload`。durable stop と finalization queue への追加後に完了し、transcript finalization は待たない。 |
+| `session.import` | `EngineImportPayload` `{input_path: String}` | `EngineSessionPayload`。source を retained import として保存し finalization queue に追加後に完了し、final transcript は待たない。 |
+| `session.reprocess` | `EngineSessionPayload` `{session_id: String}` | `EngineSessionPayload`。要求した reprocess work が終端状態になってから完了。 |
+| `session.retry_decisions` | `EngineSessionPayload` `{session_id: String}` | `EngineSessionPayload`。要求した decisions retry が終端状態になってから完了。 |
+| `session.list` | `EngineSessionListPayload` `{cursor: String|null, limit: Int}` | `EngineSessionListResult`。unreadable folder も stable `folder_id` と error 付きで含む。 |
+| `transcript.read` | `EngineTranscriptReadPayload` `{session_id: String, revision: EngineID|null, cursor: String|null, limit: Int}` | `EngineTranscriptPage`。engine が投影済みの revisioned page。stale revision/cursor は error。 |
+| `transcript.watch` | `EngineSessionPayload` `{session_id: String}` | `EngineTranscriptPage`。single selected session の bounded tail snapshot を返し、以降は revisioned `rows` event を送る。 |
+| `session.export` | `EngineExportPayload` `{session_id: String, destination_path: String}` | `EngineExportResult`。明示 destination へ `transcript.txt` と audio（recording は `audio.flac`、import は retained original）を含む bundle を publication した後に完了。 |
+| `settings.get` | `EngineEmptyPayload` `{}` | `EngineSettingsResult`。settings と revision。未設定時は `settings_required` / validation error。 |
+| `settings.replace` | `EngineSettingsReplacePayload` `{expected_revision: EngineID|null, settings: EngineSettings}` | `EngineSettingsResult`。10 field 全体の strict replacement。`expected_revision: null` は first setup のみ。busy 中に recording/model/state と競合する replacement は host が `busy` error で拒否する。 |
+| `models.prepare` | `EngineEmptyPayload` `{}` | `{}`。installed model profile の検証・load と progress。download はしない。 |
+| `shutdown` | `EngineEmptyPayload` `{}` | `{}`。host が capture を安全に停止し resource を release した後に terminal completion して終了する。 |
+
+### Nested model の exact schema
+
+次表の object は列挙した key のみを持ちます。略記 `T?` は必須 key の値が `T` または明示的 `null` であることを示します。array の要素も記載した型どおりです。
+
+| Swift 型 | exact fields と検証 |
+| --- | --- |
+| `EngineRequest` | `{version: Int (=1), request_id: EngineID, command: EngineCommandName, payload: command に対応する payload union}`。 |
+| `EngineOutput` | `{version: Int (=1), sequence: EngineID, request_id: EngineID|null, event: EngineEventName, payload: event に対応する payload union}`。 |
+| `EngineCommand` | `command` ごとに対応する payload 型を選ぶ union。正確な key/value は上表の command 行。 |
+| `EngineEvent` | `event` ごとに対応する payload 型を選ぶ union。正確な payload 型は下の Events 表。 |
+| `EngineEmptyPayload` | `{}` のみ。 |
+| `EngineDevicesListPayload` | `source: EngineSource`。 |
+| `EngineRecordingStartPayload` | `source: EngineSource`, `device: EngineDevice`。 |
+| `EngineImportPayload` | `input_path: String`。空不可。 |
+| `EngineSessionListPayload` | `cursor: String|null`, `limit: Int` (1...100)。 |
+| `EngineTranscriptReadPayload` | `session_id: String`, `revision: EngineID|null`, `cursor: String|null`, `limit: Int` (1...200)。session ID は空不可。 |
+| `EngineExportPayload` | `session_id: String`, `destination_path: String`。両方空不可。 |
+| `EngineSettingsReplacePayload` | `expected_revision: EngineID|null`, `settings: EngineSettings`。 |
+| `EngineDevice` | `{kind: "default"}` または `{kind: "id", id: String}`。後者の id は空不可。 |
+| `EngineSettings` | `schema_version: Int` (=1), `source: EngineSource`, `device: EngineDevice`, `asr_size: EngineASRSize`, `execution_provider: EngineExecutionProvider`, `threads: Int` (1...4), `low_heat: Bool`, `decisions_enabled: Bool`, `automatic_export: Bool`, `export_destination_path: String?` (null または空でない)。全10 key 必須。 |
+| `EngineCapabilities` | `sources: [EngineSource]`, `asr_sizes: [EngineASRSize]`, `execution_providers: [EngineExecutionProvider]`, `maximum_threads: Int` (1...4), `automatic_input_volume: EngineUnavailableCapability`, `thermal_monitoring: EngineUnavailableCapability`。3 arrays は空でなく各 raw value unique。 |
+| `EngineRecordingState` | `session_id: String`, `source: EngineSource`, `device: EngineDevice`, `phase: EngineRecordingPhase`。session ID は空不可。 |
+| `EngineQueuedOperation` | `session_id: String`, `stage: EngineStage`。session ID は空不可。 |
+| `EngineState` | `revision: EngineID`, `screen: EngineScreen`, `setup: EngineSetupStatus`, `recovery: EngineRecoveryStatus`, `recording: EngineRecordingState|null`, `queue: [EngineQueuedOperation]` (最大16), `failures: [EngineFailure]`。 |
+| `EngineReadyPayload` | `capabilities: EngineCapabilities`, `state: EngineState`。 |
+| `EngineDeviceInfo` | `id: String`, `name: String`, `is_default: Bool`。id/name は空不可。 |
+| `EngineDevicesResult` | `source: EngineSource`, `devices: [EngineDeviceInfo]`, `default_device_id: String|null`。device ID は一意。default device は最大1つで、nullable ID は `is_default: true` の唯一の endpoint と一致する（ID null の場合は default flag もない）。 |
+| `EngineSettingsResult` | `revision: EngineID`, `settings: EngineSettings`。 |
+| `EngineSessionSummary` | `folder_id: String`, `session_id: String|null`, `status: EngineSessionStatus`, `error: EngineFailure|null`。folder ID は一意・空不可。`unreadable` は session ID null と error 必須、それ以外は session ID 必須。 |
+| `EngineSessionListResult` | `sessions: [EngineSessionSummary]` (最大100、folder ID unique), `next_cursor: String|null`。 |
+| `EngineTranscriptRow` | `row_id: String`, `start_ms: Int64`, `end_ms: Int64`, `text: String`, `headings: [EngineSpeakerLabel]`, `clause_state: EngineClauseState|null`。row ID は空不可。時刻は wall-clock でなく session audio の 0 起点 millisecond timeline、双方 nonnegative、`end_ms >= start_ms`。text は空白だけでない。 |
+| `EngineTranscriptPage` | `session_id: String`, `revision: EngineID`, `rows: [EngineTranscriptRow]` (最大200、row ID unique), `next_cursor: String|null`。 |
+| `EngineRowsPayload` | `session_id: String`, `revision: EngineID`, `kind: EngineRowsKind`, `rows: [EngineTranscriptRow]`, `removed_row_ids: [String]`, `next_cursor: String|null`。upsert/removed ID は各々と相互で一意、removed ID は空不可、両配列合計最大200。`snapshot` は removed rows なし、`changes` と `reload_required` の cursor は null、`reload_required` は rows と removed IDs が空。 |
+| `EngineProgressPayload` | `stage: EngineStage`, `completed_units: UInt64`, `total_units: UInt64|null`, `session_id: String|null`。units は JSON integer **number** で ID string ではない。total がある場合 completed は total 以下。 |
+| `EngineErrorDetail` | `domain: String`, `code: String`, `message: String`, `path: String|null`, `device_id: String|null`。domain/code/message は空不可。nullable path/device ID は null または空でない。 |
+| `EngineFailure` | `code: EngineErrorCode`, `message: String`, `stage: EngineStage`, `request_id: EngineID|null`, `session_id: String|null`, `severity: EngineSeverity`, `recovery_action: EngineRecoveryAction`, `details: [EngineErrorDetail]`, `cleanup_errors: [EngineErrorDetail]`。message は空でない Japanese user-facing text。`details` と `cleanup_errors` は raw native domain/code/message/path/device ID を保持する。 |
+| `EngineExportResult` | `session_id: String`, `destination_path: String`; 両方空不可。 |
+| `EngineAcceptedPayload` | `command: EngineCommandName`。 |
+| `EngineResult` | `{command: EngineCommandName, result: <対応 command の型>}`。各 command の result 型は上表の Commands 欄、model prepare/shutdown は空 object。 |
+| `EngineSessionPayload` | `{session_id: String}`。空不可。request と session 操作の結果で共有。 |
+
+settings `threads` の wire 検査は明示範囲 `1...4` です。host は machine ごとの上限を検査する際 `logicalCPUCount` を注入して `threads <= min(4, logicalCPUCount)` を検証します。decode は CPU 数を読み取ったり推定したりしません。`execution_provider` は `cpu` のみで、CPU-only の選択可能な `asr_size` は `0.6b` と `1.7b` です。`low_heat` は pacing を選ぶ必須 boolean、`decisions_enabled` と `automatic_export` も必須 boolean です。`automatic_export: true` でも `export_destination_path: null` は visibly unconfigured で、Desktop を含む保存先を推測しません。
+
+Stable raw values:
+
+- `EngineSource`: `microphone`, `system_audio`; `EngineASRSize`: `0.6b`, `1.7b`; `EngineExecutionProvider`: `cpu`; `EngineUnavailableCapability`: `none`.
+- `EngineDevice.kind`: `default`, `id`.
+- `EngineCommandName`: `hello`, `state.get`, `devices.list`, `recording.start`, `recording.stop`, `session.import`, `session.reprocess`, `session.retry_decisions`, `session.list`, `transcript.read`, `transcript.watch`, `session.export`, `settings.get`, `settings.replace`, `models.prepare`, `shutdown`.
+- `EngineEventName`: `ready`, `state`, `accepted`, `completed`, `progress`, `rows`, `error`.
+- `EngineScreen`: `idle`, `live`, `finalizing`, `finalized`; `EngineSetupStatus`: `settings_required`, `models_required`, `ready`; `EngineRecoveryStatus`: `pending`, `running`, `completed`, `failed`; `EngineRecordingPhase`: `starting`, `recording`, `stopping`; `EngineSessionStatus`: `unreadable`, `recording`, `queued`, `processing`, `finalized`, `failed`.
+- `EngineSpeakerLabel`: `Speaker 1`, `Speaker 2`, `Speaker 3`, `Speaker 4`, `Speaker 5`, `Speaker 6`, `Speaker 7`, `OTHER`, `UNKNOWN`. These are materialized headings; the client does not infer speakers.
+- `EngineClauseState`: `awaiting_next_segment`, `boundary_pending`, `priority_pending`, `classified`; unavailable value is represented by nullable `clause_state: null`.
+- `EngineRowsKind`: `snapshot`, `changes`, `reload_required`.
+- `EngineStage`: `startup`, `settings`, `devices`, `capture`, `import`, `recovery`, `maintenance`, `validating_models`, `loading_models`, `vad`, `diarization`, `asr`, `decisions`, `finalization`, `export`, `shutdown`, `protocol`.
+- `EngineErrorCode`: `invalid_request`, `unsupported_version`, `invalid_request_id`, `hello_required`, `busy`, `settings_required`, `invalid_settings`, `stale_revision`, `invalid_cursor`, `session_not_found`, `device_not_found`, `device_failure`, `capture_failure`, `disk_space`, `power_failure`, `filesystem`, `model_missing`, `model_corrupt`, `model_failure`, `processing_failure`, `export_failure`, `row_too_large`, `cancelled`, `internal_error`.
+- `EngineSeverity`: `warning`, `error`, `fatal`.
+- `EngineRecoveryAction`: `none`, `replace_settings`, `prepare_models`, `retry`, `reprocess`, `retry_decisions`, `select_device`, `free_disk_space`, `inspect_session`, `restart`.
+
+### Events、correlation、revision
+
+全 event は共通 output envelope を使い、payload は下表の正確な型です。`ready` の top-level `request_id` は null、`accepted` / `completed` は非 null。`error` の envelope `request_id` と `EngineFailure.request_id` は同値です。`state`、`progress`、`rows` は相関 ID を null または該当 request ID にできます。
+
+| event | payload | 意味 |
+| --- | --- | --- |
+| `ready` | `EngineReadyPayload` | capabilities と初期 state。unsolicited。 |
+| `state` | `EngineState` | revisioned current state。 |
+| `accepted` | `EngineAcceptedPayload` | request の command を確認。 |
+| `completed` | `EngineResult` | command に対応する typed terminal result。 |
+| `progress` | `EngineProgressPayload` | stage progress。`completed_units` は UInt64 JSON number、`total_units` は必須 nullable UInt64 JSON number。 |
+| `rows` | `EngineRowsPayload` | 選択 session の revisioned projected row snapshot/changes/reload marker。 |
+| `error` | `EngineFailure` | stable code、Japanese message、stage、severity/recovery action、native details と cleanup errors。 |
+
+valid admitted request ごとに `accepted` 1つ、その後 terminal `completed` または `error` 1つを返すことは **host contract** です。`EngineCodec` は個々の envelope/schema/correlation を検査するだけで、process-wide event lifecycle を保証しません。background processing failure は unsolicited `error` / state として報告し、既に完了した stop/import command の結果を遡って変更しません。
+
+Rows snapshot にはその revision の row set を、`changes` には distinct row upsert と removals を載せます。`reload_required` は coalesced/失効した change stream の合図で、row data は持たず、client はその session を再読込します。stale transcript revision/cursor は読み直しを要求する error です。final transcript publication は新しい revision を発行し、以前の live cursor を失効させます。
+
+`EngineCodec.trustedRequestID(in:)` は entire record の lexical validation 後に限り canonical `request_id` を取り出します。全 record が lexical-valid で ID も canonical の場合だけ error correlation に利用し、それ以外の error ID は null です。invalid request は side effect を起こしません。最初の unsupported version は error を出して process を終了する扱いが host の責務です。EOF disconnect 時の durable recording stop も host responsibility で、protocol codec が実行する処理ではありません。
+
+### 独立 wire example corpus
+
+次の46 record は [`wire-v1.ndjson`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson) fixture からそのまま転記した独立例 corpus です。1つの process timeline ではなく、request ID / sequence / session lifecycle は例ごとに独立しており相互に整合する必要はありません。golden test と documentation test が全行を strict decode し、encoder bytes とも照合します。
+
+```ndjson engine-protocol-v1
+{"command":"hello","payload":{},"request_id":"1","version":1}
+{"command":"state.get","payload":{},"request_id":"2","version":1}
+{"command":"devices.list","payload":{"source":"microphone"},"request_id":"3","version":1}
+{"command":"recording.start","payload":{"device":{"id":"wasapi-loopback-42","kind":"id"},"source":"system_audio"},"request_id":"4","version":1}
+{"command":"recording.start","payload":{"device":{"kind":"default"},"source":"microphone"},"request_id":"5","version":1}
+{"command":"recording.stop","payload":{"session_id":"session-live"},"request_id":"6","version":1}
+{"command":"session.import","payload":{"input_path":"D:/Recordings/meeting.wav"},"request_id":"7","version":1}
+{"command":"session.reprocess","payload":{"session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"8","version":1}
+{"command":"session.retry_decisions","payload":{"session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"9","version":1}
+{"command":"session.list","payload":{"cursor":null,"limit":20},"request_id":"10","version":1}
+{"command":"transcript.read","payload":{"cursor":"rows-cursor-1","limit":75,"revision":"184","session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"11","version":1}
+{"command":"transcript.watch","payload":{"session_id":"session-live"},"request_id":"12","version":1}
+{"command":"session.export","payload":{"destination_path":"D:/Published/meeting-bundle","session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"13","version":1}
+{"command":"settings.get","payload":{},"request_id":"14","version":1}
+{"command":"settings.replace","payload":{"expected_revision":null,"settings":{"asr_size":"0.6b","automatic_export":true,"decisions_enabled":true,"device":{"kind":"default"},"execution_provider":"cpu","export_destination_path":null,"low_heat":true,"schema_version":1,"source":"microphone","threads":3}},"request_id":"15","version":1}
+{"command":"models.prepare","payload":{},"request_id":"16","version":1}
+{"command":"session.import","payload":{"input_path":"D:/Recordings/second-meeting.wav"},"request_id":"17","version":1}
+{"command":"shutdown","payload":{},"request_id":"18446744073709551615","version":1}
+{"event":"ready","payload":{"capabilities":{"asr_sizes":["0.6b","1.7b"],"automatic_input_volume":"none","execution_providers":["cpu"],"maximum_threads":4,"sources":["microphone","system_audio"],"thermal_monitoring":"none"},"state":{"failures":[],"queue":[],"recording":null,"recovery":"pending","revision":"1","screen":"idle","setup":"settings_required"}},"request_id":null,"sequence":"1","version":1}
+{"event":"state","payload":{"failures":[{"cleanup_errors":[{"code":"ERROR_INVALID_HANDLE","device_id":null,"domain":"Win32","message":"録音ハンドルの解放にも失敗しました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live"}],"code":"device_failure","details":[{"code":"AUDCLNT_E_DEVICE_INVALIDATED","device_id":"wasapi-mic-17","domain":"WASAPI","message":"録音デバイスが切断されました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live/audio.wav"}],"message":"録音デバイスが利用できず、クリーンアップにも失敗しました","recovery_action":"select_device","request_id":"4","session_id":"session-live","severity":"error","stage":"capture"}],"queue":[{"session_id":"session-queued-2","stage":"asr"},{"session_id":"session-queued-3","stage":"decisions"}],"recording":{"device":{"id":"wasapi-loopback-42","kind":"id"},"phase":"recording","session_id":"session-live","source":"system_audio"},"recovery":"running","revision":"42","screen":"live","setup":"ready"},"request_id":null,"sequence":"2","version":1}
+{"event":"accepted","payload":{"command":"session.import"},"request_id":"7","sequence":"3","version":1}
+{"event":"progress","payload":{"completed_units":1,"session_id":null,"stage":"import","total_units":4},"request_id":"7","sequence":"4","version":1}
+{"event":"progress","payload":{"completed_units":2,"session_id":"session-imported-second","stage":"import","total_units":null},"request_id":"17","sequence":"5","version":1}
+{"event":"error","payload":{"cleanup_errors":[{"code":"E_TEMP_CLEANUP","device_id":null,"domain":"filesystem","message":"一時ファイルの削除に失敗しました","path":"C:/Users/Aki/AppData/Local/Temp/import-stage"}],"code":"filesystem","details":[{"code":"ERROR_ACCESS_DENIED","device_id":null,"domain":"Win32","message":"アクセスが拒否されました","path":"D:/Recordings/meeting.wav"}],"message":"インポート元を読み取れませんでした","recovery_action":"retry","request_id":"7","session_id":null,"severity":"error","stage":"import"},"request_id":"7","sequence":"6","version":1}
+{"event":"completed","payload":{"command":"hello","result":{"capabilities":{"asr_sizes":["0.6b","1.7b"],"automatic_input_volume":"none","execution_providers":["cpu"],"maximum_threads":4,"sources":["microphone","system_audio"],"thermal_monitoring":"none"},"state":{"failures":[],"queue":[],"recording":null,"recovery":"pending","revision":"1","screen":"idle","setup":"settings_required"}}},"request_id":"1","sequence":"7","version":1}
+{"event":"completed","payload":{"command":"state.get","result":{"failures":[{"cleanup_errors":[{"code":"ERROR_INVALID_HANDLE","device_id":null,"domain":"Win32","message":"録音ハンドルの解放にも失敗しました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live"}],"code":"device_failure","details":[{"code":"AUDCLNT_E_DEVICE_INVALIDATED","device_id":"wasapi-mic-17","domain":"WASAPI","message":"録音デバイスが切断されました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live/audio.wav"}],"message":"録音デバイスが利用できず、クリーンアップにも失敗しました","recovery_action":"select_device","request_id":"4","session_id":"session-live","severity":"error","stage":"capture"}],"queue":[{"session_id":"session-queued-2","stage":"asr"},{"session_id":"session-queued-3","stage":"decisions"}],"recording":{"device":{"id":"wasapi-loopback-42","kind":"id"},"phase":"recording","session_id":"session-live","source":"system_audio"},"recovery":"running","revision":"42","screen":"live","setup":"ready"}},"request_id":"2","sequence":"8","version":1}
+{"event":"completed","payload":{"command":"devices.list","result":{"default_device_id":"wasapi-loopback-42","devices":[{"id":"wasapi-loopback-42","is_default":true,"name":"Speakers (High Definition Audio)"},{"id":"wasapi-loopback-73","is_default":false,"name":"USB Audio Output"}],"source":"system_audio"}},"request_id":"3","sequence":"9","version":1}
+{"event":"completed","payload":{"command":"recording.start","result":{"session_id":"session-live"}},"request_id":"4","sequence":"10","version":1}
+{"event":"completed","payload":{"command":"recording.start","result":{"session_id":"session-microphone"}},"request_id":"5","sequence":"11","version":1}
+{"event":"completed","payload":{"command":"recording.stop","result":{"session_id":"session-live"}},"request_id":"6","sequence":"12","version":1}
+{"event":"completed","payload":{"command":"session.import","result":{"session_id":"session-imported-second"}},"request_id":"17","sequence":"13","version":1}
+{"event":"completed","payload":{"command":"session.reprocess","result":{"session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"8","sequence":"14","version":1}
+{"event":"completed","payload":{"command":"session.retry_decisions","result":{"session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"9","sequence":"15","version":1}
+{"event":"completed","payload":{"command":"session.list","result":{"next_cursor":"folder-page-cursor-2","sessions":[{"error":{"cleanup_errors":[],"code":"filesystem","details":[{"code":"fileReadCorruptFile","device_id":null,"domain":"Foundation.FileManager","message":"メタデータの形式が正しくありません","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17/session.json"}],"message":"セッション情報を読み取れません","recovery_action":"inspect_session","request_id":null,"session_id":null,"severity":"warning","stage":"recovery"},"folder_id":"stable-folder-id-corrupt-metadata-17","session_id":null,"status":"unreadable"},{"error":null,"folder_id":"session-folder-2025-03-08-live","session_id":"session-finalized-2025-03-08T10-22-31Z","status":"finalized"}]}},"request_id":"10","sequence":"16","version":1}
+{"event":"completed","payload":{"command":"transcript.read","result":{"next_cursor":"rows-cursor-after-2","revision":"184","rows":[{"clause_state":null,"end_ms":900,"headings":["Speaker 1"],"row_id":"row-1","start_ms":0,"text":"おはよう、世界😀\n次の行です"},{"clause_state":"awaiting_next_segment","end_ms":2150,"headings":["Speaker 2"],"row_id":"row-2","start_ms":1250,"text":"日本語の発話 2 😀"}],"session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"11","sequence":"17","version":1}
+{"event":"completed","payload":{"command":"transcript.watch","result":{"next_cursor":null,"revision":"185","rows":[{"clause_state":"boundary_pending","end_ms":3400,"headings":["Speaker 3"],"row_id":"row-3","start_ms":2500,"text":"日本語の発話 3 😀"},{"clause_state":"priority_pending","end_ms":4650,"headings":["Speaker 4"],"row_id":"row-4","start_ms":3750,"text":"日本語の発話 4 😀"}],"session_id":"session-live"}},"request_id":"12","sequence":"18","version":1}
+{"event":"completed","payload":{"command":"session.export","result":{"destination_path":"D:/Published/meeting-bundle","session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"13","sequence":"19","version":1}
+{"event":"completed","payload":{"command":"settings.get","result":{"revision":"8","settings":{"asr_size":"0.6b","automatic_export":true,"decisions_enabled":true,"device":{"kind":"default"},"execution_provider":"cpu","export_destination_path":"D:/Ambient Exports","low_heat":true,"schema_version":1,"source":"microphone","threads":3}}},"request_id":"14","sequence":"20","version":1}
+{"event":"completed","payload":{"command":"settings.replace","result":{"revision":"9","settings":{"asr_size":"0.6b","automatic_export":true,"decisions_enabled":true,"device":{"kind":"default"},"execution_provider":"cpu","export_destination_path":"D:/Ambient Exports","low_heat":true,"schema_version":1,"source":"microphone","threads":3}}},"request_id":"15","sequence":"21","version":1}
+{"event":"completed","payload":{"command":"models.prepare","result":{}},"request_id":"16","sequence":"22","version":1}
+{"event":"completed","payload":{"command":"shutdown","result":{}},"request_id":"18446744073709551615","sequence":"23","version":1}
+{"event":"rows","payload":{"kind":"snapshot","next_cursor":"live-rows-page-2","removed_row_ids":[],"revision":"186","rows":[{"clause_state":null,"end_ms":900,"headings":["Speaker 1"],"row_id":"row-1","start_ms":0,"text":"おはよう、世界😀\n次の行です"},{"clause_state":"awaiting_next_segment","end_ms":2150,"headings":["Speaker 2"],"row_id":"row-2","start_ms":1250,"text":"日本語の発話 2 😀"},{"clause_state":"boundary_pending","end_ms":3400,"headings":["Speaker 3"],"row_id":"row-3","start_ms":2500,"text":"日本語の発話 3 😀"},{"clause_state":"priority_pending","end_ms":4650,"headings":["Speaker 4"],"row_id":"row-4","start_ms":3750,"text":"日本語の発話 4 😀"},{"clause_state":"classified","end_ms":5900,"headings":["Speaker 5"],"row_id":"row-5","start_ms":5000,"text":"日本語の発話 5 😀"},{"clause_state":"classified","end_ms":7150,"headings":["Speaker 6"],"row_id":"row-6","start_ms":6250,"text":"日本語の発話 6 😀"},{"clause_state":"awaiting_next_segment","end_ms":8400,"headings":["Speaker 7"],"row_id":"row-7","start_ms":7500,"text":"日本語の発話 7 😀"},{"clause_state":"boundary_pending","end_ms":9650,"headings":["OTHER"],"row_id":"row-8","start_ms":8750,"text":"日本語の発話 8 😀"},{"clause_state":"priority_pending","end_ms":10900,"headings":["UNKNOWN"],"row_id":"row-9","start_ms":10000,"text":"日本語の発話 9 😀"}],"session_id":"session-live"},"request_id":null,"sequence":"24","version":1}
+{"event":"rows","payload":{"kind":"changes","next_cursor":null,"removed_row_ids":["row-stale-4"],"revision":"187","rows":[{"clause_state":"classified","end_ms":12150,"headings":["Speaker 3"],"row_id":"row-10","start_ms":11250,"text":"変更された発話 😺"}],"session_id":"session-live"},"request_id":null,"sequence":"25","version":1}
+{"event":"rows","payload":{"kind":"reload_required","next_cursor":null,"removed_row_ids":[],"revision":"188","rows":[],"session_id":"session-live"},"request_id":null,"sequence":"26","version":1}
+{"event":"error","payload":{"cleanup_errors":[],"code":"processing_failure","details":[{"code":"MODEL_EXECUTION_FAILED","device_id":null,"domain":"PortableRuntime","message":"推論処理を完了できませんでした","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/models/asr/model.onnx"}],"message":"バックグラウンド処理に失敗しました。セッションを確認してください","recovery_action":"reprocess","request_id":null,"session_id":"session-background-8","severity":"warning","stage":"asr"},"request_id":null,"sequence":"27","version":1}
+{"event":"error","payload":{"cleanup_errors":[{"code":"ERROR_INVALID_HANDLE","device_id":null,"domain":"Win32","message":"録音ハンドルの解放にも失敗しました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live"}],"code":"device_failure","details":[{"code":"AUDCLNT_E_DEVICE_INVALIDATED","device_id":"wasapi-mic-17","domain":"WASAPI","message":"録音デバイスが切断されました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live/audio.wav"}],"message":"録音デバイスが利用できず、クリーンアップにも失敗しました","recovery_action":"select_device","request_id":"4","session_id":"session-live","severity":"error","stage":"capture"},"request_id":"4","sequence":"28","version":1}
+```
+
 ## ONNX Runtime
 
 Windows / Linux の ONNX 実行には Microsoft ONNX Runtime の固定版 1.31.0 を使います（[公式 v1.31.0 release](https://github.com/microsoft/onnxruntime/releases/tag/v1.31.0)、[C API](https://onnxruntime.ai/docs/get-started/with-c.html)、[OrtApi](https://onnxruntime.ai/docs/api/c/struct_ort_api.html)）。[`CONNXRuntime`](../app/MacAmbientJev/Sources/CONNXRuntime/module.modulemap) は取得した ONNX Runtime C header を読み込む `systemLibrary` module です。[`MacAmbientJevONNX`](../app/MacAmbientJev/Sources/MacAmbientJevONNX/ONNXSession.swift) はこの C module だけに直接依存し、[`MacAmbientJevONNXTests`](../app/MacAmbientJev/Tests/MacAmbientJevONNXTests/ONNXSessionTests.swift) は Windows / Linux のみで定義します。macOS は ONNX target を定義せず、ONNX Runtime SDK を取得しません。
