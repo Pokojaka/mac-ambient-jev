@@ -4,6 +4,58 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PACKAGE="$ROOT/app/MacAmbientJev"
 
+FULL_MODEL=0
+if [[ $# -eq 1 && "$1" == "--full-model" ]]; then
+  FULL_MODEL=1
+elif [[ $# -ne 0 ]]; then
+  echo "usage: verify_portable.sh [--full-model]" >&2
+  exit 2
+fi
+
+# Runs one gated numerical suite with RUN_MODEL_TESTS=1, prints the executed and skipped
+# test names, and fails when the suite executed no test.
+run_model_suite() {
+  local name="$1" filter="$2" log executed
+  log="$(mktemp)"
+  printf '==> model suite: %s (filter: %s)\n' "$name" "$filter"
+  env RUN_MODEL_TESTS=1 swift test --package-path "$PACKAGE" --filter "$filter" 2>&1 | tee "$log"
+  executed="$(grep -E 'Test .* passed after' "$log" | grep -v 'Test run' || true)"
+  if [ -z "$executed" ]; then
+    echo "error: model suite $name executed no test" >&2
+    exit 1
+  fi
+  printf 'executed tests in %s (%s):\n%s\n' "$name" "$(printf '%s\n' "$executed" | wc -l | tr -d ' ')" "$executed"
+  printf 'skipped tests in %s:\n%s\n' "$name" "$(grep -E 'Test .* skipped' "$log" || echo '(none)')"
+  rm -f "$log"
+}
+
+run_full_model() {
+  local models_directory qwen_model diarization bin_path
+  models_directory="$ROOT/.build/qwen3-asr-models"
+  mkdir -p "$models_directory"
+  qwen_model="$(python3 "$ROOT/scripts/fetch_qwen3_asr_model.py" 0.6b "$models_directory")"
+  export QWEN3_ASR_ONNX_MODEL_DIRECTORY="$qwen_model"
+  export QWEN3_ASR_ONNX_MODEL_SIZE=0.6b
+  printf 'Qwen3-ASR 0.6B model: %s\n' "$QWEN3_ASR_ONNX_MODEL_DIRECTORY"
+  diarization="$(python3 "$ROOT/scripts/fetch_community1_diarization.py")"
+  export MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="$diarization"
+  printf 'Community-1 diarization model: %s\n' "$MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY"
+
+  run_model_suite "Silero VAD" 'SileroVADParityTests'
+  run_model_suite "Qwen3-ASR" 'ONNXQwen3ASRModelTests|Qwen3ASRTokenReferenceTests'
+  run_model_suite "Community-1 diarization" 'Community1ONNXStageTests|Community1ONNXEndToEndTests'
+  run_model_suite "clause tagger" 'ONNXClauseTaggerTests'
+
+  swift build --package-path "$PACKAGE" -c release --product MacAmbientJevProcessRecording
+  swift build --package-path "$PACKAGE" -c release --product MacAmbientJevEvaluateASR
+  bin_path="$(swift build --package-path "$PACKAGE" -c release --show-bin-path)"
+  python3 "$ROOT/tools/linux-audio/process_recording_acceptance.py" \
+    --executable "$bin_path/MacAmbientJevProcessRecording" \
+    --evaluator "$bin_path/MacAmbientJevEvaluateASR" \
+    --fixture "$PACKAGE/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav"
+  echo "Portable full-model verification passed"
+}
+
 python3 "$ROOT/scripts/fetch_onnxruntime.py"
 model="$(python3 "$ROOT/scripts/fetch_silero_vad.py")"
 export MAC_AMBIENT_JEV_SILERO_MODEL="$model"
@@ -15,6 +67,10 @@ clause_tagger="$(python3 "$ROOT/scripts/fetch_clause_tagger.py")"
 export MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY="$clause_tagger"
 printf 'Clause tagger model: %s\n' "$MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY"
 cd "$ROOT"
+if [ "$FULL_MODEL" = 1 ]; then
+  run_full_model
+  exit 0
+fi
 python3 -B scripts/test_fetch_silero_vad.py
 python3 -B scripts/test_fetch_community1_diarization.py
 python3 -B scripts/test_fetch_clause_tagger.py

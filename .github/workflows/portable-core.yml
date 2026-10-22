@@ -54,6 +54,12 @@ on:
       - 'tools/clause-tagger-export/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/**'
       - 'scripts/test-windows.ps1'
+      - 'scripts/fetch_qwen3_asr_model.py'
+      - 'scripts/test_fetch_qwen3_asr_model.py'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
+      - 'tools/linux-audio/process_recording_acceptance.py'
+      - 'tools/linux-audio/tests/fake_process_recording.py'
+      - 'tools/linux-audio/tests/test_process_recording_acceptance.py'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
       - '.github/workflows/portable-core.yml'
@@ -110,6 +116,12 @@ on:
       - 'tools/clause-tagger-export/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/**'
       - 'scripts/test-windows.ps1'
+      - 'scripts/fetch_qwen3_asr_model.py'
+      - 'scripts/test_fetch_qwen3_asr_model.py'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
+      - 'tools/linux-audio/process_recording_acceptance.py'
+      - 'tools/linux-audio/tests/fake_process_recording.py'
+      - 'tools/linux-audio/tests/test_process_recording_acceptance.py'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
       - '.github/workflows/portable-core.yml'
@@ -181,6 +193,31 @@ jobs:
         run: swift build --package-path app/MacAmbientJev
       - name: Test Core, Pipeline and ONNX
         run: swift test --package-path app/MacAmbientJev
+
+  linux-model-e2e:
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name != 'workflow_dispatch' || inputs.run_linux)
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Python, pytest and FLAC
+        run: apt-get update && apt-get install -y python3 python3-pytest flac
+      - name: Test the acceptance driver without models
+        working-directory: tools/linux-audio
+        run: python3 -m pytest -q tests/test_process_recording_acceptance.py
+      - name: Restore model directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build/qwen3-asr-models
+            .build/qwen3-asr-tokenizer
+            .build/silero-vad
+            .build/community1-diarization
+            .build/clause-tagger-onnx
+          key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_community1_diarization.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
+      - name: Fetch models (hashes are verified on cache hits), run numerical suites and acceptance driver
+        run: bash scripts/verify_portable.sh --full-model
 
   windows:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
