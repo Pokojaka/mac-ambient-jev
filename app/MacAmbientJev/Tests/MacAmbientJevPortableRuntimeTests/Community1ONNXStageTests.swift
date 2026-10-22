@@ -6,13 +6,15 @@ import Testing
 @testable import MacAmbientJevPortableRuntime
 
 private enum StageTolerance {
-    /// Non-silence segmentation: measured 1.2e-4 at most on the speech windows.
-    static let segmentationMaxAbs: Float = 2e-4
-    /// An all-zero window puts almost no mass on most classes, so the two runtimes differ widely in
-    /// log-probability there (measured 2.45 against Core ML on ONNX Runtime 1.31 aarch64 Linux)
-    /// but by 3.1e-4 in probability and never in the argmax.
-    static let silenceLogProbabilityMaxAbs: Float = 3.0
-    static let silenceProbabilityMaxAbs: Float = 1e-3
+    /// Non-silence segmentation log-probability. Measured maxima against Core ML on ONNX Runtime 1.31:
+    /// 1.2e-4 on aarch64 Linux and 3.3e-4 on Windows 11 ARM64.
+    static let segmentationMaxAbs: Float = 5e-4
+    /// An all-zero window puts almost no mass on most classes, so the runtimes differ widely in
+    /// log-probability there. Measured maxima: 2.45 on aarch64 Linux and 5.49 on Windows 11 ARM64.
+    static let silenceLogProbabilityMaxAbs: Float = 8.0
+    /// The same window in probability. Measured maxima: 3.1e-4 on aarch64 Linux and 3.0e-3 on
+    /// Windows 11 ARM64. The argmax never differs.
+    static let silenceProbabilityMaxAbs: Float = 5e-3
     static let embeddingCosine = 0.995
     /// One segmentation frame (160,000 / 589 samples, rounded up).
     static let frameSamples: Int64 = 272

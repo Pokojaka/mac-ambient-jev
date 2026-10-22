@@ -366,10 +366,10 @@ RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/
 
 Linux / Windows の model テスト（[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)）は `RUN_MODEL_TESTS=1` と、`scripts/fetch_community1_diarization.py` が出力した directory を指す必須の `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` で動きます。環境変数に既定値はなく、未設定・相対 path・存在しない directory は skip ではなく失敗です。比較と許容誤差は次のとおりです。
 
-| 対象 | 許容 | 測定値（ONNX Runtime 1.31.0、Linux aarch64） |
+| 対象 | 許容 | 測定値（ONNX Runtime 1.31.0、Linux aarch64 / Windows 11 ARM64） |
 | --- | --- | --- |
-| 音声 window の Segmentation（log-probability） | 最大絶対誤差 `2e-4`、argmax 一致 100 % | 最大 `1.2e-4`、argmax 100 % |
-| 無音 window の Segmentation | argmax 一致 100 %、log-probability の最大絶対誤差 `3.0`、確率の最大絶対誤差 `1e-3` | log-probability `2.45`、確率 `3.1e-4`、argmax 100 % |
+| 音声 window の Segmentation（log-probability） | 最大絶対誤差 `5e-4`、argmax 一致 100 % | 最大 `1.2e-4` / `3.3e-4`、argmax 100 % |
+| 無音 window の Segmentation | argmax 一致 100 %、log-probability の最大絶対誤差 `8.0`、確率の最大絶対誤差 `5e-3` | log-probability `2.45` / `5.49`、確率 `3.1e-4` / `3.0e-3`、argmax 100 % |
 | 選ばれた各 mask の Embedding | Core ML との cosine `0.995` 以上 | `0.99991` 以上 |
 | 散在 mask の Embedding | cosine `0.995` 以上 | `0.99993` |
 | end-to-end の spans | 話者数・span 数・話者 ID の一致、各境界 272 sample（1 frame）以内 | FluidAudio の spans と完全一致 |
