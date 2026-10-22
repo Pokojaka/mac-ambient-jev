@@ -7,6 +7,8 @@ import Foundation
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
     .library(name: "MacAmbientJevPipeline", targets: ["MacAmbientJevPipeline"]),
+    .library(name: "MacAmbientJevEngineProtocol", targets: ["MacAmbientJevEngineProtocol"]),
+    .library(name: "MacAmbientJevEngineHost", targets: ["MacAmbientJevEngineHost"]),
     .library(name: "MacAmbientJevDiarization", targets: ["MacAmbientJevDiarization"]),
     .executable(
         name: "MacAmbientJevEvaluateSession",
@@ -43,6 +45,11 @@ coreDependencies.append("CWindowsSession")
 var targets: [Target] = [
     .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
+    .target(name: "MacAmbientJevEngineProtocol"),
+    .target(
+        name: "MacAmbientJevEngineHost",
+        dependencies: ["MacAmbientJevEngineProtocol", "MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
     .target(
         name: "MacAmbientJevDiarization",
         dependencies: ["MacAmbientJevCore"],
@@ -93,6 +100,14 @@ var targets: [Target] = [
     .testTarget(
         name: "MacAmbientJevPipelineTests",
         dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevEngineProtocolTests",
+        dependencies: ["MacAmbientJevEngineProtocol"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevEngineHostTests",
+        dependencies: ["MacAmbientJevEngineHost"]
     ),
     .testTarget(
         name: "MacAmbientJevDiarizationMeasurementTests",
@@ -225,6 +240,22 @@ let onnxRuntimeLinkerFlags = [
 let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-Xcc", "-I\(onnxRuntimeIncludeDirectory.path)"])
 ]
+
+#if os(Windows)
+products.append(.executable(
+    name: "MacAmbientJevEngine",
+    targets: ["MacAmbientJevEngine"]
+))
+targets.append(.executableTarget(
+    name: "MacAmbientJevEngine",
+    dependencies: [
+        "MacAmbientJevEngineHost",
+        "MacAmbientJevPortableRuntime",
+        "MacAmbientJevWindowsSupport"
+    ],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+#endif
 
 products.append(.executable(
     name: "MacAmbientJevDiarizeFile",

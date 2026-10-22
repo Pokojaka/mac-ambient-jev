@@ -11,6 +11,8 @@ CHECK_SCRIPT = pathlib.Path(__file__).resolve().with_name("check_portable_core.p
 DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevCore",
     "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+    "app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol",
+    "app/MacAmbientJev/Sources/MacAmbientJevEngineHost",
     "app/MacAmbientJev/Sources/MacAmbientJevDiarization",
     "app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement",
     "app/MacAmbientJev/Sources/MacAmbientJevONNX",
@@ -96,17 +98,44 @@ class PortableImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.write_fixture(directory, DEFAULT_ROOTS[0], "import Foundation")
             self.write_fixture(directory, DEFAULT_ROOTS[1], "import AVFoundation")
-            self.write_fixture(directory, DEFAULT_ROOTS[2], "import CoreML")
-            self.write_fixture(directory, DEFAULT_ROOTS[3], "import FluidAudio")
-            self.write_fixture(directory, DEFAULT_ROOTS[4], "import Foundation")
-            self.write_fixture(directory, DEFAULT_ROOTS[5], "import Foundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[2], "import AppKit")
+            self.write_fixture(directory, DEFAULT_ROOTS[3], "import WinSDK")
+            self.write_fixture(directory, DEFAULT_ROOTS[4], "import CoreML")
+            self.write_fixture(directory, DEFAULT_ROOTS[5], "import FluidAudio")
+            self.write_fixture(directory, DEFAULT_ROOTS[6], "import Foundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[7], "import Foundation")
 
             result = self.run_default_cli(directory)
 
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn("AVFoundation", result.stderr)
-            self.assertIn("CoreML", result.stderr)
-            self.assertIn("FluidAudio", result.stderr)
+            for module in ["AVFoundation", "AppKit", "WinSDK", "CoreML", "FluidAudio"]:
+                with self.subTest(module=module):
+                    self.assertIn(module, result.stderr)
+            self.assertIn(DEFAULT_ROOTS[2], result.stderr)
+            self.assertIn(DEFAULT_ROOTS[3], result.stderr)
+
+    def test_cli_rejects_platform_imports_in_each_engine_root(self):
+        sources = [
+            ("import AppKit", "AppKit"),
+            ("#if os(macOS)\nimport AVFoundation\n#endif", "AVFoundation"),
+            ("import WinSDK", "WinSDK"),
+        ]
+        for engine_root in DEFAULT_ROOTS[2:4]:
+            for source, module in sources:
+                with self.subTest(engine_root=engine_root, module=module):
+                    with tempfile.TemporaryDirectory() as directory:
+                        for root in DEFAULT_ROOTS:
+                            self.write_fixture(
+                                directory,
+                                root,
+                                source if root == engine_root else "import Foundation",
+                            )
+
+                        result = self.run_default_cli(directory)
+
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn(engine_root, result.stderr)
+                        self.assertIn(module, result.stderr)
 
     def test_cli_requires_all_default_roots(self):
         for missing_root in DEFAULT_ROOTS:
@@ -131,7 +160,11 @@ class PortableImportTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(
-                result.stdout.startswith("Portable Core / Pipeline / Diarization / ONNX / PortableRuntime import check passed"),
+                result.stdout.startswith("Portable Core / Pipeline / EngineProtocol / EngineHost / Diarization / ONNX / PortableRuntime import check passed"),
+                result.stdout,
+            )
+            self.assertTrue(
+                result.stdout.rstrip().endswith(f"({', '.join(DEFAULT_ROOTS)})"),
                 result.stdout,
             )
 
