@@ -9,7 +9,7 @@
 
 ## 現在の使用方法
 
-`CMiniaudio.c` は WAV / FLAC / MP3 のデコードと、モノラル float32 PCM のサンプルレート変換を実装します。加えて Windows では `WindowsCapture.inc` と `WindowsCaptureSafety.c` が WASAPI のマイク／ループバック取得、エンドポイント列挙、`GetDiskFreeSpaceExW`、`SetThreadExecutionState` の専用スレッドを提供します（[録音キャプチャ](../../../../docs/capture.md)）。ビルド時には次の定義を実際に設定しています。
+`CMiniaudio.c` は WAV / FLAC / MP3 のデコードと、モノラル float32 PCM のサンプルレート変換を実装します。加えて Windows では `WindowsCapture.inc` と `WindowsCaptureSafety.c` が WASAPI のマイク／ループバック取得、エンドポイント列挙、`GetDiskFreeSpaceExW`、`SetThreadExecutionState` の専用スレッド、環境監視スレッド（デバイス状態と外部再生の観測）を提供します（[録音キャプチャ](../../../../docs/capture.md)）。ビルド時には次の定義を実際に設定しています。
 
 ```c
 #define MINIAUDIO_IMPLEMENTATION

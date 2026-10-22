@@ -55,6 +55,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private static let maximumPacketFrames = 65_536
     private static let qpcUnitsPerSecond = 10_000_000.0
     private static let healthInterval: TimeInterval = CaptureHealth.stallInterval
+    /// A loopback packet reaches the reader up to one engine period (10 ms typically, tens of
+    /// ms on some endpoints) after the audio it carries, and the environment watermark is
+    /// observed up to one poll cycle (100 ms) before the drain that reports it. Idle silence
+    /// and gaps stop this far short of the watermark so a late packet is never pre-empted;
+    /// the ring keeps the first write for a range.
+    private static let deliveryGraceSeconds = 0.25
 
     public let sink: TimestampedMonoSink
     public let sampleRate: Double
@@ -63,6 +69,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private let epochQPC100ns: UInt64
     private let clock: any CaptureClock
     private let loopback: Bool
+    private let deliveryGraceFrames: Int64
     private let channelPointers: UnsafeMutablePointer<UnsafePointer<Float>>
     private let strides: UnsafeMutablePointer<Int>
     private var channelPointersInitialized = false
@@ -122,6 +129,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         self.epochQPC100ns = epochQPC100ns
         self.clock = clock
         self.loopback = loopback
+        deliveryGraceFrames = Int64((sampleRate * Self.deliveryGraceSeconds).rounded(.up))
         startedAt = clock.now()
         channelPointers = .allocate(capacity: channels)
         strides = .allocate(capacity: channels)
@@ -363,14 +371,13 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         }
 
         if activeOutput {
-            guard watermarkQPC100ns >= epochQPC100ns,
-                  let watermarkFrame = frameForQPC(watermarkQPC100ns) else {
+            guard let settledFrame = settledFrame(forWatermark: watermarkQPC100ns) else {
                 fail(.timestamp)
                 return
             }
             let endFrame = sink.lastEndFrame
-            if watermarkFrame > endFrame {
-                let missing = watermarkFrame - endFrame
+            if settledFrame > endFrame {
+                let missing = settledFrame - endFrame
                 let threeSecondFrames = Int64(
                     (sampleRate * CaptureHealth.stallInterval).rounded(.up)
                 )
@@ -390,13 +397,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return
         }
 
-        guard watermarkQPC100ns >= epochQPC100ns,
-              let watermarkFrame = frameForQPC(watermarkQPC100ns) else {
+        guard let settledFrame = settledFrame(forWatermark: watermarkQPC100ns) else {
             return
         }
         let endFrame = sink.lastEndFrame
-        guard watermarkFrame > endFrame else { return }
-        let uncoveredFrames = watermarkFrame - endFrame
+        guard settledFrame > endFrame else { return }
+        let uncoveredFrames = settledFrame - endFrame
         let threeSecondFrames = Int64((sampleRate * CaptureHealth.stallInterval).rounded(.up))
         guard uncoveredFrames < threeSecondFrames else {
             fail(.suspended)
@@ -406,6 +412,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         guard halfSecondFrames > 0 else { return }
         let count = Int(min(uncoveredFrames, Int64(halfSecondFrames)))
         sink.silence(startFrame: endFrame, frameCount: count)
+    }
+
+    /// The last frame for which every packet the device will deliver has been drained.
+    private func settledFrame(forWatermark watermark: UInt64) -> Int64? {
+        guard watermark >= epochQPC100ns, let frame = frameForQPC(watermark) else { return nil }
+        return max(0, frame - deliveryGraceFrames)
     }
 
     /// Consumer-side liveness check. `now` is supplied explicitly for deterministic tests.
@@ -479,8 +491,14 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         let tolerance = max(2.0, sampleRate * 0.002)
         let difference = abs(Double(qpcDelta) - Double(deviceDelta))
         if difference > tolerance {
+            // A loopback stream delivers no packets while nothing plays and its device position
+            // counts only delivered frames, so the first packet after an idle interval lies
+            // ahead of the device clock whether or not the driver sets DATA_DISCONTINUITY (the
+            // flag is documented only as glitch detection). The skipped host time becomes
+            // idle silence or a ring gap. A microphone has no such idle interval: a jump
+            // there is lost audio and needs the flag.
             if Double(qpcDelta) > Double(deviceDelta),
-               packet.flags & Self.discontinuityFlag != 0,
+               packet.flags & Self.discontinuityFlag != 0 || loopback,
                hostFrame >= lastPacketEndFrame {
                 return resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame)
             }

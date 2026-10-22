@@ -255,7 +255,84 @@ struct WindowsCaptureIngressTests {
         harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
 
         #expect(harness.ingress.failure == nil)
-        #expect(harness.sink.lastEndFrame == 48_000)
+        // The watermark minus the 250 ms delivery grace: 48,000 - 12,000 frames.
+        #expect(harness.sink.lastEndFrame == 36_000)
+    }
+
+    @Test func testBurstTailArrivingAfterIdleObservationIsNotMarkedMissing() throws {
+        let harness = try makeIngress(loopback: true, startMillis: 10_000, ringCapacity: 128)
+        harness.ingress.health(watermarkQPC100ns: 10_000_000, outputState: 1, error: 0)
+        let head = [Float](repeating: 0.5, count: 40_000)
+        receive(harness.ingress, samples: head, frameCount: 512, packetFrames: 512)
+        for index in 1..<78 {
+            receive(
+                harness.ingress, samples: Array(head.prefix(512)), frameCount: 512,
+                devicePosition: UInt64(index * 512),
+                qpc100ns: 10_000_000 + UInt64(index * 512 * 10_000_000 / 48_000)
+            )
+        }
+        let endOfDeliveredAudio = harness.sink.lastEndFrame
+        #expect(endOfDeliveredAudio == 39_936)
+        harness.clock.setMillis(11_000)
+        // Idle is observed at 1 s; the packets for the last 0.2 s of the burst are still in flight.
+        harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
+        #expect(harness.ingress.failure == nil)
+        for index in 78..<90 {
+            receive(
+                harness.ingress, samples: Array(head.prefix(512)), frameCount: 512,
+                devicePosition: UInt64(index * 512),
+                qpc100ns: 10_000_000 + UInt64(index * 512 * 10_000_000 / 48_000)
+            )
+        }
+
+        #expect(harness.ingress.failure == nil)
+        let blocks = drain(harness.ring)
+        #expect(blocks.allSatisfy { $0.gap == nil })
+        let lastBlock = try #require(blocks.last)
+        #expect(lastBlock.startFrame + Int64(lastBlock.samples.count) == Int64(90 * 512))
+        #expect(blocks.flatMap(\.samples).allSatisfy { $0 == 0.5 })
+    }
+
+    @Test func testTailThatNeverArrivesBecomesOneGapAfterTheGrace() throws {
+        let harness = try makeIngress(loopback: true, startMillis: 10_000)
+        harness.ingress.health(watermarkQPC100ns: 10_000_000, outputState: 1, error: 0)
+        receive(harness.ingress, samples: [Float](repeating: 0.5, count: 24_000), frameCount: 512, packetFrames: 512)
+        harness.clock.setMillis(11_000)
+        harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
+
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 36_000)
+        let gaps = drain(harness.ring).compactMap(\.gap)
+        #expect(gaps.count == 1)
+        #expect(gaps.first?.startFrame == 512)
+        #expect(gaps.first?.endFrame == 36_000)
+    }
+
+    @Test func testLoopbackResumesAfterIdleWithoutDiscontinuityFlag() throws {
+        let harness = try makeIngress(loopback: true)
+        receive(harness.ingress, samples: [Float](repeating: 0.25, count: 480), frameCount: 480, devicePosition: 0)
+        harness.clock.setMillis(11_000)
+        harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
+        // Two seconds of idle: QPC advanced, the device position advanced only by delivered frames.
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.25, count: 480), frameCount: 480,
+            devicePosition: 480, qpc100ns: 30_000_000
+        )
+
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 96_480)
+        #expect(drain(harness.ring).contains { $0.startFrame == 96_000 })
+    }
+
+    @Test func testMicrophoneForwardQPCJumpWithoutFlagStillFails() throws {
+        let harness = try makeIngress(loopback: false)
+        receive(harness.ingress, samples: [Float](repeating: 0.25, count: 480), frameCount: 480, devicePosition: 0)
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.25, count: 480), frameCount: 480,
+            devicePosition: 480, qpc100ns: 30_000_000
+        )
+
+        #expect(harness.ingress.failure == .timestamp)
     }
 
     @Test func testActiveOutputWithoutPacketsFailsAfterThreeSeconds() throws {

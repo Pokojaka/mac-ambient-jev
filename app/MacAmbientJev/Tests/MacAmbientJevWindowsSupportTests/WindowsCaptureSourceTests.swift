@@ -112,9 +112,11 @@ struct WindowsCaptureSourceTests {
         let silenceFixture = root.appending(path: "silent-packet.f32le")
         try writeScriptedFloatFixture([Float](repeating: 0, count: 512), to: silenceFixture)
         let rate = 48_000.0
+        // Idle silence stops 250 ms (12,000 frames at 48 kHz) short of the watermark.
+        let graceFrames: Int64 = 12_000
         let events: [ScriptedFileCaptureEvent] = [
             .heartbeat(
-                watermarkQPC100ns: scriptedQPC(frame: 512, sampleRate: rate),
+                watermarkQPC100ns: scriptedQPC(frame: 512 + graceFrames, sampleRate: rate),
                 outputState: 0, error: 0
             ),
             .packet(
@@ -123,7 +125,7 @@ struct WindowsCaptureSourceTests {
                 originalOffset: 0, originalFrames: 512, delivery: .step
             ),
             .heartbeat(
-                watermarkQPC100ns: scriptedQPC(frame: 1_024, sampleRate: rate),
+                watermarkQPC100ns: scriptedQPC(frame: 1_024 + graceFrames, sampleRate: rate),
                 outputState: 0, error: 0
             )
         ]

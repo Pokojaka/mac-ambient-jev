@@ -138,6 +138,33 @@ void mja_capture_destroy(mja_capture *capture);
  * The list excludes the audio engine process and its descendants. */
 int32_t mja_capture_output_pids(const char *endpoint_id, uint32_t *pids, uint32_t capacity, uint32_t *count);
 
+/* One process of a process snapshot. */
+typedef struct mja_process_info {
+    uint32_t process_id;
+    uint32_t parent_process_id;
+} mja_process_info;
+
+/* Selects the external audio sessions. session_pids were listed BEFORE processes was
+ * snapshotted, so a session PID absent from processes has exited since the listing and can be
+ * neither current_pid nor its descendant: it is skipped. PID 0 (system sounds, or a session
+ * spanning several processes) is external. current_pid missing from processes is an error
+ * (ERROR_NOT_FOUND). *external_count is the number of external PIDs; if it exceeds capacity,
+ * nonzero is returned and nothing is truncated silently. */
+int32_t mja_output_filter_external_pids(
+    const uint32_t *session_pids, uint32_t session_count,
+    const mja_process_info *processes, uint32_t process_count,
+    uint32_t current_pid,
+    uint32_t *external_pids, uint32_t capacity, uint32_t *external_count);
+
+/* Values the environment thread publishes together. Readers take a consistent set without
+ * retrying or failing: snapshot always returns the last published set. A NULL state yields
+ * ERROR_INVALID_PARAMETER in *error. */
+typedef struct mja_environment_state mja_environment_state;
+int32_t mja_environment_state_create(mja_environment_state **out);
+void mja_environment_state_destroy(mja_environment_state *state);
+void mja_environment_state_publish(mja_environment_state *state, uint64_t observed_qpc_100ns, uint64_t published_qpc_100ns, int32_t output_state, int32_t error);
+void mja_environment_state_snapshot(mja_environment_state *state, uint64_t *observed_qpc_100ns, uint64_t *published_qpc_100ns, int32_t *output_state, int32_t *error);
+
 /* directory is a NUL-terminated UTF-16 path; available receives available
  * bytes. A nonzero result is the raw Win32 error from the failed API call. */
 int32_t mja_capture_disk_free(const uint16_t *directory, uint64_t *available);

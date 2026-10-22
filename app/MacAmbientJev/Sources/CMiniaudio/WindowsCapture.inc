@@ -5,7 +5,8 @@
 #define MJA_CAPTURE_MAX_PACKET_FRAMES 65536u
 #define MJA_CAPTURE_MAX_PACKETS_PER_PASS 256u
 #define MJA_CAPTURE_ENDPOINT_ID_CAPACITY 1024u
-#define MJA_CAPTURE_QPC_FRESHNESS_100NS UINT64_C(5000000)
+/* No completed environment poll for this long: polls run every 100 ms, so 1 s is ten cycles. */
+#define MJA_CAPTURE_QPC_FRESHNESS_100NS UINT64_C(10000000)
 #define MJA_CAPTURE_ERROR_INTERRUPTED ((int32_t)-12001)
 #define MJA_CAPTURE_ERROR_DRAIN_LIMIT ((int32_t)-12002)
 #define MJA_CAPTURE_ERROR_FORMAT_CHANGED ((int32_t)-12003)
@@ -530,6 +531,7 @@ static int32_t mja_capture_packet_read(void *opaque_device, uint32_t *frames_rea
     mja_capture *capture;
     ma_IAudioCaptureClient *capture_client;
     uint64_t observed_qpc_100ns = 0;
+    uint64_t published_qpc_100ns = 0;
     int32_t output_state = -1;
     int32_t environment_error = 0;
     int32_t result;
@@ -570,6 +572,7 @@ static int32_t mja_capture_packet_read(void *opaque_device, uint32_t *frames_rea
     mja_capture_environment_snapshot(
         capture->environment,
         &observed_qpc_100ns,
+        &published_qpc_100ns,
         &output_state,
         &environment_error);
 
@@ -652,10 +655,10 @@ static int32_t mja_capture_packet_read(void *opaque_device, uint32_t *frames_rea
         if (result != MA_SUCCESS) {
             return mja_capture_fail(capture, result, observed_qpc_100ns, output_state);
         }
-        if (now_100ns < observed_qpc_100ns) {
+        if (published_qpc_100ns < observed_qpc_100ns || now_100ns < published_qpc_100ns) {
             return mja_capture_fail(capture, MA_INVALID_DATA, observed_qpc_100ns, output_state);
         }
-        if (now_100ns - observed_qpc_100ns > MJA_CAPTURE_QPC_FRESHNESS_100NS) {
+        if (now_100ns - published_qpc_100ns > MJA_CAPTURE_QPC_FRESHNESS_100NS) {
             return mja_capture_fail(capture, MA_TIMEOUT, observed_qpc_100ns, output_state);
         }
     }

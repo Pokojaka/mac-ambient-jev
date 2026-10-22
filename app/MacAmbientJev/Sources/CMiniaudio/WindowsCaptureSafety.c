@@ -16,6 +16,7 @@
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <tlhelp32.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,20 +36,31 @@ static const GUID MJA_IID_IAudioSessionControl2 = {0xBFB7FF88, 0x7239, 0x4FC9, {
 #ifndef AUDCLNT_S_NO_SINGLE_PROCESS
 #define AUDCLNT_S_NO_SINGLE_PROCESS ((HRESULT)0x0889000DL)
 #endif
-#define MJA_PROCESS_CAPACITY 4096u
-#define MJA_OUTPUT_PID_CAPACITY (MJA_PROCESS_CAPACITY + 1u)
 #define MJA_QPC_UNITS_PER_SECOND UINT64_C(10000000)
+/* Session membership and device state change on human timescales. The ingress holds idle
+ * silence back by 250 ms, so a poll cycle of 100 ms plus its own duration can never hide
+ * a burst from the silence fill. */
+#define MJA_ENVIRONMENT_POLL_MS 100u
 
 struct mja_power_owner {
     HANDLE thread;
     HANDLE ready_event;
     HANDLE release_event;
     HANDLE exit_event;
-    volatile LONG stop_requested;
     volatile LONG startup_error;
     volatile LONG wait_error;
     volatile LONG clear_error;
     volatile LONG exit_error;
+};
+
+/* The environment thread publishes four values that must be read together. A reader never
+ * observes a half-written set and never retries: the critical section is a few stores. */
+struct mja_environment_state {
+    SRWLOCK lock;
+    uint64_t observed_qpc_100ns;
+    uint64_t published_qpc_100ns;
+    int32_t output_state;
+    int32_t error;
 };
 
 struct mja_capture_environment {
@@ -60,16 +72,8 @@ struct mja_capture_environment {
     int32_t watch_default;
     volatile LONG stop_requested;
     volatile LONG startup_error;
-    volatile LONG version;
-    DECLSPEC_ALIGN(8) volatile LONG64 observed_qpc_100ns;
-    volatile LONG output_state;
-    volatile LONG error;
+    mja_environment_state state;
 };
-
-typedef struct mja_process_entry {
-    DWORD process_id;
-    DWORD parent_process_id;
-} mja_process_entry;
 
 static int32_t mja_last_error_or(DWORD fallback)
 {
@@ -174,16 +178,10 @@ static DWORD WINAPI mja_power_thread(void *opaque)
         }
     }
     if (startup_error == 0) {
-        for (;;) {
-            DWORD wait_result = WaitForSingleObject(owner->release_event, 20);
-            if (wait_result == WAIT_OBJECT_0 || InterlockedCompareExchange(&owner->stop_requested, 0, 0) != 0) {
-                break;
-            }
-            if (wait_result == WAIT_TIMEOUT) {
-                continue;
-            }
+        /* The release event is the only wake-up: acquire and release both run on this thread. */
+        DWORD wait_result = WaitForSingleObject(owner->release_event, INFINITE);
+        if (wait_result != WAIT_OBJECT_0) {
             InterlockedExchange(&owner->wait_error, (LONG)mja_last_error_or(ERROR_GEN_FAILURE));
-            break;
         }
     }
     if (acquired && SetThreadExecutionState(ES_CONTINUOUS) == 0) {
@@ -234,7 +232,6 @@ static int32_t mja_power_wait_and_dispose(mja_power_owner *owner, int32_t primar
     int joined = owner->thread == NULL;
 
     if (owner->thread != NULL) {
-        InterlockedExchange(&owner->stop_requested, 1);
         if (owner->release_event != NULL && !SetEvent(owner->release_event)) {
             int32_t event_error = mja_last_error_or(ERROR_GEN_FAILURE);
             mja_power_record_error(&errors->cleanup, event_error);
@@ -345,7 +342,6 @@ int32_t mja_power_release(mja_power_owner *owner, mja_power_errors *errors)
     if (owner == NULL) {
         return (int32_t)ERROR_INVALID_PARAMETER;
     }
-    InterlockedExchange(&owner->stop_requested, 1);
     if (!SetEvent(owner->release_event)) {
         error = mja_last_error_or(ERROR_GEN_FAILURE);
         mja_power_record_error(&errors->cleanup, error);
@@ -383,23 +379,200 @@ static int32_t mja_utf8_to_wide(const char *utf8, WCHAR **wide_out)
     return 0;
 }
 
-static int mja_find_process(const mja_process_entry *processes, DWORD process_count, DWORD process_id)
+static void mja_environment_state_init(mja_environment_state *state)
 {
-    DWORD index;
-    for (index = 0; index < process_count; index++) {
-        if (processes[index].process_id == process_id) {
-            return (int)index;
-        }
-    }
-    return -1;
+    InitializeSRWLock(&state->lock);
+    state->observed_qpc_100ns = 0;
+    state->published_qpc_100ns = 0;
+    state->output_state = -1;
+    state->error = 0;
 }
 
-static int32_t mja_process_snapshot(mja_process_entry *processes, DWORD *process_count)
+int32_t mja_environment_state_create(mja_environment_state **out)
+{
+    mja_environment_state *state;
+    if (out == NULL) return (int32_t)ERROR_INVALID_PARAMETER;
+    *out = NULL;
+    state = (mja_environment_state *)calloc(1, sizeof(*state));
+    if (state == NULL) return (int32_t)ERROR_NOT_ENOUGH_MEMORY;
+    mja_environment_state_init(state);
+    *out = state;
+    return 0;
+}
+
+void mja_environment_state_destroy(mja_environment_state *state)
+{
+    free(state);
+}
+
+void mja_environment_state_publish(mja_environment_state *state, uint64_t observed_qpc_100ns, uint64_t published_qpc_100ns, int32_t output_state, int32_t error)
+{
+    AcquireSRWLockExclusive(&state->lock);
+    state->observed_qpc_100ns = observed_qpc_100ns;
+    state->published_qpc_100ns = published_qpc_100ns;
+    state->output_state = output_state;
+    state->error = error;
+    ReleaseSRWLockExclusive(&state->lock);
+}
+
+void mja_environment_state_snapshot(mja_environment_state *state, uint64_t *observed_qpc_100ns, uint64_t *published_qpc_100ns, int32_t *output_state, int32_t *error)
+{
+    uint64_t observed = 0;
+    uint64_t published = 0;
+    int32_t native_state = -1;
+    int32_t native_error = (int32_t)ERROR_INVALID_PARAMETER;
+    if (state != NULL) {
+        AcquireSRWLockShared(&state->lock);
+        observed = state->observed_qpc_100ns;
+        published = state->published_qpc_100ns;
+        native_state = state->output_state;
+        native_error = state->error;
+        ReleaseSRWLockShared(&state->lock);
+    }
+    if (observed_qpc_100ns != NULL) *observed_qpc_100ns = observed;
+    if (published_qpc_100ns != NULL) *published_qpc_100ns = published;
+    if (output_state != NULL) *output_state = native_state;
+    if (error != NULL) *error = native_error;
+}
+
+void mja_capture_environment_snapshot(mja_capture_environment *environment, uint64_t *observed_qpc_100ns, uint64_t *published_qpc_100ns, int32_t *output_state, int32_t *error)
+{
+    mja_environment_state_snapshot(
+        environment == NULL ? NULL : &environment->state,
+        observed_qpc_100ns, published_qpc_100ns, output_state, error);
+}
+
+static int mja_compare_u32(const void *left, const void *right)
+{
+    uint32_t a = *(const uint32_t *)left;
+    uint32_t b = *(const uint32_t *)right;
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+/* process_id is the first member, so mja_compare_u32 orders and searches entries by PID. */
+static int mja_find_process(const mja_process_info *sorted, uint32_t process_count, uint32_t process_id)
+{
+    const mja_process_info *found;
+    if (process_count == 0) return -1;
+    found = (const mja_process_info *)bsearch(&process_id, sorted, process_count, sizeof(*sorted), mja_compare_u32);
+    return found == NULL ? -1 : (int)(found - sorted);
+}
+
+int32_t mja_output_filter_external_pids(
+    const uint32_t *session_pids, uint32_t session_count,
+    const mja_process_info *processes, uint32_t process_count,
+    uint32_t current_pid,
+    uint32_t *external_pids, uint32_t capacity, uint32_t *external_count)
+{
+    mja_process_info *sorted = NULL;
+    int *first_child = NULL;
+    int *next_sibling = NULL;
+    int *queue = NULL;
+    uint8_t *excluded = NULL;
+    int32_t result = 0;
+    uint32_t index;
+    uint32_t count = 0;
+    int current_index;
+
+    if (external_count == NULL || (session_count != 0 && session_pids == NULL) ||
+        (process_count != 0 && processes == NULL) || (capacity != 0 && external_pids == NULL)) {
+        return (int32_t)ERROR_INVALID_PARAMETER;
+    }
+    *external_count = 0;
+    if (process_count == 0 || (size_t)process_count > SIZE_MAX / sizeof(*sorted) || process_count > (uint32_t)INT_MAX) {
+        return (int32_t)ERROR_NOT_FOUND;
+    }
+    sorted = (mja_process_info *)malloc((size_t)process_count * sizeof(*sorted));
+    first_child = (int *)malloc((size_t)process_count * sizeof(int));
+    next_sibling = (int *)malloc((size_t)process_count * sizeof(int));
+    queue = (int *)malloc((size_t)process_count * sizeof(int));
+    excluded = (uint8_t *)calloc(process_count, 1);
+    if (sorted == NULL || first_child == NULL || next_sibling == NULL || queue == NULL || excluded == NULL) {
+        result = (int32_t)ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
+    }
+    memcpy(sorted, processes, (size_t)process_count * sizeof(*sorted));
+    qsort(sorted, process_count, sizeof(*sorted), mja_compare_u32);
+
+    /* Our own process must be in the snapshot taken after the session listing. */
+    current_index = mja_find_process(sorted, process_count, current_pid);
+    if (current_index < 0) {
+        result = (int32_t)ERROR_NOT_FOUND;
+        goto done;
+    }
+    {
+        uint32_t queue_head = 0;
+        uint32_t queue_tail = 0;
+        for (index = 0; index < process_count; index++) {
+            first_child[index] = -1;
+            next_sibling[index] = -1;
+        }
+        for (index = 0; index < process_count; index++) {
+            uint32_t parent_id = sorted[index].parent_process_id;
+            int parent_index = -1;
+            if (parent_id != 0) parent_index = mja_find_process(sorted, process_count, parent_id);
+            if (parent_index >= 0 && parent_index != (int)index) {
+                next_sibling[index] = first_child[parent_index];
+                first_child[parent_index] = (int)index;
+            }
+        }
+        excluded[current_index] = 1;
+        queue[queue_tail++] = current_index;
+        while (queue_head < queue_tail) {
+            int parent_index = queue[queue_head++];
+            int child_index;
+            for (child_index = first_child[parent_index]; child_index >= 0; child_index = next_sibling[child_index]) {
+                if (!excluded[child_index]) {
+                    excluded[child_index] = 1;
+                    queue[queue_tail++] = child_index;
+                }
+            }
+        }
+    }
+
+    for (index = 0; index < session_count; index++) {
+        uint32_t process_id = session_pids[index];
+        uint32_t seen;
+        int duplicate = 0;
+        if (process_id == current_pid) continue;
+        if (process_id != 0) {
+            int process_index = mja_find_process(sorted, process_count, process_id);
+            /* The sessions were listed before the processes: a PID missing here exited after
+             * the listing, so it is neither this process nor a descendant. */
+            if (process_index < 0) continue;
+            if (excluded[process_index]) continue;
+        }
+        for (seen = 0; seen < index; seen++) {
+            if (session_pids[seen] == process_id) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) continue;
+        if (count < capacity) external_pids[count] = process_id;
+        count++;
+    }
+    *external_count = count;
+    if (count > capacity) result = (int32_t)ERROR_INSUFFICIENT_BUFFER;
+done:
+    free(sorted);
+    free(first_child);
+    free(next_sibling);
+    free(queue);
+    free(excluded);
+    return result;
+}
+
+static int32_t mja_process_snapshot(mja_process_info **out, uint32_t *out_count)
 {
     HANDLE snapshot;
     PROCESSENTRY32W entry;
-    DWORD count = 0;
+    mja_process_info *processes = NULL;
+    uint32_t capacity = 0;
+    uint32_t count = 0;
     int32_t error = 0;
+    *out = NULL;
+    *out_count = 0;
     snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
         return mja_last_error_or(ERROR_GEN_FAILURE);
@@ -411,12 +584,18 @@ static int32_t mja_process_snapshot(mja_process_entry *processes, DWORD *process
         goto done;
     }
     for (;;) {
-        if (count == MJA_PROCESS_CAPACITY) {
-            error = (int32_t)ERROR_INSUFFICIENT_BUFFER;
-            goto done;
+        if (count == capacity) {
+            uint32_t grown = capacity == 0 ? 512u : capacity * 2u;
+            mja_process_info *resized = (mja_process_info *)realloc(processes, (size_t)grown * sizeof(*processes));
+            if (resized == NULL) {
+                error = (int32_t)ERROR_NOT_ENOUGH_MEMORY;
+                goto done;
+            }
+            processes = resized;
+            capacity = grown;
         }
-        processes[count].process_id = entry.th32ProcessID;
-        processes[count].parent_process_id = entry.th32ParentProcessID;
+        processes[count].process_id = (uint32_t)entry.th32ProcessID;
+        processes[count].parent_process_id = (uint32_t)entry.th32ParentProcessID;
         count++;
         if (!Process32NextW(snapshot, &entry)) {
             DWORD last_error = GetLastError();
@@ -426,53 +605,106 @@ static int32_t mja_process_snapshot(mja_process_entry *processes, DWORD *process
             break;
         }
     }
-    if (error == 0) {
-        *process_count = count;
-    }
 done:
     if (!CloseHandle(snapshot) && error == 0) {
         error = mja_last_error_or(ERROR_GEN_FAILURE);
     }
-    return error;
+    if (error != 0) {
+        free(processes);
+        return error;
+    }
+    *out = processes;
+    *out_count = count;
+    return 0;
 }
 
-static int32_t mja_session_process_ids(const WCHAR *endpoint_id, DWORD *process_ids, DWORD capacity, DWORD *process_id_count)
+/* Lists the active render sessions of one endpoint and classifies them. The session manager
+ * lives as long as the probe. The process tree is rebuilt only when the set of active
+ * session PIDs changes: a PID's parent never changes while the process lives. */
+typedef struct mja_output_probe {
+    IAudioSessionManager2 *session_manager;
+    uint32_t capacity;
+    uint32_t *scan;
+    uint32_t scan_count;
+    uint32_t *sessions;
+    uint32_t session_count;
+    uint32_t *external;
+    uint32_t external_count;
+    int primed;
+} mja_output_probe;
+
+static void mja_probe_destroy(mja_output_probe *probe)
 {
-    IMMDeviceEnumerator *device_enumerator = NULL;
-    IMMDevice *device = NULL;
-    IAudioSessionManager2 *session_manager = NULL;
+    if (probe == NULL) return;
+    if (probe->session_manager != NULL) IAudioSessionManager2_Release(probe->session_manager);
+    free(probe->scan);
+    free(probe->sessions);
+    free(probe->external);
+    free(probe);
+}
+
+static int32_t mja_probe_create(IMMDevice *device, mja_output_probe **out)
+{
+    mja_output_probe *probe = (mja_output_probe *)calloc(1, sizeof(*probe));
+    HRESULT hr;
+    *out = NULL;
+    if (probe == NULL) return (int32_t)ERROR_NOT_ENOUGH_MEMORY;
+    hr = IMMDevice_Activate(device, &MJA_IID_IAudioSessionManager2, CLSCTX_ALL, NULL, (void **)&probe->session_manager);
+    if (FAILED(hr)) {
+        mja_probe_destroy(probe);
+        return (int32_t)hr;
+    }
+    *out = probe;
+    return 0;
+}
+
+static int32_t mja_probe_reserve(mja_output_probe *probe, uint32_t required)
+{
+    uint32_t *scan;
+    uint32_t *sessions;
+    uint32_t *external;
+    uint32_t capacity;
+    if (required <= probe->capacity) return 0;
+    capacity = probe->capacity == 0 ? 32u : probe->capacity;
+    while (capacity < required) capacity *= 2u;
+    scan = (uint32_t *)realloc(probe->scan, (size_t)capacity * sizeof(uint32_t));
+    if (scan != NULL) probe->scan = scan;
+    sessions = (uint32_t *)realloc(probe->sessions, (size_t)capacity * sizeof(uint32_t));
+    if (sessions != NULL) probe->sessions = sessions;
+    external = (uint32_t *)realloc(probe->external, (size_t)capacity * sizeof(uint32_t));
+    if (external != NULL) probe->external = external;
+    if (scan == NULL || sessions == NULL || external == NULL) return (int32_t)ERROR_NOT_ENOUGH_MEMORY;
+    probe->capacity = capacity;
+    return 0;
+}
+
+/* Fills probe->scan with the sorted, unique PIDs of active sessions. A session that spans
+ * several processes cannot belong to this process alone, so it is reported as PID 0 (an
+ * external session without a single owner), the same as the system-sounds session. */
+static int32_t mja_probe_list_sessions(mja_output_probe *probe)
+{
     IAudioSessionEnumerator *session_enumerator = NULL;
     HRESULT hr;
     int32_t result = 0;
     int session_count = 0;
     int session_index;
-    DWORD count = 0;
+    uint32_t count = 0;
+    uint32_t sorted_index;
+    uint32_t unique = 0;
 
-    hr = CoCreateInstance(&MJA_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &MJA_IID_IMMDeviceEnumerator, (void **)&device_enumerator);
-    if (FAILED(hr)) {
-        result = (int32_t)hr;
-        goto done;
-    }
-    hr = IMMDeviceEnumerator_GetDevice(device_enumerator, endpoint_id, &device);
-    if (FAILED(hr)) {
-        result = (int32_t)hr;
-        goto done;
-    }
-    hr = IMMDevice_Activate(device, &MJA_IID_IAudioSessionManager2, CLSCTX_ALL, NULL, (void **)&session_manager);
-    if (FAILED(hr)) {
-        result = (int32_t)hr;
-        goto done;
-    }
-    hr = IAudioSessionManager2_GetSessionEnumerator(session_manager, &session_enumerator);
-    if (FAILED(hr)) {
-        result = (int32_t)hr;
-        goto done;
-    }
+    hr = IAudioSessionManager2_GetSessionEnumerator(probe->session_manager, &session_enumerator);
+    if (FAILED(hr)) return (int32_t)hr;
     hr = IAudioSessionEnumerator_GetCount(session_enumerator, &session_count);
     if (FAILED(hr)) {
         result = (int32_t)hr;
         goto done;
     }
+    if (session_count < 0) {
+        result = (int32_t)ERROR_INVALID_DATA;
+        goto done;
+    }
+    result = mja_probe_reserve(probe, (uint32_t)session_count);
+    if (result != 0) goto done;
     for (session_index = 0; session_index < session_count; session_index++) {
         IAudioSessionControl *session_control = NULL;
         IAudioSessionControl2 *session_control2 = NULL;
@@ -502,156 +734,101 @@ static int32_t mja_session_process_ids(const WCHAR *endpoint_id, DWORD *process_
         session_hr = IAudioSessionControl2_GetProcessId(session_control2, &process_id);
         IAudioSessionControl2_Release(session_control2);
         if (session_hr == AUDCLNT_S_NO_SINGLE_PROCESS) {
+            process_id = 0;
+        } else if (FAILED(session_hr)) {
             result = (int32_t)session_hr;
             goto done;
         }
-        if (FAILED(session_hr)) {
-            result = (int32_t)session_hr;
-            goto done;
-        }
-        {
-            DWORD existing;
-            for (existing = 0; existing < count; existing++) {
-                if (process_ids[existing] == process_id) break;
-            }
-            if (existing == count) {
-                if (count == capacity) {
-                    result = (int32_t)ERROR_INSUFFICIENT_BUFFER;
-                    goto done;
-                }
-                process_ids[count++] = process_id;
-            }
+        probe->scan[count++] = (uint32_t)process_id;
+    }
+    qsort(probe->scan, count, sizeof(uint32_t), mja_compare_u32);
+    for (sorted_index = 0; sorted_index < count; sorted_index++) {
+        if (unique == 0 || probe->scan[unique - 1] != probe->scan[sorted_index]) {
+            probe->scan[unique++] = probe->scan[sorted_index];
         }
     }
-    *process_id_count = count;
+    probe->scan_count = unique;
 done:
-    if (session_enumerator != NULL) IAudioSessionEnumerator_Release(session_enumerator);
-    if (session_manager != NULL) IAudioSessionManager2_Release(session_manager);
-    if (device != NULL) IMMDevice_Release(device);
-    if (device_enumerator != NULL) IMMDeviceEnumerator_Release(device_enumerator);
+    IAudioSessionEnumerator_Release(session_enumerator);
     return result;
 }
 
-static int32_t mja_collect_output_pids(const WCHAR *endpoint_id, DWORD *output_pids, DWORD output_capacity, DWORD *output_count)
+/* On success probe->external holds the external PIDs of the current active sessions. */
+static int32_t mja_probe_poll(mja_output_probe *probe)
 {
-    mja_process_entry processes[MJA_PROCESS_CAPACITY];
-    int first_child[MJA_PROCESS_CAPACITY];
-    int next_sibling[MJA_PROCESS_CAPACITY];
-    DWORD descendant_queue[MJA_PROCESS_CAPACITY];
-    uint8_t excluded[MJA_PROCESS_CAPACITY] = {0};
-    DWORD session_pids[MJA_OUTPUT_PID_CAPACITY];
-    DWORD unique_output_pids[MJA_OUTPUT_PID_CAPACITY];
-    DWORD process_count = 0;
-    DWORD session_pid_count = 0;
-    DWORD unique_count = 0;
-    DWORD index;
-    DWORD current_pid = GetCurrentProcessId();
-    int current_index;
-    int32_t result;
-
-    result = mja_process_snapshot(processes, &process_count);
+    int32_t result = mja_probe_list_sessions(probe);
     if (result != 0) return result;
-    current_index = mja_find_process(processes, process_count, current_pid);
-    if (current_index < 0) return (int32_t)ERROR_NOT_FOUND;
+    if (probe->primed && probe->scan_count == probe->session_count &&
+        memcmp(probe->scan, probe->sessions, (size_t)probe->scan_count * sizeof(uint32_t)) == 0) {
+        return 0;
+    }
+    probe->primed = 0;
     {
-        DWORD process_index;
-        DWORD queue_head = 0;
-        DWORD queue_tail = 0;
-        for (process_index = 0; process_index < process_count; process_index++) {
-            first_child[process_index] = -1;
-            next_sibling[process_index] = -1;
-        }
-        for (process_index = 0; process_index < process_count; process_index++) {
-            DWORD parent_id = processes[process_index].parent_process_id;
-            int parent_index = -1;
-            if (parent_id != 0) parent_index = mja_find_process(processes, process_count, parent_id);
-            if (parent_index >= 0) {
-                next_sibling[process_index] = first_child[parent_index];
-                first_child[parent_index] = (int)process_index;
-            }
-        }
-        excluded[current_index] = 1;
-        descendant_queue[queue_tail++] = (DWORD)current_index;
-        while (queue_head < queue_tail) {
-            int parent_index = (int)descendant_queue[queue_head++];
-            int child_index;
-            for (child_index = first_child[parent_index]; child_index >= 0; child_index = next_sibling[child_index]) {
-                if (!excluded[child_index]) {
-                    excluded[child_index] = 1;
-                    descendant_queue[queue_tail++] = (DWORD)child_index;
-                }
-            }
-        }
+        mja_process_info *processes = NULL;
+        uint32_t process_count = 0;
+        uint32_t external_count = 0;
+        /* The processes are listed after the sessions: see mja_output_filter_external_pids. */
+        result = mja_process_snapshot(&processes, &process_count);
+        if (result != 0) return result;
+        result = mja_output_filter_external_pids(
+            probe->scan, probe->scan_count, processes, process_count, (uint32_t)GetCurrentProcessId(),
+            probe->external, probe->capacity, &external_count);
+        free(processes);
+        if (result != 0) return result;
+        probe->external_count = external_count;
     }
-    result = mja_session_process_ids(endpoint_id, session_pids, MJA_OUTPUT_PID_CAPACITY, &session_pid_count);
-    if (result != 0) return result;
-
-    for (index = 0; index < session_pid_count; index++) {
-        DWORD process_id = session_pids[index];
-        int process_index;
-        DWORD output_index;
-        int duplicate = 0;
-        if (process_id == current_pid) continue;
-        if (process_id != 0) {
-            process_index = mja_find_process(processes, process_count, process_id);
-            if (process_index < 0) return (int32_t)ERROR_NOT_FOUND;
-            if (excluded[process_index]) continue;
-        }
-        for (output_index = 0; output_index < unique_count; output_index++) {
-            if (unique_output_pids[output_index] == process_id) {
-                duplicate = 1;
-                break;
-            }
-        }
-        if (!duplicate) {
-            if (unique_count == MJA_OUTPUT_PID_CAPACITY) return (int32_t)ERROR_INSUFFICIENT_BUFFER;
-            unique_output_pids[unique_count++] = process_id;
-        }
-    }
-    *output_count = unique_count;
-    if (unique_count > output_capacity) return (int32_t)ERROR_INSUFFICIENT_BUFFER;
-    if (unique_count != 0 && output_pids == NULL) return (int32_t)ERROR_INVALID_PARAMETER;
-    if (unique_count != 0) memcpy(output_pids, unique_output_pids, (size_t)unique_count * sizeof(DWORD));
+    memcpy(probe->sessions, probe->scan, (size_t)probe->scan_count * sizeof(uint32_t));
+    probe->session_count = probe->scan_count;
+    probe->primed = 1;
     return 0;
-}
-
-static int32_t mja_output_pids_w(const WCHAR *endpoint_id, DWORD *output_pids, DWORD output_capacity, DWORD *output_count)
-{
-    HRESULT hr;
-    int32_t result;
-    if (endpoint_id == NULL || endpoint_id[0] == L'\0' || output_count == NULL ||
-        (output_capacity != 0 && output_pids == NULL)) {
-        return (int32_t)ERROR_INVALID_PARAMETER;
-    }
-    *output_count = 0;
-    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (FAILED(hr)) return (int32_t)hr;
-    result = mja_collect_output_pids(endpoint_id, output_pids, output_capacity, output_count);
-    CoUninitialize();
-    return result;
 }
 
 int32_t mja_capture_output_pids(const char *endpoint_id, uint32_t *pids, uint32_t capacity, uint32_t *count)
 {
     WCHAR *wide_endpoint = NULL;
-    DWORD native_count = 0;
-    DWORD native_pids[MJA_OUTPUT_PID_CAPACITY];
+    IMMDeviceEnumerator *device_enumerator = NULL;
+    IMMDevice *device = NULL;
+    mja_output_probe *probe = NULL;
+    HRESULT hr;
+    int com_initialized = 0;
     int32_t result;
     if (count == NULL || (capacity != 0 && pids == NULL)) return (int32_t)ERROR_INVALID_PARAMETER;
     *count = 0;
     result = mja_utf8_to_wide(endpoint_id, &wide_endpoint);
     if (result != 0) return result;
-    result = mja_output_pids_w(wide_endpoint, native_pids, MJA_OUTPUT_PID_CAPACITY, &native_count);
-    free(wide_endpoint);
-    if (result != 0 && result != (int32_t)ERROR_INSUFFICIENT_BUFFER) return result;
-    *count = (uint32_t)native_count;
-    if (result != 0) return result;
-    if (native_count > capacity) return (int32_t)ERROR_INSUFFICIENT_BUFFER;
-    if (native_count != 0) {
-        DWORD index;
-        for (index = 0; index < native_count; index++) pids[index] = (uint32_t)native_pids[index];
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (FAILED(hr)) {
+        free(wide_endpoint);
+        return (int32_t)hr;
     }
-    return 0;
+    com_initialized = 1;
+    hr = CoCreateInstance(&MJA_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &MJA_IID_IMMDeviceEnumerator, (void **)&device_enumerator);
+    if (FAILED(hr)) {
+        result = (int32_t)hr;
+        goto done;
+    }
+    hr = IMMDeviceEnumerator_GetDevice(device_enumerator, wide_endpoint, &device);
+    if (FAILED(hr)) {
+        result = (int32_t)hr;
+        goto done;
+    }
+    result = mja_probe_create(device, &probe);
+    if (result != 0) goto done;
+    result = mja_probe_poll(probe);
+    if (result != 0) goto done;
+    *count = probe->external_count;
+    if (probe->external_count > capacity) {
+        result = (int32_t)ERROR_INSUFFICIENT_BUFFER;
+        goto done;
+    }
+    if (probe->external_count != 0) memcpy(pids, probe->external, (size_t)probe->external_count * sizeof(uint32_t));
+done:
+    mja_probe_destroy(probe);
+    if (device != NULL) IMMDevice_Release(device);
+    if (device_enumerator != NULL) IMMDeviceEnumerator_Release(device_enumerator);
+    if (com_initialized) CoUninitialize();
+    free(wide_endpoint);
+    return result;
 }
 
 static uint64_t mja_multiply_divide_u64(uint64_t value, uint64_t multiplier, uint64_t divisor)
@@ -707,60 +884,26 @@ static int32_t mja_qpc_100ns(LARGE_INTEGER frequency, uint64_t *qpc_100ns)
     return 0;
 }
 
-static void mja_environment_publish(mja_capture_environment *environment, uint64_t qpc_100ns, int32_t output_state, int32_t error)
-{
-    InterlockedIncrement(&environment->version);
-    InterlockedExchange64(&environment->observed_qpc_100ns, (LONG64)qpc_100ns);
-    InterlockedExchange(&environment->output_state, (LONG)output_state);
-    InterlockedExchange(&environment->error, (LONG)error);
-    InterlockedIncrement(&environment->version);
-}
+typedef struct mja_environment_context {
+    mja_capture_environment *environment;
+    IMMDeviceEnumerator *enumerator;
+    mja_output_probe *probe;
+    LARGE_INTEGER frequency;
+} mja_environment_context;
 
-void mja_capture_environment_snapshot(mja_capture_environment *environment, uint64_t *observed_qpc_100ns, int32_t *output_state, int32_t *error)
+static int32_t mja_environment_poll(mja_environment_context *context, uint64_t *qpc_100ns, int32_t *output_state)
 {
-    int attempt;
-    uint64_t qpc = 0;
-    int32_t state = -1;
-    int32_t snapshot_error = (int32_t)ERROR_RETRY;
-    if (environment == NULL) {
-        snapshot_error = (int32_t)ERROR_INVALID_PARAMETER;
-        goto done;
-    }
-    for (attempt = 0; attempt < 3; attempt++) {
-        LONG before = InterlockedCompareExchange((volatile LONG *)&environment->version, 0, 0);
-        LONG after;
-        LONG64 observed;
-        LONG native_state;
-        LONG native_error;
-        if ((before & 1) != 0) continue;
-        observed = InterlockedCompareExchange64((volatile LONG64 *)&environment->observed_qpc_100ns, 0, 0);
-        native_state = InterlockedCompareExchange((volatile LONG *)&environment->output_state, 0, 0);
-        native_error = InterlockedCompareExchange((volatile LONG *)&environment->error, 0, 0);
-        after = InterlockedCompareExchange((volatile LONG *)&environment->version, 0, 0);
-        if (before == after && (after & 1) == 0) {
-            qpc = (uint64_t)observed;
-            state = (int32_t)native_state;
-            snapshot_error = (int32_t)native_error;
-            goto done;
-        }
-    }
-done:
-    if (observed_qpc_100ns != NULL) *observed_qpc_100ns = qpc;
-    if (output_state != NULL) *output_state = state;
-    if (error != NULL) *error = snapshot_error;
-}
-
-static int32_t mja_environment_poll(mja_capture_environment *environment, IMMDeviceEnumerator *enumerator, LARGE_INTEGER frequency, uint64_t *qpc_100ns, int32_t *output_state)
-{
+    mja_capture_environment *environment = context->environment;
     IMMDevice *device = NULL;
     IMMDevice *default_device = NULL;
     LPWSTR default_id = NULL;
     DWORD device_state = 0;
     HRESULT hr;
-    int32_t result = mja_qpc_100ns(frequency, qpc_100ns);
+    int32_t result = mja_qpc_100ns(context->frequency, qpc_100ns);
     *output_state = 0;
     if (result != 0) goto done;
-    hr = IMMDeviceEnumerator_GetDevice(enumerator, environment->endpoint_id, &device);
+    /* GetDevice per poll keeps the state read live; the enumerator itself is reused. */
+    hr = IMMDeviceEnumerator_GetDevice(context->enumerator, environment->endpoint_id, &device);
     if (FAILED(hr)) {
         result = (int32_t)hr;
         goto done;
@@ -776,7 +919,7 @@ static int32_t mja_environment_poll(mja_capture_environment *environment, IMMDev
     }
     if (environment->watch_default) {
         EDataFlow flow = environment->loopback ? eRender : eCapture;
-        hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(enumerator, flow, eConsole, &default_device);
+        hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(context->enumerator, flow, eConsole, &default_device);
         if (FAILED(hr)) {
             result = (int32_t)hr;
             goto done;
@@ -799,11 +942,9 @@ static int32_t mja_environment_poll(mja_capture_environment *environment, IMMDev
         }
     }
     if (environment->loopback) {
-        DWORD process_ids[MJA_OUTPUT_PID_CAPACITY];
-        DWORD process_count = 0;
-        result = mja_output_pids_w(environment->endpoint_id, process_ids, MJA_OUTPUT_PID_CAPACITY, &process_count);
+        result = mja_probe_poll(context->probe);
         if (result != 0) goto done;
-        *output_state = process_count == 0 ? 0 : 1;
+        *output_state = context->probe->external_count == 0 ? 0 : 1;
     }
 done:
     if (default_id != NULL) CoTaskMemFree(default_id);
@@ -812,43 +953,64 @@ done:
     return result;
 }
 
+/* Publishes one finished poll. The freshness stamp is taken after the poll, so a slow but
+ * completing poll is healthy; only a poll that does not complete leaves the stamp stale. */
+static int32_t mja_environment_publish_poll(mja_environment_context *context, uint64_t observed_qpc_100ns, int32_t output_state)
+{
+    uint64_t published_qpc_100ns = 0;
+    int32_t result = mja_qpc_100ns(context->frequency, &published_qpc_100ns);
+    if (result != 0) return result;
+    mja_environment_state_publish(&context->environment->state, observed_qpc_100ns, published_qpc_100ns, output_state, 0);
+    return 0;
+}
+
 static DWORD WINAPI mja_environment_thread(void *opaque)
 {
     mja_capture_environment *environment = (mja_capture_environment *)opaque;
-    IMMDeviceEnumerator *enumerator = NULL;
+    mja_environment_context context;
+    IMMDevice *device = NULL;
     HRESULT hr;
-    LARGE_INTEGER frequency;
     int com_initialized = 0;
     int32_t result = 0;
     uint64_t qpc_100ns = 0;
     int32_t output_state = -1;
 
+    memset(&context, 0, sizeof(context));
+    context.environment = environment;
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
         result = (int32_t)hr;
         goto first_poll_complete;
     }
     com_initialized = 1;
-    if (!QueryPerformanceFrequency(&frequency)) {
+    if (!QueryPerformanceFrequency(&context.frequency)) {
         result = mja_last_error_or(ERROR_GEN_FAILURE);
         goto first_poll_complete;
     }
-    if (frequency.QuadPart <= 0) {
+    if (context.frequency.QuadPart <= 0) {
         result = (int32_t)ERROR_INVALID_DATA;
         goto first_poll_complete;
     }
-    hr = CoCreateInstance(&MJA_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &MJA_IID_IMMDeviceEnumerator, (void **)&enumerator);
+    hr = CoCreateInstance(&MJA_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &MJA_IID_IMMDeviceEnumerator, (void **)&context.enumerator);
     if (FAILED(hr)) {
         result = (int32_t)hr;
         goto first_poll_complete;
     }
-    result = mja_environment_poll(environment, enumerator, frequency, &qpc_100ns, &output_state);
+    if (environment->loopback) {
+        hr = IMMDeviceEnumerator_GetDevice(context.enumerator, environment->endpoint_id, &device);
+        if (FAILED(hr)) {
+            result = (int32_t)hr;
+            goto first_poll_complete;
+        }
+        result = mja_probe_create(device, &context.probe);
+        if (result != 0) goto first_poll_complete;
+    }
+    result = mja_environment_poll(&context, &qpc_100ns, &output_state);
+    if (result == 0) result = mja_environment_publish_poll(&context, qpc_100ns, output_state);
 
 first_poll_complete:
-    if (result == 0) {
-        mja_environment_publish(environment, qpc_100ns, output_state, 0);
-    } else {
-        mja_environment_publish(environment, qpc_100ns, -1, result);
+    if (result != 0) {
+        mja_environment_state_publish(&environment->state, qpc_100ns, qpc_100ns, -1, result);
     }
     InterlockedExchange(&environment->startup_error, (LONG)result);
     if (!SetEvent(environment->ready_event)) {
@@ -856,32 +1018,32 @@ first_poll_complete:
         if (result == 0) {
             result = event_error;
             InterlockedExchange(&environment->startup_error, (LONG)event_error);
-            mja_environment_publish(environment, qpc_100ns, -1, event_error);
+            mja_environment_state_publish(&environment->state, qpc_100ns, qpc_100ns, -1, event_error);
         }
         goto done;
     }
     if (result != 0) goto done;
 
     for (;;) {
-        DWORD wait_result = WaitForSingleObject(environment->stop_event, 20);
+        DWORD wait_result = WaitForSingleObject(environment->stop_event, MJA_ENVIRONMENT_POLL_MS);
         if (wait_result == WAIT_OBJECT_0 || InterlockedCompareExchange(&environment->stop_requested, 0, 0) != 0) {
             break;
         }
         if (wait_result == WAIT_TIMEOUT) {
-            result = mja_environment_poll(environment, enumerator, frequency, &qpc_100ns, &output_state);
-            if (result == 0) {
-                mja_environment_publish(environment, qpc_100ns, output_state, 0);
-                continue;
-            }
+            result = mja_environment_poll(&context, &qpc_100ns, &output_state);
+            if (result == 0) result = mja_environment_publish_poll(&context, qpc_100ns, output_state);
+            if (result == 0) continue;
         } else {
             result = mja_last_error_or(ERROR_GEN_FAILURE);
         }
-        mja_environment_publish(environment, qpc_100ns, -1, result);
+        mja_environment_state_publish(&environment->state, qpc_100ns, qpc_100ns, -1, result);
         break;
     }
 
 done:
-    if (enumerator != NULL) IMMDeviceEnumerator_Release(enumerator);
+    mja_probe_destroy(context.probe);
+    if (device != NULL) IMMDevice_Release(device);
+    if (context.enumerator != NULL) IMMDeviceEnumerator_Release(context.enumerator);
     if (com_initialized) CoUninitialize();
     return 0;
 }
@@ -901,10 +1063,8 @@ static int32_t mja_environment_dispose(mja_capture_environment *environment, int
         }
     }
     {
-        uint64_t ignored_qpc;
-        int32_t ignored_state;
         int32_t latched_error;
-        mja_capture_environment_snapshot(environment, &ignored_qpc, &ignored_state, &latched_error);
+        mja_capture_environment_snapshot(environment, NULL, NULL, NULL, &latched_error);
         if (error == 0 && latched_error != 0) error = latched_error;
     }
     {
@@ -933,7 +1093,7 @@ int32_t mja_capture_environment_create(const char *endpoint_id, int32_t loopback
     }
     environment = (mja_capture_environment *)calloc(1, sizeof(*environment));
     if (environment == NULL) return (int32_t)ERROR_NOT_ENOUGH_MEMORY;
-    environment->output_state = -1;
+    mja_environment_state_init(&environment->state);
     error = mja_utf8_to_wide(endpoint_id, &environment->endpoint_id);
     if (error != 0) return mja_environment_dispose(environment, error);
     environment->loopback = loopback;
@@ -958,9 +1118,10 @@ int32_t mja_capture_environment_create(const char *endpoint_id, int32_t loopback
     }
     if (error == 0) {
         uint64_t first_qpc;
+        uint64_t first_published;
         int32_t first_state;
         int32_t first_error;
-        mja_capture_environment_snapshot(environment, &first_qpc, &first_state, &first_error);
+        mja_capture_environment_snapshot(environment, &first_qpc, &first_published, &first_state, &first_error);
         if (first_error != 0 || first_state < 0) {
             error = first_error != 0 ? first_error : (int32_t)ERROR_INVALID_DATA;
         }
