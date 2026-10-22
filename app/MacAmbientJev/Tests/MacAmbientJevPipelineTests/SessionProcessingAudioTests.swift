@@ -165,9 +165,12 @@ struct SessionProcessingAudioTests {
             to: layout.diarizationInputURL,
             sessionURL: layout.sessionURL
         )
-        let cafReader = try CanonicalCAFReader(url: layout.diarizationInputURL, sessionURL: layout.sessionURL)
-        #expect(cafReader.sampleCount == Int64(samples.count))
-        #expect(try cafReader.readSamples(frames: 0..<Int64(samples.count)) == samples)
+        // Windows cannot delete a file while the reader's handle is open.
+        do {
+            let cafReader = try CanonicalCAFReader(url: layout.diarizationInputURL, sessionURL: layout.sessionURL)
+            #expect(cafReader.sampleCount == Int64(samples.count))
+            #expect(try cafReader.readSamples(frames: 0..<Int64(samples.count)) == samples)
+        }
 
         let importedSession = SessionSource.imported(originalFilename: "original.wav")
         try SessionTransientAudio.remove(layout: layout, source: importedSession)
