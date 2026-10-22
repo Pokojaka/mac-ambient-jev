@@ -1,7 +1,9 @@
 import Foundation
 import MacAmbientJevCore
 import MacAmbientJevPipeline
+#if os(macOS)
 import MacAmbientJevRuntime
+#endif
 import Testing
 @testable import MacAmbientJevProcessRecording
 
@@ -26,6 +28,7 @@ func explicitOutputCannotOverwriteImportedAudioThroughSymlink() throws {
     #expect(try Data(contentsOf: audio) == Data([0, 1, 2, 3]))
 }
 
+#if os(macOS)
 @Test
 func measurementOutputsMustBePairwiseDistinct() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
@@ -84,6 +87,7 @@ func unwritableSampleFailsTheMeasuredRun() async throws {
     #expect(FileManager.default.fileExists(atPath: metrics.path))
     #expect(!FileManager.default.fileExists(atPath: memory.path))
 }
+#endif
 
 @Test
 func resumeOutputCannotResolveInsideTheRecoveredSession() throws {

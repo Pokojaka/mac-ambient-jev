@@ -65,7 +65,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await writer.committedSnapshot()
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
-    try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
+    try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint, sessionURL: sessionURL),
         to: sourceURL, sessionURL: sessionURL
     )
@@ -78,7 +78,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
             diarization: PausedImportDiarizer(),
             finalTranscriptVAD: PausedImportVAD()
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )

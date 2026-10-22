@@ -19,6 +19,10 @@ var products: [Product] = [
     .executable(
         name: "MacAmbientJevEvaluateASR",
         targets: ["MacAmbientJevEvaluateASR"]
+    ),
+    .executable(
+        name: "MacAmbientJevProcessRecording",
+        targets: ["MacAmbientJevProcessRecording"]
     )
 ]
 
@@ -237,22 +241,27 @@ products.append(.executable(
     name: "MacAmbientJevTranscribeFile",
     targets: ["MacAmbientJevTranscribeFile"]
 ))
-var transcribeFileDependencies: [Target.Dependency] = [
-    "MacAmbientJevCore",
-    "MacAmbientJevPipeline",
-    "MacAmbientJevPortableRuntime",
-    "MacAmbientJevONNX"
-]
-#if os(Windows)
-transcribeFileDependencies.append("MacAmbientJevWindowsSupport")
-#elseif os(Linux)
-transcribeFileDependencies.append("CMiniaudio")
-#endif
 targets.append(.executableTarget(
     name: "MacAmbientJevTranscribeFile",
-    dependencies: transcribeFileDependencies,
+    dependencies: [
+        "MacAmbientJevCore",
+        "MacAmbientJevPipeline",
+        "MacAmbientJevPortableRuntime",
+        "MacAmbientJevONNX"
+    ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
+var portableRuntimeDependencies: [Target.Dependency] = [
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevONNX",
+    "MacAmbientJevDiarization"
+]
+#if os(Windows)
+portableRuntimeDependencies.append("MacAmbientJevWindowsSupport")
+#elseif os(Linux)
+portableRuntimeDependencies.append("CMiniaudio")
+#endif
 targets.append(.systemLibrary(name: "CONNXRuntime"))
 targets.append(.target(
     name: "MacAmbientJevONNX",
@@ -263,7 +272,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevPortableRuntime",
-    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX", "MacAmbientJevDiarization"],
+    dependencies: portableRuntimeDependencies,
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -297,6 +306,8 @@ targets.append(.testTarget(
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
+#else
+let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = []
 #endif
 
 #if os(macOS)
@@ -315,10 +326,6 @@ products += [
     .executable(
         name: "MacAmbientJevCaptureSystemAudio",
         targets: ["MacAmbientJevCaptureSystemAudio"]
-    ),
-    .executable(
-        name: "MacAmbientJevProcessRecording",
-        targets: ["MacAmbientJevProcessRecording"]
     ),
     .executable(
         name: "MacAmbientJevMeasureLiveLatency",
@@ -387,16 +394,7 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime",
-            .product(name: "MLX", package: "mlx-swift")
-        ]
-    ),
-    .executableTarget(
-        name: "MacAmbientJevProcessRecording",
-        dependencies: [
-            "MacAmbientJevCore",
-            "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
-            "MacAmbientJevRuntime",
             .product(name: "MLX", package: "mlx-swift")
         ]
     ),
@@ -408,10 +406,6 @@ targets += [
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime"
         ]
-    ),
-    .testTarget(
-        name: "MacAmbientJevProcessRecordingTests",
-        dependencies: ["MacAmbientJevProcessRecording", "MacAmbientJevPipeline"]
     ),
     .testTarget(
         name: "MacAmbientJevMeasureLiveLatencyTests",
@@ -468,6 +462,56 @@ targets += [
     )
 ]
 #endif
+
+var processRecordingDependencies: [Target.Dependency] = [
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline"
+]
+var processRecordingTestDependencies: [Target.Dependency] = [
+    "MacAmbientJevProcessRecording",
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline"
+]
+#if os(macOS)
+processRecordingDependencies += [
+    "MacAmbientJevAppleSupport",
+    "MacAmbientJevRuntime",
+    .product(name: "MLX", package: "mlx-swift")
+]
+processRecordingTestDependencies.append("MacAmbientJevRuntime")
+#else
+processRecordingDependencies += [
+    "MacAmbientJevPortableRuntime",
+    "MacAmbientJevONNX"
+]
+#if os(Linux)
+processRecordingDependencies.append("CMiniaudio")
+#elseif os(Windows)
+processRecordingDependencies.append("MacAmbientJevWindowsSupport")
+#endif
+#endif
+
+var processRecordingExcludes: [String] = []
+var processRecordingTestExcludes: [String] = []
+#if !os(macOS)
+processRecordingExcludes.append("RunMonitor.swift")
+processRecordingTestExcludes.append("ThermalLineTests.swift")
+#endif
+
+targets += [
+    .executableTarget(
+        name: "MacAmbientJevProcessRecording",
+        dependencies: processRecordingDependencies,
+        exclude: processRecordingExcludes,
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
+    ),
+    .testTarget(
+        name: "MacAmbientJevProcessRecordingTests",
+        dependencies: processRecordingTestDependencies,
+        exclude: processRecordingTestExcludes,
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
+    )
+]
 
 let package = Package(
     name: "MacAmbientJev",

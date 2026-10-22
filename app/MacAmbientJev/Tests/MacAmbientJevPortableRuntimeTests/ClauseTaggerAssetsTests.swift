@@ -72,6 +72,7 @@ struct ClauseTaggerAssetsTests {
         #expect(assets.modelURL.lastPathComponent == "ClauseTagger.onnx")
         #expect(assets.tokenizerURL.lastPathComponent == "tokenizer.json")
         #expect(assets.identity == (try directory.manifest.identity()))
+        #expect(assets.identity.backend == "onnx-clause-tagger")
     }
 
     @Test func directoryWithSpacesAndNonASCIIIsAccepted() throws {

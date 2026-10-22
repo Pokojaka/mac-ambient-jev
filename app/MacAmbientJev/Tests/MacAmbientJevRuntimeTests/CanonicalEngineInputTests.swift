@@ -136,7 +136,7 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
         paths: paths,
         engines: SessionProcessingEngines(asr: ObservingASR(log: log), diarization: ObservingDiarizer(log: log),
             finalTranscriptVAD: ObservingVAD(log: log)),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )

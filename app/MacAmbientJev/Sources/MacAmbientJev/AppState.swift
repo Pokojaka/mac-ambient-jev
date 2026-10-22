@@ -211,7 +211,7 @@ final class AppState: ObservableObject {
         self.sessionProcessor = NativeSessionProcessor(
             paths: paths,
             engines: engines,
-            audioHandling: MacSessionProcessingAudio(),
+            audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
             contentPriority: .localTagger(makeDecisionCoordinator, usageCounter: decisionUsageCounter),
             sleep: { try await Task.sleep(for: $0) }
         )

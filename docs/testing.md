@@ -179,7 +179,11 @@ Linux 音声正規化は入力と出力が同一ファイル（シンボリッ�
 
 `flac` CLI は codec tests の参照 oracle です。ローカル環境（VM を含む）では任意で、テストは `PATH` 上の実行可能ファイルだけを検索します。実行可能ファイルが見つからない場合は Swift Testing の `.enabled(if:)` gate により該当する interop tests を無効にします（[無効化可能なテスト](https://docs.swift.org/latest/documentation/testing/enablinganddisabling/)）。portable CI では `flac` を必須にします。Linux CI は Ubuntu noble の distro package を install し、Windows CI は公式 1.5.0 zip を SHA-256 `53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde` で検証して展開し、Win64 を `PATH` に加えます。両 CI job は `flac --version` を確認し、実行可能ファイルがない場合または version check が失敗した場合は job が失敗します。公式情報は [FLAC 1.5.0 release](https://github.com/xiph/flac/releases/tag/1.5.0) と [release API](https://api.github.com/repos/xiph/flac/releases/tags/1.5.0) を参照してください。参照エンコーダーを使う reader テストは、`-0` による FIXED、`-8` による LPC、全 sample が 8 の倍数となる wasted-bits 入力、`--lax -b 65535 -l 32` で符号化した入力の 65,535 sample 境界をまたぐ範囲読み取りの4ケースを検証します。参照 CLI の仕様は [flac 1.5.0 manual](https://raw.githubusercontent.com/xiph/flac/1.5.0/man/flac.md) を参照してください。[RecordingAudioCompactorTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift) は portable な PipelineTests で、全 OS で compactor を検証します。一方、session reader・export・symlink 境界の integration tests（[SessionAudioReadersTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioReadersTests.swift)、[SessionExportTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionExportTests.swift)、[SessionAudioSymlinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioSymlinkTests.swift)）は macOS 専用の AppleSupportTests で、Core codec を通して検証します。
 
-[CanonicalCAFReaderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/CanonicalCAFReaderTests.swift) は全 OS で `CanonicalCAFReader` を検証します。Mac の exporter が書いた committed fixture（[canonical-mac-16k.caf](../app/MacAmbientJev/Tests/MacAmbientJevCAFFixtures/Resources/canonical-mac-16k.caf)、4,800 frame、23,296 bytes）を、全体・先頭・末尾・空・block 境界をまたぐ範囲で期待 sample と bit 単位で比較します。手組みの CAF bytes では、`free` / `info` / 未知 chunk の読み飛ばしと data 後の chunk の無視、非有限値をそのまま返すこと（reader は sample を検証せず、有限性の検査は読み出し側の責務）、空の data、範囲外の読み取り、正規 file の全 byte 長での切り詰め、CAF でない file・未対応 version・非0 flags、desc が先頭でない・欠落・data が欠落・desc の重複・desc のサイズ違い、不正な chunk size・int64 を超える chunk size・data size -1（未確定）・宣言より短い data・編集カウントや4 bytes 単位に満たない data、サンプルレート・format・flags・channel 数・bit 数・packet 構成が正規と異なる desc、セッション外の file を拒否することを確認します。Mac の exporter は `desc`（32 bytes、flags 3 = float | little-endian）、`free`（4,016 bytes の padding）、`data`（編集カウント0と確定済みの正確なサイズ）の順に書き、reader はこの形だけを受け付けます。fixture 自体は Mac 専用の [CanonicalCAFFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/CanonicalCAFFixtureTests.swift) が、期待 sample を実 exporter に通した出力と byte 単位で一致すること、AVFoundation の読み出しが期待 sample と一致することで保っています。Mac 専用の [CanonicalCAFReaderParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalCAFReaderParityTests.swift) は `CanonicalCAFReader` と Mac の `CanonicalCAFAudioSource` が、fixture と 128,000 frame の file の任意範囲・8,192 frame の読み出し block 境界・最終の部分範囲で同じ sample を返すことを確認します。
+[CanonicalCAFReaderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/CanonicalCAFReaderTests.swift) は全 OS で `CanonicalCAFReader` を検証します。Mac AVFoundation の期待 sample を固定した不変のコミット済み [Mac CAF fixture](../app/MacAmbientJev/Tests/MacAmbientJevCAFFixtures/Resources/canonical-mac-16k.caf) は 4,800 frame・23,296 bytes で、`desc` と `data` の間に `free` chunk による 4,016 bytes の padding を持ちます。この fixture を全体・先頭・末尾・空・block 境界をまたぐ範囲で期待 sample と bit 単位で比較します。手組みの CAF bytes では、`free` / `info` / 未知 chunk の読み飛ばしと data 後の chunk の無視、非有限値をそのまま返すこと（reader は sample を検証せず、有限性の検査は読み出し側の責務）、空の data、範囲外の読み取り、正規 file の全 byte 長での切り詰め、CAF でない file・未対応 version・非0 flags、desc が先頭でない・欠落・data が欠落・desc の重複・desc のサイズ違い、不正な chunk size・int64 を超える chunk size・data size -1（未確定）・宣言より短い data・編集カウントや4 bytes 単位に満たない data、サンプルレート・format・flags・channel 数・bit 数・packet 構成が正規と異なる desc、セッション外の file を拒否することを確認します。期待値は f32le sample bytes です。Core の Foundation-only writer は canonical 16 kHz mono float32LE を、`desc` と `data` だけの最小 68-byte header（`free` なし）で出力し、同じ sample では 19,268 bytes になります。`CanonicalCAFReader` は両方の chunk 配置を受け付け、Mac AVFoundation も両方を読み取って期待 sample と sample-bit 単位で一致します。
+
+[ProcessingTimelineAudioExporterTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ProcessingTimelineAudioExporterTests.swift) は 13 test functions・合計17 cases（通常 test 11件＋3-case の parameterized test 2関数）で Core writer を検証します。bounded な連続 block 読み出し、正確な header・payload・sample bits（有限値の極値、signed zero、subnormal を含む）、空 CAF、offset 付き short/long read error、nonfinite 値、reader failure、mutation 前の tooManyFrames 判定、malformed/truncated PCM、atomic replacement、既存 destination の保持、一時 file cleanup、session 境界を扱います。コミット済み fixture との比較は framesPerBuffer 1・1,000・48,000 の3ケースで行い、fixture と Core 出力の sample bits を照合します。
+
+Mac 専用の [CanonicalCAFFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/CanonicalCAFFixtureTests.swift) は不変 fixture と Core writer の異なる CAF layout の両方を `CanonicalCAFReader` と AVFoundation で読み、期待 sample との sample-bit parity を検証します。fixture の bytes と Core writer 出力の byte equality は要求しません。Mac 専用の [CanonicalCAFReaderParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalCAFReaderParityTests.swift) は `CanonicalCAFReader` と Mac の `CanonicalCAFAudioSource` が、fixture と 128,000 frame の file の任意範囲・8,192 frame の読み出し block 境界・最終の部分範囲で同じ sample を返すことを確認します。
 
 [SessionFileAccessTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/SessionFileAccessTests.swift) と [SessionAudioSymlinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioSymlinkTests.swift) は一時ディレクトリだけを使い、イベント writer の初回 open と初期化後の置換、manifest・metadata の読込みと書込み、audio 親ディレクトリ、chunk・original・FLAC・partial・derived CAF の symlink を拒否することを検証します。セッション外の sentinel の bytes・ディレクトリ内容を比較し、descriptor を開いた後の URL 置換が元のファイルの読み書きを保つことと、通常セッションの成功経路も検証します。catalog・復旧はリンクされたセッションをエラーとして返します。選択 root の symlink 拒否は [AppPathsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/AppPathsTests.swift) が対象です。
 
@@ -362,10 +366,10 @@ RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/
 
 Linux / Windows の model テスト（[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)）は `RUN_MODEL_TESTS=1` と、`scripts/fetch_community1_diarization.py` が出力した directory を指す必須の `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` で動きます。環境変数に既定値はなく、未設定・相対 path・存在しない directory は skip ではなく失敗です。比較と許容誤差は次のとおりです。
 
-| 対象 | 許容 | 測定値（ONNX Runtime 1.31.0、Linux aarch64） |
+| 対象 | 許容 | 測定値（ONNX Runtime 1.31.0、Linux aarch64 / Windows 11 ARM64） |
 | --- | --- | --- |
-| 音声 window の Segmentation（log-probability） | 最大絶対誤差 `2e-4`、argmax 一致 100 % | 最大 `1.2e-4`、argmax 100 % |
-| 無音 window の Segmentation | argmax 一致 100 %、log-probability の最大絶対誤差 `3.0`、確率の最大絶対誤差 `1e-3` | log-probability `2.45`、確率 `3.1e-4`、argmax 100 % |
+| 音声 window の Segmentation（log-probability） | 最大絶対誤差 `5e-4`、argmax 一致 100 % | 最大 `1.2e-4` / `3.3e-4`、argmax 100 % |
+| 無音 window の Segmentation | argmax 一致 100 %、log-probability の最大絶対誤差 `8.0`、確率の最大絶対誤差 `5e-3` | log-probability `2.45` / `5.49`、確率 `3.1e-4` / `3.0e-3`、argmax 100 % |
 | 選ばれた各 mask の Embedding | Core ML との cosine `0.995` 以上 | `0.99991` 以上 |
 | 散在 mask の Embedding | cosine `0.995` 以上 | `0.99993` |
 | end-to-end の spans | 話者数・span 数・話者 ID の一致、各境界 272 sample（1 frame）以内 | FluidAudio の spans と完全一致 |
@@ -481,47 +485,126 @@ python3 scripts/compare_diarization_runs.py --runs "$WORK/mac-1.json" "$WORK/mac
 
 CLI の単体テストは [DiarizationMeasurementTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationMeasurementTests/DiarizationMeasurementTests.swift) にあり、引数の検査、run の形式、音声 identity、不正 span の拒否、既存出力を置き換えないことを、モデルなしで全 OS で検査します。Python 側は `python3 -B scripts/test_compare_diarization_runs.py` と `python3 -B scripts/test_prepare_canonical_caf.py` です。`MacAmbientJevDiarizeFile` は ONNX Runtime を使うため macOS では build されず、`MacAmbientJevDiarizeFileOracle` は FluidAudio を使うため Linux / Windows では build されません。
 
-## ファイル入力 CLI の smoke
+## ファイル入力 CLI
 
-`MacAmbientJevProcessRecording` は macOS 専用で、マイクや GUI を使わず既存の音声を処理する。発話文判定は無効で、Core ML tagger をロードしない。
+`MacAmbientJevProcessRecording` は全 OS で使えるファイル処理 CLI です。マイクや GUI を使わず、音声を import して VAD・話者分離・ASR を含む full-session finalization を実行し、session の inspect / resume にも対応します。発話文判定は既定で無効です。`--with-decisions` を指定した場合だけ、Mac の Core ML または Linux / Windows の ONNX provider で境界・優先度を判定します。
+
+以下は **Mac の実行例**です。macOS は `--threads` を受け付けないため指定しません。Portable の正確な Linux / Windows コマンドと model 設定は [Linux の ProcessRecording 使用方法](linux.md#セッション全体のファイル処理-cli) と [Windows の ProcessRecording 使用方法](windows.md#セッション全体のファイル処理-cli) を参照してください。
 
 ```bash
+# macOS: --threads は指定しない
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --sessions-root "$SESSIONS_ROOT" "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
 ```
-出力先を省略すると音声と同じディレクトリに `segments.json` を作る。明示的な出力先は入力音声と異なるものにする。シンボリックリンクを解決して同一になる入力・出力は拒否する。通常は処理用セッションを終了時に削除する。調査・復旧・計測に必要な場合だけ `--keep-session` を付ける。
+
+出力先を省略すると音声と同じディレクトリに `segments.json` を作ります。入力と出力が symlink 解決後に同一となる場合は拒否します。`--keep-session` を指定しない import の一時 session は成功・失敗のいずれでも処理後に削除し、調査・復旧のため保持する場合にだけ指定します。
 
 ```bash
+# macOS: --threads は指定しない
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --sessions-root "$SESSIONS_ROOT" --keep-session --low-heat "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
 ```
 
-`--low-heat` は import と resume に対応し、ASR 区間処理の pacing と MLX cache 上限を抑える。通常処理と比較する場合は出力先・セッションを分け、本文と処理状態を確認する。短い fixture の成功だけで長時間のメモリ条件やライブ遅延を合格にしない。
+Portable の import / resume は `--threads N` が必須です（export-only resume を含む）。`N` は `1...min(4, logicalCPUCount)` で、ASR・diarizer・tagger の ONNX session は N、VAD は常に1 thread です。Mac は `--threads` を拒否します。`--low-heat` は Portable では ASR 区間間の pacing のみを行い、thermal monitor / start gate / pause はありません。Mac では推論が必要な import / resume の開始時に nominal / fair を要求し、critical 時は処理を pause します。resource を作る Mac run の `--low-heat` は pacing に加えて MLX cache 上限を抑えます。measurement option と thermal / memory sampling は Mac 専用です。これらは短い fixture の成功から長時間のメモリ条件やライブ遅延を推定するものではありません。
 
-開始時の熱状態は nominal/fair を要求する。確定処理中の ASR 区間処理前に critical を検出すると paused となり、CLI は非 0 で終了する。failed/paused を completed と扱わない。VAD が正常に完了して空結果を返す場合は、音声書き出し・話者分離・ASR 推論なしで空の確定結果を成功として公開する。実モデルでの VAD 成功は合成回帰だけでは保証しない。
+`--with-decisions` の実行時に Mac は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に実在する絶対 directory を要求し、その直下の ClauseTagger.mlpackage と tokenizer.json を Core ML provider が使います。Portable は `MAC_AMBIENT_JEV_SILERO_MODEL`（既存 absolute model file）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`（既存 absolute directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）、`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY`（既存 absolute directory）を必要とし、decisions を有効にすると `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY`（既存 absolute directory）も必要です。default、暗黙 download、fallback はありません。設定は推論に必要な import / resume の前処理段階で検証され、inspect と推論不要の export-only resume は model environment を読みません。Portable の decision-only retry は ASR / diarizer 推論を再実行しませんが、base engine bundle を構成するため基本4項目の environment が必要です。
 
 ### inspect と resume
 
 ```bash
+# macOS: --threads は指定しない
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --inspect-session "$SESSION_ID" --sessions-root "$SESSIONS_ROOT"
 
+# macOS: --threads は指定しない
 swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --resume-session "$SESSION_ID" --sessions-root "$SESSIONS_ROOT" \
   --low-heat "$SEGMENTS_OUTPUT"
 ```
 
-ID は UUID、root は必須。inspect は位置引数・`--keep-session`・`--low-heat`・計測引数を受け付けず、指定対象の action と保存整理 `maintenance`（`compactRecording`、`removeTransients`、`null`）を JSON で出す。action は `finalize`、未公開の判定 run がある場合の `recoverDecisionRun`、判定の保留だけがある場合の `retryContentPriority`、`none`、音声が復旧できない場合の `unrecoverable`。読めない metadata 等の別のエラーは失敗として報告する。
+inspect は read-only で、session action と保存整理 `maintenance`（`compactRecording`、`removeTransients`、`null`）を JSON で返します。`--with-decisions` と `--threads` を含む処理 option、位置引数は受け付けません。action は `finalize`、未公開の判定 run がある場合の `recoverDecisionRun`、判定の保留だけがある場合の `retryContentPriority`、`none`、音声が復旧できない場合の `unrecoverable` です。ID は UUID、root は必須です。manifest の完全 ID から実 folder を特定し、不在・複数一致・名前の検証不整合は明示エラーになります。
 
-UUID は manifest の完全 ID です。root 直下の manifest を検索して実フォルダーを解決し、不在・複数一致・名前の検証不整合は明示エラーにします。`none` は存在する正常セッションに復旧 action がない場合だけです。
+resume は最初に output containment / session lookup の safety 検査と read-only inspection を行います。初回 inspection の action が推論を必要とする場合に限り、model configuration / resources を解決し、`--with-decisions` が有効なら decision provider preflight も session maintenance より前に行います。その後に必要な保存整理（FLAC 変換または一時音声削除）を行い、再走査した action で finalize または decision retry を dispatch します。`--with-decisions` なしの decision-only recovery は新たな判定を行わず公開済み local transcript を export します。要求された mode をすでに満たす session は model / environment を必要とせず、推論 event を追加しません（Portable の CLI 引数として `--threads` はなお必須です）。finalize は保存済み音声から全段階を再実行し、pending ASR だけを再投入する経路ではありません。
 
-resume は先にそのセッションの保存整理（FLAC 変換または一時音声の削除）を実行し、再走査した action で動く。resume は音声ファイルではなく対象 UUID と、セッション外の出力先を一つ指定する。録音・import の両方が対象で、finalize は共通確定処理を全量実行する。pending ASR だけを再投入する経路ではない。`recoverDecisionRun`、`retryContentPriority`、または action なしの場合、CLI は発話文判定を実行せず公開済みの結果を書き出す。resume が常に再処理を始めるわけではない。確定処理の失敗・一時停止では直前の正常な active run を保持する。
+認識テキストがある `--with-decisions` export は、clause-boundary と content-priority の両 run が公開済みで、boundary / priority retry target および `pendingDecisionTargets` が空の場合に限り成功します。判定 request が失敗した場合は既存 session の公開済み local transcript と保留状態を維持し、export を作らず CLI は非0で終了します。import の決定 preflight が session 作成前に失敗した場合は local transcript を約束しません。処理開始後に失敗した一時 import session は `--keep-session` がなければ削除対象のままです。認識テキストがない場合は判定 run なしで空の `[]` を export できます。
 
-引数 parser は構文だけを検査します。resume の出力先 containment は実行時に実フォルダーを解決した後、symlink 解決・大文字小文字の同一視を保って検査します。実セッション内への出力は拒否し、lookup と containment の失敗は production engine の構築・処理より前に返します。
+成功 export は全 session から materialize した `MaterializedTranscriptSegment` 配列を pretty-printed / sorted-key JSON として出力し、segment schema を変えたり TranscribeFile / CER artifact の envelope に包んだりしません。失敗・pause は completed として扱いません。実モデルでの VAD 成功や実 end-to-end 処理を fake service tests で保証するものではありません。
+
+### CLI の portable service tests
+
+[SessionFileProcessingServiceTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionFileProcessingServiceTests.swift) の9つの fake-service test functions は、注入 engine / provider と一時 session を使い、実モデルや実 CLI end-to-end を実行せず service の処理・export・cleanup を検証します。
+
+- `importKeepsCanonicalSessionAndPublishesTranscriptWithoutStdoutDependency` は import original、必須3段階の公開、materialized transcript と export の一致を確認します。
+- `inspectReportsDecisionRetryWithExactJSONAndDoesNotTouchEventsOrCreateResources` は read-only inspection、exact JSON、event 不変、resource factory 未呼出しを確認します。
+- `resumeOfDisabledOrSatisfiedTranscriptExportsWithoutResources` は判定無効または要求済み判定が完了済みの場合に resources を作らず、event を追加せず同じ配列を export することを確認します。
+- `interruptedImportedFinalizationResumesFromRunningMetadata` は中断した finalization を再走査後に全量再実行し、complete metadata と export を確認します。
+- `decisionOnlyResumeRetriesPublishedTargetsAndRecoversUnpublishedRuns` は公開済み retry target と未公開 decision run の双方を復旧し、ASR / VAD / diarizer を再実行しないことを確認します。
+- `failedDecisionRequestRejectsDecisionExportButKeepsPublishedLocalTranscript` は strict decision export failure、保持された local transcript / pending target、出力なしを確認します。
+- `failedImportCleansTemporarySessionOnlyWhenNotRetained` は失敗時に `keepSession` がない一時 session を削除し、指定時は保持することを確認します。
+- `invalidAliasesAndMissingAudioAreRejectedBeforeResourceCreation` は同一 path、missing audio、session 内 resume output を resources 作成前に拒否します。
+- `noSpeechWithDecisionsExportsEmptyArrayWithoutDecisionRuns` は無発話の空配列 export と decision run 不要を確認します。
+
+[ProcessRecordingArgumentsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevProcessRecordingTests/ProcessRecordingArgumentsTests.swift) は同じ CLI test target から `.macOS` / `.portable` policy を指定して parser を検査する9 test functions です。
+
+- `macOSAcceptsCompleteMeasurementOptionsForImportAndResume` と `macOSRejectsThreads` は Mac の計測 option 全指定と `--threads` 拒否を確認します。
+- `portableImportAndResumeRequireBoundedPositiveThreads` と `portableRejectsMeasurementOptionsWithoutFilesystemSideEffects` は import / resume の必須 thread 範囲と、measurement option の副作用前拒否を確認します。
+- `inspectAcceptsWithoutProcessingOptionsAndRejectsDisallowedOptions` は両 policy で inspect の decision / thread / pacing / measurement / position option を拒否します。
+- `decisionsAndImportFlagsArePreservedOnBothPlatforms` は両 policy で `--with-decisions`、`--keep-session`、`--low-heat` と resume の option parsing を確認します。
+- `duplicateFlagsOptionsAndUnknownFlagsAreRejected`、`missingInvalidAndEmptyValuesAndPositionalsAreRejected`、`malformedOptionsCannotBeHealedByRemovingFlags` は重複・未知 option、値と位置引数の不備、flag 除去で malformed option が通らないことを検査します。
+
+parser policy の simulation は portable runtime / CLI composition を macOS 上で compile したことを示すものではありません。
+
+[ProcessRecordingSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevProcessRecordingTests/ProcessRecordingSafetyTests.swift) の measurement destination / sampling failure cases と [ThermalLineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevProcessRecordingTests/ThermalLineTests.swift) は macOS 専用です。これらは RunMonitor の出力 alias、安全な書込み失敗、thermal JSONL を扱います。portable parser / fake service tests は測定済み run、実 model の end-to-end、または CI の実行内容変更を意味しません。
 
 ### 不正入力の smoke
 
-`scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行する。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認する。さらに実 named folder で inspect の正常・不在・完全 UUID の重複・同じ先頭 8 桁の別 ID・名前/日時/suffix/stem の不整合を検証し、実セッション内（symlink・大文字小文字の違いを含む）への resume 出力を拒否して原ファイルが変わらないことを確認する。実モデルの正常推論とは別の検査である。
+`scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行します。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認します。さらに実 named folder で inspect の正常・不在・完全 UUID の重複・同じ先頭 8 桁の別 ID・名前/日時/suffix/stem の不整合を検証し、実セッション内（symlink・大文字小文字の違いを含む）への resume 出力を拒否して原ファイルが変わらないことを確認します。これは実モデルの正常推論とは別の safety smoke です。
+
+## ポータブル full-model の受入
+
+Linux / Windows の `MacAmbientJevProcessRecording` は、実モデルで音声ファイルから最終 transcript までを通す受入 driver [`process_recording_acceptance.py`](../tools/linux-audio/process_recording_acceptance.py) で検査します。入力は公開 fixture `qwen3_asr_voicevox_long.wav`（18.464 秒）だけで、参照文と WAV の SHA-256・sample 数は [windows.md](windows.md#日本語音声-fixture) の表から読みます。fixture が表と一致しなければ失敗します。
+
+driver は release の CLI と `MacAmbientJevEvaluateASR` の絶対 path、fixture を引数で受け取り（既定値なし）、次を実行します。
+
+1. 一時 sessions root へ `--keep-session --with-decisions --threads 2` で import する。
+2. 全モデル環境変数を除いた環境で `--inspect-session` を実行する。
+3. 完了済みセッションを `--resume-session --with-decisions --threads 2` で再開し、出力を import と比較する。
+
+必須の環境変数は `MAC_AMBIENT_JEV_SILERO_MODEL`（ファイル）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` か `1.7b`）、`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY`、`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` です。いずれも未設定・空・相対 path・存在しない path は失敗で、skip しません。各コマンドには timeout があり、import と resume は 300 秒です。
+
+検査内容は次のとおりです。
+
+- 全コマンドの終了コードが 0 で、import の stdout に `session_id:` 行がちょうど 1 つある。
+- 出力 JSON は 2 件以上の segment を時系列・重なりなし・音声長以内で持ち、各 `text` は日本語を含む。`clause_state` は `classified` で、clause slice は priority を持ち再試行待ちがない。
+- `text` を時刻順に連結した raw 文を `MacAmbientJevEvaluateASR`（製品の正規化と CER 評価）で参照文と比較し、正規化後 CER が 0.15 以下。
+- 話者の raw id が空でなく span が音声長に収まる。`SpeakerDisplayMapper` と同じ規則（先頭 start 順に Speaker 1–7、8 人目以降は OTHER、重なりがなければ UNKNOWN、80% 以上を占める話者の単独表示）で得た表示ラベルが Speaker 1–7、OTHER、UNKNOWN のどれかである。話者数は固定しない。
+- セッション folder に `session.json`、末尾まで完結した `events.jsonl`、`processing_metadata.json`、`storage.json`（imported original と import 時のフレーム数）があり、`audio/original.*` が入力と byte 単位で同一である。`audio` 以下に CAF が残らず、`recording.flac` がない。
+- `active_runs` の segmentation・asr・diarization・clause_boundary・content_priority が全てあり、それぞれ `processing.run.started` / `processing.run.completed`（成功、失敗数 0）が 1 つずつある。provenance の engine は Silero・Qwen3-ASR・Community-1 の ONNX engine で、ASR の model は [qwen3_asr_models.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) の `repository@commit`、`intra_op_threads` は 2 である。判定 run の engine は ONNX で、Core ML を名乗らない。境界・優先度の判定 event が active run にあり、保留中の判定対象がない。
+- 出力 segment と active ASR run の認識済み `asr.completed` event が segment ID と本文で一致する。
+- inspect は `action` が `none`、`maintenance` が `null` で、resume は `events.jsonl` を変えず、出力が import と同一である。
+
+driver 自身のテストは実モデルを使わず、偽の CLI と evaluator が作る session で、誤った transcript、欠けた stage、不正な話者、欠けたファイル、残った CAF、Core ML を名乗る判定 engine、import と異なる resume 出力が各々失敗することを確認します。POSIX のみで実行します。
+
+```bash
+cd tools/linux-audio
+uv run --python 3.12 --with pytest python -m pytest -q tests/test_process_recording_acceptance.py
+```
+
+### full-model モード
+
+`bash scripts/verify_portable.sh --full-model` は通常の検証とは別の opt-in モードで、フラグがなければ従来どおりの build と test だけを実行します。このモードは次を順に行います。
+
+1. ONNX Runtime、Silero、Qwen3-ASR tokenizer、clause tagger に加えて Qwen3-ASR 0.6B（int4、保存先 `.build/qwen3-asr-models`）と Community-1 diarization を既存の fetcher で取得し、5 つの環境変数を設定する。
+2. `RUN_MODEL_TESTS=1` で 4 engine の数値 suite（[SileroVADParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/SileroVADParityTests.swift)、[ONNXQwen3ASRModelTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift)、[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)、[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）を 1 つずつ実行する。実行された test 名と skip された test 名を出力し、1 件も実行されなかった suite は失敗とする。
+3. `MacAmbientJevProcessRecording` と `MacAmbientJevEvaluateASR` を release で build し、受入 driver を実行する。
+
+fixture 入力の Qwen3-ASR は 0.6B で、1.7B の製品品質ではなく経路の接続を検査します。1.7B の CER は別の記録で扱います。
+
+Windows では `./scripts/test-windows.ps1 -FullModel` が通常の build / test の後に同じ取得・数値 suite・release build を行い、ONNX Runtime の DLL を release の CLI の隣に置いて同じ driver を実行します。Windows 上の実モデル受入は手動で実行し、通常の Windows CI には含まれません。
+
+### CI の `linux-model-e2e`
+
+[portable-core.yml](../.github/workflows/portable-core.yml) の `linux-model-e2e` は `linux` と同じ trigger と draft の扱いで動く必須 job です（`swift:6.2-noble`、timeout 45 分）。まず driver の自己テストを実行し、続けて `verify_portable.sh --full-model` を実行します。モデル directory（`.build/` 以下の Qwen3-ASR 0.6B、tokenizer、Silero、Community-1、clause tagger）は OS・arch と、各 manifest と fetcher・`pinned_download.py` の hash を key に GitHub Actions の cache action へ保存します。broad な restore key はありません。cache が hit しても fetcher が全ファイルの SHA-256 を再検証し、破損した cache は別モデルで代替せず失敗します。ONNX Runtime は毎回取得します。
 
 ## セッションの CER
 
@@ -548,18 +631,20 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateSession \
 
 Linux runner の全音声一つの ASR artifact には `MacAmbientJevEvaluateASR`、話者分離 artifact には `MacAmbientJevEvaluateDiarization` を使う。どちらも参照・artifact の二位置引数と任意の末尾 `--output` を受け取る。詳細は [linux.md](linux.md) を参照する。
 
-## ファイル処理の長時間計測
+## macOS のファイル処理長時間計測
 
-`scripts/measure_v1_run.sh` は release CLI を使い、音声 import または保存済みセッションの resume を一回計測する。事前に release product を build する。必要空き容量は 4 GiB 以上。
+この長時間計測は macOS 専用です。`scripts/measure_v1_run.sh` は Mac release CLI の MLX memory / thermal sampling と `/usr/bin/time -l` を使い、音声 import または保存済み session の resume を一回計測します。Portable CLI は measurement options を拒否し、thermal / memory sampling を持ちません。事前に Mac release product を build し、必要空き容量は 4 GiB 以上です。
 
 計測後は root 直下の manifest の完全 UUID を正規化して検索し、ちょうど一つの実フォルダーを解決します。ID 不在・複数一致・一致したフォルダーの名前/日時/suffix/source stem の不整合は明示エラーです。stem の Swift Character 境界での切り詰めを検査するため、実行する `python3` に `regex` package が必要です（`python3 -m pip install regex`）。日時は `created_at` から再計算しません。events、metadata、checkpoint、original は同じ解決済みフォルダーから読み、original が複数なら失敗します。import がセッション作成前に失敗して stdout に ID がない場合は、セッションの欠測理由を残します。ID がある場合は lookup の失敗を欠測扱いにしません。
 
 `scripts/test_session_artifacts.py` は shell script 内の実 artifact Python を抽出して合成セッションで実行し、成功・不在・重複・不正 suffix/stem・合成文字の切り詰め・original の重複を検査します。capture summary の実 path が指定 root 直下であること、完全 UUID、systemAudio source、録音フォルダー名も検査します。capture/playback 部分は実行せず、実音声・権限・GUI の検証根拠にはなりません。単独実行は `python3 scripts/test_session_artifacts.py` です。
 
 ```bash
+# macOS measurement build; the CLI has no --threads option on Mac
 swift build --package-path app/MacAmbientJev -c release \
   --product MacAmbientJevProcessRecording
 
+# macOS only: uses Mac thermal / MLX metrics and /usr/bin/time -l
 bash scripts/measure_v1_run.sh \
   --id lecture-ja \
   --audio "$AUDIO_FILE" \
@@ -592,9 +677,9 @@ bash scripts/measure_v1_run.sh \
 
 メモリ判定は ASR phase の有効な phys_footprint サンプルを使う。最初と最後の重ならない各 5 分窓で 48 件以上、全体で少なくとも 96 件・600 秒の範囲が必要。最後の中央値 − 最初の中央値が 512 MiB 以下、かつ `/usr/bin/time -l` の peak memory footprint が 12 GiB 以下で正常終了なら `VERIFIED`。サンプル不足、peak 欠測、途中失敗等は `INCONCLUSIVE`、条件を評価できて閾値超過なら `FAILED`。max RSS と peak footprint は別に記録する。短時間 run の INCONCLUSIVE は精度や処理成功の判定とは別で、ライブ録音全体のメモリ合格を意味しない。
 
-### CLI に直接計測引数を渡す場合
+### macOS CLI に直接計測引数を渡す場合
 
-import/resume には `--run-id`、`--metrics-output`、`--thermal-output`、`--memory-output` を四つすべて指定する。run ID は空でなく `/` を含まないもの。三つの計測出力先は互いに異なり、既存ファイルがないことが必要。通常は上の script に任せる。
+Mac の import / resume には `--run-id`、`--metrics-output`、`--thermal-output`、`--memory-output` を四つすべて指定します。run ID は空でなく `/` を含まないもの。三つの計測出力先は互いに異なり、既存ファイルがないことが必要です。Portable CLI はこれらを filesystem side effect より前に拒否します。通常は上の Mac 専用 script を使います。
 
 ## 原速 replay のライブ遅延計測
 

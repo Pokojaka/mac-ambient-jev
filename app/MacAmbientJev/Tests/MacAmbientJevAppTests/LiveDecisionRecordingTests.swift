@@ -6,7 +6,7 @@ import MacAmbientJevCore
 @testable import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
-private let testDecisionIdentity = try! DecisionModelIdentity(model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
+private let testDecisionIdentity = try! DecisionModelIdentity(backend: "test-backend", model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
 
 private actor RecordingASR: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "recording-test", model: nil, version: "test", configuration: [:])

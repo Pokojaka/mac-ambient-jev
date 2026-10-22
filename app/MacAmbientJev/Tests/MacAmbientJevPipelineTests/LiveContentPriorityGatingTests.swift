@@ -448,7 +448,7 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
     let counter = DecisionUsageCounter()
     let provider = FixedResponseProvider()
     let decisions = DecisionCoordinator(
-        provider: provider, identity: try DecisionModelIdentity(model: modelID, modelRevision: revision), usageCounter: counter
+        provider: provider, identity: try DecisionModelIdentity(backend: "test-backend", model: modelID, modelRevision: revision), usageCounter: counter
     )
     let fixture = try await LiveDecisionFixture(
         texts: ["最初。後続", "独立"], makeDecisions: { decisions }, counter: counter
@@ -471,7 +471,7 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
         == [ProcessingStage.clauseBoundary.rawValue, ProcessingStage.contentPriority.rawValue])
     for start in starts {
         let provenance = try #require((start["payload"] as? [String: Any])?["provenance"] as? [String: Any])
-        #expect(provenance["engine"] as? String == "coreml-clause-tagger")
+        #expect(provenance["engine"] as? String == "test-backend")
         #expect(provenance["model"] as? String == modelID)
         #expect(provenance["version"] as? String == revision)
         let configuration = try #require(provenance["configuration"] as? [String: String])
@@ -516,7 +516,7 @@ func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
     let counter = DecisionUsageCounter()
     let provider = FixedResponseProvider()
     let decisions = DecisionCoordinator(
-        provider: provider, identity: try DecisionModelIdentity(model: modelID, modelRevision: revision), usageCounter: counter
+        provider: provider, identity: try DecisionModelIdentity(backend: "test-backend", model: modelID, modelRevision: revision), usageCounter: counter
     )
     let fixture = try await LiveDecisionFixture(
         texts: ["終端本文"], makeDecisions: { decisions }, counter: counter
@@ -540,7 +540,7 @@ func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
     #expect(starts.allSatisfy { start in
         guard let provenance = (start["payload"] as? [String: Any])?["provenance"] as? [String: Any],
               let configuration = provenance["configuration"] as? [String: String] else { return false }
-        return provenance["engine"] as? String == "coreml-clause-tagger"
+        return provenance["engine"] as? String == "test-backend"
             && provenance["model"] as? String == modelID
             && provenance["version"] as? String == revision
             && configuration["model_id"] == modelID

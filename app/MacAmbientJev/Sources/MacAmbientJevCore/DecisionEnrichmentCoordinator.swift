@@ -9,7 +9,6 @@ public enum ClauseEventType {
 
 /// What each decision run records about the clause tagger and policy.
 public enum DecisionRunProvenance {
-    private static let engine = "coreml-clause-tagger"
     private static let unitPolicy = "btsj-utterance-sentence"
     private static let encodingRevision = "1"
     private static let maximumTokens = "192"
@@ -27,7 +26,7 @@ public enum DecisionRunProvenance {
         configuration["span_policy"] = "argmax-o-f-d-b-remove-f-b"
         configuration["span_window_policy"] = "whole-piece-max-min-context"
         configuration["text_policy"] = "neutral-punctuation-piecewise"
-        return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
+        return RunProvenance(engine: identity.backend, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 
     public static func priority(mode: String, identity: DecisionModelIdentity) -> RunProvenance {
@@ -35,7 +34,7 @@ public enum DecisionRunProvenance {
         configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
         configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
         configuration["text_policy"] = "filler-backchannel-removed-neutral-punctuation-piecewise"
-        return RunProvenance(engine: engine, model: identity.model, version: identity.modelRevision, configuration: configuration)
+        return RunProvenance(engine: identity.backend, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 
     /// A live run whose tagger could not be loaded.

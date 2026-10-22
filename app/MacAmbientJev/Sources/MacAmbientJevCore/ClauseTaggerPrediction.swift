@@ -24,13 +24,14 @@ public struct ClauseTaggerModelIdentity: Sendable, Equatable {
     public let decisionIdentity: DecisionModelIdentity
     public let tokenizerSHA256: String
 
+    public var backend: String { decisionIdentity.backend }
     public var modelID: String { decisionIdentity.model }
     public var revision: String { decisionIdentity.modelRevision }
 
-    public init(modelID: String, revision: String, tokenizerSHA256: String) throws {
+    public init(backend: String, modelID: String, revision: String, tokenizerSHA256: String) throws {
         let decisionIdentity: DecisionModelIdentity
         do {
-            decisionIdentity = try DecisionModelIdentity(model: modelID, modelRevision: revision)
+            decisionIdentity = try DecisionModelIdentity(backend: backend, model: modelID, modelRevision: revision)
         } catch ClauseValidationError.invalidMetadata {
             throw ClauseTaggerModelError.invalidModel("モデルメタデータが発話文モデルの仕様に一致しません。")
         }

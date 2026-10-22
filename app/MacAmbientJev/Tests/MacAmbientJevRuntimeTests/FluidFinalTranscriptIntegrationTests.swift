@@ -234,7 +234,7 @@ func finalTranscriptPipelineBoundsFluidPaddingBeforePublishing() async throws {
                 log: log
             )
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )
@@ -278,7 +278,7 @@ func finalTranscriptPipelineRejectsFluidSpansOutsideFinalPadding(startFrame: Int
                 log: log
             )
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )
@@ -310,7 +310,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let originalURL = importURL.appending(path: "audio/original.caf")
-    try ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
+    try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
         reader: try ProcessingTimelineReader(
             directory: sourceSessionURL.appending(path: "audio/processing", directoryHint: .isDirectory),
             checkpoint: checkpoint, sessionURL: sourceSessionURL
@@ -339,7 +339,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
                 log: log
             )
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { await sleepRecorder.append($0) }
     )

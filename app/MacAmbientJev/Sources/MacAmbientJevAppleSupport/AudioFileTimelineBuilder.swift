@@ -19,7 +19,7 @@ public enum AudioFileTimelineBuilderError: LocalizedError {
     }
 }
 
-public actor AudioFileTimelineBuilder {
+public actor AudioFileTimelineBuilder: ImportedAudioTimelineBuilding {
     public let readFrameCount: AVAudioFrameCount
 
     public init(readFrameCount: AVAudioFrameCount = 8_192) {
