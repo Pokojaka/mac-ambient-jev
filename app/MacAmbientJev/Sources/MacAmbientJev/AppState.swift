@@ -149,6 +149,8 @@ final class AppState: ObservableObject {
     var recordingSessionID: UUID? { recording.sessionID }
     /// Set only while the current recording captures the microphone.
     var micInputSessionID: UUID?
+    /// The automatic-adjustment preference read for the recording that is starting.
+    var micInputVolumeAutomaticForStart: Bool?
     var displayedSessionID: UUID?
     private var thermalObservation: (any ThermalStateObservation)?
     lazy var processingCoordinator = SessionProcessingCoordinator(
