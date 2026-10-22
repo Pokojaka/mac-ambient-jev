@@ -34,6 +34,8 @@ on:
       - 'scripts/test_fetch_silero_vad.py'
       - 'scripts/fetch_community1_diarization.py'
       - 'scripts/test_fetch_community1_diarization.py'
+      - 'scripts/fetch_clause_tagger.py'
+      - 'scripts/test_fetch_clause_tagger.py'
       - 'scripts/compare_diarization_runs.py'
       - 'scripts/test_compare_diarization_runs.py'
       - 'scripts/prepare_canonical_caf.py'
@@ -47,6 +49,10 @@ on:
       - 'scripts/generate_silero_speech_fixture.py'
       - 'scripts/generate_silero_reference.py'
       - 'scripts/test_generate_silero_reference.py'
+      - 'scripts/export_clause_tagger_onnx.py'
+      - 'scripts/test_export_clause_tagger_onnx.py'
+      - 'tools/clause-tagger-export/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/**'
       - 'scripts/test-windows.ps1'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
@@ -84,6 +90,8 @@ on:
       - 'scripts/test_fetch_silero_vad.py'
       - 'scripts/fetch_community1_diarization.py'
       - 'scripts/test_fetch_community1_diarization.py'
+      - 'scripts/fetch_clause_tagger.py'
+      - 'scripts/test_fetch_clause_tagger.py'
       - 'scripts/compare_diarization_runs.py'
       - 'scripts/test_compare_diarization_runs.py'
       - 'scripts/prepare_canonical_caf.py'
@@ -97,6 +105,10 @@ on:
       - 'scripts/generate_silero_speech_fixture.py'
       - 'scripts/generate_silero_reference.py'
       - 'scripts/test_generate_silero_reference.py'
+      - 'scripts/export_clause_tagger_onnx.py'
+      - 'scripts/test_export_clause_tagger_onnx.py'
+      - 'tools/clause-tagger-export/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/**'
       - 'scripts/test-windows.ps1'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
@@ -139,6 +151,12 @@ jobs:
           set -euo pipefail
           tokenizer="$(python3 scripts/fetch_qwen3_asr_tokenizer.py)"
           printf 'MAC_AMBIENT_JEV_QWEN3_TOKENIZER=%s\n' "$tokenizer" >> "$GITHUB_ENV"
+      - name: Fetch clause tagger model
+        shell: bash
+        run: |
+          set -euo pipefail
+          model="$(python3 scripts/fetch_clause_tagger.py)"
+          printf 'MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY=%s\n' "$model" >> "$GITHUB_ENV"
       - name: Check FLAC
         run: |
           command -v flac
@@ -149,11 +167,13 @@ jobs:
           python3 -B scripts/test_fetch_onnxruntime.py
           python3 -B scripts/test_fetch_silero_vad.py
           python3 -B scripts/test_fetch_community1_diarization.py
+          python3 -B scripts/test_fetch_clause_tagger.py
           python3 -B scripts/test_compare_diarization_runs.py
           python3 -B scripts/test_prepare_canonical_caf.py
           python3 -B scripts/test_fetch_qwen3_asr_tokenizer.py
           python3 -B scripts/test_pinned_download.py
           python3 -B scripts/test_generate_silero_reference.py
+          python3 -B scripts/test_export_clause_tagger_onnx.py
           python3 -B scripts/check_portable_core.py
           python3 scripts/test_doc_references.py
           python3 scripts/check_doc_references.py
@@ -179,6 +199,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Test clause tagger exporter helpers (stdlib only)
+        run: |
+          python -B scripts/test_export_clause_tagger_onnx.py
+          if ($LASTEXITCODE -ne 0) { throw 'Clause tagger exporter helper tests failed' }
       - name: Install FLAC
         run: |
           $ErrorActionPreference = 'Stop'

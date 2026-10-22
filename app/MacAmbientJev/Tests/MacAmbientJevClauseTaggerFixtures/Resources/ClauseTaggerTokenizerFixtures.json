@@ -1,0 +1,6141 @@
+{
+  "cases" : [
+    {
+      "name" : "original-01",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 10,
+              "start" : 5
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            }
+          ],
+          "text" : "今日は天気がいいですけど",
+          "token_ids" : [
+            1707,
+            8601,
+            59474,
+            1003
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 7,
+              "start" : 3
+            },
+            {
+              "end" : 11,
+              "start" : 7
+            }
+          ],
+          "text" : "明日は雨が降るそうです",
+          "token_ids" : [
+            14333,
+            71303,
+            2090
+          ]
+        }
+      ],
+      "text" : "今日は天気がいいですけど、明日は雨が降るそうです",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-02",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            }
+          ],
+          "text" : "えーと",
+          "token_ids" : [
+            28897,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            }
+          ],
+          "text" : "あのー",
+          "token_ids" : [
+            2390,
+            733
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            }
+          ],
+          "text" : "ビ",
+          "token_ids" : [
+            2911
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 2
+            },
+            {
+              "end" : 10,
+              "start" : 4
+            }
+          ],
+          "text" : "ビザの話なんですけど",
+          "token_ids" : [
+            19233,
+            5289,
+            23437
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            }
+          ],
+          "text" : "はい",
+          "token_ids" : [
+            5896
+          ]
+        }
+      ],
+      "text" : "えーと、あのー、ビ、ビザの話なんですけど、はい",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-03",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            }
+          ],
+          "text" : "うん",
+          "token_ids" : [
+            11247
+          ]
+        }
+      ],
+      "text" : "うん",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-04",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            }
+          ],
+          "text" : "いうか",
+          "token_ids" : [
+            13416,
+            477
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 5
+            },
+            {
+              "end" : 9,
+              "start" : 7
+            },
+            {
+              "end" : 11,
+              "start" : 9
+            }
+          ],
+          "text" : "原本を複製する操作です",
+          "token_ids" : [
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        }
+      ],
+      "text" : "これはコピーと、いうか、原本を複製する操作です",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-05",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 1
+            }
+          ],
+          "text" : "ＡＢＣ",
+          "token_ids" : [
+            3511,
+            63809
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 1
+            },
+            {
+              "end" : 4,
+              "start" : 2
+            },
+            {
+              "end" : 6,
+              "start" : 4
+            }
+          ],
+          "text" : "ｘは変数です",
+          "token_ids" : [
+            22874,
+            302,
+            18397,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 1
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            }
+          ],
+          "text" : "１０％",
+          "token_ids" : [
+            406,
+            489,
+            1001
+          ]
+        }
+      ],
+      "text" : "ＡＢＣ、ｘは変数です、１０％",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-06",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 10,
+              "start" : 5
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            }
+          ],
+          "text" : "今日は天気がいいですけど",
+          "token_ids" : [
+            1707,
+            8601,
+            59474,
+            1003
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 7,
+              "start" : 3
+            },
+            {
+              "end" : 11,
+              "start" : 7
+            }
+          ],
+          "text" : "明日は雨が降るそうです",
+          "token_ids" : [
+            14333,
+            71303,
+            2090
+          ]
+        }
+      ],
+      "text" : "今日は天気がいいですけど。明日は雨が降るそうです？！",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-07",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 1
+            },
+            {
+              "end" : 4,
+              "start" : 3
+            }
+          ],
+          "text" : " えーと",
+          "token_ids" : [
+            271,
+            28897,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 1
+            },
+            {
+              "end" : 4,
+              "start" : 3
+            }
+          ],
+          "text" : " あのー",
+          "token_ids" : [
+            271,
+            2390,
+            733
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            }
+          ],
+          "text" : "ビ",
+          "token_ids" : [
+            2911
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 2
+            },
+            {
+              "end" : 10,
+              "start" : 4
+            }
+          ],
+          "text" : "ビザの話なんですけど",
+          "token_ids" : [
+            19233,
+            5289,
+            23437
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            }
+          ],
+          "text" : "はい",
+          "token_ids" : [
+            5896
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            }
+          ],
+          "text" : " ",
+          "token_ids" : [
+            271
+          ]
+        }
+      ],
+      "text" : " えーと、 あのー、ビ、ビザの話なんですけど、はい！ ",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-08",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            }
+          ],
+          "text" : "うん",
+          "token_ids" : [
+            11247
+          ]
+        }
+      ],
+      "text" : "うん!!!",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-09",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+
+          ],
+          "text" : "",
+          "token_ids" : [
+
+          ]
+        },
+        {
+          "ranges" : [
+
+          ],
+          "text" : "",
+          "token_ids" : [
+
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            }
+          ],
+          "text" : "いうか",
+          "token_ids" : [
+            13416,
+            477
+          ]
+        },
+        {
+          "ranges" : [
+
+          ],
+          "text" : "",
+          "token_ids" : [
+
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 5
+            },
+            {
+              "end" : 9,
+              "start" : 7
+            },
+            {
+              "end" : 11,
+              "start" : 9
+            }
+          ],
+          "text" : "原本を複製する操作です",
+          "token_ids" : [
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        }
+      ],
+      "text" : "これはコピーと、、、いうか？？原本を複製する操作です?!",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-10",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 5,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 11,
+              "start" : 10
+            },
+            {
+              "end" : 12,
+              "start" : 11
+            },
+            {
+              "end" : 15,
+              "start" : 12
+            }
+          ],
+          "text" : "emoji 🙂 éと日本語",
+          "token_ids" : [
+            44733,
+            271,
+            35624,
+            656,
+            27438,
+            317,
+            3861
+          ]
+        }
+      ],
+      "text" : "emoji 🙂 éと日本語。",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-11",
+      "next" : "いうか原本を複製する操作です。",
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        }
+      ],
+      "text" : "これはコピーと。",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-12",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        }
+      ],
+      "text" : "これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "original-13",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 3
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "これはコピーと",
+          "token_ids" : [
+            975,
+            6942,
+            317
+          ]
+        },
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 10,
+              "start" : 8
+            },
+            {
+              "end" : 12,
+              "start" : 10
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            }
+          ],
+          "text" : "いうか原本を複製する操作です",
+          "token_ids" : [
+            13416,
+            477,
+            80869,
+            315,
+            34775,
+            431,
+            4087,
+            355
+          ]
+        }
+      ],
+      "text" : "これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、これはコピーと、いうか原本を複製する操作です、",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-empty",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+
+          ],
+          "text" : "",
+          "token_ids" : [
+
+          ]
+        }
+      ],
+      "text" : "",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-bom",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 1
+            },
+            {
+              "end" : 5,
+              "start" : 4
+            }
+          ],
+          "text" : "﻿今日は﻿",
+          "token_ids" : [
+            8186,
+            1707,
+            8186
+          ]
+        }
+      ],
+      "text" : "﻿今日は﻿",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-composed",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 1
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 4,
+              "start" : 3
+            },
+            {
+              "end" : 5,
+              "start" : 4
+            }
+          ],
+          "text" : "é が カ",
+          "token_ids" : [
+            2697,
+            271,
+            306,
+            271,
+            1456
+          ]
+        }
+      ],
+      "text" : "é が カ",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-decomposed",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 1
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            },
+            {
+              "end" : 8,
+              "start" : 7
+            }
+          ],
+          "text" : "é が ガ",
+          "token_ids" : [
+            347,
+            27438,
+            271,
+            22105,
+            271,
+            1456,
+            13923
+          ]
+        }
+      ],
+      "text" : "é が ガ",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-consecutive-oov",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 0
+            }
+          ],
+          "text" : "􏿿􏿾",
+          "token_ids" : [
+            259,
+            158,
+            206,
+            206,
+            259,
+            158,
+            206,
+            205
+          ]
+        }
+      ],
+      "text" : "􏿿􏿾",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-separated-oov",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 3,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 5,
+              "start" : 3
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            },
+            {
+              "end" : 8,
+              "start" : 6
+            }
+          ],
+          "text" : "􏿿a􏿾 􏿿",
+          "token_ids" : [
+            259,
+            158,
+            206,
+            206,
+            351,
+            259,
+            158,
+            206,
+            205,
+            271,
+            259,
+            158,
+            206,
+            206
+          ]
+        }
+      ],
+      "text" : "􏿿a􏿾 􏿿",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-emoji-modifiers",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 8,
+              "start" : 2
+            },
+            {
+              "end" : 9,
+              "start" : 8
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            },
+            {
+              "end" : 15,
+              "start" : 9
+            }
+          ],
+          "text" : "👍🏽👩🏽‍💻😀😀",
+          "token_ids" : [
+            29454,
+            255,
+            174,
+            158,
+            204,
+            255,
+            174,
+            160,
+            184,
+            255,
+            174,
+            158,
+            204,
+            47857,
+            255,
+            174,
+            161,
+            202,
+            255,
+            174,
+            167,
+            143,
+            255,
+            174,
+            167,
+            143
+          ]
+        }
+      ],
+      "text" : "👍🏽👩🏽‍💻😀😀",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "direct-whitespace",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 2,
+              "start" : 1
+            },
+            {
+              "end" : 4,
+              "start" : 2
+            },
+            {
+              "end" : 5,
+              "start" : 4
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            },
+            {
+              "end" : 9,
+              "start" : 7
+            },
+            {
+              "end" : 11,
+              "start" : 9
+            },
+            {
+              "end" : 11,
+              "start" : 9
+            },
+            {
+              "end" : 12,
+              "start" : 11
+            },
+            {
+              "end" : 14,
+              "start" : 12
+            },
+            {
+              "end" : 15,
+              "start" : 14
+            },
+            {
+              "end" : 16,
+              "start" : 15
+            }
+          ],
+          "text" : "  今日\tは\n晴れ\r\n　です  ",
+          "token_ids" : [
+            271,
+            271,
+            3413,
+            24,
+            302,
+            25,
+            16416,
+            28,
+            25,
+            332,
+            355,
+            271,
+            271
+          ]
+        }
+      ],
+      "text" : "  今日\tは\n晴れ\r\n　です  ",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-001",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 1
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "前<unk>後",
+          "token_ids" : [
+            1017,
+            0,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<unk>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-002",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 1
+            },
+            {
+              "end" : 5,
+              "start" : 4
+            }
+          ],
+          "text" : "前<s>後",
+          "token_ids" : [
+            1017,
+            1,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<s>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-003",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 5,
+              "start" : 1
+            },
+            {
+              "end" : 6,
+              "start" : 5
+            }
+          ],
+          "text" : "前</s>後",
+          "token_ids" : [
+            1017,
+            2,
+            1159
+          ]
+        }
+      ],
+      "text" : "前</s>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-004",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 1
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "前<pad>後",
+          "token_ids" : [
+            1017,
+            3,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<pad>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-005",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 1
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "前<sep>後",
+          "token_ids" : [
+            1017,
+            4,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<sep>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-006",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 7,
+              "start" : 1
+            },
+            {
+              "end" : 8,
+              "start" : 7
+            }
+          ],
+          "text" : "前<mask>後",
+          "token_ids" : [
+            1017,
+            5,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<mask>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-007",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 6,
+              "start" : 1
+            },
+            {
+              "end" : 7,
+              "start" : 6
+            }
+          ],
+          "text" : "前<cls>後",
+          "token_ids" : [
+            1017,
+            6,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<cls>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-008",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 11,
+              "start" : 1
+            },
+            {
+              "end" : 12,
+              "start" : 11
+            }
+          ],
+          "text" : "前<|system|>後",
+          "token_ids" : [
+            1017,
+            7,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|system|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-009",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 14,
+              "start" : 1
+            },
+            {
+              "end" : 15,
+              "start" : 14
+            }
+          ],
+          "text" : "前<|assistant|>後",
+          "token_ids" : [
+            1017,
+            8,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|assistant|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-010",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 9,
+              "start" : 1
+            },
+            {
+              "end" : 10,
+              "start" : 9
+            }
+          ],
+          "text" : "前<|user|>後",
+          "token_ids" : [
+            1017,
+            9,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|user|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-011",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 20,
+              "start" : 1
+            },
+            {
+              "end" : 21,
+              "start" : 20
+            }
+          ],
+          "text" : "前<|available_tools|>後",
+          "token_ids" : [
+            1017,
+            10,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|available_tools|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-012",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 15,
+              "start" : 1
+            },
+            {
+              "end" : 16,
+              "start" : 15
+            }
+          ],
+          "text" : "前<|tool_calls|>後",
+          "token_ids" : [
+            1017,
+            11,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|tool_calls|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-013",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 17,
+              "start" : 1
+            },
+            {
+              "end" : 18,
+              "start" : 17
+            }
+          ],
+          "text" : "前<|tool_results|>後",
+          "token_ids" : [
+            1017,
+            12,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|tool_results|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-014",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 9,
+              "start" : 1
+            },
+            {
+              "end" : 10,
+              "start" : 9
+            }
+          ],
+          "text" : "前<|code|>後",
+          "token_ids" : [
+            1017,
+            13,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|code|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-015",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 9,
+              "start" : 1
+            },
+            {
+              "end" : 10,
+              "start" : 9
+            }
+          ],
+          "text" : "前<|file|>後",
+          "token_ids" : [
+            1017,
+            14,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|file|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-016",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 11,
+              "start" : 1
+            },
+            {
+              "end" : 12,
+              "start" : 11
+            }
+          ],
+          "text" : "前<|prefix|>後",
+          "token_ids" : [
+            1017,
+            102397,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|prefix|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-017",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 11,
+              "start" : 1
+            },
+            {
+              "end" : 12,
+              "start" : 11
+            }
+          ],
+          "text" : "前<|suffix|>後",
+          "token_ids" : [
+            1017,
+            102398,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|suffix|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "release-added-token-018",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 11,
+              "start" : 1
+            },
+            {
+              "end" : 12,
+              "start" : 11
+            }
+          ],
+          "text" : "前<|middle|>後",
+          "token_ids" : [
+            1017,
+            102399,
+            1159
+          ]
+        }
+      ],
+      "text" : "前<|middle|>後",
+      "tokenizer" : "release"
+    },
+    {
+      "name" : "ties-forward-ab",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            }
+          ],
+          "text" : "ab",
+          "token_ids" : [
+            278
+          ]
+        }
+      ],
+      "text" : "ab",
+      "tokenizer" : "ties-forward"
+    },
+    {
+      "name" : "ties-forward-aba",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            }
+          ],
+          "text" : "aba",
+          "token_ids" : [
+            280
+          ]
+        }
+      ],
+      "text" : "aba",
+      "tokenizer" : "ties-forward"
+    },
+    {
+      "name" : "ties-forward-abab",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 2
+            }
+          ],
+          "text" : "abab",
+          "token_ids" : [
+            278,
+            278
+          ]
+        }
+      ],
+      "text" : "abab",
+      "tokenizer" : "ties-forward"
+    },
+    {
+      "name" : "ties-forward-baba",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 1
+            }
+          ],
+          "text" : "baba",
+          "token_ids" : [
+            277,
+            280
+          ]
+        }
+      ],
+      "text" : "baba",
+      "tokenizer" : "ties-forward"
+    },
+    {
+      "name" : "ties-reversed-ab",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            }
+          ],
+          "text" : "ab",
+          "token_ids" : [
+            278
+          ]
+        }
+      ],
+      "text" : "ab",
+      "tokenizer" : "ties-reversed"
+    },
+    {
+      "name" : "ties-reversed-aba",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 3,
+              "start" : 0
+            }
+          ],
+          "text" : "aba",
+          "token_ids" : [
+            276
+          ]
+        }
+      ],
+      "text" : "aba",
+      "tokenizer" : "ties-reversed"
+    },
+    {
+      "name" : "ties-reversed-abab",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 2,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 2
+            }
+          ],
+          "text" : "abab",
+          "token_ids" : [
+            278,
+            278
+          ]
+        }
+      ],
+      "text" : "abab",
+      "tokenizer" : "ties-reversed"
+    },
+    {
+      "name" : "ties-reversed-baba",
+      "next" : null,
+      "pieces" : [
+        {
+          "ranges" : [
+            {
+              "end" : 1,
+              "start" : 0
+            },
+            {
+              "end" : 4,
+              "start" : 1
+            }
+          ],
+          "text" : "baba",
+          "token_ids" : [
+            279,
+            276
+          ]
+        }
+      ],
+      "text" : "baba",
+      "tokenizer" : "ties-reversed"
+    }
+  ],
+  "schema_version" : 1,
+  "synthetic_tokenizers" : [
+    {
+      "name" : "ties-forward",
+      "sha256" : "436e3929721ff7cb1d97171ef8b6352421273bd8fd73ae3edeeb08bd207f1912",
+      "tokenizer_json" : {
+        "added_tokens" : [
+          {
+            "content" : "<unk>",
+            "id" : 0,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<s>",
+            "id" : 1,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "</s>",
+            "id" : 2,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<pad>",
+            "id" : 3,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<sep>",
+            "id" : 4,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<mask>",
+            "id" : 5,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<cls>",
+            "id" : 6,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<|system|>",
+            "id" : 7,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|assistant|>",
+            "id" : 8,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|user|>",
+            "id" : 9,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|available_tools|>",
+            "id" : 10,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|tool_calls|>",
+            "id" : 11,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|tool_results|>",
+            "id" : 12,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|code|>",
+            "id" : 13,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|file|>",
+            "id" : 14,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          }
+        ],
+        "decoder" : {
+          "decoders" : [
+            {
+              "content" : " ",
+              "pattern" : {
+                "String" : "▁"
+              },
+              "type" : "Replace"
+            },
+            {
+              "type" : "ByteFallback"
+            },
+            {
+              "type" : "Fuse"
+            }
+          ],
+          "type" : "Sequence"
+        },
+        "model" : {
+          "byte_fallback" : true,
+          "type" : "Unigram",
+          "unk_id" : 0,
+          "vocab" : [
+            [
+              "<unk>",
+              0
+            ],
+            [
+              "<s>",
+              0
+            ],
+            [
+              "</s>",
+              0
+            ],
+            [
+              "<pad>",
+              0
+            ],
+            [
+              "<sep>",
+              0
+            ],
+            [
+              "<mask>",
+              0
+            ],
+            [
+              "<cls>",
+              0
+            ],
+            [
+              "<|system|>",
+              0
+            ],
+            [
+              "<|assistant|>",
+              0
+            ],
+            [
+              "<|user|>",
+              0
+            ],
+            [
+              "<|available_tools|>",
+              0
+            ],
+            [
+              "<|tool_calls|>",
+              0
+            ],
+            [
+              "<|tool_results|>",
+              0
+            ],
+            [
+              "<|code|>",
+              0
+            ],
+            [
+              "<|file|>",
+              0
+            ],
+            [
+              "<0x00>",
+              0
+            ],
+            [
+              "<0x01>",
+              0
+            ],
+            [
+              "<0x02>",
+              0
+            ],
+            [
+              "<0x03>",
+              0
+            ],
+            [
+              "<0x04>",
+              0
+            ],
+            [
+              "<0x05>",
+              0
+            ],
+            [
+              "<0x06>",
+              0
+            ],
+            [
+              "<0x07>",
+              0
+            ],
+            [
+              "<0x08>",
+              0
+            ],
+            [
+              "<0x09>",
+              0
+            ],
+            [
+              "<0x0A>",
+              0
+            ],
+            [
+              "<0x0B>",
+              0
+            ],
+            [
+              "<0x0C>",
+              0
+            ],
+            [
+              "<0x0D>",
+              0
+            ],
+            [
+              "<0x0E>",
+              0
+            ],
+            [
+              "<0x0F>",
+              0
+            ],
+            [
+              "<0x10>",
+              0
+            ],
+            [
+              "<0x11>",
+              0
+            ],
+            [
+              "<0x12>",
+              0
+            ],
+            [
+              "<0x13>",
+              0
+            ],
+            [
+              "<0x14>",
+              0
+            ],
+            [
+              "<0x15>",
+              0
+            ],
+            [
+              "<0x16>",
+              0
+            ],
+            [
+              "<0x17>",
+              0
+            ],
+            [
+              "<0x18>",
+              0
+            ],
+            [
+              "<0x19>",
+              0
+            ],
+            [
+              "<0x1A>",
+              0
+            ],
+            [
+              "<0x1B>",
+              0
+            ],
+            [
+              "<0x1C>",
+              0
+            ],
+            [
+              "<0x1D>",
+              0
+            ],
+            [
+              "<0x1E>",
+              0
+            ],
+            [
+              "<0x1F>",
+              0
+            ],
+            [
+              "<0x20>",
+              0
+            ],
+            [
+              "<0x21>",
+              0
+            ],
+            [
+              "<0x22>",
+              0
+            ],
+            [
+              "<0x23>",
+              0
+            ],
+            [
+              "<0x24>",
+              0
+            ],
+            [
+              "<0x25>",
+              0
+            ],
+            [
+              "<0x26>",
+              0
+            ],
+            [
+              "<0x27>",
+              0
+            ],
+            [
+              "<0x28>",
+              0
+            ],
+            [
+              "<0x29>",
+              0
+            ],
+            [
+              "<0x2A>",
+              0
+            ],
+            [
+              "<0x2B>",
+              0
+            ],
+            [
+              "<0x2C>",
+              0
+            ],
+            [
+              "<0x2D>",
+              0
+            ],
+            [
+              "<0x2E>",
+              0
+            ],
+            [
+              "<0x2F>",
+              0
+            ],
+            [
+              "<0x30>",
+              0
+            ],
+            [
+              "<0x31>",
+              0
+            ],
+            [
+              "<0x32>",
+              0
+            ],
+            [
+              "<0x33>",
+              0
+            ],
+            [
+              "<0x34>",
+              0
+            ],
+            [
+              "<0x35>",
+              0
+            ],
+            [
+              "<0x36>",
+              0
+            ],
+            [
+              "<0x37>",
+              0
+            ],
+            [
+              "<0x38>",
+              0
+            ],
+            [
+              "<0x39>",
+              0
+            ],
+            [
+              "<0x3A>",
+              0
+            ],
+            [
+              "<0x3B>",
+              0
+            ],
+            [
+              "<0x3C>",
+              0
+            ],
+            [
+              "<0x3D>",
+              0
+            ],
+            [
+              "<0x3E>",
+              0
+            ],
+            [
+              "<0x3F>",
+              0
+            ],
+            [
+              "<0x40>",
+              0
+            ],
+            [
+              "<0x41>",
+              0
+            ],
+            [
+              "<0x42>",
+              0
+            ],
+            [
+              "<0x43>",
+              0
+            ],
+            [
+              "<0x44>",
+              0
+            ],
+            [
+              "<0x45>",
+              0
+            ],
+            [
+              "<0x46>",
+              0
+            ],
+            [
+              "<0x47>",
+              0
+            ],
+            [
+              "<0x48>",
+              0
+            ],
+            [
+              "<0x49>",
+              0
+            ],
+            [
+              "<0x4A>",
+              0
+            ],
+            [
+              "<0x4B>",
+              0
+            ],
+            [
+              "<0x4C>",
+              0
+            ],
+            [
+              "<0x4D>",
+              0
+            ],
+            [
+              "<0x4E>",
+              0
+            ],
+            [
+              "<0x4F>",
+              0
+            ],
+            [
+              "<0x50>",
+              0
+            ],
+            [
+              "<0x51>",
+              0
+            ],
+            [
+              "<0x52>",
+              0
+            ],
+            [
+              "<0x53>",
+              0
+            ],
+            [
+              "<0x54>",
+              0
+            ],
+            [
+              "<0x55>",
+              0
+            ],
+            [
+              "<0x56>",
+              0
+            ],
+            [
+              "<0x57>",
+              0
+            ],
+            [
+              "<0x58>",
+              0
+            ],
+            [
+              "<0x59>",
+              0
+            ],
+            [
+              "<0x5A>",
+              0
+            ],
+            [
+              "<0x5B>",
+              0
+            ],
+            [
+              "<0x5C>",
+              0
+            ],
+            [
+              "<0x5D>",
+              0
+            ],
+            [
+              "<0x5E>",
+              0
+            ],
+            [
+              "<0x5F>",
+              0
+            ],
+            [
+              "<0x60>",
+              0
+            ],
+            [
+              "<0x61>",
+              0
+            ],
+            [
+              "<0x62>",
+              0
+            ],
+            [
+              "<0x63>",
+              0
+            ],
+            [
+              "<0x64>",
+              0
+            ],
+            [
+              "<0x65>",
+              0
+            ],
+            [
+              "<0x66>",
+              0
+            ],
+            [
+              "<0x67>",
+              0
+            ],
+            [
+              "<0x68>",
+              0
+            ],
+            [
+              "<0x69>",
+              0
+            ],
+            [
+              "<0x6A>",
+              0
+            ],
+            [
+              "<0x6B>",
+              0
+            ],
+            [
+              "<0x6C>",
+              0
+            ],
+            [
+              "<0x6D>",
+              0
+            ],
+            [
+              "<0x6E>",
+              0
+            ],
+            [
+              "<0x6F>",
+              0
+            ],
+            [
+              "<0x70>",
+              0
+            ],
+            [
+              "<0x71>",
+              0
+            ],
+            [
+              "<0x72>",
+              0
+            ],
+            [
+              "<0x73>",
+              0
+            ],
+            [
+              "<0x74>",
+              0
+            ],
+            [
+              "<0x75>",
+              0
+            ],
+            [
+              "<0x76>",
+              0
+            ],
+            [
+              "<0x77>",
+              0
+            ],
+            [
+              "<0x78>",
+              0
+            ],
+            [
+              "<0x79>",
+              0
+            ],
+            [
+              "<0x7A>",
+              0
+            ],
+            [
+              "<0x7B>",
+              0
+            ],
+            [
+              "<0x7C>",
+              0
+            ],
+            [
+              "<0x7D>",
+              0
+            ],
+            [
+              "<0x7E>",
+              0
+            ],
+            [
+              "<0x7F>",
+              0
+            ],
+            [
+              "<0x80>",
+              0
+            ],
+            [
+              "<0x81>",
+              0
+            ],
+            [
+              "<0x82>",
+              0
+            ],
+            [
+              "<0x83>",
+              0
+            ],
+            [
+              "<0x84>",
+              0
+            ],
+            [
+              "<0x85>",
+              0
+            ],
+            [
+              "<0x86>",
+              0
+            ],
+            [
+              "<0x87>",
+              0
+            ],
+            [
+              "<0x88>",
+              0
+            ],
+            [
+              "<0x89>",
+              0
+            ],
+            [
+              "<0x8A>",
+              0
+            ],
+            [
+              "<0x8B>",
+              0
+            ],
+            [
+              "<0x8C>",
+              0
+            ],
+            [
+              "<0x8D>",
+              0
+            ],
+            [
+              "<0x8E>",
+              0
+            ],
+            [
+              "<0x8F>",
+              0
+            ],
+            [
+              "<0x90>",
+              0
+            ],
+            [
+              "<0x91>",
+              0
+            ],
+            [
+              "<0x92>",
+              0
+            ],
+            [
+              "<0x93>",
+              0
+            ],
+            [
+              "<0x94>",
+              0
+            ],
+            [
+              "<0x95>",
+              0
+            ],
+            [
+              "<0x96>",
+              0
+            ],
+            [
+              "<0x97>",
+              0
+            ],
+            [
+              "<0x98>",
+              0
+            ],
+            [
+              "<0x99>",
+              0
+            ],
+            [
+              "<0x9A>",
+              0
+            ],
+            [
+              "<0x9B>",
+              0
+            ],
+            [
+              "<0x9C>",
+              0
+            ],
+            [
+              "<0x9D>",
+              0
+            ],
+            [
+              "<0x9E>",
+              0
+            ],
+            [
+              "<0x9F>",
+              0
+            ],
+            [
+              "<0xA0>",
+              0
+            ],
+            [
+              "<0xA1>",
+              0
+            ],
+            [
+              "<0xA2>",
+              0
+            ],
+            [
+              "<0xA3>",
+              0
+            ],
+            [
+              "<0xA4>",
+              0
+            ],
+            [
+              "<0xA5>",
+              0
+            ],
+            [
+              "<0xA6>",
+              0
+            ],
+            [
+              "<0xA7>",
+              0
+            ],
+            [
+              "<0xA8>",
+              0
+            ],
+            [
+              "<0xA9>",
+              0
+            ],
+            [
+              "<0xAA>",
+              0
+            ],
+            [
+              "<0xAB>",
+              0
+            ],
+            [
+              "<0xAC>",
+              0
+            ],
+            [
+              "<0xAD>",
+              0
+            ],
+            [
+              "<0xAE>",
+              0
+            ],
+            [
+              "<0xAF>",
+              0
+            ],
+            [
+              "<0xB0>",
+              0
+            ],
+            [
+              "<0xB1>",
+              0
+            ],
+            [
+              "<0xB2>",
+              0
+            ],
+            [
+              "<0xB3>",
+              0
+            ],
+            [
+              "<0xB4>",
+              0
+            ],
+            [
+              "<0xB5>",
+              0
+            ],
+            [
+              "<0xB6>",
+              0
+            ],
+            [
+              "<0xB7>",
+              0
+            ],
+            [
+              "<0xB8>",
+              0
+            ],
+            [
+              "<0xB9>",
+              0
+            ],
+            [
+              "<0xBA>",
+              0
+            ],
+            [
+              "<0xBB>",
+              0
+            ],
+            [
+              "<0xBC>",
+              0
+            ],
+            [
+              "<0xBD>",
+              0
+            ],
+            [
+              "<0xBE>",
+              0
+            ],
+            [
+              "<0xBF>",
+              0
+            ],
+            [
+              "<0xC0>",
+              0
+            ],
+            [
+              "<0xC1>",
+              0
+            ],
+            [
+              "<0xC2>",
+              0
+            ],
+            [
+              "<0xC3>",
+              0
+            ],
+            [
+              "<0xC4>",
+              0
+            ],
+            [
+              "<0xC5>",
+              0
+            ],
+            [
+              "<0xC6>",
+              0
+            ],
+            [
+              "<0xC7>",
+              0
+            ],
+            [
+              "<0xC8>",
+              0
+            ],
+            [
+              "<0xC9>",
+              0
+            ],
+            [
+              "<0xCA>",
+              0
+            ],
+            [
+              "<0xCB>",
+              0
+            ],
+            [
+              "<0xCC>",
+              0
+            ],
+            [
+              "<0xCD>",
+              0
+            ],
+            [
+              "<0xCE>",
+              0
+            ],
+            [
+              "<0xCF>",
+              0
+            ],
+            [
+              "<0xD0>",
+              0
+            ],
+            [
+              "<0xD1>",
+              0
+            ],
+            [
+              "<0xD2>",
+              0
+            ],
+            [
+              "<0xD3>",
+              0
+            ],
+            [
+              "<0xD4>",
+              0
+            ],
+            [
+              "<0xD5>",
+              0
+            ],
+            [
+              "<0xD6>",
+              0
+            ],
+            [
+              "<0xD7>",
+              0
+            ],
+            [
+              "<0xD8>",
+              0
+            ],
+            [
+              "<0xD9>",
+              0
+            ],
+            [
+              "<0xDA>",
+              0
+            ],
+            [
+              "<0xDB>",
+              0
+            ],
+            [
+              "<0xDC>",
+              0
+            ],
+            [
+              "<0xDD>",
+              0
+            ],
+            [
+              "<0xDE>",
+              0
+            ],
+            [
+              "<0xDF>",
+              0
+            ],
+            [
+              "<0xE0>",
+              0
+            ],
+            [
+              "<0xE1>",
+              0
+            ],
+            [
+              "<0xE2>",
+              0
+            ],
+            [
+              "<0xE3>",
+              0
+            ],
+            [
+              "<0xE4>",
+              0
+            ],
+            [
+              "<0xE5>",
+              0
+            ],
+            [
+              "<0xE6>",
+              0
+            ],
+            [
+              "<0xE7>",
+              0
+            ],
+            [
+              "<0xE8>",
+              0
+            ],
+            [
+              "<0xE9>",
+              0
+            ],
+            [
+              "<0xEA>",
+              0
+            ],
+            [
+              "<0xEB>",
+              0
+            ],
+            [
+              "<0xEC>",
+              0
+            ],
+            [
+              "<0xED>",
+              0
+            ],
+            [
+              "<0xEE>",
+              0
+            ],
+            [
+              "<0xEF>",
+              0
+            ],
+            [
+              "<0xF0>",
+              0
+            ],
+            [
+              "<0xF1>",
+              0
+            ],
+            [
+              "<0xF2>",
+              0
+            ],
+            [
+              "<0xF3>",
+              0
+            ],
+            [
+              "<0xF4>",
+              0
+            ],
+            [
+              "<0xF5>",
+              0
+            ],
+            [
+              "<0xF6>",
+              0
+            ],
+            [
+              "<0xF7>",
+              0
+            ],
+            [
+              "<0xF8>",
+              0
+            ],
+            [
+              "<0xF9>",
+              0
+            ],
+            [
+              "<0xFA>",
+              0
+            ],
+            [
+              "<0xFB>",
+              0
+            ],
+            [
+              "<0xFC>",
+              0
+            ],
+            [
+              "<0xFD>",
+              0
+            ],
+            [
+              "<0xFE>",
+              0
+            ],
+            [
+              "<0xFF>",
+              0
+            ],
+            [
+              "▁",
+              -2.6575100421905518
+            ],
+            [
+              ".",
+              -3.7702920436859131
+            ],
+            [
+              ",",
+              -3.9282803535461426
+            ],
+            [
+              "0",
+              -4.2066159248352051
+            ],
+            [
+              "、",
+              -4.2291178703308105
+            ],
+            [
+              "a",
+              -1
+            ],
+            [
+              "b",
+              -1
+            ],
+            [
+              "ab",
+              -2
+            ],
+            [
+              "ba",
+              -2
+            ],
+            [
+              "aba",
+              -3
+            ]
+          ]
+        },
+        "normalizer" : null,
+        "padding" : null,
+        "post_processor" : {
+          "pair" : [
+            {
+              "SpecialToken" : {
+                "id" : "<s>",
+                "type_id" : 0
+              }
+            },
+            {
+              "Sequence" : {
+                "id" : "A",
+                "type_id" : 0
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "</s>",
+                "type_id" : 0
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "<s>",
+                "type_id" : 1
+              }
+            },
+            {
+              "Sequence" : {
+                "id" : "B",
+                "type_id" : 1
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "</s>",
+                "type_id" : 1
+              }
+            }
+          ],
+          "single" : [
+            {
+              "SpecialToken" : {
+                "id" : "<s>",
+                "type_id" : 0
+              }
+            },
+            {
+              "Sequence" : {
+                "id" : "A",
+                "type_id" : 0
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "</s>",
+                "type_id" : 0
+              }
+            }
+          ],
+          "special_tokens" : {
+            "</s>" : {
+              "id" : "</s>",
+              "ids" : [
+                2
+              ],
+              "tokens" : [
+                "</s>"
+              ]
+            },
+            "<s>" : {
+              "id" : "<s>",
+              "ids" : [
+                1
+              ],
+              "tokens" : [
+                "<s>"
+              ]
+            }
+          },
+          "type" : "TemplateProcessing"
+        },
+        "pre_tokenizer" : {
+          "prepend_scheme" : "never",
+          "replacement" : "▁",
+          "split" : false,
+          "type" : "Metaspace"
+        },
+        "truncation" : null,
+        "version" : "1.0"
+      }
+    },
+    {
+      "name" : "ties-reversed",
+      "sha256" : "e9c80e27ff4062e93de234e614d1be414f712821696e8dd6bf58b643592cfca4",
+      "tokenizer_json" : {
+        "added_tokens" : [
+          {
+            "content" : "<unk>",
+            "id" : 0,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<s>",
+            "id" : 1,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "</s>",
+            "id" : 2,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<pad>",
+            "id" : 3,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<sep>",
+            "id" : 4,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<mask>",
+            "id" : 5,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<cls>",
+            "id" : 6,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : true
+          },
+          {
+            "content" : "<|system|>",
+            "id" : 7,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|assistant|>",
+            "id" : 8,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|user|>",
+            "id" : 9,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|available_tools|>",
+            "id" : 10,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|tool_calls|>",
+            "id" : 11,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|tool_results|>",
+            "id" : 12,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|code|>",
+            "id" : 13,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          },
+          {
+            "content" : "<|file|>",
+            "id" : 14,
+            "lstrip" : false,
+            "normalized" : false,
+            "rstrip" : false,
+            "single_word" : false,
+            "special" : false
+          }
+        ],
+        "decoder" : {
+          "decoders" : [
+            {
+              "content" : " ",
+              "pattern" : {
+                "String" : "▁"
+              },
+              "type" : "Replace"
+            },
+            {
+              "type" : "ByteFallback"
+            },
+            {
+              "type" : "Fuse"
+            }
+          ],
+          "type" : "Sequence"
+        },
+        "model" : {
+          "byte_fallback" : true,
+          "type" : "Unigram",
+          "unk_id" : 0,
+          "vocab" : [
+            [
+              "<unk>",
+              0
+            ],
+            [
+              "<s>",
+              0
+            ],
+            [
+              "</s>",
+              0
+            ],
+            [
+              "<pad>",
+              0
+            ],
+            [
+              "<sep>",
+              0
+            ],
+            [
+              "<mask>",
+              0
+            ],
+            [
+              "<cls>",
+              0
+            ],
+            [
+              "<|system|>",
+              0
+            ],
+            [
+              "<|assistant|>",
+              0
+            ],
+            [
+              "<|user|>",
+              0
+            ],
+            [
+              "<|available_tools|>",
+              0
+            ],
+            [
+              "<|tool_calls|>",
+              0
+            ],
+            [
+              "<|tool_results|>",
+              0
+            ],
+            [
+              "<|code|>",
+              0
+            ],
+            [
+              "<|file|>",
+              0
+            ],
+            [
+              "<0x00>",
+              0
+            ],
+            [
+              "<0x01>",
+              0
+            ],
+            [
+              "<0x02>",
+              0
+            ],
+            [
+              "<0x03>",
+              0
+            ],
+            [
+              "<0x04>",
+              0
+            ],
+            [
+              "<0x05>",
+              0
+            ],
+            [
+              "<0x06>",
+              0
+            ],
+            [
+              "<0x07>",
+              0
+            ],
+            [
+              "<0x08>",
+              0
+            ],
+            [
+              "<0x09>",
+              0
+            ],
+            [
+              "<0x0A>",
+              0
+            ],
+            [
+              "<0x0B>",
+              0
+            ],
+            [
+              "<0x0C>",
+              0
+            ],
+            [
+              "<0x0D>",
+              0
+            ],
+            [
+              "<0x0E>",
+              0
+            ],
+            [
+              "<0x0F>",
+              0
+            ],
+            [
+              "<0x10>",
+              0
+            ],
+            [
+              "<0x11>",
+              0
+            ],
+            [
+              "<0x12>",
+              0
+            ],
+            [
+              "<0x13>",
+              0
+            ],
+            [
+              "<0x14>",
+              0
+            ],
+            [
+              "<0x15>",
+              0
+            ],
+            [
+              "<0x16>",
+              0
+            ],
+            [
+              "<0x17>",
+              0
+            ],
+            [
+              "<0x18>",
+              0
+            ],
+            [
+              "<0x19>",
+              0
+            ],
+            [
+              "<0x1A>",
+              0
+            ],
+            [
+              "<0x1B>",
+              0
+            ],
+            [
+              "<0x1C>",
+              0
+            ],
+            [
+              "<0x1D>",
+              0
+            ],
+            [
+              "<0x1E>",
+              0
+            ],
+            [
+              "<0x1F>",
+              0
+            ],
+            [
+              "<0x20>",
+              0
+            ],
+            [
+              "<0x21>",
+              0
+            ],
+            [
+              "<0x22>",
+              0
+            ],
+            [
+              "<0x23>",
+              0
+            ],
+            [
+              "<0x24>",
+              0
+            ],
+            [
+              "<0x25>",
+              0
+            ],
+            [
+              "<0x26>",
+              0
+            ],
+            [
+              "<0x27>",
+              0
+            ],
+            [
+              "<0x28>",
+              0
+            ],
+            [
+              "<0x29>",
+              0
+            ],
+            [
+              "<0x2A>",
+              0
+            ],
+            [
+              "<0x2B>",
+              0
+            ],
+            [
+              "<0x2C>",
+              0
+            ],
+            [
+              "<0x2D>",
+              0
+            ],
+            [
+              "<0x2E>",
+              0
+            ],
+            [
+              "<0x2F>",
+              0
+            ],
+            [
+              "<0x30>",
+              0
+            ],
+            [
+              "<0x31>",
+              0
+            ],
+            [
+              "<0x32>",
+              0
+            ],
+            [
+              "<0x33>",
+              0
+            ],
+            [
+              "<0x34>",
+              0
+            ],
+            [
+              "<0x35>",
+              0
+            ],
+            [
+              "<0x36>",
+              0
+            ],
+            [
+              "<0x37>",
+              0
+            ],
+            [
+              "<0x38>",
+              0
+            ],
+            [
+              "<0x39>",
+              0
+            ],
+            [
+              "<0x3A>",
+              0
+            ],
+            [
+              "<0x3B>",
+              0
+            ],
+            [
+              "<0x3C>",
+              0
+            ],
+            [
+              "<0x3D>",
+              0
+            ],
+            [
+              "<0x3E>",
+              0
+            ],
+            [
+              "<0x3F>",
+              0
+            ],
+            [
+              "<0x40>",
+              0
+            ],
+            [
+              "<0x41>",
+              0
+            ],
+            [
+              "<0x42>",
+              0
+            ],
+            [
+              "<0x43>",
+              0
+            ],
+            [
+              "<0x44>",
+              0
+            ],
+            [
+              "<0x45>",
+              0
+            ],
+            [
+              "<0x46>",
+              0
+            ],
+            [
+              "<0x47>",
+              0
+            ],
+            [
+              "<0x48>",
+              0
+            ],
+            [
+              "<0x49>",
+              0
+            ],
+            [
+              "<0x4A>",
+              0
+            ],
+            [
+              "<0x4B>",
+              0
+            ],
+            [
+              "<0x4C>",
+              0
+            ],
+            [
+              "<0x4D>",
+              0
+            ],
+            [
+              "<0x4E>",
+              0
+            ],
+            [
+              "<0x4F>",
+              0
+            ],
+            [
+              "<0x50>",
+              0
+            ],
+            [
+              "<0x51>",
+              0
+            ],
+            [
+              "<0x52>",
+              0
+            ],
+            [
+              "<0x53>",
+              0
+            ],
+            [
+              "<0x54>",
+              0
+            ],
+            [
+              "<0x55>",
+              0
+            ],
+            [
+              "<0x56>",
+              0
+            ],
+            [
+              "<0x57>",
+              0
+            ],
+            [
+              "<0x58>",
+              0
+            ],
+            [
+              "<0x59>",
+              0
+            ],
+            [
+              "<0x5A>",
+              0
+            ],
+            [
+              "<0x5B>",
+              0
+            ],
+            [
+              "<0x5C>",
+              0
+            ],
+            [
+              "<0x5D>",
+              0
+            ],
+            [
+              "<0x5E>",
+              0
+            ],
+            [
+              "<0x5F>",
+              0
+            ],
+            [
+              "<0x60>",
+              0
+            ],
+            [
+              "<0x61>",
+              0
+            ],
+            [
+              "<0x62>",
+              0
+            ],
+            [
+              "<0x63>",
+              0
+            ],
+            [
+              "<0x64>",
+              0
+            ],
+            [
+              "<0x65>",
+              0
+            ],
+            [
+              "<0x66>",
+              0
+            ],
+            [
+              "<0x67>",
+              0
+            ],
+            [
+              "<0x68>",
+              0
+            ],
+            [
+              "<0x69>",
+              0
+            ],
+            [
+              "<0x6A>",
+              0
+            ],
+            [
+              "<0x6B>",
+              0
+            ],
+            [
+              "<0x6C>",
+              0
+            ],
+            [
+              "<0x6D>",
+              0
+            ],
+            [
+              "<0x6E>",
+              0
+            ],
+            [
+              "<0x6F>",
+              0
+            ],
+            [
+              "<0x70>",
+              0
+            ],
+            [
+              "<0x71>",
+              0
+            ],
+            [
+              "<0x72>",
+              0
+            ],
+            [
+              "<0x73>",
+              0
+            ],
+            [
+              "<0x74>",
+              0
+            ],
+            [
+              "<0x75>",
+              0
+            ],
+            [
+              "<0x76>",
+              0
+            ],
+            [
+              "<0x77>",
+              0
+            ],
+            [
+              "<0x78>",
+              0
+            ],
+            [
+              "<0x79>",
+              0
+            ],
+            [
+              "<0x7A>",
+              0
+            ],
+            [
+              "<0x7B>",
+              0
+            ],
+            [
+              "<0x7C>",
+              0
+            ],
+            [
+              "<0x7D>",
+              0
+            ],
+            [
+              "<0x7E>",
+              0
+            ],
+            [
+              "<0x7F>",
+              0
+            ],
+            [
+              "<0x80>",
+              0
+            ],
+            [
+              "<0x81>",
+              0
+            ],
+            [
+              "<0x82>",
+              0
+            ],
+            [
+              "<0x83>",
+              0
+            ],
+            [
+              "<0x84>",
+              0
+            ],
+            [
+              "<0x85>",
+              0
+            ],
+            [
+              "<0x86>",
+              0
+            ],
+            [
+              "<0x87>",
+              0
+            ],
+            [
+              "<0x88>",
+              0
+            ],
+            [
+              "<0x89>",
+              0
+            ],
+            [
+              "<0x8A>",
+              0
+            ],
+            [
+              "<0x8B>",
+              0
+            ],
+            [
+              "<0x8C>",
+              0
+            ],
+            [
+              "<0x8D>",
+              0
+            ],
+            [
+              "<0x8E>",
+              0
+            ],
+            [
+              "<0x8F>",
+              0
+            ],
+            [
+              "<0x90>",
+              0
+            ],
+            [
+              "<0x91>",
+              0
+            ],
+            [
+              "<0x92>",
+              0
+            ],
+            [
+              "<0x93>",
+              0
+            ],
+            [
+              "<0x94>",
+              0
+            ],
+            [
+              "<0x95>",
+              0
+            ],
+            [
+              "<0x96>",
+              0
+            ],
+            [
+              "<0x97>",
+              0
+            ],
+            [
+              "<0x98>",
+              0
+            ],
+            [
+              "<0x99>",
+              0
+            ],
+            [
+              "<0x9A>",
+              0
+            ],
+            [
+              "<0x9B>",
+              0
+            ],
+            [
+              "<0x9C>",
+              0
+            ],
+            [
+              "<0x9D>",
+              0
+            ],
+            [
+              "<0x9E>",
+              0
+            ],
+            [
+              "<0x9F>",
+              0
+            ],
+            [
+              "<0xA0>",
+              0
+            ],
+            [
+              "<0xA1>",
+              0
+            ],
+            [
+              "<0xA2>",
+              0
+            ],
+            [
+              "<0xA3>",
+              0
+            ],
+            [
+              "<0xA4>",
+              0
+            ],
+            [
+              "<0xA5>",
+              0
+            ],
+            [
+              "<0xA6>",
+              0
+            ],
+            [
+              "<0xA7>",
+              0
+            ],
+            [
+              "<0xA8>",
+              0
+            ],
+            [
+              "<0xA9>",
+              0
+            ],
+            [
+              "<0xAA>",
+              0
+            ],
+            [
+              "<0xAB>",
+              0
+            ],
+            [
+              "<0xAC>",
+              0
+            ],
+            [
+              "<0xAD>",
+              0
+            ],
+            [
+              "<0xAE>",
+              0
+            ],
+            [
+              "<0xAF>",
+              0
+            ],
+            [
+              "<0xB0>",
+              0
+            ],
+            [
+              "<0xB1>",
+              0
+            ],
+            [
+              "<0xB2>",
+              0
+            ],
+            [
+              "<0xB3>",
+              0
+            ],
+            [
+              "<0xB4>",
+              0
+            ],
+            [
+              "<0xB5>",
+              0
+            ],
+            [
+              "<0xB6>",
+              0
+            ],
+            [
+              "<0xB7>",
+              0
+            ],
+            [
+              "<0xB8>",
+              0
+            ],
+            [
+              "<0xB9>",
+              0
+            ],
+            [
+              "<0xBA>",
+              0
+            ],
+            [
+              "<0xBB>",
+              0
+            ],
+            [
+              "<0xBC>",
+              0
+            ],
+            [
+              "<0xBD>",
+              0
+            ],
+            [
+              "<0xBE>",
+              0
+            ],
+            [
+              "<0xBF>",
+              0
+            ],
+            [
+              "<0xC0>",
+              0
+            ],
+            [
+              "<0xC1>",
+              0
+            ],
+            [
+              "<0xC2>",
+              0
+            ],
+            [
+              "<0xC3>",
+              0
+            ],
+            [
+              "<0xC4>",
+              0
+            ],
+            [
+              "<0xC5>",
+              0
+            ],
+            [
+              "<0xC6>",
+              0
+            ],
+            [
+              "<0xC7>",
+              0
+            ],
+            [
+              "<0xC8>",
+              0
+            ],
+            [
+              "<0xC9>",
+              0
+            ],
+            [
+              "<0xCA>",
+              0
+            ],
+            [
+              "<0xCB>",
+              0
+            ],
+            [
+              "<0xCC>",
+              0
+            ],
+            [
+              "<0xCD>",
+              0
+            ],
+            [
+              "<0xCE>",
+              0
+            ],
+            [
+              "<0xCF>",
+              0
+            ],
+            [
+              "<0xD0>",
+              0
+            ],
+            [
+              "<0xD1>",
+              0
+            ],
+            [
+              "<0xD2>",
+              0
+            ],
+            [
+              "<0xD3>",
+              0
+            ],
+            [
+              "<0xD4>",
+              0
+            ],
+            [
+              "<0xD5>",
+              0
+            ],
+            [
+              "<0xD6>",
+              0
+            ],
+            [
+              "<0xD7>",
+              0
+            ],
+            [
+              "<0xD8>",
+              0
+            ],
+            [
+              "<0xD9>",
+              0
+            ],
+            [
+              "<0xDA>",
+              0
+            ],
+            [
+              "<0xDB>",
+              0
+            ],
+            [
+              "<0xDC>",
+              0
+            ],
+            [
+              "<0xDD>",
+              0
+            ],
+            [
+              "<0xDE>",
+              0
+            ],
+            [
+              "<0xDF>",
+              0
+            ],
+            [
+              "<0xE0>",
+              0
+            ],
+            [
+              "<0xE1>",
+              0
+            ],
+            [
+              "<0xE2>",
+              0
+            ],
+            [
+              "<0xE3>",
+              0
+            ],
+            [
+              "<0xE4>",
+              0
+            ],
+            [
+              "<0xE5>",
+              0
+            ],
+            [
+              "<0xE6>",
+              0
+            ],
+            [
+              "<0xE7>",
+              0
+            ],
+            [
+              "<0xE8>",
+              0
+            ],
+            [
+              "<0xE9>",
+              0
+            ],
+            [
+              "<0xEA>",
+              0
+            ],
+            [
+              "<0xEB>",
+              0
+            ],
+            [
+              "<0xEC>",
+              0
+            ],
+            [
+              "<0xED>",
+              0
+            ],
+            [
+              "<0xEE>",
+              0
+            ],
+            [
+              "<0xEF>",
+              0
+            ],
+            [
+              "<0xF0>",
+              0
+            ],
+            [
+              "<0xF1>",
+              0
+            ],
+            [
+              "<0xF2>",
+              0
+            ],
+            [
+              "<0xF3>",
+              0
+            ],
+            [
+              "<0xF4>",
+              0
+            ],
+            [
+              "<0xF5>",
+              0
+            ],
+            [
+              "<0xF6>",
+              0
+            ],
+            [
+              "<0xF7>",
+              0
+            ],
+            [
+              "<0xF8>",
+              0
+            ],
+            [
+              "<0xF9>",
+              0
+            ],
+            [
+              "<0xFA>",
+              0
+            ],
+            [
+              "<0xFB>",
+              0
+            ],
+            [
+              "<0xFC>",
+              0
+            ],
+            [
+              "<0xFD>",
+              0
+            ],
+            [
+              "<0xFE>",
+              0
+            ],
+            [
+              "<0xFF>",
+              0
+            ],
+            [
+              "▁",
+              -2.6575100421905518
+            ],
+            [
+              ".",
+              -3.7702920436859131
+            ],
+            [
+              ",",
+              -3.9282803535461426
+            ],
+            [
+              "0",
+              -4.2066159248352051
+            ],
+            [
+              "、",
+              -4.2291178703308105
+            ],
+            [
+              "aba",
+              -3
+            ],
+            [
+              "ba",
+              -2
+            ],
+            [
+              "ab",
+              -2
+            ],
+            [
+              "b",
+              -1
+            ],
+            [
+              "a",
+              -1
+            ]
+          ]
+        },
+        "normalizer" : null,
+        "padding" : null,
+        "post_processor" : {
+          "pair" : [
+            {
+              "SpecialToken" : {
+                "id" : "<s>",
+                "type_id" : 0
+              }
+            },
+            {
+              "Sequence" : {
+                "id" : "A",
+                "type_id" : 0
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "</s>",
+                "type_id" : 0
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "<s>",
+                "type_id" : 1
+              }
+            },
+            {
+              "Sequence" : {
+                "id" : "B",
+                "type_id" : 1
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "</s>",
+                "type_id" : 1
+              }
+            }
+          ],
+          "single" : [
+            {
+              "SpecialToken" : {
+                "id" : "<s>",
+                "type_id" : 0
+              }
+            },
+            {
+              "Sequence" : {
+                "id" : "A",
+                "type_id" : 0
+              }
+            },
+            {
+              "SpecialToken" : {
+                "id" : "</s>",
+                "type_id" : 0
+              }
+            }
+          ],
+          "special_tokens" : {
+            "</s>" : {
+              "id" : "</s>",
+              "ids" : [
+                2
+              ],
+              "tokens" : [
+                "</s>"
+              ]
+            },
+            "<s>" : {
+              "id" : "<s>",
+              "ids" : [
+                1
+              ],
+              "tokens" : [
+                "<s>"
+              ]
+            }
+          },
+          "type" : "TemplateProcessing"
+        },
+        "pre_tokenizer" : {
+          "prepend_scheme" : "never",
+          "replacement" : "▁",
+          "split" : false,
+          "type" : "Metaspace"
+        },
+        "truncation" : null,
+        "version" : "1.0"
+      }
+    }
+  ],
+  "tokenizer_backend" : "swift-transformers-1.3.4",
+  "tokenizer_sha256" : "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
+}

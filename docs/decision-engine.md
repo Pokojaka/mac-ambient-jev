@@ -1,6 +1,6 @@
 # 発話文の境界・優先度判定
 
-境界判定と優先度判定の単位は BTSJ 発話文（以下「発話文」）です。保存形式・コード上の `clause` / `節` はこの発話文単位を識別し、別の節分割器を意味しません。境界、継続、フィラー・相槌除去範囲、優先度は app bundle に同梱したローカル Core ML モデル（clause tagger）だけが判定し、ネットワークを使いません。録音、VAD、ASR、話者分離、フィラー・相槌除去、発話文判定はすべてこの Mac 上で動作します。確定処理のローカル必須段階は segmentation・diarization・ASR の3段階で、判定段階は任意です。モデルの初期化や判定が失敗した場合は判定結果を保留し、別の方式で補いません。
+境界判定と優先度判定の単位は BTSJ 発話文（以下「発話文」）です。保存形式・コード上の `clause` / `節` はこの発話文単位を識別し、別の節分割器を意味しません。境界、継続、フィラー・相槌除去範囲、優先度は app bundle に同梱したローカル Core ML モデル（clause tagger。Linux / Windows は同じ重みの ONNX モデル）だけが判定し、ネットワークを使いません。録音、VAD、ASR、話者分離、フィラー・相槌除去、発話文判定はすべてこの Mac 上で動作します。確定処理のローカル必須段階は segmentation・diarization・ASR の3段階で、判定段階は任意です。モデルの初期化や判定が失敗した場合は判定結果を保留し、別の方式で補いません。
 
 ## 処理の流れ
 
@@ -54,19 +54,62 @@ ASR gap の後に空の ASR 結果が保存された場合も、そこでテキ�
 3. build_app.sh の tag、asset 名、SHA-256（`shasum -a 256` の値）の3定数を書き換える。
 4. 実モデル parity テストの fixture を新しいモデルで作り直す（[検証と計測](testing.md)）。
 
+## ポータブル ONNX の書き出し
+
+Windows・Linux 向けの ONNX モデルは [export_clause_tagger_onnx.py](../scripts/export_clause_tagger_onnx.py) で書き出します。実行環境は [tools/clause-tagger-export](../tools/clause-tagger-export/pyproject.toml) の uv project（Python 3.12、torch 2.12.0、transformers 5.12.0、onnx 1.21.0、onnxscript 0.7.0、onnxruntime 1.31.0、`uv.lock` で固定）です。引数は `--base-dir`（modernbert-ja-30m）、`--checkpoint`（multitagger.pt。同じディレクトリの config.json も読む）、`--tokenizer`（base model と同じ bytes の tokenizer.json）、`--fixture`（ClauseTaggerFixtures.json）、`--output-dir` の5つで、すべて必須です。出力先は存在しない新規ディレクトリで、上書きしません。script はネットワークを使わず、既定パスも持ちません。
+
+書き出しは `torch.onnx.export` の dynamo exporter、opset 18、batch 1、動的 `seq`（`2...192`）、fp32 で、重みは単一の ClauseTagger.onnx に埋め込みます。入力は `input_ids` int64 `[1,seq]`、出力は `boundary_probs` float32 `[1,seq,2]`、`span_probs` float32 `[1,seq,4]`、`priority_probs` float32 `[1,2]` です。Core ML 変換器と同じ推論 wrapper（`full_attention=None`、`config.sliding_window`（64）を半幅とする `abs(i-j) <= 64` の加算 mask、許可しない位置は `-1e4`）を使います。変換元の Core ML 変換 script（clf/convert.py）の SHA-256 は export.json に記録します。
+
+次の受入検査を一つでも満たさなければ失敗します。
+
+- 二つの独立な CPU fp32 モデルへ checkpoint を strict load し、state revision が `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9`、tokenizer SHA-256 が `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` に一致すること。
+- onnx checker と、入出力名・dtype・shape の完全一致、標準 operator のみ、外部 data・fp16・bf16・fp64 を含まないこと。
+- ORT 1.31.0 CPU の出力を、独立に作った mask の eager PyTorch と比較し、長さ 2〜192 のすべてで tokenizer 由来 ID と seed 固定の乱数 ID の両方、各 head の最大絶対誤差が `1e-3` 以下であること。fixture 13件の literal `input_ids` も保存済み確率と `1e-3` 以下で一致すること。
+- mask を長さ 2・64・65・66・128・192 で Transformers の sliding mask と照合し、mask あり・なしの出力差が長い入力で `1e-3` を超えること（mask が効いている証拠）。
+
+出力ディレクトリは ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt の4ファイルです。export.json は hash、パッケージ version、opset、入出力契約、seed、head ごとの最大誤差、通過した検査を記録し、個人の絶対パスを含みません。LICENSE.txt は modernbert-ja-30m（revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`）の MIT license 全文の前に、base model と license URL を1行で記します。
+
+## ポータブル ONNX の配布
+
+書き出した4ファイルは tar.gz にまとめ、このリポジトリの GitHub release asset として固定します。tag は `clause-tagger-onnx-90501ea3-v1`、asset 名は clause-tagger-onnx-90501ea3-v1.tar.gz で、`90501ea3` は model revision の先頭8桁、`v1` は書き出しの版です。公開済みの asset は置き換えず、再書き出しでは版を上げます。Mac 向けの Core ML release（`clause-tagger-90501ea3`）は別で、変更しません。archive は最上位に `clause-tagger-onnx` ディレクトリを一つだけ持ち、直下に ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt を置きます。
+
+pin は PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) が唯一の情報源です。archive の byte 数と SHA-256、4ファイルの名前・byte 数・SHA-256、model id と revision、tokenizer SHA-256、opset と入出力契約を持ちます。[fetch_clause_tagger.py](../scripts/fetch_clause_tagger.py) が同じ manifest から archive を取得して検証・厳密展開し、`.build/clause-tagger-onnx/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx` に原子的に公開します。Swift の `ClauseTaggerAssets` は caller が渡した directory の4ファイルを manifest と照合し、ONNX モデルの URL、tokenizer の URL、`ClauseTaggerModelIdentity` を返します。アプリや CLI にモデルの探索や自動取得はなく、directory は呼出し側が渡します。取得と検証の詳細は [windows.md](windows.md#発話文タガー-onnx-モデルの取得) にあります。
+
 ## モデルの検証と推論
 
 モデルをロードすると macOS 15 で Core ML に compile し、compute units は CPU only、tensor dtype は float32 です。入力 `input_ids` は int32、形状 `[1,N]`（`2...192`）です。N は入力 token 数と厳密に一致します。モデル出力は `boundary_probs` `[1,N,2]`、`span_probs` `[1,N,4]`、`priority_probs` `[1,2]` の float32 です。各出力の形状・dtype・値は仕様に一致しなければならず、不正な出力は当該 request 全体を失敗させます。`span_probs` は境界要求の F・B 除去範囲投影に使います。
 
 `.mlpackage` の creator-defined metadata は次の6 key を全て必要とし、値・型を検証します。`model_id` は sbintuitions/modernbert-ja-30m-multitagger、`model_revision` は sorted state-key bytes と tensor bytes から計算した SHA-256 hash の64桁小文字 hex、`training_status` は `trained`、`tokenizer_sha256` は tokenizer.json の生 bytes の SHA-256、`unit_policy` は `btsj-utterance-sentence`、`encoding_revision` は `1` です。モデル ID は外部モデル識別子であり、ローカルのファイルパスではありません。`training_status` が `trained` 以外の package は判定に使用できません。metadata 欠損・不正、tokenizer hash 不一致、型・shape・語彙検証失敗は初期化エラーとなり、境界・優先度の表示は通常の保留状態のままとし、架空確率を記録しません。
 
-ロードの結果（成功も失敗も）は [DecisionProviderFactory](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift) がアプリの実行中 cache し、再 compile しません。失敗は同じエラーを返し続け、アプリを再起動するまで再ロードしません。同時に要求されたロードは一つにまとまります。compile で作る一時 `.mlmodelc` ディレクトリはロード直後に削除します。
+アプリの `AppState` は Core の [`DecisionProviderFactory`](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionProviderFactory.swift) に同期の `@Sendable () throws -> LoadedDecisionProvider` `loadProvider` closure を渡します。この closure が `LocalClauseTagger` とその identity を `LoadedDecisionProvider` として返します。factory の同期機構は同時要求を一つの load に集約し、load closure を lock の外で一度だけ実行します。成功・失敗のどちらも factory のプロセススコープの寿命中 cache し、throw された CancellationError も再試行せず同じ失敗として返します。`makeCoordinator()` と `localModelIdentity()` は同じ cache を使い、後者は判定 request・利用計数を発生させません。モデルと tokenizer の検証・初期化に失敗しても再ロードや fallback はありません。compile で作る一時 `.mlmodelc` ディレクトリはロード直後に削除します。
+
+### ONNX バックエンド
+
+Linux / Windows では PortableRuntime の `ONNXClauseTagger` actor（`DecisionProvider`）が同じ判定を担います。`init(modelDirectory:intraOpThreads:)` は throwing で、次の順に一度だけロードします。
+
+1. `ClauseTaggerAssets` が directory の4ファイルを bundled manifest の byte 数と SHA-256 に照合します。
+2. 検証済みの tokenizer.json から Core の `ClauseTaggerTokenizer` を、manifest の tokenizer SHA-256 を期待値にして作ります。
+3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
+
+session 作成後に graph の入出力 metadata を完全一致で検証します。入力は `input_ids` int64 `[1,-1]`、出力は `boundary_probs` float32 `[1,-1,2]`、`span_probs` float32 `[1,-1,4]`、`priority_probs` float32 `[1,2]` で、名前・dtype・rank・固定次元が一つでも違えば初期化エラーです。`identity` は manifest から作る `ClauseTaggerModelIdentity` で、ONNX ファイル内の metadata は読みません。
+
+各推論は Core ML と同じ入力検査（長さ `2...192`、先頭 CLS、末尾 SEP、全 ID が語彙 `0..<102400`）に失敗すると `invalidInput` を返します。出力は形状と要素数が入力長と厳密に一致し、全値が有限の 0..1 で、各 row の和が 1 から `1e-5` 以内でなければ `invalidOutput` です。値の clamp や再正規化はしません。ONNX Runtime 自体の失敗は `unavailable` として返します。request の組み立て、投影、優先度、キャンセル確認は Core ML 版と同じ `ClauseTaggerDecisionLogic` を通り、inference closure だけが違います。actor が session への呼出しを直列化します。
+
+`ONNXClauseTagger` を `LoadedDecisionProvider` に包んで `DecisionProviderFactory` に渡すと、Mac の `LocalClauseTagger` と同じ cache と identity の経路になります。CLI への組み込みはまだなく、既存の判定無効 CLI は tagger をロードしません。
 
 ### 符号化と推論
 
+推論制御は Core の同期 public `ClauseTaggerDecisionLogic` に集約されます。Core の `ClauseTaggerTokenizer` と throwing な `predict: (_ inputIDs: [Int]) throws -> ClauseTaggerPrediction` closure を受け取り、共有 `ClauseTaggerEncoding` を使った request assembly、優先度 target の検証、候補への推論結果割当て、source-only span token の ownership、継続確率の補数、優先度確率が同率の場合の PRIMARY 選択と confidence、全入力 token 数を扱います。entry、各推論の間、return 前に cancellation を検査し、logic の実行中に suspension point はありません。符号化と F・B除去範囲投影はそれぞれ一つの Core 実装である `ClauseTaggerEncoding` と `ClauseTaggerSpanProjection` が担い、AppleSupport に複製しません。AppleSupport の `LocalClauseTagger` actor は Core ML model と tokenizer を初期化時に読み込み、各 actor method から同じ decision logic に同期 `model.predict(inputIDs:)` closure を渡します。actor の直列化を保ったまま、符号化・検証・推論のエラーは provider 呼出し元へ伝播し、代替 tokenizer、model、判定方式へ fallback しません。
+
 候補 offset は ASR 原文の句読点直後の UTF-16 offset です。Unicode scalar を正規化せず保持し、原文から末尾連続の `、。？！?!` だけを符号化対象から取り除きます。空白は trim しません。符号化時は各 `、。？！?!` を中立記号 `、` として扱い、句読点間を piecewise Unigram lattice で tokenize し、句読点は語彙 ID `275` を強制します。special-token 追加を tokenizer に任せず、先頭に `[CLS]` ID `6`、末尾に `[SEP]` ID `4` を付けます。入力は `[CLS]` + 内容 token（最大190）+ `[SEP]` で最大192 token です。優先度用の符号化は内容 token が190を超えると先頭190 token で切り、その後ろに `[SEP]` を付けます。切った後ろの内容は判定に使いません。
 
-Tokenizer は swift-transformers Tokenizers `1.3.4` の Unigram を使い、Metaspace の `prepend_scheme=never`・`split=false` と UTF-8 byte fallback を wrapper で実装します。tokenizer.json はモデル metadata の SHA-256 と一致した時だけ読み、一度だけ typed vocabulary として解析します。ASCII space は tokenize の間だけ Metaspace の U+2581 に置換します。原文対応の source token range と span 投影 index は source-only の `boundaryInputs` でのみ生成し、優先度入力の符号化と継続用入力では生成しません。連続する OOV Unicode scalar は一つの unknown run として扱い、run 内の各 UTF-8 byte fallback token は個々の scalar ではなく run 全体を覆う同じ raw UTF-16 範囲を持ちます。既知 scalar または added token が現れると run はそこで分かれます（例: `😀😀` が連続した OOV run なら、8 byte token はすべて `[0,4)`）。tokenize の再構成が Metaspace 変換後の piece bytes と一致しない入力、byte fallback で表現できない入力はエラーにし、別 tokenizer や方式を試しません。
+`ClauseTaggerTokenizer`、型付き tokenizer configuration、Unigram Viterbi は Core にある Foundation-only 実装で、外部 Swift package に依存しません。Unigram は Unicode scalar trie 上の lattice を使い、Float32 score を累積します。各候補の score を加算してから比較し、strict-greater の比較で同点なら最初に挿入された候補を保持します。語彙 token の同一性は Swift の正規化等ではなく UTF-8 byte 列で判定し、同じ UTF-8 bytes の重複を拒否します。
+
+tokenizer.json は [Core の `FileSHA256`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift) で生 bytes の SHA-256 を検証し、モデル metadata と一致した時だけ typed configuration として解析します。configuration は Unigram 型を要求し、語彙件数は276...102400、各 token score は JSON の Double と Float への変換後の双方で有限値、語彙 token は UTF-8 byte 列で重複しないことを検証します。固定語彙 ID 0...14、byte fallback ID 15...270、comma ID 275 の token 表記を検証し、`byte_fallback=true`、`normalizer`・`truncation`・`padding` が明示的な null であることも要求します。Metaspace は置換 `▁`（U+2581）、`prepend_scheme=never`、`split=false` に固定します。added token の `single_word`・`lstrip`・`rstrip`・`normalized` は false に固定し、`special` は ID 0...6 だけ true を許可します。
+
+configuration は TemplateProcessing の single 系列（SpecialToken `<s>`、Sequence A、SpecialToken `</s>`）と pair 系列（SpecialToken `<s>`、Sequence A、SpecialToken `</s>`、SpecialToken `<s>`、Sequence B、SpecialToken `</s>`）、decoder の Sequence（Replace ▁ → ASCII space、ByteFallback、Fuse）も完全一致で検証しますが、`encodePiece` はこれらの処理を実行しません。special token の追加は符号化側が所有し、先頭に `[CLS]` ID `6`、末尾に `[SEP]` ID `4` を付けます。tokenizer による ID decoding も行いません。ASCII space は tokenize の間だけ Metaspace の U+2581 に置換します。原文対応の source token range と span 投影 index は source-only の `boundaryInputs` でのみ生成し、優先度入力の符号化と継続用入力では生成しません。
+
+連続する OOV Unicode scalar は一つの unknown run として扱い、run 内の各 UTF-8 byte fallback token は個々の scalar ではなく run 全体を覆う同じ raw UTF-16 範囲を持ちます。既知 scalar または added token が現れると run はそこで分かれます（例: `😀😀` が連続した OOV run なら、8 byte token はすべて `[0,4)`）。語彙内のどの token にも現れない Unicode scalar の連続 run は UTF-8 byte fallback で符号化します。一方、既知 scalar を含む lattice run 内で隣接する unknown pieces は、unknown-fusion と UTF-8 bytes の完全再構成を両立できない場合、`.unrepresentableText` で fail-fast します。tokenize の再構成が Metaspace 変換後の piece bytes と一致しない入力、byte fallback で表現できない入力はエラーにし、別 tokenizer や方式を試しません。Unigram 実装の参照元は [swift-transformers 1.3.4 source release](https://github.com/huggingface/swift-transformers/releases/tag/1.3.4) です。
 
 境界入力の長さが190 token 以下なら対象区間全体を一つの窓にします。それを超える場合は句読点で分かれた連続 piece を途中で切らず、各190 token 以下の窓にします。各候補と原文対応を持つ全 source token は、それぞれ左右の文脈の短い方が最大になる窓を選び、同率なら開始位置が最も早い窓を使います。選ばれた窓の和集合を推論し、候補の境界判定と全 source token の F・B 除去範囲推定を網羅します。source token は一つの窓だけを F・B 除去範囲投影に使います。候補がない窓も source token の F・B 除去範囲推定に使います。
 
@@ -146,4 +189,4 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 - [アプリ／CLI の判定アクセス](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[確定 transcript pipeline](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[アプリの構成](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)
 - [設定](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)、[利用計数](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionUsageCounter.swift)、[診断表示](../app/MacAmbientJev/Sources/MacAmbientJev/DiagnosticsView.swift)
 - [画面と書き出しの行集合・発話文 slice](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)
-- [候補・入力符号化](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)、[Tokenizer 検証と Unigram wrapper](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerTokenizer.swift)、[Core ML model validation](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[tagger と同梱モデルの場所](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[provider factory/cache](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/DecisionProviderFactory.swift)、[モデルの取得と同梱](../scripts/build_app.sh)
+- [候補・入力符号化](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)、[符号化・推論制御](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerDecisionLogic.swift)、[model identity・prediction・model error](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerPrediction.swift)、[F・B除去範囲の投影](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerSpanProjection.swift)、[Tokenizer](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizer.swift)、[typed configuration と検証](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizerConfiguration.swift)、[Unigram Viterbi](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerUnigram.swift)、[Core の FileSHA256](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift)、[Core ML model validation](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[tagger と同梱モデルの場所](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[provider factory/cache](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionProviderFactory.swift)、[モデルの取得と同梱](../scripts/build_app.sh)

@@ -147,3 +147,37 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## swift-transformers Unigram tokenizer
+
+`app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerUnigram.swift` adapts the Unigram implementation, token lattice, and trie from [swift-transformers 1.3.4](https://github.com/huggingface/swift-transformers/releases/tag/1.3.4): [`UnigramTokenizer.swift`](https://raw.githubusercontent.com/huggingface/swift-transformers/1.3.4/Sources/Tokenizers/UnigramTokenizer.swift), [`TokenLattice.swift`](https://raw.githubusercontent.com/huggingface/swift-transformers/1.3.4/Sources/Tokenizers/TokenLattice.swift), and [`Trie.swift`](https://raw.githubusercontent.com/huggingface/swift-transformers/1.3.4/Sources/Tokenizers/Trie.swift). The upstream `TokenLattice.swift` identifies the original lattice algorithm sources as [Rust tokenizers](https://github.com/huggingface/tokenizers/blob/b58227c7f1ccf8b73ee2268354336da56d91e492/tokenizers/src/models/unigram/lattice.rs#L137) and [transformers.js](https://github.com/xenova/transformers.js/blob/b07336d8f7ff57453cc164cc68aead2a79cbd57e/src/utils/data-structures.js#L269C28-L269C28).
+
+The adapted files are by Pedro Cuenca. Copyright © 2024 Hugging Face. All rights reserved. Licensed under the Apache License, Version 2.0 (<https://www.apache.org/licenses/LICENSE-2.0>); upstream license: <https://github.com/huggingface/swift-transformers/blob/1.3.4/LICENSE>.
+
+## ClauseTagger tokenizer fixture
+
+`app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizer.json` contains tokenizer data associated with [SB Intuitions' modernbert-ja-30m model](https://huggingface.co/sbintuitions/modernbert-ja-30m). It is test-only tokenizer data, not model weights. The file is a byte-for-byte copy of the supplied `release-bc2` tokenizer; SHA-256: `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062`. It was not downloaded from the license revision linked below. The MIT license text is from the upstream [LICENSE at revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`](https://huggingface.co/sbintuitions/modernbert-ja-30m/resolve/6a0406481a741f0f74f23c03a8b958acfd276b7c/LICENSE).
+
+```text
+MIT License
+
+Copyright (c) 2025 SB Intuitions
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

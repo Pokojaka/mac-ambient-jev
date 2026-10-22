@@ -73,9 +73,18 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevCAFFixtures",
         resources: [.copy("Resources")]
     ),
+    .target(
+        name: "MacAmbientJevClauseTaggerFixtures",
+        path: "Tests/MacAmbientJevClauseTaggerFixtures",
+        resources: [.copy("Resources")]
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
-        dependencies: ["MacAmbientJevCore", "MacAmbientJevCAFFixtures"]
+        dependencies: [
+            "MacAmbientJevCore",
+            "MacAmbientJevCAFFixtures",
+            "MacAmbientJevClauseTaggerFixtures"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevPipelineTests",
@@ -272,7 +281,8 @@ targets.append(.testTarget(
         "MacAmbientJevPipeline",
         "MacAmbientJevCore",
         "MacAmbientJevDiarization",
-        "MacAmbientJevVADFixtures"
+        "MacAmbientJevVADFixtures",
+        "MacAmbientJevClauseTaggerFixtures"
     ],
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
@@ -328,21 +338,13 @@ dependencies += [
     .package(
         url: "https://github.com/ml-explore/mlx-swift.git",
         exact: "0.31.6"
-    ),
-    .package(
-        url: "https://github.com/huggingface/swift-transformers",
-        exact: "1.3.4"
     )
 ]
 
 targets += [
     .target(
         name: "MacAmbientJevAppleSupport",
-        dependencies: [
-            "MacAmbientJevCore",
-            .product(name: "Tokenizers", package: "swift-transformers"),
-            .product(name: "Hub", package: "swift-transformers")
-        ]
+        dependencies: ["MacAmbientJevCore"]
     ),
     .target(
         name: "MacAmbientJevCapture",
@@ -447,9 +449,9 @@ targets += [
             "MacAmbientJevCore",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevPipeline",
-            "MacAmbientJevCAFFixtures"
-        ],
-        resources: [.copy("Resources/ClauseTaggerFixtures.json")]
+            "MacAmbientJevCAFFixtures",
+            "MacAmbientJevClauseTaggerFixtures"
+        ]
     ),
     .testTarget(
         name: "MacAmbientJevRuntimeTests",

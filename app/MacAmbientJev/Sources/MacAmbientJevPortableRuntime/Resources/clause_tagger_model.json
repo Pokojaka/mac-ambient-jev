@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "repository": "Pokojaka/mac-ambient-jev",
+    "tag": "clause-tagger-onnx-90501ea3-v1",
+    "asset": "clause-tagger-onnx-90501ea3-v1.tar.gz",
+    "byteCount": 110829019,
+    "sha256": "95985c53bacb0feea79b1f627864026cd22767f44eaf330eb0e5a0b4887ac30d",
+    "directory": "clause-tagger-onnx"
+  },
+  "model": {
+    "id": "sbintuitions/modernbert-ja-30m-multitagger",
+    "revision": "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
+    "tokenizerSHA256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
+    "encodingRevision": "1",
+    "unitPolicy": "btsj-utterance-sentence",
+    "trainingStatus": "trained"
+  },
+  "onnx": {
+    "opset": 18,
+    "minimumSequenceLength": 2,
+    "maximumSequenceLength": 192,
+    "inputs": [
+      { "name": "input_ids", "dtype": "int64", "shape": [1, "seq"] }
+    ],
+    "outputs": [
+      { "name": "boundary_probs", "dtype": "float32", "shape": [1, "seq", 2] },
+      { "name": "span_probs", "dtype": "float32", "shape": [1, "seq", 4] },
+      { "name": "priority_probs", "dtype": "float32", "shape": [1, 2] }
+    ]
+  },
+  "members": [
+    {
+      "role": "model",
+      "name": "ClauseTagger.onnx",
+      "byteCount": 146889561,
+      "sha256": "8f9e7d3e4f72f2b7d18db1c59bac6b9506d135f976512ae8afbff1386687b699"
+    },
+    {
+      "role": "tokenizer",
+      "name": "tokenizer.json",
+      "byteCount": 6724873,
+      "sha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
+    },
+    {
+      "role": "export",
+      "name": "export.json",
+      "byteCount": 253705,
+      "sha256": "2d8d8e8585f9d34476d4e1377c8bcf90f47004c1aa4a7efe05f7d05acd292627"
+    },
+    {
+      "role": "license",
+      "name": "LICENSE.txt",
+      "byteCount": 1292,
+      "sha256": "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a"
+    }
+  ]
+}

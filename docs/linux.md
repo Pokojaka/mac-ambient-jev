@@ -141,6 +141,8 @@ ASR model directory は対応する固定 repository / revision の model を事
 
 話者分離の固定 model（segmentation と embedding の ONNX、PLDA の JSON 2ファイル）は `MODELS="$(python3.12 scripts/fetch_community1_diarization.py)"` で取得します。stdout の検証済み directory を Swift の `Community1Assets` に渡します。取得元、pin、検証、manifest の詳細は [windows.md](windows.md#community-1-話者分離モデルの取得) を参照してください。Linux でも同じ manifest と fetcher を使います。
 
+ONNX 発話文タガー（ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt）は `CLAUSE_TAGGER="$(python3.12 scripts/fetch_clause_tagger.py)"` で取得します。取得元は固定の GitHub release、検証済み directory は `.build/clause-tagger-onnx/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx/` で、stdout の絶対 path を Swift の `ClauseTaggerAssets` に渡します。実モデルを使うテストは、この directory を必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に設定して実行し、未設定や存在しない directory では skip せず失敗します。pin、検証、manifest の詳細は [windows.md](windows.md#発話文タガー-onnx-モデルの取得) を参照してください。Linux でも同じ manifest と fetcher を使います。
+
 取得した directory を使う ONNX 話者分離の model テストは、リポジトリルートで次のように実行します。`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` に既定値はなく、未設定や存在しない directory では skip せず失敗します。
 
 ```bash

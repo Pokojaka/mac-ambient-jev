@@ -1,58 +1,8 @@
-import CryptoKit
 import Foundation
 import Testing
 import MacAmbientJevCore
 import MacAmbientJevAppleSupport
-
-private struct ClauseTaggerFixtureDocument: Decodable {
-    let modelID: String
-    let modelRevision: String
-    let trainingStatus: String
-    let tokenizerSHA256: String
-    let unitPolicy: String
-    let encodingRevision: String
-    let clsTokenID: Int
-    let sepTokenID: Int
-    let commaTokenID: Int
-    let fixtures: [ClauseTaggerFixture]
-
-    enum CodingKeys: String, CodingKey {
-        case modelID = "model_id"
-        case modelRevision = "model_revision"
-        case trainingStatus = "training_status"
-        case tokenizerSHA256 = "tokenizer_sha256"
-        case unitPolicy = "unit_policy"
-        case encodingRevision = "encoding_revision"
-        case clsTokenID = "cls_token_id"
-        case sepTokenID = "sep_token_id"
-        case commaTokenID = "comma_token_id"
-        case fixtures
-    }
-}
-
-private struct ClauseTaggerFixture: Decodable {
-    let text: String
-    let inputIDs: [Int]
-    let boundaryProbabilities: [[Double]]
-    let spanProbabilities: [[Double]]
-    let priorityProbabilities: [Double]
-    let candidateTokenIndices: [String: Int]
-    let coreMLMaxAbsDiff: Double
-    let next: String?
-    let junctionIndex: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case text
-        case inputIDs = "input_ids"
-        case boundaryProbabilities = "boundary_probs"
-        case spanProbabilities = "span_probs"
-        case priorityProbabilities = "priority_probs"
-        case candidateTokenIndices = "candidate_token_indices"
-        case coreMLMaxAbsDiff = "coreml_max_abs_diff"
-        case next
-        case junctionIndex = "junction_index"
-    }
-}
+import MacAmbientJevClauseTaggerFixtures
 
 private enum LocalClauseTaggerTestSetupError: LocalizedError {
     case missingModelDirectoryEnvironment
@@ -116,77 +66,6 @@ struct LocalClauseTaggerTests {
                 #expect(fixture.inputIDs[junctionIndex] == document.commaTokenID)
             }
         }
-    }
-
-    @Test
-    func tokenizerPreservesVocabularyAndByteFallbackTokenRanges() throws {
-        let byteOrderMark = "\u{FEFF}"
-        var vocabulary = (0..<276).map { "fixture-\($0)" }
-        vocabulary[0] = "<unk>"
-        vocabulary[4] = "<sep>"
-        vocabulary[6] = "<cls>"
-        vocabulary[275] = "、"
-        vocabulary.append(byteOrderMark)
-        vocabulary.append("▁")
-        vocabulary.append(contentsOf: (0..<256).map { String(format: "<0x%02X>", $0) })
-
-        let entries = vocabulary.enumerated().map { id, token in
-            let encodedToken = token == byteOrderMark ? #""\uFEFF""# : "\"\(token)\""
-            return "[\(encodedToken), \(-id)]"
-        }.joined(separator: ",")
-        let tokenizerJSON = """
-        {"normalizer":null,"pre_tokenizer":{"type":"Metaspace","replacement":"▁","prepend_scheme":"never","split":false},"post_processor":null,"decoder":null,"model":{"type":"Unigram","unk_id":0,"vocab":[\(entries)],"byte_fallback":true},"added_tokens":[]}
-        """
-        let tokenizerURL = FileManager.default.temporaryDirectory
-            .appending(path: "clause-tagger-token-ranges-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tokenizerURL) }
-        let tokenizerData = Data(tokenizerJSON.utf8)
-        try tokenizerData.write(to: tokenizerURL)
-        let expectedSHA256 = SHA256.hash(data: tokenizerData)
-            .map { String(format: "%02x", $0) }
-            .joined()
-
-        let tokenizer = try ClauseTaggerTokenizer(tokenizerURL: tokenizerURL, expectedSHA256: expectedSHA256)
-        let encodedByteOrderMark = try tokenizer.encodePiece(byteOrderMark)
-        #expect(encodedByteOrderMark.map(\.id) == [276])
-        #expect(encodedByteOrderMark.map(\.range) == [try TextUTF16Range(start: 0, end: 1)])
-
-        let encodedSpacesAndEmoji = try tokenizer.encodePiece(" 😀 ")
-        #expect(encodedSpacesAndEmoji.map(\.id) == [277, 518, 437, 430, 406, 277])
-        #expect(encodedSpacesAndEmoji.map(\.range) == [
-            try TextUTF16Range(start: 0, end: 1),
-            try TextUTF16Range(start: 1, end: 3),
-            try TextUTF16Range(start: 1, end: 3),
-            try TextUTF16Range(start: 1, end: 3),
-            try TextUTF16Range(start: 1, end: 3),
-            try TextUTF16Range(start: 3, end: 4)
-        ])
-
-        let encodedRepeatedEmoji = try tokenizer.encodePiece("😀😀")
-        #expect(encodedRepeatedEmoji.map(\.id) == [518, 437, 430, 406, 518, 437, 430, 406])
-        #expect(encodedRepeatedEmoji.map(\.range) == Array(repeating: try TextUTF16Range(start: 0, end: 4), count: 8))
-
-        let encodedSeparatedUnknownRuns = try tokenizer.encodePiece(" 😀😀 😀 ")
-        #expect(encodedSeparatedUnknownRuns.map(\.id) == [
-            277, 518, 437, 430, 406, 518, 437, 430, 406, 277, 518, 437, 430, 406, 277
-        ])
-        #expect(encodedSeparatedUnknownRuns.map(\.range) == [
-            try TextUTF16Range(start: 0, end: 1),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 1, end: 5),
-            try TextUTF16Range(start: 5, end: 6),
-            try TextUTF16Range(start: 6, end: 8),
-            try TextUTF16Range(start: 6, end: 8),
-            try TextUTF16Range(start: 6, end: 8),
-            try TextUTF16Range(start: 6, end: 8),
-            try TextUTF16Range(start: 8, end: 9)
-        ])
     }
 
     @Test
@@ -604,8 +483,7 @@ struct LocalClauseTaggerTests {
     }
 
     private static func loadFixture() throws -> ClauseTaggerFixtureDocument {
-        let resourceURL = try #require(Bundle.module.url(forResource: "ClauseTaggerFixtures", withExtension: "json"))
-        return try JSONDecoder().decode(ClauseTaggerFixtureDocument.self, from: Data(contentsOf: resourceURL))
+        try ClauseTaggerFixtures.loadOriginal()
     }
 
     private static func temporaryDirectoryURL() -> URL {

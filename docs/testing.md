@@ -67,27 +67,61 @@ swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionCont
 
 ### ローカル発話文モデルの parity
 
-通常の `swift test` では実 Core ML モデルを使う次のテストは skip されますが、encoding、fixture metadata、BOM token、tokenizer・package・モデル欠損の検証は毎回実行されます。実モデルテストは macOS 15 以降で CPU only・float32 を使います。リポジトリルートから実行します。
+発話文判定テストでは、通常の `swift test` で実 Core ML モデルを使うテストだけが skip され、model-free tests は通常の suite で実行対象です（他の suite や benchmark の gate は別途適用されます）。fixture 比較器、環境変数の検証、BOM を含む JSON reader の回帰テストも gated な実モデル実行なしで動きます。実モデル parity は macOS 15 以降で CPU only・float32 を使います。リポジトリルートから実行します。
 
 ```bash
-RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|DecisionProviderFactoryTests'
+RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|DecisionProviderFactoryTests|ClauseTaggerParityFixtureTests|ClauseTagger'
 ```
 
-`/absolute/path/to/exported-model` は例示用 placeholder です。学習済み ClauseTagger.mlpackage と tokenizer.json が直下にある実在ディレクトリの絶対パスへ置き換えてください。`scripts/build_app.sh` の後は、app bundle の Contents/Resources/clause-tagger の絶対パスを指定すると同梱モデルを検証できます。テストを有効にした状態で環境変数が未設定、相対パス、存在しないパス、またはディレクトリでないパスを指定するとセットアップエラーになります。既定パス、モデルの自動取得、fallback はありません。モデル package と tokenizer は Git に含めません。
+`/absolute/path/to/exported-model` は placeholder です。学習済み ClauseTagger.mlpackage と tokenizer.json が直下にある実在ディレクトリの絶対パスへ置き換えてください。`scripts/build_app.sh` の後は、app bundle の Contents/Resources/clause-tagger の絶対パスを指定すると同梱モデルを検証できます。gated run では `RUN_CLAUSE_TAGGER_TESTS=1` と明示的な `CLAUSE_TAGGER_MODEL_DIRECTORY` が必要です。環境変数の未設定・空値、相対パス、存在しないパス、ディレクトリでないパスはエラーになります。`MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1` を `RUN_CLAUSE_TAGGER_TESTS=1` なしで指定する場合もエラーです。既定パス、モデルの自動取得、fallback はありません。学習済みモデル package は Git に含めず、production tokenizer はアプリ release に同梱します。test-only の hash-pinned tokenizer JSON は Git に含めます。
 
-[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/Resources/ClauseTaggerFixtures.json) は SwiftPM の小さな test resource で、13件の入力文、厳密な token ID、boundary・span・priority の参照確率を持ちます。現在の学習済み model revision は `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9` です。fixture の `model_revision` と `tokenizer_sha256` はテスト対象の学習済み package と tokenizer に一致しなければなりません。新しい学習済み export を作ったら、その export から fixture を再生成します。Swift の誤った tokenization を観測した値に合わせて期待 ID を書き換えてはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
+fixture は production dependency を持たない all-platform の test-only SwiftPM target `MacAmbientJevClauseTaggerFixtures` に置き、reader と resources を共有します。[reader](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/ClauseTaggerFixtures.swift) は元 fixture を JSONDecoder で読みます。leading U+FEFF を含む値は、現行 runtime の JSONSerialization が decode 時に除くため、scalar を保つ reader/comparator regression も実行します。
 
-Parity の受け入れ基準は次のとおりです。
+[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerFixtures.json) は13件の元入力、厳密な token ID、boundary・span・priority の参照確率を持ち、移動前と byte-identical（SHA-256 `2a359e7f416da5a431c35fe89d6abf8ed413c457c330763b64a59296d273294a`）です。実モデル capture より先に、model ID・revision `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9`・tokenizer SHA と、元13件すべての literal input ID、candidate/junction index、三 head の形と確率を照合します。期待 token ID を Swift の誤った tokenization に合わせて変更してはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
 
-- Python の参照出力と Core ML reference MLProgram package を、`input_ids` が int32、shape が `[1,L]` の dynamic sequence 入力で照合します。全整数長 `L=2...192` の通常入力と randomized input について、`boundary_probs`・`span_probs`・`priority_probs` の各 head の最大絶対誤差が `1e-3` 以下であること。mask 対応は長さ 2、64、65、66、128、192 で確認します。これは Python 側が全長を検証する受入基準です。
-- Swift fixture の全13文について、token ID と候補・junction index が完全一致し、三 head の確率誤差が `1e-3` 以下であること。句読点、連続句読点、Unicode、空白、190 token を超える長文の窓分割、continuation を含みます。raw `[CLS, SEP]` の2 token 入力と192 token 入力も検証します。優先度判定では、192 token を超える本文が先頭190 token への切り詰めで判定されること、句読点だけの本文がモデルで判定されることも検証します。Swift fixture は選定した入力群であり、全191長の確認を意味しません。
-- Core ML は macOS 15 以降、CPU only・float32。Tokenizer は swift-transformers Tokenizers `1.3.4` の Unigram semantics を piecewise に使い、`prepend_scheme=never`、`split=false`、UTF-8 byte fallback を正確に実装します。要求と異なる tokenizer config は失敗させます。モデル入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。
+[ClauseTaggerTokenizerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizerFixtures.json) は47 cases・106 pieces を持ち、release tokenizer SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` を固定します。元13件に加え、BOM、composed/decomposed Unicode、OOV、emoji modifiers、whitespace、全18 added token、2つの埋め込み synthetic tokenizer config と SHA-256 による8件の exact Float32 tie cases を含みます。fixture の `tokenizer_backend` は capture provenance で、runtime dependency ではありません。現行の `MacAmbientJevCore` の [ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizer.swift) は Foundation-only の scalar trie と Float32 Unigram lattice 実装で、`swift-transformers` を runtime import しません。swift-transformers 1.3.4 release は tokenizer algorithm の provenance です（[1.3.4 release](https://github.com/huggingface/swift-transformers/releases/tag/1.3.4)）。
 
-`RUN_CLAUSE_TAGGER_TESTS=1` と必須の `CLAUSE_TAGGER_MODEL_DIRECTORY` で有効になる実モデル境界テストは、`まあ、あの、今日は損失関数の話をします。` を評価し、フィラー範囲を適用した本文が正確に `今日は損失関数の話をします。` となることを受入条件にします。長文の窓分割では、全候補の UTF-16 offset が欠落・重複なく窓全体へ一度ずつ割り当てられ、長文 fixture の全 span token が重複なく割り当てられ、その UTF-16 範囲にも穴がないことを検証します。各応答確率は対応する token の model output と一致し、input token 数は全窓分を含みます。終端の `まあ。` は候補が空でも実モデルへ境界 request を送り、input token を計上します。このテストは指定した実モデルを使う受入基準であり、この文書は実行済み結果の報告ではありません。
+[ClauseTaggerTokenizerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerTokenizerTests.swift) は CoreTests の全 platform で無条件に実行される model-free tests です。5 tests が現在の47 cases・106 pieces・8 ties、77個の不正・未対応 configuration mutation、誤 hash・読取・parse error、byte-distinct Unicode、Float32 加算順序（比較前に Float32 へ加算）、byte fallback witness、および BOM・空白・unknown-run の raw UTF-16 範囲 regression を検証します。この回帰テストはサポート対象の埋め込み synthetic tokenizer prefix（byte ID 固定）を使います。test-only resource [ClauseTaggerTokenizer.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizer.json) は pinned release tokenizer と byte-identical（6,724,873 bytes、SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062`）です。期待 token ID・範囲と request の golden fixtures は変更せずに照合します。既知 scalar を含む lattice で隣接する unknown pieces の再構成失敗が `.unrepresentableText` となることも検証し、通常の OOV は byte fallback で表現します。この Core tokenizer tests にモデル weights、download、環境変数は不要です。この JSON は test resource 専用で、app fallback には使いません。
 
-Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、上記の MLProgram 入出力契約を満たす必要があります。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
+```bash
+swift test --package-path app/MacAmbientJev --filter ClauseTaggerTokenizer
+```
 
-[DecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/DecisionProviderFactoryTests.swift) は tagger のロード結果（失敗を含む）を factory の寿命中 cache すること、同時要求が一つのロードを共有すること、実 token usage、request record の request ID と input token 数、provenance の model/model revision を記録することを検証します。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。
+[ClauseTaggerRequestFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerRequestFixtures.json) は同じモデル identity の Core ML・CPU only・float32 による request parity を保存します。6 boundary cases・10 raw model calls と、3 targets / 3 calls の priority batch を含みます。multi-window、short/long continuation、候補なしの終端 `まあ。`、filler、backchannel を扱います。filler の必須 projection は入力 `まあ、あの、今日は損失関数の話をします。` から出力 `今日は損失関数の話をします。` です。backchannel は元コーパスの F/B owned-span argmax witness を確認します。priority batch では192-token truncation も確認します。各 request の source、candidates、`next`、全 window の input IDs・ownership・UTF-16 ranges、junction/span indices、raw 3 heads、実際の `LocalClauseTagger` response と projected text を記録します。raw model snapshots は同じ既存 encoder/model sequence の決定的 replay であり、production trace hook ではありません。fixture を書く前に replay と public response を照合します。
+
+保存済み request の replay と実モデル capture は別の検証です。[ClauseTaggerDecisionLogicFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerDecisionLogicFixtureTests.swift) は CoreTests の3件で、同じ target の [ClauseTaggerRequestReplaySupport.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerRequestReplaySupport.swift) を使い、不変の request fixture 6 boundary cases・10 calls と、priority batch 3 targets・3 calls の計13 raw calls を、Core の pinned tokenizer と同期 decision logic で再生します。fake throwing closure は各 `inputID` の内容・順序・呼び出し数を照合し、想定外の呼び出しを throw します。すべての呼び出しがちょうど一度消費され、欠落・余分・未消費がないことと、fake throwing closure が記録済み snapshot の3 heads の raw 出力を返すことを確認します。唯一の request encoder を使って事前符号化した ownership・ranges・windows・junctions・candidates は完全一致で比較し、最終結果の keys・labels・counts・tokens・ranges・projected text の UTF-8 bytes も完全一致で比較します。probabilities と confidence は絶対誤差 `1e-3` 以下、raw head の shape・値と確率和（`1e-5` 以内）も検証します。filler の結果は `今日は損失関数の話をします。` と完全一致します。
+
+```bash
+swift test --package-path app/MacAmbientJev --filter 'DecisionProviderFactoryTests|ClauseTaggerDecisionLogic|ClauseTaggerEncodingTests|ClauseTaggerSpanProjectionTests'
+```
+
+[ClauseTaggerDecisionLogicTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerDecisionLogicTests.swift) の10件は不正 batch・keys・probabilities・malformed heads、primary tie と confidence、error propagation、および entry・windows 間・continuation 前・final return での cancellation と priority 処理を model-free で検証します。これらと上記 fixture replay、DecisionProviderFactoryTests の計20件は CoreTests で model・download・環境変数・OS gate を使わず、通常の `swift test` で実行対象です。
+
+[ClauseTaggerParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/ClauseTaggerParityFixtureTests.swift) は shape を確認してから値を比較します。object key sets、array counts、IDs、ranges、candidate/label/token totals、projected text などは完全一致し、文字列は UTF-8 bytes で比較して Unicode の byte-distinct 表記を区別します。確率と confidence は各値の絶対誤差 `1e-3` 以下、head の shape は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]`、各確率 row の和は `1e-5` 以内です。
+
+変換 artifact の Python 受け入れ基準では、Python reference と Core ML MLProgram を dynamic `input_ids` int32 `[1,L]` で比較し、通常入力と randomized inputs の各整数長 `L=2...192` のすべてで `boundary_probs`、`span_probs`、`priority_probs` 各 head の最大絶対誤差を `1e-3` 以下とします。mask support は長さ `2, 64, 65, 66, 128, 192` で確認します。これは Python conversion acceptance sweep の基準であり、Swift の選定 corpus が全191長を網羅するという意味ではありません。tokenizer config は Metaspace の `prepend_scheme=never` と `split=false`、正確な UTF-8 byte fallback を要求し、この契約に違反する config は拒否します。
+
+fixture の生成と check は次のとおりです。placeholder は上記と同じ要件の絶対 model directory に置き換えます。`MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY` が未設定または `1` 以外なら committed golden と比較するだけで、書き換えません。生成時だけ `MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1` を指定します。
+
+```bash
+MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter ClauseTaggerParityFixtureTests
+RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter ClauseTaggerParityFixtureTests
+```
+
+Linux / Windows の `ONNXClauseTagger`（[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）は実モデルの parity テストを持ち、通常の portable CI で必ず実行します。`RUN_MODEL_TESTS` のような opt-in はありません。必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に `python3 scripts/fetch_clause_tagger.py` が出力する絶対 directory を設定します（`scripts/verify_portable.sh`、`scripts/test-windows.ps1`、`.github/workflows/portable-core.yml` が設定します）。未設定・空・相対 path・存在しない directory はテストの失敗で、skip しません。
+
+- `ClauseTaggerFixtures.json` の13件は literal な `input_ids` をそのまま推論し、`boundary_probs`、`span_probs`、`priority_probs` の head ごとに最大絶対誤差を `1e-3` 以下とします。head ごとの最大値は fixture ごとと全体でログに出ます。
+- `ClauseTaggerRequestFixtures.json` の境界 6 case と優先度 batch は `ONNXClauseTagger` の public API へ実 request を渡し、response を Core ML 由来の保存値と比較します。key、candidate、label、token 数、除去範囲、投影後の文字列は完全一致、確率と confidence は `1e-3` 以下です。`まあ、あの、今日は損失関数の話をします。` は `今日は損失関数の話をします。` になります。
+- model への不正入力（空、1 token、193 token、CLS・SEP 欠落、負・語彙外の ID）、最短2 token と最長192 token の推論、取り消し済み request、非正の thread 数（ロード前に失敗）、相対・存在しない directory のテストと、`DecisionProviderFactory` が一度だけロードして manifest の identity を返すテストも含みます。thread 数と directory のテストは model を使いません。
+
+```bash
+CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py)"
+MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY="$CLAUSE_TAGGER" swift test --package-path app/MacAmbientJev --filter 'ONNXClauseTagger|ClauseTaggerAssets'
+```
+
+Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、この入出力契約を満たす必要があります。ポータブル ONNX の書き出しは次節の repository script で行います。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
+
+[DecisionProviderFactoryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionProviderFactoryTests.swift) は全 platform の CoreTests にある model-free 7件で、fake providers を使い、環境変数・filesystem・モデルなしで実行します。成功・失敗時の single-flight と同時要求での identity/coordinator 共有、同じ failure と load の CancellationError の cache、完全な identity/provenance、identity の lookup/確認だけでは判定 request も usage も発生しないこと、synthetic token accounting、provider cancellation が attempt-only で cache を再利用することを検証します。実 token usage や実モデル推論を測るテストではありません。これらは単体テストであり、GUI 操作、マイク／システム音声の権限、画面表示の確認にはなりません。
 
 ### 合成イベントによる回帰検証とライブ滞留計測
 
@@ -576,6 +610,28 @@ Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間�
 ### 保存整理のテスト
 
 Runtime の保存整理テストは、確定処理の全結果（成功・発話なし・VAD／話者分離／ASR の失敗・話者分離中のキャンセル・一時停止）と録音・import の組で、話者分離入力 CAF と import の処理タイムラインが残らないこと、開始失敗でも古い一時ファイルが消えること、削除失敗・変換失敗のメッセージ、変換後の再処理が PCM 由来と同じ文字起こしを返し FLAC を変えないこと、失敗した再処理が公開結果と FLAC を保つことを、音声から結果を導く fake engine で確認する。AppleSupport の起動時整理テストは、全セッションの整理が収束し、整理に失敗したセッションをフォルダー名付きで返し、録音中のセッションに触れないことを確認する。App テストは、起動時の保存整理中に、音声がまだ `recordingPCM` の録音の書き出しが、書き出し先へ触れる前に整理中のメッセージで止まることを確認する。
+
+## ポータブル ONNX の書き出しと受入
+
+[export_clause_tagger_onnx.py](../scripts/export_clause_tagger_onnx.py) の純粋な helper（引数・入力 path・出力先の検証、入出力契約、入力 ID、fixture document、license 文、state revision）は [test_export_clause_tagger_onnx.py](../scripts/test_export_clause_tagger_onnx.py) が torch なしで検証します。このテストは portable-core workflow の Linux と Windows で実行します。
+
+```bash
+python3 -B scripts/test_export_clause_tagger_onnx.py
+```
+
+実際の書き出しと受入は、モデルと checkpoint が必要なためリポジトリのルートで手動実行します。重い処理なので、他の重い job と同時に動かさないでください。出力先は存在しない新規ディレクトリで、親ディレクトリは先に作ります。`<models>` は modernbert-ja-30m と multi-30m-bc2 を置いたディレクトリの絶対パスに置き換えます。
+
+```bash
+mkdir -p .build/clause-tagger-onnx-export
+uv run --project tools/clause-tagger-export python scripts/export_clause_tagger_onnx.py \
+  --base-dir <models>/modernbert-ja-30m \
+  --checkpoint <models>/multi-30m-bc2/multitagger.pt \
+  --tokenizer <models>/modernbert-ja-30m/tokenizer.json \
+  --fixture app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerFixtures.json \
+  --output-dir .build/clause-tagger-onnx-export/clause-tagger-onnx
+```
+
+`--tokenizer` には SHA-256 `0a94ac9a...` の tokenizer.json を指定します。multi-30m-bc2 ディレクトリの tokenizer.json は再保存された別 bytes なので使えません。受入検査の内容は [判定](decision-engine.md) の「ポータブル ONNX の書き出し」に従い、失敗した検査と測定値を標準エラーに出して非 0 で終了します。成功時は stdout の最後の行に ClauseTagger.onnx の SHA-256・サイズと head ごとの最大誤差を JSON で出し、全長の誤差は export.json の `parity` に残ります。
 
 ## Linux Python の単体テストと suite
 

@@ -32,6 +32,13 @@ if ($qwen3TokenizerExitCode -ne 0) { throw "Qwen3-ASR tokenizer fetch failed wit
 if ($qwen3TokenizerPathLines.Count -ne 1) { throw "Qwen3-ASR tokenizer fetch returned $($qwen3TokenizerPathLines.Count) paths; expected exactly one" }
 $env:MAC_AMBIENT_JEV_QWEN3_TOKENIZER = [string]$qwen3TokenizerPathLines[0]
 
+Write-Host '==> fetch clause tagger model'
+$clauseTaggerPathLines = @(& python scripts/fetch_clause_tagger.py)
+$clauseTaggerExitCode = $LASTEXITCODE
+if ($clauseTaggerExitCode -ne 0) { throw "Clause tagger model fetch failed with exit code $clauseTaggerExitCode" }
+if ($clauseTaggerPathLines.Count -ne 1) { throw "Clause tagger model fetch returned $($clauseTaggerPathLines.Count) paths; expected exactly one" }
+$env:MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY = [string]$clauseTaggerPathLines[0]
+
 Invoke-Step 'portable Core/Pipeline checker self-test' { python -B scripts/test_portable_core.py }
 Invoke-Step 'portable Core/Pipeline import check' { python -B scripts/check_portable_core.py }
 Invoke-Step 'doc reference checker self-test' { python scripts/test_doc_references.py }
@@ -39,6 +46,7 @@ Invoke-Step 'doc reference check' { python scripts/check_doc_references.py }
 Invoke-Step 'ONNX Runtime fetcher self-test' { python -B scripts/test_fetch_onnxruntime.py }
 Invoke-Step 'Silero VAD fetcher self-test' { python -B scripts/test_fetch_silero_vad.py }
 Invoke-Step 'Community-1 diarization fetcher self-test' { python -B scripts/test_fetch_community1_diarization.py }
+Invoke-Step 'clause tagger fetcher self-test' { python -B scripts/test_fetch_clause_tagger.py }
 Invoke-Step 'diarization run comparison self-test' { python -B scripts/test_compare_diarization_runs.py }
 Invoke-Step 'canonical CAF converter self-test' { python -B scripts/test_prepare_canonical_caf.py }
 Invoke-Step 'Qwen3-ASR tokenizer fetcher self-test' { python -B scripts/test_fetch_qwen3_asr_tokenizer.py }
