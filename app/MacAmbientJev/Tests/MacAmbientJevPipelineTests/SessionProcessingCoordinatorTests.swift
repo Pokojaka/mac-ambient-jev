@@ -567,3 +567,26 @@ func processingCompletionPublishesBeforeTaskReleaseThenAllowsIdleRelease() async
     #expect(drainingObservations == [true, false])
     #expect(effects.eventOrder.suffix(2) == ["willFinishDrain", "drained"])
 }
+
+@MainActor
+@Test
+func retainedFinalizeRequestRunsExactlyOneFinalization() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult()],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(SessionFinalizeRequest(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
+    #expect(effects.exportedSessionIDs == [sessionID])
+}

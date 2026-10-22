@@ -89,6 +89,10 @@ public final class SessionProcessingCoordinator {
         }
     }
 
+    public func enqueue(_ request: SessionFinalizeRequest) {
+        enqueue(request.pending)
+    }
+
     public func enqueue(_ request: PendingProcessing) {
         let effects = requiredEffects
         if !effects.pausesProcessing, request.finalizesTranscript {
@@ -148,14 +152,8 @@ public final class SessionProcessingCoordinator {
                 !pending.contains { $0.sessionID == candidate.manifest.sessionID }
             }
             .compactMap { candidate in
-                switch candidate.action {
-                case .finalize:
-                    .finalize(sessionID: candidate.manifest.sessionID, metadataPolicy: .reject)
-                case .recoverDecisionRun:
-                    decisionRetryRequest(for: candidate)
-                case .retryContentPriority:
-                    nil
-                }
+                SessionRecoveryPlan(candidate.action)
+                    .launchRecoveryRequest(sessionID: candidate.manifest.sessionID)
             }
     }
 
@@ -229,7 +227,7 @@ public final class SessionProcessingCoordinator {
         do {
             let candidates = try scan().candidates
             let requests = candidates.compactMap {
-                Self.decisionRetryRequest(for: $0)
+                SessionRecoveryPlan($0.action).decisionRetryRequest(sessionID: $0.manifest.sessionID)
             }
             for request in requests {
                 enqueue(request)
@@ -239,22 +237,6 @@ public final class SessionProcessingCoordinator {
             }
         } catch {
             recoveryEffects.recoveryDidChange(.retryFailed(error.localizedDescription))
-        }
-    }
-
-    private static func decisionRetryRequest(
-        for candidate: RecoverableSession
-    ) -> PendingProcessing? {
-        switch candidate.action {
-        case .recoverDecisionRun(let boundarySegments, let clauses),
-             .retryContentPriority(let boundarySegments, let clauses):
-            .retryContentPriority(
-                sessionID: candidate.manifest.sessionID,
-                boundarySegments: boundarySegments,
-                clauses: clauses
-            )
-        case .finalize:
-            nil
         }
     }
 

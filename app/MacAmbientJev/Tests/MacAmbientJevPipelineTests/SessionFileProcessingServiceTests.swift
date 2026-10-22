@@ -751,4 +751,111 @@ struct SessionFileProcessingServiceTests {
         #expect(usage.sendCount == 0)
         #expect(decisions.providerLoadCount.snapshot() == 1)
     }
+
+    @Test
+    func retainedImportKeepsOriginalAndSessionWithOneFinalizeRequestAndNoProcessingOrJSON() throws {
+        let environment = try ServiceEnvironment()
+        defer { environment.remove() }
+        let bytes = Data([0x52, 0x49, 0x46, 0x46, 0x11, 0x22, 0x33, 0x44, 0x80, 0xfe])
+        let audioURL = try environment.makeInput(bytes: bytes)
+
+        let retained = try RetainedSessionImporter(paths: .trustedApplication(environment.paths))
+            .importRetainedSession(audioURL: audioURL)
+
+        let originalURL = SessionLayout(sessionURL: retained.sessionURL).audioDirectory.appending(path: "original.wav")
+        #expect(try Data(contentsOf: originalURL) == bytes)
+        #expect(try SessionLayout(sessionURL: retained.sessionURL).loadManifest().sessionID == retained.sessionID)
+        #expect(retained.finalize == SessionFinalizeRequest(sessionID: retained.sessionID, metadataPolicy: .reject))
+        #expect(retained.finalize.pending.sessionID == retained.sessionID)
+        #expect(try ProcessingMetadataStore(sessionURL: retained.sessionURL).load()?.activeRuns == nil)
+        let sessionEntries = try FileManager.default.contentsOfDirectory(
+            at: environment.paths.sessionsRoot, includingPropertiesForKeys: nil
+        )
+        #expect(sessionEntries.map(\.lastPathComponent) == [retained.sessionURL.lastPathComponent])
+        let rootEntries = try FileManager.default.contentsOfDirectory(at: environment.root, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent)
+        #expect(rootEntries.filter { $0.hasSuffix(".json") }.isEmpty)
+    }
+
+    @Test
+    func retainedImportOfMissingAudioReportsCopyFailureWithTheCreatedSession() throws {
+        let environment = try ServiceEnvironment()
+        defer { environment.remove() }
+        let missing = environment.root.appending(path: "missing.wav")
+
+        do {
+            _ = try RetainedSessionImporter(paths: .trustedApplication(environment.paths))
+                .importRetainedSession(audioURL: missing)
+            Issue.record("a missing audio file must fail the import")
+        } catch let error as RetainedImportError {
+            let created = try #require(error.createdSession)
+            #expect(FileManager.default.fileExists(atPath: created.sessionURL.path))
+        }
+    }
+
+    @Test
+    func externalRootStillRejectsProtectedRootsWhileTrustedApplicationRootIsAdmitted() throws {
+        let environment = try ServiceEnvironment()
+        defer { environment.remove() }
+        let protectedRoot = environment.paths.sessionsRoot
+
+        #expect(throws: SessionsRootPolicy.Error.self) {
+            _ = try ValidatedSessionPaths.externalRoot(environment.paths, protectedRoots: [protectedRoot])
+        }
+        let trusted = ValidatedSessionPaths.trustedApplication(environment.paths)
+        #expect(trusted.paths.sessionsRoot == environment.paths.sessionsRoot)
+    }
+
+    @Test
+    func cliServiceRejectsProtectedRootBeforeImportingAnything() async throws {
+        let environment = try ServiceEnvironment()
+        defer { environment.remove() }
+        let audioURL = try environment.makeInput()
+        let service = SessionFileProcessingService(
+            paths: environment.paths,
+            protectedRoots: [environment.paths.sessionsRoot],
+            timelineBuilder: FakeServiceTimelineBuilder(samples: []),
+            makeResources: { _ in throw ServiceTestFailure.expected },
+            sleep: { _ in }
+        )
+        let recorder = ServiceEventRecorder()
+
+        await #expect(throws: SessionsRootPolicy.Error.self) {
+            _ = try await service.importFile(
+                .init(
+                    audioURL: audioURL,
+                    outputURL: environment.root.appending(path: "out.json"),
+                    keepSession: true,
+                    pacingMode: .normal,
+                    withDecisions: false
+                ),
+                callbacks: serviceCallbacks(recorder)
+            )
+        }
+        #expect(await recorder.createdSessions().isEmpty)
+    }
+
+    @Test
+    func recoveryPlanRoutesInspectionNamesInferenceAndEnqueueRequests() {
+        let sessionID = UUID()
+        let none = SessionRecoveryPlan(nil)
+        let finalize = SessionRecoveryPlan(.finalize)
+        let recover = SessionRecoveryPlan(.recoverDecisionRun(boundarySegments: [], clauses: []))
+        let retry = SessionRecoveryPlan(.retryContentPriority(boundarySegments: [], clauses: []))
+
+        #expect([none, finalize, recover, retry].map(\.inspectionName)
+            == ["none", "finalize", "recoverDecisionRun", "retryContentPriority"])
+        #expect(!none.requiresInference(withDecisions: true))
+        #expect(finalize.requiresInference(withDecisions: false))
+        #expect(recover.requiresInference(withDecisions: true) && !recover.requiresInference(withDecisions: false))
+        #expect(retry.requiresInference(withDecisions: true) && !retry.requiresInference(withDecisions: false))
+
+        #expect(finalize.launchRecoveryRequest(sessionID: sessionID)?.finalizesTranscript == true)
+        #expect(recover.launchRecoveryRequest(sessionID: sessionID)?.finalizesTranscript == false)
+        #expect(retry.launchRecoveryRequest(sessionID: sessionID) == nil)
+        #expect(none.launchRecoveryRequest(sessionID: sessionID) == nil)
+        #expect(recover.decisionRetryRequest(sessionID: sessionID) != nil)
+        #expect(retry.decisionRetryRequest(sessionID: sessionID) != nil)
+        #expect(finalize.decisionRetryRequest(sessionID: sessionID) == nil)
+    }
 }

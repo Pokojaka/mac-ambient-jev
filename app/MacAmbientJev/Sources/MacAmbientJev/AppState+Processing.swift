@@ -154,35 +154,20 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             }
         }
 
-        let sessionID = UUID()
-        var createdSessionURL: URL?
-
         do {
-            let sessionURL = try prepareSession(
-                sessionID: sessionID,
-                source: .imported(originalFilename: sourceURL.lastPathComponent)
-            )
-            createdSessionURL = sessionURL
-            _ = try AudioImporter().importFile(
-                sourceURL,
-                into: sessionURL
-            )
+            let retained = try RetainedSessionImporter(paths: .trustedApplication(paths))
+                .importRetainedSession(audioURL: sourceURL)
 
             recording.finish()
-            showNewSession(sessionID)
+            showNewSession(retained.sessionID)
             setCaptureStatus(
                 "「\(sourceURL.lastPathComponent)」を読み込みました",
                 tone: .neutral
             )
-            enqueueProcessing(
-                .finalize(
-                    sessionID: sessionID,
-                    metadataPolicy: .reject
-                )
-            )
+            processingCoordinator.enqueue(retained.finalize)
         } catch {
             var message = "音声ファイルを読み込めませんでした: \(error.localizedDescription)"
-            if let sessionURL = createdSessionURL {
+            if let sessionURL = (error as? RetainedImportError)?.createdSession?.sessionURL {
                 do {
                     try SessionFileAccess.removeIfPresent(sessionURL, relativeTo: paths.sessionsRoot)
                 } catch let cleanupError {
