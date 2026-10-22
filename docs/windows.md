@@ -1054,3 +1054,76 @@ PCM chunk 一覧は大文字に変換した名前でも一意である必要が�
 `prepare` は全モデルを検証してから、全モデルを読み込みます。VAD、ASR、diarization、（decisions 有効時）タガーの順です。検証は存在、通常ファイル、サイズ、streaming SHA-256 を見ます（Silero はサイズの pin がなく SHA-256 のみ）。読み込みは Silero の ONNX session、`ONNXQwen3ASREngine.prepare()`、`ONNXCommunity1DiarizationEngine.prepare()`、`ONNXClauseTagger` の生成で、認識や decisions のリクエストは作りません。読み込んだモデルは次のモデルの前に解放するため、`prepare` は後続の処理が使う engine を温めず、読み込めることの確認だけを行います。
 進捗は `PortableModelPreparationProgress`（`stage` は `validating` / `loading`、`model`、`completed`、`total`）です。各モデルの開始時に `completed` = 完了済みの数で通知し、各 stage の最後に `model == nil`、`completed == total` を通知します。単位はモデル数で、1 ファイル内の byte 進捗はありません。
 失敗は `PortableModelPreparationError` です。`missing` と `invalid` は期待するパスと配置手順（fetch コマンド）を含み、`loadFailed` はモデルとパスを含みます。ホストは `missing` を `model_missing`、`invalid` を `model_corrupt`、`loadFailed` を `model_failure` に対応させ、復旧は `prepare_models` です。
+
+## エンジンの NDJSON transport とコマンド dispatcher
+
+`MacAmbientJevEngineHost` は、プロトコル（`MacAmbientJevEngineProtocol`）の codec の上に、stdin/stdout の有界 transport と main actor の dispatcher を実装します。どちらも Foundation とプロトコル module だけに依存し、macOS と Linux で build と test が通ります。Windows の build と test は Windows CI で確認するまで未検証です。実装は [`EngineTransport.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransport.swift)、[`EngineTransportOutput.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportOutput.swift)、[`EngineTransportIO.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportIO.swift)、[`EngineTransportLimits.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportLimits.swift)、[`EngineController.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineController.swift)、[`EngineHandlers.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineHandlers.swift) です。テストは [`EngineTransportInputTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportInputTests.swift)、[`EngineTransportOutputTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportOutputTests.swift)、[`EngineTransportPipeTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportPipeTests.swift)、[`EngineControllerTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineControllerTests.swift)、[`EngineSettingsStoreHandlerTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineSettingsStoreHandlerTests.swift) です。プロセスを起動せず、スクリプト化した source / sink と実際の POSIX pipe で検証します（pipe のテストは Windows では build しません）。
+
+### 入力 lane
+
+`EngineTransport` は専用 thread で `EngineByteSource` から生の bytes を読み、`EngineLineFramer` に渡します。テキスト変換や code page は使いません。`FileHandleByteSource` は OS の read を 1 回ずつ呼び（POSIX は `read`、Windows は ReadFile。pipe の終端 `ERROR_BROKEN_PIPE` は EOF）、record の一部が届いた時点で返します。Windows の ReadFile 経路は Windows CI で build と test が通るまで未検証です。
+chunk は LF ごとに framer へ渡すため、不正な行の前に完成した record は失われず、先に `line` として届きます。framer が失敗した時点で入力 lane は止まります。
+controller に渡したが `lineHandled()` が呼ばれていない行は最大 32 件で、超えると入力 lane が読み取りを止め、pipe の backpressure になります。
+
+`EngineTransport.events` は次の event を 1 つの consumer に渡します。
+
+| event | 意味 |
+|---|---|
+| `line` | delimiter を除いた、字句検査済みの 1 record |
+| `endOfInput` | record の境界での EOF |
+| `protocolViolation` | framing / 字句違反。最後の行が LF で終わらない EOF は `partialFinalLine` |
+| `readFailed` | 入力の read エラー |
+| `writeFailed` | 出力 writer の失敗（下記） |
+
+### 出力 writer
+
+stdout へ書くのは専用の writer thread 1 つだけです。record を 1 件ずつ、部分書き込みを繰り返して LF まで書きます。診断は stderr にだけ出し、stdout には NDJSON の record 以外を一切書きません。`sequence` は enqueue 時に 1 から連番で付けます。encode に失敗した record は番号を消費しません。
+
+出力待ち行列は最大 128 record / 8 MiB（`EngineTransportLimits.production`）です。そのうち 32 record / 2 MiB は `accepted`、`completed`、`error`、`ready` のために空けておき、置き換え可能な event は残りだけを使います。
+
+| event | 扱い |
+|---|---|
+| `ready`、`accepted`、`completed`、`error` | 結合も破棄もしません。待ち行列が満杯なら送信側が writer の空きを待ちます |
+| `state` | 待ち行列に 1 件だけ残し、新しいものが古いものを置き換えます |
+| `progress` | session とステージごとに置き換えます。枠が足りないときは最も古い `progress` を捨てます |
+| `rows` | 枠が足りないとき、その session の待ち行列上の `rows` を 1 件の `reload_required`（最新の revision）にまとめます。完全な変更列を装いません |
+
+置き換え可能な event の枠に収まらず、結合できる古い event もないときは `replaceableOverflow` を呼び出し元に返します（黙って捨てません）。
+
+出力が失敗すると、writer は最初の失敗だけを記録し、ブロック中の write を cancel し、sink を閉じ、`writeFailed` を通知します。失敗は次の 3 種類です。
+
+| 失敗 | 条件 |
+|---|---|
+| `deadlineExceeded` | 書き込み中に 1 byte も進まない状態が 5 秒続いた（部分書き込みが進めば deadline は延びる） |
+| `brokenPipe` | 読み手が閉じた |
+| `failed` | その他の write エラー |
+
+ブロック中の write を止める OS 固有の処理は `EngineByteSink` が持ちます。`cancelBlockedWrite()` は別 thread から呼ばれ、実行中の `write` を `cancelled` で戻らせます。移植可能な既定の `PosixByteSink` は、`poll` を短い間隔で繰り返し、`PIPE_BUF` 以下ずつ書くことで、満杯の pipe を flag で止められるようにします（fd の状態 flag は変えず、SIGPIPE は process 全体で無視して `brokenPipe` にします）。Windows の executable は WriteFile と CancelSynchronousIo を使う sink を渡します。
+
+### dispatcher
+
+`EngineController`（`@MainActor`）が `run()` で transport を開始し、`ready` を送ってから `events` を処理します。
+
+- 最初の request は `hello` で `request_id` は `1` です。以後は厳密に増加します（`EngineRequestOrder`）。違反は `hello_required` / `invalid_request_id` / `invalid_request`（2 回目の `hello`）の `error` 1 件で拒否します。このとき `accepted` は送らず、副作用もありません。順序を満たした request の id は、あとで `busy` になっても high-water mark に含まれます。
+- request を解釈できない場合（未知の command、未知の field など）は、字句検査に通る行から信頼できる `request_id` を取り出せるときだけそれを付け、`invalid_request` の `error` を返して接続を続けます。framing / 字句違反（重複 key、不正 JSON など）と `unsupported_version` は `error`（`fatal`）を送ったあと、接続を終了します。
+- 受理した request は同時に最大 16 件です。`recording.stop` と `shutdown` 用に 2 件を予約し、それ以外の command は 14 件までで、超えると `busy` の `error` 1 件で拒否します（`EngineAdmissionLimits.production`）。
+- 受理すると `accepted` を送り、handler を main actor 上の task で実行し、`completed` か `error` のどちらか 1 件だけを送ります。handler が投げた `EngineCommandError` はそのまま、Swift の取り消しエラーは `cancelled`、それ以外は `internal_error`（元のエラーを detail に保持）です。`shutdown` は dispatcher が直接処理します。
+- handler は `EngineStateHandling`、`EngineRecordingHandling`、`EngineSessionHandling`、`EngineTranscriptHandling`、`EngineSettingsHandling`、`EngineModelsHandling`、`EngineShutdownHandling` の protocol で注入します。実際の実装は Windows の composition 層が組み立てます。`EngineSettingsStoreHandler` は `settings.get` / `settings.replace` を `EngineSettingsStore` につなぐ実装で、実行中の作業と衝突する置換は呼び出し側が渡す条件で `busy` として拒否します。
+- handler は `EngineRequestContext` の `EngineEventEmitter` で、request に紐づく `progress` や、request を持たない `state` / `rows` / background の `error` を送ります。
+
+### 終了
+
+`run()` は終了理由 `EngineExit` を返し、`processExitCode` が process の終了コードです。
+
+| 理由 | `shutdown` handler の reason | コード |
+|---|---|---|
+| `shutdown` request の完了 | `requested` | 0 |
+| EOF（record の境界） | `inputClosed` | 0 |
+| framing / プロトコル違反、最後の行が LF で終わらない EOF | `protocolError` | 3 |
+| 入力の read エラー | `inputFailed` | 4 |
+| 出力の失敗（deadline、broken pipe） | `outputFailed` | 5 |
+| `shutdown` handler の失敗 | なし | 6 |
+| `ready` の準備に失敗 | なし | 2 |
+
+どの終了でも `shutdown` handler を 1 回呼び、capture の durable な停止と推論の安全な取り消しを任せます。その後も終端を受け取っていない受理済み request には `cancelled` の `error` を送ります。出力が失敗した場合は何も書かず、`shutdown` handler の実行後すぐ終了します。それ以外は待ち行列を書き切ってから transport を閉じます。
+EOF は client が消えたときの安全な切断として扱い、終了コードは 0 です。`shutdown` handler が取り消しに応じない場合でも、dispatcher はその request に `cancelled` を送って終了し、後から戻った handler の結果は送りません。
