@@ -1019,3 +1019,38 @@ handle を閉じるまで保持します。復旧の途中で破損した末尾�
 
 PCM chunk 一覧は大文字に変換した名前でも一意である必要があります。
 大小文字を区別しないファイルシステムで同じ音声を二重に数える索引を拒否します。
+
+## エンジン設定とアプリケーション root lock
+
+`MacAmbientJevEngineHost` の `EngineSettingsStore` は、アプリ root（`AppPaths.root`）直下の settings.json を読み書きします。パスは `AppPaths` だけから決め、環境変数や追加のパス計算を使いません。
+ファイルは `{"revision":"<EngineID>","settings":{…}}` の 1 object で、プロトコルの `EngineSettingsResult`（`settings` は `EngineSettings`）をそのまま使い、別のスキーマはありません。`schema_version` は 1 だけを受け付け、未知のフィールド、重複キー、欠落フィールド、型違いは読み込み時に拒否します。`threads` は `1...min(4, logicalCPUCount)` で、`logicalCPUCount` は呼び出し側が明示的に渡します。
+`load()` は次の結果になります。
+
+| ファイルの状態 | 結果 |
+|---|---|
+| なし | `EngineSettingsError.required`（`settings_required`、復旧は `replace_settings`）。何も作りません |
+| 読めて有効 | revision 付きの設定 |
+| 不正（JSON、スキーマ、threads の上限超過） | `EngineSettingsError.corrupt`（`invalid_settings`）。既定値、移行、部分的な読み込みはありません |
+| symlink、通常ファイルでない、I/O エラー | `EngineSettingsError.filesystem` |
+
+`replace(expectedRevision:settings:)` は設定を検証し、現在の revision が `expectedRevision` と一致するときだけ revision を 1 進めて保存します。ファイルがないときの `expectedRevision` は `nil` だけです。不一致は `staleRevision` で、書き込みません。不正なファイルは `expectedRevision == nil` の全体置換だけが修復し、revision は 1 から始まります。保存は `SessionFileAccess.writeAtomically`（固定した親 handle、同期後の原子的な公開、ディレクトリ同期）です。`load` と `replace` の直列化は engine controller が行います。
+
+`ApplicationRootLock.acquire(paths:)` はアプリ root を作成し、`engine.lock` を開いて排他 lock を取ります。2 つ目の engine は `alreadyRunning` で失敗します。lock は開いたファイルに属し、プロセスが終了すると OS が解放します。macOS / Linux は flock（LOCK_EX と LOCK_NB）、Windows は LockFileEx（LOCKFILE_EXCLUSIVE_LOCK と LOCKFILE_FAIL_IMMEDIATELY） で、ERROR_LOCK_VIOLATION が `alreadyRunning` になります。Windows の経路は Windows CI で build と test が通るまで未検証です。
+
+## インストール済みモデルの検証と読み込み
+
+`models.prepare` は `PortableModelPreparationService.prepare(configuration:onProgress:)` で実装します。ダウンロード、代替モデル、モデルや decisions の自動無効化はありません。
+モデルはアプリ root の models 配下に次の配置で置きます。名前は同梱の pin とマニフェストから `PortableInstalledModelLayout` が作ります。
+
+| モデル | 配置 |
+|---|---|
+| Silero VAD | `silero/<commit>/silero_vad_16k_op15.onnx` |
+| Qwen3-ASR | `qwen3-asr-<0.6b\|1.7b>-int4-<commit>/`（`fetch_qwen3_asr_model.py <size> <models root>` が作るディレクトリ） |
+| Community-1 | `community1/<同梱マニフェスト bytes の SHA-256>/` |
+| 発話文タガー | `clause-tagger/<release tag>/clause-tagger-onnx/`（decisions 有効時だけ） |
+
+`PortableProcessingConfiguration.installed(layout:qwen3Size:threads:logicalCPUCount:withDecisions:)` は設定から型付きの configuration を作ります。threads の検証は `resolve` と同じ関数を使い、パスの存在は確認しません。
+
+`prepare` は全モデルを検証してから、全モデルを読み込みます。VAD、ASR、diarization、（decisions 有効時）タガーの順です。検証は存在、通常ファイル、サイズ、streaming SHA-256 を見ます（Silero はサイズの pin がなく SHA-256 のみ）。読み込みは Silero の ONNX session、`ONNXQwen3ASREngine.prepare()`、`ONNXCommunity1DiarizationEngine.prepare()`、`ONNXClauseTagger` の生成で、認識や decisions のリクエストは作りません。読み込んだモデルは次のモデルの前に解放するため、`prepare` は後続の処理が使う engine を温めず、読み込めることの確認だけを行います。
+進捗は `PortableModelPreparationProgress`（`stage` は `validating` / `loading`、`model`、`completed`、`total`）です。各モデルの開始時に `completed` = 完了済みの数で通知し、各 stage の最後に `model == nil`、`completed == total` を通知します。単位はモデル数で、1 ファイル内の byte 進捗はありません。
+失敗は `PortableModelPreparationError` です。`missing` と `invalid` は期待するパスと配置手順（fetch コマンド）を含み、`loadFailed` はモデルとパスを含みます。ホストは `missing` を `model_missing`、`invalid` を `model_corrupt`、`loadFailed` を `model_failure` に対応させ、復旧は `prepare_models` です。
