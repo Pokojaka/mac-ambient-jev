@@ -3,7 +3,6 @@ import AVFoundation
 import Combine
 import Dispatch
 import Foundation
-import MacAmbientJevAppleSupport
 import MacAmbientJevCore
 import MacAmbientJevCapture
 import MacAmbientJevPipeline

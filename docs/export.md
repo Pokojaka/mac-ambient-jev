@@ -18,7 +18,7 @@
 
 ## transcript.txt
 
-`TranscriptTextRenderer` が開始時刻と話者見出しを付け、UTF-8 で 1 行 1 発話を書き出す。各行末は改行。
+`TranscriptTextRenderer`（Pipeline、Foundation のみ）が開始時刻と話者見出しを付け、UTF-8 で 1 行 1 発話を書き出す。各行末は改行。
 
 ```text
 [00:07] Speaker 1: 本文
@@ -44,7 +44,11 @@ YYYY-MM-DD_HH-mm-ss_<stem>_<8 lowercase hex>
 
 録音例: `2023-11-14_22-13-20_録音_0123abcd`。読み込み例: `2023-11-14_22-13-20_定例会議_0123abcd`。時刻はセッション作成時に指定したタイムゾーンで一度だけ決まり、読み込みでは読み込み時刻、録音では録音開始時刻を使う。stem の sanitization、切り詰め、検証は[保存形式](storage.md)を参照。
 
-設定の「保存先」で書き出し先を選ぶ。書き出しは Application Support 内のセッションを移動しない。同じセッションの再書き出しは同名のフォルダーを置き換える。まず非表示の作業用フォルダーでテキストと音声を揃えてから公開する。失敗時は作業用フォルダーを削除し、削除にも失敗した場合は元の書き出しエラーと削除エラーを併記する。
+設定の「保存先」で書き出し先を選ぶ。書き出しは Application Support 内のセッションを移動しない。同じセッションの再書き出しは同名のフォルダーを置き換える。書き出しの内容は UTF-8 の `transcript.txt` と、録音なら検証済みで無変換の `audio.flac`、読み込み音声なら元の拡張子・バイト列のままの `audio.<拡張子>` で、macOS と Windows で同じ。`SessionExporter`（Pipeline）は書き出し先を実体に解決した上で、すべてのファイル操作を `SessionFileAccess` 経由で書き出し先に固定して行う。
+
+公開の手順は次のとおり。まず非表示の作業用フォルダー `.export-<セッション ID>.partial` にテキストと音声を揃える。同名の書き出しが既にあれば `.export-<セッション ID>.previous` へ移し、作業用フォルダーを同名へ移して公開し、成功したら置き換え前のフォルダーを削除する。ディレクトリの移動は `SessionFileAccess.renameDirectory` が行い、移動先が既に存在すれば失敗する（Windows でも POSIX 意味論の rename を使う）。公開に失敗したら置き換え前のフォルダーを元の名前へ戻し、戻せなければそのパスを示したエラーで失敗する。置き換え前のフォルダーを削除する手段がなく置き換えを実現できない場合も、既存の書き出しを削除したり、その場へコピーしたりせず失敗する。
+
+失敗時は作業用フォルダーを削除し、削除にも失敗した場合は元の書き出しエラーと削除エラーを併記する。公開後に置き換え前のフォルダーを削除できなかった場合は、書き出し済みであることと残ったパスを示して失敗とする。置き換え中にアプリが終了して `.previous` だけが残った場合、次の書き出しの開始時に同名の書き出しが無ければ元の名前へ戻し、あれば削除する。
 
 ## 自動書き出しと保存先
 
@@ -89,7 +93,9 @@ Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙�
 
 ## 実装
 
-- [SessionExport.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/SessionExport.swift): 行の描画、音声書き出し、公開。
+- [SessionExporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionExporter.swift): 音声書き出し、作業用フォルダー、公開と置き換え。
+- [TranscriptTextRenderer.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/TranscriptTextRenderer.swift): 行の描画。
+- [SavedTranscriptLoader.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SavedTranscriptLoader.swift): 保存済み run からの文字起こしの読み込み。
 - [SavedSessionCatalog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SavedSessionCatalog.swift): 音声・派生結果の状態と再処理可否。
 - [AppState+SavedSessions.swift](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+SavedSessions.swift): 保存先、書き出し、一覧操作。
 - [ExportDestination.swift](../app/MacAmbientJev/Sources/MacAmbientJev/ExportDestination.swift): 保存先参照と設定検証。

@@ -59,10 +59,14 @@ struct Community1Manifest: Decodable, Equatable {
     static let resourceName = "community1_diarization_models"
 
     static func bundled() throws -> Community1Manifest {
+        try parse(try bundledData())
+    }
+
+    static func bundledData() throws -> Data {
         guard let url = Bundle.module.url(forResource: resourceName, withExtension: "json", subdirectory: "Resources") else {
             throw Community1AssetsError.invalidManifest("resource \(resourceName).json is missing from the module bundle")
         }
-        return try parse(try Data(contentsOf: url))
+        return try Data(contentsOf: url)
     }
 
     static func parse(_ data: Data) throws -> Community1Manifest {
@@ -148,6 +152,11 @@ public struct Community1Assets {
 
     /// The fixed diarizer built on this directory's PLDA transform.
     public var diarizer: Community1Diarizer { Community1Diarizer(plda: plda) }
+
+    /// SHA-256 of the bundled manifest's bytes, the identity of the installed model directory.
+    public static func pinnedManifestSHA256() throws -> String {
+        FileSHA256.hexDigest(of: try Community1Manifest.bundledData())
+    }
 
     public static func pinnedIdentity() throws -> Community1ModelIdentity {
         let manifest = try Community1Manifest.bundled()
