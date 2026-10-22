@@ -137,7 +137,7 @@ if ($FullModel) {
     Copy-Item -LiteralPath $runtimeDll -Destination $releaseDll -Force -ErrorAction Stop
     if (-not (Test-Path -LiteralPath $releaseDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied beside the release CLI: $releaseDll" }
 
-    $fixture = [System.IO.Path]::GetFullPath('app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav')
+    $fixture = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) 'app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav'))
     Invoke-Step 'process recording acceptance driver' {
         python tools/linux-audio/process_recording_acceptance.py `
             --executable (Join-Path $releaseBinDir 'MacAmbientJevProcessRecording.exe') `
