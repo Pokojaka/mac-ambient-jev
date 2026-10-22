@@ -146,6 +146,8 @@ Windows には入力音量の自動調整がなく、能力表示は `automatic_
 
 WindowsSupport の ingress unit tests は仮想時計と座標・無音・gap・障害を指定し、idle からの再開時の無音補填、合成無音との重複拒否、active／idle 状態に応じた再アンカーの扱いを検証します。これらの unit tests は実際の sink と ring を使います。別の source integration fake tests は、さらに drain・SRC・writer も通します。fake は本番の protocol と実行ファイルからは使えません。native 側は `app/MacAmbientJev/Tests/CMiniaudioInjected/WindowsCaptureSafetyInjectedTests.c` を Windows clang で `clang <file> -o <一時 exe> -lole32` としてビルドし、SwiftPM tests とは別に実行します。ローカルで差し替えた Win32／COM 呼び出しを通じて同梱実装そのものを検証し、音声ハードウェアは使いません。
 
+snapshot publisher stress test は 1,000,000 回読み取りを行い、teardown は publisher の完了を待ってから native state を解放します。
+
 ## 実装の根拠
 
 - [録音開始・停止・障害表示](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Recording.swift)、[キャプチャ本体](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[macOS provider の空き容量と入力監視](../app/MacAmbientJev/Sources/MacAmbientJevCapture/MacCaptureProviders.swift)、[portable な capture lifecycle / policy](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/CaptureSafety.swift)

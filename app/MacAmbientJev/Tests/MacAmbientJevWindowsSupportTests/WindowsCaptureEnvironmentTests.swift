@@ -21,21 +21,32 @@ private func filter(
 
 private final class PublisherBox: @unchecked Sendable {
     let state: OpaquePointer
-    private let lock = NSLock()
+    private let condition = NSCondition()
     private var stopped = false
+    private var finished = false
 
     init(state: OpaquePointer) { self.state = state }
 
     var isStopped: Bool {
-        lock.lock()
-        defer { lock.unlock() }
+        condition.lock()
+        defer { condition.unlock() }
         return stopped
     }
 
-    func stop() {
-        lock.lock()
+    func stopAndWait() {
+        condition.lock()
         stopped = true
-        lock.unlock()
+        while !finished {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func markFinished() {
+        condition.lock()
+        finished = true
+        condition.broadcast()
+        condition.unlock()
     }
 }
 
@@ -51,6 +62,7 @@ struct WindowsCaptureEnvironmentTests {
 
         let box = PublisherBox(state: state)
         let publisher = Thread {
+            defer { box.markFinished() }
             var value: UInt64 = 2
             while !box.isStopped {
                 mja_environment_state_publish(box.state, value, value + 1, Int32(value & 1), 0)
@@ -58,7 +70,8 @@ struct WindowsCaptureEnvironmentTests {
             }
         }
         publisher.start()
-        defer { box.stop() }
+        // A stop request is not a join; wait for completion before native state is destroyed.
+        defer { box.stopAndWait() }
 
         var incoherent = 0
         var failed = 0
