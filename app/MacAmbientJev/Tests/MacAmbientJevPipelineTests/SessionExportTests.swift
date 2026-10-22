@@ -1,9 +1,7 @@
-import AVFoundation
 import Foundation
 import Testing
-import MacAmbientJevPipeline
-@testable import MacAmbientJevAppleSupport
 @testable import MacAmbientJevCore
+@testable import MacAmbientJevPipeline
 
 private let fixtureSampleRate = 16_000.0
 
@@ -136,21 +134,16 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
     let transcript = try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
     #expect(transcript == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
 
-    let flac = try AVAudioFile(forReading: folder.appending(path: "audio.flac"))
-    #expect(flac.fileFormat.settings[AVFormatIDKey] as? UInt32 == kAudioFormatFLAC)
-    #expect(try Data(contentsOf: folder.appending(path: "audio.flac")) == Data(contentsOf: SessionLayout(sessionURL: session.sessionURL).recordingFLACURL))
-    #expect(flac.length == Int64(samples.count))
-    #expect(flac.processingFormat.sampleRate == fixtureSampleRate)
-    let buffer = try #require(AVAudioPCMBuffer(
-        pcmFormat: flac.processingFormat,
-        frameCapacity: AVAudioFrameCount(flac.length)
-    ))
-    try flac.read(into: buffer)
-    let decoded = UnsafeBufferPointer(start: try #require(buffer.floatChannelData)[0], count: Int(buffer.frameLength))
+    let exported = folder.appending(path: "audio.flac")
+    let info = try TimelineAudioInfo(committedFrames: Int64(samples.count), gapEvents: [])
+    let reader = try FLACTimelineReader(url: exported, info: info, sessionURL: folder)
+    try reader.validateAudio()
+    let decoded = try reader.readSamples(frameRange: 0..<Int64(samples.count))
     #expect(decoded.count == samples.count)
     for (index, sample) in samples.enumerated() {
         #expect(decoded[index] == Float(RecordingFLAC.quantize16(sample)!) / 32_768)
     }
+    #expect(try Data(contentsOf: exported) == Data(contentsOf: SessionLayout(sessionURL: session.sessionURL).recordingFLACURL))
 }
 
 @Test
@@ -165,6 +158,17 @@ func exportRefusesARecordingThatIsNotYetFLAC() async throws {
     if FileManager.default.fileExists(atPath: fixture.exportRoot.path) {
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path).isEmpty)
     }
+}
+
+/// A 16 kHz mono 16-bit WAV of silence. Export copies the bytes, so only identity matters.
+private func wavBytes(frames: Int) -> Data {
+    func le32(_ value: Int) -> [UInt8] { (0..<4).map { UInt8((value >> (8 * $0)) & 0xFF) } }
+    func le16(_ value: Int) -> [UInt8] { (0..<2).map { UInt8((value >> (8 * $0)) & 0xFF) } }
+    let dataBytes = frames * 2
+    var bytes: [UInt8] = Array("RIFF".utf8) + le32(36 + dataBytes) + Array("WAVEfmt ".utf8)
+    bytes += le32(16) + le16(1) + le16(1) + le32(16_000) + le32(32_000) + le16(2) + le16(16)
+    bytes += Array("data".utf8) + le32(dataBytes) + [UInt8](repeating: 0, count: dataBytes)
+    return Data(bytes)
 }
 
 private func fileBytes(in directory: URL) throws -> [String: Data] {
@@ -260,21 +264,7 @@ func reexportReplacesTheSameFolder() async throws {
 func exporterCopiesImportedOriginalByteForByte() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
-    let wav = fixture.root.appending(path: "source.wav")
-    do {
-        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: fixtureSampleRate, channels: 1))
-        let file = try AVAudioFile(forWriting: wav, settings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: fixtureSampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-        ])
-        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_600))
-        buffer.frameLength = 1_600
-        try file.write(from: buffer)
-        file.close()
-    }
-    let original = try Data(contentsOf: wav)
+    let original = wavBytes(frames: 1_600)
     let session = try await fixture.writeImportedSession(
         originalFilename: "定例会議.wav", originalBytes: original
     )
@@ -296,21 +286,7 @@ func exporterCopiesImportedOriginalByteForByte() async throws {
 func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
-    let wav = fixture.root.appending(path: "boundary.wav")
-    do {
-        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: fixtureSampleRate, channels: 1))
-        let file = try AVAudioFile(forWriting: wav, settings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: fixtureSampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-        ])
-        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_600))
-        buffer.frameLength = 1_600
-        try file.write(from: buffer)
-        file.close()
-    }
-    let original = try Data(contentsOf: wav)
+    let original = wavBytes(frames: 1_600)
     let session = try await fixture.writeImportedSession(
         originalFilename: String(repeating: "a", count: 300) + ".wav",
         originalBytes: original
@@ -817,4 +793,161 @@ func corruptProcessingMetadataBlocksExportButKeepsTheSessionReprocessable() asyn
         try SessionExporter().export(session: session, to: fixture.exportRoot)
     }
     #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
+}
+
+private struct InjectedFailure: Error, LocalizedError {
+    let reason: String
+    var errorDescription: String? { reason }
+}
+
+private func hiddenName(_ session: SavedSession, _ suffix: String) -> String {
+    ".export-\(session.sessionID.uuidString.lowercased()).\(suffix)"
+}
+
+/// Real directory operations, except where `failing` names a failure to inject.
+private func operations(
+    failRemove: (@Sendable (URL) -> String?)? = nil,
+    failRename: (@Sendable (URL, URL) -> String?)? = nil
+) -> SessionExporter.DirectoryOperations {
+    SessionExporter.DirectoryOperations(
+        remove: { url, root in
+            if let reason = failRemove?(url) { throw InjectedFailure(reason: reason) }
+            try SessionExporter.DirectoryOperations.live.remove(url, root)
+        },
+        rename: { source, destination, root in
+            if let reason = failRename?(source, destination) { throw InjectedFailure(reason: reason) }
+            try SessionExporter.DirectoryOperations.live.rename(source, destination, root)
+        }
+    )
+}
+
+@Test
+func failedPublicationRestoresThePreviousBundle() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    let priorBytes = try fileBytes(in: prior)
+
+    let exporter = SessionExporter(operations: operations(failRename: { source, _ in
+        source.lastPathComponent.hasSuffix(".partial") ? "publish refused" : nil
+    }))
+    #expect(throws: InjectedFailure.self) {
+        try exporter.export(session: session, to: fixture.exportRoot)
+    }
+
+    #expect(try fileBytes(in: prior) == priorBytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [prior.lastPathComponent])
+}
+
+@Test
+func unrestorablePreviousBundleIsReportedWhereItWasLeft() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    let priorBytes = try fileBytes(in: prior)
+
+    let exporter = SessionExporter(operations: operations(failRename: { source, destination in
+        if source.lastPathComponent.hasSuffix(".partial") { return "publish refused" }
+        if destination.lastPathComponent == prior.lastPathComponent { return "restore refused" }
+        return nil
+    }))
+    let previous = fixture.exportRoot.resolvingSymlinksInPath().appending(path: hiddenName(session, "previous"), directoryHint: .isDirectory)
+    #expect(throws: SessionExportError.previousExportNotRestored(
+        path: previous.path, exportFailure: "publish refused", restoreFailure: "restore refused"
+    )) {
+        try exporter.export(session: session, to: fixture.exportRoot)
+    }
+
+    #expect(try fileBytes(in: previous) == priorBytes)
+    #expect(!FileManager.default.fileExists(atPath: prior.path))
+}
+
+@Test
+func failedPublicationReportsBothTheFailureAndTheStagingCleanupFailure() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let staging = fixture.exportRoot.resolvingSymlinksInPath().appending(path: hiddenName(session, "partial"), directoryHint: .isDirectory)
+
+    let exporter = SessionExporter(operations: operations(
+        failRemove: { $0.lastPathComponent.hasSuffix(".partial") ? "cleanup refused" : nil },
+        failRename: { source, _ in source.lastPathComponent.hasSuffix(".partial") ? "publish refused" : nil }
+    ))
+    let message = SessionExportError.stagingNotRemoved(
+        path: staging.path, exportFailure: "publish refused", cleanupFailure: "cleanup refused"
+    )
+    #expect(throws: message) {
+        try exporter.export(session: session, to: fixture.exportRoot)
+    }
+}
+
+@Test
+func removingTheReplacedBundleFailsLoudlyAfterPublishing() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    try Data("edited".utf8).write(to: prior.appending(path: "transcript.txt"))
+    let previous = fixture.exportRoot.resolvingSymlinksInPath().appending(path: hiddenName(session, "previous"), directoryHint: .isDirectory)
+
+    let exporter = SessionExporter(operations: operations(failRemove: { url in
+        url.lastPathComponent.hasSuffix(".previous") ? "cleanup refused" : nil
+    }))
+    #expect(throws: SessionExportError.previousExportNotRemoved(path: previous.path, cleanupFailure: "cleanup refused")) {
+        try exporter.export(session: session, to: fixture.exportRoot)
+    }
+
+    #expect(try String(contentsOf: prior.appending(path: "transcript.txt"), encoding: .utf8)
+        .hasPrefix("[00:00] Speaker 1: こんにちは"))
+    #expect(try String(contentsOf: previous.appending(path: "transcript.txt"), encoding: .utf8) == "edited")
+}
+
+@Test
+func exportFailsWithoutTouchingAnythingWhenTheFolderNameIsTakenByAFile() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let taken = fixture.exportRoot.appending(path: session.sessionURL.lastPathComponent)
+    try FileManager.default.createDirectory(at: fixture.exportRoot, withIntermediateDirectories: true)
+    try Data("not a bundle".utf8).write(to: taken)
+
+    #expect(throws: (any Error).self) {
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
+    }
+
+    #expect(try Data(contentsOf: taken) == Data("not a bundle".utf8))
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [taken.lastPathComponent])
+}
+
+@Test
+func exportRestoresABundleLeftAsideByAnInterruptedReplacement() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let aside = fixture.exportRoot.appending(path: hiddenName(session, "previous"), directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: aside, withIntermediateDirectories: true)
+    try Data("older".utf8).write(to: aside.appending(path: "transcript.txt"))
+
+    let folder = try SessionExporter().export(session: session, to: fixture.exportRoot)
+
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [folder.lastPathComponent])
+    #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
+        .hasPrefix("[00:00] Speaker 1: こんにちは"))
+}
+
+@Test
+func exportDropsAStaleAsideBundleWhenTheDestinationExists() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    let aside = fixture.exportRoot.appending(path: hiddenName(session, "previous"), directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: aside, withIntermediateDirectories: true)
+    try Data("older".utf8).write(to: aside.appending(path: "transcript.txt"))
+
+    try SessionExporter().export(session: session, to: fixture.exportRoot)
+
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [prior.lastPathComponent])
 }
