@@ -6,6 +6,19 @@ on:
       - work/linux-asr-evaluation
     paths:
       - .github/workflows/linux-asr-real-inference.yml
+      - app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/**
+      - app/MacAmbientJev/Sources/MacAmbientJevEngineHost/**
+      - app/MacAmbientJev/Sources/MacAmbientJevEngine/**
+      - app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/**
+      - app/MacAmbientJev/Sources/CMiniaudio/**
+      - app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/**
+      - app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/**
+      - app/MacAmbientJev/Tests/MacAmbientJevEngineTests/**
+      - app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**
+      - app/MacAmbientJev/Tests/CMiniaudioInjected/**
+      - docs/**
+      - README.md
+      - AGENTS.md
   workflow_dispatch:
 
 jobs:

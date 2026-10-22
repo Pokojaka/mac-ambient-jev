@@ -28,6 +28,7 @@ FORBIDDEN_IMPORTS = {
     "MacAmbientJevRuntime",
     "MacAmbientJevAppleSupport",
     "MacAmbientJevCapture",
+    "MacAmbientJevEngine",
 }
 
 IMPORT_RE = re.compile(
@@ -38,6 +39,7 @@ PLATFORM_GUARDS = {
     "Darwin": {"canImport(Darwin)", "os(macOS)", "os(iOS)", "os(tvOS)", "os(watchOS)", "os(visionOS)"},
     "Glibc": {"canImport(Glibc)", "os(Linux)"},
     "WinSDK": {"canImport(WinSDK)", "os(Windows)"},
+    "MacAmbientJevWindowsSupport": {"os(Windows)"},
 }
 
 

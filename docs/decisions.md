@@ -1,6 +1,6 @@
 # 製品ルール
 
-Windows で実行する共通 Core / Pipeline、評価 CLI、ProcessRecording CLI と保存先・ファイルアクセスの規則は [windows.md](windows.md) に記載します。Windows では録音・GUI は提供しませんが、ProcessRecording CLI による音声 file processing は提供します。
+Windows の共通 Core / Pipeline、評価 CLI、ProcessRecording CLI、保存先とファイルアクセスの規則は [windows.md](windows.md) に記載します。Windows には WASAPI shared-mode の microphone / system-audio capture adapters と Windows 専用 `MacAmbientJevEngine` executable product があります。Linux engine product はなく、Windows GUI は提供しません。
 
 - Dock と Finder には、暗い角丸タイルに白い紙のしおりと橙色の波形・文字の行を組み合わせたアプリアイコンを表示する。[アプリのウィンドウ](export.md#アプリのウィンドウ)
 - 画面全体で「ライブ（暫定）」「確定処理中」「確定済み」を区別し、行ごとの確定印は付けない。[ライブ](live.md)
@@ -15,13 +15,13 @@ Windows で実行する共通 Core / Pipeline、評価 CLI、ProcessRecording CL
 - 録音停止は最後の ASR drain 後にテキスト列終端を通知する。確定処理開始時に保存済みライブ判定を固定してからライブ判定キューを取り消し、推論の終了を待たない。確定と再試行の比較では各 run 自身の保存済みフィラー・相槌除去範囲を原文へ適用し、発話文 parts を区間順に区切りなしで連結した UTF-8 byte 列が完全一致するときだけ優先度を引き継ぐ。trim・空白/句読点/Unicode 正規化は行わず、元 priority run・event・発話文参照を記録する。[確定処理](final.md)・[保存形式](storage.md)
 - 通常行は矢印のない平文で、詳細は時刻ボタンの popover に出す。同じ話者の連続行は狭く、話者見出しの前は広く空ける。[ライブ](live.md)
 - ライブ認識は閉じた VAD 区間または 14 秒分割単位。分割は直前 2 秒の最も静かな点で行い、端数 continuation も保持する。0.5 秒未満の独立区間は ASR に送らない。確定処理も同じ VAD 区間を ASR へ渡し、話者交代では細分化しない。話者の詳細 span を保持し、複数話者を含む行は 80% ルールで見出しを決める。VAD を通さず全音声を ASR に送ることはしない。長い発話の初表示は区間が閉じるまで遅れる。[ライブ](live.md)
-- critical の間はライブ認識を止め、録音を続ける。冷却後は滞留分の最古から再開し、確定処理で全体を認識する。[ライブ](live.md)
+- Mac は `critical` の間、ライブ認識を止めて録音を続ける。冷却後は滞留分の最古から再開し、確定処理で全体を認識する。[ライブ](live.md)
 - 「最新へ戻る」は末尾へ移動する。自動追従は利用者のスクロール操作でのみ解除する。非同期操作には実行中表示と重複防止を設ける。[ライブ](live.md)
 - 録音も確定処理もない待機中の releaseIdleResources は ASR・話者分離のモデルと MLX キャッシュを解放する。発話文 tagger は provider factory の寿命中 cache され、idle release では解放しない。失敗したロードもアプリ再起動まで cache される。[アーキテクチャ](architecture.md)
 - 内部音声は録音・import とも **16 kHz mono float32 PCM**。確定処理が終わった録音は **16 kHz mono 16-bit FLAC**（`recording.flac`）として保存し、PCM は削除する。全入力 channel の平均後、保存前の ingress で一度だけ連続 SRC を行う。VAD・ASR・話者分離は同じ canonical 音声を直接読む。必要容量は実保存形式で計算し、開始時に空き容量を取得できなければ録音しない。[音声入力](capture.md)・[保存形式](storage.md)
 - 録音の書き出しは保存済みの 16-bit FLAC `recording.flac` の無変換コピー。FLAC 化前の録音は書き出せない。書き出しは内部の音声を削除せず、書き出し後に内部音声を消す機能もない。読み込み音声は保存済み original の無再圧縮コピー。書き出しフォルダーは保存済みセッションの実フォルダー名をそのまま使い、日時・stem・ID から再計算しない。[書き出し](export.md)
-- 入力音量調整は既定入力デバイスが変わったら ownership を放棄し、停止時に旧デバイスの音量を戻さない。[音声入力](capture.md)
-- 入力音量を変更できない機器は橙色の非致命な注意。音量の注意と VAD による監視不能は別状態・別表示とする。[音声入力](capture.md)
+- Mac app の入力音量調整は既定入力デバイスが変わったら ownership を放棄し、停止時に旧デバイスの音量を戻さない。[音声入力](capture.md)
+- Mac app では入力音量を変更できない機器は橙色の非致命な注意とする。音量の注意と VAD による監視不能は別状態・別表示とする。[音声入力](capture.md)
 - 録音保存エラーは原因別の日本語で報告し、破損 chunk 名などの識別情報を保つ。入力停止はマイク・システム音声に応じた文言で伝える。[音声入力](capture.md)
 - writer 障害でも健全な checkpoint 範囲を確定処理へ送り、録音障害の表示は残す。書き出し・録音開始の後始末失敗は元のエラーと併記する。[音声入力](capture.md)・[書き出し](export.md)
 - 停止後、ファイル import、再処理、クラッシュ復旧と ProcessRecording CLI は同じ `NativeSessionProcessor` 確定処理を使う。ローカル必須3段階（発話区間検出・話者分離・音声認識）の成功を検証して run と境界保留を一括公開し、その後の任意判定は Mac app の Core ML provider または `--with-decisions` で明示された ProcessRecording の platform-local provider（Mac Core ML / portable ONNX）で行う。ローカル失敗・一時停止では直前の正常表示を保持し、判定保留はローカル公開を取り消さない。[確定処理](final.md)・[アーキテクチャ](architecture.md)
@@ -30,13 +30,19 @@ Windows で実行する共通 Core / Pipeline、評価 CLI、ProcessRecording CL
 - 話者 span が負または音声範囲外なら明示エラー。VAD 区間内の話者間 gap の音声を保持し、独立した UNKNOWN gap 行は作らない。[確定処理](final.md)
 - 確定処理の来歴は run ごとに実際の engine、model ID、revision、設定を保存し、再処理時に古い run の来歴を流用しない。判定 run はロードした model と state hash revision を示し、各成功 request record は request ID と入力 token 数を記録する。ライブの認識完了イベントは実エンジンとモデルを保存する。永続 timeline は sample rate・channels・encoding を自ら記述する。[保存形式](storage.md)
 - セッション保存フォルダーは作成時のローカル日時・録音または元ファイル名 stem・UUID 小文字先頭 8 桁。identity は manifest の完全 UUID、読み取りは実 URL と明示検証を使い、名前を再計算しない。欠損・不正・重複 ID はフォルダーごとのエラーとして残し、保存済み一覧は URL で選択する。[保存形式](storage.md)
-- セッション root の既定値を使うのは GUI のみ。セッションを作成・検索する CLI は各モードで安全性検証済みの `--sessions-root` を必須とする。artifact-only 評価 CLI は保存済みセッションを検索しないため root を要求しない。[保存形式](storage.md)・[検証](testing.md)
+- セッション root の既定値を使うのは GUI と Windows engine。Windows engine は CLI flag を持たない NDJSON process で、`AppPaths` が決める per-user application root の `sessions` を使う。セッションを作成・検索する file / capture / measurement CLI は各モードで安全性検証済みの `--sessions-root` を必須とする。artifact-only 評価 CLI は保存済みセッションを検索しないため root を要求しない。[保存形式](storage.md)・[検証](testing.md)・[windows.md](windows.md)
 - ProcessRecording の portable import / resume は `--threads N` を必須とし、`1...min(4, logicalCPUCount)` に制限する。ASR・diarization・tagger は `N` thread、VAD は1 thread。Mac ProcessRecording は `--threads` を拒否する。`--run-id`、`--metrics-output`、`--thermal-output`、`--memory-output` は Mac の import / resume で四つ全て指定し、portable では filesystem side effect より前に拒否する。[アーキテクチャ](architecture.md)
 - 境界判定と優先度判定の単位は BTSJ 発話文。接続表現で節が完結しても内容が続く場合、倒置・後置・付け足しが続く場合は同じ発話文とし、フィラーや言い直しだけでは発話文を分けない。発話文の境界・優先度・フィラー・相槌除去の判定では、形態素解析、辞書、規則による別 splitter・判定を使わない。保存形式・コード上の `clause` / `節` は発話文単位を識別する。[発話文判定](decision-engine.md)・[保存形式](storage.md)
 - Mac app の発話文境界・優先度とフィラー・相槌除去範囲は app bundle 内の Core ML tagger が判定する。ProcessRecording CLI は既定では判定を無効にし、明示的な `--with-decisions` で Mac の Core ML または Linux / Windows の ONNX provider を使う。Mac CLI の `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` は decisions inference 時に限って必須となり、既存の絶対 directory を指定する。PortableRuntime は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` を decisions inference 時だけ読む。他の model-path environment variables は Mac ProcessRecording で読まない。source-only 境界入力から得た原文の raw UTF-16 のフィラー・相槌表示本文除去範囲は、必須フィールド `filler_ranges` に保存する。フィラー・相槌除去では materialization は保存済み範囲を適用し、辞書もモデルも使わない。判定テキストをネットワークに送らず、segmentation・diarization・ASR の必須ローカル3段階の後に任意実行し、初期化・判定の失敗では別方式で補わず判定を保留する。[発話文判定](decision-engine.md)・[アーキテクチャ](architecture.md)
 - 相槌（聞き手の「うん」「はい」「へえ」「なるほど」等、および文頭で応答として置かれた「はい、」「そうですね。」等の後に内容が続くもの）は、発話文判定モデルの span head が B と判定した範囲を本文から除く。「すごい」「うわあ」のような評価的な感嘆は B に含めない。引用中の相槌（「ふうん、って思ってた」）は残す。
 - Mac app の発話文モデルは GitHub release asset に置き、`scripts/build_app.sh` が固定した tag と SHA-256 で取得・検証して app bundle の Resources 内 `clause-tagger` directory に入れる。アプリはその位置だけから読み込み、実行時の download や path override はない。ProcessRecording の Mac decisions は bundle を使わず、decision inference 時に必要な `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` の明示 directory から `LocalClauseTagger` を作る。PortableRuntime は同環境変数に指定された pinned ONNX assets directory を検証し、backend `onnx-clause-tagger` を run identity に記録する。欠損・不正モデルは明確な初期化エラーになる。[発話文判定](decision-engine.md)
 - `ContentPriorityAccess` は共有 access enum。アプリの `.localTagger(factory, usageCounter:)` は `DecisionProviderFactory` が cache した tagger の coordinator を使う。ProcessRecording CLI は `--with-decisions` がなければ `.disabled` を保ち、指定時だけ platform-local tagger を構成する。システム音声キャプチャ CLI とライブ遅延計測 CLI は `.disabled` を使い続ける。[アーキテクチャ](architecture.md)
+- Windows engine の NDJSON v1 は strict schema とし、unknown field / value、欠落・型違い、camelCase などの alias を受け付けない。[windows.md](windows.md)
+- Windows capture は利用者が source と device（開始時に解決して固定する `default`、または明示した endpoint ID）を選ぶ。endpoint の無効化・既定 endpoint の変更・形式変更では録音を停止して error にし、device、backend、format を切り替える fallback はしない。[音声入力](capture.md)・[windows.md](windows.md)
+- Windows engine が使うのはインストール済みの CPU-only model profile に限る。`models.prepare` は配置済み model を検証・load し、download、別 model / backend への fallback、decisions の自動無効化はしない。利用できる ASR size は `0.6b` と `1.7b`、execution provider は `cpu` のみ。[windows.md](windows.md)
+- Windows engine settings は全 field の strict replacement とし、破損設定から default、migration、部分読み込みで復旧しない。破損の修復は明示的な全体置換だけで、engine は per-user application root の排他 lock を取得する。automatic export が有効でも destination が `null` なら未設定のままで、Desktop 等を推測しない。[windows.md](windows.md)
+- Windows は automatic input volume を提供せず、thermal state を監視・推定しない。熱状態を `nominal` と装う値も返さない。[音声入力](capture.md)・[熱状態](windows.md)
+- Windows capture の sleep-prevention power request を開始時に取得できなければ capture start を失敗させる。Mac の power assertion の扱いは Mac 固有の規則とする。[音声入力](capture.md)
 - `--with-decisions` の ProcessRecording export は、recognized text があるとき active boundary / priority run の両方、空の boundary / priority retry targets と `pendingDecisionTargets` を成功条件にする。decision request failure は published local transcript を保持するが export を作らず、CLI failure とする。recognized text がなければ decision run なしで空配列を出力する。decision-only recovery の resume で `--with-decisions` を指定しない場合も inference をせず local transcript を export する。inspect と inference が不要な export-only resume は model resource / model environment を読み込まない。[アーキテクチャ](architecture.md)
 - 利用状況は `DecisionProvider` 呼出し単位で数える。一つの境界 request は複数の source window と、次区間がある場合の継続入力を含み、全入力の実 token 数を合計する。優先度判定は最大40 sequence の一 batch を一 request とし、実入力 token 数を合計する。モデル確認、判定呼出し前の保留は判定 request に数えない。[発話文判定](decision-engine.md)・[アーキテクチャ](architecture.md)
 - 設定の「モデルを確認」は cache した tagger の identity を表示するだけで、判定 request・usage・token を発生させない。[発話文判定](decision-engine.md)

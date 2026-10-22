@@ -56,7 +56,8 @@ Invoke-Step 'Qwen3-ASR model fetcher self-test' { python -B scripts/test_fetch_q
 Invoke-Step 'pinned download self-test' { python -B scripts/test_pinned_download.py }
 Invoke-Step 'Silero reference generator self-test' { python -B scripts/test_generate_silero_reference.py }
 Invoke-Step 'Qwen3-ASR token reference generator self-test' { python -B scripts/test_generate_qwen3_asr_token_reference.py }
-Invoke-Step 'Swift build portable Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
+Invoke-Step 'Swift build EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
+Invoke-Step 'Swift build Windows MacAmbientJevEngine executable' { swift build --package-path app/MacAmbientJev --product MacAmbientJevEngine }
 
 Write-Host '==> resolve Swift debug bin path'
 $binPathLines = @(& swift build --package-path app/MacAmbientJev --show-bin-path)
@@ -75,7 +76,22 @@ $destinationDll = Join-Path $binDir 'onnxruntime.dll'
 Copy-Item -LiteralPath $runtimeDll -Destination $destinationDll -Force -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $destinationDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied to the Swift debug bin directory: $destinationDll" }
 
-Invoke-Step 'Swift test portable Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
+$swiftExecutable = (Get-Command swift -CommandType Application -ErrorAction Stop).Source
+$swiftToolchainDirectory = Split-Path -Parent $swiftExecutable
+$clangPath = Join-Path $swiftToolchainDirectory 'clang.exe'
+if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { throw "Swift toolchain clang.exe is missing at the expected path: $clangPath" }
+$injectedTestSource = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) 'app/MacAmbientJev/Tests/CMiniaudioInjected/WindowsCaptureSafetyInjectedTests.c'))
+$injectedTestExecutable = Join-Path $binDir 'WindowsCaptureSafetyInjectedTests.exe'
+Invoke-Step 'Compile Windows capture safety injected C tests' { & $clangPath $injectedTestSource -o $injectedTestExecutable -lole32 }
+if (-not (Test-Path -LiteralPath $injectedTestExecutable -PathType Leaf)) { throw "Windows capture safety injected test executable was not produced: $injectedTestExecutable" }
+Invoke-Step 'Run Windows capture safety injected C tests' { & $injectedTestExecutable }
+
+# Host transport tests intentionally block fake sinks with short write deadlines; run them separately so model/tokenizer workload cannot delay sink-release continuations.
+Invoke-Step 'Swift test portable EngineHost fast suite' { swift test --package-path app/MacAmbientJev --filter MacAmbientJevEngineHostTests }
+Invoke-Step 'Swift test EngineProtocol/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX remaining suites' { swift test --package-path app/MacAmbientJev --skip-build --skip MacAmbientJevEngineHostTests }
+
+# Fake-capture acceptance integration point (job 7A).
+# Lead inserts the exact command after merge; no acceptance driver is run here yet.
 
 if ($FullModel) {
     function Get-SinglePath([string]$Name, [object[]]$Lines) {

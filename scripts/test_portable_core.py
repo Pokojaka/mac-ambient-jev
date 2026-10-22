@@ -18,6 +18,10 @@ DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevONNX",
     "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime",
 )
+WINDOWS_ONLY_ROOTS = (
+    "app/MacAmbientJev/Sources/MacAmbientJevEngine",
+    "app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport",
+)
 
 
 class PortableImportTests(unittest.TestCase):
@@ -59,6 +63,29 @@ class PortableImportTests(unittest.TestCase):
         ]:
             with self.subTest(module=module):
                 self.assertEqual(self.violations(f"#if os(macOS)\nimport {module}\n#endif"), [module])
+
+    def test_engine_module_is_rejected_even_when_windows_guarded(self):
+        source = "#if os(Windows)\nimport MacAmbientJevEngine\n#endif"
+        self.assertEqual(self.violations(source), ["MacAmbientJevEngine"])
+
+    def test_windows_support_requires_positive_windows_guard(self):
+        rejected_sources = [
+            "import MacAmbientJevWindowsSupport",
+            "#if DEBUG\nimport MacAmbientJevWindowsSupport\n#endif",
+            "#if os(Linux)\nimport MacAmbientJevWindowsSupport\n#endif",
+            "#if !os(Windows)\nimport MacAmbientJevWindowsSupport\n#endif",
+        ]
+        for source in rejected_sources:
+            with self.subTest(source=source):
+                self.assertEqual(self.violations(source), ["MacAmbientJevWindowsSupport"])
+
+        allowed_sources = [
+            "#if os(Windows)\nimport MacAmbientJevWindowsSupport\n#endif",
+            "#if os(Windows)\n#if DEBUG\nimport MacAmbientJevWindowsSupport\n#endif\n#endif",
+        ]
+        for source in allowed_sources:
+            with self.subTest(source=source):
+                self.assertEqual(self.violations(source), [])
 
     def test_os_import_requires_its_own_positive_guard(self):
         for module in ["Darwin", "Glibc", "WinSDK"]:
@@ -119,6 +146,11 @@ class PortableImportTests(unittest.TestCase):
             ("import AppKit", "AppKit"),
             ("#if os(macOS)\nimport AVFoundation\n#endif", "AVFoundation"),
             ("import WinSDK", "WinSDK"),
+            (
+                "#if os(Windows)\nimport MacAmbientJevEngine\n#endif",
+                "MacAmbientJevEngine",
+            ),
+            ("import MacAmbientJevWindowsSupport", "MacAmbientJevWindowsSupport"),
         ]
         for engine_root in DEFAULT_ROOTS[2:4]:
             for source, module in sources:
@@ -151,10 +183,23 @@ class PortableImportTests(unittest.TestCase):
                     self.assertIn(pathlib.Path(missing_root).name, result.stderr)
                     self.assertIn("not found", result.stderr)
 
+    def test_cli_ignores_windows_only_source_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for root in DEFAULT_ROOTS:
+                self.write_fixture(directory, root, "import Foundation")
+            for root in WINDOWS_ONLY_ROOTS:
+                self.write_fixture(directory, root, "import WinSDK")
+
+            result = self.run_default_cli(directory)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cli_passes_when_all_default_roots_are_valid(self):
         with tempfile.TemporaryDirectory() as directory:
             for root in DEFAULT_ROOTS:
                 self.write_fixture(directory, root, "import Foundation")
+            for root in WINDOWS_ONLY_ROOTS:
+                self.assertFalse((pathlib.Path(directory) / root).exists())
 
             result = self.run_default_cli(directory)
 

@@ -79,10 +79,11 @@ python3 -B scripts/test_fetch_qwen3_asr_model.py
 python3 -B scripts/test_pinned_download.py
 python3 -B scripts/test_generate_silero_reference.py
 python3 -B scripts/test_generate_qwen3_asr_token_reference.py
+python3 -B scripts/test_portable_core.py
 python3 -B scripts/check_portable_core.py
 
 swift package --package-path "$PACKAGE" dump-package >/dev/null
 swift build --package-path "$PACKAGE"
 swift test --package-path "$PACKAGE"
 
-echo "Portable Core, Pipeline, and ONNX build/test verification passed"
+echo "Portable EngineProtocol, EngineHost, PortableRuntime, Core, Pipeline, and ONNX build/test verification passed"

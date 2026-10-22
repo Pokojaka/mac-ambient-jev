@@ -1,10 +1,76 @@
 # 検証と計測
 
-共通 Core / Pipeline と評価 CLI は Windows・Linux の常設 CI でビルドし、portable な Core / Pipeline tests を実行します。WindowsSupport の build / tests は Windows で実行します。Windows の手順と対象外のアプリ機能は [windows.md](windows.md) を参照してください。macOS app bundle の plist 生成を確認する Bash テストは Windows では実行しません。
+検証記述は build / test target と実行した test の範囲を示し、製品 process の受入を意味しません。Windows の現行 target、保存規則、対象外機能は [windows.md](windows.md)、capture の境界は [capture.md](capture.md) を参照してください。macOS app bundle の plist 生成を確認する Bash テストは Windows では実行しません。
 
-自動検証、実モデルによるファイル処理、計測結果の意味を分けて扱う。マイク・システム音声の実キャプチャや画面の確認は、ファイル入力の結果だけでは検証できない。Linux の artifact・corpus・CI 実推論は [linux.md](linux.md)、処理経路は [final.md](final.md)、保存と公開結果は [storage.md](storage.md) を参照する。
+自動検証、実モデルによるファイル処理、計測結果の意味を分けて扱う。実マイク・システム音声の capture や画面の確認は fake 入力やファイル処理だけでは検証できない。Linux の artifact・corpus・CI 実推論は [linux.md](linux.md)、処理経路は [final.md](final.md)、保存と公開結果は [storage.md](storage.md) を参照する。
 
 以下のコマンドはリポジトリルートから実行する。実データのファイル名、セッション ID、保存先を示す環境変数には、自分の実在するデータを設定する。個人録音は Git に入れず、ローカル録音用の領域に置く。配置の案内は `test-data/recordings/README.md` にある。
+
+## 現行 EngineProtocol / EngineHost の検証範囲
+
+`MacAmbientJevEngineProtocol` と `MacAmbientJevEngineHost` は portable な library target で、macOS・Linux・Windows の build / test 対象です。[MacAmbientJevEngineProtocolTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/) は NDJSON v1 の strict codec、lexical validation、全 command / event の golden corpus を検証します。[MacAmbientJevEngineHostTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/) は scripted byte source / sink と fake handlers を使い、framing、queue/backpressure、request admission、dispatcher、settings store / lock を検証します。これらは portable な protocol / host unit tests で、実 engine process を起動しません。
+
+```bash
+swift test --package-path app/MacAmbientJev --filter 'MacAmbientJevEngineProtocolTests|MacAmbientJevEngineHostTests'
+```
+
+この focused command は macOS での手動確認用です。`EngineTransportPipeTests.swift` は POSIX pipe integration test で `#if !os(Windows)` により Windows では除外されます。Windows で fake source / sink tests が通ることを POSIX pipe integration の実行と取り違えません。
+
+`MacAmbientJevEngine` executable product は Windows 専用で、Linux に engine executable product はありません。Windows runner は package build に加えて `--product MacAmbientJevEngine` を明示して build します。package / product build と portable unit tests は engine process を実行せず、process acceptance を確立しません。
+
+| OS / 手順 | 現行 build / test 範囲 |
+| --- | --- |
+| macOS | `MacAmbientJevEngineProtocol` / `MacAmbientJevEngineHost` の portable tests を実行できます。上の focused command はこの手動確認用です。通常の macOS 検証は後述の AGENTS 指定コマンドを変更せず実行します。 |
+| Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) は fetch / check の後、manifest dump と unfiltered build / test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と `MacAmbientJevEngine` product は Linux target ではありません。通常の Linux CI fast job は同じ fetch/check 後に直接 package build / test を実行し、`linux-model-e2e` job の範囲は変わりません。 |
+| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は EngineProtocol / EngineHost / WindowsSupport / PortableRuntime 等を build し、`MacAmbientJevEngine` product も明示 build します。native injected C tests の後、Swift tests は以下の2 passで実行し、Windows で適用される全 suite（新しい portable fast suites を含む）を各1回実行します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意します。 |
+
+Windows runner の Swift test command は次の順で fail-fast に実行します。
+
+```powershell
+swift test --package-path app/MacAmbientJev --filter MacAmbientJevEngineHostTests
+swift test --package-path app/MacAmbientJev --skip-build --skip MacAmbientJevEngineHostTests
+```
+
+最初の pass は `--filter` で EngineHost を実行し、test targets を build します。続く `--skip-build` pass はその build を再利用し、`--skip` で EngineHost を除いた applicable suites を実行します。2 pass で EngineProtocol / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows の test set 全体を重複なくカバーします。EngineHost の transport tests は fake sink を意図的に block したまま短い write deadline を使うため、model / tokenizer workload とは別に先行実行します。
+
+Linux CI fast job の package command は次のとおりです（先行する fetch / check step の後に実行します）。
+
+```bash
+swift build --package-path app/MacAmbientJev
+swift test --package-path app/MacAmbientJev
+```
+
+Linux / Windows の PortableRuntime tests が使う pinned asset path は runner が fetch して既存の必須環境変数に設定します。WindowsSupport の fake capture tests と native injected C tests は実 audio hardware を使わず、実機 WASAPI の動作を保証しません。現在の `test-windows.ps1` には `Fake-capture acceptance integration point (job 7A)` というコメントだけがあり、fake-capture acceptance は実行しません。`-FullModel` は既存の model numerical tests と ProcessRecording acceptance driver を追加実行しますが、host / fake-capture acceptance ではありません。
+
+### Windows native capture-safety injected C test
+
+Windows runner はすべての実行で（`-FullModel` を含む）native C test を Swift tests と別に compile / run します。compiler は解決した `swift.exe` と同じ toolchain directory の `clang.exe`、出力先は `swift build --show-bin-path` で解決した debug `binDir` です。実際の compile command は次の形です。
+
+```text
+<clang.exe> app/MacAmbientJev/Tests/CMiniaudioInjected/WindowsCaptureSafetyInjectedTests.c -o <binDir>/WindowsCaptureSafetyInjectedTests.exe -lole32
+```
+
+runner は生成 exe の存在を検証してから起動し、compile / run の非 0 exit code は失敗です。test source は production [C implementation](../app/MacAmbientJev/Sources/CMiniaudio/WindowsCaptureSafety.c) を include し、Win32 / COM 呼び出しを local substitutions で差し替えます。SetEvent 解放失敗時に join しないこと、成功時の power cleanup、active probe の再利用と invalidation、GetState failure による invalidation、session-enumerator error の伝播を検証します。音声 hardware は使いません。
+
+### macOS から Windows VM で検証
+
+リポジトリルートから `winvm test .` を実行すると、作業ツリーを VM に自動同期し、Windows test runner [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) を実行します。VM は 6.8 GB のため、test run は同時に1つだけにします。
+
+```bash
+( until mkdir /private/tmp/winvm-p4.lock 2>/dev/null; do sleep 30; done; winvm test .; rc=$?; rmdir /private/tmp/winvm-p4.lock; exit $rc )
+```
+
+### Linux Docker で portable 検証
+
+Linux で portable 検証をローカル実行する場合は、次のコマンドを使います。bind mount 上で SwiftPM が macOS `Package.resolved` を削除・変更する場合があるため、使い捨て checkout / worktree で実行します。
+
+```bash
+docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2-noble bash -lc 'apt-get update && apt-get install -y python3 flac && bash scripts/verify_portable.sh'
+```
+
+[`verify_portable.sh`](../scripts/verify_portable.sh) は pinned assets を fetch し、portable checker の self-test と import check を行い、SwiftPM manifest を dump してから unfiltered `swift build` / `swift test` を実行します。test は Core / Pipeline / EngineProtocol / EngineHost / PortableRuntime / ONNX 等を含みますが、Linux には WindowsSupport と `MacAmbientJevEngine` product はありません。Linux CI fast job は同じ検証内容の一部を fetch/check step 後の直接の `swift build` / `swift test` で実行し、この shell script 自体は呼びません。`linux-model-e2e` は既存の separate job です。
+
+[`check_portable_core.py`](../scripts/check_portable_core.py) の default roots には Core / Pipeline に加えて EngineProtocol / EngineHost、Diarization / DiarizationMeasurement、ONNX、PortableRuntime が含まれます。portable root から Windows-only `MacAmbientJevEngine` の import を拒否し、WindowsSupport 自体は portable scan roots に含めず、`MacAmbientJevWindowsSupport` import には `#if os(Windows)` を要求します。portable-core workflow の path filter は新しい engine source / test / executable target、native injected test、runner と docs の変更を対象にします。path filter のない macOS CI の対象は変更しません。
 
 ## 共通 Core / Pipeline テストの現状
 
@@ -18,7 +84,7 @@ swift test --package-path app/MacAmbientJev --filter MacAmbientJevPipelineTests
 
 テストに付ける `timeLimit` は hang guard としてのみ使い、値はすべて10分です。Swift Testing は全テストを並列に開始するため、各テストの経過時間には suite 全体の待ち時間が含まれ、負荷の高い CI ランナーでは2分を超えます。上限は suite 全体の実行時間より長くし、意味上の条件や実行時間予算には使いません。
 
-Windows の [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は同じ Pipeline test target を含みます。これらのテストは portable な調整・状態ロジックの検証であり、Windows の inference や capture の実装・検証を意味しません。
+Windows の [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は同じ Pipeline test target を EngineHost を除く2番目の pass で実行します。これらは portable な調整・状態ロジックの検証です。WindowsSupport の capture unit tests と native injected C test は別に実行しますが、実 audio hardware を使う検証ではありません。
 
 [CaptureSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/CaptureSafetyTests.swift) は startup/stall/silence、disk threshold と error rules、oversized mono buffer を検証します。[TimestampedMonoSinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/TimestampedMonoSinkTests.swift) は raw-meter の 100ms windows、channels 間の clipping、gaps/reset、metering 前後で audio が変わらないことを検証します。AudioCaptureEngine/CoreMedia/IOKit との実 integration は macOS 専用 AppTests（[AudioCaptureEngineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/AudioCaptureEngineTests.swift)、[CaptureSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/CaptureSafetyTests.swift)）で扱います。
 
@@ -426,7 +492,7 @@ swift build --package-path app/MacAmbientJev --product MacAmbientJevEvaluateDiar
 bash scripts/verify_portable.sh
 ```
 
-`verify_portable.sh` は `scripts/check_portable_core.py` による Apple framework import 検査、SwiftPM manifest 評価、`MacAmbientJevCoreTests` を実行する。禁止 import は AVFoundation、AppKit、CoreAudio、CoreML、Security、SwiftUI。これは Core の境界検査であり、Linux 上で macOS runtime が実行できることを意味しない。
+`verify_portable.sh` は `scripts/check_portable_core.py` の default portable roots と test import check を使い、SwiftPM manifest を評価してから unfiltered build / test を実行します。検査対象 roots と禁止 import / platform guard の正本は [checker](../scripts/check_portable_core.py) です。これは import 境界の検査であり、Linux 上で macOS runtime が実行できることを意味しません。
 
 ## 話者分離 DER の計測
 
