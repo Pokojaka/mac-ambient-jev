@@ -1,21 +1,12 @@
 import Foundation
 import MacAmbientJevCore
-import MacAmbientJevAppleSupport
-import MacAmbientJevPipeline
 
-public extension SessionProcessingEngines {
-    /// Creates the production engines used by the app and command-line tools.
-    static func production(paths: AppPaths) -> SessionProcessingEngines {
-        SessionProcessingEngines(
-            asr: NativeQwen3ASREngine(modelStore: ModelStore(paths: paths)),
-            diarization: FluidOfflineDiarizationEngine(paths: paths),
-            finalTranscriptVAD: FluidFinalTranscriptVADSegmenter()
-        )
+public struct SessionProcessingAudio: SessionProcessingAudioHandling {
+    private let timelineBuilder: any ImportedAudioTimelineBuilding
+
+    public init(timelineBuilder: any ImportedAudioTimelineBuilding) {
+        self.timelineBuilder = timelineBuilder
     }
-}
-
-public struct MacSessionProcessingAudio: SessionProcessingAudioHandling {
-    public init() {}
 
     /// An import is read only through the timeline built for this run, which finalization removes.
     public func open(
@@ -27,8 +18,11 @@ public struct MacSessionProcessingAudio: SessionProcessingAudioHandling {
             return try SessionAudioReaders.open(source, layout: layout)
         }
         await onStatus(UserFacingStatus.convertingTimeline.text)
-        let checkpoint = try await AudioFileTimelineBuilder()
-            .build(from: originalURL, into: layout.processingDirectory, sessionURL: layout.sessionURL)
+        let checkpoint = try await timelineBuilder.build(
+            from: originalURL,
+            into: layout.processingDirectory,
+            sessionURL: layout.sessionURL
+        )
         let reader = try ProcessingTimelineReader(
             directory: layout.processingDirectory,
             checkpoint: checkpoint,

@@ -78,7 +78,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
             diarization: PausedImportDiarizer(),
             finalTranscriptVAD: PausedImportVAD()
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )

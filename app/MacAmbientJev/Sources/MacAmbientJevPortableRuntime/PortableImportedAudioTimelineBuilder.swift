@@ -6,7 +6,7 @@ import MacAmbientJevWindowsSupport
 import CMiniaudio
 #endif
 
-private enum FileAudioImportError: LocalizedError {
+public enum PortableAudioImportError: LocalizedError, Equatable {
     case unsupportedLinuxExtension(String)
     case linuxRequiresCanonicalAudio(sampleRate: UInt32, channels: UInt32)
     case invalidDecoderMetadata
@@ -18,7 +18,7 @@ private enum FileAudioImportError: LocalizedError {
     case invalidSamples
     case invalidTimeline
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .unsupportedLinuxExtension(let fileExtension):
             let suffix = fileExtension.isEmpty ? "なし" : ".\(fileExtension)"
@@ -45,43 +45,45 @@ private enum FileAudioImportError: LocalizedError {
     }
 }
 
-/// Imports a pinned source file and builds its canonical processing timeline.
-enum FileAudioImport {
-    static func open(inputURL: URL, sessionURL: URL) async throws -> ProcessingTimelineReader {
-        let imported = try AudioImporter().importFile(inputURL, into: sessionURL)
-        let processingDirectory = sessionURL.appending(path: "processing", directoryHint: .isDirectory)
+/// Builds a canonical processing timeline from an already stored original.
+public struct PortableImportedAudioTimelineBuilder: ImportedAudioTimelineBuilding {
+    public init() {}
 
+    public func build(
+        from sourceURL: URL,
+        into processingDirectory: URL,
+        sessionURL: URL
+    ) async throws -> AudioCheckpoint {
         #if os(Windows)
         let checkpoint = try await AudioFileTimelineBuilder(readFrameCount: 8_192).build(
-            from: imported.originalURL,
+            from: sourceURL,
             into: processingDirectory,
-            sessionURL: sessionURL
-        )
-        return try validatedReader(
-            directory: processingDirectory,
-            checkpoint: checkpoint,
             sessionURL: sessionURL
         )
         #elseif os(Linux)
         let result = try await buildLinuxTimeline(
-            from: imported.originalURL,
+            from: sourceURL,
             into: processingDirectory,
             sessionURL: sessionURL
         )
+        let checkpoint = result.checkpoint
+        #endif
+
         let reader = try validatedReader(
             directory: processingDirectory,
-            checkpoint: result.checkpoint,
+            checkpoint: checkpoint,
             sessionURL: sessionURL
         )
+        #if os(Linux)
         guard reader.info.committedFrames == result.decodedFrames else {
-            throw FileAudioImportError.invalidTimeline
+            throw PortableAudioImportError.invalidTimeline
         }
-        return reader
         #endif
+        return checkpoint
     }
 
     #if os(Linux)
-    private static func buildLinuxTimeline(
+    private func buildLinuxTimeline(
         from sourceURL: URL,
         into processingDirectory: URL,
         sessionURL: URL
@@ -92,7 +94,7 @@ enum FileAudioImport {
         case "wav": format = MJA_DECODER_FORMAT_WAV
         case "flac": format = MJA_DECODER_FORMAT_FLAC
         case "mp3": format = MJA_DECODER_FORMAT_MP3
-        default: throw FileAudioImportError.unsupportedLinuxExtension(fileExtension)
+        default: throw PortableAudioImportError.unsupportedLinuxExtension(fileExtension)
         }
 
         let handle = try SessionFileAccess.openHandle(sourceURL, relativeTo: sessionURL)
@@ -111,7 +113,7 @@ enum FileAudioImport {
         guard createResult == 0, let decoder = createdDecoder else {
             if let createdDecoder { mja_decoder_destroy(createdDecoder) }
             try? handle.close()
-            throw FileAudioImportError.decoderCreationFailed(createResult)
+            throw PortableAudioImportError.decoderCreationFailed(createResult)
         }
         // The decoder borrows this descriptor, so destroy it before closing the handle.
         defer {
@@ -120,14 +122,17 @@ enum FileAudioImport {
         }
 
         guard declaredLength > 0, declaredLength <= UInt64(Int64.max) else {
-            throw FileAudioImportError.invalidDecoderMetadata
+            throw PortableAudioImportError.invalidDecoderMetadata
         }
         guard sampleRate == 16_000, channels == 1 else {
-            throw FileAudioImportError.linuxRequiresCanonicalAudio(
+            throw PortableAudioImportError.linuxRequiresCanonicalAudio(
                 sampleRate: sampleRate,
                 channels: channels
             )
         }
+
+        // Imported builds reconstruct the processing timeline from the original.
+        try SessionFileAccess.removeIfPresent(processingDirectory, relativeTo: sessionURL)
 
         let expectedFrames = Int64(declaredLength)
         let writer = try DurableAudioWriter(
@@ -146,19 +151,19 @@ enum FileAudioImport {
             }
 
             if readResult == MJA_DECODER_UNEXPECTED_EOF {
-                throw FileAudioImportError.unexpectedNativeEOF(readResult)
+                throw PortableAudioImportError.unexpectedNativeEOF(readResult)
             }
             guard readResult == 0 else {
-                throw FileAudioImportError.decoderReadFailed(readResult)
+                throw PortableAudioImportError.decoderReadFailed(readResult)
             }
             guard framesRead <= UInt64(samples.count) else {
-                throw FileAudioImportError.excessFrames
+                throw PortableAudioImportError.excessFrames
             }
 
             if framesRead == 0 {
                 // The C wrapper normalizes MA_AT_END to success only at its declared length.
                 guard decodedFrames == expectedFrames else {
-                    throw FileAudioImportError.prematureEOF(
+                    throw PortableAudioImportError.prematureEOF(
                         expected: expectedFrames,
                         actual: decodedFrames
                     )
@@ -169,12 +174,12 @@ enum FileAudioImport {
 
             let readCount = Int(framesRead)
             guard samples[..<readCount].allSatisfy(\.isFinite) else {
-                throw FileAudioImportError.invalidSamples
+                throw PortableAudioImportError.invalidSamples
             }
             let (nextDecodedFrames, overflow) = decodedFrames.addingReportingOverflow(Int64(framesRead))
-            guard !overflow else { throw FileAudioImportError.excessFrames }
+            guard !overflow else { throw PortableAudioImportError.excessFrames }
             guard nextDecodedFrames <= expectedFrames else {
-                throw FileAudioImportError.excessFrames
+                throw PortableAudioImportError.excessFrames
             }
 
             try await writer.append(samples: Array(samples[..<readCount]))
@@ -182,13 +187,13 @@ enum FileAudioImport {
         }
 
         guard decodedFrames == expectedFrames else {
-            throw FileAudioImportError.prematureEOF(expected: expectedFrames, actual: decodedFrames)
+            throw PortableAudioImportError.prematureEOF(expected: expectedFrames, actual: decodedFrames)
         }
         return (try await writer.finish(), decodedFrames)
     }
     #endif
 
-    private static func validatedReader(
+    private func validatedReader(
         directory: URL,
         checkpoint: AudioCheckpoint,
         sessionURL: URL
@@ -203,7 +208,7 @@ enum FileAudioImport {
         guard info.committedFrames > 0,
               info.sampleRate == CanonicalAudio.sampleRate,
               info.channelCount == CanonicalAudio.channelCount else {
-            throw FileAudioImportError.invalidTimeline
+            throw PortableAudioImportError.invalidTimeline
         }
         return reader
     }

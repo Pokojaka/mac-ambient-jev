@@ -2,7 +2,7 @@ import Foundation
 import MacAmbientJevCore
 
 /// Streams imported source audio through canonical conversion into durable timeline chunks.
-public actor AudioFileTimelineBuilder {
+public actor AudioFileTimelineBuilder: ImportedAudioTimelineBuilding {
     public let readFrameCount: UInt32
 
     public init(readFrameCount: UInt32 = 8_192) {

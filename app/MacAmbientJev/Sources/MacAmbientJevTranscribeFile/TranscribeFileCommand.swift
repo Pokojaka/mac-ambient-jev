@@ -190,7 +190,7 @@ internal enum TranscribeFileCommand {
         var vadProvenance: RunProvenance?
         var operationError: Error?
         do {
-            let audio = try await FileAudioImport.open(inputURL: options.inputURL, sessionURL: scratchURL)
+            let audio = try await PortableAudioFileImporter.open(inputURL: options.inputURL, sessionURL: scratchURL)
             audioSeconds = audio.info.durationSeconds
             let environment = try ONNXEnvironment(
                 loggingID: "MacAmbientJev-SileroFinalTranscript-\(UUID().uuidString)"

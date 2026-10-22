@@ -234,7 +234,7 @@ func finalTranscriptPipelineBoundsFluidPaddingBeforePublishing() async throws {
                 log: log
             )
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )
@@ -278,7 +278,7 @@ func finalTranscriptPipelineRejectsFluidSpansOutsideFinalPadding(startFrame: Int
                 log: log
             )
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )
@@ -339,7 +339,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
                 log: log
             )
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { await sleepRecorder.append($0) }
     )

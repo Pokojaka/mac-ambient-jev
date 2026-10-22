@@ -153,7 +153,7 @@ func storageDiskUsageHarness() async throws {
             asr: StorageHarnessASR(), diarization: StorageHarnessDiarizer(),
             finalTranscriptVAD: StorageHarnessVAD()
         ),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
     )

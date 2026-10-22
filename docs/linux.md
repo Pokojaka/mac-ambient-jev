@@ -101,7 +101,9 @@ MacAmbientJevTranscribeFile <audio-file> --silero-model <path> --asr-model-direc
 
 音声 import と VAD の前に、CLI は Silero model の pinned SHA-256 を検証し、選択した ASR model manifest が列挙する6ファイルの存在・通常ファイル型・readability・正確な byte 数を確認します。この preflight は VAD 区間が空の場合も実行しますが、ASR model ファイルの SHA-256 は検証しません。preflight は測定時間に含まれません。VAD が空の区間一覧を返した場合も処理は成功し、primary の `segments` は空、artifact の hypothesis は空文字です。この場合 ASR model の load / inference は行いません。
 
-入力は import 後に canonical 16 kHz mono float timeline になります。Windows は WindowsSupport による streaming WAV / FLAC / MP3 / M4A / AAC import と canonical conversion を使い、AAC encoder priming も timeline に保持します（詳細は [音声 import API](windows.md#音声-import-api)）。Linux は CMiniaudio 0.11.23 で WAV / FLAC / MP3 だけを読み、入力がすでに 16 kHz mono であることを要求します。Linux では sample-rate conversion と channel mixing をしません。非対応形式や 16 kHz mono でない入力は明示エラーになります。
+`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter.open(inputURL:sessionURL:)`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) を呼びます。Core の [`AudioImporter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioImporter.swift) が入力を一度だけ `sessionURL/audio/original.*` にコピーし、[`PortableImportedAudioTimelineBuilder`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableImportedAudioTimelineBuilder.swift) は保存済み original を再コピーせず、[`SessionLayout.processingDirectory`](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionLayout.swift)（audio directory 内の processing subdirectory）に processing timeline を作ります。共通 Core の [`ImportedAudioTimelineBuilding`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineBuilding.swift) contract を使い、読み込み buffer は最大 8,192 frame、processing timeline は5秒単位の durable chunk に保存します。Linux は [`CMiniaudio`](../app/MacAmbientJev/Sources/CMiniaudio/README.md) 0.11.23 で WAV / FLAC / MP3 を読み、入力がすでに16 kHz mono であることを要求します。Linux では channel mixing と sample-rate conversion をせず、非対応形式・非 canonical 入力・decoder error は既存の明示エラーとして返し、別 decoder へ fallback しません。Windows は既存の WindowsSupport [`AudioFileTimelineBuilder`](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioFileTimelineBuilder.swift) に decode と SRC を委譲し、WAV / FLAC / MP3 / M4A / AAC を扱います。AAC encoder priming と canonical frame boundary の規則は [音声 import API](windows.md#音声-import-api) を参照してください。
+
+Pipeline の [`SessionProcessingAudio`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingAudio.swift) は builder の注入を必須とし、録音音声の読み込みを [`SessionAudioReaders`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionAudioReaders.swift)、録音音声の compaction を [`RecordingAudioCompactor`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/RecordingAudioCompactor.swift) に委譲します。import では構築済み reader を検証して `.importedOriginal(reader.info)` を保存し、CAF export は Core の [`ProcessingTimelineAudioExporter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineAudioExporter.swift) を使います。
 
 Linux で必要なら、既存の ffmpeg を使って事前に mono PCM16 / 16 kHz WAV を作れます。これは利用者が明示的に行う前処理であり、CLI の fallback ではありません。
 
@@ -109,7 +111,7 @@ Linux で必要なら、既存の ffmpeg を使って事前に mono PCM16 / 16 k
 ffmpeg -nostdin -i "$SOURCE_AUDIO" -map_metadata -1 -vn -ac 1 -ar 16000 -c:a pcm_s16le "$NORMALIZED_WAV"
 ```
 
-invalid input や処理失敗では出力 JSON を作りません。CLI は import した original、processing timeline、event files を一時 scratch directory に置き、処理後に削除します。ユーザーの永続 session は作成しません。primary JSON と artifact JSON はそれぞれ atomic file write しますが、2 ファイルの pair 全体は transactional ではありません。
+invalid input や処理失敗では出力 JSON を作りません。CLI は import した original、processing timeline、event files を一時 scratch directory に置き、処理後に削除します。処理と scratch 削除の両方が失敗した場合は両方の error を報告し、削除だけが失敗した場合も filesystem error として返します（[`TranscribeFileCommand`](../app/MacAmbientJev/Sources/MacAmbientJevTranscribeFile/TranscribeFileCommand.swift)）。ユーザーの永続 session は作成しません。primary JSON と artifact JSON はそれぞれ atomic file write しますが、2 ファイルの pair 全体は transactional ではありません。
 
 primary JSON の top-level keys は `schema_version`（常に `1`）、`asr`、`vad`、`segments`、`runtime` です。`asr` と `vad` はそれぞれ `RunProvenance` の `engine`、`model`、`version`、`configuration` を持ちます。`segments` は時系列の `start_ms`、`end_ms`、`text` 要素の配列で、frame 境界を最も近い整数 millisecond に ties-to-even で丸めます。`runtime` は `audio_seconds`、`model_load_seconds`、`inference_seconds`、`rtf` を持ちます。
 
@@ -181,7 +183,7 @@ export MAC_AMBIENT_JEV_SILERO_MODEL="$SILERO_MODEL"
 uv run --python 3.12 --with pytest python -m pytest -q tests/test_transcribe_file_cli_model.py
 ```
 
-CLI の unit tests は引数・path・import decode に加え、モデル不要で primary JSON / artifact の完全な payload schema、VAD segment text の順序と改行 join、provenance、RTF、計測値・configuration・path の error を検査します（[`TranscribeFileTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift)）。実モデルを使う Python integration test は opt-in で、release CLI の出力と CER を検査します。pipeline helper tests は [`FileTranscriptionPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FileTranscriptionPipelineTests.swift) にあります。
+CLI の unit tests は引数・path・import decode に加え、モデル不要で primary JSON / artifact の完全な payload schema、VAD segment text の順序と改行 join、provenance、RTF、計測値・configuration・path の error を検査します（[`TranscribeFileTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift)）。PortableRuntime の [`PortableAudioImportTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/PortableAudioImportTests.swift) はモデル不要で stored-original builder が再コピーしないことと、Linux の非 canonical / 非対応入力の拒否を検査します。実モデルを使う Python integration test は opt-in で、release CLI の出力と CER を検査します。pipeline helper tests は [`FileTranscriptionPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FileTranscriptionPipelineTests.swift) にあります。
 
 ## 話者分離の計測 CLI
 

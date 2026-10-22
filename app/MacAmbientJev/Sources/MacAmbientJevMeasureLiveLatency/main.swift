@@ -231,7 +231,7 @@ struct MeasureLiveLatencyCommand {
         let processor = NativeSessionProcessor(
             paths: replayPaths,
             engines: .production(paths: paths),
-            audioHandling: MacSessionProcessingAudio(),
+            audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
             contentPriority: .disabled,
             sleep: { try await Task.sleep(for: $0) }
         )

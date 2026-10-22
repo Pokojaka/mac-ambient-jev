@@ -493,7 +493,7 @@ struct TranscribeFileTests {
     }
 
     @Test
-    func fileAudioImportBuildsCanonicalTimelineFromGeneratedWave() async throws {
+    func portableAudioFileImporterBuildsCanonicalTimelineFromGeneratedWave() async throws {
         let root = try makeScratchRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let session = try makeSession(in: root, named: "valid-session")
@@ -506,7 +506,7 @@ struct TranscribeFileTests {
             samples: sourceSamples
         )
 
-        let reader = try await FileAudioImport.open(inputURL: source, sessionURL: session)
+        let reader = try await PortableAudioFileImporter.open(inputURL: source, sessionURL: session)
         let info = reader.info
         let samples = try reader.readSamples(frameRange: 0..<5)
 
@@ -518,7 +518,7 @@ struct TranscribeFileTests {
     }
 
     @Test
-    func fileAudioImportRejectsUnsupportedExtensionAndCorruptWave() async throws {
+    func portableAudioFileImporterRejectsUnsupportedExtensionAndCorruptWave() async throws {
         let root = try makeScratchRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let validWave = root.appendingPathComponent("valid-source.wav")
@@ -541,7 +541,7 @@ struct TranscribeFileTests {
 
     #if os(Linux)
     @Test
-    func linuxFileAudioImportRejectsNoncanonicalRateAndChannelsWithLocalizedMessage() async throws {
+    func linuxPortableAudioFileImporterRejectsNoncanonicalRateAndChannelsWithLocalizedMessage() async throws {
         let root = try makeScratchRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let stereoWave = root.appendingPathComponent("stereo.wav")
@@ -913,7 +913,7 @@ struct TranscribeFileTests {
 
     private func importError(input: URL, session: URL) async -> String {
         do {
-            _ = try await FileAudioImport.open(inputURL: input, sessionURL: session)
+            _ = try await PortableAudioFileImporter.open(inputURL: input, sessionURL: session)
             Issue.record("Expected audio import to be rejected: \(input.path)")
             return ""
         } catch {

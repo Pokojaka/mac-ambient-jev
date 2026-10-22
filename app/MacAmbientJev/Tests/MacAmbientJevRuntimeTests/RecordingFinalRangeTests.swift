@@ -120,7 +120,7 @@ func micCaptureStopFinalizesSpeechThroughTheLastPartialDiarizationWindow(sampleR
     let layout = SessionLayout(sessionURL: url)
     let processor = NativeSessionProcessor(paths: paths,
         engines: SessionProcessingEngines(asr: TailASR(), diarization: TailWindowDiarizer(), finalTranscriptVAD: TailVAD()),
-        audioHandling: MacSessionProcessingAudio(),
+        audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in })
     let liveRun = "seg_live_tail"

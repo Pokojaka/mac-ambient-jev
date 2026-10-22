@@ -258,7 +258,7 @@ struct ProcessRecordingCommand {
         let collector = ProcessingResultCollector()
         let processor = NativeSessionProcessor(
             paths: paths, engines: .production(paths: paths),
-            audioHandling: MacSessionProcessingAudio(),
+            audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
             contentPriority: .disabled,
             sleep: { try await Task.sleep(for: $0) }
         )
@@ -369,7 +369,7 @@ struct ProcessRecordingCommand {
         )
         let processor = NativeSessionProcessor(
             paths: paths, engines: .production(paths: paths),
-            audioHandling: MacSessionProcessingAudio(),
+            audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
             contentPriority: .disabled,
             sleep: { try await Task.sleep(for: $0) }
         )

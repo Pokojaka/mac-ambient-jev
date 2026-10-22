@@ -237,22 +237,27 @@ products.append(.executable(
     name: "MacAmbientJevTranscribeFile",
     targets: ["MacAmbientJevTranscribeFile"]
 ))
-var transcribeFileDependencies: [Target.Dependency] = [
-    "MacAmbientJevCore",
-    "MacAmbientJevPipeline",
-    "MacAmbientJevPortableRuntime",
-    "MacAmbientJevONNX"
-]
-#if os(Windows)
-transcribeFileDependencies.append("MacAmbientJevWindowsSupport")
-#elseif os(Linux)
-transcribeFileDependencies.append("CMiniaudio")
-#endif
 targets.append(.executableTarget(
     name: "MacAmbientJevTranscribeFile",
-    dependencies: transcribeFileDependencies,
+    dependencies: [
+        "MacAmbientJevCore",
+        "MacAmbientJevPipeline",
+        "MacAmbientJevPortableRuntime",
+        "MacAmbientJevONNX"
+    ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
+var portableRuntimeDependencies: [Target.Dependency] = [
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevONNX",
+    "MacAmbientJevDiarization"
+]
+#if os(Windows)
+portableRuntimeDependencies.append("MacAmbientJevWindowsSupport")
+#elseif os(Linux)
+portableRuntimeDependencies.append("CMiniaudio")
+#endif
 targets.append(.systemLibrary(name: "CONNXRuntime"))
 targets.append(.target(
     name: "MacAmbientJevONNX",
@@ -263,7 +268,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevPortableRuntime",
-    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "MacAmbientJevONNX", "MacAmbientJevDiarization"],
+    dependencies: portableRuntimeDependencies,
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -387,6 +392,7 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime",
+            "MacAmbientJevAppleSupport",
             .product(name: "MLX", package: "mlx-swift")
         ]
     ),
