@@ -95,7 +95,11 @@ session 作成後に graph の入出力 metadata を完全一致で検証しま�
 
 各推論は Core ML と同じ入力検査（長さ `2...192`、先頭 CLS、末尾 SEP、全 ID が語彙 `0..<102400`）に失敗すると `invalidInput` を返します。出力は形状と要素数が入力長と厳密に一致し、全値が有限の 0..1 で、各 row の和が 1 から `1e-5` 以内でなければ `invalidOutput` です。値の clamp や再正規化はしません。ONNX Runtime 自体の失敗は `unavailable` として返します。request の組み立て、投影、優先度、キャンセル確認は Core ML 版と同じ `ClauseTaggerDecisionLogic` を通り、inference closure だけが違います。actor が session への呼出しを直列化します。
 
+判定 run の provenance `engine` は、ロードした tagger の backend 名です。`DecisionModelIdentity` が必須の `backend` を持ち（空白のみは不正）、`DecisionRunProvenance` はそれをそのまま `engine` に記録します。Core に既定値や OS 判定はなく、Mac の `ClauseTaggerModel` が `coreml-clause-tagger`、`ONNXClauseTagger` が `onnx-clause-tagger` を `ClauseTaggerModelIdentity` に渡します。ONNX の run が Core ML を名乗ることはありません。
+
 `ONNXClauseTagger` を `LoadedDecisionProvider` に包んで `DecisionProviderFactory` に渡すと、Mac の `LocalClauseTagger` と同じ cache と identity の経路になります。CLI への組み込みはまだなく、既存の判定無効 CLI は tagger をロードしません。
+
+PortableRuntime の `PortableProcessingConfiguration.resolve` は環境変数（`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` は判定を要求したときだけ必須）と `--threads` の値を型付きの設定にします。変数の欠落・空・相対パス・存在しないパス・不正な model size・範囲外のスレッド数は明確なエラーで、モデルは読みません。`PortableSessionEngineBundle` は設定から Silero（1スレッド）、Qwen3 ASR、話者分離、（判定要求時のみ）`DecisionProviderFactory` に包んだ `ONNXClauseTagger` を作り、`SessionProcessingEngines` と `ContentPriorityAccess` として渡します。ASR・話者分離・tagger のモデルは最初の利用時にロードされます。
 
 ### 符号化と推論
 

@@ -132,17 +132,19 @@ public struct ClauseBoundaryRequest: Sendable, Equatable {
     }
 }
 
-/// The loaded clause tagger: its external model ID and the 64-digit lowercase hex state-hash revision.
+/// The loaded clause tagger: the backend that runs it, its external model ID and the 64-digit lowercase hex state-hash revision.
 public struct DecisionModelIdentity: Sendable, Equatable {
+    public let backend: String
     public let model: String
     public let modelRevision: String
 
-    public init(model: String, modelRevision: String) throws {
+    public init(backend: String, model: String, modelRevision: String) throws {
         let revisionBytes = modelRevision.utf8
-        guard isNonblank(model), revisionBytes.count == 64,
+        guard isNonblank(backend), isNonblank(model), revisionBytes.count == 64,
               revisionBytes.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw ClauseValidationError.invalidMetadata
         }
+        self.backend = backend
         self.model = model
         self.modelRevision = modelRevision
     }

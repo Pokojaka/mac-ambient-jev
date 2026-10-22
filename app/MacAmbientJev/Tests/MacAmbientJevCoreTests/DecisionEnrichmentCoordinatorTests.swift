@@ -68,7 +68,7 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     let counter = DecisionUsageCounter()
     let provider = FixedResponseDecisionProvider()
     let decisions = DecisionCoordinator(
-        provider: provider, identity: try DecisionModelIdentity(model: modelID, modelRevision: revision), usageCounter: counter
+        provider: provider, identity: try DecisionModelIdentity(backend: "test-backend", model: modelID, modelRevision: revision), usageCounter: counter
     )
     let boundaryRunID = "boundary_local_final"
     let priorityRunID = "priority_local_final"
@@ -98,7 +98,7 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
         == [ProcessingStage.clauseBoundary.rawValue, ProcessingStage.contentPriority.rawValue])
     for start in starts {
         let provenance = try requireValue((start["payload"] as? [String: Any])?["provenance"] as? [String: Any])
-        #expect(provenance["engine"] as? String == "coreml-clause-tagger")
+        #expect(provenance["engine"] as? String == "test-backend")
         #expect(provenance["model"] as? String == modelID)
         #expect(provenance["version"] as? String == revision)
         let configuration = try requireValue(provenance["configuration"] as? [String: String])

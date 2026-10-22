@@ -528,7 +528,7 @@ struct ExportFixture {
 
         let boundaryRunID = "boundary-run"
         let priorityRunID = "priority-run"
-        let identity = try DecisionModelIdentity(model: "fixture", modelRevision: String(repeating: "a", count: 64))
+        let identity = try DecisionModelIdentity(backend: "test-backend", model: "fixture", modelRevision: String(repeating: "a", count: 64))
         let writer = try SessionWriter(sessionURL: session.sessionURL)
         try await writer.append(EventDraft(
             eventType: "processing.run.started",

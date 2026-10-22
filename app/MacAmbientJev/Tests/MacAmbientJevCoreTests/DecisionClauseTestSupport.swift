@@ -28,7 +28,7 @@ actor ScriptedDecisionProvider: DecisionProvider {
     }
 }
 
-let testDecisionIdentity = try! DecisionModelIdentity(model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
+let testDecisionIdentity = try! DecisionModelIdentity(backend: "test-backend", model: "test-tagger", modelRevision: String(repeating: "0", count: 64))
 let testInputTokens = 10
 
 /// Accepts a candidate after `。？！?!` and rejects one after `、`; continues into the next

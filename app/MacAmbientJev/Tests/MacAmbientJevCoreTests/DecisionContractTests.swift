@@ -49,7 +49,8 @@ func codableProbabilityAndNextHeadValidationCannotBeBypassed() throws {
     headObject["text"] = String(repeating: "👩🏽‍💻", count: 61)
     let invalidHead = try JSONSerialization.data(withJSONObject: headObject)
     #expect(throws: (any Error).self) { try JSONDecoder().decode(NextSegmentHead.self, from: invalidHead) }
-    #expect(throws: (any Error).self) { try DecisionModelIdentity(model: " ", modelRevision: String(repeating: "0", count: 64)) }
+    #expect(throws: (any Error).self) { try DecisionModelIdentity(backend: "test-backend", model: " ", modelRevision: String(repeating: "0", count: 64)) }
+    #expect(throws: (any Error).self) { try DecisionModelIdentity(backend: " ", model: "m", modelRevision: String(repeating: "0", count: 64)) }
     #expect(throws: (any Error).self) { try DecisionRequestRecord(requestID: "decisionreq_1", inputTokens: -1) }
 }
 
