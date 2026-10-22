@@ -133,6 +133,7 @@ struct ClauseTaggerManifest: Decodable, Equatable {
 
     func identity() throws -> ClauseTaggerModelIdentity {
         try ClauseTaggerModelIdentity(
+            backend: ONNXClauseTagger.backendName,
             modelID: model.id, revision: model.revision, tokenizerSHA256: model.tokenizerSHA256
         )
     }

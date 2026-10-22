@@ -116,6 +116,7 @@ private struct CancelFirstDecisionProvider: DecisionProvider {
 
 private func makeIdentity() throws -> ClauseTaggerModelIdentity {
     try ClauseTaggerModelIdentity(
+        backend: "test-backend",
         modelID: "synthetic-local-model",
         revision: String(repeating: "b", count: 64),
         tokenizerSHA256: String(repeating: "c", count: 64)
@@ -313,7 +314,7 @@ struct DecisionProviderFactoryTests {
         let boundaryProvenance = coordinator.boundaryProvenance(mode: "live")
         let priorityProvenance = coordinator.priorityProvenance(mode: "live")
         for provenance in [boundaryProvenance, priorityProvenance] {
-            #expect(provenance.engine == "coreml-clause-tagger")
+            #expect(provenance.engine == "test-backend")
             #expect(provenance.model == identity.modelID)
             #expect(provenance.version == identity.revision)
             #expect(provenance.configuration["model_id"] == identity.modelID)

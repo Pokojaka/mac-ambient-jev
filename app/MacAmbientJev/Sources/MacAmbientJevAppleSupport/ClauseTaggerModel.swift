@@ -3,6 +3,8 @@ import Foundation
 import MacAmbientJevCore
 
 public final class ClauseTaggerModel {
+    public static let backendName = "coreml-clause-tagger"
+
     public let identity: ClauseTaggerModelIdentity
 
     private let model: MLModel
@@ -179,6 +181,7 @@ public final class ClauseTaggerModel {
         }
 
         return try ClauseTaggerModelIdentity(
+            backend: Self.backendName,
             modelID: modelID,
             revision: revision,
             tokenizerSHA256: tokenizerSHA256

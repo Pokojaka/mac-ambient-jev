@@ -3,6 +3,8 @@ import MacAmbientJevCore
 
 /// The portable clause tagger: the pinned ONNX graph on ONNX Runtime CPU, behind the same decision logic as Core ML.
 public actor ONNXClauseTagger: DecisionProvider {
+    public static let backendName = "onnx-clause-tagger"
+
     public nonisolated let identity: ClauseTaggerModelIdentity
 
     private let tokenizer: ClauseTaggerTokenizer
