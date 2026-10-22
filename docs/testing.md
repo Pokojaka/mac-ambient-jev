@@ -527,6 +527,52 @@ resume は先にそのセッションの保存整理（FLAC 変換または一�
 
 `scripts/verify_cli_inputs.py` は build 済み CLI のパスを一つ受け取り、重複 flag、未知 option、inspect/resume の余分な位置引数、計測引数の欠落等の 10 ケースを実行する。不正入力の非 0 終了に加えて、出力・計測ファイル・セッションが作成されないことを確認する。さらに実 named folder で inspect の正常・不在・完全 UUID の重複・同じ先頭 8 桁の別 ID・名前/日時/suffix/stem の不整合を検証し、実セッション内（symlink・大文字小文字の違いを含む）への resume 出力を拒否して原ファイルが変わらないことを確認する。実モデルの正常推論とは別の検査である。
 
+## ポータブル full-model の受入
+
+Linux / Windows の `MacAmbientJevProcessRecording` は、実モデルで音声ファイルから最終 transcript までを通す受入 driver [`process_recording_acceptance.py`](../tools/linux-audio/process_recording_acceptance.py) で検査します。入力は公開 fixture `qwen3_asr_voicevox_long.wav`（18.464 秒）だけで、参照文と WAV の SHA-256・sample 数は [windows.md](windows.md#日本語音声-fixture) の表から読みます。fixture が表と一致しなければ失敗します。
+
+driver は release の CLI と `MacAmbientJevEvaluateASR` の絶対 path、fixture を引数で受け取り（既定値なし）、次を実行します。
+
+1. 一時 sessions root へ `--keep-session --with-decisions --threads 2` で import する。
+2. 全モデル環境変数を除いた環境で `--inspect-session` を実行する。
+3. 完了済みセッションを `--resume-session --with-decisions --threads 2` で再開し、出力を import と比較する。
+
+必須の環境変数は `MAC_AMBIENT_JEV_SILERO_MODEL`（ファイル）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` か `1.7b`）、`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY`、`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` です。いずれも未設定・空・相対 path・存在しない path は失敗で、skip しません。各コマンドには timeout があり、import と resume は 300 秒です。
+
+検査内容は次のとおりです。
+
+- 全コマンドの終了コードが 0 で、import の stdout に `session_id:` 行がちょうど 1 つある。
+- 出力 JSON は 2 件以上の segment を時系列・重なりなし・音声長以内で持ち、各 `text` は日本語を含む。`clause_state` は `classified` で、clause slice は priority を持ち再試行待ちがない。
+- `text` を時刻順に連結した raw 文を `MacAmbientJevEvaluateASR`（製品の正規化と CER 評価）で参照文と比較し、正規化後 CER が 0.15 以下。
+- 話者の raw id が空でなく span が音声長に収まる。`SpeakerDisplayMapper` と同じ規則（先頭 start 順に Speaker 1–7、8 人目以降は OTHER、重なりがなければ UNKNOWN、80% 以上を占める話者の単独表示）で得た表示ラベルが Speaker 1–7、OTHER、UNKNOWN のどれかである。話者数は固定しない。
+- セッション folder に `session.json`、末尾まで完結した `events.jsonl`、`processing_metadata.json`、`storage.json`（imported original と import 時のフレーム数）があり、`audio/original.*` が入力と byte 単位で同一である。`audio` 以下に CAF が残らず、`recording.flac` がない。
+- `active_runs` の segmentation・asr・diarization・clause_boundary・content_priority が全てあり、それぞれ `processing.run.started` / `processing.run.completed`（成功、失敗数 0）が 1 つずつある。provenance の engine は Silero・Qwen3-ASR・Community-1 の ONNX engine で、ASR の model は [qwen3_asr_models.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) の `repository@commit`、`intra_op_threads` は 2 である。判定 run の engine は ONNX で、Core ML を名乗らない。境界・優先度の判定 event が active run にあり、保留中の判定対象がない。
+- 出力 segment と active ASR run の認識済み `asr.completed` event が segment ID と本文で一致する。
+- inspect は `action` が `none`、`maintenance` が `null` で、resume は `events.jsonl` を変えず、出力が import と同一である。
+
+driver 自身のテストは実モデルを使わず、偽の CLI と evaluator が作る session で、誤った transcript、欠けた stage、不正な話者、欠けたファイル、残った CAF、Core ML を名乗る判定 engine、import と異なる resume 出力が各々失敗することを確認します。POSIX のみで実行します。
+
+```bash
+cd tools/linux-audio
+uv run --python 3.12 --with pytest python -m pytest -q tests/test_process_recording_acceptance.py
+```
+
+### full-model モード
+
+`bash scripts/verify_portable.sh --full-model` は通常の検証とは別の opt-in モードで、フラグがなければ従来どおりの build と test だけを実行します。このモードは次を順に行います。
+
+1. ONNX Runtime、Silero、Qwen3-ASR tokenizer、clause tagger に加えて Qwen3-ASR 0.6B（int4、保存先 `.build/qwen3-asr-models`）と Community-1 diarization を既存の fetcher で取得し、5 つの環境変数を設定する。
+2. `RUN_MODEL_TESTS=1` で 4 engine の数値 suite（[SileroVADParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/SileroVADParityTests.swift)、[ONNXQwen3ASRModelTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift)、[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)、[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）を 1 つずつ実行する。実行された test 名と skip された test 名を出力し、1 件も実行されなかった suite は失敗とする。
+3. `MacAmbientJevProcessRecording` と `MacAmbientJevEvaluateASR` を release で build し、受入 driver を実行する。
+
+fixture 入力の Qwen3-ASR は 0.6B で、1.7B の製品品質ではなく経路の接続を検査します。1.7B の CER は別の記録で扱います。
+
+Windows では `./scripts/test-windows.ps1 -FullModel` が通常の build / test の後に同じ取得・数値 suite・release build を行い、ONNX Runtime の DLL を release の CLI の隣に置いて同じ driver を実行します。Windows 上の実モデル受入は手動で実行し、通常の Windows CI には含まれません。
+
+### CI の `linux-model-e2e`
+
+[portable-core.yml](../.github/workflows/portable-core.yml) の `linux-model-e2e` は `linux` と同じ trigger と draft の扱いで動く必須 job です（`swift:6.2-noble`、timeout 45 分）。まず driver の自己テストを実行し、続けて `verify_portable.sh --full-model` を実行します。モデル directory（`.build/` 以下の Qwen3-ASR 0.6B、tokenizer、Silero、Community-1、clause tagger）は OS・arch と、各 manifest と fetcher・`pinned_download.py` の hash を key に GitHub Actions の cache action へ保存します。broad な restore key はありません。cache が hit しても fetcher が全ファイルの SHA-256 を再検証し、破損した cache は別モデルで代替せず失敗します。ONNX Runtime は毎回取得します。
+
 ## セッションの CER
 
 `MacAmbientJevEvaluateSession` は portable で、二つの位置引数だけを受け取る。

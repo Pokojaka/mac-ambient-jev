@@ -1,3 +1,5 @@
+param([switch]$FullModel)
+
 $ErrorActionPreference = 'Stop'
 $env:PYTHONIOENCODING = 'utf-8'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -74,3 +76,73 @@ Copy-Item -LiteralPath $runtimeDll -Destination $destinationDll -Force -ErrorAct
 if (-not (Test-Path -LiteralPath $destinationDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied to the Swift debug bin directory: $destinationDll" }
 
 Invoke-Step 'Swift test portable Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
+
+if ($FullModel) {
+    function Get-SinglePath([string]$Name, [object[]]$Lines) {
+        if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
+        if ($Lines.Count -ne 1) { throw "$Name returned $($Lines.Count) paths; expected exactly one" }
+        $path = ([string]$Lines[0]).Trim()
+        if ([string]::IsNullOrWhiteSpace($path)) { throw "$Name returned an empty path" }
+        return $path
+    }
+
+    # Runs one gated numerical suite with RUN_MODEL_TESTS=1, prints the executed and skipped test
+    # names, and fails when the suite executed no test. Windows PowerShell 5.1 turns native stderr
+    # into terminating errors under 'Stop', so the preference is relaxed around the native call.
+    function Invoke-ModelSuite([string]$Name, [string]$Filter) {
+        Write-Host "==> model suite: $Name (filter: $Filter)"
+        $env:RUN_MODEL_TESTS = '1'
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $lines = @(& swift test --package-path app/MacAmbientJev --filter $Filter 2>&1 | ForEach-Object { "$_" })
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+            Remove-Item Env:RUN_MODEL_TESTS
+        }
+        $lines | ForEach-Object { Write-Host $_ }
+        if ($exitCode -ne 0) { throw "model suite $Name failed with exit code $exitCode" }
+        $executed = @($lines | Where-Object { $_ -match 'Test .* passed after' -and $_ -notmatch 'Test run' })
+        if ($executed.Count -eq 0) { throw "model suite $Name executed no test" }
+        Write-Host "executed tests in $Name ($($executed.Count)):"
+        $executed | ForEach-Object { Write-Host $_ }
+        $skipped = @($lines | Where-Object { $_ -match 'Test .* skipped' })
+        Write-Host "skipped tests in ${Name}:"
+        if ($skipped.Count -eq 0) { Write-Host '(none)' } else { $skipped | ForEach-Object { Write-Host $_ } }
+    }
+
+    $modelsDirectory = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) '.build\qwen3-asr-models'))
+    New-Item -ItemType Directory -Force -Path $modelsDirectory | Out-Null
+    Write-Host '==> fetch Qwen3-ASR 0.6B model'
+    $qwen3Lines = @(& python scripts/fetch_qwen3_asr_model.py 0.6b $modelsDirectory)
+    $env:QWEN3_ASR_ONNX_MODEL_DIRECTORY = Get-SinglePath 'Qwen3-ASR model fetch' $qwen3Lines
+    $env:QWEN3_ASR_ONNX_MODEL_SIZE = '0.6b'
+
+    Write-Host '==> fetch Community-1 diarization model'
+    $diarizationLines = @(& python scripts/fetch_community1_diarization.py)
+    $env:MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY = Get-SinglePath 'Community-1 diarization fetch' $diarizationLines
+
+    Invoke-ModelSuite 'Silero VAD' 'SileroVADParityTests'
+    Invoke-ModelSuite 'Qwen3-ASR' 'ONNXQwen3ASRModelTests|Qwen3ASRTokenReferenceTests'
+    Invoke-ModelSuite 'Community-1 diarization' 'Community1ONNXStageTests|Community1ONNXEndToEndTests'
+    Invoke-ModelSuite 'clause tagger' 'ONNXClauseTaggerTests'
+
+    Invoke-Step 'Swift build release ProcessRecording' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevProcessRecording }
+    Invoke-Step 'Swift build release EvaluateASR' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevEvaluateASR }
+    $releaseBinLines = @(& swift build --package-path app/MacAmbientJev -c release --show-bin-path)
+    $releaseBinDir = [System.IO.Path]::GetFullPath((Get-SinglePath 'Swift release bin path lookup' $releaseBinLines))
+    if (-not (Test-Path -LiteralPath $releaseBinDir -PathType Container)) { throw "Swift release bin directory does not exist: $releaseBinDir" }
+    $releaseDll = Join-Path $releaseBinDir 'onnxruntime.dll'
+    Copy-Item -LiteralPath $runtimeDll -Destination $releaseDll -Force -ErrorAction Stop
+    if (-not (Test-Path -LiteralPath $releaseDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied beside the release CLI: $releaseDll" }
+
+    $fixture = [System.IO.Path]::GetFullPath('app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav')
+    Invoke-Step 'process recording acceptance driver' {
+        python tools/linux-audio/process_recording_acceptance.py `
+            --executable (Join-Path $releaseBinDir 'MacAmbientJevProcessRecording.exe') `
+            --evaluator (Join-Path $releaseBinDir 'MacAmbientJevEvaluateASR.exe') `
+            --fixture $fixture
+    }
+    Write-Host 'Windows full-model verification passed'
+}
