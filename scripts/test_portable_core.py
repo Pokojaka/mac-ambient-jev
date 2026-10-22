@@ -111,8 +111,8 @@ class PortableImportTests(unittest.TestCase):
             for module in ["AVFoundation", "AppKit", "WinSDK", "CoreML", "FluidAudio"]:
                 with self.subTest(module=module):
                     self.assertIn(module, result.stderr)
-            self.assertIn(DEFAULT_ROOTS[2], result.stderr)
-            self.assertIn(DEFAULT_ROOTS[3], result.stderr)
+            self.assertIn(str(pathlib.PurePath(DEFAULT_ROOTS[2])), result.stderr)
+            self.assertIn(str(pathlib.PurePath(DEFAULT_ROOTS[3])), result.stderr)
 
     def test_cli_rejects_platform_imports_in_each_engine_root(self):
         sources = [
@@ -134,7 +134,7 @@ class PortableImportTests(unittest.TestCase):
                         result = self.run_default_cli(directory)
 
                         self.assertEqual(result.returncode, 1, result.stderr)
-                        self.assertIn(engine_root, result.stderr)
+                        self.assertIn(str(pathlib.PurePath(engine_root)), result.stderr)
                         self.assertIn(module, result.stderr)
 
     def test_cli_requires_all_default_roots(self):
