@@ -24687,6 +24687,9 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
 
 static ma_result ma_device_read__wasapi(ma_device* pDevice, void* pFrames, ma_uint32 frameCount, ma_uint32* pFramesRead)
 {
+    #if defined(MJA_WASAPI_PACKET_READ)
+    return MJA_WASAPI_PACKET_READ(pDevice, pFramesRead);
+    #else
     ma_result result = MA_SUCCESS;
     ma_uint32 totalFramesProcessed = 0;
 
@@ -24880,6 +24883,7 @@ static ma_result ma_device_read__wasapi(ma_device* pDevice, void* pFrames, ma_ui
     }
 
     return result;
+    #endif
 }
 
 static ma_result ma_device_write__wasapi(ma_device* pDevice, const void* pFrames, ma_uint32 frameCount, ma_uint32* pFramesWritten)

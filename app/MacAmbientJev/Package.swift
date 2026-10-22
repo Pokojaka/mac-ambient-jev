@@ -130,7 +130,7 @@ var targets: [Target] = [
 targets.append(.target(
     name: "CMiniaudio",
     exclude: ["README.md"],
-    linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("uuid")]
+    linkerSettings: [.linkedLibrary("kernel32"), .linkedLibrary("ole32"), .linkedLibrary("uuid")]
 ))
 #elseif os(Linux)
 targets.append(.target(
@@ -154,7 +154,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevWindowsSupport",
-    dependencies: ["MacAmbientJevCore", "CMiniaudio", "CWindowsAudio"]
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "CMiniaudio", "CWindowsAudio"]
 ))
 targets.append(.testTarget(
     name: "MacAmbientJevWindowsSupportTests",

@@ -122,6 +122,22 @@ writer 障害時は録音を停止し、赤い障害表示を維持しながら�
 
 システム音声タップの停止では、各資源の解放をすべて試み、失敗した操作名を付けて「システム音声の取得資源を解放できませんでした（…）。アプリを終了して開き直してください」というエラーを返します。開始失敗に伴う解放失敗は元のエラーと併記します。録音保存が成功し、解放だけが失敗した通常停止では、音声を保持し警告として表示します。writer 障害や入力障害による自動停止では元の障害表示を維持し、停止時に発生した別の解放・停止エラーも赤い表示に併記します。同じ原因が重複して返された場合は一度だけ表示します。
 
+## Windows のキャプチャ
+
+Windows では miniaudio の WASAPI（共有モードのみ）でマイク（`ma_device_type_capture`）とシステム音声（`ma_device_type_loopback`、再生エンドポイントを選択）を取得します。排他モード・他 backend・形式の代替経路はありません。同時に録音する入力元は一つです。入力デバイスは「既定」または列挙したエンドポイント ID のどちらかを明示し、既定は開始時に解決して固定します。エンドポイントの無効化・切替・形式変更・中断は、別デバイスへ切り替えず録音を停止してエラーにします。エンドポイント一覧は `WindowsWASAPICaptureFactory.devices(source:)` が返します（`devices.list` 用）。
+
+**パケット hook。** 標準の miniaudio コールバックにはタイムスタンプがなく、WASAPI の GetBuffer はデバイス位置と QPC を捨てます。そこで同梱ヘッダーの `ma_device_read__wasapi` に、`MJA_WASAPI_PACKET_READ` が定義されている場合だけ元の読み取りループを置き換える 4 行の hook を加えています。hook は GetBuffer のパケットを、フレーム数・デバイス位置・QPC（100 ns 単位）・フラグとともに最大 512 フレームに分割して渡し、分割後も元パケットの位置と offset を保持します。この経路が取得モードの唯一の入力で、通常の data callback は何も処理しません。native PCM（u8 / s16 / s24 / s32 / f32）は有界な scratch で float32 に変換し、チャンネル数とソースレートは保持します。チャンネル平均は `TimestampedMonoSink`、SRC は `AudioCaptureDrain` で一度だけ行います。
+
+**タイムスタンプ。** デバイスフレームを録音開始時の QPC epoch からの座標へ写します。QPC の経過とデバイス位置の差が許容（2 フレームまたは 2 ms の大きい方）を超える場合、QPC が先行して `DISCONTINUITY` が付くときだけ gap として座標を再アンカーします。それ以外の逆行・不整合・`TIMESTAMP_ERROR`・不正なフラグ／形式／NaN は、欠落時間を推測せず停止します。`SILENT` パケットは有効な無音（`sink.silence`）です。ゼロ値が連続する通常パケットも有効な音声として扱います。
+
+**ループバックの無音。** ループバックは再生がない間パケットを返さないことがあります。同じ native producer thread で、利用可能なパケットを全て読んだ後に健全性を通知します。独立に観測した外部再生（エンジンとその子孫を除くセッションのプロセス）が無く、エンドポイントが生きている間は、QPC の watermark までを時計に合わせた有効な無音として埋めます。再生が観測されるのにパケットが 3 秒届かない場合、watermark が 3 秒以上遅れる場合、ワーカーの heartbeat が 3 秒途切れる場合、再生状態が不明な場合は停止します。再生が止まった直後の未到着区間は、3 秒未満であれば gap として記録します。マイクのパケット途絶は共通の 3 秒 stall 判定に従います。
+
+**安全機能。** 共通の capture safety の定数（最初のバッファと stall は 3 秒、無音通知 30 秒、開始予約 601,600,000 bytes、停止下限 128,000,000 bytes、30 秒ごとの確認）をそのまま使います。空き容量は検証済みの録音ディレクトリを GetDiskFreeSpaceExW に渡し、呼び出し元が使える空き bytes を Int64 に変換します（BOOL と GetLastError を確認し、Int64 の上限超過はエラー）。NULL や現在のドライブは使いません。開始前に取得できなければ録音しません。録音中の取得失敗は警告、下限未満は停止です。スリープ防止は専用の native スレッドが SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) を取得し、同じスレッドで `ES_CONTINUOUS` を指定して解放します。開始失敗を含むすべての終了経路で解放し、取得失敗は開始エラー、解放失敗は報告します。ディスプレイ関連のフラグは使いません。蓋を閉じる操作や利用者が選ぶスリープは防げず、想定外の中断では録音を停止して復旧可能な音声を残します。停止は native producer を join してからリングの末尾を確定し、`drain.finish()`、資源解放の順で行います。writer 障害では健全な checkpoint を[共通確定処理](final.md)へ送ります。
+
+Windows には入力音量の自動調整がなく、能力表示は `automatic_input_volume: "none"` です。熱状態の監視もなく、`WindowsNoThermalMonitoring` を注入して `thermal_monitoring: "none"` と表示し、常温を装う値は返しません。
+
+テストでは実機の代わりに、仮想時計と座標・無音・gap・障害を指定できる fake ingress がハードウェアだけを置き換え、実際の sink・ring・drain・SRC・writer を通します。fake は本番の protocol と実行ファイルからは使えません。
+
 ## 実装の根拠
 
 - [録音開始・停止・障害表示](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Recording.swift)、[キャプチャ本体](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[macOS provider の空き容量と入力監視](../app/MacAmbientJev/Sources/MacAmbientJevCapture/MacCaptureProviders.swift)、[portable な capture lifecycle / policy](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/CaptureSafety.swift)
@@ -129,3 +145,4 @@ writer 障害時は録音を停止し、赤い障害表示を維持しながら�
 - [リング容量](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[保存エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[取得音声の判定](../app/MacAmbientJev/Sources/MacAmbientJevCore/TimelineAudio.swift)
 - [入力音量 policy](../app/MacAmbientJev/Sources/MacAmbientJevCore/MicGainPolicy.swift)、[音量 ownership と復元](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/MicInputVolumeController.swift)、[設定初期値](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[設定 UI](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)
 - [日本語表示文言](../app/MacAmbientJev/Sources/MacAmbientJevCore/UserFacingStatus.swift)、[表示色・状態の分離](../app/MacAmbientJev/Sources/MacAmbientJev/MacAmbientJevApp.swift)、[読み込みのチャンネル構成](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)
+- [Windows のキャプチャ源](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsCaptureSource.swift)、[パケット ingress](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsCaptureIngress.swift)、[安全 adapter](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsCaptureSafety.swift)、[WASAPI factory](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsWASAPICaptureFactory.swift)、[native wrapper](../app/MacAmbientJev/Sources/CMiniaudio/WindowsCapture.inc)
