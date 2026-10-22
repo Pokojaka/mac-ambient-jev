@@ -55,12 +55,15 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private static let maximumPacketFrames = 65_536
     private static let qpcUnitsPerSecond = 10_000_000.0
     private static let healthInterval: TimeInterval = CaptureHealth.stallInterval
-    /// A loopback packet reaches the reader up to one engine period (10 ms typically, tens of
-    /// ms on some endpoints) after the audio it carries, and the environment watermark is
-    /// observed up to one poll cycle (100 ms) before the drain that reports it. Idle silence
-    /// and gaps stop this far short of the watermark so a late packet is never pre-empted;
-    /// the ring keeps the first write for a range.
+    /// The 250 ms grace bounds normal delivery delay and observation lag for health fills;
+    /// it does not guarantee late packets cannot arrive after a fill. Real PCM overlapping an
+    /// already synthesized fill fails with `.timestamp` rather than being silently discarded.
     private static let deliveryGraceSeconds = 0.25
+
+    private struct PacketStartMapping {
+        let frame: Int64
+        let fillsIdleGap: Bool
+    }
 
     public let sink: TimestampedMonoSink
     public let sampleRate: Double
@@ -88,7 +91,6 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private var previousDeviceEnd: UInt64?
     private var previousQPC100ns: UInt64?
     private var previousQPCFrame: Int64?
-    private var lastPacketEndFrame: Int64 = 0
     private var currentPacketPosition: UInt64 = 0
     private var currentPacketQPC: UInt64 = 0
     private var currentPacketFrames = 0
@@ -205,14 +207,17 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
 
         let isNewPacket = packet.packetOffset == 0
         let packetStart: Int64
+        let fillsIdleGap: Bool
         if isNewPacket {
             guard !packetInProgress else {
                 fail(.invalidPacket)
                 return
             }
             guard let mapped = mapPacketStart(packet) else { return }
-            packetStart = mapped
+            packetStart = mapped.frame
+            fillsIdleGap = mapped.fillsIdleGap
         } else {
+            fillsIdleGap = false
             guard packetInProgress,
                   packet.devicePosition == currentPacketPosition,
                   packet.qpc100ns == currentPacketQPC,
@@ -258,6 +263,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             }
         }
 
+        if fillsIdleGap, !fillIdleReanchorGap(upTo: packetStart) { return }
+        if !isSilent && !isKnownMissing, packetStart < sink.lastEndFrame {
+            fail(.timestamp)
+            return
+        }
+
         if isNewPacket {
             currentPacketPosition = packet.devicePosition
             currentPacketQPC = packet.qpc100ns
@@ -289,12 +300,6 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             )
         }
 
-        let (packetEnd, endOverflow) = packetStart.addingReportingOverflow(Int64(packet.frameCount))
-        guard !endOverflow else {
-            fail(.timestamp)
-            return
-        }
-        lastPacketEndFrame = packetEnd
         expectedPacketOffset += packet.frameCount
         if expectedPacketOffset == packet.packetFrames {
             let (deviceEnd, deviceEndOverflow) = packet.devicePosition.addingReportingOverflow(
@@ -414,7 +419,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         sink.silence(startFrame: endFrame, frameCount: count)
     }
 
-    /// The last frame for which every packet the device will deliver has been drained.
+    /// The health-fill boundary at the watermark, excluding the 250 ms delivery grace.
     private func settledFrame(forWatermark watermark: UInt64) -> Int64? {
         guard watermark >= epochQPC100ns, let frame = frameForQPC(watermark) else { return nil }
         return max(0, frame - deliveryGraceFrames)
@@ -455,7 +460,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         return failure
     }
 
-    private func mapPacketStart(_ packet: WindowsCapturePacket) -> Int64? {
+    private func mapPacketStart(_ packet: WindowsCapturePacket) -> PacketStartMapping? {
         guard let hostFrame = frameForQPC(packet.qpc100ns) else {
             fail(.timestamp)
             return nil
@@ -465,21 +470,28 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
               let previousDeviceEnd,
               let previousQPC100ns,
               let previousQPCFrame else {
-            return resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame)
+            guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
+                return nil
+            }
+            return PacketStartMapping(frame: hostFrame, fillsIdleGap: false)
         }
         guard packet.qpc100ns >= previousQPC100ns else {
             fail(.timestamp)
             return nil
         }
 
+        let idleLoopback = loopback && lastHealthTime != nil && !activeOutput
         if packet.devicePosition < previousDeviceEnd {
             guard packet.flags & Self.discontinuityFlag != 0,
                   packet.qpc100ns > previousQPC100ns,
-                  hostFrame >= lastPacketEndFrame else {
+                  hostFrame >= sink.lastEndFrame else {
                 fail(.timestamp)
                 return nil
             }
-            return resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame)
+            guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
+                return nil
+            }
+            return PacketStartMapping(frame: hostFrame, fillsIdleGap: idleLoopback)
         }
 
         let deviceDelta = packet.devicePosition - previousDevicePosition
@@ -491,16 +503,17 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         let tolerance = max(2.0, sampleRate * 0.002)
         let difference = abs(Double(qpcDelta) - Double(deviceDelta))
         if difference > tolerance {
-            // A loopback stream delivers no packets while nothing plays and its device position
-            // counts only delivered frames, so the first packet after an idle interval lies
-            // ahead of the device clock whether or not the driver sets DATA_DISCONTINUITY (the
-            // flag is documented only as glitch detection). The skipped host time becomes
-            // idle silence or a ring gap. A microphone has no such idle interval: a jump
-            // there is lost audio and needs the flag.
+            // Loopback QPC can advance while device position counts only delivered frames.
+            // An unflagged jump is trustworthy only after an observed idle health state;
+            // discontinuity-flagged jumps retain their existing acceptance constraints.
+            let flagged = packet.flags & Self.discontinuityFlag != 0
             if Double(qpcDelta) > Double(deviceDelta),
-               packet.flags & Self.discontinuityFlag != 0 || loopback,
-               hostFrame >= lastPacketEndFrame {
-                return resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame)
+               (flagged || idleLoopback),
+               hostFrame >= sink.lastEndFrame {
+                guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
+                    return nil
+                }
+                return PacketStartMapping(frame: hostFrame, fillsIdleGap: idleLoopback)
             }
             fail(.timestamp)
             return nil
@@ -520,7 +533,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             fail(.timestamp)
             return nil
         }
-        return mapped
+        return PacketStartMapping(frame: mapped, fillsIdleGap: false)
     }
 
     private func resetAnchor(devicePosition: UInt64, frame: Int64) -> Int64? {
@@ -531,6 +544,33 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         anchorDevicePosition = devicePosition
         anchorFrame = frame
         return frame
+    }
+
+    private func fillIdleReanchorGap(upTo frame: Int64) -> Bool {
+        let endFrame = sink.lastEndFrame
+        guard frame >= endFrame else {
+            fail(.timestamp)
+            return false
+        }
+        let (uncovered, overflow) = frame.subtractingReportingOverflow(endFrame)
+        guard !overflow else {
+            fail(.timestamp)
+            return false
+        }
+        guard uncovered > 0 else { return true }
+        let threeSecondFrames = Int64(
+            (sampleRate * CaptureHealth.stallInterval).rounded(.up)
+        )
+        guard uncovered < threeSecondFrames else {
+            fail(.suspended)
+            return false
+        }
+        guard let count = Int(exactly: uncovered) else {
+            fail(.timestamp)
+            return false
+        }
+        sink.silence(startFrame: endFrame, frameCount: count)
+        return true
     }
 
     private func frameForQPC(_ qpc: UInt64) -> Int64? {

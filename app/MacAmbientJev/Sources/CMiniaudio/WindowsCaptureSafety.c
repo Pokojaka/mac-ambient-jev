@@ -37,9 +37,8 @@ static const GUID MJA_IID_IAudioSessionControl2 = {0xBFB7FF88, 0x7239, 0x4FC9, {
 #define AUDCLNT_S_NO_SINGLE_PROCESS ((HRESULT)0x0889000DL)
 #endif
 #define MJA_QPC_UNITS_PER_SECOND UINT64_C(10000000)
-/* Session membership and device state change on human timescales. The ingress holds idle
- * silence back by 250 ms, so a poll cycle of 100 ms plus its own duration can never hide
- * a burst from the silence fill. */
+/* Environment polling uses a 100 ms observation interval. Ingress applies a 250 ms
+ * health-fill grace; real PCM overlapping an already synthesized fill fails with .timestamp. */
 #define MJA_ENVIRONMENT_POLL_MS 100u
 
 struct mja_power_owner {
@@ -236,14 +235,15 @@ static int32_t mja_power_wait_and_dispose(mja_power_owner *owner, int32_t primar
             int32_t event_error = mja_last_error_or(ERROR_GEN_FAILURE);
             mja_power_record_error(&errors->cleanup, event_error);
             if (first_operation_error == 0) first_operation_error = event_error;
-        }
-        wait_result = WaitForSingleObject(owner->thread, INFINITE);
-        if (wait_result == WAIT_OBJECT_0) {
-            joined = 1;
         } else {
-            int32_t wait_error = mja_last_error_or(ERROR_GEN_FAILURE);
-            mja_power_record_error(&errors->wait, wait_error);
-            if (first_operation_error == 0) first_operation_error = wait_error;
+            wait_result = WaitForSingleObject(owner->thread, INFINITE);
+            if (wait_result == WAIT_OBJECT_0) {
+                joined = 1;
+            } else {
+                int32_t wait_error = mja_last_error_or(ERROR_GEN_FAILURE);
+                mja_power_record_error(&errors->wait, wait_error);
+                if (first_operation_error == 0) first_operation_error = wait_error;
+            }
         }
     }
 
@@ -341,10 +341,6 @@ int32_t mja_power_release(mja_power_owner *owner, mja_power_errors *errors)
     mja_power_initialize_errors(errors);
     if (owner == NULL) {
         return (int32_t)ERROR_INVALID_PARAMETER;
-    }
-    if (!SetEvent(owner->release_event)) {
-        error = mja_last_error_or(ERROR_GEN_FAILURE);
-        mja_power_record_error(&errors->cleanup, error);
     }
     return mja_power_wait_and_dispose(owner, error, errors);
 }
@@ -910,10 +906,14 @@ static int32_t mja_environment_poll(mja_environment_context *context, uint64_t *
     }
     hr = IMMDevice_GetState(device, &device_state);
     if (FAILED(hr)) {
+        mja_probe_destroy(context->probe);
+        context->probe = NULL;
         result = (int32_t)hr;
         goto done;
     }
     if ((device_state & DEVICE_STATE_ACTIVE) == 0) {
+        mja_probe_destroy(context->probe);
+        context->probe = NULL;
         result = (int32_t)ERROR_DEVICE_NOT_CONNECTED;
         goto done;
     }
@@ -942,6 +942,10 @@ static int32_t mja_environment_poll(mja_environment_context *context, uint64_t *
         }
     }
     if (environment->loopback) {
+        if (context->probe == NULL) {
+            result = mja_probe_create(device, &context->probe);
+            if (result != 0) goto done;
+        }
         result = mja_probe_poll(context->probe);
         if (result != 0) goto done;
         *output_state = context->probe->external_count == 0 ? 0 : 1;
@@ -968,7 +972,6 @@ static DWORD WINAPI mja_environment_thread(void *opaque)
 {
     mja_capture_environment *environment = (mja_capture_environment *)opaque;
     mja_environment_context context;
-    IMMDevice *device = NULL;
     HRESULT hr;
     int com_initialized = 0;
     int32_t result = 0;
@@ -995,15 +998,6 @@ static DWORD WINAPI mja_environment_thread(void *opaque)
     if (FAILED(hr)) {
         result = (int32_t)hr;
         goto first_poll_complete;
-    }
-    if (environment->loopback) {
-        hr = IMMDeviceEnumerator_GetDevice(context.enumerator, environment->endpoint_id, &device);
-        if (FAILED(hr)) {
-            result = (int32_t)hr;
-            goto first_poll_complete;
-        }
-        result = mja_probe_create(device, &context.probe);
-        if (result != 0) goto first_poll_complete;
     }
     result = mja_environment_poll(&context, &qpc_100ns, &output_state);
     if (result == 0) result = mja_environment_publish_poll(&context, qpc_100ns, output_state);
@@ -1042,7 +1036,6 @@ first_poll_complete:
 
 done:
     mja_probe_destroy(context.probe);
-    if (device != NULL) IMMDevice_Release(device);
     if (context.enumerator != NULL) IMMDeviceEnumerator_Release(context.enumerator);
     if (com_initialized) CoUninitialize();
     return 0;
