@@ -33,8 +33,8 @@ public enum CanonicalCAFError: LocalizedError, Equatable {
     }
 }
 
-/// Reads exact samples from the canonical 16 kHz mono Float32 CAF that the Mac exporter writes
-/// (`desc`, `free`, `data` with an exact size). Anything else is an error; nothing is converted.
+/// Reads exact samples from canonical 16 kHz mono Float32 little-endian CAF files with a
+/// `desc` chunk and exact-sized `data` chunk; optional intervening chunks are skipped.
 ///
 /// Samples are returned as stored. Non-finite values are not rejected here; consumers that
 /// require finite samples validate what they read.

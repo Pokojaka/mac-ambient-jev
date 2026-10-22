@@ -70,7 +70,7 @@ private struct SecureAudioFixture {
     let pcm = try await fixture.pcm()
     try fixture.link(fixture.layout.diarizationInputURL)
     #expect(throws: CocoaError.self) {
-        try ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: fixture.layout.diarizationInputURL, sessionURL: fixture.layout.sessionURL)
+        try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: fixture.layout.diarizationInputURL, sessionURL: fixture.layout.sessionURL)
     }
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.layout.derivedDirectory.path) == [fixture.layout.diarizationInputURL.lastPathComponent])
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
@@ -87,7 +87,7 @@ private struct SecureAudioFixture {
         _ = try FLACTimelineReader(url: fixture.layout.recordingFLACURL, info: pcm.info, sessionURL: fixture.layout.sessionURL)
     }
     #expect(throws: CocoaError.self) {
-        try ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: fixture.layout.diarizationInputURL, sessionURL: fixture.layout.sessionURL)
+        try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: fixture.layout.diarizationInputURL, sessionURL: fixture.layout.sessionURL)
     }
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.outside.path) == [fixture.sentinel.lastPathComponent])
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
@@ -98,7 +98,7 @@ private struct SecureAudioFixture {
     defer { fixture.cleanup() }
     let pcm = try await fixture.pcm()
     let url = fixture.layout.diarizationInputURL
-    try ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: url, sessionURL: fixture.layout.sessionURL)
+    try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: url, sessionURL: fixture.layout.sessionURL)
     let reader = try DescriptorAudioReader(url: url, sessionURL: fixture.layout.sessionURL)
     let retained = fixture.layout.derivedDirectory.appending(path: "retained.caf")
     try FileManager.default.moveItem(at: url, to: retained)

@@ -64,7 +64,7 @@ func processingTimelineExporterWritesStandardAudioWithoutWholeTimelineBuffer() a
     let reader = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint, sessionURL: root)
     let output = root.appending(path: "diarization.caf")
 
-    try ProcessingTimelineAudioExporter(
+    try MacAmbientJevCore.ProcessingTimelineAudioExporter(
         framesPerBuffer: 5
     ).export(reader: reader, to: output, sessionURL: root)
 

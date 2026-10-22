@@ -4,27 +4,11 @@ import Darwin
 import Foundation
 import MacAmbientJevCore
 
-/// CoreAudio callbacks keep encoding on the O_NOFOLLOW-opened file, rather than
-/// validating a URL and then letting the encoder reopen a potentially replaced path.
+/// CoreAudio decoding callbacks stay pinned to the opened file descriptor, rather than
+/// validating a URL and letting a decoder reopen a potentially replaced path.
 final class DescriptorAudioFile {
     let handle: FileHandle
     let audioFile: AudioFileID
-    private var closed = false
-
-    init(url: URL, sessionURL: URL, format: inout AudioStreamBasicDescription) throws {
-        let handle = try SessionFileAccess.openHandle(url, relativeTo: sessionURL, writable: true, create: true, exclusive: true)
-        var file: AudioFileID?
-        let status = AudioFileInitializeWithCallbacks(
-            Unmanaged.passUnretained(handle).toOpaque(), descriptorRead, descriptorWrite,
-            descriptorSize, descriptorSetSize, kAudioFileCAFType, &format, [], &file
-        )
-        guard status == noErr, let file else {
-            try? handle.close()
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSFilePathErrorKey: url.path])
-        }
-        self.handle = handle
-        self.audioFile = file
-    }
 
     init(reading url: URL, sessionURL: URL) throws {
         let handle = try SessionFileAccess.openHandle(url, relativeTo: sessionURL)
@@ -41,17 +25,8 @@ final class DescriptorAudioFile {
         self.audioFile = file
     }
 
-    func close() throws {
-        guard !closed else { return }
-        closed = true
-        let status = AudioFileClose(audioFile)
-        defer { try? handle.close() }
-        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
-        try handle.synchronize()
-    }
-
     deinit {
-        if !closed { AudioFileClose(audioFile) }
+        AudioFileClose(audioFile)
         try? handle.close()
     }
 }
@@ -148,27 +123,9 @@ private let descriptorRead: AudioFile_ReadProc = { context, position, count, buf
     return noErr
 }
 
-private let descriptorWrite: AudioFile_WriteProc = { context, position, count, buffer, actual in
-    let descriptor = Unmanaged<FileHandle>.fromOpaque(context).takeUnretainedValue().fileDescriptor
-    var written = 0
-    while written < Int(count) {
-        let result = pwrite(descriptor, buffer.advanced(by: written), Int(count) - written, off_t(position) + off_t(written))
-        if result < 0 && errno == EINTR { continue }
-        guard result > 0 else { actual.pointee = UInt32(written); return OSStatus(result == 0 ? EIO : errno) }
-        written += result
-    }
-    actual.pointee = UInt32(written)
-    return noErr
-}
-
 private let descriptorSize: AudioFile_GetSizeProc = { context in
     let descriptor = Unmanaged<FileHandle>.fromOpaque(context).takeUnretainedValue().fileDescriptor
     var info = stat()
     guard fstat(descriptor, &info) == 0 else { return -1 }
     return Int64(info.st_size)
-}
-
-private let descriptorSetSize: AudioFile_SetSizeProc = { context, size in
-    let descriptor = Unmanaged<FileHandle>.fromOpaque(context).takeUnretainedValue().fileDescriptor
-    return ftruncate(descriptor, off_t(size)) == 0 ? noErr : OSStatus(errno)
 }
