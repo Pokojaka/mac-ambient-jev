@@ -84,7 +84,7 @@ import MacAmbientJevTestSupport
                 output.requestID?.value == 1 && { if case .completed(.hello) = output.event { true } else { false } }()
             }
         }
-        #expect(h.fake.helloCompletionCount == 1)
+        try await h.fake.changes.wait("held hello completion hook") { h.fake.helloCompletionCount == 1 }
         h.source.finish()
         _ = await h.exit()
     }
