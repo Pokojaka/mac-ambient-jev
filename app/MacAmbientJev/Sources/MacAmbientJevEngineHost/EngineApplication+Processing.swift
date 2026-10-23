@@ -191,11 +191,22 @@ extension EngineApplicationCore {
                     )]
                 ))
             }
-            for (sessionID, message) in maintenanceFailures.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
-                report(EngineFailures.failure(
-                    code: .filesystem, message: "保存済み録音の音声を整理できませんでした: \(message)", stage: .maintenance,
-                    sessionID: sessionID, severity: .error, recoveryAction: .inspectSession
-                ))
+            for (sessionID, issue) in maintenanceFailures.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+                let failure: EngineFailure
+                switch issue {
+                case .failed:
+                    failure = EngineFailures.failure(
+                        code: .filesystem, message: "保存済み録音の音声を整理できませんでした: \(issue.message)", stage: .maintenance,
+                        sessionID: sessionID, severity: .error, recoveryAction: .inspectSession
+                    )
+                case .interruptedByShutdown:
+                    failure = EngineFailures.failure(
+                        code: .cancelled,
+                        message: issue.message,
+                        stage: .maintenance, sessionID: sessionID, severity: .warning, recoveryAction: .restart
+                    )
+                }
+                report(failure)
             }
         case let .failed(reason):
             scanFailed = true

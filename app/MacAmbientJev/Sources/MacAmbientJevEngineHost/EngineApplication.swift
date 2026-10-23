@@ -407,13 +407,26 @@ enum PortableThreadLimit {
     static let maximum = 4
 }
 
+/// A transcript row that failed to project or encode, with the input it failed on.
+struct EngineTranscriptRowFailure: Equatable {
+    enum Input: Equatable {
+        case segments([MaterializedTranscriptSegment])
+        case row(EngineTranscriptRow)
+        case removal
+    }
+
+    let rowID: String
+    let input: Input
+    let failure: EngineFailure
+}
+
 struct EngineTranscriptCache {
     let sessionID: UUID
     var revision: UInt64
     var rows: [EngineTranscriptRow]
     var isLiveState: Bool
     var projection: EngineTranscriptProjection.Incremental?
-    var lastReportedOversizedRow: EngineTranscriptRow? = nil
+    var reportedTranscriptFailures: [EngineTranscriptRowFailure] = []
 }
 
 // MARK: EngineStateHandling

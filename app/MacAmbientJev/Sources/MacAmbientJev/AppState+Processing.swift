@@ -42,14 +42,31 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
                     "復旧できないセッションが\(scanFailures.count)件あります。詳細は「保存済み録音」で確認できます"
                 )
             }
-            if !maintenanceFailures.isEmpty {
-                let details = maintenanceFailures.values.sorted().joined(separator: " / ")
+
+            let failedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
+                guard case .failed = issue else { return nil }
+                return issue.message
+            }.sorted()
+            if !failedMaintenance.isEmpty {
+                let details = failedMaintenance.joined(separator: " / ")
                 sentences.append(
-                    "保存済み録音の音声を整理できなかったセッションが\(maintenanceFailures.count)件あります: \(details)"
+                    "保存済み録音の音声を整理できなかったセッションが\(failedMaintenance.count)件あります: \(details)"
                 )
             }
+
+            let interruptedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
+                guard case .interruptedByShutdown = issue else { return nil }
+                return issue.message
+            }.sorted()
+            if !interruptedMaintenance.isEmpty {
+                let details = interruptedMaintenance.joined(separator: " / ")
+                sentences.append(
+                    "終了処理のため保存済み録音の音声整理が中断されたセッションが\(interruptedMaintenance.count)件あります。次回起動時に再実行します: \(details)"
+                )
+            }
+
             let message = sentences.joined(separator: "。")
-            if !hasRecoveries {
+            if !hasRecoveries && (!scanFailures.isEmpty || !failedMaintenance.isEmpty) {
                 processingState = .partialFailure(message)
             }
             processingStatusText = message

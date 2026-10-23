@@ -4,9 +4,10 @@ import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
+import MacAmbientJevTestSupport
 
 @MainActor
-@Suite struct EngineApplicationTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineApplicationTests {
     private func prepared(_ root: URL) async throws -> ApplicationHarness {
         let harness = ApplicationHarness(root: root)
         harness.start()
@@ -237,7 +238,7 @@ import MacAmbientJevPipeline
         try await first.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
         // This VAD is only used by NativeSessionProcessor's offline finalization pass. Live ASR
         // uses the ordinary fake engine, so reaching the gate proves the queued finalization began.
-        try await gate.waitUntilEntered()
+        await gate.waitUntilEntered()
 
         #expect(try await first.shutdown() == .shutdownRequested)
         let sessionID = try #require(UUID(uuidString: started.sessionID))
@@ -424,11 +425,15 @@ private func EngineFailures_wireID(_ id: UUID) -> String {
 
 private actor OfflineFinalizationGate {
     private var entered = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
     private var released = false
     private var continuation: CheckedContinuation<Void, Error>?
 
     func suspend() async throws {
         entered = true
+        let waiters = enteredWaiters
+        enteredWaiters = []
+        for waiter in waiters { waiter.resume() }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if released {
@@ -444,12 +449,9 @@ private actor OfflineFinalizationGate {
         }
     }
 
-    func waitUntilEntered(timeout: TimeInterval = 180) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !entered {
-            guard Date() < deadline else { throw TestTimeout(description: "offline finalization did not reach its gate") }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
     }
 
     private func cancel() {
@@ -545,7 +547,7 @@ private final class FinalizationShutdownHarness {
         nextRequestID += 1
         source.feed(requestLine(id, command, payload: payload))
         let sink = self.sink
-        try await waitUntil(timeout: 180, "terminal reply to \(command)") {
+        try await sink.changes.wait("terminal reply to \(command)") {
             ((try? sink.outputs()) ?? []).contains { $0.requestID?.value == id && Self.isTerminal($0.event) }
         }
         for output in try sink.outputs() where output.requestID?.value == id {

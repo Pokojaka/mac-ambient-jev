@@ -35,11 +35,11 @@ private func setDirectoryWriteDenial(_ directory: URL, deny: Bool) throws {
 
 // Keep Windows subprocess waits and deferred ACL cleanup off the cooperative executor.
 @Test func windowsReadOnlyBoundaryAllowsReadsAndRejectsWrites() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = try SessionWriter(sessionURL: root)
+    try await writer.append(EventDraft(eventType: "test", sessionID: UUID(), payload: "read-only"))
     try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let writer = try SessionWriter(sessionURL: root)
-        try await writer.append(EventDraft(eventType: "test", sessionID: UUID(), payload: "read-only"))
         let events = root.appending(path: "events.jsonl")
         let bytes = try SessionFileAccess.read(events, relativeTo: root)
         try setDirectoryWriteDenial(root, deny: true)

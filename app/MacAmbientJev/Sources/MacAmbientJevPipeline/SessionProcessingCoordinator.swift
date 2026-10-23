@@ -147,7 +147,7 @@ public final class SessionProcessingCoordinator {
     public static func recoveryRequests(
         candidates: [RecoverableSession],
         recordingSessionID: UUID?,
-        maintenanceFailures: [UUID: String],
+        maintenanceFailures: [UUID: SessionMaintenanceIssue],
         pending: [PendingProcessing]
     ) -> [PendingProcessing] {
         candidates
@@ -168,7 +168,7 @@ public final class SessionProcessingCoordinator {
         maintain: @Sendable (
             [SessionMaintenanceCandidate],
             @Sendable (Int) async -> Void
-        ) async -> [UUID: String]
+        ) async -> [UUID: SessionMaintenanceIssue]
     ) async {
         requiredEffects.processingQueue.beginStorageMaintenance()
         do {

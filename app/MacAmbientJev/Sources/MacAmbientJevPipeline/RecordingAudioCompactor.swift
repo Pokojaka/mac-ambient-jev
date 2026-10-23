@@ -140,14 +140,14 @@ public enum SessionStorageMaintainer {
 }
 
 extension SessionStorageMaintainer {
-    /// Runs each item in order and returns failed or uncompleted sessions by session ID.
-    /// If cancelled, the current and all unprocessed items are reported as uncompleted;
-    /// completed items are absent. `willMaintain` receives the item count first, and an empty
-    /// list returns at once.
+    /// Runs each item in order and returns failed or shutdown-interrupted sessions by ID.
+    /// A real error marks that session as failed; cancellation marks the current and remaining
+    /// sessions as interrupted for retry at next launch. Successful sessions are absent.
+    /// `willMaintain` receives the item count first, and an empty list returns at once.
     public static func maintain(
         _ items: [SessionMaintenanceCandidate],
         willMaintain: @Sendable (Int) async -> Void
-    ) async -> [UUID: String] {
+    ) async -> [UUID: SessionMaintenanceIssue] {
         await maintain(items, willMaintain: willMaintain, perform: { item in
             let layout = SessionLayout(sessionURL: item.sessionURL)
             try run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
@@ -158,30 +158,34 @@ extension SessionStorageMaintainer {
         _ items: [SessionMaintenanceCandidate],
         willMaintain: @Sendable (Int) async -> Void,
         perform: @Sendable (SessionMaintenanceCandidate) throws -> Void
-    ) async -> [UUID: String] {
+    ) async -> [UUID: SessionMaintenanceIssue] {
         guard !items.isEmpty else { return [:] }
         await willMaintain(items.count)
-        var failures: [UUID: String] = [:]
-        func markUncompleted(from index: Int) {
+        var failures: [UUID: SessionMaintenanceIssue] = [:]
+        func markInterruptedByShutdown(from index: Int) {
             for item in items[index...] {
-                failures[item.sessionID] = "\(item.sessionURL.lastPathComponent): 保存整理が中断されたため未完了です"
+                failures[item.sessionID] = .interruptedByShutdown(
+                    "\(item.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+                )
             }
         }
 
         for (index, item) in items.enumerated() {
             if Task.isCancelled {
-                markUncompleted(from: index)
+                markInterruptedByShutdown(from: index)
                 break
             }
             do {
                 try perform(item)
             } catch is CancellationError {
-                markUncompleted(from: index)
+                markInterruptedByShutdown(from: index)
                 break
             } catch {
-                failures[item.sessionID] = "\(item.sessionURL.lastPathComponent): \(error.localizedDescription)"
+                failures[item.sessionID] = .failed(
+                    "\(item.sessionURL.lastPathComponent): \(error.localizedDescription)"
+                )
                 if Task.isCancelled {
-                    markUncompleted(from: index + 1)
+                    markInterruptedByShutdown(from: index + 1)
                     break
                 }
             }

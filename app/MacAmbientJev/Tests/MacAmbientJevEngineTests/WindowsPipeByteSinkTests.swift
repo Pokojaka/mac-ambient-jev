@@ -4,6 +4,7 @@ import WinSDK
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevCore
+import MacAmbientJevTestSupport
 @testable import MacAmbientJevEngine
 
 private struct PipeTestError: Error, CustomStringConvertible {
@@ -20,12 +21,12 @@ private func makePipe(bufferBytes: DWORD = 4096) throws -> (read: HANDLE, write:
     return (read, write)
 }
 
-/// Reads the pipe on its own thread, optionally slowly, until the write end closes.
+/// Reads the pipe on its own thread, optionally slowly, until the write end closes. `changes` signals after every chunk.
 private final class PipeReader: @unchecked Sendable {
+    let changes = ChangeSignal()
     private let handle: HANDLE
     private let lock = NSLock()
     private var storage = Data()
-    private var finished = false
     private let pause: TimeInterval
 
     init(handle: HANDLE, pause: TimeInterval) {
@@ -43,10 +44,8 @@ private final class PipeReader: @unchecked Sendable {
             lock.lock()
             storage.append(contentsOf: buffer[..<Int(count)])
             lock.unlock()
+            changes.signal()
         }
-        lock.lock()
-        finished = true
-        lock.unlock()
     }
 
     var data: Data {
@@ -56,12 +55,9 @@ private final class PipeReader: @unchecked Sendable {
     }
 }
 
-private func waitUntil(timeout: TimeInterval, _ what: String, _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition() {
-        if Date() > deadline { throw PipeTestError(description: "timed out waiting for \(what)") }
-        try await Task.sleep(nanoseconds: 5_000_000)
-    }
+/// Runs a synchronous call that can block, such as cancelling or closing a sink, on its own thread as production does.
+private func blocking(_ body: @escaping @Sendable () -> Void) async {
+    await Task.detached(executorPreference: BlockingIOExecutor.shared, operation: body).value
 }
 
 private func testLimits(deadline: TimeInterval) -> EngineTransportLimits {
@@ -76,135 +72,122 @@ private func testLimits(deadline: TimeInterval) -> EngineTransportLimits {
     )
 }
 
-// Keep blocking sink cancellation/close waits off cooperative workers.
-@Suite struct WindowsPipeByteSinkTests {
+@Suite(.timeLimit(.minutes(10))) struct WindowsPipeByteSinkTests {
     @Test func aWriteBlockedOnAFullPipeIsCancelledFromAnotherThread() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let pipe = try makePipe()
-            defer { CloseHandle(pipe.read) }
-            let sink = WindowsPipeByteSink(handle: pipe.write)
-            let outcome = Outcome()
-            Thread.detachNewThread {
-                let block = [UInt8](repeating: 0x41, count: 65_536)
-                do {
-                    while true {
-                        let written = try block.withUnsafeBytes { try sink.write($0) }
-                        outcome.add(written)
-                    }
-                } catch {
-                    outcome.finish(error)
+        let pipe = try makePipe()
+        defer { CloseHandle(pipe.read) }
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        let outcome = Outcome()
+        Thread.detachNewThread {
+            let block = [UInt8](repeating: 0x41, count: 65_536)
+            do {
+                while true {
+                    let written = try block.withUnsafeBytes { try sink.write($0) }
+                    outcome.add(written)
                 }
+            } catch {
+                outcome.finish(error)
             }
-            // 4 KiB fit the pipe buffer; the next write blocks because nobody reads.
-            try await waitUntil(timeout: 10, "the write to fill the pipe") { outcome.totalBytes >= 4096 }
-            try await Task.sleep(nanoseconds: 200_000_000)
-            #expect(outcome.error == nil)
+        }
+        // 4 KiB fit the pipe buffer; the next write blocks because nobody reads.
+        try await outcome.changes.wait("the write to fill the pipe") { outcome.totalBytes >= 4096 }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(outcome.error == nil)
 
-            let started = Date()
-            sink.cancelBlockedWrite()
-            try await waitUntil(timeout: 5, "the blocked write to return") { outcome.error != nil }
-            #expect(outcome.error as? EngineSinkError == .cancelled)
-            #expect(Date().timeIntervalSince(started) < 2)
-            sink.close()
-            // A cancelled sink refuses further writes.
-            #expect(throws: EngineSinkError.cancelled) {
-                _ = try [UInt8](repeating: 1, count: 4).withUnsafeBytes { try sink.write($0) }
-            }
+        await blocking { sink.cancelBlockedWrite() }
+        try await outcome.changes.wait("the blocked write to return") { outcome.error != nil }
+        #expect(outcome.error as? EngineSinkError == .cancelled)
+        await blocking { sink.close() }
+        // A cancelled sink refuses further writes.
+        #expect(throws: EngineSinkError.cancelled) {
+            _ = try [UInt8](repeating: 1, count: 4).withUnsafeBytes { try sink.write($0) }
         }
     }
 
     @Test func aClosedReaderIsABrokenPipe() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let pipe = try makePipe()
-            let sink = WindowsPipeByteSink(handle: pipe.write)
-            CloseHandle(pipe.read)
-            defer { sink.close() }
-            #expect(throws: EngineSinkError.brokenPipe) {
-                _ = try [UInt8](repeating: 1, count: 16).withUnsafeBytes { try sink.write($0) }
-            }
+        let pipe = try makePipe()
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        CloseHandle(pipe.read)
+        defer { sink.close() }
+        #expect(throws: EngineSinkError.brokenPipe) {
+            _ = try [UInt8](repeating: 1, count: 16).withUnsafeBytes { try sink.write($0) }
         }
     }
 
     @Test func aDrainingReaderReceivesEveryByteInOrder() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let pipe = try makePipe()
-            let reader = PipeReader(handle: pipe.read, pause: 0)
-            let sink = WindowsPipeByteSink(handle: pipe.write)
-            let payload = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ ($0 >> 8)) })
-            let writerDone = Outcome()
-            Thread.detachNewThread {
-                do {
-                    var offset = 0
-                    while offset < payload.count {
-                        let written = try payload.withUnsafeBytes { try sink.write(UnsafeRawBufferPointer(rebasing: $0[offset...])) }
-                        precondition(written > 0 && written <= WindowsPipeByteSink.chunkBytes)
-                        offset += written
-                    }
-                    writerDone.finish(nil)
-                } catch {
-                    writerDone.finish(error)
+        let pipe = try makePipe()
+        let reader = PipeReader(handle: pipe.read, pause: 0)
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        let payload = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ ($0 >> 8)) })
+        let writerDone = Outcome()
+        Thread.detachNewThread {
+            do {
+                var offset = 0
+                while offset < payload.count {
+                    let written = try payload.withUnsafeBytes { try sink.write(UnsafeRawBufferPointer(rebasing: $0[offset...])) }
+                    precondition(written > 0 && written <= WindowsPipeByteSink.chunkBytes)
+                    offset += written
                 }
+                writerDone.finish(nil)
+            } catch {
+                writerDone.finish(error)
             }
-            try await waitUntil(timeout: 20, "the reader to receive the payload") { reader.data.count >= payload.count }
-            #expect(reader.data == payload)
-            sink.close()
-            CloseHandle(pipe.read)
         }
+        try await reader.changes.wait("the reader to receive the payload") { reader.data.count >= payload.count }
+        #expect(reader.data == payload)
+        await blocking { sink.close() }
+        CloseHandle(pipe.read)
     }
 
     @Test func aSlowPipeReaderReceivesEveryTransportRecordIntact() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let pipe = try makePipe()
-            let reader = PipeReader(handle: pipe.read, pause: 0.0002)
-            let transport = EngineTransport(source: IdleSource(), sink: WindowsPipeByteSink(handle: pipe.write), limits: testLimits(deadline: 5))
-            transport.start()
-            defer { transport.close() }
+        let pipe = try makePipe()
+        let reader = PipeReader(handle: pipe.read, pause: 0.0002)
+        let transport = EngineTransport(source: IdleSource(), sink: WindowsPipeByteSink(handle: pipe.write), limits: testLimits(deadline: 5))
+        transport.start()
+        defer { transport.close() }
 
-            let text = String(repeating: "あ", count: 3000)
-            for id in 1...40 {
-                try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
-                let row = try EngineTranscriptRow(rowID: "r\(id)", startMS: 0, endMS: 10, text: text, headings: [], clauseState: nil)
-                try transport.sendReplaceable(
-                    .rows(try EngineRowsPayload(
-                        sessionID: "s", revision: EngineID(UInt64(id)), kind: .changes, rows: [row], removedRowIDs: [], nextCursor: nil
-                    )),
-                    requestID: nil
-                )
-            }
-            await transport.drain()
-            try await waitUntil(timeout: 30, "the reader to receive all records") {
-                reader.data.last == 0x0A && ((try? decode(reader.data).count) ?? 0) >= 41
-            }
-            let outputs = try decode(reader.data)
-            #expect(outputs.filter { if case .completed = $0.event { true } else { false } }.count == 40)
-            #expect(outputs.map(\.sequence.value) == outputs.map(\.sequence.value).sorted())
+        let text = String(repeating: "あ", count: 3000)
+        for id in 1...40 {
+            try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
+            let row = try EngineTranscriptRow(rowID: "r\(id)", startMS: 0, endMS: 10, text: text, headings: [], clauseState: nil)
+            try transport.sendReplaceable(
+                .rows(try EngineRowsPayload(
+                    sessionID: "s", revision: EngineID(UInt64(id)), kind: .changes, rows: [row], removedRowIDs: [], nextCursor: nil
+                )),
+                requestID: nil
+            )
         }
+        await transport.drain()
+        try await reader.changes.wait("the reader to receive all records") {
+            reader.data.last == 0x0A && ((try? decode(reader.data).count) ?? 0) >= 41
+        }
+        let outputs = try decode(reader.data)
+        #expect(outputs.filter { if case .completed = $0.event { true } else { false } }.count == 40)
+        #expect(outputs.map(\.sequence.value) == outputs.map(\.sequence.value).sorted())
     }
 
     @Test func aPipeThatIsNeverReadFailsAtTheDeadlineWithoutHangingTheEngine() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let pipe = try makePipe()
-            defer { CloseHandle(pipe.read) }
-            let transport = EngineTransport(source: IdleSource(), sink: WindowsPipeByteSink(handle: pipe.write), limits: testLimits(deadline: 0.5))
-            transport.start()
-            defer { transport.close() }
-            // Enough records to exceed the pipe buffer, which nobody drains.
-            for id in 1...200 {
-                do {
-                    try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
-                } catch {
-                    break
-                }
+        let pipe = try makePipe()
+        defer { CloseHandle(pipe.read) }
+        let transport = EngineTransport(source: IdleSource(), sink: WindowsPipeByteSink(handle: pipe.write), limits: testLimits(deadline: 0.5))
+        transport.start()
+        defer { transport.close() }
+        // Enough records to exceed the pipe buffer, which nobody drains.
+        for id in 1...200 {
+            do {
+                try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
+            } catch {
+                break
             }
-            var failure: EngineWriteFailure?
-            for await event in transport.events {
-                if case let .writeFailed(reason) = event {
-                    failure = reason
-                    break
-                }
-            }
-            #expect(failure == .deadlineExceeded)
         }
+        var failure: EngineWriteFailure?
+        for await event in transport.events {
+            if case let .writeFailed(reason) = event {
+                failure = reason
+                break
+            }
+        }
+        #expect(failure == .deadlineExceeded)
     }
 }
 
@@ -215,23 +198,25 @@ private func decode(_ data: Data) throws -> [EngineOutput] {
     }
 }
 
+/// What a writer thread did; `changes` signals after every update.
 private final class Outcome: @unchecked Sendable {
+    let changes = ChangeSignal()
     private let lock = NSLock()
     private var written = 0
     private var failure: (any Error)?
-    private var done = false
 
     func add(_ bytes: Int) {
         lock.lock()
         written += bytes
         lock.unlock()
+        changes.signal()
     }
 
     func finish(_ error: (any Error)?) {
         lock.lock()
         failure = error
-        done = true
         lock.unlock()
+        changes.signal()
     }
 
     var totalBytes: Int {

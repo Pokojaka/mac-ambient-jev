@@ -48,7 +48,7 @@ extension EngineApplicationCore {
         let projectionsAreShared = watchedProjection != nil && watchedProjection === readProjection
         let watchedUpdate: (rows: [EngineTranscriptRow], changes: EngineTranscriptProjection.Changes)?
         let readUpdate: (rows: [EngineTranscriptRow], changes: EngineTranscriptProjection.Changes)?
-        do {
+        do throws(EngineTranscriptProjection.Failures) {
             if let watchedProjection {
                 let update = try watchedProjection.update(segments)
                 watchedUpdate = update
@@ -66,7 +66,12 @@ extension EngineApplicationCore {
                 preconditionFailure("a matching transcript cache has an incremental projection")
             }
         } catch {
-            reportTranscriptError(error, sessionID: sessionID)
+            reportTranscriptFailures(error.rows.prefix(Self.failureLimit).map { row in
+                EngineTranscriptRowFailure(
+                    rowID: row.rowID, input: .segments(segments.filter { $0.segmentID == row.rowID }),
+                    failure: transcriptFailure(row.error, sessionID: sessionID)
+                )
+            }, sessionID: sessionID)
             return
         }
 
@@ -74,42 +79,29 @@ extension EngineApplicationCore {
         let readChanged = readUpdate?.changes.isEmpty == false
         let changesFit: Bool
         if let changes = watchedUpdate?.changes, watchedChanged {
-            for row in changes.upserts {
-                do {
-                    _ = try EngineTranscriptProjection.encodedRowBytes(row)
-                } catch {
-                    if let command = error as? EngineCommandError, command.code == .rowTooLarge {
-                        guard var cache = transcript, cache.sessionID == sessionID else {
-                            reportTranscriptError(error, sessionID: sessionID)
-                            return
-                        }
-                        guard cache.lastReportedOversizedRow != row else { return }
-                        cache.lastReportedOversizedRow = row
-                        transcript = cache
-                    }
-                    reportTranscriptError(error, sessionID: sessionID)
-                    return
-                }
-            }
-            do {
+            do throws(EngineTranscriptProjection.Failures) {
                 let bytes = try EngineTranscriptProjection.encodedChangeBytes(
                     upserts: changes.upserts, removedRowIDs: changes.removedRowIDs
                 )
                 changesFit = changes.count <= Self.transcriptPageLimit
                     && bytes <= EngineTranscriptProjection.pageByteBudget
             } catch {
-                reportTranscriptError(error, sessionID: sessionID)
+                reportTranscriptFailures(error.rows.prefix(Self.failureLimit).map { row in
+                    let input: EngineTranscriptRowFailure.Input = if let upsert = changes.upserts.first(where: { $0.rowID == row.rowID }) {
+                        .row(upsert)
+                    } else {
+                        .removal
+                    }
+                    return EngineTranscriptRowFailure(
+                        rowID: row.rowID, input: input, failure: transcriptFailure(row.error, sessionID: sessionID)
+                    )
+                }, sessionID: sessionID)
                 return
             }
         } else {
             changesFit = true
         }
-
-        if let update = watchedUpdate, var cache = transcript, cache.sessionID == sessionID,
-           let failedRow = cache.lastReportedOversizedRow, !update.rows.contains(failedRow) {
-            cache.lastReportedOversizedRow = nil
-            transcript = cache
-        }
+        reportTranscriptFailures([], sessionID: sessionID)
 
         // Commit only after all changes that will be sent have passed validation. Empty updates still
         // commit so the helper can discard its clean baseline without advancing the cached revision.
@@ -190,7 +182,7 @@ extension EngineApplicationCore {
             cache.revision = newRevision()
             cache.isLiveState = false
             cache.projection = nil
-            cache.lastReportedOversizedRow = nil
+            cache.reportedTranscriptFailures = []
             transcript = cache
             updatedWatched = cache
         }
@@ -199,6 +191,7 @@ extension EngineApplicationCore {
             cache.revision = newRevision()
             cache.isLiveState = false
             cache.projection = nil
+            cache.reportedTranscriptFailures = []
             readTranscript = cache
         }
 
@@ -213,20 +206,49 @@ extension EngineApplicationCore {
         }
     }
 
-    private func reportTranscriptError(_ error: Error, sessionID: UUID) {
+    private func reportTranscriptError(_ error: any Error, sessionID: UUID) {
+        report(transcriptFailure(error, sessionID: sessionID))
+    }
+
+    /// Reports each failing row once per distinct (row, input, failure). `failures` is every failing row of this
+    /// update, at most `failureLimit` of them in row order, as `state.failures` shows no more. A row missing from it
+    /// stopped failing and is forgotten, so it is reported again if it fails later.
+    private func reportTranscriptFailures(_ failures: [EngineTranscriptRowFailure], sessionID: UUID) {
+        let previous: [EngineTranscriptRowFailure]
+        if sessionID == watchedSessionID, let cache = transcript, cache.sessionID == sessionID {
+            previous = cache.reportedTranscriptFailures
+        } else if let cache = readTranscript, cache.sessionID == sessionID {
+            previous = cache.reportedTranscriptFailures
+        } else {
+            preconditionFailure("transcript failures are tracked only for a cached session")
+        }
+        if failures == previous { return }
+        if sessionID == watchedSessionID, var cache = transcript, cache.sessionID == sessionID {
+            cache.reportedTranscriptFailures = failures
+            transcript = cache
+        }
+        if var cache = readTranscript, cache.sessionID == sessionID {
+            cache.reportedTranscriptFailures = failures
+            readTranscript = cache
+        }
+        for failure in failures where !previous.contains(failure) {
+            report(failure.failure)
+        }
+    }
+
+    private func transcriptFailure(_ error: any Error, sessionID: UUID) -> EngineFailure {
         if let command = error as? EngineCommandError {
-            report(EngineFailures.failure(
+            return EngineFailures.failure(
                 code: command.code, message: command.message, stage: command.stage, sessionID: sessionID,
                 severity: command.severity, recoveryAction: command.recoveryAction,
                 details: command.details, cleanupErrors: command.cleanupErrors
-            ))
-            return
+            )
         }
-        report(EngineFailures.failure(
+        return EngineFailures.failure(
             code: .processingFailure, message: "文字起こし表示を更新できませんでした: \(error.localizedDescription)",
             stage: .finalization, sessionID: sessionID, severity: .error, recoveryAction: .reprocess,
             details: [EngineFailures.detail(for: error)]
-        ))
+        )
     }
 
     private static func reloadRequired(sessionID: UUID, revision: EngineID) throws -> EngineRowsPayload {

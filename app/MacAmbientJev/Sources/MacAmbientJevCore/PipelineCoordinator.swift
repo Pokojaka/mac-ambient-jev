@@ -49,8 +49,12 @@ public enum RunPhase: String, Codable, Sendable {
     case complete
 }
 
-public struct ASRRunCancellation: Error, Sendable {
+public struct ASRRunCancellation: Error, LocalizedError, Sendable {
     public let metrics: ASRBatchMetrics
+
+    public var errorDescription: String? {
+        "音声認識がキャンセルされました"
+    }
 }
 
 public struct ASRBatchMetrics: Codable, Sendable, Equatable {

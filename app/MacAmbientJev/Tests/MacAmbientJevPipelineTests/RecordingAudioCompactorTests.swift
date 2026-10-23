@@ -523,8 +523,9 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
 
     #expect(Set(failures.keys) == Set(items.map(\.sessionID)))
     for item in items {
-        #expect(failures[item.sessionID]?.contains(item.sessionURL.lastPathComponent) == true)
-        #expect(failures[item.sessionID]?.contains("保存整理が中断されたため未完了です") == true)
+        #expect(failures[item.sessionID] == .interruptedByShutdown(
+            "\(item.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+        ))
     }
     let recoveryCandidates = items.map { item in
         RecoverableSession(
@@ -547,6 +548,7 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
     }
     #expect(requests.isEmpty)
     #expect(try SessionAudioStorageStore(layout: first).load() == .recordingPCM)
+    #expect(try SessionAudioStorageStore(layout: second).load() == .recordingPCM)
     #expect(exists(first.processingDirectory))
     #expect(exists(first.derivedDirectory))
     #expect(exists(first.recordingFLACPartialURL))
@@ -603,8 +605,12 @@ func maintenanceCancellationDuringCandidateReportsCurrentAndRemainingButNotCompl
     #expect(Set(failures.keys) == Set([interruptedManifest.sessionID, skippedManifest.sessionID]))
     #expect(failures[completedManifest.sessionID] == nil)
     for item in items.dropFirst() {
-        #expect(failures[item.sessionID]?.contains(item.sessionURL.lastPathComponent) == true)
-        #expect(failures[item.sessionID]?.contains("保存整理が中断されたため未完了です") == true)
+        #expect(failures[item.sessionID] == .interruptedByShutdown(
+            "\(item.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+        ))
+    }
+    for layout in [completed, interrupted, skipped] {
+        #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
     }
     #expect(!exists(completed.derivedDirectory))
     #expect(!exists(completed.recordingFLACPartialURL))
@@ -642,8 +648,12 @@ func aRealMaintenanceErrorIsPreservedWhenCancellationAlsoOccurs() async throws {
         })
     }.value
 
-    #expect(failures[failedManifest.sessionID] == "\(failed.sessionURL.lastPathComponent): injected maintenance error")
-    #expect(failures[unstartedManifest.sessionID] == "\(unstarted.sessionURL.lastPathComponent): 保存整理が中断されたため未完了です")
+    #expect(failures[failedManifest.sessionID] == .failed(
+        "\(failed.sessionURL.lastPathComponent): injected maintenance error"
+    ))
+    #expect(failures[unstartedManifest.sessionID] == .interruptedByShutdown(
+        "\(unstarted.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+    ))
     #expect(Set(failures.keys) == Set([failedManifest.sessionID, unstartedManifest.sessionID]))
 }
 

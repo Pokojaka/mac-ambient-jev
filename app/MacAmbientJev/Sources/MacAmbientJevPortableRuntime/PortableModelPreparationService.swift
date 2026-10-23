@@ -136,7 +136,7 @@ public struct PortableModelPreparationService: Sendable {
                 onProgress(PortableModelPreparationProgress(stage: stage, model: step.model, completed: index, total: total))
                 switch stage {
                 case .validating:
-                    try await Task.detached { try step.validate() }.value
+                    try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try step.validate() }.value
                 case .loading:
                     try await step.load()
                 }
@@ -169,7 +169,7 @@ public struct PortableModelPreparationService: Sendable {
                 load: {
                     try await Self.load(.vad, path: silero.path) {
                         let environment = try ONNXEnvironment(loggingID: "MacAmbientJev-ModelPreparation")
-                        try await Task.detached { _ = try SileroVAD(environment: environment, modelURL: silero, intraOpThreads: 1) }.value
+                        try await Task.detached(executorPreference: BlockingIOExecutor.shared) { _ = try SileroVAD(environment: environment, modelURL: silero, intraOpThreads: 1) }.value
                     }
                 }
             ),
@@ -226,7 +226,7 @@ public struct PortableModelPreparationService: Sendable {
                 },
                 load: {
                     try await Self.load(.clauseTagger, path: tagger.path) {
-                        try await Task.detached { _ = try ONNXClauseTagger(modelDirectory: tagger, intraOpThreads: threads) }.value
+                        try await Task.detached(executorPreference: BlockingIOExecutor.shared) { _ = try ONNXClauseTagger(modelDirectory: tagger, intraOpThreads: threads) }.value
                     }
                 }
             ))

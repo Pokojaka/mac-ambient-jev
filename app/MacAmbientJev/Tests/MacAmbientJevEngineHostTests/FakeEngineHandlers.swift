@@ -1,11 +1,13 @@
 import Foundation
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevTestSupport
 
 struct FakeFailure: Error {}
 
 /// Records every call and can hold chosen commands open until released. A held call is deliberately not
-/// cancellable, like a handler stuck in uncooperative work.
+/// cancellable, like a handler stuck in uncooperative work. `changes` signals after every recorded call, held
+/// call and hello completion.
 @MainActor
 final class FakeEngineHandlers:
     EngineStateHandling, EngineRecordingHandling, EngineSessionHandling, EngineTranscriptHandling,
@@ -20,6 +22,7 @@ final class FakeEngineHandlers:
     var shutdownError: Error?
     var progressOnPrepare = false
     private var held: [CheckedContinuation<Void, Never>] = []
+    let changes = ChangeSignal()
 
     var heldCount: Int { held.count }
 
@@ -31,8 +34,12 @@ final class FakeEngineHandlers:
 
     private func enter(_ name: String) async throws {
         calls.append(name)
+        changes.signal()
         if heldCommands.contains(name) {
-            await withCheckedContinuation { held.append($0) }
+            await withCheckedContinuation { continuation in
+                held.append(continuation)
+                changes.signal()
+            }
         }
         if let error = failingCommands[name] { throw error }
     }
@@ -46,6 +53,7 @@ final class FakeEngineHandlers:
 
     func ready() async throws -> EngineReadyPayload {
         calls.append("ready")
+        changes.signal()
         return try sampleReady()
     }
 
@@ -56,6 +64,7 @@ final class FakeEngineHandlers:
 
     func helloDidComplete() {
         helloCompletionCount += 1
+        changes.signal()
         onHelloDidComplete?()
     }
 
@@ -137,6 +146,7 @@ final class FakeEngineHandlers:
     func shutdown(reason: EngineShutdownReason) async throws {
         calls.append("shutdown")
         shutdownReasons.append(reason)
+        changes.signal()
         if let shutdownError { throw shutdownError }
     }
 }
@@ -184,9 +194,11 @@ final class EngineHarness {
         get throws { try sink.outputs() }
     }
 
-    func waitForOutputs(_ what: String, _ predicate: @escaping @Sendable ([EngineOutput]) -> Bool) async throws {
+    /// Waits until the complete records written so far satisfy `predicate`. A record still being written is
+    /// not complete yet, so its partial bytes leave the condition false.
+    func waitForOutputs(_ what: String, _ predicate: ([EngineOutput]) -> Bool) async throws {
         let sink = self.sink
-        try await waitUntil(what) { ((try? sink.outputs()).map(predicate)) ?? false }
+        try await sink.changes.wait(what) { ((try? sink.outputs()).map(predicate)) ?? false }
     }
 
     /// Terminal events (`completed` / `error`) for a request id, in order.

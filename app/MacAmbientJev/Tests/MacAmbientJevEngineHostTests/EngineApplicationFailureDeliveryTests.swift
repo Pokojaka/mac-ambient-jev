@@ -3,11 +3,19 @@ import Testing
 import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
+import MacAmbientJevTestSupport
 
 @testable import MacAmbientJevEngineHost
 
+extension EngineApplicationCore {
+    /// Returns once no failure worker runs. A worker clears `failureEventTask` as its last step.
+    func failureWorkerFinished() async {
+        while let task = failureEventTask { await task.value }
+    }
+}
+
 @MainActor
-@Suite struct EngineApplicationFailureDeliveryTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineApplicationFailureDeliveryTests {
     private struct Fixture {
         let root: URL
         let source: ScriptedSource
@@ -70,7 +78,7 @@ import MacAmbientJevPipeline
         #expect(fixture.app.core.failureEventTask != nil)
         fixture.sink.release()
         fixture.transport.start()
-        try await waitOnMain("the failure worker to finish") { fixture.app.core.failureEventTask == nil }
+        await fixture.app.core.failureWorkerFinished()
         await fixture.transport.drain()
 
         let errors = try fixture.sink.outputs().compactMap { output -> EngineFailure? in
@@ -98,18 +106,14 @@ import MacAmbientJevPipeline
 
         fixture.app.core.report(silenceWarning)
         #expect(fixture.app.core.failures == [silenceWarning])
-        try await waitOnMain("the first failure worker to finish") {
-            fixture.app.core.failureEventTask == nil
-        }
+        await fixture.app.core.failureWorkerFinished()
         fixture.sink.release()
         fixture.transport.start()
         await fixture.transport.drain()
 
         fixture.app.core.report(silenceWarning)
         #expect(fixture.app.core.failures == [silenceWarning, silenceWarning])
-        try await waitOnMain("the second failure worker to finish") {
-            fixture.app.core.failureEventTask == nil
-        }
+        await fixture.app.core.failureWorkerFinished()
         await fixture.transport.drain()
 
         let outputs = try fixture.sink.outputs()
@@ -143,7 +147,7 @@ import MacAmbientJevPipeline
         #expect(fixture.app.core.pendingFailureEvents.count <= EngineApplicationCore.failureLimit)
         #expect(fixture.app.core.failureEventTask != nil)
 
-        try await waitOnMain("the single failure worker to fill the transport queue") {
+        try await waitForMainActorState("the single failure worker to fill the transport queue") {
             fixture.app.core.inFlightFailureEvent?.message == "background failure 1987"
                 && fixture.app.core.pendingFailureEvents.count == 12
         }
@@ -156,7 +160,7 @@ import MacAmbientJevPipeline
             defer { shutdownReturned.set(true) }
             try await fixture.app.core.shutdown(reason: .requested)
         }
-        try await waitOnMain("shutdown to close background events") { fixture.app.core.eventsClosed }
+        try await waitForMainActorState("shutdown to close background events") { fixture.app.core.eventsClosed }
         #expect(fixture.app.core.pendingFailureEvents.isEmpty)
         #expect(fixture.app.core.inFlightFailureEvent?.message == "background failure 1987")
         #expect(fixture.app.core.failureEventTask != nil)
@@ -231,5 +235,58 @@ import MacAmbientJevPipeline
         await fixture.transport.drain()
         #expect(!fixture.app.core.eventsEnabled)
         #expect(try fixture.sink.outputs().count == outputCountAfterShutdown)
+    }
+
+    @Test func recoveryMaintenanceFailuresDistinguishShutdownInterruptionFromFailure() async throws {
+        let fixture = try fixture()
+        defer {
+            fixture.sink.release()
+            fixture.transport.close()
+            try? FileManager.default.removeItem(at: fixture.root)
+        }
+
+        _ = try await fixture.app.handlers.state.hello()
+        fixture.app.handlers.state.helloDidComplete()
+        let interruptedSessionID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+        let failedSessionID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
+        let interruptionReason = "終了処理のため保存整理を中断しました。次回起動時に再実行します"
+        let failureReason = "permission denied"
+
+        fixture.app.core.recoveryDidChange(.reportedFailures(
+            scanFailures: [],
+            maintenanceFailures: [
+                interruptedSessionID: .interruptedByShutdown(interruptionReason),
+                failedSessionID: .failed(failureReason)
+            ],
+            hasRecoveries: false
+        ))
+
+        fixture.sink.release()
+        fixture.transport.start()
+        await fixture.app.core.failureWorkerFinished()
+        await fixture.transport.drain()
+
+        let errors = try fixture.sink.outputs().compactMap { output -> EngineFailure? in
+            if case let .error(failure) = output.event { failure } else { nil }
+        }
+        #expect(errors.map(\.sessionID) == [
+            EngineFailures.wireID(interruptedSessionID), EngineFailures.wireID(failedSessionID)
+        ])
+        let interruptedFailure = try #require(errors.first { $0.sessionID == EngineFailures.wireID(interruptedSessionID) })
+        #expect(interruptedFailure.code == .cancelled)
+        #expect(interruptedFailure.stage == .maintenance)
+        #expect(interruptedFailure.severity == .warning)
+        #expect(interruptedFailure.recoveryAction == .restart)
+        #expect(interruptedFailure.sessionID == EngineFailures.wireID(interruptedSessionID))
+        #expect(interruptedFailure.message == interruptionReason)
+
+        let failedFailure = try #require(errors.first { $0.sessionID == EngineFailures.wireID(failedSessionID) })
+        #expect(failedFailure.code == .filesystem)
+        #expect(failedFailure.stage == .maintenance)
+        #expect(failedFailure.severity == .error)
+        #expect(failedFailure.recoveryAction == .inspectSession)
+        #expect(failedFailure.sessionID == EngineFailures.wireID(failedSessionID))
+        #expect(failedFailure.message == "保存済み録音の音声を整理できませんでした: \(failureReason)")
+        #expect(errors.filter { $0.code == .filesystem }.map(\.sessionID) == [EngineFailures.wireID(failedSessionID)])
     }
 }

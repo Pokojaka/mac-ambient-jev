@@ -5,14 +5,17 @@ import ucrt
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevTestSupport
 @testable import MacAmbientJevEngine
 
 private struct ProcessTestError: Error, CustomStringConvertible {
     let description: String
 }
 
-/// The built engine executable as a child process, speaking NDJSON on its standard streams.
+/// The built engine executable as a child process, speaking NDJSON on its standard streams. `changes` signals after
+/// every stdout or stderr chunk and when the process exits.
 private final class EngineChild: @unchecked Sendable {
+    private let changes = ChangeSignal()
     private let process = Process()
     private let stdin = Pipe()
     private let stdout = Pipe()
@@ -35,6 +38,17 @@ private final class EngineChild: @unchecked Sendable {
             throw ProcessTestError(description: "OpenProcess failed (Win32 \(GetLastError()))")
         }
         processHandle = handle
+        guard let exitHandle = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(process.processIdentifier)) else {
+            throw ProcessTestError(description: "OpenProcess failed (Win32 \(GetLastError()))")
+        }
+        let exitHandleBits = Int(bitPattern: exitHandle)
+        let changes = self.changes
+        Thread.detachNewThread {
+            let exitHandle = HANDLE(bitPattern: exitHandleBits)
+            _ = WaitForSingleObject(exitHandle, INFINITE)
+            CloseHandle(exitHandle)
+            changes.signal()
+        }
         Self.drain(stdout.fileHandleForReading) { [self] in append(&stdoutData, $0) }
         Self.drain(stderr.fileHandleForReading) { [self] in append(&stderrData, $0) }
     }
@@ -43,6 +57,7 @@ private final class EngineChild: @unchecked Sendable {
         lock.lock()
         storage.append(chunk)
         lock.unlock()
+        changes.signal()
     }
 
     private static func drain(_ handle: FileHandle, _ onChunk: @escaping @Sendable (Data) -> Void) {
@@ -122,20 +137,18 @@ private final class EngineChild: @unchecked Sendable {
         return terminal!
     }
 
-    func wait(_ what: String, timeout: TimeInterval = 60, _ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                throw ProcessTestError(description: "timed out waiting for \(what); stdout: \(stdoutText) stderr: \(stderrText)")
-            }
-            try await Task.sleep(nanoseconds: 20_000_000)
+    func wait(_ what: String, _ condition: () -> Bool) async throws {
+        do {
+            try await changes.wait(what, until: condition)
+        } catch let cancelled as WaitCancelled {
+            throw ProcessTestError(description: "\(cancelled); stdout: \(stdoutText) stderr: \(stderrText)")
         }
     }
 
     /// The exit code once the process has ended.
-    func exitCode(timeout: TimeInterval = 60) async throws -> Int32 {
+    func exitCode() async throws -> Int32 {
         var status: Int32?
-        try await wait("the engine to exit", timeout: timeout) {
+        try await wait("the engine to exit") {
             status = exitStatusIfExited()
             return status != nil
         }
@@ -170,7 +183,7 @@ private let settingsPayload = """
 
 /// Serialized: a child inherits every inheritable handle of the test process, so two children started at once would
 /// hold each other's pipe ends open and a closed stdin would never reach end of file.
-@Suite(.serialized) struct EngineProcessTests {
+@Suite(.serialized, .timeLimit(.minutes(10))) struct EngineProcessTests {
     @Test func launchOptionsAcceptOnlyAnAbsoluteLocalAppDataFolder() throws {
         #expect(try EngineLaunchOptions.parse([]).localAppData == nil)
         #expect(try EngineLaunchOptions.parse(["--local-app-data", "C:\\data"]).localAppData?.path == URL(fileURLWithPath: "C:\\data").path)

@@ -113,5 +113,9 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
     #expect(exists(unwritable.processingDirectory))
     #expect(Array(failures.keys) == [try unwritable.loadManifest().sessionID])
     let failure = try #require(failures.values.first)
-    #expect(failure.hasPrefix(unwritable.sessionURL.lastPathComponent + ": "))
+    guard case .failed(let message) = failure else {
+        Issue.record("unexpected shutdown interruption while maintaining the unwritable session")
+        return
+    }
+    #expect(message.hasPrefix(unwritable.sessionURL.lastPathComponent + ": "))
 }

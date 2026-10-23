@@ -783,19 +783,6 @@ public actor NativeSessionProcessor {
                     activeRuns: final.activeRuns,
                     pendingClauseBoundarySegments: pendingSources
                 )
-            } catch is CancellationError {
-                return await pauseFinalization(
-                    attemptID: attemptID,
-                    metrics: final.metrics,
-                    status: "確定処理が中断されたため、一時停止しました",
-                    metadataStore: metadataStore,
-                    sessionLayout: sessionLayout,
-                    previous: previous,
-                    provisional: provisional,
-                    onPhase: onPhase,
-                    onStatus: onStatus,
-                    onUpdate: onUpdate
-                )
             } catch {
                 return await failFinalization(
                     attemptID: attemptID,

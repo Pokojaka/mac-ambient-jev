@@ -89,6 +89,11 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevClauseTaggerFixtures",
         resources: [.copy("Resources")]
     ),
+    // Deadline-free waits for test doubles, shared by the engine test targets.
+    .target(
+        name: "MacAmbientJevTestSupport",
+        path: "Tests/MacAmbientJevTestSupport"
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
         dependencies: [
@@ -109,7 +114,7 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "MacAmbientJevEngineHostTests",
-        dependencies: ["MacAmbientJevEngineHost"]
+        dependencies: ["MacAmbientJevEngineHost", "MacAmbientJevTestSupport"]
     ),
     .testTarget(
         name: "MacAmbientJevDiarizationMeasurementTests",
@@ -266,7 +271,8 @@ targets.append(.testTarget(
         "MacAmbientJevEngine",
         "MacAmbientJevCore",
         "MacAmbientJevEngineProtocol",
-        "MacAmbientJevEngineHost"
+        "MacAmbientJevEngineHost",
+        "MacAmbientJevTestSupport"
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))

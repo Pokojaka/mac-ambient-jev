@@ -24,21 +24,27 @@ func detachedTaskReturnsTypedResultAndPropagatesOriginalErrorIdentity() async th
     }
 }
 
-@Test
-func detachedTaskRetainsCancellationContextOnBlockingIOExecutor() async throws {
-    let task = Task.detached(executorPreference: BlockingIOExecutor.shared) {
-        withUnsafeCurrentTask { currentTask in
-            currentTask?.cancel()
+/// A synchronous blocking loop that ends only when its task is cancelled, like chunked file work.
+private func blockUntilCancelled(signalling entered: AsyncStream<Void>.Continuation) -> Bool {
+    entered.yield()
+    while !Task.isCancelled { Thread.sleep(forTimeInterval: 0.001) }
+    return Task.isCancelled
+}
+
+@Test(.timeLimit(.minutes(10)))
+func cancellingTheAwaitingParentReachesTheBlockingClosure() async throws {
+    let (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
+    let parent = Task { () -> Bool in
+        let work = Task.detached(executorPreference: BlockingIOExecutor.shared) {
+            blockUntilCancelled(signalling: enteredContinuation)
         }
-        try Task.checkCancellation()
+        return await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
     }
-
-    do {
-        _ = try await task.value
-        Issue.record("Expected cancellation to throw")
-    } catch is CancellationError {
-        // Expected cancellation from the current task context.
-    }
-
-    #expect(task.isCancelled)
+    for await _ in entered { break }
+    parent.cancel()
+    #expect(await parent.value)
 }

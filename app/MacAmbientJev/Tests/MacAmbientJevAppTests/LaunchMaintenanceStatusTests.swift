@@ -171,3 +171,97 @@ func failedLaunchMaintenanceReportsFailureWithoutStaleStatus() async throws {
     #expect(!state.processingCoordinator.isDraining)
     #expect(FileManager.default.fileExists(atPath: layout.processingDirectory.path))
 }
+
+@MainActor
+@Test("interrupted launch maintenance remains retryable when shutdown cancels before the first item")
+func interruptedLaunchMaintenanceRemainsRetryableAfterCancellation() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let layout = try await launchMaintenanceRecording(paths: paths, attempt: .paused)
+    let manifest = try layout.loadManifest()
+    let state = launchMaintenanceState(paths: paths, defaults: defaults)
+    let previousProcessingState = state.processingState
+    let previousTranscriptStatus = "既存の文字起こし表示"
+    state.transcriptViewModel.setStatus(previousTranscriptStatus)
+
+    let recoveryTask = Task { @MainActor in
+        await state.processingCoordinator.recoverPendingSessions(
+            effects: state,
+            scan: {
+                try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+            },
+            maintain: { items, callback in
+                await SessionStorageMaintainer.maintain(items, willMaintain: { count in
+                    await callback(count)
+                    withUnsafeCurrentTask { $0?.cancel() }
+                })
+            }
+        )
+    }
+    await recoveryTask.value
+
+    #expect(!state.processingQueue.isMaintainingStorage)
+    #expect(state.processingQueue.pending.isEmpty)
+    #expect(!state.processingQueue.containsForReprocessing(manifest.sessionID))
+    #expect(!state.processingCoordinator.isDraining)
+    #expect(state.processingState == previousProcessingState)
+    guard let status = state.processingStatusText else {
+        Issue.record("shutdown interruption must remain visible for the next launch")
+        return
+    }
+    #expect(status.contains("終了処理"))
+    #expect(status.contains("次回起動時に再実行"))
+    #expect(state.transcriptViewModel.statusText == previousTranscriptStatus)
+
+    guard case .recordingPCM = try SessionAudioStorageStore(layout: layout).load() else {
+        Issue.record("interrupted maintenance must retain PCM as the authoritative recording")
+        return
+    }
+    guard case .recordedPCM(let checkpoint)? = try layout.audioSource(for: manifest) else {
+        Issue.record("interrupted maintenance must retain its readable PCM checkpoint")
+        return
+    }
+    #expect(checkpoint.committedFrames == 16_000)
+    #expect(FileManager.default.fileExists(atPath: layout.processingDirectory.path))
+    #expect(!FileManager.default.fileExists(atPath: layout.recordingFLACURL.path))
+    let pcmFiles = try FileManager.default.contentsOfDirectory(
+        at: layout.processingDirectory, includingPropertiesForKeys: nil
+    )
+    #expect(!pcmFiles.isEmpty)
+
+    let retryScan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+    #expect(retryScan.maintenance.count == 1)
+    #expect(retryScan.candidates.count == 1)
+    #expect(retryScan.maintenance[0].sessionURL == layout.sessionURL)
+}
+
+@MainActor
+@Test("mixed maintenance failures preserve actual errors and report shutdown interruption")
+func mixedMaintenanceFailuresKeepActualErrorsVisible() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let state = launchMaintenanceState(paths: paths, defaults: defaults)
+    let failureReason = "permission denied"
+    let interruptionReason = "終了処理のため保存整理を中断しました。次回起動時に再実行します"
+
+    state.recoveryDidChange(.reportedFailures(
+        scanFailures: [],
+        maintenanceFailures: [
+            UUID(): .failed(failureReason),
+            UUID(): .interruptedByShutdown(interruptionReason)
+        ],
+        hasRecoveries: false
+    ))
+
+    guard case .partialFailure(let message) = state.processingState else {
+        Issue.record("a real maintenance error must remain a partial failure")
+        return
+    }
+    #expect(message.contains(failureReason))
+    #expect(message.contains(interruptionReason))
+    #expect(state.processingStatusText == message)
+}

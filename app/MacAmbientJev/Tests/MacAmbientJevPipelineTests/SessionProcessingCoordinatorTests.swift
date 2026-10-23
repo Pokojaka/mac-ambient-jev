@@ -226,8 +226,9 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
     ) async {
         record("retryContentPriority:\(sessionID.uuidString)")
         if retryWaitsForCancellation {
+            // Only cancellation ends the wait; the test's `.timeLimit` guards against a hang.
             do {
-                try await Task.sleep(nanoseconds: 60_000_000_000)
+                while true { try await Task.sleep(nanoseconds: 60_000_000_000) }
             } catch is CancellationError {
                 // The coordinator cancellation is the behavior under test.
             } catch {
@@ -545,7 +546,7 @@ func pauseDuringLiveDrainSkipsFinishAndHoldsStoredFinalization() async {
 }
 
 @MainActor
-@Test
+@Test(.timeLimit(.minutes(10)))
 func cancelledRetryIsHeldAndFollowingRequestIsNotDequeued() async {
     let eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
@@ -641,6 +642,7 @@ func recoveryFilteringExcludesRecordingMaintenanceFailuresPendingAndPublishedRet
     let recordingID = UUID()
     let recoverDecisionID = UUID()
     let maintenanceFailureID = UUID()
+    let interruptedMaintenanceID = UUID()
     let pendingID = UUID()
     let publishedRetryID = UUID()
     let boundarySegments = [try SegmentTextReference(
@@ -658,6 +660,7 @@ func recoveryFilteringExcludesRecordingMaintenanceFailuresPendingAndPublishedRet
             action: .recoverDecisionRun(boundarySegments: boundarySegments, clauses: clauses)
         ),
         makeRecoveryCandidate(sessionID: maintenanceFailureID, action: .finalize),
+        makeRecoveryCandidate(sessionID: interruptedMaintenanceID, action: .finalize),
         makeRecoveryCandidate(sessionID: pendingID, action: .finalize),
         makeRecoveryCandidate(
             sessionID: publishedRetryID,
@@ -669,11 +672,16 @@ func recoveryFilteringExcludesRecordingMaintenanceFailuresPendingAndPublishedRet
     let requests = SessionProcessingCoordinator.recoveryRequests(
         candidates: candidates,
         recordingSessionID: recordingID,
-        maintenanceFailures: [maintenanceFailureID: "保存領域の保守に失敗しました"],
+        maintenanceFailures: [
+            maintenanceFailureID: .failed("保存領域の保守に失敗しました"),
+            interruptedMaintenanceID: .interruptedByShutdown("終了時に保守が中断されました")
+        ],
         pending: pending
     )
 
     #expect(requests.map(\.sessionID) == [finalizeID, recoverDecisionID])
+    #expect(!requests.contains { $0.sessionID == maintenanceFailureID })
+    #expect(!requests.contains { $0.sessionID == interruptedMaintenanceID })
     if case .finalize(let sessionID, let metadataPolicy) = requests[0] {
         #expect(sessionID == finalizeID)
         #expect(metadataPolicy == .reject)

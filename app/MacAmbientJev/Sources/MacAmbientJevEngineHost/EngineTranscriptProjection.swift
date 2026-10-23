@@ -5,6 +5,16 @@ import MacAmbientJevEngineProtocol
 /// The rows P5 shows. Row content comes from `LiveTranscriptProjection`, the projection the Mac screen and
 /// `transcript.txt` share, so filler removal, number formatting and speaker labels are decided here once.
 enum EngineTranscriptProjection {
+    struct RowFailure: Sendable {
+        let rowID: String
+        let error: any Error
+    }
+
+    /// Every row of one update that failed to project or encode, in row order.
+    struct Failures: Error {
+        let rows: [RowFailure]
+    }
+
     /// Encoded bytes of a page beyond which it is cut, kept well inside the 1 MiB record limit.
     static let pageByteBudget = 700_000
 
@@ -59,22 +69,32 @@ enum EngineTranscriptProjection {
             cachedRows = rows
         }
 
-        func update(_ segments: [MaterializedTranscriptSegment]) throws -> (rows: [EngineTranscriptRow], changes: Changes) {
+        func update(_ segments: [MaterializedTranscriptSegment]) throws(Failures) -> (rows: [EngineTranscriptRow], changes: Changes) {
             var nextOrderedIDs: [String] = []
             nextOrderedIDs.reserveCapacity(segments.count)
             var seenIDs: Set<String> = []
             seenIDs.reserveCapacity(segments.count)
+            var duplicateIDs: [String] = []
+            var recordedDuplicateIDs: Set<String> = []
             var changedSegments: [String: MaterializedTranscriptSegment] = [:]
             changedSegments.reserveCapacity(segments.count)
             for segment in segments {
                 let id = segment.segmentID
                 guard seenIDs.insert(id).inserted else {
-                    throw EngineTranscriptProjectionError.duplicateSegmentID(id)
+                    if recordedDuplicateIDs.insert(id).inserted {
+                        duplicateIDs.append(id)
+                    }
+                    continue
                 }
                 nextOrderedIDs.append(id)
                 if sourceByID[id] != segment {
                     changedSegments[id] = segment
                 }
+            }
+            if !duplicateIDs.isEmpty {
+                throw Failures(rows: duplicateIDs.map { id in
+                    RowFailure(rowID: id, error: EngineTranscriptProjectionError.duplicateSegmentID(id))
+                })
             }
 
             let removedIDs = sourceByID.keys.filter { !seenIDs.contains($0) }
@@ -133,29 +153,37 @@ enum EngineTranscriptProjection {
             let pendingIDs = orderedIDs.filter { unprojectedIDs.contains($0) }
             var projectedRows: [(id: String, row: EngineTranscriptRow?)] = []
             projectedRows.reserveCapacity(pendingIDs.count)
+            var rowFailures: [RowFailure] = []
             for id in pendingIDs {
                 guard let segment = sourceByID[id] else { continue }
                 totalProjectedSegments += 1
-                let projectedRow: EngineTranscriptRow?
-                if segment.isDiarized {
-                    if segment.hasRecognizedText, !ClauseTextComposer.isBlank(segment.displayText) {
-                        let liveRow = try LiveTranscriptRow(
-                            segment: segment,
-                            displaySpeakerLabels: SpeakerDisplayMapper.turnLabels(for: segment, labels: speakerLabels)
-                        )
-                        projectedRow = try EngineTranscriptProjection.row(for: liveRow)
+                do {
+                    let projectedRow: EngineTranscriptRow?
+                    if segment.isDiarized {
+                        if segment.hasRecognizedText, !ClauseTextComposer.isBlank(segment.displayText) {
+                            let liveRow = try LiveTranscriptRow(
+                                segment: segment,
+                                displaySpeakerLabels: SpeakerDisplayMapper.turnLabels(for: segment, labels: speakerLabels)
+                            )
+                            projectedRow = try EngineTranscriptProjection.row(for: liveRow)
+                        } else {
+                            projectedRow = nil
+                        }
                     } else {
-                        projectedRow = nil
+                        let liveRows = try LiveTranscriptProjection().rows(for: [segment])
+                        if let liveRow = liveRows.first {
+                            projectedRow = try EngineTranscriptProjection.row(for: liveRow)
+                        } else {
+                            projectedRow = nil
+                        }
                     }
-                } else {
-                    let liveRows = try LiveTranscriptProjection().rows(for: [segment])
-                    if let liveRow = liveRows.first {
-                        projectedRow = try EngineTranscriptProjection.row(for: liveRow)
-                    } else {
-                        projectedRow = nil
-                    }
+                    projectedRows.append((id, projectedRow))
+                } catch {
+                    rowFailures.append(RowFailure(rowID: id, error: error))
                 }
-                projectedRows.append((id, projectedRow))
+            }
+            if !rowFailures.isEmpty {
+                throw Failures(rows: rowFailures)
             }
             for (id, projectedRow) in projectedRows {
                 if rowByID[id] != projectedRow {
@@ -232,14 +260,30 @@ enum EngineTranscriptProjection {
     }
 
     /// Encoded data bytes carried by a changes event, excluding JSON array brackets.
-    static func encodedChangeBytes(upserts: [EngineTranscriptRow], removedRowIDs: [String]) throws -> Int {
+    static func encodedChangeBytes(upserts: [EngineTranscriptRow], removedRowIDs: [String]) throws(Failures) -> Int {
         var bytes = 0
-        for row in upserts { bytes += try encodedRowBytes(row) }
+        var failures: [RowFailure] = []
+        for row in upserts {
+            do {
+                bytes += try encodedRowBytes(row)
+            } catch {
+                failures.append(RowFailure(rowID: row.rowID, error: error))
+            }
+        }
         if upserts.count > 1 { bytes += upserts.count - 1 }
 
         let idEncoder = encoder()
-        for rowID in removedRowIDs { bytes += try idEncoder.encode(rowID).count }
+        for rowID in removedRowIDs {
+            do {
+                bytes += try idEncoder.encode(rowID).count
+            } catch {
+                failures.append(RowFailure(rowID: rowID, error: error))
+            }
+        }
         if removedRowIDs.count > 1 { bytes += removedRowIDs.count - 1 }
+        if !failures.isEmpty {
+            throw Failures(rows: failures)
+        }
         return bytes
     }
 

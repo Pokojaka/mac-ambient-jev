@@ -2,9 +2,10 @@ import Foundation
 import Testing
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevTestSupport
 
 @MainActor
-@Suite struct EngineControllerTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineControllerTests {
     private func hello(_ h: EngineHarness) async throws {
         h.send(1, "hello")
         try await h.waitForOutputs("hello completed") { $0.contains { if case .completed = $0.event { true } else { false } } }
@@ -68,7 +69,7 @@ import MacAmbientJevEngineProtocol
         h.fake.heldCommands = ["hello"]
         h.start()
         h.send(1, "hello")
-        try await waitOnMain("hello handler to be held") { h.fake.heldCount == 1 }
+        try await h.fake.changes.wait("hello handler to be held") { h.fake.heldCount == 1 }
 
         var mainActorTaskRan = false
         let mainActorTask = Task { @MainActor in mainActorTaskRan = true }
@@ -109,7 +110,7 @@ import MacAmbientJevEngineProtocol
         h.fake.heldCommands = ["hello"]
         h.start()
         h.send(1, "hello")
-        try await waitOnMain("hello handler to be held") { h.fake.heldCount == 1 }
+        try await h.fake.changes.wait("hello handler to be held") { h.fake.heldCount == 1 }
 
         h.send(2, "shutdown")
         #expect(await h.exit() == .shutdownRequested)
@@ -252,7 +253,7 @@ import MacAmbientJevEngineProtocol
         h.start()
         try await hello(h)
         for id in 2...15 { h.send(UInt64(id), "session.reprocess", payload: "{\"session_id\":\"s\"}") }
-        try await waitOnMain("14 held") { h.fake.heldCount == 14 }
+        try await h.fake.changes.wait("14 held") { h.fake.heldCount == 14 }
         h.send(16, "session.reprocess", payload: "{\"session_id\":\"s\"}")
         h.send(17, "recording.stop", payload: "{\"session_id\":\"s\"}")
         h.send(18, "recording.stop", payload: "{\"session_id\":\"s\"}")
@@ -284,7 +285,7 @@ import MacAmbientJevEngineProtocol
         h.start()
         try await hello(h)
         h.send(2, "session.reprocess", payload: "{\"session_id\":\"s\"}")
-        try await waitOnMain("held") { h.fake.heldCount == 1 }
+        try await h.fake.changes.wait("held") { h.fake.heldCount == 1 }
         h.send(3, "shutdown")
         let exit = await h.exit()
         #expect(exit == .shutdownRequested)
@@ -305,7 +306,7 @@ import MacAmbientJevEngineProtocol
         h.start()
         try await hello(h)
         h.send(2, "session.reprocess", payload: "{\"session_id\":\"s\"}")
-        try await waitOnMain("held") { h.fake.heldCount == 1 }
+        try await h.fake.changes.wait("held") { h.fake.heldCount == 1 }
 
         let reason = "audio capture device was lost"
         h.transport.captureFailed(reason)
@@ -347,7 +348,7 @@ import MacAmbientJevEngineProtocol
         h.start()
         try await hello(h)
         h.send(2, "session.reprocess", payload: "{\"session_id\":\"s\"}")
-        try await waitOnMain("held") { h.fake.heldCount == 1 }
+        try await h.fake.changes.wait("held") { h.fake.heldCount == 1 }
         h.source.finish()
         #expect(await h.exit() == .inputClosed)
         #expect(h.fake.shutdownReasons == [.inputClosed])

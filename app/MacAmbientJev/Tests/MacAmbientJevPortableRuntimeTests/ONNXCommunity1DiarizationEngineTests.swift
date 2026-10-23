@@ -152,48 +152,44 @@ struct ONNXCommunity1DiarizationEngineTests {
 
     @Test
     func concurrentDiarizeCallsRunOneAtATime() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let session = try Community1CAFSession(samples: [0.1, 0.2, 0.3, 0.4])
-            defer { session.cleanup() }
-            let log = RunLog()
-            let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log, runDelay: 0.03)
-            try await engine.prepare()
+        let session = try Community1CAFSession(samples: [0.1, 0.2, 0.3, 0.4])
+        defer { session.cleanup() }
+        let log = RunLog()
+        let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log, runDelay: 0.03)
+        try await engine.prepare()
 
-            let results = try await withThrowingTaskGroup(of: [SpeakerSpan].self) { group in
-                for _ in 0..<5 {
-                    group.addTask {
-                        try await engine.diarize(fileURL: session.cafURL, canonicalSampleRate: 16_000, sessionURL: session.root)
-                    }
+        let results = try await withThrowingTaskGroup(of: [SpeakerSpan].self) { group in
+            for _ in 0..<5 {
+                group.addTask {
+                    try await engine.diarize(fileURL: session.cafURL, canonicalSampleRate: 16_000, sessionURL: session.root)
                 }
-                var all: [[SpeakerSpan]] = []
-                for try await spans in group { all.append(spans) }
-                return all
             }
-
-            #expect(results.count == 5)
-            #expect(results.allSatisfy { $0 == results[0] })
-            #expect(log.snapshot.runs == 5)
-            #expect(log.snapshot.peak == 1)
+            var all: [[SpeakerSpan]] = []
+            for try await spans in group { all.append(spans) }
+            return all
         }
+
+        #expect(results.count == 5)
+        #expect(results.allSatisfy { $0 == results[0] })
+        #expect(log.snapshot.runs == 5)
+        #expect(log.snapshot.peak == 1)
     }
 
     @Test
     func unloadWaitsForTheRunningDiarize() async throws {
-        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
-            let session = try Community1CAFSession(samples: [0.1, 0.2, 0.3, 0.4])
-            defer { session.cleanup() }
-            let log = RunLog()
-            let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log, runDelay: 0.1)
-            try await engine.prepare()
+        let session = try Community1CAFSession(samples: [0.1, 0.2, 0.3, 0.4])
+        defer { session.cleanup() }
+        let log = RunLog()
+        let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log, runDelay: 0.1)
+        try await engine.prepare()
 
-            async let running = engine.diarize(fileURL: session.cafURL, canonicalSampleRate: 16_000, sessionURL: session.root)
-            while log.snapshot.runs == 0 { await Task.yield() }
-            await engine.unload()
+        async let running = engine.diarize(fileURL: session.cafURL, canonicalSampleRate: 16_000, sessionURL: session.root)
+        while log.snapshot.runs == 0 { await Task.yield() }
+        await engine.unload()
 
-            #expect(log.snapshot.inFlight == 0)
-            #expect(try await running.count == 1)
-            #expect(await engine.isPrepared == false)
-        }
+        #expect(log.snapshot.inFlight == 0)
+        #expect(try await running.count == 1)
+        #expect(await engine.isPrepared == false)
     }
 }
 

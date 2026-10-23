@@ -4,6 +4,7 @@ import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
+import MacAmbientJevTestSupport
 
 // MARK: Fake engines
 
@@ -353,7 +354,7 @@ final class ApplicationHarness {
         nextRequestID += 1
         source.feed(requestLine(id, command, payload: payload))
         let sink = self.sink
-        try await waitUntil(timeout: 180, "terminal reply to \(command)") {
+        try await sink.changes.wait("terminal reply to \(command)") {
             ((try? sink.outputs()) ?? []).contains { $0.requestID?.value == id && Self.isTerminal($0.event) }
         }
         for output in try outputs where output.requestID?.value == id {
@@ -404,18 +405,19 @@ final class ApplicationHarness {
         return list.sessions
     }
 
-    /// Polls `session.list` until the only session reaches `status`.
-    func waitForSession(status: EngineSessionStatus, timeout: TimeInterval = 180) async throws -> EngineSessionSummary {
-        let deadline = Date().addingTimeInterval(timeout)
+    /// Re-reads `session.list` after every `state` event until the only session reaches `status`. A session
+    /// changes status only together with the processing queue, which `state` carries.
+    func waitForSession(status: EngineSessionStatus) async throws -> EngineSessionSummary {
         while true {
+            let statesBefore = stateEventCount
             if let session = try await sessions().first, session.status == status { return session }
-            if Date() > deadline {
-                let state = try await self.state()
-                let seen = try await sessions().map { "\($0.status)" }
-                throw TestTimeout(description: "no session reached \(status); sessions \(seen); setup \(state.setup) recovery \(state.recovery) queue \(state.queue) failures \(state.failures.map { "\($0.code.rawValue): \($0.message)" })")
-            }
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await sink.changes.wait("a session to reach \(status)") { stateEventCount > statesBefore }
         }
+    }
+
+    /// `state` events written so far.
+    var stateEventCount: Int {
+        ((try? outputs) ?? []).filter { if case .state = $0.event { true } else { false } }.count
     }
 
     func shutdown() async throws -> EngineExit {

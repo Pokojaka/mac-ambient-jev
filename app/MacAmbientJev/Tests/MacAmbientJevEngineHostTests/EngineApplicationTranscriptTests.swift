@@ -3,11 +3,12 @@ import Testing
 import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
+import MacAmbientJevTestSupport
 
 @testable import MacAmbientJevEngineHost
 
 @MainActor
-@Suite struct EngineApplicationTranscriptTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineApplicationTranscriptTests {
     @Test func watchedAndReadCachesRemainIndependentAndInvalidWatchIsTransactional() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -44,7 +45,7 @@ import MacAmbientJevPipeline
         #expect(core.readTranscript?.sessionID == UUID(uuidString: sessionB))
         #expect(core.readTranscript?.revision == readPage.revision.value)
 
-        try await waitOnMain(timeout: 10, "watched transcript change event") {
+        try await h.sink.changes.wait("watched transcript change event") {
             ((try? h.outputs) ?? []).contains { output in
                 guard case let .rows(payload) = output.event else { return false }
                 return payload.sessionID == sessionA && payload.kind == .changes
@@ -175,9 +176,7 @@ import MacAmbientJevPipeline
         #expect(core.pendingFailureEvents.count <= 1)
         #expect(core.inFlightFailureEvent == nil || core.inFlightFailureEvent?.code == .rowTooLarge)
 
-        try await waitOnMain(timeout: 10, "oversized transcript failure worker") {
-            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
-        }
+        await core.failureWorkerFinished()
         await h.transport.drain()
         let outputsAfterFailure = try h.outputs
         let firstRowTooLargeEvents = outputsAfterFailure.compactMap { output -> EngineFailure? in
@@ -197,9 +196,7 @@ import MacAmbientJevPipeline
         }
         #expect(core.transcript?.revision == originalCache.revision)
         #expect(core.transcript?.rows == originalCache.rows)
-        try await waitOnMain(timeout: 10, "deduplicated oversized transcript failure worker") {
-            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
-        }
+        await core.failureWorkerFinished()
         await h.transport.drain()
         let outputsAfterUnrelatedChange = try h.outputs
         let rowTooLargeEventsAfterUnrelatedChange = outputsAfterUnrelatedChange.compactMap { output -> EngineFailure? in
@@ -213,9 +210,7 @@ import MacAmbientJevPipeline
         core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
         #expect(core.transcript?.revision == originalCache.revision)
         #expect(core.transcript?.rows == originalCache.rows)
-        try await waitOnMain(timeout: 10, "changed oversized transcript failure worker") {
-            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
-        }
+        await core.failureWorkerFinished()
         await h.transport.drain()
         let outputsAfterChangedOversizedRow = try h.outputs
         let rowTooLargeEventsAfterContentChange = outputsAfterChangedOversizedRow.compactMap { output -> EngineFailure? in
@@ -242,8 +237,8 @@ import MacAmbientJevPipeline
         #expect(repairedCache.revision > originalCache.revision)
         #expect(repairedCache.rows == expectedRows)
         #expect(repairedCache.rows.count == segments.count)
-        #expect(repairedCache.lastReportedOversizedRow == nil)
-        try await waitOnMain(timeout: 10, "large transcript reload event") {
+        #expect(repairedCache.reportedTranscriptFailures.isEmpty)
+        try await h.sink.changes.wait("large transcript reload event") {
             ((try? h.outputs) ?? []).contains { output in
                 guard case let .rows(payload) = output.event else { return false }
                 return payload.sessionID == sessionID && payload.revision.value == repairedCache.revision
@@ -273,9 +268,7 @@ import MacAmbientJevPipeline
         core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
         #expect(core.transcript?.revision == repairedRevision)
         #expect(core.transcript?.rows == expectedRows)
-        try await waitOnMain(timeout: 10, "repeated oversized transcript failure worker") {
-            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
-        }
+        await core.failureWorkerFinished()
         await h.transport.drain()
         let finalOutputs = try h.outputs
         let finalRowTooLargeEvents = finalOutputs.compactMap { output -> EngineFailure? in
@@ -287,6 +280,250 @@ import MacAmbientJevPipeline
         #expect(core.failures.filter { $0.code == .rowTooLarge && $0.sessionID == sessionID } == [firstFailure, secondFailure, firstFailure])
         #expect(core.pendingFailureEvents.isEmpty)
         #expect(core.failureEventTask == nil)
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func duplicateIdentityProjectionFailuresAreDeduplicatedUntilTheirGroupsChange() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let core = h.app.core
+        _ = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: requestContext(for: h)
+        )
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        await drainTranscriptFailures(in: h)
+        await h.transport.drain()
+
+        let originalCache = try #require(core.transcript)
+        let stateEventCountBeforeFailures = stateEventCount(in: try h.outputs)
+        let failuresBefore = core.failures.filter { $0.sessionID == sessionID }
+        let firstID = "duplicate-projection-first"
+        let secondID = "duplicate-projection-second"
+        let firstCopy = try materializedApplicationSegment(id: firstID, text: "first identity copy")
+        let secondCopy = try materializedApplicationSegment(id: firstID, text: "second identity copy")
+        let otherFirstCopy = try materializedApplicationSegment(id: secondID, text: "other first copy")
+        let otherSecondCopy = try materializedApplicationSegment(id: secondID, text: "other second copy")
+        let unrelated = try materializedApplicationSegment(id: "unrelated-projection-row", text: "unchanged unrelated")
+
+        var segments = [firstCopy, secondCopy, unrelated]
+        for _ in 0..<30 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        await drainTranscriptFailures(in: h)
+        let firstOutputs = try h.outputs
+        let firstFailures = failureEvents(for: sessionID, in: firstOutputs)
+            .filter { $0.code == .processingFailure }
+        #expect(firstFailures.count == 1)
+        let firstFailure = try #require(firstFailures.first)
+        #expect(core.failures.filter { $0.sessionID == sessionID } == failuresBefore + [firstFailure])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID])
+
+        let stateEventCountAfterFirstFailure = stateEventCount(in: firstOutputs)
+        #expect(stateEventCountAfterFirstFailure == stateEventCountBeforeFailures + 1)
+        let failuresAfterFirstFailure = core.failures.filter { $0.sessionID == sessionID }
+        for _ in 0..<30 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        segments[2] = try materializedApplicationSegment(id: unrelated.segmentID, text: "changed unrelated")
+        for _ in 0..<30 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        await drainTranscriptFailures(in: h)
+        let outputsAfterRepeats = try h.outputs
+        let failuresAfterRepeats = failureEvents(for: sessionID, in: outputsAfterRepeats)
+            .filter { $0.code == .processingFailure }
+        #expect(failuresAfterRepeats == [firstFailure])
+        #expect(core.failures.filter { $0.sessionID == sessionID } == failuresAfterFirstFailure)
+        #expect(stateEventCount(in: outputsAfterRepeats) == stateEventCountAfterFirstFailure)
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID])
+
+        segments.insert(otherFirstCopy, at: 2)
+        segments.insert(otherSecondCopy, at: 3)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsWithTwoFailures = try h.outputs
+        let errorsWithTwoFailures = failureEvents(for: sessionID, in: outputsWithTwoFailures)
+            .filter { $0.code == .processingFailure }
+        #expect(errorsWithTwoFailures.count == 2)
+        let secondFailure = try #require(errorsWithTwoFailures.last)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID, secondID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [firstCopy, otherFirstCopy, otherSecondCopy, segments[4]]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterFirstRepair = try h.outputs
+        #expect(failureEvents(for: sessionID, in: outputsAfterFirstRepair)
+            .filter { $0.code == .processingFailure } == [firstFailure, secondFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [secondID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        let changedUnrelated = try #require(segments.last)
+        segments = [firstCopy, secondCopy, otherFirstCopy, otherSecondCopy, changedUnrelated]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterReintroduction = try h.outputs
+        let errorsAfterReintroduction = failureEvents(for: sessionID, in: outputsAfterReintroduction)
+            .filter { $0.code == .processingFailure }
+        #expect(errorsAfterReintroduction == [firstFailure, secondFailure, firstFailure])
+        #expect(core.failures.filter { $0.sessionID == sessionID } == failuresBefore + errorsAfterReintroduction)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID, secondID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [firstCopy, otherFirstCopy, changedUnrelated]
+        let expectedRows = try EngineTranscriptProjection.rows(for: segments)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        let repairedCache = try #require(core.transcript)
+        #expect(repairedCache.revision > originalCache.revision)
+        #expect(repairedCache.rows == expectedRows)
+        #expect(repairedCache.reportedTranscriptFailures.isEmpty)
+        await h.transport.drain()
+        #expect(failureEvents(for: sessionID, in: try h.outputs)
+            .filter { $0.code == .processingFailure } == [firstFailure, secondFailure, firstFailure])
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func oversizedRowsReportEveryFailingIdentityUntilEachIsRepaired() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let core = h.app.core
+        _ = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: requestContext(for: h)
+        )
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        await drainTranscriptFailures(in: h)
+        await h.transport.drain()
+
+        let originalCache = try #require(core.transcript)
+        let oversizedText = String(repeating: "\u{0001}", count: 60_000)
+        let firstID = "oversized-transcript-first"
+        let secondID = "oversized-transcript-second"
+        let oversizedFirst = try materializedApplicationSegment(id: firstID, text: oversizedText)
+        let oversizedSecond = try materializedApplicationSegment(id: secondID, text: oversizedText)
+        let repairedFirst = try materializedApplicationSegment(id: firstID, text: "repaired first row")
+        let repairedSecond = try materializedApplicationSegment(id: secondID, text: "repaired second row")
+        let stableRow = try materializedApplicationSegment(id: "oversized-transcript-stable", text: "stable row")
+        var segments = [oversizedFirst, repairedSecond, stableRow]
+
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsWithFirstFailure = try h.outputs
+        let firstOversizedFailures = failureEvents(for: sessionID, in: outputsWithFirstFailure)
+            .filter { $0.code == .rowTooLarge }
+        #expect(firstOversizedFailures.count == 1)
+        let firstFailure = try #require(firstOversizedFailures.first)
+        #expect(firstFailure.message.contains(firstID))
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments[1] = oversizedSecond
+        for _ in 0..<30 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        await drainTranscriptFailures(in: h)
+        let outputsWithBothFailures = try h.outputs
+        let oversizedFailures = failureEvents(for: sessionID, in: outputsWithBothFailures)
+            .filter { $0.code == .rowTooLarge }
+        #expect(oversizedFailures.count == 2)
+        let secondFailure = try #require(oversizedFailures.last)
+        #expect(secondFailure.message.contains(secondID))
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID, secondID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments[0] = repairedFirst
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        #expect(failureEvents(for: sessionID, in: try h.outputs)
+            .filter { $0.code == .rowTooLarge } == [firstFailure, secondFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [secondID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments[0] = oversizedFirst
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let failuresAfterReintroduction = failureEvents(for: sessionID, in: try h.outputs)
+            .filter { $0.code == .rowTooLarge }
+        #expect(failuresAfterReintroduction == [firstFailure, secondFailure, firstFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [firstID, secondID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments[0] = repairedFirst
+        segments[1] = repairedSecond
+        let expectedRows = try EngineTranscriptProjection.rows(for: segments)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        let repairedCache = try #require(core.transcript)
+        #expect(repairedCache.revision > originalCache.revision)
+        #expect(repairedCache.rows == expectedRows)
+        #expect(repairedCache.reportedTranscriptFailures.isEmpty)
+        await h.transport.drain()
+        #expect(failureEvents(for: sessionID, in: try h.outputs)
+            .filter { $0.code == .rowTooLarge } == [firstFailure, secondFailure, firstFailure])
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func transcriptFailureTrackingIsBoundedToTheFailureLimit() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let core = h.app.core
+        _ = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: requestContext(for: h)
+        )
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        await drainTranscriptFailures(in: h)
+        let originalCache = try #require(core.transcript)
+        let failureCountBefore = failureEvents(for: sessionID, in: try h.outputs).count
+        let limit = EngineApplicationCore.failureLimit
+
+        var segments: [MaterializedTranscriptSegment] = []
+        for index in 0...limit {
+            let rowID = "bounded-failure-\(index)"
+            segments.append(try materializedApplicationSegment(id: rowID, text: "first \(index)"))
+            segments.append(try materializedApplicationSegment(id: rowID, text: "second \(index)"))
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+            await drainTranscriptFailures(in: h)
+        }
+
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == (0..<limit).map { "bounded-failure-\($0)" })
+        let outputsAfterAccumulation = try h.outputs
+        #expect(failureEvents(for: sessionID, in: outputsAfterAccumulation).count == failureCountBefore + limit)
+
+        let stateCountBeforeRepeat = stateEventCount(in: outputsAfterAccumulation)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterRepeat = try h.outputs
+        #expect(failureEvents(for: sessionID, in: outputsAfterRepeat).count == failureCountBefore + limit)
+        #expect(stateEventCount(in: outputsAfterRepeat) == stateCountBeforeRepeat)
+
+        // Repairing the first failing row brings the next one within the limit, so it is reported.
+        segments.remove(at: 1)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let failuresAfterRepair = failureEvents(for: sessionID, in: try h.outputs)
+        #expect(failuresAfterRepair.count == failureCountBefore + limit + 1)
+        #expect(failuresAfterRepair.last?.message.contains("bounded-failure-\(limit)") == true)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == (1...limit).map { "bounded-failure-\($0)" })
 
         #expect(try await h.shutdown() == .shutdownRequested)
     }
@@ -328,7 +565,7 @@ import MacAmbientJevPipeline
             Issue.record("expected stale_revision, got \(error)")
         }
 
-        try await waitOnMain(timeout: 10, "final transcript reload_required event") {
+        try await h.sink.changes.wait("final transcript reload_required event") {
             ((try? h.outputs) ?? []).contains { output in
                 guard case let .rows(payload) = output.event else { return false }
                 return payload.sessionID == sessionID && payload.kind == .reloadRequired
@@ -440,6 +677,25 @@ import MacAmbientJevPipeline
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
+    private func drainTranscriptFailures(in h: ApplicationHarness) async {
+        await h.app.core.failureWorkerFinished()
+        await h.transport.drain()
+    }
+
+    private func failureEvents(for sessionID: String, in outputs: [EngineOutput]) -> [EngineFailure] {
+        outputs.compactMap { output in
+            guard case let .error(failure) = output.event, failure.sessionID == sessionID else { return nil }
+            return failure
+        }
+    }
+
+    private func stateEventCount(in outputs: [EngineOutput]) -> Int {
+        outputs.filter { output in
+            if case .state = output.event { return true }
+            return false
+        }.count
+    }
+
     private func prepared(_ root: URL) async throws -> ApplicationHarness {
         let h = ApplicationHarness(root: root)
         h.start()
@@ -463,14 +719,13 @@ import MacAmbientJevPipeline
     }
 
     private func waitForFinalized(_ sessionID: String, in h: ApplicationHarness) async throws {
-        let deadline = Date().addingTimeInterval(180)
-        while Date() < deadline {
+        while true {
+            let statesBefore = h.stateEventCount
             if try await h.sessions().contains(where: { $0.sessionID == sessionID && $0.status == .finalized }) {
                 return
             }
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await h.sink.changes.wait("session \(sessionID) to finalize") { h.stateEventCount > statesBefore }
         }
-        throw TestTimeout(description: "session \(sessionID) did not finalize")
     }
 
     private func requestContext(for h: ApplicationHarness) throws -> EngineRequestContext {

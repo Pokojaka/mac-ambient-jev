@@ -90,6 +90,31 @@ import MacAmbientJevEngineProtocol
         #expect(try EngineTranscriptProjection.encodedChangeBytes(upserts: rows, removedRowIDs: []) > 700_000)
     }
 
+    @Test func encodedChangesCollectEveryOversizedRowFailure() throws {
+        let text = String(repeating: "\u{0001}", count: 60_000)
+        let segments = try [
+            materializedSegment(id: "oversized-1", text: text, speakers: [], isDiarized: false),
+            materializedSegment(id: "oversized-2", text: text, speakers: [], isDiarized: false)
+        ]
+        let rows = try EngineTranscriptProjection.rows(for: segments)
+
+        do {
+            _ = try EngineTranscriptProjection.encodedChangeBytes(upserts: rows, removedRowIDs: [])
+            Issue.record("every oversized change row must be rejected")
+        } catch let failures as EngineTranscriptProjection.Failures {
+            #expect(failures.rows.map(\.rowID) == ["oversized-1", "oversized-2"])
+            for failure in failures.rows {
+                guard let error = failure.error as? EngineCommandError else {
+                    Issue.record("expected EngineCommandError.rowTooLarge, got \(failure.error)")
+                    continue
+                }
+                #expect(error.code == .rowTooLarge)
+            }
+        } catch {
+            Issue.record("expected aggregated row failures, got \(error)")
+        }
+    }
+
     @Test @MainActor func incrementalProjectionOnlyProjectsChangedSegments() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
         var segments = try (0..<1_000).map { index in
@@ -199,18 +224,64 @@ import MacAmbientJevEngineProtocol
         #expect(incremental.totalProjectedSegments == 2)
     }
 
-    @Test @MainActor func incrementalRejectsDuplicateSegmentIDs() throws {
+    @Test @MainActor func incrementalRejectsDuplicateSegmentIDsWithRowFailure() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
         let first = try materializedSegment(id: "duplicate", text: "first", speakers: [], isDiarized: false)
         let second = try materializedSegment(id: "duplicate", text: "second", speakers: [], isDiarized: false)
         do {
             _ = try incremental.update([first, second])
             Issue.record("duplicate segment IDs must be rejected")
-        } catch EngineTranscriptProjectionError.duplicateSegmentID("duplicate") {
-            #expect(true)
+        } catch let failures as EngineTranscriptProjection.Failures {
+            #expect(failures.rows.count == 1)
+            #expect(failures.rows.first?.rowID == "duplicate")
+            if let failure = failures.rows.first,
+               let underlying = failure.error as? EngineTranscriptProjectionError
+            {
+                if case let .duplicateSegmentID(id) = underlying {
+                    #expect(id == "duplicate")
+                } else {
+                    Issue.record("expected duplicateSegmentID, got \(underlying)")
+                }
+            } else {
+                Issue.record("expected underlying duplicateSegmentID error")
+            }
         } catch {
-            Issue.record("expected duplicate segment ID error, got \(error)")
+            Issue.record("expected aggregated duplicate segment ID error, got \(error)")
         }
+    }
+
+    @Test @MainActor func incrementalCollectsDistinctDuplicateIDsAndCanRetryAfterRepair() throws {
+        let incremental = EngineTranscriptProjection.Incremental(rows: [])
+        let firstA = try materializedSegment(id: "a", text: "first a", speakers: [], isDiarized: false)
+        let firstB = try materializedSegment(id: "b", text: "first b", speakers: [], isDiarized: false)
+        let secondA = try materializedSegment(id: "a", text: "second a", speakers: [], isDiarized: false)
+        let secondB = try materializedSegment(id: "b", text: "second b", speakers: [], isDiarized: false)
+
+        do {
+            _ = try incremental.update([firstA, firstB, secondA, secondB])
+            Issue.record("all duplicate segment IDs must be rejected")
+        } catch let failures as EngineTranscriptProjection.Failures {
+            #expect(failures.rows.map(\.rowID) == ["a", "b"])
+            for (failure, expectedID) in zip(failures.rows, ["a", "b"]) {
+                #expect(failure.rowID == expectedID)
+                guard let underlying = failure.error as? EngineTranscriptProjectionError else {
+                    Issue.record("expected underlying duplicateSegmentID error")
+                    continue
+                }
+                if case let .duplicateSegmentID(id) = underlying {
+                    #expect(id == expectedID)
+                } else {
+                    Issue.record("expected duplicateSegmentID, got \(underlying)")
+                }
+            }
+        } catch {
+            Issue.record("expected aggregated duplicate segment ID errors, got \(error)")
+        }
+
+        let repaired = try incremental.update([firstA, firstB])
+        #expect(repaired.rows.map(\.rowID) == ["a", "b"])
+        #expect(repaired.changes.upserts.map(\.rowID) == ["a", "b"])
+        #expect(incremental.totalProjectedSegments == 2)
     }
 }
 

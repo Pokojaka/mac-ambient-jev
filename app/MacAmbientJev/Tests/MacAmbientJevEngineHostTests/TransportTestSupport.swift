@@ -1,25 +1,20 @@
 import Foundation
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevTestSupport
 
 struct TestTimeout: Error, CustomStringConvertible {
     let description: String
 }
 
-func waitUntil(timeout: TimeInterval = 5, _ what: String, _ condition: @Sendable () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition() {
-        if Date() > deadline { throw TestTimeout(description: "timed out waiting for \(what)") }
-        try await Task.sleep(nanoseconds: 2_000_000)
-    }
-}
-
+/// Waits for state that production code owns on the main actor and that no test double can signal. Every change
+/// to it happens in a main-actor job, so the condition is re-checked each time the main actor runs other work.
+/// There is no wall-clock deadline: the test's `.timeLimit` cancels a wait that never ends.
 @MainActor
-func waitOnMain(timeout: TimeInterval = 5, _ what: String, _ condition: @MainActor () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
+func waitForMainActorState(_ what: String, _ condition: @MainActor () -> Bool) async throws {
     while !condition() {
-        if Date() > deadline { throw TestTimeout(description: "timed out waiting for \(what)") }
-        try await Task.sleep(nanoseconds: 2_000_000)
+        if Task.isCancelled { throw WaitCancelled(description: "cancelled while waiting for \(what)") }
+        await Task.yield()
     }
 }
 
@@ -37,6 +32,7 @@ final class TransportTestExecutor: TaskExecutor, @unchecked Sendable {
 
 /// Counts only sends that returned successfully from EngineTransport.send.
 final class SuccessfulSendCount: @unchecked Sendable {
+    let changes = ChangeSignal()
     private let lock = NSLock()
     private var count = 0
 
@@ -44,6 +40,7 @@ final class SuccessfulSendCount: @unchecked Sendable {
         lock.lock()
         count += 1
         lock.unlock()
+        changes.signal()
     }
 
     var value: Int {
@@ -73,7 +70,9 @@ func testLimits(
 }
 
 /// In-memory sink with scripted partial writes, a blockable gate and cancellation like a real pipe.
+/// `changes` signals after every write call enters, after every accepted write, and on cancel and close.
 final class ScriptedSink: EngineByteSink, @unchecked Sendable {
+    let changes = ChangeSignal()
     private let condition = NSCondition()
     private var storage = Data()
     private var blocked: Bool
@@ -94,6 +93,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
     func write(_ bytes: UnsafeRawBufferPointer) throws -> Int {
         condition.lock()
         entered += 1
+        changes.signal()
         while blocked && !cancelled && !isClosed { condition.wait() }
         if cancelled || isClosed {
             condition.unlock()
@@ -107,6 +107,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
         storage.append(contentsOf: UnsafeRawBufferPointer(rebasing: bytes[..<count]))
         condition.broadcast()
         condition.unlock()
+        changes.signal()
         if delayPerCall > 0 { Thread.sleep(forTimeInterval: delayPerCall) }
         return count
     }
@@ -117,6 +118,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
         cancels += 1
         condition.broadcast()
         condition.unlock()
+        changes.signal()
     }
 
     func close() {
@@ -124,6 +126,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
         isClosed = true
         condition.broadcast()
         condition.unlock()
+        changes.signal()
     }
 
     func block() { setBlocked(true) }

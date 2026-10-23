@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevTestSupport
 
 private func makeTransport(_ sink: ScriptedSink, limits: EngineTransportLimits = testLimits()) -> EngineTransport {
     let transport = EngineTransport(source: ScriptedSource(), sink: sink, limits: limits)
@@ -9,8 +10,10 @@ private func makeTransport(_ sink: ScriptedSink, limits: EngineTransportLimits =
     return transport
 }
 
-private func blockedWriter(_ sink: ScriptedSink) async throws {
-    try await waitUntil("the writer to block in the sink") { sink.enteredWrites >= 1 }
+/// A transport whose writer has not started, so a test can fill its queue without a write in flight: the write
+/// deadline measures only a writer that cannot drain, never the test's own pace.
+private func makeUnstartedTransport(_ sink: ScriptedSink, limits: EngineTransportLimits = testLimits()) -> EngineTransport {
+    EngineTransport(source: ScriptedSource(), sink: sink, limits: limits)
 }
 
 private func accepted(_ command: EngineCommandName = .stateGet) -> EngineEvent {
@@ -24,7 +27,7 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
     return nil
 }
 
-@Suite struct EngineTransportOutputTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineTransportOutputTests {
     @Test func partialWritesStillProduceWholeLFTerminatedRecords() async throws {
         let sink = ScriptedSink(acceptPerCall: 3)
         let transport = makeTransport(sink)
@@ -42,14 +45,14 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
     @Test func replaceableStateIsCoalescedWhileTheConsumerIsSlow() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
-            let sink = ScriptedSink(blocked: true)
-            let transport = makeTransport(sink)
+            let sink = ScriptedSink()
+            let transport = makeUnstartedTransport(sink)
             defer { transport.close() }
             for revision in 1...200 {
                 try transport.sendReplaceable(try stateEvent(revision: UInt64(revision)), requestID: nil)
             }
             try await transport.send(accepted(), requestID: EngineID(1))
-            sink.release()
+            transport.start()
             await transport.drain()
             let outputs = try sink.outputs()
             let states = outputs.compactMap { output -> UInt64? in
@@ -66,44 +69,39 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
     @Test func progressIsCoalescedPerSessionAndStage() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
-            let sink = ScriptedSink(blocked: true)
-            let transport = makeTransport(sink)
+            let sink = ScriptedSink()
+            let transport = makeUnstartedTransport(sink)
             defer { transport.close() }
-            try transport.sendReplaceable(try progressEvent(session: "a", stage: .asr, completed: 1), requestID: nil)
-            try await blockedWriter(sink)
-            for completed in 2...50 {
+            for completed in 1...50 {
                 try transport.sendReplaceable(try progressEvent(session: "a", stage: .asr, completed: UInt64(completed)), requestID: nil)
                 try transport.sendReplaceable(try progressEvent(session: "b", stage: .asr, completed: UInt64(completed)), requestID: nil)
             }
-            sink.release()
+            transport.start()
             await transport.drain()
             let progress = try sink.outputs().compactMap { output -> (String?, UInt64)? in
                 if case let .progress(payload) = output.event { (payload.sessionID, payload.completedUnits) } else { nil }
             }
+            #expect(progress.filter { $0.0 == "a" }.map(\.1) == [50])
             #expect(progress.filter { $0.0 == "b" }.map(\.1) == [50])
-            #expect(progress.filter { $0.0 == "a" }.last?.1 == 50)
-            #expect(progress.count <= 3)
         }
     }
 
     @Test func rowChangesBeyondTheReplaceableBudgetBecomeOneReloadRequired() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
-            let sink = ScriptedSink(blocked: true)
-            let transport = makeTransport(sink, limits: testLimits(maxRecords: 10, reservedRecords: 4))
+            let sink = ScriptedSink()
+            let transport = makeUnstartedTransport(sink, limits: testLimits(maxRecords: 10, reservedRecords: 4))
             defer { transport.close() }
-            // The first record is taken by the blocked writer; the next ones fill the 6-record budget.
-            try transport.sendReplaceable(try rowsEvent(session: "s", revision: 1, rowIDs: ["r0"]), requestID: nil)
-            try await blockedWriter(sink)
-            for revision in 2...20 {
+            // Twenty row changes exceed the 6-record replaceable budget.
+            for revision in 1...20 {
                 try transport.sendReplaceable(try rowsEvent(session: "s", revision: UInt64(revision), rowIDs: ["r\(revision)"]), requestID: nil)
             }
-            sink.release()
+            transport.start()
             await transport.drain()
             let rows = try sink.outputs().compactMap { output -> EngineRowsPayload? in
                 if case let .rows(payload) = output.event { payload } else { nil }
             }
-            #expect(rows.count <= 7)
+            #expect(rows.count <= 6)
             #expect(rows.contains { $0.kind == .reloadRequired && $0.rows.isEmpty })
             #expect(rows.last?.revision.value == 20)
         }
@@ -112,8 +110,8 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
     @Test func terminalRepliesAreNeverCoalescedOrDroppedAndKeepOrder() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
-            let sink = ScriptedSink(blocked: true)
-            let transport = makeTransport(sink)
+            let sink = ScriptedSink()
+            let transport = makeUnstartedTransport(sink)
             defer { transport.close() }
             for id in 1...16 {
                 try await transport.send(accepted(), requestID: EngineID(UInt64(id)))
@@ -122,7 +120,7 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
                 }
                 try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
             }
-            sink.release()
+            transport.start()
             await transport.drain()
             let outputs = try sink.outputs()
             let terminals = outputs.compactMap { output -> String? in
@@ -139,8 +137,8 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
     @Test func aFullQueueSuspendsReliableSendersUntilTheWriterDrains() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
-            let sink = ScriptedSink(blocked: true)
-            let transport = makeTransport(sink, limits: testLimits(maxRecords: 6, reservedRecords: 2))
+            let sink = ScriptedSink()
+            let transport = makeUnstartedTransport(sink, limits: testLimits(maxRecords: 6, reservedRecords: 2))
             defer { transport.close() }
             let successfulSends = SuccessfulSendCount()
             let sender = Task(executorPreference: executor) {
@@ -149,12 +147,11 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
                     successfulSends.increment()
                 }
             }
-            try await blockedWriter(sink)
-            try await waitUntil("seven reliable sends to complete") { successfulSends.value == 7 }
+            try await successfulSends.changes.wait("six reliable sends to fill the queue") { successfulSends.value == 6 }
             try await Task.sleep(nanoseconds: 20_000_000)
-            #expect(successfulSends.value == 7)
+            #expect(successfulSends.value == 6)
             #expect(sink.received.isEmpty)
-            sink.release()
+            transport.start()
             try await sender.value
             await transport.drain()
             #expect(successfulSends.value == 20)

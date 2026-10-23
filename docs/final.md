@@ -60,12 +60,15 @@ ASR の計測 phase は推論完了時に終了します。その後の `postpro
 | --- | --- |
 | 成功 | `complete` と新しい全 run を公開 |
 | 熱による一時停止・ローカル公開前の型付きキャンセル | `paused` を durable に保存し、公開済み run と以前の確定結果を保持 |
+| ローカル公開後、任意判定中のキャンセル | finalization metadata は `complete` のまま、公開済みローカル `active_runs`・transcript・判定保留 metadata を維持。処理呼び出しは `paused` を返す |
 | ローカル公開後、録音 compaction 中のキャンセル | `complete` と公開済み `active_runs` を維持。音声整理だけを次回起動時に再開 |
 | 必須ローカル処理失敗・ローカル公開失敗 | `failed` と理由。公開済み run を保持 |
 | 発話文判定の失敗 | 対象判定を保留し、公開済みローカル結果を保持 |
 | 判定ログ・イベント保存・metadata 公開失敗 | 処理結果はエラー。公開済みローカル run・表示・保留 metadata は保持 |
 
 型付きキャンセルがローカル結果の公開前に起きた場合は、推論失敗に分類せず `paused` の保存を試みます。保存に成功した場合、公開前の結果は表示・公開せず、以前の正常な確定結果があれば保持します。初回録音で確定結果がなければ、終了処理が得たライブ暫定結果を保持します。保持できる結果がなければ文字は表示しません。以前の結果自体が読めない場合は、その読取失敗も明示します。熱による一時停止も同じ永続状態・保持規則です。停止中の `paused` は次回起動時に scanner が `finalize` として再投入し、確定処理全体を新しい attempt/run で再実行します。一時停止 metadata の保存に失敗した場合は、明示的な処理エラー結果として元の中断理由（熱による一時停止を含む）と保存エラーの両方を報告し、`failFinalization` による `failed` metadata への書き換えは行いません。既存の `running` / `paused` metadata は保たれ、次回 scanner が `finalize` として再投入します。`paused` が durable なのは metadata 保存に成功した場合に限られます。
+
+ローカル transcript の公開後、任意の境界・優先度判定中にキャンセルされた場合は、処理呼び出しは `paused` を返しますが、finalization metadata は既に保存した `complete` のままです。公開済みのローカル `active_runs` と transcript、および判定の保留 metadata を維持し、`complete` を `paused` に書き換えません。判定イベントや run がまだ保存されていなければ scanner は `retryContentPriority` を返しますが、これは起動時の自動復旧キューには入らず、利用者が判定を再試行するまで保留されます。公開済み snapshot より新しい final / retry の判定 run が保存された後、その run の snapshot 公開前に中断した場合は `recoverDecisionRun` を返し、起動時に判定復旧をキューへ入れます。どちらも公開済み snapshot を入力に判定だけを再実行し、VAD・話者分離・ASR はやり直しません。これは、次回起動時に録音の storage maintenance を再開する compaction 中断とは異なります。
 
 必須ローカル結果を公開した後、録音の FLAC compaction がキャンセルされた場合は、処理呼び出しは一時停止を報告しても、永続状態は `complete` のまま `active_runs` と公開済み transcript を保持します。起動時は推論復旧ではなく `compactRecording` の maintenance を再開するため、VAD・話者分離・ASR をやり直しません。通常の完了録音も同じ手順で `recording.flac` に変換し、FLAC を検証してから `storage.json` の音声の正本を切り替え、その後に PCM を削除します。finalization の親 task のキャンセルは detached compactor に転送され、符号化・検証・公開・削除の各キャンセル境界でも、正本になっている PCM または検証済み FLAC を失いません。FLAC の録音の再処理は再符号化しません。
 
@@ -102,7 +105,7 @@ CLI は開始時の熱状態が nominal / fair 以外なら開始を拒否しま
 
 読めないセッションは理由付きで報告します。イベントと `processing_metadata.json` は `schema_version: 3` が必須で、version の欠落や未対応の値は明示的な再処理でも拒否します。自動復旧は読めない `processing_metadata.json` を上書きしません。アプリの保存済み一覧で利用者が明示的に「再処理」を選ぶ場合だけ、未対応 version 以外の破損した処理 metadata を置き換えられます。派生結果が「破損」でも対応する保存形式と保存音声が利用可能なら再処理できます。原音声や録音タイムラインまで壊れている場合、metadata を置き換えても音声の問題は解消しません。
 
-復旧 scanner は非表示・manifest 欠損を含む root 直下の全ディレクトリを調べ、保存フォルダー名と manifest を検証します。同じ完全 UUID が複数フォルダーにある場合は全て復旧失敗として報告し、自動処理へ投入しません。`paused` は `finalize` として再処理し、`complete` でも録音 PCM や一時ファイルが残る場合は transcript 推論と別に `compactRecording` / `removeTransients` の maintenance を返します。起動時は maintenance を先に実行し、そのセッションの maintenance が成功するまで inference recovery から除外します。maintenance の結果には失敗 item と、キャンセルで未完了になった現在・未処理 item の UUID と理由を明示し、成功済み item は含めません。次回起動でも必要な maintenance を再検出して、実際に成功した後でのみ推論復旧へ進みます。詳細は [保存形式](storage.md) を参照してください。
+復旧 scanner は非表示・manifest 欠損を含む root 直下の全ディレクトリを調べ、保存フォルダー名と manifest を検証します。同じ完全 UUID が複数フォルダーにある場合は全て復旧失敗として報告し、自動処理へ投入しません。`paused` は `finalize` として再処理し、`complete` でも録音 PCM や一時ファイルが残る場合は transcript 推論と別に `compactRecording` / `removeTransients` の maintenance を返します。起動時は maintenance を先に実行し、そのセッションの maintenance が成功するまで inference recovery から除外します。maintenance の実エラーは `SessionMaintenanceIssue.failed`、shutdown cancellation で未完了の現在 item と残りの item は `interruptedByShutdown` として UUID と理由を記録し、成功済み item は結果に含めません。中断理由は終了処理による中断と次回起動時の再実行を明示し、disk error として扱いません。どちらの種類も maintenance 成功までは inference recovery から除外され、次回起動で必要な maintenance を再検出し、実際に成功した後でのみ推論復旧へ進みます。詳細は [保存形式](storage.md) を参照してください。
 
 ### CLI の復旧インターフェース
 
