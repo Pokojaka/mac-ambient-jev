@@ -74,6 +74,23 @@ extension EngineApplicationCore {
         let readChanged = readUpdate?.changes.isEmpty == false
         let changesFit: Bool
         if let changes = watchedUpdate?.changes, watchedChanged {
+            for row in changes.upserts {
+                do {
+                    _ = try EngineTranscriptProjection.encodedRowBytes(row)
+                } catch {
+                    if let command = error as? EngineCommandError, command.code == .rowTooLarge {
+                        guard var cache = transcript, cache.sessionID == sessionID else {
+                            reportTranscriptError(error, sessionID: sessionID)
+                            return
+                        }
+                        guard cache.lastReportedOversizedRow != row else { return }
+                        cache.lastReportedOversizedRow = row
+                        transcript = cache
+                    }
+                    reportTranscriptError(error, sessionID: sessionID)
+                    return
+                }
+            }
             do {
                 let bytes = try EngineTranscriptProjection.encodedChangeBytes(
                     upserts: changes.upserts, removedRowIDs: changes.removedRowIDs
@@ -86,6 +103,12 @@ extension EngineApplicationCore {
             }
         } else {
             changesFit = true
+        }
+
+        if let update = watchedUpdate, var cache = transcript, cache.sessionID == sessionID,
+           let failedRow = cache.lastReportedOversizedRow, !update.rows.contains(failedRow) {
+            cache.lastReportedOversizedRow = nil
+            transcript = cache
         }
 
         // Commit only after all changes that will be sent have passed validation. Empty updates still
@@ -167,6 +190,7 @@ extension EngineApplicationCore {
             cache.revision = newRevision()
             cache.isLiveState = false
             cache.projection = nil
+            cache.lastReportedOversizedRow = nil
             transcript = cache
             updatedWatched = cache
         }

@@ -3,9 +3,21 @@ import MacAmbientJevCore
 
 public struct SessionProcessingAudio: SessionProcessingAudioHandling {
     private let timelineBuilder: any ImportedAudioTimelineBuilding
+    private let compactionOperation: @Sendable (SessionLayout) throws -> Void
 
     public init(timelineBuilder: any ImportedAudioTimelineBuilding) {
         self.timelineBuilder = timelineBuilder
+        self.compactionOperation = { layout in
+            _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
+        }
+    }
+
+    init(
+        timelineBuilder: any ImportedAudioTimelineBuilding,
+        compactionOperation: @escaping @Sendable (SessionLayout) throws -> Void
+    ) {
+        self.timelineBuilder = timelineBuilder
+        self.compactionOperation = compactionOperation
     }
 
     /// An import is read only through the timeline built for this run, which finalization removes.
@@ -34,9 +46,15 @@ public struct SessionProcessingAudio: SessionProcessingAudioHandling {
     }
 
     public func compactRecording(layout: SessionLayout) async throws {
-        _ = try await Task.detached {
-            try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
-        }.value
+        try Task.checkCancellation()
+        let compactionOperation = self.compactionOperation
+        let task = Task.detached {
+            try compactionOperation(layout)
+        }
+        try await withTaskCancellationHandler(
+            operation: { try await task.value },
+            onCancel: { task.cancel() }
+        )
     }
 
     public func exportDiarizationAudio(

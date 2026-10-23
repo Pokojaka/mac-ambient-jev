@@ -113,6 +113,45 @@ private actor GatedRegistrationWriter: SessionEventAppending {
     }
 }
 
+private actor DurableThenGatedRegistrationWriter: SessionEventAppending {
+    private let writer: SessionWriter
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    init(writer: SessionWriter) {
+        self.writer = writer
+    }
+
+    func waitUntilDurableAppendReturns() async {
+        if entered { return }
+        await withCheckedContinuation { continuation in
+            entryWaiter = continuation
+        }
+    }
+
+    func releaseAppendReturn() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    @discardableResult
+    func append<Payload: Codable & Sendable>(
+        _ draft: EventDraft<Payload>
+    ) async throws -> EventEnvelope<Payload> {
+        let envelope = try await writer.append(draft)
+        if draft.eventType == "segment.created", !entered {
+            entered = true
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+                entryWaiter?.resume()
+                entryWaiter = nil
+            }
+        }
+        return envelope
+    }
+}
+
 private final class Locked<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Value
@@ -765,6 +804,54 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
         return try #require(event["event_type"] as? String)
     }
     #expect(eventTypes.filter { $0 == "segment.created" }.count == 1)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func liveASRRegistrationCompletesAfterDurableAppendDespiteCallerCancellation() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let writer = DurableThenGatedRegistrationWriter(
+        writer: try SessionWriter(sessionURL: root)
+    )
+    let session = LiveASRSession(
+        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
+        asrRunID: "asr_live_test", processingDirectory: root,
+        writer: writer, asr: CountingASREngine(), sampleRate: 16_000,
+        clauseBoundaryRunID: nil,
+        contentPriorityRunID: nil
+    )
+    let segment = SegmentReference(
+        segmentationRunID: "seg_live_test", segmentID: "seg_cancelled_register",
+        startFrame: 0, endFrame: 4_000
+    )
+    let registration = Task {
+        try await session.register(segments: [segment])
+    }
+
+    await writer.waitUntilDurableAppendReturns()
+    registration.cancel()
+    await writer.releaseAppendReturn()
+
+    let progress = try await registration.value
+    #expect(progress.pendingCount == 1)
+    #expect(progress.completedCount == 0)
+    #expect(progress.failedCount == 0)
+    #expect(progress.materializedSegments.isEmpty)
+
+    let snapshot = await session.snapshot()
+    #expect(snapshot.segments.map(\.segmentID) == [segment.segmentID])
+    #expect(snapshot.segments.first?.outcome == .pending)
+    let recovered = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: root.appending(path: "events.jsonl"))
+    )
+    let savedSegments = try recovered.lines.compactMap { line -> String? in
+        let event = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+        guard event["event_type"] as? String == "segment.created" else { return nil }
+        return try #require(event["segment_id"] as? String)
+    }
+    #expect(savedSegments == [segment.segmentID])
 }
 
 /// Measures duplicate pending registration without inference or recognized-row updates.

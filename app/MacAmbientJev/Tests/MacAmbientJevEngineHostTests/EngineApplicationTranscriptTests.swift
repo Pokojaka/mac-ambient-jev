@@ -156,13 +156,14 @@ import MacAmbientJevPipeline
         _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
         let sessionUUID = try #require(UUID(uuidString: sessionID))
         let originalCache = try #require(core.transcript)
+        let originalOversizedText = String(repeating: "\u{0001}", count: 60_000)
+        let changedOversizedText = String(repeating: "\u{0002}", count: 60_000)
+        #expect(originalOversizedText.utf8.count == changedOversizedText.utf8.count)
 
         var segments = try (0..<205).map { index in
             try materializedApplicationSegment(id: "batch-row-\(index)", text: "batch text \(index)")
         }
-        segments[137] = try materializedApplicationSegment(
-            id: "batch-row-137", text: String(repeating: "\u{0001}", count: 60_000)
-        )
+        segments[137] = try materializedApplicationSegment(id: "batch-row-137", text: originalOversizedText)
         #expect(segments.count > EngineApplicationCore.transcriptPageLimit)
         for _ in 0..<30 {
             core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
@@ -179,11 +180,52 @@ import MacAmbientJevPipeline
         }
         await h.transport.drain()
         let outputsAfterFailure = try h.outputs
-        let rowTooLargeEvents = outputsAfterFailure.compactMap { output -> EngineFailure? in
+        let firstRowTooLargeEvents = outputsAfterFailure.compactMap { output -> EngineFailure? in
             if case let .error(failure) = output.event, failure.code == .rowTooLarge { return failure }
             return nil
         }
-        #expect(rowTooLargeEvents.count == 1)
+        #expect(firstRowTooLargeEvents.count == 1)
+        let firstFailure = try #require(firstRowTooLargeEvents.first)
+
+        // Once delivered, identical rejected snapshots must not report the same oversized row again.
+        for _ in 0..<5 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        segments[10] = try materializedApplicationSegment(id: "batch-row-10", text: "changed unrelated row")
+        for _ in 0..<5 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        try await waitOnMain(timeout: 10, "deduplicated oversized transcript failure worker") {
+            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
+        }
+        await h.transport.drain()
+        let outputsAfterUnrelatedChange = try h.outputs
+        let rowTooLargeEventsAfterUnrelatedChange = outputsAfterUnrelatedChange.compactMap { output -> EngineFailure? in
+            if case let .error(failure) = output.event, failure.code == .rowTooLarge { return failure }
+            return nil
+        }
+        #expect(rowTooLargeEventsAfterUnrelatedChange == [firstFailure])
+        #expect(core.failures.filter { $0.code == .rowTooLarge && $0.sessionID == sessionID } == [firstFailure])
+
+        segments[137] = try materializedApplicationSegment(id: "batch-row-137", text: changedOversizedText)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        try await waitOnMain(timeout: 10, "changed oversized transcript failure worker") {
+            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
+        }
+        await h.transport.drain()
+        let outputsAfterChangedOversizedRow = try h.outputs
+        let rowTooLargeEventsAfterContentChange = outputsAfterChangedOversizedRow.compactMap { output -> EngineFailure? in
+            if case let .error(failure) = output.event, failure.code == .rowTooLarge { return failure }
+            return nil
+        }
+        #expect(rowTooLargeEventsAfterContentChange.count == 2)
+        let secondFailure = try #require(rowTooLargeEventsAfterContentChange.last)
+        #expect(secondFailure.message == firstFailure.message)
+        #expect(core.failures.filter { $0.code == .rowTooLarge && $0.sessionID == sessionID } == [firstFailure, secondFailure])
 
         segments[137] = try materializedApplicationSegment(id: "batch-row-137", text: "repaired batch text")
         let expectedRows = try EngineTranscriptProjection.rows(for: segments)
@@ -199,6 +241,8 @@ import MacAmbientJevPipeline
         let repairedCache = try #require(core.transcript)
         #expect(repairedCache.revision > originalCache.revision)
         #expect(repairedCache.rows == expectedRows)
+        #expect(repairedCache.rows.count == segments.count)
+        #expect(repairedCache.lastReportedOversizedRow == nil)
         try await waitOnMain(timeout: 10, "large transcript reload event") {
             ((try? h.outputs) ?? []).contains { output in
                 guard case let .rows(payload) = output.event else { return false }
@@ -207,13 +251,40 @@ import MacAmbientJevPipeline
             }
         }
         await h.transport.drain()
+        let outputsAfterRepair = try h.outputs
+        let repairReloadEvents = outputsAfterRepair.compactMap { output -> EngineRowsPayload? in
+            if case let .rows(payload) = output.event, payload.kind == .reloadRequired { return payload }
+            return nil
+        }
+        #expect(repairReloadEvents.contains {
+            $0.sessionID == sessionID && $0.revision.value == repairedCache.revision
+                && $0.rows.isEmpty && $0.removedRowIDs.isEmpty
+        })
+        let rowTooLargeEventsAfterRepair = outputsAfterRepair.compactMap { output -> EngineFailure? in
+            if case let .error(failure) = output.event, failure.code == .rowTooLarge { return failure }
+            return nil
+        }
+        #expect(rowTooLargeEventsAfterRepair == [firstFailure, secondFailure])
+        #expect(core.failures.filter { $0.code == .rowTooLarge && $0.sessionID == sessionID } == [firstFailure, secondFailure])
+
+        // A repaired row clears the marker, so the same old content can be reported again.
+        let repairedRevision = repairedCache.revision
+        segments[137] = try materializedApplicationSegment(id: "batch-row-137", text: originalOversizedText)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        #expect(core.transcript?.revision == repairedRevision)
+        #expect(core.transcript?.rows == expectedRows)
+        try await waitOnMain(timeout: 10, "repeated oversized transcript failure worker") {
+            core.failureEventTask == nil && core.pendingFailureEvents.isEmpty && core.inFlightFailureEvent == nil
+        }
+        await h.transport.drain()
         let finalOutputs = try h.outputs
         let finalRowTooLargeEvents = finalOutputs.compactMap { output -> EngineFailure? in
             if case let .error(failure) = output.event, failure.code == .rowTooLarge { return failure }
             return nil
         }
-        #expect(finalRowTooLargeEvents.count == 1)
-        #expect(core.failures.filter { $0.code == .rowTooLarge && $0.sessionID == sessionID }.count == 1)
+        #expect(finalRowTooLargeEvents.count == 3)
+        #expect(finalRowTooLargeEvents.map(\.message) == [firstFailure.message, secondFailure.message, firstFailure.message])
+        #expect(core.failures.filter { $0.code == .rowTooLarge && $0.sessionID == sessionID } == [firstFailure, secondFailure, firstFailure])
         #expect(core.pendingFailureEvents.isEmpty)
         #expect(core.failureEventTask == nil)
 

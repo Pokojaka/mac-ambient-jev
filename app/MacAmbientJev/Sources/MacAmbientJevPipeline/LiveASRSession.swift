@@ -168,7 +168,6 @@ public actor LiveASRSession {
         defer { endWork() }
 
         try await registerPendingSegments(segments)
-        try Task.checkCancellation()
         return currentProgress()
     }
 

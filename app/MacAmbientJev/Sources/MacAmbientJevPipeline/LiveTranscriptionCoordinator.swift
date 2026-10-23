@@ -57,6 +57,9 @@ public final class LiveTranscriptionCoordinator {
     private let sleep: @MainActor (Duration) async throws -> Void
     private var vadSession: (sessionID: UUID, session: any LiveVADProcessing)?
     private var vadTask: Task<Void, Never>?
+    private var vadTaskID: UUID?
+    private var vadStopRequested = false
+    private var vadSleepTask: Task<Void, Error>?
     private var asrTasks: [UUID: Task<Void, Never>] = [:]
     private var asrTaskIDs: [UUID: UUID] = [:]
     private var retiredASRTasks: [UUID: Task<Void, Never>] = [:]
@@ -116,17 +119,30 @@ public final class LiveTranscriptionCoordinator {
             return
         }
 
-        vadTask?.cancel()
+        await stopVADPolling()
+        guard effects.isCurrentRecording(sessionID) else {
+            cleanup(sessionID: sessionID)
+            await processor.cancelLiveTranscription(sessionID: sessionID)
+            return
+        }
+
+        vadStopRequested = false
+        let taskID = UUID()
+        vadTaskID = taskID
         vadTask = Task { [weak self] in
             await self?.runVADLoop(sessionID: sessionID)
         }
     }
 
     public func stopVADPolling() async {
-        guard let task = vadTask else { return }
-        task.cancel()
+        vadStopRequested = true
+        vadSleepTask?.cancel()
+        guard let task = vadTask, let taskID = vadTaskID else { return }
         _ = await task.value
-        vadTask = nil
+        if vadTaskID == taskID {
+            vadTask = nil
+            vadTaskID = nil
+        }
     }
 
     public func finishVAD(sessionID: UUID, checkpoint: AudioCheckpoint) async {
@@ -148,6 +164,8 @@ public final class LiveTranscriptionCoordinator {
     }
 
     public func resetVAD() {
+        vadStopRequested = true
+        vadSleepTask?.cancel()
         vadSession = nil
         state.resetVAD()
     }
@@ -329,18 +347,12 @@ public final class LiveTranscriptionCoordinator {
     }
 
     private func runVADLoop(sessionID: UUID) async {
-        while !Task.isCancelled,
+        while !vadStopRequested,
               let pollingEffects = effects,
               pollingEffects.isCurrentRecording(sessionID) {
-            do {
-                try await sleep(
-                    .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)
-                )
-            } catch {
-                return
-            }
+            guard await sleepForVADPoll() else { return }
 
-            guard !Task.isCancelled,
+            guard !vadStopRequested,
                   let effects,
                   effects.recordingSessionID == sessionID,
                   let active = vadSession,
@@ -366,6 +378,25 @@ public final class LiveTranscriptionCoordinator {
                 effects.liveDidChange(.vadFailed(sessionID, error.localizedDescription))
                 return
             }
+        }
+    }
+
+    private func sleepForVADPoll() async -> Bool {
+        guard !vadStopRequested else { return false }
+        let sleep = self.sleep
+        let task = Task<Void, Error> {
+            try await sleep(
+                .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)
+            )
+        }
+        vadSleepTask = task
+        do {
+            try await task.value
+            vadSleepTask = nil
+            return !vadStopRequested
+        } catch {
+            vadSleepTask = nil
+            return false
         }
     }
 

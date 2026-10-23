@@ -47,7 +47,7 @@ import MacAmbientJevPipeline
         )
     }
 
-    @Test func repeatedOversizedFailureIsRetainedAndDeliveredOnce() async throws {
+    @Test func repeatedPendingFailureIsRetainedAndDeliveredOnce() async throws {
         let fixture = try fixture()
         defer {
             fixture.sink.release()
@@ -77,6 +77,52 @@ import MacAmbientJevPipeline
             if case let .error(failure) = output.event { failure } else { nil }
         }
         #expect(errors == [oversized])
+    }
+
+    @Test func historicalFailureCanBeReportedAndDeliveredAgain() async throws {
+        let fixture = try fixture()
+        defer {
+            fixture.sink.release()
+            fixture.transport.close()
+            try? FileManager.default.removeItem(at: fixture.root)
+        }
+
+        _ = try await fixture.app.handlers.state.hello()
+        fixture.app.handlers.state.helloDidComplete()
+        let sessionID = UUID()
+        let silenceWarning = EngineFailures.failure(
+            code: .captureFailure, message: "音声が30秒以上無音です", stage: .capture,
+            sessionID: sessionID, severity: .warning, recoveryAction: .none,
+            details: [], cleanupErrors: []
+        )
+
+        fixture.app.core.report(silenceWarning)
+        #expect(fixture.app.core.failures == [silenceWarning])
+        try await waitOnMain("the first failure worker to finish") {
+            fixture.app.core.failureEventTask == nil
+        }
+        fixture.sink.release()
+        fixture.transport.start()
+        await fixture.transport.drain()
+
+        fixture.app.core.report(silenceWarning)
+        #expect(fixture.app.core.failures == [silenceWarning, silenceWarning])
+        try await waitOnMain("the second failure worker to finish") {
+            fixture.app.core.failureEventTask == nil
+        }
+        await fixture.transport.drain()
+
+        let outputs = try fixture.sink.outputs()
+        let errors = outputs.compactMap { output -> EngineFailure? in
+            if case let .error(failure) = output.event { failure } else { nil }
+        }
+        #expect(errors == [silenceWarning, silenceWarning])
+
+        let stateFailures = outputs.compactMap { output -> [EngineFailure]? in
+            if case let .state(state) = output.event { state.failures } else { nil }
+        }
+        #expect(stateFailures.contains([silenceWarning]))
+        #expect(stateFailures.contains([silenceWarning, silenceWarning]))
     }
 
     @Test func distinctFailureFloodIsBoundedAndShutdownPreventsLateErrors() async throws {

@@ -59,16 +59,19 @@ ASR の計測 phase は推論完了時に終了します。その後の `postpro
 | 結果 | 永続状態と表示 |
 | --- | --- |
 | 成功 | `complete` と新しい全 run を公開 |
-| 発熱による中断 | `paused`。公開済み run を保持 |
+| 熱による一時停止・ローカル公開前の型付きキャンセル | `paused` を durable に保存し、公開済み run と以前の確定結果を保持 |
+| ローカル公開後、録音 compaction 中のキャンセル | `complete` と公開済み `active_runs` を維持。音声整理だけを次回起動時に再開 |
 | 必須ローカル処理失敗・ローカル公開失敗 | `failed` と理由。公開済み run を保持 |
 | 発話文判定の失敗 | 対象判定を保留し、公開済みローカル結果を保持 |
 | 判定ログ・イベント保存・metadata 公開失敗 | 処理結果はエラー。公開済みローカル run・表示・保留 metadata は保持 |
 
-失敗・一時停止では、以前の正常な確定結果があればその表示を保持します。初回録音で確定結果がなければ、終了処理が得たライブ暫定結果を保持します。保持できる結果がなければ文字は表示しません。以前の結果自体が読めない場合は、その読取失敗も明示します。失敗状態の保存まで失敗した場合も元の原因と併記します。
+型付きキャンセルがローカル結果の公開前に起きた場合は、推論失敗に分類せず `paused` の保存を試みます。保存に成功した場合、公開前の結果は表示・公開せず、以前の正常な確定結果があれば保持します。初回録音で確定結果がなければ、終了処理が得たライブ暫定結果を保持します。保持できる結果がなければ文字は表示しません。以前の結果自体が読めない場合は、その読取失敗も明示します。熱による一時停止も同じ永続状態・保持規則です。停止中の `paused` は次回起動時に scanner が `finalize` として再投入し、確定処理全体を新しい attempt/run で再実行します。一時停止 metadata の保存に失敗した場合は、明示的な処理エラー結果として元の中断理由（熱による一時停止を含む）と保存エラーの両方を報告し、`failFinalization` による `failed` metadata への書き換えは行いません。既存の `running` / `paused` metadata は保たれ、次回 scanner が `finalize` として再投入します。`paused` が durable なのは metadata 保存に成功した場合に限られます。
 
-セッション情報を読めない開始失敗を除く全ての結果で、確定処理は終了時に一度だけ一時音声（話者分離入力の CAF、import の処理タイムライン、FLAC の partial）を削除します。成功した録音（文字起こし無しの完了を含む）は続けて `recording.flac` へ変換し、PCM を削除します。FLAC の録音の再処理は再符号化しません。変換・削除の失敗は成功でも結果を失敗とし、公開済みの文字起こしの保持を明示します。一時停止の削除失敗は一時停止のまま、削除エラーを状態文で報告します。詳細は [保存形式](storage.md) を参照してください。
+必須ローカル結果を公開した後、録音の FLAC compaction がキャンセルされた場合は、処理呼び出しは一時停止を報告しても、永続状態は `complete` のまま `active_runs` と公開済み transcript を保持します。起動時は推論復旧ではなく `compactRecording` の maintenance を再開するため、VAD・話者分離・ASR をやり直しません。通常の完了録音も同じ手順で `recording.flac` に変換し、FLAC を検証してから `storage.json` の音声の正本を切り替え、その後に PCM を削除します。finalization の親 task のキャンセルは detached compactor に転送され、符号化・検証・公開・削除の各キャンセル境界でも、正本になっている PCM または検証済み FLAC を失いません。FLAC の録音の再処理は再符号化しません。
 
-途中失敗・一時停止でも、ASR 段階で得た計測値を処理結果に残します。ASR 開始前の失敗では ASR 計測値はありません。
+セッション情報を読めない開始失敗を除く全ての結果で、確定処理は終了時に一度だけ一時音声（話者分離入力の CAF、import の処理タイムライン、FLAC の partial）を削除します。型付きキャンセル以外の変換・一時音声削除エラーは成功結果も `failed` とし、公開済み transcript と元の run error があればその両方を保持・報告します。一時停止後の削除失敗は `paused` を維持し、元の一時停止理由と cleanup error の両方を状態文へ残します。詳細は [保存形式](storage.md) を参照してください。
+
+途中失敗・一時停止でも、ASR 段階で得た計測値を処理結果に残します。ASR 開始前の失敗・キャンセルでは ASR 計測値はありません。
 
 ## 発熱による一時停止と再開
 
@@ -99,7 +102,7 @@ CLI は開始時の熱状態が nominal / fair 以外なら開始を拒否しま
 
 読めないセッションは理由付きで報告します。イベントと `processing_metadata.json` は `schema_version: 3` が必須で、version の欠落や未対応の値は明示的な再処理でも拒否します。自動復旧は読めない `processing_metadata.json` を上書きしません。アプリの保存済み一覧で利用者が明示的に「再処理」を選ぶ場合だけ、未対応 version 以外の破損した処理 metadata を置き換えられます。派生結果が「破損」でも対応する保存形式と保存音声が利用可能なら再処理できます。原音声や録音タイムラインまで壊れている場合、metadata を置き換えても音声の問題は解消しません。
 
-復旧 scanner は非表示・manifest 欠損を含む root 直下の全ディレクトリを調べ、保存フォルダー名と manifest を検証します。同じ完全 UUID が複数フォルダーにある場合は全て復旧失敗として報告し、自動処理へ投入しません。詳細は [保存形式](storage.md) を参照してください。
+復旧 scanner は非表示・manifest 欠損を含む root 直下の全ディレクトリを調べ、保存フォルダー名と manifest を検証します。同じ完全 UUID が複数フォルダーにある場合は全て復旧失敗として報告し、自動処理へ投入しません。`paused` は `finalize` として再処理し、`complete` でも録音 PCM や一時ファイルが残る場合は transcript 推論と別に `compactRecording` / `removeTransients` の maintenance を返します。起動時は maintenance を先に実行し、そのセッションの maintenance が成功するまで inference recovery から除外します。maintenance の結果には失敗 item と、キャンセルで未完了になった現在・未処理 item の UUID と理由を明示し、成功済み item は含めません。次回起動でも必要な maintenance を再検出して、実際に成功した後でのみ推論復旧へ進みます。詳細は [保存形式](storage.md) を参照してください。
 
 ### CLI の復旧インターフェース
 
@@ -149,7 +152,7 @@ ASR は VAD が作った区間の音声を、そのまま一回ずつ認識し�
 ## 実装の根拠
 
 - [確定パイプラインと FinalTranscriptVADSegmenter](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[確定 VAD adapter](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidFinalTranscriptVADSegmenter.swift)、[共通 VAD engine](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[共通入口・公開・保持](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[ASR の一時停止・失敗・計測](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
-- [処理 metadata](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[復旧判定](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[アプリの処理キュー](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Processing.swift)、[CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)
+- [処理 metadata](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[復旧判定](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[音声 maintenance とキャンセル時の partial 保護](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/RecordingAudioCompactor.swift)、[maintenance の失敗・未完了 item と inference 除外](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingCoordinator.swift)、[finalization の pause・公開・cleanup](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)。関連テスト: [型付きキャンセルと compaction 復旧](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FinalTranscriptPipelineTests.swift)、[detached compactor へのキャンセル転送と音声正本の保護](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionProcessingAudioTests.swift)、[maintenance の中断・未処理 item](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift)、[pause 中 cleanup 失敗](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/SessionStorageFinalizationTests.swift)、[起動時 maintenance 失敗の報告と recovery 除外](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/LaunchMaintenanceStatusTests.swift)
 - [判定 run の provenance・境界／優先度処理・batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionEnrichmentCoordinator.swift)、[provider factory とモデル cache](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionProviderFactory.swift)、[Core ML tagger](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)
 - [読み込み音声のタイムライン準備](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[話者ラベル](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift)、[FluidAudio 話者分離設定](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[FluidAudio 0.15.8 の OfflineDiarizerConfig](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerTypes.swift)
 - [表示 projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[画面の見出し](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[テキスト書き出し](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/TranscriptTextRenderer.swift)、[構造化 ASR 結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)

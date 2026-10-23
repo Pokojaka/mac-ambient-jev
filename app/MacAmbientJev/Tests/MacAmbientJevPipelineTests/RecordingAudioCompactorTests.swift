@@ -5,6 +5,10 @@ import Testing
 
 private struct Crash: Error {}
 
+private struct MaintenanceOperationFailure: LocalizedError {
+    var errorDescription: String? { "injected maintenance error" }
+}
+
 private func makeLayout() throws -> SessionLayout {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
@@ -474,7 +478,7 @@ func theMaintainerCompactsARecordingAndRemovesItsTransients() async throws {
 }
 
 @Test
-func maintenanceCancellationStopsBeforeNextCandidateWithoutFailures() async throws {
+func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncompleted() async throws {
     let first = try makeLayout()
     let second = try makeLayout()
     defer {
@@ -517,13 +521,130 @@ func maintenanceCancellationStopsBeforeNextCandidateWithoutFailures() async thro
         }
     }.value
 
-    #expect(failures.isEmpty)
+    #expect(Set(failures.keys) == Set(items.map(\.sessionID)))
+    for item in items {
+        #expect(failures[item.sessionID]?.contains(item.sessionURL.lastPathComponent) == true)
+        #expect(failures[item.sessionID]?.contains("保存整理が中断されたため未完了です") == true)
+    }
+    let recoveryCandidates = items.map { item in
+        RecoverableSession(
+            manifest: SessionManifest(
+                sessionID: item.sessionID,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                source: .recording(.microphone)
+            ),
+            sessionURL: item.sessionURL,
+            action: .finalize
+        )
+    }
+    let requests = await MainActor.run {
+        SessionProcessingCoordinator.recoveryRequests(
+            candidates: recoveryCandidates,
+            recordingSessionID: nil,
+            maintenanceFailures: failures,
+            pending: []
+        )
+    }
+    #expect(requests.isEmpty)
     #expect(try SessionAudioStorageStore(layout: first).load() == .recordingPCM)
     #expect(exists(first.processingDirectory))
     #expect(exists(first.derivedDirectory))
     #expect(exists(first.recordingFLACPartialURL))
     #expect(exists(second.derivedDirectory))
     #expect(exists(second.recordingFLACPartialURL))
+}
+
+@Test
+func maintenanceCancellationDuringCandidateReportsCurrentAndRemainingButNotCompleted() async throws {
+    let completed = try makeLayout()
+    let interrupted = try makeLayout()
+    let skipped = try makeLayout()
+    defer {
+        cleanUp(completed)
+        cleanUp(interrupted)
+        cleanUp(skipped)
+    }
+    for layout in [completed, skipped] {
+        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
+        try Data(count: 1).write(to: layout.diarizationInputURL)
+        try Data(count: 1).write(to: layout.recordingFLACPartialURL)
+    }
+    let completedManifest = try completed.loadManifest()
+    let interruptedManifest = try interrupted.loadManifest()
+    let skippedManifest = try skipped.loadManifest()
+    let items = [
+        SessionMaintenanceCandidate(
+            sessionID: completedManifest.sessionID, sessionURL: completed.sessionURL, maintenance: .removeTransients
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: interruptedManifest.sessionID, sessionURL: interrupted.sessionURL, maintenance: .compactRecording
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: skippedManifest.sessionID, sessionURL: skipped.sessionURL, maintenance: .removeTransients
+        ),
+    ]
+
+    let failures = await Task {
+        await SessionStorageMaintainer.maintain(items, willMaintain: { _ in }, perform: { item in
+            if item.sessionID == completedManifest.sessionID {
+                let layout = SessionLayout(sessionURL: item.sessionURL)
+                try SessionStorageMaintainer.run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
+                return
+            }
+            if item.sessionID == interruptedManifest.sessionID {
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CancellationError()
+            }
+            Issue.record("Skipped candidate operation should never run")
+            throw Crash()
+        })
+    }.value
+
+    #expect(Set(failures.keys) == Set([interruptedManifest.sessionID, skippedManifest.sessionID]))
+    #expect(failures[completedManifest.sessionID] == nil)
+    for item in items.dropFirst() {
+        #expect(failures[item.sessionID]?.contains(item.sessionURL.lastPathComponent) == true)
+        #expect(failures[item.sessionID]?.contains("保存整理が中断されたため未完了です") == true)
+    }
+    #expect(!exists(completed.derivedDirectory))
+    #expect(!exists(completed.recordingFLACPartialURL))
+    #expect(exists(skipped.derivedDirectory))
+    #expect(exists(skipped.recordingFLACPartialURL))
+}
+
+@Test
+func aRealMaintenanceErrorIsPreservedWhenCancellationAlsoOccurs() async throws {
+    let failed = try makeLayout()
+    let unstarted = try makeLayout()
+    defer {
+        cleanUp(failed)
+        cleanUp(unstarted)
+    }
+    let failedManifest = try failed.loadManifest()
+    let unstartedManifest = try unstarted.loadManifest()
+    let items = [
+        SessionMaintenanceCandidate(
+            sessionID: failedManifest.sessionID, sessionURL: failed.sessionURL, maintenance: .removeTransients
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: unstartedManifest.sessionID, sessionURL: unstarted.sessionURL, maintenance: .removeTransients
+        ),
+    ]
+
+    let failures = await Task {
+        await SessionStorageMaintainer.maintain(items, willMaintain: { _ in }, perform: { item in
+            if item.sessionID == failedManifest.sessionID {
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw MaintenanceOperationFailure()
+            }
+            Issue.record("Unstarted candidate operation should never run")
+            throw Crash()
+        })
+    }.value
+
+    #expect(failures[failedManifest.sessionID] == "\(failed.sessionURL.lastPathComponent): injected maintenance error")
+    #expect(failures[unstartedManifest.sessionID] == "\(unstarted.sessionURL.lastPathComponent): 保存整理が中断されたため未完了です")
+    #expect(Set(failures.keys) == Set([failedManifest.sessionID, unstartedManifest.sessionID]))
 }
 
 @Test

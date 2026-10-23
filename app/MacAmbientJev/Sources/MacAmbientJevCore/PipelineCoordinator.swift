@@ -49,6 +49,10 @@ public enum RunPhase: String, Codable, Sendable {
     case complete
 }
 
+public struct ASRRunCancellation: Error, Sendable {
+    public let metrics: ASRBatchMetrics
+}
+
 public struct ASRBatchMetrics: Codable, Sendable, Equatable {
     public var modelLoadSeconds: Double = 0
     public var asrCallSeconds: Double = 0
@@ -199,144 +203,184 @@ public actor PipelineCoordinator {
         metrics.maximumPendingCount = segments.count
         let clock = ContinuousClock()
 
-        var prepared = true
-        if !segments.isEmpty {
-            do {
+        do {
+            var prepared = true
+            if !segments.isEmpty {
+                try Task.checkCancellation()
                 let start = clock.now
-                try await asr.prepare()
-                metrics.modelLoadSeconds = seconds(start.duration(to: clock.now))
-            } catch {
-                prepared = false
-                for segment in segments {
-                    await recordFailure(segment, kind: .engineUnavailable, error: error, in: &tally)
+                do {
+                    try await asr.prepare()
+                    metrics.modelLoadSeconds = seconds(start.duration(to: clock.now))
+                } catch let cancellation as CancellationError {
+                    metrics.modelLoadSeconds += seconds(start.duration(to: clock.now))
+                    throw cancellation
+                } catch {
+                    metrics.modelLoadSeconds += seconds(start.duration(to: clock.now))
+                    try Task.checkCancellation()
+                    prepared = false
+                    for segment in segments {
+                        try await recordFailure(segment, kind: .engineUnavailable, error: error, in: &tally)
+                    }
                 }
             }
-        }
 
-        var paused = false
-        if prepared {
-            for (index, segment) in segments.enumerated() {
-                if await shouldPause() {
-                    paused = true
-                    break
-                }
-                if let oldest = pendingDates[index...].min() {
-                    metrics.oldestPendingAgeSeconds = max(
-                        metrics.oldestPendingAgeSeconds,
-                        Date().timeIntervalSince(oldest)
-                    )
-                }
-                let input: ASRAudioInput
-                do {
-                    input = try loader.load(segment: segment)
-                } catch {
-                    await recordFailure(segment, kind: .audioUnreadable, error: error, in: &tally)
-                    continue
-                }
-
-                let start = clock.now
-                let result: ASRResult
-                do {
-                    result = try await asr.transcribe(input)
-                } catch {
-                    if !input.isShorterThanMinimumASRDuration {
-                        metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
-                    }
-                    await recordFailure(segment, kind: .transcriptionFailed, error: error, in: &tally)
-                    continue
-                }
-                if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
-                    metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
-                    metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
-                }
-
-                do {
-                    let completed = try await writer.append(EventDraft(
-                        eventType: "asr.completed",
-                        sessionID: sessionID,
-                        processingRunID: asrRunID,
-                        segmentationRunID: segmentationRunID,
-                        segmentID: segment.segmentID,
-                        sourceStartFrame: segment.startFrame,
-                        sourceEndFrame: segment.endFrame,
-                        payload: ASRCompletedEventPayload(
-                            text: result.text,
-                            detectedLanguage: result.detectedLanguage,
-                            provenance: asr.provenance
-                        )
-                    ))
-                    transcriptEvents.append(.asrCompleted(
-                        seq: completed.eventSeq,
-                        runID: asrRunID,
-                        segmentationRunID: segmentationRunID,
-                        segmentID: segment.segmentID,
-                        text: result.text,
-                        detectedLanguage: result.detectedLanguage
-                    ))
-                    completedCount += 1
-                } catch {
-                    tally.persistenceFailedCount += 1
-                    tally.recordPersistenceFailure(error)
-                    continue
-                }
-
-                if pacingMode == .lowHeat, index < segments.count - 1 {
-                    do {
-                        let start = clock.now
-                        try await sleep(.seconds(2))
-                        metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
-                        metrics.pacingWaitCount += 1
-                    } catch {
+            var paused = false
+            if prepared {
+                for (index, segment) in segments.enumerated() {
+                    try Task.checkCancellation()
+                    let pauseRequested = await shouldPause()
+                    try Task.checkCancellation()
+                    if pauseRequested {
                         paused = true
                         break
                     }
+                    if let oldest = pendingDates[index...].min() {
+                        metrics.oldestPendingAgeSeconds = max(
+                            metrics.oldestPendingAgeSeconds,
+                            Date().timeIntervalSince(oldest)
+                        )
+                    }
+                    let input: ASRAudioInput
+                    do {
+                        input = try loader.load(segment: segment)
+                    } catch let cancellation as CancellationError {
+                        throw cancellation
+                    } catch {
+                        try Task.checkCancellation()
+                        try await recordFailure(segment, kind: .audioUnreadable, error: error, in: &tally)
+                        continue
+                    }
+                    try Task.checkCancellation()
+
+                    let start = clock.now
+                    let result: ASRResult
+                    do {
+                        result = try await asr.transcribe(input)
+                    } catch let cancellation as CancellationError {
+                        if !input.isShorterThanMinimumASRDuration {
+                            metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                        }
+                        throw cancellation
+                    } catch {
+                        if !input.isShorterThanMinimumASRDuration {
+                            metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                        }
+                        try Task.checkCancellation()
+                        try await recordFailure(segment, kind: .transcriptionFailed, error: error, in: &tally)
+                        continue
+                    }
+                    if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
+                        metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
+                        metrics.processedAudioSeconds += Double(input.samples.count) / Double(input.sampleRate)
+                    }
+
+                    try Task.checkCancellation()
+                    do {
+                        let completed = try await writer.append(EventDraft(
+                            eventType: "asr.completed",
+                            sessionID: sessionID,
+                            processingRunID: asrRunID,
+                            segmentationRunID: segmentationRunID,
+                            segmentID: segment.segmentID,
+                            sourceStartFrame: segment.startFrame,
+                            sourceEndFrame: segment.endFrame,
+                            payload: ASRCompletedEventPayload(
+                                text: result.text,
+                                detectedLanguage: result.detectedLanguage,
+                                provenance: asr.provenance
+                            )
+                        ))
+                        transcriptEvents.append(.asrCompleted(
+                            seq: completed.eventSeq,
+                            runID: asrRunID,
+                            segmentationRunID: segmentationRunID,
+                            segmentID: segment.segmentID,
+                            text: result.text,
+                            detectedLanguage: result.detectedLanguage
+                        ))
+                        completedCount += 1
+                    } catch let cancellation as CancellationError {
+                        throw cancellation
+                    } catch {
+                        try Task.checkCancellation()
+                        tally.persistenceFailedCount += 1
+                        tally.recordPersistenceFailure(error)
+                        continue
+                    }
+
+                    if pacingMode == .lowHeat, index < segments.count - 1 {
+                        let start = clock.now
+                        do {
+                            try await sleep(.seconds(2))
+                        } catch let cancellation as CancellationError {
+                            metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
+                            metrics.pacingWaitCount += 1
+                            throw cancellation
+                        } catch {
+                            metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
+                            metrics.pacingWaitCount += 1
+                            try Task.checkCancellation()
+                            throw error
+                        }
+                        metrics.pacingWaitSeconds += seconds(start.duration(to: clock.now))
+                        metrics.pacingWaitCount += 1
+                        try Task.checkCancellation()
+                    }
                 }
             }
-        }
 
-        if paused {
+            if paused {
+                try Task.checkCancellation()
+                return ASRRunResult(
+                    events: transcriptEvents,
+                    completedCount: completedCount,
+                    metrics: metrics,
+                    disposition: .paused
+                )
+            }
+
+            try Task.checkCancellation()
+            let failedCount = tally.failureCounts.values.reduce(0, +) + tally.persistenceFailedCount
+            do {
+                try await writer.append(EventDraft(
+                    eventType: "processing.run.completed",
+                    sessionID: sessionID,
+                    processingRunID: asrRunID,
+                    payload: ProcessingRunCompletedPayload(
+                        stage: .asr,
+                        succeeded: failedCount == 0 && tally.persistenceFailure == nil,
+                        completedCount: completedCount,
+                        failedCount: failedCount
+                    )
+                ))
+            } catch let cancellation as CancellationError {
+                throw cancellation
+            } catch {
+                try Task.checkCancellation()
+                tally.recordPersistenceFailure(error)
+            }
+            try Task.checkCancellation()
+
+            let disposition: ASRRunDisposition
+            if failedCount == 0, tally.persistenceFailure == nil {
+                disposition = .completed
+            } else {
+                disposition = .failed(ASRRunFailure(
+                    failedSegmentCount: failedCount,
+                    failureCounts: tally.failureCounts,
+                    firstRecognitionMessage: tally.firstRecognitionMessage,
+                    persistenceFailure: tally.persistenceFailure
+                ))
+            }
             return ASRRunResult(
                 events: transcriptEvents,
                 completedCount: completedCount,
                 metrics: metrics,
-                disposition: .paused
+                disposition: disposition
             )
+        } catch is CancellationError {
+            throw ASRRunCancellation(metrics: metrics)
         }
-
-        let failedCount = tally.failureCounts.values.reduce(0, +) + tally.persistenceFailedCount
-        do {
-            try await writer.append(EventDraft(
-                eventType: "processing.run.completed",
-                sessionID: sessionID,
-                processingRunID: asrRunID,
-                payload: ProcessingRunCompletedPayload(
-                    stage: .asr,
-                    succeeded: failedCount == 0 && tally.persistenceFailure == nil,
-                    completedCount: completedCount,
-                    failedCount: failedCount
-                )
-            ))
-        } catch {
-            tally.recordPersistenceFailure(error)
-        }
-
-        let disposition: ASRRunDisposition
-        if failedCount == 0, tally.persistenceFailure == nil {
-            disposition = .completed
-        } else {
-            disposition = .failed(ASRRunFailure(
-                failedSegmentCount: failedCount,
-                failureCounts: tally.failureCounts,
-                firstRecognitionMessage: tally.firstRecognitionMessage,
-                persistenceFailure: tally.persistenceFailure
-            ))
-        }
-        return ASRRunResult(
-            events: transcriptEvents,
-            completedCount: completedCount,
-            metrics: metrics,
-            disposition: disposition
-        )
     }
 
     /// Records a recognition failure and its `asr.failed` event; a failed write is kept as a persistence failure.
@@ -345,14 +389,18 @@ public actor PipelineCoordinator {
         kind: ASRFailureKind,
         error: any Error,
         in tally: inout FailureTally
-    ) async {
+    ) async throws {
+        try Task.checkCancellation()
         tally.failureCounts[kind, default: 0] += 1
         if tally.firstRecognitionMessage == nil {
             tally.firstRecognitionMessage = error.localizedDescription
         }
         do {
             try await appendFailure(segment: segment, kind: kind, error: error)
+        } catch let cancellation as CancellationError {
+            throw cancellation
         } catch {
+            try Task.checkCancellation()
             tally.recordPersistenceFailure(error)
         }
     }
@@ -362,6 +410,7 @@ public actor PipelineCoordinator {
         kind: ASRFailureKind,
         error: any Error
     ) async throws {
+        try Task.checkCancellation()
         try await writer.append(EventDraft(
             eventType: "asr.failed",
             sessionID: sessionID,
@@ -375,6 +424,7 @@ public actor PipelineCoordinator {
                 message: error.localizedDescription
             )
         ))
+        try Task.checkCancellation()
     }
 
     private func seconds(_ duration: Duration) -> Double {

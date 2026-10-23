@@ -140,25 +140,50 @@ public enum SessionStorageMaintainer {
 }
 
 extension SessionStorageMaintainer {
-    /// Runs every item to completion, one after another, and returns each failed session's message
-    /// by session ID. `willMaintain` receives the item count first; an empty list returns at once.
+    /// Runs each item in order and returns failed or uncompleted sessions by session ID.
+    /// If cancelled, the current and all unprocessed items are reported as uncompleted;
+    /// completed items are absent. `willMaintain` receives the item count first, and an empty
+    /// list returns at once.
     public static func maintain(
         _ items: [SessionMaintenanceCandidate],
         willMaintain: @Sendable (Int) async -> Void
     ) async -> [UUID: String] {
+        await maintain(items, willMaintain: willMaintain, perform: { item in
+            let layout = SessionLayout(sessionURL: item.sessionURL)
+            try run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
+        })
+    }
+
+    static func maintain(
+        _ items: [SessionMaintenanceCandidate],
+        willMaintain: @Sendable (Int) async -> Void,
+        perform: @Sendable (SessionMaintenanceCandidate) throws -> Void
+    ) async -> [UUID: String] {
         guard !items.isEmpty else { return [:] }
         await willMaintain(items.count)
         var failures: [UUID: String] = [:]
-        for item in items {
-            if Task.isCancelled { break }
+        func markUncompleted(from index: Int) {
+            for item in items[index...] {
+                failures[item.sessionID] = "\(item.sessionURL.lastPathComponent): 保存整理が中断されたため未完了です"
+            }
+        }
+
+        for (index, item) in items.enumerated() {
+            if Task.isCancelled {
+                markUncompleted(from: index)
+                break
+            }
             do {
-                let layout = SessionLayout(sessionURL: item.sessionURL)
-                try run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
+                try perform(item)
             } catch is CancellationError {
+                markUncompleted(from: index)
                 break
             } catch {
-                if Task.isCancelled { break }
                 failures[item.sessionID] = "\(item.sessionURL.lastPathComponent): \(error.localizedDescription)"
+                if Task.isCancelled {
+                    markUncompleted(from: index + 1)
+                    break
+                }
             }
         }
         return failures

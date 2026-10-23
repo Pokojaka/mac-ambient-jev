@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Testing
 @testable import MacAmbientJevCore
@@ -112,6 +113,102 @@ private actor FakeFinalASR: ASREngine {
     func recordedAudioFrameCounts() -> [Int] { audioFrameCounts }
 }
 
+private actor CancellationGate {
+    private var started = false
+    private var cancelled = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancellationWaiters: [CheckedContinuation<Void, any Error>] = []
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func suspendUntilCancelled() async throws {
+        markStarted()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                guard !cancelled, !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                cancellationWaiters.append(continuation)
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    private func markStarted() {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func cancel() {
+        cancelled = true
+        let waiters = cancellationWaiters
+        cancellationWaiters.removeAll()
+        for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+    }
+}
+
+private actor CancellationGatedFinalASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "cancellation-gated-asr", model: nil, version: "test", configuration: [:])
+    private let gate: CancellationGate
+
+    init(gate: CancellationGate) {
+        self.gate = gate
+    }
+
+    func prepare() async throws {}
+
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        try await gate.suspendUntilCancelled()
+        return ASRResult(text: "取消されなかった認識", detectedLanguage: "ja")
+    }
+
+    func unload() async {}
+}
+
+private struct CancellationGatedFinalVAD: FinalTranscriptVADSegmenter {
+    let provenance = RunProvenance(engine: "cancellation-gated-vad", model: nil, version: "test", configuration: [:])
+    let gate: CancellationGate
+
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        try await gate.suspendUntilCancelled()
+        return [SegmentReference(segmentationRunID: runID, segmentID: "vad", startFrame: 0, endFrame: 16_000)]
+    }
+}
+
+private struct CancellationGatedCompactionAudioHandling: SessionProcessingAudioHandling {
+    let gate: CancellationGate
+
+    func open(
+        _ source: SessionAudioSource,
+        layout: SessionLayout,
+        onStatus: @escaping @Sendable (String) async -> Void
+    ) async throws -> any TimelineAudioReading {
+        try SessionAudioReaders.open(source, layout: layout)
+    }
+
+    func compactRecording(layout: SessionLayout) async throws {
+        try await gate.suspendUntilCancelled()
+    }
+
+    func exportDiarizationAudio(
+        reader: any TimelineAudioReading,
+        to destinationURL: URL,
+        sessionURL: URL
+    ) throws {
+        try SessionFileAccess.createDirectory(destinationURL.deletingLastPathComponent(), relativeTo: sessionURL)
+        try SessionFileAccess.writeAtomically(
+            Data("test diarization audio".utf8), to: destinationURL, relativeTo: sessionURL
+        )
+    }
+}
+
 private enum FakeFinalizationError: Error {
     case expected
 }
@@ -212,9 +309,271 @@ private func processFinal(
     )
 }
 
+private func cancelProcessingWhenGateStarts(
+    _ processor: NativeSessionProcessor,
+    sessionID: UUID,
+    gate: CancellationGate,
+    pacingMode: ASRPacingMode = .normal
+) async -> SessionProcessingResult {
+    let task = Task {
+        await processor.processSession(
+            sessionID: sessionID,
+            pacingMode: pacingMode,
+            shouldPause: { false },
+            onPhase: { _ in },
+            metadataPolicy: .reject,
+            onStatus: { _ in },
+            onUpdate: { _, _ in }
+        )
+    }
+    await gate.waitUntilStarted()
+    task.cancel()
+    return await task.value
+}
+
+private func recoveryProcessor(
+    paths: AppPaths,
+    log: FinalizationCallLog,
+    audioHandling: any SessionProcessingAudioHandling = RecordingTestAudioHandling()
+) -> NativeSessionProcessor {
+    let counter = DecisionUsageCounter()
+    let provider = FrozenReuseProvider(fillerRangesByText: ["再開した本文": []])
+    return NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["再開した本文"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
+        ),
+        audioHandling: audioHandling,
+        contentPriority: .localTagger({
+            DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+        }, usageCounter: counter),
+        sleep: { _ in }
+    )
+}
+
 private func eventObjects(_ sessionURL: URL) throws -> [[String: Any]] {
     try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
         .lines.compactMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let gate = CancellationGate()
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: CancellationGatedFinalASR(gate: gate),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
+        ),
+        audioHandling: RecordingTestAudioHandling(),
+        contentPriority: .disabled,
+        sleep: { _ in }
+    )
+
+    let cancelled = await cancelProcessingWhenGateStarts(processor, sessionID: sessionID, gate: gate)
+
+    #expect(cancelled.disposition == .paused)
+    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.metrics?.initialPendingCount == 1)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
+
+    let relaunch = recoveryProcessor(paths: paths, log: log)
+    let resumed = try await processFinal(
+        relaunch, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(resumed.disposition == .completed)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func nativeProcessorCancellationRetainsPublishedTranscriptAndRuns() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let initialLog = FinalizationCallLog()
+    let initialProcessor = recoveryProcessor(paths: paths, log: initialLog)
+    let initial = try await processFinal(
+        initialProcessor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(initial.disposition == .completed)
+    let publishedText = try readFinalRows(sessionURL: sessionURL).map(\.text)
+    #expect(!publishedText.isEmpty)
+    let previousMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    let previousRuns = try #require(previousMetadata.activeRuns)
+
+    let gate = CancellationGate()
+    let log = FinalizationCallLog()
+    let cancellingProcessor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: CancellationGatedFinalASR(gate: gate),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                log: log
+            )
+        ),
+        audioHandling: RecordingTestAudioHandling(),
+        contentPriority: .disabled,
+        sleep: { _ in }
+    )
+
+    let cancelled = await cancelProcessingWhenGateStarts(cancellingProcessor, sessionID: sessionID, gate: gate)
+
+    #expect(cancelled.disposition == .paused)
+    #expect(cancelled.retainedTranscript == .finalized)
+    let cancelledMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(cancelledMetadata.finalizationAttempt?.state == .paused)
+    #expect(cancelledMetadata.activeRuns == previousRuns)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == publishedText)
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func nativeProcessorCancellationDuringVADPausesDurablyAndRecoversOnRelaunch() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let gate = CancellationGate()
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["認識されない"]),
+            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
+            finalTranscriptVAD: CancellationGatedFinalVAD(gate: gate)
+        ),
+        audioHandling: RecordingTestAudioHandling(),
+        contentPriority: .disabled,
+        sleep: { _ in }
+    )
+
+    let cancelled = await cancelProcessingWhenGateStarts(processor, sessionID: sessionID, gate: gate)
+
+    #expect(cancelled.disposition == .paused)
+    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.metrics == nil)
+    #expect(await log.snapshot().isEmpty)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
+
+    let relaunch = recoveryProcessor(paths: paths, log: log)
+    let resumed = try await processFinal(
+        relaunch, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(resumed.disposition == .completed)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let gate = CancellationGate()
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
+            diarization: FakeFinalDiarizer(
+                spans: [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)],
+                log: log,
+                shouldFail: false
+            ),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "first", startFrame: 0, endFrame: 8_000),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "second", startFrame: 8_000, endFrame: 16_000)
+                ],
+                log: log
+            )
+        ),
+        audioHandling: RecordingTestAudioHandling(),
+        contentPriority: .disabled,
+        sleep: { _ in try await gate.suspendUntilCancelled() }
+    )
+
+    let cancelled = await cancelProcessingWhenGateStarts(
+        processor, sessionID: sessionID, gate: gate, pacingMode: .lowHeat
+    )
+
+    #expect(cancelled.disposition == .paused)
+    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.metrics?.initialPendingCount == 2)
+    #expect(cancelled.metrics?.pacingWaitCount == 1)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
+
+    let relaunch = recoveryProcessor(paths: paths, log: log)
+    let resumed = try await processFinal(
+        relaunch, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(resumed.disposition == .completed)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
+    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func nativeProcessorCancellationDuringCompactionKeepsPublishedRunsCompleteForMaintenance() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let gate = CancellationGate()
+    let log = FinalizationCallLog()
+    let processor = recoveryProcessor(
+        paths: paths,
+        log: log,
+        audioHandling: CancellationGatedCompactionAudioHandling(gate: gate)
+    )
+
+    let cancelled = await cancelProcessingWhenGateStarts(processor, sessionID: sessionID, gate: gate)
+
+    #expect(cancelled.disposition == .paused)
+    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.retainedTranscript == .finalized)
+    let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(metadata.finalizationAttempt?.state == .complete)
+    #expect(metadata.activeRuns?.asr != nil)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
+    let inspection = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID)
+    #expect(inspection.recovery == nil)
+    #expect(inspection.maintenance == .compactRecording)
 }
 
 @Test

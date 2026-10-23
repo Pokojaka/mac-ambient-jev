@@ -300,7 +300,7 @@ final class EngineApplicationCore {
     /// Records a failure no request awaits: it joins the state's bounded failure list and, once the client has
     /// said hello, is also sent as an `error` event.
     func report(_ failure: EngineFailure) {
-        guard !failures.contains(failure), !pendingFailureEvents.contains(failure), inFlightFailureEvent != failure else {
+        guard !pendingFailureEvents.contains(failure), inFlightFailureEvent != failure else {
             return
         }
         failures.append(failure)
@@ -413,6 +413,7 @@ struct EngineTranscriptCache {
     var rows: [EngineTranscriptRow]
     var isLiveState: Bool
     var projection: EngineTranscriptProjection.Incremental?
+    var lastReportedOversizedRow: EngineTranscriptRow? = nil
 }
 
 // MARK: EngineStateHandling

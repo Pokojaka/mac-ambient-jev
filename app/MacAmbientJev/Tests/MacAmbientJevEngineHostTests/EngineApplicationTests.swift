@@ -217,6 +217,62 @@ import MacAmbientJevPipeline
         #expect(try await second.shutdown() == .shutdownRequested)
     }
 
+    @Test func shutdownDuringOfflineFinalizationPausesForRecovery() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = OfflineFinalizationGate()
+        let first = FinalizationShutdownHarness(root: root, gate: gate)
+        first.start()
+        try await first.hello()
+        try await first.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        try await first.call("models.prepare")
+
+        guard case let .recordingStart(started) = try await first.call(
+            "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
+        ) else {
+            Issue.record("recording.start did not return a session")
+            return
+        }
+        try await first.capture.session?.appendSpeech(seconds: 2)
+        try await first.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
+        // This VAD is only used by NativeSessionProcessor's offline finalization pass. Live ASR
+        // uses the ordinary fake engine, so reaching the gate proves the queued finalization began.
+        try await gate.waitUntilEntered()
+
+        #expect(try await first.shutdown() == .shutdownRequested)
+        let sessionID = try #require(UUID(uuidString: started.sessionID))
+        let paths = engineTestPaths(root: root)
+        let recovery = try #require(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
+            .inspect(sessionID: sessionID).recovery)
+        #expect(recovery.action == .finalize)
+        let pausedMetadata = try #require(try ProcessingMetadataStore(sessionURL: recovery.sessionURL).load())
+        let interruptedState = try #require(pausedMetadata.finalizationAttempt?.state)
+        #expect(interruptedState == .paused || interruptedState == .running)
+        #expect(interruptedState != .failed)
+
+        // A new app instance uses the ordinary, ungated provider and completes startup recovery.
+        let second = ApplicationHarness(root: root)
+        second.start()
+        try await second.hello()
+        await second.app.waitForStartupRecovery()
+        #expect(try await second.state().setup == .modelsRequired)
+        try await second.call("models.prepare")
+        let completed = try await second.waitForSession(status: .finalized)
+        #expect(completed.sessionID == started.sessionID)
+        #expect(try await second.state().recovery == .completed)
+        let completedMetadata = try #require(try ProcessingMetadataStore(sessionURL: recovery.sessionURL).load())
+        #expect(completedMetadata.finalizationAttempt?.state == .complete)
+        guard case let .transcriptRead(page) = try await second.call(
+            "transcript.read",
+            payload: "{\"session_id\":\"\(started.sessionID)\",\"revision\":null,\"cursor\":null,\"limit\":10}"
+        ) else {
+            Issue.record("transcript.read did not return a page")
+            return
+        }
+        #expect(page.rows.map(\.text) == ["日本語のテストです。"])
+        #expect(try await second.shutdown() == .shutdownRequested)
+    }
+
     @Test func captureFailureStopsTheControllerAndTheNextLaunchRecoversDurableAudio() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -364,4 +420,165 @@ private func jsonString(_ value: String) -> String {
 
 private func EngineFailures_wireID(_ id: UUID) -> String {
     id.uuidString.lowercased()
+}
+
+private actor OfflineFinalizationGate {
+    private var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    func suspend() async throws {
+        entered = true
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if released {
+                    continuation.resume()
+                } else if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    self.continuation = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func waitUntilEntered(timeout: TimeInterval = 180) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !entered {
+            guard Date() < deadline else { throw TestTimeout(description: "offline finalization did not reach its gate") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func cancel() {
+        released = true
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(throwing: CancellationError())
+    }
+}
+
+private struct GatedOfflineFinalTranscriptVAD: FinalTranscriptVADSegmenter {
+    let gate: OfflineFinalizationGate
+    let provenance = RunProvenance(engine: "host-test-gated-finalization-vad", model: nil, version: "test", configuration: [:])
+
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        try await gate.suspend()
+        guard reader.info.committedFrames > 0 else { return [] }
+        return [SegmentReference(
+            segmentationRunID: runID, segmentID: "final_segment_1", startFrame: 0, endFrame: reader.info.committedFrames
+        )]
+    }
+}
+
+private final class GatedFinalizationInferenceProvider: EngineInferenceProviding, @unchecked Sendable {
+    private let gate: OfflineFinalizationGate
+    private let calls = CallCounter()
+
+    init(gate: OfflineFinalizationGate) {
+        self.gate = gate
+    }
+
+    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+        calls.increment("prepare")
+        onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
+        onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
+    }
+
+    func makeInference(settings: EngineSettings) throws -> EngineInference {
+        EngineInference(
+            engines: SessionProcessingEngines(
+                asr: FakeASR(calls: calls),
+                diarization: FakeDiarizer(calls: calls),
+                finalTranscriptVAD: GatedOfflineFinalTranscriptVAD(gate: gate)
+            ),
+            contentPriority: .disabled,
+            timelineBuilder: FakeTimelineBuilder(),
+            makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }
+        )
+    }
+}
+
+/// A local copy of the transport harness with only inference injection changed.
+/// It still dispatches commands through EngineController and EngineApplication handlers.
+@MainActor
+private final class FinalizationShutdownHarness {
+    let root: URL
+    let paths: AppPaths
+    let source = ScriptedSource()
+    let sink = ScriptedSink()
+    let capture = FakeCapture()
+    let transport: EngineTransport
+    let app: EngineApplication
+    let controller: EngineController
+    private var runTask: Task<EngineExit, Never>?
+    private var nextRequestID: UInt64 = 1
+
+    init(root: URL, gate: OfflineFinalizationGate) {
+        self.root = root
+        paths = engineTestPaths(root: root)
+        let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
+        self.transport = transport
+        let app = EngineApplication(
+            configuration: EngineApplicationConfiguration(
+                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
+                shutdownPauseTimeout: .seconds(20)
+            ),
+            capture: capture,
+            inference: GatedFinalizationInferenceProvider(gate: gate),
+            events: EngineEventEmitter(transport: transport)
+        )
+        self.app = app
+        controller = EngineController(transport: transport, handlers: app.handlers, admission: .production)
+    }
+
+    func start() {
+        app.start()
+        runTask = Task { await controller.run() }
+    }
+
+    @discardableResult
+    func call(_ command: String, payload: String = "{}") async throws -> EngineResult {
+        let id = nextRequestID
+        nextRequestID += 1
+        source.feed(requestLine(id, command, payload: payload))
+        let sink = self.sink
+        try await waitUntil(timeout: 180, "terminal reply to \(command)") {
+            ((try? sink.outputs()) ?? []).contains { $0.requestID?.value == id && Self.isTerminal($0.event) }
+        }
+        for output in try sink.outputs() where output.requestID?.value == id {
+            switch output.event {
+            case let .completed(result): return result
+            case let .error(failure): throw CommandFailure(failure: failure)
+            default: continue
+            }
+        }
+        preconditionFailure("terminal reply vanished")
+    }
+
+    func hello() async throws {
+        try await call("hello")
+    }
+
+    func replaceSettings(_ settings: EngineSettings, expectedRevision: UInt64?) async throws {
+        let request = EngineSettingsReplacePayload(
+            expectedRevision: try expectedRevision.map { try EngineID($0) }, settings: settings
+        )
+        let payload = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+        try await call("settings.replace", payload: payload)
+    }
+
+    func shutdown() async throws -> EngineExit {
+        try await call("shutdown")
+        return await runTask!.value
+    }
+
+    nonisolated private static func isTerminal(_ event: EngineEvent) -> Bool {
+        switch event {
+        case .completed, .error: true
+        default: false
+        }
+    }
 }
