@@ -88,8 +88,9 @@ Invoke-Step 'Run Windows capture safety injected C tests' { & $injectedTestExecu
 
 Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
 
-# Fake-capture acceptance integration point (job 7A).
-# Lead inserts the exact command after merge; no acceptance driver is run here yet.
+Invoke-Step 'engine acceptance driver self-test' { python -B scripts/test_engine_acceptance.py }
+Invoke-Step 'engine acceptance FLAC validator self-test' { python -B scripts/test_engine_acceptance_flac.py }
+Invoke-Step 'fake-capture engine process acceptance' { python -B scripts/engine_acceptance.py --executable (Join-Path $binDir 'MacAmbientJevEngineHarness.exe') }
 
 if ($FullModel) {
     function Get-SinglePath([string]$Name, [object[]]$Lines) {

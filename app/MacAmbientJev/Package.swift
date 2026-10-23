@@ -25,6 +25,10 @@ var products: [Product] = [
     .executable(
         name: "MacAmbientJevProcessRecording",
         targets: ["MacAmbientJevProcessRecording"]
+    ),
+    .executable(
+        name: "MacAmbientJevEngineHarness",
+        targets: ["MacAmbientJevEngineHarness"]
     )
 ]
 
@@ -556,6 +560,48 @@ targets += [
         dependencies: processRecordingTestDependencies,
         exclude: processRecordingTestExcludes,
         swiftSettings: onnxRuntimeIncludeSwiftSettings
+    )
+]
+
+var engineE2ESupportDependencies: [Target.Dependency] = [
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevEngineHost",
+    "MacAmbientJevEngineProtocol"
+]
+#if os(Windows)
+engineE2ESupportDependencies.append("MacAmbientJevWindowsSupport")
+#elseif os(macOS)
+engineE2ESupportDependencies.append("MacAmbientJevAppleSupport")
+#endif
+
+targets += [
+    .target(
+        name: "MacAmbientJevEngineE2ESupport",
+        dependencies: engineE2ESupportDependencies,
+        path: "Tests/MacAmbientJevEngineE2ESupport"
+    ),
+    .executableTarget(
+        name: "MacAmbientJevEngineHarness",
+        dependencies: [
+            "MacAmbientJevEngineE2ESupport",
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
+            "MacAmbientJevEngineHost",
+            "MacAmbientJevEngineProtocol"
+        ],
+        path: "Tests/MacAmbientJevEngineHarness"
+    ),
+    .testTarget(
+        name: "MacAmbientJevEngineE2ETests",
+        dependencies: [
+            "MacAmbientJevEngineE2ESupport",
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
+            "MacAmbientJevEngineHost",
+            "MacAmbientJevEngineProtocol"
+        ],
+        path: "Tests/MacAmbientJevEngineE2ETests"
     )
 ]
 
