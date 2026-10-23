@@ -109,7 +109,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2-noble bash -lc 'apt
 
 [`verify_portable.sh`](../scripts/verify_portable.sh) は pinned assets を fetch し、portable checker の self-test と import check を行い、SwiftPM manifest を dump してから unfiltered `swift build` / `swift test` を実行します。test は Core / Pipeline / EngineProtocol / EngineHost / PortableRuntime / ONNX 等を含みますが、Linux には WindowsSupport と `MacAmbientJevEngine` product はありません。Linux CI fast job は同じ検証内容の一部を fetch/check step 後の直接の `swift build` / `swift test` で実行し、この shell script 自体は呼びません。`linux-model-e2e` は既存の separate job です。
 
-[`check_portable_core.py`](../scripts/check_portable_core.py) の default roots には Core / Pipeline に加えて EngineProtocol / EngineHost、Diarization / DiarizationMeasurement、ONNX、PortableRuntime が含まれます。portable root から Windows-only `MacAmbientJevEngine` の import を拒否し、WindowsSupport 自体は portable scan roots に含めず、`MacAmbientJevWindowsSupport` import には `#if os(Windows)` を要求します。portable-core workflow の path filter は新しい engine source / test / executable target、native injected test、runner と docs の変更を対象にします。path filter のない macOS CI の対象は変更しません。
+[`check_portable_core.py`](../scripts/check_portable_core.py) の default roots には Core / Pipeline に加えて EngineProtocol / EngineHost、Diarization / DiarizationMeasurement、ONNX、PortableRuntime が含まれます。portable root から Windows-only `MacAmbientJevEngine` の import を拒否し、WindowsSupport 自体は portable scan roots に含めず、`MacAmbientJevWindowsSupport` import には `#if os(Windows)` を要求します。portable-core workflow の path filter は engine source / test / executable target、native injected test、runner と docs の変更を対象にします。macOS CI には path filter がありません。
 
 ## 共通 Core / Pipeline テストの現状
 
