@@ -1,5 +1,5 @@
 import Foundation
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevTestSupport
 
@@ -258,4 +258,37 @@ func rowsEvent(session: String, revision: UInt64, rowIDs: [String], text: String
         sessionID: session, revision: EngineID(revision), kind: .changes,
         rows: rowIDs.map { try sampleRow($0, text: text) }, removedRowIDs: [], nextCursor: nil
     ))
+}
+
+final class ManualWriteDeadlineClock: EngineWriteDeadlineClock, @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var time: UInt64 = 0
+    private var lastObservedTime: UInt64 = 0
+
+    func now() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return time
+    }
+
+    func wait(on condition: NSCondition, remainingNanoseconds: UInt64) {
+        lock.lock()
+        lastObservedTime = time
+        lock.unlock()
+        changes.signal()
+        condition.wait()
+    }
+
+    func advance(by nanoseconds: UInt64) {
+        lock.lock()
+        time &+= nanoseconds
+        lock.unlock()
+    }
+
+    var observedTime: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastObservedTime
+    }
 }

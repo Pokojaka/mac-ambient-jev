@@ -1,18 +1,28 @@
 import Foundation
 import Testing
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevTestSupport
 
-@Suite struct EngineP4FloodEvidenceTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineP4FloodEvidenceTests {
     @Test func productionStdoutReliableRecordBound() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
             let sink = ScriptedSink(blocked: true)
-            let transport = EngineTransport(source: ScriptedSource(), sink: sink, limits: .production)
+            let expectedSuccessCount = 129
+            let successful = SuccessfulSendCount()
+            let waitingAtBound = SuccessfulSendCount()
+            let transport = EngineTransport(
+                source: ScriptedSource(),
+                sink: sink,
+                limits: .production,
+                deadlineClock: ManualWriteDeadlineClock(),
+                onReliableWait: {
+                    if successful.value == expectedSuccessCount { waitingAtBound.increment() }
+                }
+            )
             transport.start()
             defer { transport.close() }
-
-            let successful = SuccessfulSendCount()
             let producer = Task(executorPreference: executor) {
                 for rawID in 1...1_000 {
                     let id = try EngineID(UInt64(rawID))
@@ -22,11 +32,16 @@ import MacAmbientJevEngineProtocol
                     successful.increment()
                 }
             }
+            defer { producer.cancel() }
 
-            try await waitUntil("production writer to enter blocked stdout") { sink.enteredWrites == 1 }
+            try await sink.changes.wait("production writer to enter blocked stdout") { sink.enteredWrites == 1 }
             let blockedAt = DispatchTime.now().uptimeNanoseconds
-            try await waitUntil("129 reliable sends at the production record bound") { successful.value == 129 }
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await successful.changes.wait("129 reliable sends at the production record bound") {
+                successful.value == 129
+            }
+            try await waitingAtBound.changes.wait("a reliable send to suspend at the production record bound") {
+                waitingAtBound.value > 0
+            }
             #expect(successful.value == 129)
             #expect(sink.received.isEmpty)
             let blockedSeconds = Double(DispatchTime.now().uptimeNanoseconds - blockedAt) / 1_000_000_000
@@ -85,13 +100,22 @@ import MacAmbientJevEngineProtocol
             }
             #expect(expectedQueuedRecords > 0)
             #expect(nextRecordBytes > cap - expectedQueuedBytes)
+            let expectedSuccessfulAtBound = expectedQueuedRecords + 1
 
             let sink = ScriptedSink(blocked: true)
-            let transport = EngineTransport(source: ScriptedSource(), sink: sink, limits: .production)
+            let successful = SuccessfulSendCount()
+            let waitingAtBound = SuccessfulSendCount()
+            let transport = EngineTransport(
+                source: ScriptedSource(),
+                sink: sink,
+                limits: .production,
+                deadlineClock: ManualWriteDeadlineClock(),
+                onReliableWait: {
+                    if successful.value == expectedSuccessfulAtBound { waitingAtBound.increment() }
+                }
+            )
             transport.start()
             defer { transport.close() }
-
-            let successful = SuccessfulSendCount()
             let producer = Task(executorPreference: executor) {
                 for rawID in 1...64 {
                     let id = try EngineID(UInt64(rawID))
@@ -99,14 +123,18 @@ import MacAmbientJevEngineProtocol
                     successful.increment()
                 }
             }
+            defer { producer.cancel() }
 
-            try await waitUntil("production writer to enter blocked large-record stdout") { sink.enteredWrites == 1 }
+            try await sink.changes.wait("production writer to enter blocked large-record stdout") {
+                sink.enteredWrites == 1
+            }
             let blockedAt = DispatchTime.now().uptimeNanoseconds
-            let expectedSuccessfulAtBound = expectedQueuedRecords + 1
-            try await waitUntil("large reliable sends to fill the production byte bound") {
+            try await successful.changes.wait("large reliable sends to fill the production byte bound") {
                 successful.value == expectedSuccessfulAtBound
             }
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await waitingAtBound.changes.wait("a reliable send to suspend at the production byte bound") {
+                waitingAtBound.value > 0
+            }
             #expect(successful.value == expectedSuccessfulAtBound)
             #expect(sink.received.isEmpty)
             let blockedSeconds = Double(DispatchTime.now().uptimeNanoseconds - blockedAt) / 1_000_000_000
@@ -195,6 +223,7 @@ import MacAmbientJevEngineProtocol
     @MainActor
     @Test func productionAdmissionBoundsFloodAndReservesControls() async throws {
         let harness = EngineHarness(limits: .production, admission: .production)
+        defer { harness.fake.releaseAll(); harness.transport.close() }
         harness.fake.heldCommands = ["state.get", "recording.stop"]
         harness.start()
         harness.send(1, "hello")
@@ -206,10 +235,10 @@ import MacAmbientJevEngineProtocol
             harness.send(UInt64(id), "state.get")
         }
         let sink = harness.sink
-        try await waitUntil("every flood request to receive its admission reply") {
+        try await sink.changes.wait("every flood request to receive its admission reply") {
             sink.received.filter { $0 == 0x0A }.count >= 1_003
         }
-        try await waitOnMain("14 admitted state handlers held") { harness.fake.heldCount == 14 }
+        try await harness.fake.changes.wait("14 admitted state handlers held") { harness.fake.heldCount == 14 }
 
         let floodOutputs = try harness.outputs.filter {
             guard let requestID = $0.requestID?.value else { return false }
@@ -228,8 +257,8 @@ import MacAmbientJevEngineProtocol
         #expect(harness.fake.calls.filter { $0 == "state.get" }.count == 14)
 
         harness.send(1_002, "recording.stop", payload: "{\"session_id\":\"session-1\"}")
-        try await waitOnMain("reserved recording.stop handler held") { harness.fake.heldCount == 15 }
-        try await waitUntil("reserved recording.stop acceptance to reach stdout") {
+        try await harness.fake.changes.wait("reserved recording.stop handler held") { harness.fake.heldCount == 15 }
+        try await sink.changes.wait("reserved recording.stop acceptance to reach stdout") {
             sink.received.filter { $0 == 0x0A }.count >= 1_004
         }
         let maximumHeldHandlers = harness.fake.heldCount
@@ -275,7 +304,9 @@ import MacAmbientJevEngineProtocol
 
         harness.fake.heldCommands = []
         harness.fake.releaseAll()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await harness.fake.changes.wait("all held flood handlers to resume") {
+            harness.fake.resumedHeldCount == maximumHeldHandlers
+        }
         let afterRelease = try harness.outputs
         let releaseEvents = requestEvents(afterRelease)
         for id in acceptedFloodIDs {

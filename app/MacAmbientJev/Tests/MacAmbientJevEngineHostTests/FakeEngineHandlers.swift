@@ -16,6 +16,7 @@ final class FakeEngineHandlers:
     private(set) var calls: [String] = []
     private(set) var shutdownReasons: [EngineShutdownReason] = []
     private(set) var helloCompletionCount = 0
+    private(set) var resumedHeldCount = 0
     var onHelloDidComplete: (@MainActor () -> Void)?
     var heldCommands: Set<String> = []
     var failingCommands: [String: Error] = [:]
@@ -40,6 +41,8 @@ final class FakeEngineHandlers:
                 held.append(continuation)
                 changes.signal()
             }
+            resumedHeldCount += 1
+            changes.signal()
         }
         if let error = failingCommands[name] { throw error }
     }

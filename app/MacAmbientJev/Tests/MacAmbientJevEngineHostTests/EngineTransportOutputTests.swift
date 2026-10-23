@@ -39,39 +39,6 @@ private final class ReliableWaitObservation: @unchecked Sendable {
     }
 }
 
-private final class ManualWriteDeadlineClock: EngineWriteDeadlineClock, @unchecked Sendable {
-    let changes = ChangeSignal()
-    private let lock = NSLock()
-    private var time: UInt64 = 0
-    private var lastObservedTime: UInt64 = 0
-
-    func now() -> UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return time
-    }
-
-    func wait(on condition: NSCondition, remainingNanoseconds: UInt64) {
-        lock.lock()
-        lastObservedTime = time
-        lock.unlock()
-        changes.signal()
-        condition.wait()
-    }
-
-    func advance(by nanoseconds: UInt64) {
-        lock.lock()
-        time &+= nanoseconds
-        lock.unlock()
-    }
-
-    var observedTime: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return lastObservedTime
-    }
-}
-
 private final class WriteFailureObservation: @unchecked Sendable {
     let changes = ChangeSignal()
     private let lock = NSLock()
