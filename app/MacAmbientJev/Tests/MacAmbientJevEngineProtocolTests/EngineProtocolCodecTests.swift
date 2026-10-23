@@ -85,6 +85,12 @@ struct EngineProtocolCodecTests {
             #"{"version":1,"request_id":"1","command":"devices.list","payload":{"source":"future"}}"#,
             #"{"version":1,"request_id":"1","command":"devices.list","payload":{"source":null}}"#,
             #"{"version":1,"request_id":"1","command":"session.list","payload":{"cursor":null}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":null}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":""}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":1}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folderId":"folder-1"}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"session_id":"folder-1"}}"#,
         ]
         for value in invalidRequests {
             #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(Data(value.utf8)) }
@@ -200,7 +206,7 @@ struct EngineProtocolCodecTests {
 
         let tooLarge = try asciiRow(exactEncodedBytes: EngineCodec.maxRowBytes + 1)
         #expect(protocolError { _ = try EngineCodec.encodeOutput(rowsOutput([tooLarge])) } == .oversizedRow(tooLarge.rowID))
-        let page = try EngineTranscriptPage(sessionID: "s", revision: id(1), rows: [tooLarge], nextCursor: nil)
+        let page = try EngineTranscriptPage(sessionID: "s", revision: id(1), rows: [tooLarge], nextCursor: nil, previousCursor: nil)
         for result in [EngineResult.transcriptRead(page), .transcriptWatch(page)] {
             let output = try EngineOutput(version: 1, sequence: id(1), requestID: id(2), event: .completed(result))
             #expect(protocolError { _ = try EngineCodec.encodeOutput(output) } == .oversizedRow(tooLarge.rowID))

@@ -312,6 +312,29 @@ public struct EngineSessionPayload: Codable, Equatable, Sendable {
     }
 }
 
+public struct EngineSessionInspectPayload: Codable, Equatable, Sendable {
+    public let folderID: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case folderID = "folder_id"
+    }
+
+    public init(folderID: String) throws {
+        try engineRequireNonempty(folderID, "folder_id")
+        self.folderID = folderID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(folderID: container.decode(String.self, forKey: .folderID))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(folderID, forKey: .folderID)
+    }
+}
+
 public struct EngineImportPayload: Codable, Equatable, Sendable {
     public let inputPath: String
 
@@ -477,6 +500,7 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case recordingStart = "recording.start"
     case recordingStop = "recording.stop"
     case sessionImport = "session.import"
+    case sessionInspect = "session.inspect"
     case sessionReprocess = "session.reprocess"
     case sessionRetryDecisions = "session.retry_decisions"
     case sessionList = "session.list"
@@ -510,6 +534,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case recordingStart(EngineRecordingStartPayload)
     case recordingStop(EngineSessionPayload)
     case sessionImport(EngineImportPayload)
+    case sessionInspect(EngineSessionInspectPayload)
     case sessionReprocess(EngineSessionPayload)
     case sessionRetryDecisions(EngineSessionPayload)
     case sessionList(EngineSessionListPayload)
@@ -534,6 +559,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .recordingStart: .recordingStart
         case .recordingStop: .recordingStop
         case .sessionImport: .sessionImport
+        case .sessionInspect: .sessionInspect
         case .sessionReprocess: .sessionReprocess
         case .sessionRetryDecisions: .sessionRetryDecisions
         case .sessionList: .sessionList
@@ -575,6 +601,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             return .recordingStop(try EngineSessionPayload(from: payload))
         case .sessionImport:
             return .sessionImport(try EngineImportPayload(from: payload))
+        case .sessionInspect:
+            return .sessionInspect(try EngineSessionInspectPayload(from: payload))
         case .sessionReprocess:
             return .sessionReprocess(try EngineSessionPayload(from: payload))
         case .sessionRetryDecisions:
@@ -612,6 +640,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case let .recordingStop(payload), let .sessionReprocess(payload), let .sessionRetryDecisions(payload), let .transcriptWatch(payload):
             try payload.encode(to: encoder)
         case let .sessionImport(payload):
+            try payload.encode(to: encoder)
+        case let .sessionInspect(payload):
             try payload.encode(to: encoder)
         case let .sessionList(payload):
             try payload.encode(to: encoder)

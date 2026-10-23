@@ -130,6 +130,7 @@ public protocol EngineSessionHandling {
     func importSession(_ payload: EngineImportPayload, context: EngineRequestContext) async throws -> EngineSessionPayload
     func reprocess(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload
     func retryDecisions(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload
+    func inspect(_ payload: EngineSessionInspectPayload, context: EngineRequestContext) async throws -> EngineSessionSummary
     func list(_ payload: EngineSessionListPayload, context: EngineRequestContext) async throws -> EngineSessionListResult
     func export(_ payload: EngineExportPayload, context: EngineRequestContext) async throws -> EngineExportResult
 }

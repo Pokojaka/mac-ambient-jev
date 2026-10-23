@@ -106,9 +106,29 @@ final class FakeEngineHandlers:
         return payload
     }
 
+    func inspect(_ payload: EngineSessionInspectPayload, context: EngineRequestContext) async throws -> EngineSessionSummary {
+        try await enter("session.inspect")
+        return try EngineSessionSummary(
+            folderID: payload.folderID,
+            sessionID: "session-1",
+            status: .finalized,
+            error: nil,
+            displayName: "保存済み録音",
+            statusText: "文字起こしあり",
+            folderPath: "/sessions/\(payload.folderID)",
+            exportPath: nil,
+            canReprocess: true,
+            canRetryDecisions: false,
+            canExport: true,
+            metadata: .readable(
+                createdAt: 1700000000, source: .microphone, audio: .available, hasTranscript: true
+            )
+        )
+    }
+
     func list(_ payload: EngineSessionListPayload, context: EngineRequestContext) async throws -> EngineSessionListResult {
         try await enter("session.list")
-        return try EngineSessionListResult(sessions: [], nextCursor: nil)
+        return try EngineSessionListResult(sessions: [], nextCursor: nil, previousCursor: nil)
     }
 
     func export(_ payload: EngineExportPayload, context: EngineRequestContext) async throws -> EngineExportResult {
@@ -118,12 +138,12 @@ final class FakeEngineHandlers:
 
     func read(_ payload: EngineTranscriptReadPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
         try await enter("transcript.read")
-        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil)
+        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil, previousCursor: nil)
     }
 
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
         try await enter("transcript.watch")
-        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil)
+        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil, previousCursor: nil)
     }
 
     func get(context: EngineRequestContext) async throws -> EngineSettingsResult {

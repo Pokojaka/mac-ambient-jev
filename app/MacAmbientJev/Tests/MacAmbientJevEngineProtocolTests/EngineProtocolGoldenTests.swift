@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 46)
+        #expect(records.count == 49)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -49,6 +49,17 @@ struct EngineProtocolGoldenTests {
         var sawConfiguredSettingsResult = false
         var sawEndpointDefault = false
         var sawUnreadableAndReadableSessions = false
+        var sawSessionInspectRequest = false
+        var sawUnreadableSessionInspect = false
+        var sawReadableSessionInspect = false
+        var sawMicrophoneSessionSource = false
+        var sawSystemAudioSessionSource = false
+        var sawImportedSessionSource = false
+        var sawAvailableSessionAudio = false
+        var sawMissingSessionAudio = false
+        var sawUnreadableSessionAudio = false
+        var sawPreviousCursorNull = false
+        var sawPreviousCursorNonNull = false
         var sawEscapedJapaneseEmojiRow = false
         var sawNullClauseState = false
         var sawKnownClauseState = false
@@ -80,19 +91,170 @@ struct EngineProtocolGoldenTests {
                         #expect(value.settings.exportDestinationPath == "D:/Ambient Exports")
                         sawConfiguredSettingsResult = true
                     case let .sessionList(value):
+                        #expect(value.sessions.count == 5)
                         let unreadable = try #require(value.sessions.first { $0.status == .unreadable })
                         #expect(unreadable.folderID == "stable-folder-id-corrupt-metadata-17")
                         #expect(unreadable.sessionID == nil)
-                        #expect(unreadable.error != nil)
+                        #expect(unreadable.statusText == "読み込みエラー: セッション情報を読み取れません")
+                        #expect(unreadable.displayName == "日時を読み取れません")
+                        #expect(unreadable.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17")
+                        #expect(unreadable.exportPath == nil)
+                        #expect(!unreadable.canReprocess && !unreadable.canRetryDecisions && !unreadable.canExport)
+                        let unreadableError = try #require(unreadable.error)
+                        #expect(unreadableError.code == .filesystem)
+                        #expect(unreadableError.stage == .recovery)
+                        #expect(unreadableError.severity == .warning)
+                        #expect(unreadableError.recoveryAction == .inspectSession)
+                        #expect(unreadableError.message == "セッション情報を読み取れません")
+                        #expect(unreadableError.requestID == nil)
+                        #expect(unreadableError.sessionID == nil)
+                        let unreadableDetail = try #require(unreadableError.details.first)
+                        #expect(unreadableDetail.path == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17/session.json")
+                        #expect(unreadable.metadata == .unreadable(reason: "セッション情報を読み取れません"))
+
+                        // Check every enriched summary field.
                         let readable = try #require(value.sessions.first { $0.status == .finalized })
                         #expect(readable.sessionID == "session-finalized-2025-03-08T10-22-31Z")
+                        #expect(readable.folderID == "session-folder-2025-03-08-live")
+                        #expect(readable.displayName == "2025年3月8日 19:22")
+                        #expect(readable.statusText == "文字起こしあり")
+                        #expect(readable.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-2025-03-08-live")
+                        #expect(readable.error == nil)
+                        #expect(readable.exportPath == nil)
+                        #expect(readable.canReprocess && !readable.canRetryDecisions && readable.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = readable.metadata {
+                            #expect(createdAt == 1741429351)
+                            #expect(source == .microphone)
+                            #expect(audio == .available)
+                            #expect(hasTranscript)
+                            sawMicrophoneSessionSource = true
+                            sawAvailableSessionAudio = true
+                        } else {
+                            #expect(Bool(false), "Finalized session must have readable metadata")
+                        }
+
+                        let systemAudioFailed = try #require(value.sessions.first { $0.folderID == "session-folder-system-audio-missing-2025-03-10T08-00-00Z" })
+                        #expect(systemAudioFailed.status == .failed)
+                        #expect(systemAudioFailed.sessionID == "session-system-audio-missing-2025-03-10T08-00-00Z")
+                        #expect(systemAudioFailed.displayName == "2025年3月10日 17:00")
+                        #expect(systemAudioFailed.statusText == "保存済み音声がありません")
+                        #expect(systemAudioFailed.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-system-audio-missing-2025-03-10T08-00-00Z")
+                        #expect(systemAudioFailed.error == nil && systemAudioFailed.exportPath == nil)
+                        #expect(!systemAudioFailed.canReprocess && !systemAudioFailed.canRetryDecisions && !systemAudioFailed.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = systemAudioFailed.metadata {
+                            #expect(createdAt == 1741593600)
+                            #expect(source == .systemAudio)
+                            #expect(audio == .missing)
+                            #expect(!hasTranscript)
+                            sawSystemAudioSessionSource = true
+                            sawMissingSessionAudio = true
+                        } else {
+                            #expect(Bool(false), "System-audio session must have readable metadata")
+                        }
+
+                        let importedAudioFailed = try #require(value.sessions.first { $0.folderID == "session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z" })
+                        #expect(importedAudioFailed.status == .failed)
+                        #expect(importedAudioFailed.sessionID == "session-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                        #expect(importedAudioFailed.displayName == "2025年3月11日 9:30")
+                        #expect(importedAudioFailed.statusText == "音声を読めません: 音声ファイルを読めません")
+                        #expect(importedAudioFailed.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                        #expect(importedAudioFailed.error == nil && importedAudioFailed.exportPath == nil)
+                        #expect(!importedAudioFailed.canReprocess && !importedAudioFailed.canRetryDecisions && !importedAudioFailed.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = importedAudioFailed.metadata {
+                            #expect(createdAt == 1741653000)
+                            #expect(source == .imported(originalFilename: "meeting.wav"))
+                            #expect(audio == .unreadable(reason: "音声ファイルを読めません"))
+                            #expect(!hasTranscript)
+                            sawImportedSessionSource = true
+                            sawUnreadableSessionAudio = true
+                        } else {
+                            #expect(Bool(false), "Imported session must have readable metadata")
+                        }
+
+                        let exportFailed = try #require(value.sessions.first { $0.folderID == "session-folder-export-probe-failed" })
+                        #expect(exportFailed.status == .finalized)
+                        #expect(exportFailed.sessionID == "session-export-probe-failed")
+                        #expect(exportFailed.folderID == "session-folder-export-probe-failed")
+                        #expect(exportFailed.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-export-probe-failed")
+                        #expect(exportFailed.displayName == "2025年3月8日 19:22")
+                        #expect(exportFailed.statusText == "文字起こしあり")
+                        #expect(exportFailed.exportPath == nil)
+                        #expect(exportFailed.canReprocess && !exportFailed.canRetryDecisions && exportFailed.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = exportFailed.metadata {
+                            #expect(createdAt == 1741429351)
+                            #expect(source == .microphone)
+                            #expect(audio == .available)
+                            #expect(hasTranscript)
+                        } else {
+                            #expect(Bool(false), "Export-failed session must retain readable metadata")
+                        }
+                        let exportError = try #require(exportFailed.error)
+                        #expect(exportError.code == .exportFailure)
+                        #expect(exportError.stage == .exporting)
+                        #expect(exportError.requestID == nil)
+                        #expect(exportError.sessionID == "session-export-probe-failed")
+                        #expect(exportError.severity == .error)
+                        #expect(exportError.recoveryAction == .retry)
+                        #expect(exportError.message == "書き出し先を確認できません: アクセスが拒否されました")
+                        #expect(exportError.details.isEmpty)
+                        #expect(exportError.cleanupErrors.isEmpty)
+
                         sawUnreadableAndReadableSessions = true
                         #expect(value.nextCursor == "folder-page-cursor-2")
+                        #expect(value.previousCursor == nil)
+                        sawPreviousCursorNull = true
                         sawNonNullRevisionAndCursor = true
+                    case let .sessionInspect(summary):
+                        if summary.status == .unreadable {
+                            #expect(summary.folderID == "stable-folder-id-corrupt-metadata-17")
+                            #expect(summary.sessionID == "session-known-unreadable-17")
+                            #expect(summary.statusText == "読み込みエラー: セッション情報を読み取れません")
+                            #expect(summary.displayName == "日時を読み取れません")
+                            #expect(summary.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17")
+                            #expect(summary.exportPath == nil)
+                            #expect(!summary.canReprocess && !summary.canRetryDecisions && !summary.canExport)
+                            #expect(summary.metadata == .unreadable(reason: "セッション情報を読み取れません"))
+                            let error = try #require(summary.error)
+                            #expect(error.code == .filesystem)
+                            #expect(error.stage == .recovery)
+                            #expect(error.severity == .warning)
+                            #expect(error.recoveryAction == .inspectSession)
+                            #expect(error.message == "セッション情報を読み取れません")
+                            #expect(error.requestID == nil && error.sessionID == "session-known-unreadable-17")
+                            let detail = try #require(error.details.first)
+                            #expect(detail.path == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17/session.json")
+                            sawUnreadableSessionInspect = true
+                        } else {
+                            #expect(summary.status == .finalized)
+                            #expect(summary.folderID == "session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                            #expect(summary.sessionID == "session-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                            #expect(summary.displayName == "2025年3月11日 9:30")
+                            #expect(summary.statusText == "文字起こしあり")
+                            #expect(summary.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                            #expect(summary.error == nil)
+                            #expect(summary.exportPath == "D:/Published/session-folder-imported")
+                            #expect(summary.canReprocess && !summary.canRetryDecisions && summary.canExport)
+                            if case let .readable(createdAt, source, audio, hasTranscript) = summary.metadata {
+                                #expect(createdAt == 1741653000)
+                                #expect(source == .imported(originalFilename: "meeting.wav"))
+                                #expect(audio == .available)
+                                #expect(hasTranscript)
+                                sawImportedSessionSource = true
+                                sawAvailableSessionAudio = true
+                            } else {
+                                #expect(Bool(false), "Imported inspect result must have readable metadata")
+                            }
+                            sawReadableSessionInspect = true
+                        }
                     case let .transcriptRead(page):
                         #expect(page.revision.value == 184)
                         #expect(page.nextCursor == "rows-cursor-after-2")
+                        #expect(page.previousCursor == "rows-cursor-before-2")
+                        sawPreviousCursorNonNull = true
                         sawNonNullRevisionAndCursor = true
+                    case let .transcriptWatch(page):
+                        #expect(page.previousCursor == nil)
+                        sawPreviousCursorNull = true
                     default:
                         break
                     }
@@ -164,6 +326,9 @@ struct EngineProtocolGoldenTests {
                     case (.systemAudio, .id("wasapi-loopback-42")): sawSystemAudioIDSelector = true
                     default: break
                     }
+                case let .sessionInspect(payload):
+                    #expect(payload.folderID == "stable-folder-id-corrupt-metadata-17")
+                    sawSessionInspectRequest = true
                 case let .transcriptRead(payload):
                     #expect(payload.revision?.value == 184)
                     #expect(payload.cursor == "rows-cursor-1")
@@ -184,6 +349,17 @@ struct EngineProtocolGoldenTests {
         #expect(sawConfiguredSettingsResult)
         #expect(sawEndpointDefault)
         #expect(sawUnreadableAndReadableSessions)
+        #expect(sawSessionInspectRequest)
+        #expect(sawUnreadableSessionInspect)
+        #expect(sawReadableSessionInspect)
+        #expect(sawMicrophoneSessionSource)
+        #expect(sawSystemAudioSessionSource)
+        #expect(sawImportedSessionSource)
+        #expect(sawAvailableSessionAudio)
+        #expect(sawMissingSessionAudio)
+        #expect(sawUnreadableSessionAudio)
+        #expect(sawPreviousCursorNull)
+        #expect(sawPreviousCursorNonNull)
         #expect(sawEscapedJapaneseEmojiRow)
         #expect(sawNullClauseState)
         #expect(sawKnownClauseState)
@@ -420,6 +596,10 @@ private func isNullableField(
 ) -> Bool {
     let keys = Set(object.keys)
     func has(_ expected: Set<String>) -> Bool { keys == expected }
+    let isSessionSummary = has([
+        "folder_id", "session_id", "status", "error", "display_name", "status_text",
+        "folder_path", "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata",
+    ])
 
     if key == "request_id" {
         if objectPath.isEmpty { return root["event"] != nil }
@@ -435,16 +615,21 @@ private func isNullableField(
        has(["session_id", "revision", "cursor", "limit"]) { return true }
     if key == "session_id" {
         if has(["code", "message", "stage", "request_id", "session_id", "severity", "recovery_action", "details", "cleanup_errors"]) { return true }
-        if has(["folder_id", "session_id", "status", "error"]) { return true }
+        if isSessionSummary { return true }
         if has(["stage", "completed_units", "total_units", "session_id"]) { return true }
     }
-    if key == "error", has(["folder_id", "session_id", "status", "error"]) { return true }
+    if key == "error", isSessionSummary { return true }
+    if key == "export_path", isSessionSummary { return true }
     if key == "path" || key == "device_id", has(["domain", "code", "message", "path", "device_id"]) { return true }
     if key == "recording", has(["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]) { return true }
     if key == "default_device_id", has(["source", "devices", "default_device_id"]) { return true }
+    if key == "previous_cursor" {
+        if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
+        if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
+    }
     if key == "next_cursor" {
-        if has(["sessions", "next_cursor"]) { return true }
-        if has(["session_id", "revision", "rows", "next_cursor"]) { return true }
+        if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
+        if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "kind", "rows", "removed_row_ids", "next_cursor"]) { return true }
     }
     if key == "clause_state", has(["row_id", "start_ms", "end_ms", "text", "headings", "clause_state"]) { return true }

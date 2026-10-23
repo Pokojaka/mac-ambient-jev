@@ -13,6 +13,7 @@ struct EngineProtocolCommandTests {
             (.recordingStart, .recordingStart(try EngineRecordingStartPayload(source: .systemAudio, device: .id("endpoint-1"))), ["source", "device"]),
             (.recordingStop, .recordingStop(session), ["session_id"]),
             (.sessionImport, .sessionImport(try EngineImportPayload(inputPath: "/audio.wav")), ["input_path"]),
+            (.sessionInspect, .sessionInspect(try EngineSessionInspectPayload(folderID: "session-folder-1")), ["folder_id"]),
             (.sessionReprocess, .sessionReprocess(session), ["session_id"]),
             (.sessionRetryDecisions, .sessionRetryDecisions(session), ["session_id"]),
             (.sessionList, .sessionList(try EngineSessionListPayload(cursor: nil, limit: 100)), ["cursor", "limit"]),
@@ -24,8 +25,8 @@ struct EngineProtocolCommandTests {
             (.modelsPrepare, .modelsPrepare, []),
             (.shutdown, .shutdown, [])
         ]
-        #expect(commands.count == 16)
-        #expect(EngineCommandName.allCases.count == 16)
+        #expect(commands.count == 17)
+        #expect(EngineCommandName.allCases.count == 17)
 
         for (name, command, payloadKeys) in commands {
             let request = try makeRequest(command)
@@ -70,7 +71,7 @@ struct EngineProtocolCommandTests {
         #expect(EngineExecutionProvider.allCases.map(\.rawValue) == ["cpu"])
         #expect(EngineCommandName.allCases.map(\.rawValue) == [
             "hello", "state.get", "devices.list", "recording.start", "recording.stop",
-            "session.import", "session.reprocess", "session.retry_decisions", "session.list",
+            "session.import", "session.inspect", "session.reprocess", "session.retry_decisions", "session.list",
             "transcript.read", "transcript.watch", "session.export", "settings.get",
             "settings.replace", "models.prepare", "shutdown"
         ])

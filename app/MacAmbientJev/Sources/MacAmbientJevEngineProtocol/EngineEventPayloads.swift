@@ -605,32 +605,252 @@ public struct EngineSettingsResult: Codable, Equatable, Sendable {
     }
 }
 
+public enum EngineSessionSource: Codable, Equatable, Sendable {
+    case microphone
+    case systemAudio
+    case imported(originalFilename: String)
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind
+        case originalFilename = "original_filename"
+    }
+
+    fileprivate func validate() throws {
+        if case let .imported(originalFilename) = self {
+            try enginePayloadRequireNonempty(originalFilename, "original_filename")
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
+        let kind = try dynamic.decode(String.self, forKey: EngineCodingKey(stringValue: "kind")!)
+        switch kind {
+        case "microphone":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "microphone source has invalid fields")
+            self = .microphone
+        case "system_audio":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "system_audio source has invalid fields")
+            self = .systemAudio
+        case "imported":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "original_filename"], "imported source has invalid fields")
+            let originalFilename = try container.decode(String.self, forKey: .originalFilename)
+            try enginePayloadRequireNonempty(originalFilename, "original_filename")
+            self = .imported(originalFilename: originalFilename)
+        default:
+            throw EngineProtocolError.invalidJSON("unknown session source kind: \(kind)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try validate()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .microphone:
+            try container.encode("microphone", forKey: .kind)
+        case .systemAudio:
+            try container.encode("system_audio", forKey: .kind)
+        case let .imported(originalFilename):
+            try container.encode("imported", forKey: .kind)
+            try container.encode(originalFilename, forKey: .originalFilename)
+        }
+    }
+}
+
+public enum EngineSessionAudio: Codable, Equatable, Sendable {
+    case available
+    case missing
+    case unreadable(reason: String)
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind
+        case reason
+    }
+
+    fileprivate func validate() throws {
+        if case let .unreadable(reason) = self {
+            try enginePayloadRequireNonempty(reason, "audio.reason")
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
+        let kind = try dynamic.decode(String.self, forKey: EngineCodingKey(stringValue: "kind")!)
+        switch kind {
+        case "available":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "available audio has invalid fields")
+            self = .available
+        case "missing":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "missing audio has invalid fields")
+            self = .missing
+        case "unreadable":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "reason"], "unreadable audio has invalid fields")
+            let reason = try container.decode(String.self, forKey: .reason)
+            try enginePayloadRequireNonempty(reason, "audio.reason")
+            self = .unreadable(reason: reason)
+        default:
+            throw EngineProtocolError.invalidJSON("unknown session audio kind: \(kind)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try validate()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .available:
+            try container.encode("available", forKey: .kind)
+        case .missing:
+            try container.encode("missing", forKey: .kind)
+        case let .unreadable(reason):
+            try container.encode("unreadable", forKey: .kind)
+            try container.encode(reason, forKey: .reason)
+        }
+    }
+}
+
+public enum EngineSessionMetadata: Codable, Equatable, Sendable {
+    case unreadable(reason: String)
+    case readable(createdAt: Double, source: EngineSessionSource, audio: EngineSessionAudio, hasTranscript: Bool)
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind
+        case reason
+        case createdAt = "created_at"
+        case source
+        case audio
+        case hasTranscript = "has_transcript"
+    }
+
+    fileprivate func validate() throws {
+        switch self {
+        case let .unreadable(reason):
+            try enginePayloadRequireNonempty(reason, "metadata.reason")
+        case let .readable(createdAt, source, audio, _):
+            try enginePayloadRequire(createdAt.isFinite, "created_at must be finite")
+            try source.validate()
+            try audio.validate()
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
+        let kind = try dynamic.decode(String.self, forKey: EngineCodingKey(stringValue: "kind")!)
+        switch kind {
+        case "unreadable":
+            try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "reason"], "unreadable metadata has invalid fields")
+            let reason = try container.decode(String.self, forKey: .reason)
+            try enginePayloadRequireNonempty(reason, "metadata.reason")
+            self = .unreadable(reason: reason)
+        case "readable":
+            try enginePayloadRequire(
+                Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "created_at", "source", "audio", "has_transcript"],
+                "readable metadata has invalid fields"
+            )
+            let createdAt = try container.decode(Double.self, forKey: .createdAt)
+            try enginePayloadRequire(createdAt.isFinite, "created_at must be finite")
+            let source = try container.decode(EngineSessionSource.self, forKey: .source)
+            let audio = try container.decode(EngineSessionAudio.self, forKey: .audio)
+            let hasTranscript = try container.decode(Bool.self, forKey: .hasTranscript)
+            self = .readable(createdAt: createdAt, source: source, audio: audio, hasTranscript: hasTranscript)
+        default:
+            throw EngineProtocolError.invalidJSON("unknown session metadata kind: \(kind)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try validate()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .unreadable(reason):
+            try container.encode("unreadable", forKey: .kind)
+            try container.encode(reason, forKey: .reason)
+        case let .readable(createdAt, source, audio, hasTranscript):
+            try container.encode("readable", forKey: .kind)
+            try container.encode(createdAt, forKey: .createdAt)
+            try container.encode(source, forKey: .source)
+            try container.encode(audio, forKey: .audio)
+            try container.encode(hasTranscript, forKey: .hasTranscript)
+        }
+    }
+}
+
 public struct EngineSessionSummary: Codable, Equatable, Sendable {
     public let folderID: String
     @EngineNullable public private(set) var sessionID: String?
     public let status: EngineSessionStatus
     @EngineNullable public private(set) var error: EngineFailure?
+    public let displayName: String
+    public let statusText: String
+    public let folderPath: String
+    @EngineNullable public private(set) var exportPath: String?
+    public let canReprocess: Bool
+    public let canRetryDecisions: Bool
+    public let canExport: Bool
+    public let metadata: EngineSessionMetadata
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case folderID = "folder_id"
         case sessionID = "session_id"
         case status
         case error
+        case displayName = "display_name"
+        case statusText = "status_text"
+        case folderPath = "folder_path"
+        case exportPath = "export_path"
+        case canReprocess = "can_reprocess"
+        case canRetryDecisions = "can_retry_decisions"
+        case canExport = "can_export"
+        case metadata
     }
 
-    public init(folderID: String, sessionID: String?, status: EngineSessionStatus, error: EngineFailure?) throws {
+    public init(
+        folderID: String,
+        sessionID: String?,
+        status: EngineSessionStatus,
+        error: EngineFailure?,
+        displayName: String,
+        statusText: String,
+        folderPath: String,
+        exportPath: String?,
+        canReprocess: Bool,
+        canRetryDecisions: Bool,
+        canExport: Bool,
+        metadata: EngineSessionMetadata
+    ) throws {
         try enginePayloadRequireNonempty(folderID, "folder_id")
         if let sessionID { try enginePayloadRequireNonempty(sessionID, "session_id") }
+        try enginePayloadRequireNonempty(displayName, "display_name")
+        try enginePayloadRequireNonempty(statusText, "status_text")
+        try enginePayloadRequireNonempty(folderPath, "folder_path")
+        if let exportPath { try enginePayloadRequireNonempty(exportPath, "export_path") }
+        try metadata.validate()
         if status == .unreadable {
-            try enginePayloadRequire(sessionID == nil, "unreadable session must not have session_id")
             try enginePayloadRequire(error != nil, "unreadable session requires error")
+            try enginePayloadRequire(exportPath == nil, "unreadable session must not have export_path")
+            try enginePayloadRequire(!canReprocess && !canRetryDecisions && !canExport, "unreadable session must not allow actions")
+            guard case .unreadable = metadata else {
+                throw EngineProtocolError.invalidJSON("unreadable session requires unreadable metadata")
+            }
         } else {
             try enginePayloadRequire(sessionID != nil, "readable session requires session_id")
+            guard case .readable = metadata else {
+                throw EngineProtocolError.invalidJSON("readable session requires readable metadata")
+            }
         }
         self.folderID = folderID
         _sessionID = EngineNullable(wrappedValue: sessionID)
         self.status = status
         _error = EngineNullable(wrappedValue: error)
+        self.displayName = displayName
+        self.statusText = statusText
+        self.folderPath = folderPath
+        _exportPath = EngineNullable(wrappedValue: exportPath)
+        self.canReprocess = canReprocess
+        self.canRetryDecisions = canRetryDecisions
+        self.canExport = canExport
+        self.metadata = metadata
     }
 
     public init(from decoder: Decoder) throws {
@@ -639,41 +859,74 @@ public struct EngineSessionSummary: Codable, Equatable, Sendable {
             folderID: container.decode(String.self, forKey: .folderID),
             sessionID: container.decode(EngineNullable<String>.self, forKey: .sessionID).wrappedValue,
             status: container.decode(EngineSessionStatus.self, forKey: .status),
-            error: container.decode(EngineNullable<EngineFailure>.self, forKey: .error).wrappedValue
+            error: container.decode(EngineNullable<EngineFailure>.self, forKey: .error).wrappedValue,
+            displayName: container.decode(String.self, forKey: .displayName),
+            statusText: container.decode(String.self, forKey: .statusText),
+            folderPath: container.decode(String.self, forKey: .folderPath),
+            exportPath: container.decode(EngineNullable<String>.self, forKey: .exportPath).wrappedValue,
+            canReprocess: container.decode(Bool.self, forKey: .canReprocess),
+            canRetryDecisions: container.decode(Bool.self, forKey: .canRetryDecisions),
+            canExport: container.decode(Bool.self, forKey: .canExport),
+            metadata: container.decode(EngineSessionMetadata.self, forKey: .metadata)
         )
     }
 
     public func encode(to encoder: Encoder) throws {
+        try metadata.validate()
+        if status == .unreadable {
+            try enginePayloadRequire(exportPath == nil, "unreadable session must not have export_path")
+            try enginePayloadRequire(!canReprocess && !canRetryDecisions && !canExport, "unreadable session must not allow actions")
+            guard case .unreadable = metadata else {
+                throw EngineProtocolError.invalidJSON("unreadable session requires unreadable metadata")
+            }
+        } else {
+            guard case .readable = metadata else {
+                throw EngineProtocolError.invalidJSON("readable session requires readable metadata")
+            }
+        }
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(folderID, forKey: .folderID)
         try container.encode(_sessionID, forKey: .sessionID)
         try container.encode(status, forKey: .status)
         try container.encode(_error, forKey: .error)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(statusText, forKey: .statusText)
+        try container.encode(folderPath, forKey: .folderPath)
+        try container.encode(_exportPath, forKey: .exportPath)
+        try container.encode(canReprocess, forKey: .canReprocess)
+        try container.encode(canRetryDecisions, forKey: .canRetryDecisions)
+        try container.encode(canExport, forKey: .canExport)
+        try container.encode(metadata, forKey: .metadata)
     }
 }
 
 public struct EngineSessionListResult: Codable, Equatable, Sendable {
     public let sessions: [EngineSessionSummary]
     @EngineNullable public private(set) var nextCursor: String?
+    @EngineNullable public private(set) var previousCursor: String?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case sessions
         case nextCursor = "next_cursor"
+        case previousCursor = "previous_cursor"
     }
 
-    public init(sessions: [EngineSessionSummary], nextCursor: String?) throws {
+    public init(sessions: [EngineSessionSummary], nextCursor: String?, previousCursor: String?) throws {
         try enginePayloadRequire(sessions.count <= 100, "sessions must contain at most 100 entries")
         try enginePayloadRequireUnique(sessions.map(\.folderID), "folder ids")
         if let nextCursor { try enginePayloadRequireNonempty(nextCursor, "next_cursor") }
+        if let previousCursor { try enginePayloadRequireNonempty(previousCursor, "previous_cursor") }
         self.sessions = sessions
         _nextCursor = EngineNullable(wrappedValue: nextCursor)
+        _previousCursor = EngineNullable(wrappedValue: previousCursor)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         try self.init(
             sessions: container.decode([EngineSessionSummary].self, forKey: .sessions),
-            nextCursor: container.decode(EngineNullable<String>.self, forKey: .nextCursor).wrappedValue
+            nextCursor: container.decode(EngineNullable<String>.self, forKey: .nextCursor).wrappedValue,
+            previousCursor: container.decode(EngineNullable<String>.self, forKey: .previousCursor).wrappedValue
         )
     }
 
@@ -681,6 +934,7 @@ public struct EngineSessionListResult: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sessions, forKey: .sessions)
         try container.encode(_nextCursor, forKey: .nextCursor)
+        try container.encode(_previousCursor, forKey: .previousCursor)
     }
 }
 
@@ -742,23 +996,27 @@ public struct EngineTranscriptPage: Codable, Equatable, Sendable {
     public let revision: EngineID
     public let rows: [EngineTranscriptRow]
     @EngineNullable public private(set) var nextCursor: String?
+    @EngineNullable public private(set) var previousCursor: String?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case sessionID = "session_id"
         case revision
         case rows
         case nextCursor = "next_cursor"
+        case previousCursor = "previous_cursor"
     }
 
-    public init(sessionID: String, revision: EngineID, rows: [EngineTranscriptRow], nextCursor: String?) throws {
+    public init(sessionID: String, revision: EngineID, rows: [EngineTranscriptRow], nextCursor: String?, previousCursor: String?) throws {
         try enginePayloadRequireNonempty(sessionID, "session_id")
         try enginePayloadRequire(rows.count <= 200, "rows must contain at most 200 entries")
         try enginePayloadRequireUnique(rows.map(\.rowID), "row ids")
         if let nextCursor { try enginePayloadRequireNonempty(nextCursor, "next_cursor") }
+        if let previousCursor { try enginePayloadRequireNonempty(previousCursor, "previous_cursor") }
         self.sessionID = sessionID
         self.revision = revision
         self.rows = rows
         _nextCursor = EngineNullable(wrappedValue: nextCursor)
+        _previousCursor = EngineNullable(wrappedValue: previousCursor)
     }
 
     public init(from decoder: Decoder) throws {
@@ -767,7 +1025,8 @@ public struct EngineTranscriptPage: Codable, Equatable, Sendable {
             sessionID: container.decode(String.self, forKey: .sessionID),
             revision: container.decode(EngineID.self, forKey: .revision),
             rows: container.decode([EngineTranscriptRow].self, forKey: .rows),
-            nextCursor: container.decode(EngineNullable<String>.self, forKey: .nextCursor).wrappedValue
+            nextCursor: container.decode(EngineNullable<String>.self, forKey: .nextCursor).wrappedValue,
+            previousCursor: container.decode(EngineNullable<String>.self, forKey: .previousCursor).wrappedValue
         )
     }
 
@@ -777,6 +1036,7 @@ public struct EngineTranscriptPage: Codable, Equatable, Sendable {
         try container.encode(revision, forKey: .revision)
         try container.encode(rows, forKey: .rows)
         try container.encode(_nextCursor, forKey: .nextCursor)
+        try container.encode(_previousCursor, forKey: .previousCursor)
     }
 }
 

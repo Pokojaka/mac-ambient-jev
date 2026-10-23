@@ -9,7 +9,8 @@ struct EngineProtocolEventTests {
         let session = try EngineSessionPayload(sessionID: "session-1")
         let settingsResult = EngineSettingsResult(revision: try engineID(2), settings: try sampleSettings())
         let row = try sampleRow()
-        let page = try EngineTranscriptPage(sessionID: "session-1", revision: engineID(3), rows: [row], nextCursor: nil)
+        let page = try EngineTranscriptPage(sessionID: "session-1", revision: engineID(3), rows: [row], nextCursor: nil, previousCursor: nil)
+        let inspectedSummary = try sampleSessionSummary()
         let results: [(EngineCommandName, EngineResult, Set<String>)] = [
             (.hello, .hello(ready), ["capabilities", "state"]),
             (.stateGet, .stateGet(state), ["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]),
@@ -17,11 +18,15 @@ struct EngineProtocolEventTests {
             (.recordingStart, .recordingStart(session), ["session_id"]),
             (.recordingStop, .recordingStop(session), ["session_id"]),
             (.sessionImport, .sessionImport(session), ["session_id"]),
+            (.sessionInspect, .sessionInspect(inspectedSummary), [
+                "folder_id", "session_id", "status", "error", "display_name", "status_text", "folder_path",
+                "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata"
+            ]),
             (.sessionReprocess, .sessionReprocess(session), ["session_id"]),
             (.sessionRetryDecisions, .sessionRetryDecisions(session), ["session_id"]),
-            (.sessionList, .sessionList(try EngineSessionListResult(sessions: [], nextCursor: nil)), ["sessions", "next_cursor"]),
-            (.transcriptRead, .transcriptRead(page), ["session_id", "revision", "rows", "next_cursor"]),
-            (.transcriptWatch, .transcriptWatch(page), ["session_id", "revision", "rows", "next_cursor"]),
+            (.sessionList, .sessionList(try EngineSessionListResult(sessions: [], nextCursor: nil, previousCursor: nil)), ["sessions", "next_cursor", "previous_cursor"]),
+            (.transcriptRead, .transcriptRead(page), ["session_id", "revision", "rows", "next_cursor", "previous_cursor"]),
+            (.transcriptWatch, .transcriptWatch(page), ["session_id", "revision", "rows", "next_cursor", "previous_cursor"]),
             (.sessionExport, .sessionExport(try EngineExportResult(sessionID: "session-1", destinationPath: "/published/bundle")), ["session_id", "destination_path"]),
             (.settingsGet, .settingsGet(settingsResult), ["revision", "settings"]),
             (.settingsReplace, .settingsReplace(settingsResult), ["revision", "settings"]),
@@ -29,7 +34,7 @@ struct EngineProtocolEventTests {
             (.shutdown, .shutdown, [])
         ]
 
-        #expect(results.count == 16)
+        #expect(results.count == 17)
         #expect(EngineCommandName.allCases == results.map(\.0))
 
         for (command, result, resultKeys) in results {
@@ -46,6 +51,27 @@ struct EngineProtocolEventTests {
         }
 
         #expect(EngineResult.sessionImport(session).command == .sessionImport)
+        #expect(EngineResult.sessionInspect(inspectedSummary).command == .sessionInspect)
+    }
+
+    @Test func sessionInspectRoundTripsThroughFullCodecRequestAndOutput() throws {
+        let requestID = try engineID(21)
+        let request = try EngineRequest(
+            version: 1,
+            requestID: requestID,
+            command: .sessionInspect(try EngineSessionInspectPayload(folderID: "folder-inspected"))
+        )
+        let requestLine = try EngineCodec.encodeRequest(request)
+        #expect(try EngineCodec.decodeRequest(Data(requestLine.dropLast())) == request)
+
+        let output = try EngineOutput(
+            version: 1,
+            sequence: engineID(22),
+            requestID: requestID,
+            event: .completed(.sessionInspect(try sampleSessionSummary()))
+        )
+        let outputLine = try EngineCodec.encodeOutput(output)
+        #expect(try EngineCodec.decodeOutput(Data(outputLine.dropLast())) == output)
     }
 
     @Test func allEventCasesRoundTripWithExactDiscriminatorAndPayload() throws {
@@ -199,6 +225,28 @@ private func sampleFailure(requestID: EngineID?) throws -> EngineFailure {
 
 private func sampleRow() throws -> EngineTranscriptRow {
     try EngineTranscriptRow(rowID: "row-1", startMS: 12, endMS: 34, text: "日本語の文字起こし", headings: [.speaker1], clauseState: nil)
+}
+
+private func sampleSessionSummary() throws -> EngineSessionSummary {
+    try EngineSessionSummary(
+        folderID: "folder-inspected",
+        sessionID: "session-inspected",
+        status: .finalized,
+        error: nil,
+        displayName: "Inspected recording",
+        statusText: "Finalized",
+        folderPath: "/sessions/folder-inspected",
+        exportPath: nil,
+        canReprocess: true,
+        canRetryDecisions: true,
+        canExport: true,
+        metadata: .readable(
+            createdAt: 1_700_000_000,
+            source: .imported(originalFilename: "meeting.wav"),
+            audio: .available,
+            hasTranscript: true
+        )
+    )
 }
 
 private func sampleSettings() throws -> EngineSettings {

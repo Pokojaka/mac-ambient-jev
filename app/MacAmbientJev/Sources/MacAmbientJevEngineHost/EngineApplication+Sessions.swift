@@ -6,6 +6,20 @@ import MacAmbientJevPipeline
 // MARK: Saved sessions
 
 extension EngineApplicationCore {
+    /// Formats a session timestamp in Japanese using the caller's time zone.
+    ///
+    /// Uses Apple's `Date.FormatStyle(date:time:locale:timeZone:)` initializer, available in the installed
+    /// Apple Swift 6.4 toolchain. See [Date.FormatStyle](https://developer.apple.com/documentation/foundation/date/formatstyle)
+    /// and the [Swift 6.4 release](https://www.swift.org/blog/swift-6.4-released/).
+    static func sessionDisplayName(_ date: Date, timeZone: TimeZone) -> String {
+        date.formatted(Date.FormatStyle(
+            date: .abbreviated,
+            time: .shortened,
+            locale: Locale(identifier: "ja_JP"),
+            timeZone: timeZone
+        ))
+    }
+
     /// The catalog, re-read after anything that may have changed it.
     func currentSessions() throws -> [SavedSessionSummary] {
         if savedSessionsAreStale {
@@ -49,35 +63,247 @@ extension EngineApplicationCore {
 // MARK: EngineSessionHandling
 
 extension EngineApplicationCore: EngineSessionHandling {
-    func list(_ payload: EngineSessionListPayload, context: EngineRequestContext) async throws -> EngineSessionListResult {
-        let sessions = try currentSessions()
-        var start = 0
-        if let cursor = payload.cursor {
-            guard let parsed = Int(cursor), parsed >= 0, parsed <= sessions.count, String(parsed) == cursor else {
-                throw EngineFailures.commandError(.invalidCursor, "cursor が不正です: \(cursor)", stage: .recovery)
+    func sessionSummary(_ summary: SavedSessionSummary) throws -> EngineSessionSummary {
+        switch summary {
+        case let .unreadable(sessionURL, sessionID, reason):
+            return try EngineSessionSummary(
+                folderID: sessionURL.lastPathComponent,
+                sessionID: sessionID.map(EngineFailures.wireID),
+                status: .unreadable,
+                error: EngineFailures.failure(
+                    code: .filesystem,
+                    message: reason,
+                    stage: .recovery,
+                    sessionID: sessionID,
+                    severity: .error,
+                    recoveryAction: .inspectSession,
+                    details: [EngineFailures.detail(
+                        domain: "catalog", code: "unreadable", message: reason, path: sessionURL.path
+                    )]
+                ),
+                displayName: "日時を読み取れません",
+                statusText: "読み込みエラー: \(reason)",
+                folderPath: sessionURL.path,
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .unreadable(reason: reason)
+            )
+
+        case let .readable(session):
+            let audio: EngineSessionAudio
+            switch session.audio {
+            case .available:
+                audio = .available
+            case .missing:
+                audio = .missing
+            case .unreadable(let reason):
+                audio = .unreadable(reason: reason)
             }
-            start = parsed
-        }
-        let end = min(sessions.count, start + payload.limit)
-        let page = try sessions[start..<end].map { summary -> EngineSessionSummary in
-            switch summary {
-            case let .readable(session):
-                return try EngineSessionSummary(
-                    folderID: session.sessionURL.lastPathComponent, sessionID: EngineFailures.wireID(session.sessionID),
-                    status: status(of: session), error: nil
+
+            let source: EngineSessionSource
+            switch session.source {
+            case .recording(.microphone):
+                source = .microphone
+            case .recording(.systemAudio):
+                source = .systemAudio
+            case .imported(let originalFilename):
+                source = .imported(originalFilename: originalFilename)
+            }
+
+            let statusText: String
+            switch session.audio {
+            case .missing:
+                statusText = "保存済み音声がありません"
+            case .unreadable(let reason):
+                statusText = "音声を読めません: \(reason)"
+            case .available:
+                statusText = switch session.processingStatus {
+                case .notProcessed: "未処理"
+                case .running: "処理中"
+                case .paused: "一時停止中（発熱）"
+                case .complete: session.hasActiveTranscript ? "文字起こしあり" : "処理完了"
+                case .classificationPending: "文字起こしあり・判定を再試行"
+                case .failed(let reason): "再処理が必要: \(reason ?? "処理に失敗しました")"
+                case .corrupted: "文字起こしデータが破損しています（音声から再処理できます）"
+                }
+            }
+
+            let sessionID = session.sessionID
+            let busySession = processingQueue.sessionIDs.contains(sessionID)
+            let processingCount = processingQueue.pending.count
+                + processingQueue.thermallyHeld.count
+                + (processingQueue.currentSessionID == nil ? 0 : 1)
+            let processingAdmissible = !isShuttingDown
+                && !isPreparingModels
+                && !processingQueue.isMaintainingStorage
+                && recording.phase == .idle
+                && settings != nil
+                && inference != nil
+                && processingCount < Self.queueLimit
+            let canReprocess = processingAdmissible && !busySession && session.audioSource != nil
+            let canRetryDecisions = processingAdmissible
+                && !busySession
+                && settings?.decisionsEnabled == true
+                && session.processingStatus == .classificationPending
+                && session.audioSource != nil
+                && session.hasActiveTranscript
+
+            var exportState = savedSessionOperations.exports[sessionID]
+            var exportPath: String?
+            if case .exported(let folder)? = exportState {
+                exportPath = folder.path
+            } else if exportState == nil,
+                      let destinationPath = settings?.exportDestinationPath,
+                      let audioSource = session.audioSource {
+                let destination = URL(fileURLWithPath: destinationPath, isDirectory: true)
+                let folder = destination.appending(
+                    path: session.sessionURL.lastPathComponent, directoryHint: .isDirectory
                 )
-            case let .unreadable(sessionURL, _, reason):
-                return try EngineSessionSummary(
-                    folderID: sessionURL.lastPathComponent, sessionID: nil, status: .unreadable,
-                    error: EngineFailures.failure(
-                        code: .filesystem, message: reason, stage: .recovery, sessionID: nil, severity: .error,
-                        recoveryAction: .inspectSession,
-                        details: [EngineFailures.detail(domain: "catalog", code: "unreadable", message: reason, path: sessionURL.path)]
+                do {
+                    if try SessionFileAccess.isDirectoryIfPresent(folder, relativeTo: destination) == true,
+                       SessionExportLayout.isCompleteExport(folder: folder, audioSource: audioSource) {
+                        savedSessionOperations.recordExistingExport(.exported(folder), sessionID: sessionID)
+                        exportPath = folder.path
+                    }
+                } catch {
+                    savedSessionOperations.recordExistingExport(
+                        .failed("書き出し先を確認できません: \(error.localizedDescription)"), sessionID: sessionID
                     )
+                }
+            }
+            exportState = savedSessionOperations.exports[sessionID]
+            let exportError: EngineFailure?
+            if case let .failed(message)? = exportState {
+                exportError = EngineFailures.failure(
+                    code: .exportFailure,
+                    message: message,
+                    stage: .exporting,
+                    sessionID: sessionID,
+                    severity: .error,
+                    recoveryAction: .retry
+                )
+            } else {
+                exportError = nil
+            }
+
+            let exportBlockedByMaintenance: Bool
+            if processingQueue.isMaintainingStorage {
+                switch session.audioSource {
+                case .recordedPCM?:
+                    exportBlockedByMaintenance = true
+                default:
+                    exportBlockedByMaintenance = false
+                }
+            } else {
+                exportBlockedByMaintenance = false
+            }
+            let isCorrupted: Bool
+            if case .corrupted = session.processingStatus {
+                isCorrupted = true
+            } else {
+                isCorrupted = false
+            }
+            let canExport = !isShuttingDown
+                && !busySession
+                && exportState != .exporting
+                && session.hasActiveTranscript
+                && session.audioSource != nil
+                && !isCorrupted
+                && !exportBlockedByMaintenance
+
+            return try EngineSessionSummary(
+                folderID: session.sessionURL.lastPathComponent,
+                sessionID: EngineFailures.wireID(sessionID),
+                status: status(of: session),
+                error: exportError,
+                displayName: Self.sessionDisplayName(session.createdAt, timeZone: TimeZone.current),
+                statusText: statusText,
+                folderPath: session.sessionURL.path,
+                exportPath: exportPath,
+                canReprocess: canReprocess,
+                canRetryDecisions: canRetryDecisions,
+                canExport: canExport,
+                metadata: .readable(
+                    createdAt: session.createdAt.timeIntervalSince1970,
+                    source: source,
+                    audio: audio,
+                    hasTranscript: session.hasActiveTranscript
+                )
+            )
+        }
+    }
+
+    func list(_ payload: EngineSessionListPayload, context: EngineRequestContext) async throws -> EngineSessionListResult {
+        let snapshot: EngineSessionListSnapshot
+        let isFirstPage = payload.cursor == nil
+        if isFirstPage {
+            savedSessionsAreStale = true
+            let sessions = try currentSessions().map { try sessionSummary($0) }
+            snapshot = try EngineSessionListSnapshot(
+                sessions: sessions,
+                navigation: EnginePageNavigation(limit: payload.limit)
+            )
+        } else {
+            guard let retained = sessionListSnapshot else {
+                throw EngineFailures.commandError(
+                    .invalidCursor, "cursor に対応する保存済み録音一覧がありません", stage: .protocolValidation
                 )
             }
+            snapshot = retained
         }
-        return try EngineSessionListResult(sessions: page, nextCursor: end < sessions.count ? String(end) : nil)
+
+        let location = try snapshot.navigation.location(cursor: payload.cursor, limit: payload.limit)
+        let sessions = snapshot.sessions
+        let end = try snapshot.pageSizer.end(from: location.start, limit: payload.limit)
+
+        let cursors = snapshot.navigation.cursors(for: location, end: end, total: sessions.count)
+        let result = try EngineSessionListResult(
+            sessions: Array(sessions[location.start..<end]),
+            nextCursor: cursors.next,
+            previousCursor: cursors.previous
+        )
+        if isFirstPage {
+            sessionListSnapshot = snapshot
+        }
+        return result
+    }
+
+    func inspect(
+        _ payload: EngineSessionInspectPayload,
+        context: EngineRequestContext
+    ) async throws -> EngineSessionSummary {
+        savedSessionsAreStale = true
+        guard let catalogSummary = try currentSessions().first(where: {
+            $0.sessionURL.lastPathComponent == payload.folderID
+        }) else {
+            throw EngineFailures.commandError(
+                .sessionNotFound,
+                "保存済み録音のフォルダが見つかりません: \(payload.folderID)",
+                stage: .recovery,
+                recoveryAction: .inspectSession
+            )
+        }
+        let summary = try sessionSummary(catalogSummary)
+        let maxID = try EngineID(UInt64.max)
+        let output = try EngineOutput(
+            version: 1,
+            sequence: maxID,
+            requestID: maxID,
+            event: .completed(.sessionInspect(summary))
+        )
+        do {
+            _ = try EngineCodec.encodeOutput(output)
+        } catch EngineProtocolError.lineTooLong {
+            throw EngineFailures.commandError(
+                .filesystem,
+                "保存済み録音の情報が大きすぎて詳細を返せません",
+                stage: .recovery,
+                recoveryAction: .inspectSession
+            )
+        }
+        return summary
     }
 
     func importSession(_ payload: EngineImportPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {

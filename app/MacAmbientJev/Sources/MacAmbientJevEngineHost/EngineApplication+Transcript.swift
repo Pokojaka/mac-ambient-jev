@@ -219,6 +219,7 @@ extension EngineApplicationCore {
     func transcriptDidPublish(sessionID: UUID) {
         if transcriptReadSnapshot?.sessionID == sessionID {
             transcriptReadSnapshot = nil
+            transcriptReadNavigation = nil
         }
         let watchedCache = sessionID == watchedSessionID && transcript?.sessionID == sessionID ? transcript : nil
         let cachedRead = readTranscript?.sessionID == sessionID ? readTranscript : nil
@@ -405,16 +406,33 @@ extension EngineApplicationCore {
 extension EngineApplicationCore: EngineTranscriptHandling {
     func read(_ payload: EngineTranscriptReadPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
         let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
+        if payload.revision == nil, payload.cursor != nil {
+            throw EngineFailures.commandError(
+                .invalidCursor, "cursor には revision が必要です", stage: .finalization, sessionID: sessionID
+            )
+        }
+
         let latestCache = try transcriptCache(for: sessionID)
         let cache: EngineTranscriptCache
+        let navigation: EnginePageNavigation
         if let revision = payload.revision {
             if let snapshot = transcriptReadSnapshot,
                snapshot.sessionID == sessionID,
                snapshot.revision == revision.value {
                 cache = snapshot
+                guard let retainedNavigation = transcriptReadNavigation else {
+                    preconditionFailure("a retained transcript snapshot has navigation")
+                }
+                navigation = retainedNavigation
             } else if latestCache.revision == revision.value {
-                transcriptReadSnapshot = latestCache
+                guard payload.cursor == nil else {
+                    throw EngineFailures.commandError(
+                        .invalidCursor, "cursor に対応する文字起こし snapshot がありません",
+                        stage: .finalization, sessionID: sessionID
+                    )
+                }
                 cache = latestCache
+                navigation = EnginePageNavigation(limit: payload.limit)
             } else {
                 throw EngineFailures.commandError(
                     .staleRevision, "文字起こしの revision が古くなっています。最初から読み直してください",
@@ -422,25 +440,26 @@ extension EngineApplicationCore: EngineTranscriptHandling {
                 )
             }
         } else {
-            transcriptReadSnapshot = latestCache
             cache = latestCache
+            navigation = EnginePageNavigation(limit: payload.limit)
         }
-        var offset = 0
-        if let cursor = payload.cursor {
-            guard payload.revision != nil else {
-                throw EngineFailures.commandError(.invalidCursor, "cursor には revision が必要です", stage: .finalization, sessionID: sessionID)
-            }
-            guard let parsed = Int(cursor), parsed >= 0, parsed <= cache.rows.count, String(parsed) == cursor else {
-                throw EngineFailures.commandError(.invalidCursor, "cursor が不正です: \(cursor)", stage: .finalization, sessionID: sessionID)
-            }
-            offset = parsed
-        }
-        let page = try EngineTranscriptProjection.page(of: cache.rows, from: offset, limit: payload.limit)
-        let next = offset + page.count
-        return try EngineTranscriptPage(
-            sessionID: payload.sessionID, revision: wireRevision(cache.revision), rows: Array(page),
-            nextCursor: next < cache.rows.count ? String(next) : nil
+
+        let location = try navigation.location(cursor: payload.cursor, limit: payload.limit)
+        let page = try EngineTranscriptProjection.page(
+            of: cache.rows, from: location.start, limit: payload.limit
         )
+        let cursors = navigation.cursors(
+            for: location, end: location.start + page.count, total: cache.rows.count
+        )
+        let response = try EngineTranscriptPage(
+            sessionID: payload.sessionID, revision: wireRevision(cache.revision), rows: Array(page),
+            nextCursor: cursors.next, previousCursor: cursors.previous
+        )
+
+        // Commit the selected snapshot and navigation only after the page is valid.
+        transcriptReadSnapshot = cache
+        transcriptReadNavigation = navigation
+        return response
     }
 
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
@@ -459,7 +478,8 @@ extension EngineApplicationCore: EngineTranscriptHandling {
         }
         let tail = try EngineTranscriptProjection.tail(of: cache.rows, limit: Self.transcriptPageLimit)
         let page = try EngineTranscriptPage(
-            sessionID: payload.sessionID, revision: wireRevision(cache.revision), rows: Array(tail), nextCursor: nil
+            sessionID: payload.sessionID, revision: wireRevision(cache.revision), rows: Array(tail),
+            nextCursor: nil, previousCursor: nil
         )
 
         // Commit only after session validation and page construction succeeded.

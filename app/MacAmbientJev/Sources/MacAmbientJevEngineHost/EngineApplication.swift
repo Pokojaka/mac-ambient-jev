@@ -97,6 +97,7 @@ final class EngineApplicationCore {
     let liveTranscription = LiveTranscriptionState()
     var savedSessionOperations = SavedSessionOperations()
     var savedSessionsAreStale = true
+    var sessionListSnapshot: EngineSessionListSnapshot?
     var idleReleaseTask: Task<Void, Never>?
     var startupTask: Task<Void, Never>?
     var recoveryStatus: EngineRecoveryStatus = .pending
@@ -110,6 +111,7 @@ final class EngineApplicationCore {
     var transcript: EngineTranscriptCache?
     var readTranscript: EngineTranscriptCache?
     var transcriptReadSnapshot: EngineTranscriptCache?
+    var transcriptReadNavigation: EnginePageNavigation?
     var nextTranscriptRevision: UInt64 = 0
 
     // State publication
@@ -477,6 +479,9 @@ extension EngineApplicationCore: EngineSettingsHandling {
     func replace(_ payload: EngineSettingsReplacePayload, context: EngineRequestContext) async throws -> EngineSettingsResult {
         let previous = settings
         let result = try await settingsHandler.replace(payload, context: context)
+        if previous?.exportDestinationPath != result.settings.exportDestinationPath {
+            savedSessionOperations.resetExportDestination()
+        }
         settingsResult = result
         gateway.setPacing(result.settings.lowHeat ? .lowHeat : .normal)
         if let previous, profileDiffers(previous, result.settings) {

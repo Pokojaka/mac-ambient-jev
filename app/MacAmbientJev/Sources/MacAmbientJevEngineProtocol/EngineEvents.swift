@@ -50,6 +50,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case recordingStop(EngineSessionPayload)
     /// Completion means the retained import was queued for finalization, not that the transcript is final.
     case sessionImport(EngineSessionPayload)
+    case sessionInspect(EngineSessionSummary)
     /// Completion is terminal: the requested reprocessing work has finished.
     case sessionReprocess(EngineSessionPayload)
     /// Completion is terminal: the requested decision retry has finished.
@@ -77,6 +78,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .recordingStart: .recordingStart
         case .recordingStop: .recordingStop
         case .sessionImport: .sessionImport
+        case .sessionInspect: .sessionInspect
         case .sessionReprocess: .sessionReprocess
         case .sessionRetryDecisions: .sessionRetryDecisions
         case .sessionList: .sessionList
@@ -116,6 +118,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .recordingStop(try EngineSessionPayload(from: result))
         case .sessionImport:
             return .sessionImport(try EngineSessionPayload(from: result))
+        case .sessionInspect:
+            return .sessionInspect(try EngineSessionSummary(from: result))
         case .sessionReprocess:
             return .sessionReprocess(try EngineSessionPayload(from: result))
         case .sessionRetryDecisions:
@@ -152,6 +156,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case let .recordingStart(payload), let .recordingStop(payload), let .sessionImport(payload),
              let .sessionReprocess(payload), let .sessionRetryDecisions(payload):
             try payload.encode(to: encoder)
+        case let .sessionInspect(summary):
+            try summary.encode(to: encoder)
         case let .sessionList(result):
             try result.encode(to: encoder)
         case let .transcriptRead(page), let .transcriptWatch(page):

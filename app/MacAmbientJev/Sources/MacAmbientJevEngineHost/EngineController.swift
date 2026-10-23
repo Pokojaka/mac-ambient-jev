@@ -224,6 +224,8 @@ public final class EngineController {
             return .sessionRetryDecisions(try await handlers.sessions.retryDecisions(payload, context: context))
         case let .sessionList(payload):
             return .sessionList(try await handlers.sessions.list(payload, context: context))
+        case let .sessionInspect(payload):
+            return .sessionInspect(try await handlers.sessions.inspect(payload, context: context))
         case let .transcriptRead(payload):
             return .transcriptRead(try await handlers.transcript.read(payload, context: context))
         case let .transcriptWatch(payload):
