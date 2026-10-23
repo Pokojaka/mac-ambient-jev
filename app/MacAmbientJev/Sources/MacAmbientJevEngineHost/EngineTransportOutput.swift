@@ -1,6 +1,21 @@
 import Foundation
 import MacAmbientJevEngineProtocol
 
+protocol EngineWriteDeadlineClock: Sendable {
+    func now() -> UInt64
+    func wait(on condition: NSCondition, remainingNanoseconds: UInt64)
+}
+
+struct LiveEngineWriteDeadlineClock: EngineWriteDeadlineClock {
+    func now() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
+    }
+
+    func wait(on condition: NSCondition, remainingNanoseconds: UInt64) {
+        _ = condition.wait(until: Date(timeIntervalSinceNow: Double(remainingNanoseconds) / 1_000_000_000))
+    }
+}
+
 public enum EngineWriteFailure: Error, Equatable, Sendable {
     case deadlineExceeded
     case brokenPipe
@@ -50,6 +65,8 @@ final class EngineOutputChannel: @unchecked Sendable {
 
     private let sink: EngineByteSink
     private let limits: EngineTransportLimits
+    private let clock: any EngineWriteDeadlineClock
+    private let onReliableWait: @Sendable () -> Void
     private let onFailure: @Sendable (EngineWriteFailure) -> Void
     private let condition = NSCondition()
 
@@ -64,10 +81,26 @@ final class EngineOutputChannel: @unchecked Sendable {
     private var spaceWaiters: [CheckedContinuation<Bool, Error>] = []
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(sink: EngineByteSink, limits: EngineTransportLimits, onFailure: @escaping @Sendable (EngineWriteFailure) -> Void) {
+    init(
+        sink: EngineByteSink,
+        limits: EngineTransportLimits,
+        clock: any EngineWriteDeadlineClock,
+        onReliableWait: @escaping @Sendable () -> Void,
+        onFailure: @escaping @Sendable (EngineWriteFailure) -> Void
+    ) {
         self.sink = sink
         self.limits = limits
+        self.clock = clock
+        self.onReliableWait = onReliableWait
         self.onFailure = onFailure
+    }
+
+    /// Advances a logical test clock while the watchdog cannot check or wait on its condition.
+    func advanceWriteDeadlineClock(_ advance: () -> Void) {
+        condition.lock()
+        advance()
+        condition.broadcast()
+        condition.unlock()
     }
 
     func start() {
@@ -163,6 +196,7 @@ final class EngineOutputChannel: @unchecked Sendable {
             } else {
                 spaceWaiters.append(continuation)
                 condition.unlock()
+                onReliableWait()
             }
         } catch {
             condition.unlock()
@@ -309,7 +343,7 @@ final class EngineOutputChannel: @unchecked Sendable {
             let record = records.removeFirst()
             queuedBytes -= record.data.count
             writing = true
-            progressAt = Self.now()
+            progressAt = clock.now()
             let space = spaceWaiters
             spaceWaiters = []
             condition.broadcast()
@@ -358,7 +392,7 @@ final class EngineOutputChannel: @unchecked Sendable {
             }
             offset += written
             condition.lock()
-            progressAt = Self.now()
+            progressAt = clock.now()
             condition.broadcast()
             condition.unlock()
         }
@@ -371,14 +405,13 @@ final class EngineOutputChannel: @unchecked Sendable {
                 condition.wait()
                 continue
             }
-            let elapsed = Self.now() &- progressAt
+            let elapsed = clock.now() &- progressAt
             if elapsed >= limits.writeDeadlineNanoseconds {
                 condition.unlock()
                 fail(.deadlineExceeded)
                 return
             }
-            let remaining = Double(limits.writeDeadlineNanoseconds - elapsed) / 1_000_000_000
-            _ = condition.wait(until: Date(timeIntervalSinceNow: remaining))
+            clock.wait(on: condition, remainingNanoseconds: limits.writeDeadlineNanoseconds - elapsed)
         }
         condition.unlock()
     }
@@ -401,9 +434,5 @@ final class EngineOutputChannel: @unchecked Sendable {
         for waiter in space { waiter.resume(throwing: EngineTransportError.writeFailed(reason)) }
         for waiter in drains { waiter.resume() }
         onFailure(reason)
-    }
-
-    private static func now() -> UInt64 {
-        DispatchTime.now().uptimeNanoseconds
     }
 }

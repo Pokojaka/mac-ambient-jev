@@ -479,6 +479,257 @@ import MacAmbientJevTestSupport
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
+    @Test func mixedProjectionAndEncodingFailuresRetainSkippedMarkers() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let core = h.app.core
+        _ = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: requestContext(for: h)
+        )
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        await drainTranscriptFailures(in: h)
+        await h.transport.drain()
+
+        let originalCache = try #require(core.transcript)
+        let failuresBefore = failureEvents(for: sessionID, in: try h.outputs)
+        let stateCountBefore = stateEventCount(in: try h.outputs)
+        let oversizedID = "mixed-failure-oversized-A"
+        let duplicateBID = "mixed-failure-duplicate-B"
+        let duplicateCID = "mixed-failure-duplicate-C"
+        let oversizedText = String(repeating: "\u{0001}", count: 60_000)
+        let oversizedA = try materializedApplicationSegment(id: oversizedID, text: oversizedText)
+        let repairedA = try materializedApplicationSegment(id: oversizedID, text: "repaired A")
+        let duplicateBFirst = try materializedApplicationSegment(id: duplicateBID, text: "first B")
+        let duplicateBSecond = try materializedApplicationSegment(id: duplicateBID, text: "second B")
+        let duplicateCFirst = try materializedApplicationSegment(id: duplicateCID, text: "first C")
+        let duplicateCSecond = try materializedApplicationSegment(id: duplicateCID, text: "second C")
+        let unrelated = try materializedApplicationSegment(id: "mixed-failure-unrelated", text: "unrelated")
+        let changedUnrelated = try materializedApplicationSegment(
+            id: unrelated.segmentID, text: "changed unrelated"
+        )
+
+        var segments = [oversizedA, unrelated]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsWithOversizedA = try h.outputs
+        let firstOversizedFailures = failureEvents(for: sessionID, in: outputsWithOversizedA)
+            .filter { $0.code == .rowTooLarge }
+        #expect(firstOversizedFailures.count == 1)
+        let firstOversizedFailure = try #require(firstOversizedFailures.first)
+        #expect(failureEvents(for: sessionID, in: outputsWithOversizedA)
+            .filter { $0.code == .processingFailure }.isEmpty)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [oversizedA, duplicateBFirst, duplicateBSecond, unrelated]
+        for _ in 0..<5 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        await drainTranscriptFailures(in: h)
+        let outputsWithDuplicateB = try h.outputs
+        let oversizedFailuresWithB = failureEvents(for: sessionID, in: outputsWithDuplicateB)
+            .filter { $0.code == .rowTooLarge }
+        let projectionFailuresWithB = failureEvents(for: sessionID, in: outputsWithDuplicateB)
+            .filter { $0.code == .processingFailure }
+        #expect(oversizedFailuresWithB == [firstOversizedFailure])
+        #expect(projectionFailuresWithB.count == 1)
+        let firstDuplicateFailure = try #require(projectionFailuresWithB.first)
+        #expect(firstDuplicateFailure.message.contains(duplicateBID))
+        #expect(core.failures.filter { $0.sessionID == sessionID }
+            == failuresBefore + [firstOversizedFailure, firstDuplicateFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID, duplicateBID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        let stateCountAfterDuplicateB = stateEventCount(in: outputsWithDuplicateB)
+        #expect(stateCountAfterDuplicateB == stateCountBefore + 2)
+
+        for _ in 0..<5 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        segments[3] = changedUnrelated
+        for _ in 0..<5 {
+            core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        }
+        await drainTranscriptFailures(in: h)
+        let outputsAfterMixedRepeats = try h.outputs
+        #expect(failureEvents(for: sessionID, in: outputsAfterMixedRepeats)
+            == [firstOversizedFailure, firstDuplicateFailure])
+        #expect(core.failures.filter { $0.sessionID == sessionID }
+            == failuresBefore + [firstOversizedFailure, firstDuplicateFailure])
+        #expect(stateEventCount(in: outputsAfterMixedRepeats) == stateCountAfterDuplicateB)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID, duplicateBID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [oversizedA, duplicateBFirst, changedUnrelated]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterRepairingB = try h.outputs
+        #expect(failureEvents(for: sessionID, in: outputsAfterRepairingB)
+            == [firstOversizedFailure, firstDuplicateFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID])
+        #expect(stateEventCount(in: outputsAfterRepairingB) == stateCountAfterDuplicateB)
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [oversizedA, duplicateBFirst, duplicateCFirst, duplicateCSecond, changedUnrelated]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsWithDuplicateC = try h.outputs
+        let failuresWithDuplicateC = failureEvents(for: sessionID, in: outputsWithDuplicateC)
+        #expect(failuresWithDuplicateC.filter { $0.code == .processingFailure }.count == 2)
+        let duplicateCFailure = try #require(failuresWithDuplicateC.last)
+        #expect(duplicateCFailure.message.contains(duplicateCID))
+        #expect(failuresWithDuplicateC.filter { $0.code == .rowTooLarge } == [firstOversizedFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID, duplicateCID])
+        let stateCountWithDuplicateC = stateEventCount(in: outputsWithDuplicateC)
+        #expect(stateCountWithDuplicateC == stateCountAfterDuplicateB + 1)
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments[0] = repairedA
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterRepairingA = try h.outputs
+        #expect(failureEvents(for: sessionID, in: outputsAfterRepairingA)
+            == [firstOversizedFailure, firstDuplicateFailure, duplicateCFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [duplicateCID])
+        #expect(stateEventCount(in: outputsAfterRepairingA) == stateCountWithDuplicateC)
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments[0] = oversizedA
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterReintroducingA = try h.outputs
+        let oversizedFailuresAfterReintroduction = failureEvents(for: sessionID, in: outputsAfterReintroducingA)
+            .filter { $0.code == .rowTooLarge }
+        #expect(oversizedFailuresAfterReintroduction == [firstOversizedFailure, firstOversizedFailure])
+        #expect(failureEvents(for: sessionID, in: outputsAfterReintroducingA)
+            .filter { $0.code == .processingFailure } == [firstDuplicateFailure, duplicateCFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID, duplicateCID])
+        #expect(stateEventCount(in: outputsAfterReintroducingA) == stateCountWithDuplicateC + 1)
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        // Delete A while B is failing; its marker must clear despite the rejected snapshot.
+        segments = [duplicateBFirst, duplicateBSecond, unrelated]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterDeletingA = try h.outputs
+        let failuresAfterDeletingA = failureEvents(for: sessionID, in: outputsAfterDeletingA)
+        #expect(failuresAfterDeletingA.filter { $0.code == .rowTooLarge }
+            == [firstOversizedFailure, firstOversizedFailure])
+        #expect(failuresAfterDeletingA.filter { $0.code == .processingFailure }
+            == [firstDuplicateFailure, duplicateCFailure, firstDuplicateFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [duplicateBID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [oversizedA, duplicateBFirst, duplicateBSecond, unrelated]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterReintroducingDeletedA = try h.outputs
+        let finalOversizedFailures = failureEvents(for: sessionID, in: outputsAfterReintroducingDeletedA)
+            .filter { $0.code == .rowTooLarge }
+        #expect(finalOversizedFailures == [firstOversizedFailure, firstOversizedFailure, firstOversizedFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID, duplicateBID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [repairedA, duplicateBFirst, unrelated]
+        let expectedRows = try EngineTranscriptProjection.rows(for: segments)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        let repairedCache = try #require(core.transcript)
+        #expect(repairedCache.revision > originalCache.revision)
+        #expect(repairedCache.rows == expectedRows)
+        #expect(repairedCache.reportedTranscriptFailures.isEmpty)
+        await h.transport.drain()
+        let finalFailures = failureEvents(for: sessionID, in: try h.outputs)
+        #expect(finalFailures.filter { $0.code == .rowTooLarge }
+            == [firstOversizedFailure, firstOversizedFailure, firstOversizedFailure])
+        #expect(finalFailures.filter { $0.code == .processingFailure }
+            == [firstDuplicateFailure, duplicateCFailure, firstDuplicateFailure])
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func skippedDiarizedValidationRetainsEncodingFailureMarker() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let core = h.app.core
+        _ = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: requestContext(for: h)
+        )
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        await drainTranscriptFailures(in: h)
+        await h.transport.drain()
+
+        let originalCache = try #require(core.transcript)
+        let oversizedID = "skipped-diarized-oversized-A"
+        let duplicateID = "skipped-diarized-duplicate-B"
+        let oversizedText = String(repeating: "\u{0001}", count: 60_000)
+        let oversizedA = try materializedApplicationDiarizedSegment(
+            id: oversizedID, text: oversizedText, start: 0, speakerID: "speaker-a"
+        )
+        let duplicateFirst = try materializedApplicationDiarizedSegment(
+            id: duplicateID, text: "first B", start: 200, speakerID: "speaker-b"
+        )
+        let duplicateSecond = try materializedApplicationDiarizedSegment(
+            id: duplicateID, text: "second B", start: 300, speakerID: "speaker-c"
+        )
+
+        var segments = [oversizedA]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsWithOversizedA = try h.outputs
+        let oversizedFailures = failureEvents(for: sessionID, in: outputsWithOversizedA)
+            .filter { $0.code == .rowTooLarge }
+        #expect(oversizedFailures.count == 1)
+        let firstOversizedFailure = try #require(oversizedFailures.first)
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+        let projection = try #require(core.transcript?.projection)
+        let projectedBeforeUncertainContext = projection.totalProjectedSegments
+
+        segments = [oversizedA, duplicateFirst, duplicateSecond]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsWithUncertainLabels = try h.outputs
+        #expect(projection.totalProjectedSegments == projectedBeforeUncertainContext)
+        #expect(failureEvents(for: sessionID, in: outputsWithUncertainLabels)
+            .filter { $0.code == .rowTooLarge } == [firstOversizedFailure])
+        let duplicateFailures = failureEvents(for: sessionID, in: outputsWithUncertainLabels)
+            .filter { $0.code == .processingFailure }
+        #expect(duplicateFailures.count == 1)
+        let duplicateFailure = try #require(duplicateFailures.first)
+        #expect(duplicateFailure.message.contains(duplicateID))
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID, duplicateID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        segments = [oversizedA, duplicateFirst]
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
+        await drainTranscriptFailures(in: h)
+        let outputsAfterRepairingDuplicate = try h.outputs
+        #expect(projection.totalProjectedSegments > projectedBeforeUncertainContext)
+        #expect(failureEvents(for: sessionID, in: outputsAfterRepairingDuplicate)
+            .filter { $0.code == .rowTooLarge } == [firstOversizedFailure])
+        #expect(failureEvents(for: sessionID, in: outputsAfterRepairingDuplicate)
+            .filter { $0.code == .processingFailure } == [duplicateFailure])
+        #expect(core.transcript?.reportedTranscriptFailures.map(\.rowID) == [oversizedID])
+        #expect(core.transcript?.revision == originalCache.revision)
+        #expect(core.transcript?.rows == originalCache.rows)
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
     @Test func transcriptFailureTrackingIsBoundedToTheFailureLimit() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -733,6 +984,24 @@ import MacAmbientJevTestSupport
             requestID: try EngineID(10_000), events: EngineEventEmitter(transport: h.transport)
         )
     }
+}
+
+private func materializedApplicationDiarizedSegment(
+    id: String, text: String, start: Int64, speakerID: String
+) throws -> MaterializedTranscriptSegment {
+    let source = try SegmentTextReference(
+        segmentationRunID: "transcript-test-run", segmentID: id, asrRunID: "transcript-test-asr", asrEventSeq: 1
+    )
+    let projection = try TranscriptTextProjector().project(sourceText: text, fillerRanges: [])
+    return try MaterializedTranscriptSegment(
+        segmentID: id, source: source, startMilliseconds: start, endMilliseconds: start + 100,
+        text: text, textProjection: projection,
+        speakers: [MaterializedSpeakerSpan(
+            id: speakerID, startMilliseconds: start, endMilliseconds: start + 100,
+            confidence: 1, displayLabel: nil
+        )],
+        clauseState: .classified, clauseSlices: [], isDiarized: true
+    )
 }
 
 private func materializedApplicationSegment(id: String, text: String) throws -> MaterializedTranscriptSegment {

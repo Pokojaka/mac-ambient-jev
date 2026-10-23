@@ -36,11 +36,13 @@ public actor ONNXQwen3ASREngine: ASREngine {
         self.size = size
         self.intraOpThreads = intraOpThreads
         self.loadModel = { directory, modelSize, threadCount in
-            try Qwen3ASRONNXModel(
-                modelDirectory: directory,
-                size: modelSize,
-                intraOpThreads: threadCount
-            )
+            try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+                try Qwen3ASRONNXModel(
+                    modelDirectory: directory,
+                    size: modelSize,
+                    intraOpThreads: threadCount
+                )
+            }.value
         }
         self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
     }

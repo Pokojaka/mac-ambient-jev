@@ -10,9 +10,21 @@ enum EngineTranscriptProjection {
         let error: any Error
     }
 
-    /// Every row of one update that failed to project or encode, in row order.
+    /// Failed rows plus successful work that remains useful when the update is retried.
     struct Failures: Error {
         let rows: [RowFailure]
+        let validatedIDs: Set<String>
+        let deletedIDs: Set<String>
+        let rowlessIDs: Set<String>
+        let changes: Changes?
+    }
+
+    struct Update {
+        let rows: [EngineTranscriptRow]
+        let changes: Changes
+        let validatedIDs: Set<String>
+        let deletedIDs: Set<String>
+        let rowlessIDs: Set<String>
     }
 
     /// Encoded bytes of a page beyond which it is cut, kept well inside the 1 MiB record limit.
@@ -45,11 +57,13 @@ enum EngineTranscriptProjection {
     @MainActor
     final class Incremental {
         private var sourceByID: [String: MaterializedTranscriptSegment] = [:]
+        private var observedIDs: Set<String> = []
         private var rowByID: [String: EngineTranscriptRow] = [:]
         private var committedRowByID: [String: EngineTranscriptRow] = [:]
         private var dirtyIDs: Set<String> = []
         private var orderedIDs: [String] = []
         private var speakerLabels: [String: String] = [:]
+        private var speakerContextWasUncertain = false
         private var unprojectedIDs: Set<String> = []
         private var committedOrderedIDs: [String] = []
         private var cachedRows: [EngineTranscriptRow] = []
@@ -69,47 +83,60 @@ enum EngineTranscriptProjection {
             cachedRows = rows
         }
 
-        func update(_ segments: [MaterializedTranscriptSegment]) throws(Failures) -> (rows: [EngineTranscriptRow], changes: Changes) {
+        func update(_ segments: [MaterializedTranscriptSegment]) throws(Failures) -> Update {
             var nextOrderedIDs: [String] = []
             nextOrderedIDs.reserveCapacity(segments.count)
             var seenIDs: Set<String> = []
             seenIDs.reserveCapacity(segments.count)
             var duplicateIDs: [String] = []
             var recordedDuplicateIDs: Set<String> = []
-            var changedSegments: [String: MaterializedTranscriptSegment] = [:]
-            changedSegments.reserveCapacity(segments.count)
+            var segmentsByID: [String: MaterializedTranscriptSegment] = [:]
+            segmentsByID.reserveCapacity(segments.count)
+            var duplicateGroups: [String: [MaterializedTranscriptSegment]] = [:]
             for segment in segments {
                 let id = segment.segmentID
-                guard seenIDs.insert(id).inserted else {
+                if seenIDs.insert(id).inserted {
+                    nextOrderedIDs.append(id)
+                    segmentsByID[id] = segment
+                } else {
                     if recordedDuplicateIDs.insert(id).inserted {
                         duplicateIDs.append(id)
+                        duplicateGroups[id] = [segmentsByID[id]!]
                     }
-                    continue
+                    duplicateGroups[id, default: []].append(segment)
                 }
-                nextOrderedIDs.append(id)
+            }
+
+            var changedSegments: [String: MaterializedTranscriptSegment] = [:]
+            changedSegments.reserveCapacity(segmentsByID.count)
+            for (id, segment) in segmentsByID where !recordedDuplicateIDs.contains(id) {
                 if sourceByID[id] != segment {
                     changedSegments[id] = segment
                 }
             }
-            if !duplicateIDs.isEmpty {
-                throw Failures(rows: duplicateIDs.map { id in
-                    RowFailure(rowID: id, error: EngineTranscriptProjectionError.duplicateSegmentID(id))
-                })
-            }
 
-            let removedIDs = sourceByID.keys.filter { !seenIDs.contains($0) }
+            let removedIDs = observedIDs.filter { !seenIDs.contains($0) }
             let removedBaselineIDs = dirtyIDs.filter {
                 sourceByID[$0] == nil && !seenIDs.contains($0) && rowByID[$0] != nil
             }
-            let removedRowCandidates = Set(removedIDs).union(removedBaselineIDs)
-            let speakerContextChanged = changedSegments.contains { id, segment in
+            let deletedIDs = Set(removedIDs).union(removedBaselineIDs)
+            let removedRowCandidates = deletedIDs
+            let speakerContextUncertain = duplicateIDs.contains { id in
+                duplicateGroups[id, default: []].contains { !$0.speakers.isEmpty }
+                    || sourceByID[id]?.speakers.isEmpty == false
+            }
+            let speakerContextChanged = speakerContextUncertain || changedSegments.contains { id, segment in
                 (sourceByID[id]?.speakers ?? []) != segment.speakers
             } || removedIDs.contains { sourceByID[$0]?.speakers.isEmpty == false }
             let sourceChanged = !changedSegments.isEmpty || !removedIDs.isEmpty
             let orderChanged = nextOrderedIDs != orderedIDs
 
-            if !sourceChanged, !orderChanged, unprojectedIDs.isEmpty, dirtyIDs.isEmpty {
-                return (cachedRows, Changes(upserts: [], removedRowIDs: []))
+            if duplicateIDs.isEmpty, !sourceChanged, !orderChanged, unprojectedIDs.isEmpty, dirtyIDs.isEmpty {
+                return Update(
+                    rows: cachedRows, changes: Changes(upserts: [], removedRowIDs: []),
+                    validatedIDs: Set(sourceByID.keys), deletedIDs: [],
+                    rowlessIDs: Set(sourceByID.keys).subtracting(Set(rowByID.keys))
+                )
             }
 
             for id in removedIDs {
@@ -118,10 +145,15 @@ enum EngineTranscriptProjection {
             for (id, segment) in changedSegments {
                 sourceByID[id] = segment
             }
+            observedIDs = seenIDs
             orderedIDs = nextOrderedIDs
             dirtyIDs.formUnion(changedSegments.keys)
             dirtyIDs.formUnion(removedRowCandidates)
             unprojectedIDs.formUnion(changedSegments.keys)
+            for id in duplicateIDs where sourceByID[id] != nil {
+                dirtyIDs.insert(id)
+                unprojectedIDs.insert(id)
+            }
             if orderChanged {
                 cachedRowsNeedsRebuild = true
             }
@@ -132,19 +164,28 @@ enum EngineTranscriptProjection {
                 unprojectedIDs.remove(id)
             }
 
-            if speakerContextChanged {
-                let spans = segments.flatMap(\.speakers).map { speaker in
-                    SpeakerSpan(
-                        speakerID: speaker.id,
-                        startFrame: speaker.startMilliseconds,
-                        endFrame: speaker.endMilliseconds,
-                        confidence: speaker.confidence
-                    )
-                }
+            if speakerContextUncertain {
+                speakerContextWasUncertain = true
+                let diarizedIDs = sourceByID.values.filter(\.isDiarized).map(\.segmentID)
+                dirtyIDs.formUnion(diarizedIDs)
+                unprojectedIDs.formUnion(diarizedIDs)
+            } else if speakerContextChanged || speakerContextWasUncertain {
+                let spans = nextOrderedIDs
+                    .filter { !recordedDuplicateIDs.contains($0) }
+                    .compactMap { sourceByID[$0] }
+                    .flatMap(\.speakers).map { speaker in
+                        SpeakerSpan(
+                            speakerID: speaker.id,
+                            startFrame: speaker.startMilliseconds,
+                            endFrame: speaker.endMilliseconds,
+                            confidence: speaker.confidence
+                        )
+                    }
                 let nextLabels = SpeakerDisplayMapper.makeLabels(spans: spans)
+                speakerContextWasUncertain = false
                 if nextLabels != speakerLabels {
                     speakerLabels = nextLabels
-                    let diarizedIDs = segments.filter(\.isDiarized).map(\.segmentID)
+                    let diarizedIDs = sourceByID.values.filter(\.isDiarized).map(\.segmentID)
                     dirtyIDs.formUnion(diarizedIDs)
                     unprojectedIDs.formUnion(diarizedIDs)
                 }
@@ -153,9 +194,13 @@ enum EngineTranscriptProjection {
             let pendingIDs = orderedIDs.filter { unprojectedIDs.contains($0) }
             var projectedRows: [(id: String, row: EngineTranscriptRow?)] = []
             projectedRows.reserveCapacity(pendingIDs.count)
-            var rowFailures: [RowFailure] = []
+            var projectedIDs: Set<String> = []
+            var rowFailures = duplicateIDs.map { id in
+                RowFailure(rowID: id, error: EngineTranscriptProjectionError.duplicateSegmentID(id))
+            }
             for id in pendingIDs {
-                guard let segment = sourceByID[id] else { continue }
+                guard !recordedDuplicateIDs.contains(id), let segment = sourceByID[id] else { continue }
+                if speakerContextUncertain, segment.isDiarized { continue }
                 totalProjectedSegments += 1
                 do {
                     let projectedRow: EngineTranscriptRow?
@@ -178,12 +223,10 @@ enum EngineTranscriptProjection {
                         }
                     }
                     projectedRows.append((id, projectedRow))
+                    projectedIDs.insert(id)
                 } catch {
                     rowFailures.append(RowFailure(rowID: id, error: error))
                 }
-            }
-            if !rowFailures.isEmpty {
-                throw Failures(rows: rowFailures)
             }
             for (id, projectedRow) in projectedRows {
                 if rowByID[id] != projectedRow {
@@ -202,9 +245,31 @@ enum EngineTranscriptProjection {
                 cachedRowsNeedsRebuild = false
             }
 
+            let validatedIDs = Set(sourceByID.keys.filter {
+                !unprojectedIDs.contains($0) && !recordedDuplicateIDs.contains($0)
+            }).union(projectedIDs)
+            let rowlessIDs = validatedIDs.subtracting(Set(rowByID.keys))
+            let changes = pendingChanges(validatedIDs: validatedIDs)
+            let sourcePositions = Dictionary(uniqueKeysWithValues: nextOrderedIDs.enumerated().map { offset, id in (id, offset) })
+            rowFailures.sort {
+                (sourcePositions[$0.rowID] ?? Int.max) < (sourcePositions[$1.rowID] ?? Int.max)
+            }
+            if !rowFailures.isEmpty {
+                throw Failures(
+                    rows: rowFailures, validatedIDs: validatedIDs, deletedIDs: deletedIDs,
+                    rowlessIDs: rowlessIDs, changes: changes
+                )
+            }
+            return Update(
+                rows: cachedRows, changes: changes, validatedIDs: validatedIDs,
+                deletedIDs: deletedIDs, rowlessIDs: rowlessIDs
+            )
+        }
+
+        private func pendingChanges(validatedIDs: Set<String>) -> Changes {
             var upserts: [EngineTranscriptRow] = []
             for id in orderedIDs where dirtyIDs.contains(id) {
-                guard let row = rowByID[id] else { continue }
+                guard validatedIDs.contains(id), let row = rowByID[id] else { continue }
                 totalDiffedRows += 1
                 if committedRowByID[id] != row {
                     upserts.append(row)
@@ -213,7 +278,7 @@ enum EngineTranscriptProjection {
             let removedRowIDs = committedOrderedIDs.filter { id in
                 dirtyIDs.contains(id) && rowByID[id] == nil && committedRowByID[id] != nil
             }
-            return (cachedRows, Changes(upserts: upserts, removedRowIDs: removedRowIDs))
+            return Changes(upserts: upserts, removedRowIDs: removedRowIDs)
         }
 
         func commit() {
@@ -282,7 +347,9 @@ enum EngineTranscriptProjection {
         }
         if removedRowIDs.count > 1 { bytes += removedRowIDs.count - 1 }
         if !failures.isEmpty {
-            throw Failures(rows: failures)
+            throw Failures(
+                rows: failures, validatedIDs: [], deletedIDs: [], rowlessIDs: [], changes: nil
+            )
         }
         return bytes
     }

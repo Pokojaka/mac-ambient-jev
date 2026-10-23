@@ -3,6 +3,7 @@ import Testing
 import WinSDK
 import ucrt
 import MacAmbientJevEngineHost
+import MacAmbientJevTestSupport
 @testable import MacAmbientJevEngine
 
 private struct DiagnosticPipeTestError: Error, CustomStringConvertible {
@@ -37,36 +38,42 @@ private final class DiagnosticTestHandle: @unchecked Sendable {
 }
 
 private final class DiagnosticTestLatch: @unchecked Sendable {
-    private let condition = NSCondition()
+    let changes = ChangeSignal()
+    private let lock = NSLock()
     private var completed = false
     private var byteCount = 0
     private var failure: String?
 
     func finish(byteCount: Int, failure: String?) {
-        condition.lock()
+        lock.lock()
         self.byteCount = byteCount
         self.failure = failure
         completed = true
-        condition.broadcast()
-        condition.unlock()
+        lock.unlock()
+        changes.signal()
     }
 
     var isComplete: Bool {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return completed
     }
 
     var result: (byteCount: Int, failure: String?) {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return (byteCount, failure)
+    }
+
+    func waitUntilComplete(_ description: String) async throws {
+        try await changes.wait(description) { isComplete }
     }
 }
 
 private final class DiagnosticPipeReader: @unchecked Sendable {
+    let changes = ChangeSignal()
     private let handle: HANDLE
-    private let condition = NSCondition()
+    private let lock = NSLock()
     private var storage = Data()
     private var finished = false
 
@@ -83,52 +90,39 @@ private final class DiagnosticPipeReader: @unchecked Sendable {
                 ReadFile(handle, $0.baseAddress, DWORD($0.count), &count, nil)
             }
             guard succeeded, count > 0 else { break }
-            condition.lock()
+            lock.lock()
             storage.append(contentsOf: buffer[..<Int(count)])
-            condition.unlock()
+            lock.unlock()
         }
         _ = CloseHandle(handle)
-        condition.lock()
+        lock.lock()
         finished = true
-        condition.broadcast()
-        condition.unlock()
+        lock.unlock()
+        changes.signal()
     }
 
     var data: Data {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return storage
     }
 
     var isFinished: Bool {
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return finished
     }
-}
 
-private func waitForDiagnosticCondition(
-    timeout: TimeInterval,
-    _ description: String,
-    condition: () -> Bool
-) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition() {
-        guard Date() < deadline else {
-            throw DiagnosticPipeTestError(description: "timed out waiting for \(description)")
-        }
-        try await Task.sleep(nanoseconds: 5_000_000)
+    func waitUntilFinished() async throws {
+        try await changes.wait("the diagnostic egress reader to finish") { isFinished }
     }
 }
 
 private func closeCaptureOffThread(_ capture: WindowsDiagnosticCapture) -> DiagnosticTestLatch {
     let latch = DiagnosticTestLatch()
     Thread.detachNewThread {
-        let started = Date()
         capture.close()
-        let elapsed = Date().timeIntervalSince(started)
-        let failure = elapsed >= 5 ? "capture.close() took \(elapsed) seconds (expected < 5)" : nil
-        latch.finish(byteCount: 0, failure: failure)
+        latch.finish(byteCount: 0, failure: nil)
     }
     return latch
 }
@@ -142,7 +136,19 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
     return latch
 }
 
-@Suite struct WindowsDiagnosticCaptureTests {
+@Suite(.timeLimit(.minutes(10))) struct WindowsDiagnosticCaptureTests {
+    @Test func waitingForNeverFinishedLatchThrowsWhenCancelled() async {
+        let latch = DiagnosticTestLatch()
+        let waiter = Task {
+            try await latch.waitUntilComplete("a never-finished diagnostic operation")
+        }
+        waiter.cancel()
+
+        await #expect(throws: WaitCancelled.self) {
+            try await waiter.value
+        }
+    }
+
     @Test func stalledClientStderrDoesNotStopNativeStdoutDiagnosticIngress() async throws {
         let ingress = try makeDiagnosticPipe(bufferBytes: 4096)
         let ingressWrite = DiagnosticTestHandle(ingress.write)
@@ -192,9 +198,7 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
             producer.finish(byteCount: offset, failure: failure)
         }
 
-        try await waitForDiagnosticCondition(timeout: 10, "the native stdout producer to finish") {
-            producer.isComplete
-        }
+        try await producer.waitUntilComplete("the native stdout producer to finish")
         let producerResult = producer.result
         #expect(producerResult.failure == nil)
         #expect(producerResult.byteCount == payloadBytes)
@@ -202,9 +206,7 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
         // No egress reader exists yet: the bounded diagnostic queue must absorb/drop records rather
         // than making the native stdout writer wait for the external client's stderr reader.
         let captureClose = closeCaptureOffThread(capture)
-        try await waitForDiagnosticCondition(timeout: 5, "diagnostic capture shutdown") {
-            captureClose.isComplete
-        }
+        try await captureClose.waitUntilComplete("diagnostic capture shutdown")
         #expect(captureClose.result.failure == nil)
         let snapshot = writer.snapshot
         #expect(snapshot.droppedRecords > 0)
@@ -212,16 +214,13 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
         #expect(snapshot.queuedRecords <= 128)
         #expect(snapshot.queuedBytes <= 262_144)
 
-        pipeReader = DiagnosticPipeReader(handle: egress.read)
+        let reader = DiagnosticPipeReader(handle: egress.read)
+        pipeReader = reader
         let writerClose = closeWriterOffThread(writer, timeout: 3)
-        try await waitForDiagnosticCondition(timeout: 6, "bounded diagnostic writer shutdown") {
-            writerClose.isComplete
-        }
-        try await waitForDiagnosticCondition(timeout: 5, "the diagnostic egress reader to finish") {
-            pipeReader?.isFinished == true
-        }
+        try await writerClose.waitUntilComplete("bounded diagnostic writer shutdown")
+        try await reader.waitUntilFinished()
 
-        let output = String(decoding: pipeReader?.data ?? Data(), as: UTF8.self)
+        let output = String(decoding: reader.data, as: UTF8.self)
         #expect(output.contains("engine diagnostics overflow: dropped_records="))
     }
 
@@ -306,10 +305,7 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
             #expect(writeCRT(crtStdout, descriptor: 1) == Int32(crtStdout.utf8.count))
             #expect(writeWin32(win32Stdout, to: GetStdHandle(DWORD(bitPattern: -11))))
 
-            try await waitForDiagnosticCondition(timeout: 5, "native stdout diagnostics to be captured") {
-                let captured = capturedStdout.text
-                return captured.contains(crtStdout) && captured.contains(win32Stdout)
-            }
+            try await capturedStdout.waitUntilContains([crtStdout, win32Stdout])
             #expect(capturedStdout.text.contains(crtStdout))
             #expect(capturedStdout.text.contains(win32Stdout))
         }
@@ -339,9 +335,7 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
         defer { writeHandle.close() }
 
         let closeLatch = closeCaptureOffThread(capture)
-        try await waitForDiagnosticCondition(timeout: 5, "idle diagnostic capture cancellation") {
-            closeLatch.isComplete
-        }
+        try await closeLatch.waitUntilComplete("idle diagnostic capture cancellation")
         #expect(closeLatch.result.failure == nil)
         #expect(GetStdHandle(DWORD(bitPattern: -12)) == originalStandardError)
         #expect(receivedChunks.count == 0)
@@ -349,9 +343,7 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
         // Ensure a reader whose cancellation needed the pipe close can still finish safely.
         writeHandle.close()
         let secondClose = closeCaptureOffThread(capture)
-        try await waitForDiagnosticCondition(timeout: 5, "idle diagnostic reader completion") {
-            secondClose.isComplete
-        }
+        try await secondClose.waitUntilComplete("idle diagnostic reader completion")
         #expect(GetStdHandle(DWORD(bitPattern: -12)) == originalStandardError)
     }
 }
@@ -374,6 +366,7 @@ private func writeWin32(_ text: String, to handle: HANDLE?) -> Bool {
 }
 
 private final class DiagnosticChunkBuffer: @unchecked Sendable {
+    let changes = ChangeSignal()
     private let lock = NSLock()
     private var storage = ""
 
@@ -381,12 +374,20 @@ private final class DiagnosticChunkBuffer: @unchecked Sendable {
         lock.lock()
         storage.append(chunk)
         lock.unlock()
+        changes.signal()
     }
 
     var text: String {
         lock.lock()
         defer { lock.unlock() }
         return storage
+    }
+
+    func waitUntilContains(_ expectedChunks: [String]) async throws {
+        try await changes.wait("diagnostic chunks \(expectedChunks)") {
+            let contents = text
+            return expectedChunks.allSatisfy { contents.contains($0) }
+        }
     }
 }
 

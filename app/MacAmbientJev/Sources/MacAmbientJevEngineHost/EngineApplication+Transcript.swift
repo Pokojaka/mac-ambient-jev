@@ -46,65 +46,134 @@ extension EngineApplicationCore {
         }
 
         let projectionsAreShared = watchedProjection != nil && watchedProjection === readProjection
-        let watchedUpdate: (rows: [EngineTranscriptRow], changes: EngineTranscriptProjection.Changes)?
-        let readUpdate: (rows: [EngineTranscriptRow], changes: EngineTranscriptProjection.Changes)?
-        do throws(EngineTranscriptProjection.Failures) {
-            if let watchedProjection {
+        var watchedUpdate: EngineTranscriptProjection.Update?
+        var readUpdate: EngineTranscriptProjection.Update?
+        var watchedChanges: EngineTranscriptProjection.Changes?
+        var readChanges: EngineTranscriptProjection.Changes?
+        var projectionFailures: [EngineTranscriptProjection.RowFailure] = []
+        var validatedByProjection: [Set<String>] = []
+        var deletedByProjection: [Set<String>] = []
+        var rowlessByProjection: [Set<String>] = []
+
+        if let watchedProjection {
+            do {
                 let update = try watchedProjection.update(segments)
                 watchedUpdate = update
-                if projectionsAreShared {
-                    readUpdate = update
-                } else if let readProjection {
-                    readUpdate = try readProjection.update(segments)
-                } else {
-                    readUpdate = nil
-                }
-            } else if let readProjection {
-                watchedUpdate = nil
-                readUpdate = try readProjection.update(segments)
-            } else {
-                preconditionFailure("a matching transcript cache has an incremental projection")
+                watchedChanges = update.changes
+                validatedByProjection.append(update.validatedIDs)
+                deletedByProjection.append(update.deletedIDs)
+                rowlessByProjection.append(update.rowlessIDs)
+            } catch {
+                projectionFailures.append(contentsOf: error.rows)
+                watchedChanges = error.changes
+                validatedByProjection.append(error.validatedIDs)
+                deletedByProjection.append(error.deletedIDs)
+                rowlessByProjection.append(error.rowlessIDs)
             }
-        } catch {
-            reportTranscriptFailures(error.rows.prefix(Self.failureLimit).map { row in
-                EngineTranscriptRowFailure(
-                    rowID: row.rowID, input: .segments(segments.filter { $0.segmentID == row.rowID }),
-                    failure: transcriptFailure(row.error, sessionID: sessionID)
-                )
-            }, sessionID: sessionID)
-            return
+        }
+        if projectionsAreShared {
+            readUpdate = watchedUpdate
+            readChanges = watchedChanges
+        } else if let readProjection {
+            do {
+                let update = try readProjection.update(segments)
+                readUpdate = update
+                readChanges = update.changes
+                validatedByProjection.append(update.validatedIDs)
+                deletedByProjection.append(update.deletedIDs)
+                rowlessByProjection.append(update.rowlessIDs)
+            } catch {
+                projectionFailures.append(contentsOf: error.rows)
+                readChanges = error.changes
+                validatedByProjection.append(error.validatedIDs)
+                deletedByProjection.append(error.deletedIDs)
+                rowlessByProjection.append(error.rowlessIDs)
+            }
         }
 
-        let watchedChanged = watchedUpdate?.changes.isEmpty == false
-        let readChanged = readUpdate?.changes.isEmpty == false
-        let changesFit: Bool
-        if let changes = watchedUpdate?.changes, watchedChanged {
-            do throws(EngineTranscriptProjection.Failures) {
+        guard !validatedByProjection.isEmpty else {
+            preconditionFailure("a matching transcript cache has an incremental projection")
+        }
+        let validatedIDs = validatedByProjection.dropFirst().reduce(validatedByProjection[0]) { result, ids in
+            result.intersection(ids)
+        }
+        let deletedIDs = deletedByProjection.dropFirst().reduce(deletedByProjection[0]) { result, ids in
+            result.intersection(ids)
+        }
+        let rowlessIDs = rowlessByProjection.dropFirst().reduce(rowlessByProjection[0]) { result, ids in
+            result.intersection(ids)
+        }
+
+        var encodingFailures: [EngineTranscriptProjection.RowFailure] = []
+        var encodingValidatedIDs: Set<String> = []
+        var changesFit = true
+        var encodingOutcomes: [(changes: EngineTranscriptProjection.Changes, isWatched: Bool)] = []
+        if let watchedChanges { encodingOutcomes.append((watchedChanges, true)) }
+        if !projectionsAreShared, let readChanges { encodingOutcomes.append((readChanges, false)) }
+        for outcome in encodingOutcomes where !outcome.changes.isEmpty {
+            let changes = outcome.changes
+            do {
                 let bytes = try EngineTranscriptProjection.encodedChangeBytes(
                     upserts: changes.upserts, removedRowIDs: changes.removedRowIDs
                 )
-                changesFit = changes.count <= Self.transcriptPageLimit
-                    && bytes <= EngineTranscriptProjection.pageByteBudget
+                encodingValidatedIDs.formUnion(changes.upserts.map(\.rowID))
+                encodingValidatedIDs.formUnion(changes.removedRowIDs)
+                if outcome.isWatched {
+                    changesFit = changes.count <= Self.transcriptPageLimit
+                        && bytes <= EngineTranscriptProjection.pageByteBudget
+                }
             } catch {
-                reportTranscriptFailures(error.rows.prefix(Self.failureLimit).map { row in
-                    let input: EngineTranscriptRowFailure.Input = if let upsert = changes.upserts.first(where: { $0.rowID == row.rowID }) {
-                        .row(upsert)
-                    } else {
-                        .removal
-                    }
-                    return EngineTranscriptRowFailure(
-                        rowID: row.rowID, input: input, failure: transcriptFailure(row.error, sessionID: sessionID)
-                    )
-                }, sessionID: sessionID)
-                return
+                encodingFailures.append(contentsOf: error.rows)
+                let failedIDs = Set(error.rows.map(\.rowID))
+                encodingValidatedIDs.formUnion(changes.upserts.map(\.rowID).filter { !failedIDs.contains($0) })
+                encodingValidatedIDs.formUnion(changes.removedRowIDs.filter { !failedIDs.contains($0) })
             }
-        } else {
-            changesFit = true
         }
-        reportTranscriptFailures([], sessionID: sessionID)
+        encodingValidatedIDs.formIntersection(validatedIDs.union(deletedIDs))
 
-        // Commit only after all changes that will be sent have passed validation. Empty updates still
-        // commit so the helper can discard its clean baseline without advancing the cached revision.
+        var observedFailures: [EngineTranscriptRowFailure] = []
+        for row in projectionFailures {
+            let marker = EngineTranscriptRowFailure(
+                rowID: row.rowID, input: .segments(segments.filter { $0.segmentID == row.rowID }),
+                failure: transcriptFailure(row.error, sessionID: sessionID)
+            )
+            if !observedFailures.contains(marker) { observedFailures.append(marker) }
+        }
+        let currentUpserts = [watchedChanges, readChanges].compactMap { $0 }.flatMap(\.upserts)
+        for row in encodingFailures {
+            let input: EngineTranscriptRowFailure.Input = if let upsert = currentUpserts.first(where: { $0.rowID == row.rowID }) {
+                .row(upsert)
+            } else {
+                .removal
+            }
+            let marker = EngineTranscriptRowFailure(
+                rowID: row.rowID, input: input, failure: transcriptFailure(row.error, sessionID: sessionID)
+            )
+            if !observedFailures.contains(marker) { observedFailures.append(marker) }
+        }
+
+        var sourceOrder: [String] = []
+        var orderedIDs: Set<String> = []
+        for segment in segments where orderedIDs.insert(segment.segmentID).inserted {
+            sourceOrder.append(segment.segmentID)
+        }
+        let observedIDs = Set(observedFailures.map(\.rowID))
+        let verifiedNoRowIDs = rowlessIDs.union(deletedIDs)
+        if !observedFailures.isEmpty {
+            reconcileTranscriptFailures(
+                observedFailures, observedIDs: observedIDs, projectionValidatedIDs: validatedIDs,
+                encodingValidatedIDs: encodingValidatedIDs, verifiedNoRowIDs: verifiedNoRowIDs,
+                sourceOrder: sourceOrder, sessionID: sessionID
+            )
+            return
+        }
+        reconcileTranscriptFailures(
+            [], observedIDs: [], projectionValidatedIDs: validatedIDs,
+            encodingValidatedIDs: encodingValidatedIDs, verifiedNoRowIDs: verifiedNoRowIDs,
+            sourceOrder: sourceOrder, sessionID: sessionID
+        )
+
+        // Commit only after every projection and every pending row has passed validation.
         if projectionsAreShared {
             watchedProjection?.commit()
         } else {
@@ -112,6 +181,8 @@ extension EngineApplicationCore {
             readProjection?.commit()
         }
 
+        let watchedChanged = watchedChanges?.isEmpty == false
+        let readChanged = readUpdate?.changes.isEmpty == false
         var updatedWatched: EngineTranscriptCache?
         if watchedChanged, var cache = transcript, cache.sessionID == sessionID, let update = watchedUpdate {
             cache.rows = update.rows
@@ -126,7 +197,7 @@ extension EngineApplicationCore {
             cache.isLiveState = true
             readTranscript = cache
         }
-        guard let cache = updatedWatched, let changes = watchedUpdate?.changes else { return }
+        guard let cache = updatedWatched, let changes = watchedChanges else { return }
         do {
             let payload: EngineRowsPayload
             if changesFit {
@@ -210,10 +281,12 @@ extension EngineApplicationCore {
         report(transcriptFailure(error, sessionID: sessionID))
     }
 
-    /// Reports each failing row once per distinct (row, input, failure). `failures` is every failing row of this
-    /// update, at most `failureLimit` of them in row order, as `state.failures` shows no more. A row missing from it
-    /// stopped failing and is forgotten, so it is reported again if it fails later.
-    private func reportTranscriptFailures(_ failures: [EngineTranscriptRowFailure], sessionID: UUID) {
+    /// Reconciles observed failures without dropping markers for rows this update did not verify.
+    private func reconcileTranscriptFailures(
+        _ observed: [EngineTranscriptRowFailure], observedIDs: Set<String>,
+        projectionValidatedIDs: Set<String>, encodingValidatedIDs: Set<String>, verifiedNoRowIDs: Set<String>,
+        sourceOrder: [String], sessionID: UUID
+    ) {
         let previous: [EngineTranscriptRowFailure]
         if sessionID == watchedSessionID, let cache = transcript, cache.sessionID == sessionID {
             previous = cache.reportedTranscriptFailures
@@ -222,16 +295,40 @@ extension EngineApplicationCore {
         } else {
             preconditionFailure("transcript failures are tracked only for a cached session")
         }
-        if failures == previous { return }
+
+        var merged = previous.filter { failure in
+            guard !observedIDs.contains(failure.rowID) else { return false }
+            switch failure.input {
+            case .segments:
+                return !projectionValidatedIDs.contains(failure.rowID)
+                    && !verifiedNoRowIDs.contains(failure.rowID)
+            case .row, .removal:
+                return !encodingValidatedIDs.contains(failure.rowID)
+                    && !verifiedNoRowIDs.contains(failure.rowID)
+            }
+        }
+        for failure in observed where !merged.contains(failure) {
+            merged.append(failure)
+        }
+        var sourcePositions: [String: Int] = [:]
+        for (index, id) in sourceOrder.enumerated() where sourcePositions[id] == nil {
+            sourcePositions[id] = index
+        }
+        let ordered = merged.enumerated().sorted { lhs, rhs in
+            let leftPosition = sourcePositions[lhs.element.rowID] ?? Int.max
+            let rightPosition = sourcePositions[rhs.element.rowID] ?? Int.max
+            return leftPosition == rightPosition ? lhs.offset < rhs.offset : leftPosition < rightPosition
+        }.prefix(Self.failureLimit).map(\.element)
+        if ordered == previous { return }
         if sessionID == watchedSessionID, var cache = transcript, cache.sessionID == sessionID {
-            cache.reportedTranscriptFailures = failures
+            cache.reportedTranscriptFailures = ordered
             transcript = cache
         }
         if var cache = readTranscript, cache.sessionID == sessionID {
-            cache.reportedTranscriptFailures = failures
+            cache.reportedTranscriptFailures = ordered
             readTranscript = cache
         }
-        for failure in failures where !previous.contains(failure) {
+        for failure in ordered where !previous.contains(failure) {
             report(failure.failure)
         }
     }

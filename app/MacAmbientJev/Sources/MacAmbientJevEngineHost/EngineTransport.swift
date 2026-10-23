@@ -26,13 +26,34 @@ public final class EngineTransport: @unchecked Sendable {
     private let output: EngineOutputChannel
     private let lane: EngineInputLane
 
-    public init(source: EngineByteSource, sink: EngineByteSink, limits: EngineTransportLimits) {
+    public convenience init(source: EngineByteSource, sink: EngineByteSink, limits: EngineTransportLimits) {
+        self.init(
+            source: source,
+            sink: sink,
+            limits: limits,
+            deadlineClock: LiveEngineWriteDeadlineClock(),
+            onReliableWait: {}
+        )
+    }
+
+    init(
+        source: EngineByteSource,
+        sink: EngineByteSink,
+        limits: EngineTransportLimits,
+        deadlineClock: any EngineWriteDeadlineClock,
+        onReliableWait: @escaping @Sendable () -> Void
+    ) {
         let (events, continuation) = AsyncStream<EngineTransportEvent>.makeStream(bufferingPolicy: .unbounded)
         self.events = events
         self.continuation = continuation
         self.source = source
         self.limits = limits
-        output = EngineOutputChannel(sink: sink, limits: limits) { failure in
+        output = EngineOutputChannel(
+            sink: sink,
+            limits: limits,
+            clock: deadlineClock,
+            onReliableWait: onReliableWait
+        ) { failure in
             EngineLog.write("output failed: \(failure)")
             continuation.yield(.writeFailed(failure))
         }
@@ -70,6 +91,11 @@ public final class EngineTransport: @unchecked Sendable {
     /// Returns once every record queued so far has been written, or the writer failed.
     public func drain() async {
         await output.drain()
+    }
+
+    /// Advances a logical test clock atomically with the output watchdog's condition check.
+    func advanceWriteDeadlineClock(_ advance: () -> Void) {
+        output.advanceWriteDeadlineClock(advance)
     }
 
     /// Stops the lanes and closes the input source and the output sink. Queued unwritten records are dropped.

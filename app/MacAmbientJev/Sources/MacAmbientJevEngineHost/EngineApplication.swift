@@ -121,6 +121,7 @@ final class EngineApplicationCore {
     var failureEventTask: Task<Void, Never>?
     var inFlightFailureEvent: EngineFailure?
     var eventsClosed = false
+    var onBackgroundEventStateChange: (@MainActor () -> Void)?
 
     lazy var processingCoordinator = SessionProcessingCoordinator(
         effects: self, processor: gateway, thermalMonitor: pauseGate
@@ -322,14 +323,17 @@ final class EngineApplicationCore {
         while eventsEnabled, !eventsClosed, !pendingFailureEvents.isEmpty {
             let failure = pendingFailureEvents.removeFirst()
             inFlightFailureEvent = failure
+            onBackgroundEventStateChange?()
             do {
                 try await events.failure(failure)
             } catch {
                 EngineLog.write("error event not sent: \(error)")
             }
             inFlightFailureEvent = nil
+            onBackgroundEventStateChange?()
         }
         failureEventTask = nil
+        onBackgroundEventStateChange?()
     }
 
     func clearFailures(sessionID: UUID) {
@@ -564,6 +568,7 @@ extension EngineApplicationCore: EngineShutdownHandling {
         eventsClosed = true
         eventsEnabled = false
         pendingFailureEvents.removeAll()
+        onBackgroundEventStateChange?()
         let failureEventTaskAtShutdown = failureEventTask
 
         isShuttingDown = true

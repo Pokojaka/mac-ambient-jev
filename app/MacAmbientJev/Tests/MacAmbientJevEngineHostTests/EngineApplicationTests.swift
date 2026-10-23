@@ -218,6 +218,18 @@ import MacAmbientJevTestSupport
         #expect(try await second.shutdown() == .shutdownRequested)
     }
 
+    @Test func waitingForNeverEnteredOfflineFinalizationGateThrowsWhenCancelled() async {
+        let gate = OfflineFinalizationGate()
+        let waiter = Task {
+            try await gate.waitUntilEntered()
+        }
+        waiter.cancel()
+
+        await #expect(throws: WaitCancelled.self) {
+            try await waiter.value
+        }
+    }
+
     @Test func shutdownDuringOfflineFinalizationPausesForRecovery() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -238,7 +250,7 @@ import MacAmbientJevTestSupport
         try await first.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
         // This VAD is only used by NativeSessionProcessor's offline finalization pass. Live ASR
         // uses the ordinary fake engine, so reaching the gate proves the queued finalization began.
-        await gate.waitUntilEntered()
+        try await gate.waitUntilEntered()
 
         #expect(try await first.shutdown() == .shutdownRequested)
         let sessionID = try #require(UUID(uuidString: started.sessionID))
@@ -425,15 +437,13 @@ private func EngineFailures_wireID(_ id: UUID) -> String {
 
 private actor OfflineFinalizationGate {
     private var entered = false
-    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private let enteredChanges = ChangeSignal()
     private var released = false
     private var continuation: CheckedContinuation<Void, Error>?
 
     func suspend() async throws {
         entered = true
-        let waiters = enteredWaiters
-        enteredWaiters = []
-        for waiter in waiters { waiter.resume() }
+        enteredChanges.signal()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if released {
@@ -449,9 +459,8 @@ private actor OfflineFinalizationGate {
         }
     }
 
-    func waitUntilEntered() async {
-        if entered { return }
-        await withCheckedContinuation { enteredWaiters.append($0) }
+    func waitUntilEntered() async throws {
+        try await enteredChanges.wait("offline finalization entry") { entered }
     }
 
     private func cancel() {

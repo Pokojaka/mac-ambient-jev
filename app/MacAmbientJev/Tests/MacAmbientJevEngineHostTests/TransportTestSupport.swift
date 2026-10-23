@@ -7,17 +7,6 @@ struct TestTimeout: Error, CustomStringConvertible {
     let description: String
 }
 
-/// Waits for state that production code owns on the main actor and that no test double can signal. Every change
-/// to it happens in a main-actor job, so the condition is re-checked each time the main actor runs other work.
-/// There is no wall-clock deadline: the test's `.timeLimit` cancels a wait that never ends.
-@MainActor
-func waitForMainActorState(_ what: String, _ condition: @MainActor () -> Bool) async throws {
-    while !condition() {
-        if Task.isCancelled { throw WaitCancelled(description: "cancelled while waiting for \(what)") }
-        await Task.yield()
-    }
-}
-
 /// Serial task executor for tests whose producer tasks must not depend on the cooperative pool.
 final class TransportTestExecutor: TaskExecutor, @unchecked Sendable {
     private let queue = DispatchQueue(label: "TransportTestExecutor")

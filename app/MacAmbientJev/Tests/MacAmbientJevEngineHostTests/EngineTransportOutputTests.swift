@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevTestSupport
 
@@ -20,11 +20,155 @@ private func accepted(_ command: EngineCommandName = .stateGet) -> EngineEvent {
     .accepted(EngineAcceptedPayload(command: command))
 }
 
-private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWriteFailure? {
-    for await event in transport.events {
-        if case let .writeFailed(failure) = event { return failure }
+private final class ReliableWaitObservation: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var count = 0
+
+    func record() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+        changes.signal()
     }
-    return nil
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
+private final class ManualWriteDeadlineClock: EngineWriteDeadlineClock, @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var time: UInt64 = 0
+    private var lastObservedTime: UInt64 = 0
+
+    func now() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return time
+    }
+
+    func wait(on condition: NSCondition, remainingNanoseconds: UInt64) {
+        lock.lock()
+        lastObservedTime = time
+        lock.unlock()
+        changes.signal()
+        condition.wait()
+    }
+
+    func advance(by nanoseconds: UInt64) {
+        lock.lock()
+        time &+= nanoseconds
+        lock.unlock()
+    }
+
+    var observedTime: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastObservedTime
+    }
+}
+
+private final class WriteFailureObservation: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var observedFailure: EngineWriteFailure?
+
+    func record(_ failure: EngineWriteFailure) {
+        lock.lock()
+        observedFailure = failure
+        lock.unlock()
+        changes.signal()
+    }
+
+    var value: EngineWriteFailure? {
+        lock.lock()
+        defer { lock.unlock() }
+        return observedFailure
+    }
+}
+
+private final class SteppedSink: EngineByteSink, @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let condition = NSCondition()
+    private var storage = Data()
+    private var entered = 0
+    private var permits = 0
+    private var cancelled = false
+    private var isClosed = false
+
+    func write(_ bytes: UnsafeRawBufferPointer) throws -> Int {
+        condition.lock()
+        entered += 1
+        condition.broadcast()
+        condition.unlock()
+        changes.signal()
+
+        condition.lock()
+        while permits == 0 && !cancelled && !isClosed {
+            condition.wait()
+        }
+        guard !cancelled && !isClosed else {
+            condition.unlock()
+            throw EngineSinkError.cancelled
+        }
+        permits -= 1
+        let count = min(bytes.count, 8)
+        storage.append(contentsOf: UnsafeRawBufferPointer(rebasing: bytes[..<count]))
+        condition.unlock()
+        changes.signal()
+        return count
+    }
+
+    func permitOneWrite() {
+        condition.lock()
+        permits += 1
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func cancelBlockedWrite() {
+        condition.lock()
+        cancelled = true
+        condition.broadcast()
+        condition.unlock()
+        changes.signal()
+    }
+
+    func close() {
+        condition.lock()
+        isClosed = true
+        condition.broadcast()
+        condition.unlock()
+        changes.signal()
+    }
+
+    var received: Data {
+        condition.lock()
+        defer { condition.unlock() }
+        return storage
+    }
+
+    var enteredWrites: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return entered
+    }
+
+    var cancelCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return cancelled ? 1 : 0
+    }
+
+    var closed: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return isClosed
+    }
 }
 
 @Suite(.timeLimit(.minutes(10))) struct EngineTransportOutputTests {
@@ -138,7 +282,14 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
             let sink = ScriptedSink()
-            let transport = makeUnstartedTransport(sink, limits: testLimits(maxRecords: 6, reservedRecords: 2))
+            let reliableWaits = ReliableWaitObservation()
+            let transport = EngineTransport(
+                source: ScriptedSource(),
+                sink: sink,
+                limits: testLimits(maxRecords: 6, reservedRecords: 2),
+                deadlineClock: LiveEngineWriteDeadlineClock(),
+                onReliableWait: { reliableWaits.record() }
+            )
             defer { transport.close() }
             let successfulSends = SuccessfulSendCount()
             let sender = Task(executorPreference: executor) {
@@ -147,8 +298,7 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
                     successfulSends.increment()
                 }
             }
-            try await successfulSends.changes.wait("six reliable sends to fill the queue") { successfulSends.value == 6 }
-            try await Task.sleep(nanoseconds: 20_000_000)
+            try await reliableWaits.changes.wait("a reliable sender waiting on the full queue") { reliableWaits.value > 0 }
             #expect(successfulSends.value == 6)
             #expect(sink.received.isEmpty)
             transport.start()
@@ -159,13 +309,36 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
         }
     }
 
-    @Test func aBlockedWriteFailsAfterTheDeadlineAndCancelsTheSink() async throws {
-        let sink = ScriptedSink(blocked: true)
-        let transport = makeTransport(sink, limits: testLimits(deadline: 0.2))
-        defer { transport.close() }
+    @Test func aBlockedWriteFailsAtTheLogicalDeadlineAndCancelsTheSink() async throws {
+        let sink = SteppedSink()
+        let clock = ManualWriteDeadlineClock()
+        let transport = EngineTransport(
+            source: ScriptedSource(),
+            sink: sink,
+            limits: testLimits(deadline: 0.4),
+            deadlineClock: clock,
+            onReliableWait: {}
+        )
+        let failure = WriteFailureObservation()
+        let failureObserver = Task {
+            for await event in transport.events {
+                if case let .writeFailed(reason) = event {
+                    failure.record(reason)
+                    return
+                }
+            }
+        }
+        defer {
+            transport.close()
+            failureObserver.cancel()
+        }
+        transport.start()
         try await transport.send(accepted(), requestID: EngineID(1))
-        #expect(await firstWriteFailure(transport) == .deadlineExceeded)
-        #expect(sink.cancelCount >= 1)
+        try await sink.changes.wait("the blocked sink write to enter") { sink.enteredWrites == 1 }
+        transport.advanceWriteDeadlineClock { clock.advance(by: 400_000_000) }
+        try await failure.changes.wait("the logical write deadline to fail") { failure.value != nil }
+        #expect(failure.value == .deadlineExceeded)
+        #expect(sink.cancelCount == 1)
         #expect(sink.closed)
         await #expect(throws: EngineTransportError.writeFailed(.deadlineExceeded)) {
             try await transport.send(accepted(), requestID: EngineID(2))
@@ -173,12 +346,44 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
     }
 
     @Test func progressInsideAWriteResetsTheDeadline() async throws {
-        let sink = ScriptedSink(acceptPerCall: 8, delayPerCall: 0.05)
-        let transport = makeTransport(sink, limits: testLimits(deadline: 0.4))
+        let sink = SteppedSink()
+        let clock = ManualWriteDeadlineClock()
+        let deadline: UInt64 = 400_000_000
+        let step: UInt64 = 100_000_000
+        let transport = EngineTransport(
+            source: ScriptedSource(),
+            sink: sink,
+            limits: testLimits(deadline: 0.4),
+            deadlineClock: clock,
+            onReliableWait: {}
+        )
         defer { transport.close() }
+        transport.start()
         try await transport.send(accepted(), requestID: EngineID(1))
+
+        let expectedRecord = try EngineCodec.encodeOutput(
+            EngineOutput(version: 1, sequence: EngineID(1), requestID: EngineID(1), event: accepted())
+        )
+        try await sink.changes.wait("the first stepped write to enter") { sink.enteredWrites == 1 }
+
+        var targetTime: UInt64 = 0
+        var currentWrite = 1
+        while sink.received.count < expectedRecord.count {
+            targetTime += step
+            transport.advanceWriteDeadlineClock { clock.advance(by: step) }
+            try await clock.changes.wait("the watchdog to observe logical time \(targetTime)") {
+                clock.observedTime >= targetTime
+            }
+            sink.permitOneWrite()
+            try await sink.changes.wait("the next stepped write or complete record") {
+                sink.enteredWrites > currentWrite || sink.received.count == expectedRecord.count
+            }
+            currentWrite += 1
+        }
+
         await transport.drain()
-        #expect(try sink.outputs().count == 1)
+        #expect(targetTime > deadline)
+        #expect(try ScriptedSink.decodeOutputs(sink.received).count == 1)
         #expect(!sink.closed)
     }
 
@@ -186,9 +391,22 @@ private func firstWriteFailure(_ transport: EngineTransport) async -> EngineWrit
         let sink = ScriptedSink()
         sink.failNextWrites(with: .brokenPipe)
         let transport = makeTransport(sink)
-        defer { transport.close() }
+        let failure = WriteFailureObservation()
+        let failureObserver = Task {
+            for await event in transport.events {
+                if case let .writeFailed(reason) = event {
+                    failure.record(reason)
+                    return
+                }
+            }
+        }
+        defer {
+            transport.close()
+            failureObserver.cancel()
+        }
         try await transport.send(accepted(), requestID: EngineID(1))
-        #expect(await firstWriteFailure(transport) == .brokenPipe)
+        try await failure.changes.wait("the broken pipe failure") { failure.value != nil }
+        #expect(failure.value == .brokenPipe)
         #expect(sink.closed)
     }
 

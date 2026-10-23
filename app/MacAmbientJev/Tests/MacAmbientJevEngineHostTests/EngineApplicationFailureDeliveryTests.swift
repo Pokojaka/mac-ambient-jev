@@ -139,6 +139,8 @@ extension EngineApplicationCore {
 
         _ = try await fixture.app.handlers.state.hello()
         fixture.app.handlers.state.helloDidComplete()
+        let changes = ChangeSignal()
+        fixture.app.core.onBackgroundEventStateChange = { changes.signal() }
 
         for index in 0..<2_000 {
             fixture.app.core.report(reportableFailure("background failure \(index)"))
@@ -147,7 +149,7 @@ extension EngineApplicationCore {
         #expect(fixture.app.core.pendingFailureEvents.count <= EngineApplicationCore.failureLimit)
         #expect(fixture.app.core.failureEventTask != nil)
 
-        try await waitForMainActorState("the single failure worker to fill the transport queue") {
+        try await changes.wait("the single failure worker to fill the transport queue") {
             fixture.app.core.inFlightFailureEvent?.message == "background failure 1987"
                 && fixture.app.core.pendingFailureEvents.count == 12
         }
@@ -160,7 +162,7 @@ extension EngineApplicationCore {
             defer { shutdownReturned.set(true) }
             try await fixture.app.core.shutdown(reason: .requested)
         }
-        try await waitForMainActorState("shutdown to close background events") { fixture.app.core.eventsClosed }
+        try await changes.wait("shutdown to close background events") { fixture.app.core.eventsClosed }
         #expect(fixture.app.core.pendingFailureEvents.isEmpty)
         #expect(fixture.app.core.inFlightFailureEvent?.message == "background failure 1987")
         #expect(fixture.app.core.failureEventTask != nil)
