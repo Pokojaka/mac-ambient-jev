@@ -95,7 +95,7 @@ private enum CompactionCancellationProbeError: Error {
 
 private func waitForSignal(_ semaphore: DispatchSemaphore) async -> Bool {
     await withCheckedContinuation { continuation in
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             continuation.resume(returning: semaphore.wait(timeout: .now() + .seconds(180)) == .success)
         }
     }
@@ -109,6 +109,24 @@ private final class SessionProcessingAudioTestExecutor: TaskExecutor, @unchecked
         queue.async {
             job.runSynchronously(on: self.asUnownedTaskExecutor())
         }
+    }
+}
+
+private final class CompactionExecutorProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedExecutor: UnownedTaskExecutor?
+
+    func recordCurrentExecutor() {
+        let executor = withUnsafeCurrentTask { $0?.unownedTaskExecutor }
+        lock.lock()
+        defer { lock.unlock() }
+        recordedExecutor = executor
+    }
+
+    var executor: UnownedTaskExecutor? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedExecutor
     }
 }
 
@@ -409,6 +427,23 @@ struct SessionProcessingAudioTests {
         let cafReader = try CanonicalCAFReader(url: layout.diarizationInputURL, sessionURL: layout.sessionURL)
         #expect(cafReader.sampleCount == Int64(samples.count))
         #expect(try cafReader.readSamples(frames: 0..<Int64(samples.count)) == expectedSamples)
+    }
+
+    @Test
+    func compactRecordingUsesDedicatedBlockingIOExecutor() async throws {
+        let layout = try makeManualLayout()
+        defer { cleanUp(layout) }
+        let probe = CompactionExecutorProbe()
+        let audio = SessionProcessingAudio(
+            timelineBuilder: TestTimelineBuilder(samples: [], behavior: .valid),
+            compactionOperation: { _ in probe.recordCurrentExecutor() }
+        )
+
+        try await audio.compactRecording(layout: layout)
+
+        let observed: UnownedTaskExecutor? = probe.executor
+        let expected: UnownedTaskExecutor = BlockingIOExecutor.shared.asUnownedTaskExecutor()
+        #expect(observed == expected, "blocking compaction must run on the dedicated I/O executor, not the cooperative pool")
     }
 
     @Test

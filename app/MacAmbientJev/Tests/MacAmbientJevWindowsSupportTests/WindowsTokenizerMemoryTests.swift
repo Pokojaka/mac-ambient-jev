@@ -5,29 +5,32 @@ import WinSDK
 @testable import MacAmbientJevCore
 
 struct WindowsTokenizerMemoryTests {
-    @Test func maximumVocabularyParsingDoesNotRetainPerValueErrors() throws {
-        switch ProcessInfo.processInfo.environment["MJA_TOKENIZER_MEMORY_CHILD"] {
-        case nil:
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-            process.arguments = [
-                "--testing-library", "swift-testing",
-                "--filter", "MacAmbientJevWindowsSupportTests.WindowsTokenizerMemoryTests/maximumVocabularyParsingDoesNotRetainPerValueErrors"
-            ]
-            var environment = ProcessInfo.processInfo.environment
-            environment["MJA_TOKENIZER_MEMORY_CHILD"] = "1"
-            process.environment = environment
-            try process.run()
-            process.waitUntilExit()
-            #expect(process.terminationStatus == 0)
-        case "1":
-            try runMaximumVocabularyMemoryProbe()
-        case let marker?:
-            throw NSError(
-                domain: "WindowsTokenizerMemoryTests",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Unexpected MJA_TOKENIZER_MEMORY_CHILD value: \(marker)"]
-            )
+    // Keep the parent process's blocking subprocess wait off the cooperative executor.
+    @Test func maximumVocabularyParsingDoesNotRetainPerValueErrors() async throws {
+        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            switch ProcessInfo.processInfo.environment["MJA_TOKENIZER_MEMORY_CHILD"] {
+            case nil:
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+                process.arguments = [
+                    "--testing-library", "swift-testing",
+                    "--filter", "MacAmbientJevWindowsSupportTests.WindowsTokenizerMemoryTests/maximumVocabularyParsingDoesNotRetainPerValueErrors"
+                ]
+                var environment = ProcessInfo.processInfo.environment
+                environment["MJA_TOKENIZER_MEMORY_CHILD"] = "1"
+                process.environment = environment
+                try process.run()
+                process.waitUntilExit()
+                #expect(process.terminationStatus == 0)
+            case "1":
+                try runMaximumVocabularyMemoryProbe()
+            case let marker?:
+                throw NSError(
+                    domain: "WindowsTokenizerMemoryTests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unexpected MJA_TOKENIZER_MEMORY_CHILD value: \(marker)"]
+                )
+            }
         }
     }
 }

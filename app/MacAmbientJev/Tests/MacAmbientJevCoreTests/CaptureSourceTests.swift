@@ -48,24 +48,26 @@ func sessionManifestRequiresTheFieldsOfItsSourceKind(_ sourceFields: String) {
 
 #if !os(Windows)
 @Test
-func appBundleRecipeEmitsJapaneseSystemAudioPermission() throws {
-    let repository = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let recipe = repository.appending(path: "scripts/build_app.sh")
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/bash")
-    process.arguments = [recipe.path, "--print-info-plist"]
-    let output = Pipe()
-    process.standardOutput = output
-    try process.run()
-    let data = output.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    #expect(process.terminationStatus == 0)
-    let plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
-    let description = try #require(plist["NSAudioCaptureUsageDescription"] as? String)
-    #expect(description.contains("システム音声"))
-    #expect(description.contains("文字起こし"))
+func appBundleRecipeEmitsJapaneseSystemAudioPermission() async throws {
+    try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let recipe = repository.appending(path: "scripts/build_app.sh")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [recipe.path, "--print-info-plist"]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        let plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let description = try #require(plist["NSAudioCaptureUsageDescription"] as? String)
+        #expect(description.contains("システム音声"))
+        #expect(description.contains("文字起こし"))
+    }
 }
 #endif

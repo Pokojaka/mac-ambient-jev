@@ -16,13 +16,32 @@ swift test --package-path app/MacAmbientJev --filter 'MacAmbientJevEngineProtoco
 
 この focused command は macOS での手動確認用です。`EngineTransportPipeTests.swift` は POSIX pipe integration test で `#if !os(Windows)` により Windows では除外されます。Windows で fake source / sink tests が通ることを POSIX pipe integration の実行と取り違えません。
 
+### Blocking I/O と cooperative pool の回帰検証
+
+macOS で cooperative pool の strict 検査を有効にして EngineHost と Pipeline の compaction regression を実行し、[Apple が説明する cooperative executor の forward progress](https://developer.apple.com/videos/play/wwdc2021/10254/) に関わる回帰を確認します。
+
+```bash
+LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --package-path app/MacAmbientJev --filter 'MacAmbientJevEngineHostTests|SessionProcessingAudioTests'
+```
+
+[`SessionProcessingAudioTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionProcessingAudioTests.swift) の `compactRecordingUsesDedicatedBlockingIOExecutor` は、同期 compaction I/O callback 内で UnsafeCurrentTask.unownedTaskExecutor を観測し、`BlockingIOExecutor.shared.asUnownedTaskExecutor()` と一致することを検証します（shared executor は assertion まで生存します）。この決定的な placement assertion は、plain Task.detached が default pool に戻る regression を、無関係な work が wall-clock budget 内に schedule されることを要求せずに検出します。heartbeat、gate、deadline は使いません。親 task の cancellation forwarding は既存の cancellation / boundary cases で別に検証します。
+
+Windows の few-core run では、必須 asset setup を保つため同じ PowerShell process で affinity を設定してから既存 runner を実行します。Windows の process affinity は子 process に継承されます（[Microsoft process affinity inheritance](https://learn.microsoft.com/en-us/windows/win32/procthread/inheritance)）。
+
+```powershell
+[Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity = [IntPtr]3
+./scripts/test-windows.ps1
+```
+
+`swift test --parallel --num-workers 2` だけでは processor affinity は保証されません。
+
 `MacAmbientJevEngine` executable product は Windows 専用で、Linux に engine executable product はありません。Windows runner は package build に加えて `--product MacAmbientJevEngine` を明示して build します。package / product build と portable unit tests は engine process を実行せず、process acceptance を確立しません。
 
 | OS / 手順 | 現行 build / test 範囲 |
 | --- | --- |
 | macOS | `MacAmbientJevEngineProtocol` / `MacAmbientJevEngineHost` の portable tests を実行できます。上の focused command はこの手動確認用です。通常の macOS 検証は後述の AGENTS 指定コマンドを変更せず実行します。 |
 | Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) は fetch / check の後、manifest dump と unfiltered build / test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と `MacAmbientJevEngine` product は Linux target ではありません。通常の Linux CI fast job は同じ fetch/check 後に直接 package build / test を実行し、`linux-model-e2e` job の範囲は変わりません。 |
-| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は EngineProtocol / EngineHost / WindowsSupport / PortableRuntime 等を build し、`MacAmbientJevEngine` product も明示 build します。native injected C tests の後、Swift tests は以下の2 passで実行し、Windows で適用される全 suite（新しい portable fast suites を含む）を各1回実行します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意します。 |
+| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は EngineProtocol / EngineHost / WindowsSupport / PortableRuntime 等を build し、`MacAmbientJevEngine` product も明示 build します。native injected C tests の後、Windows で適用される全 Swift test suite（新しい portable fast suites を含む）を unfiltered な1回の `swift test` で実行します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意します。 |
 
 Windows runner の Swift test command は次のとおりです。
 
@@ -83,7 +102,7 @@ swift test --package-path app/MacAmbientJev --filter MacAmbientJevPipelineTests
 
 テストに付ける `timeLimit` は hang guard としてのみ使い、値はすべて10分です。Swift Testing は全テストを並列に開始するため、各テストの経過時間には suite 全体の待ち時間が含まれ、負荷の高い CI ランナーでは2分を超えます。上限は suite 全体の実行時間より長くし、意味上の条件や実行時間予算には使いません。
 
-Windows の [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は同じ Pipeline test target を EngineHost を除く2番目の pass で実行します。これらは portable な調整・状態ロジックの検証です。WindowsSupport の capture unit tests と native injected C test は別に実行しますが、実 audio hardware を使う検証ではありません。
+Windows の [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は unfiltered な `swift test --package-path app/MacAmbientJev` を1回実行し、Windows で適用される Pipeline を含む全 test target を一度ずつ検証します。これらは portable な調整・状態ロジックの検証です。WindowsSupport の capture unit tests と native injected C test は別に実行しますが、実 audio hardware を使う検証ではありません。
 
 [CaptureSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/CaptureSafetyTests.swift) は startup/stall/silence、disk threshold と error rules、oversized mono buffer を検証します。[TimestampedMonoSinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/TimestampedMonoSinkTests.swift) は raw-meter の 100ms windows、channels 間の clipping、gaps/reset、metering 前後で audio が変わらないことを検証します。AudioCaptureEngine/CoreMedia/IOKit との実 integration は macOS 専用 AppTests（[AudioCaptureEngineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/AudioCaptureEngineTests.swift)、[CaptureSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/CaptureSafetyTests.swift)）で扱います。
 

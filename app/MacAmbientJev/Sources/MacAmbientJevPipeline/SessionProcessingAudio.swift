@@ -48,7 +48,8 @@ public struct SessionProcessingAudio: SessionProcessingAudioHandling {
     public func compactRecording(layout: SessionLayout) async throws {
         try Task.checkCancellation()
         let compactionOperation = self.compactionOperation
-        let task = Task.detached {
+        // Detached does not move blocking file work off the cooperative pool; use a dedicated executor.
+        let task = Task.detached(executorPreference: BlockingIOExecutor.shared) {
             try compactionOperation(layout)
         }
         try await withTaskCancellationHandler(

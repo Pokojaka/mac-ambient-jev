@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MacAmbientJevCore
 @testable import MacAmbientJevEngineHost
 
 private final class GatedDiagnosticSink: EngineByteSink, @unchecked Sendable {
@@ -106,101 +107,113 @@ private final class CompletionLatch: @unchecked Sendable {
     }
 }
 
+// Condition waits and diagnostic closes run on dedicated threads, not Swift cooperative workers;
+// async callers suspend through executor machinery.
 @Suite struct EngineDiagnosticWriterTests {
-    @Test func blockedSinkDoesNotBlockProducerAndReportsExactOverflowBeforeRecords() {
-        let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: Int.max)
-        let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 7, maxBytes: 14, maxRecordBytes: 64)
-        writer.write("seed")
-        #expect(sink.waitForWrite())
+    @Test func blockedSinkDoesNotBlockProducerAndReportsExactOverflowBeforeRecords() async {
+        await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: Int.max)
+            let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 7, maxBytes: 14, maxRecordBytes: 64)
+            writer.write("seed")
+            #expect(sink.waitForWrite())
 
-        let completed = CompletionLatch()
-        Thread.detachNewThread {
-            for _ in 0..<10_000 { writer.write("x") }
-            completed.signal()
+            let completed = CompletionLatch()
+            Thread.detachNewThread {
+                for _ in 0..<10_000 { writer.write("x") }
+                completed.signal()
+            }
+            #expect(completed.wait(timeout: 2), "producer must finish while the sink remains blocked")
+
+            let beforeRelease = writer.snapshot
+            #expect(beforeRelease.queuedRecords == 7)
+            #expect(beforeRelease.queuedBytes == 14)
+            #expect(beforeRelease.droppedRecords == 9_993)
+            #expect(beforeRelease.droppedBytes == 19_986)
+
+            sink.release()
+            writer.close(timeout: 3)
+            let output = String(decoding: sink.received, as: UTF8.self)
+            #expect(output.hasPrefix("seed\nengine diagnostics overflow: dropped_records=9993 dropped_bytes=19986\n"))
+            #expect(output.hasSuffix(String(repeating: "x\n", count: 7)))
+            #expect(sink.isClosed)
         }
-        #expect(completed.wait(timeout: 2), "producer must finish while the sink remains blocked")
-
-        let beforeRelease = writer.snapshot
-        #expect(beforeRelease.queuedRecords == 7)
-        #expect(beforeRelease.queuedBytes == 14)
-        #expect(beforeRelease.droppedRecords == 9_993)
-        #expect(beforeRelease.droppedBytes == 19_986)
-
-        sink.release()
-        writer.close(timeout: 3)
-        let output = String(decoding: sink.received, as: UTF8.self)
-        #expect(output.hasPrefix("seed\nengine diagnostics overflow: dropped_records=9993 dropped_bytes=19986\n"))
-        #expect(output.hasSuffix(String(repeating: "x\n", count: 7)))
-        #expect(sink.isClosed)
     }
 
-    @Test func oversizedMessagesAreCountedWithoutTruncationAndPartialWritesComplete() {
-        let sink = GatedDiagnosticSink(blocked: false, maxBytesPerWrite: 1)
-        let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 4, maxBytes: 128, maxRecordBytes: 8)
-        writer.write(String(repeating: "é", count: 20))
-        writer.write("ok")
-        writer.close(timeout: 3)
+    @Test func oversizedMessagesAreCountedWithoutTruncationAndPartialWritesComplete() async {
+        await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            let sink = GatedDiagnosticSink(blocked: false, maxBytesPerWrite: 1)
+            let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 4, maxBytes: 128, maxRecordBytes: 8)
+            writer.write(String(repeating: "é", count: 20))
+            writer.write("ok")
+            writer.close(timeout: 3)
 
-        let expected = "engine diagnostics overflow: dropped_records=1 dropped_bytes=41\nok\n"
-        #expect(String(decoding: sink.received, as: UTF8.self) == expected)
-        #expect(writer.snapshot.droppedRecords == 1)
-        #expect(writer.snapshot.droppedBytes == 41)
+            let expected = "engine diagnostics overflow: dropped_records=1 dropped_bytes=41\nok\n"
+            #expect(String(decoding: sink.received, as: UTF8.self) == expected)
+            #expect(writer.snapshot.droppedRecords == 1)
+            #expect(writer.snapshot.droppedBytes == 41)
+        }
     }
 
-    @Test func maxRecordBytesIncludesTheLineFeed() {
-        let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: Int.max)
-        let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 4, maxBytes: 32, maxRecordBytes: 4)
-        writer.write("a")
-        #expect(sink.waitForWrite())
-        writer.write("abc")
-        writer.write("abcd")
-        sink.release()
-        writer.close(timeout: 3)
+    @Test func maxRecordBytesIncludesTheLineFeed() async {
+        await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: Int.max)
+            let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 4, maxBytes: 32, maxRecordBytes: 4)
+            writer.write("a")
+            #expect(sink.waitForWrite())
+            writer.write("abc")
+            writer.write("abcd")
+            sink.release()
+            writer.close(timeout: 3)
 
-        let expected = "a\nengine diagnostics overflow: dropped_records=1 dropped_bytes=5\nabc\n"
-        #expect(String(decoding: sink.received, as: UTF8.self) == expected)
-        #expect(writer.snapshot.droppedRecords == 1)
-        #expect(writer.snapshot.droppedBytes == 5)
+            let expected = "a\nengine diagnostics overflow: dropped_records=1 dropped_bytes=5\nabc\n"
+            #expect(String(decoding: sink.received, as: UTF8.self) == expected)
+            #expect(writer.snapshot.droppedRecords == 1)
+            #expect(writer.snapshot.droppedBytes == 5)
+        }
     }
 
-    @Test func zeroProgressSinkStopsAndAccountsForQueuedRecords() {
-        let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: 0)
-        let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 3, maxBytes: 32, maxRecordBytes: 16)
-        writer.write("first")
-        #expect(sink.waitForWrite())
-        writer.write("x")
-        writer.write("yz")
+    @Test func zeroProgressSinkStopsAndAccountsForQueuedRecords() async {
+        await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: 0)
+            let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 3, maxBytes: 32, maxRecordBytes: 16)
+            writer.write("first")
+            #expect(sink.waitForWrite())
+            writer.write("x")
+            writer.write("yz")
 
-        sink.release()
-        writer.close(timeout: 3)
+            sink.release()
+            writer.close(timeout: 3)
 
-        let snapshot = writer.snapshot
-        #expect(snapshot.queuedRecords == 0)
-        #expect(snapshot.queuedBytes == 0)
-        #expect(snapshot.droppedRecords == 3)
-        #expect(snapshot.droppedBytes == 11)
-        #expect(sink.received.isEmpty)
-        #expect(sink.isClosed)
+            let snapshot = writer.snapshot
+            #expect(snapshot.queuedRecords == 0)
+            #expect(snapshot.queuedBytes == 0)
+            #expect(snapshot.droppedRecords == 3)
+            #expect(snapshot.droppedBytes == 11)
+            #expect(sink.received.isEmpty)
+            #expect(sink.isClosed)
+        }
     }
 
-    @Test func closeCancelsAFullBlockedSinkWithinItsDeadline() {
-        let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: Int.max)
-        let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 2, maxBytes: 8, maxRecordBytes: 8)
-        writer.write("busy")
-        #expect(sink.waitForWrite())
-        writer.write("a")
-        writer.write("b")
+    @Test func closeCancelsAFullBlockedSinkWithinItsDeadline() async {
+        await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            let sink = GatedDiagnosticSink(blocked: true, maxBytesPerWrite: Int.max)
+            let writer = EngineDiagnosticWriter(sink: sink, maxRecords: 2, maxBytes: 8, maxRecordBytes: 8)
+            writer.write("busy")
+            #expect(sink.waitForWrite())
+            writer.write("a")
+            writer.write("b")
 
-        let startedAt = Date()
-        writer.close(timeout: 0)
-        let elapsed = Date().timeIntervalSince(startedAt)
+            let startedAt = Date()
+            writer.close(timeout: 0)
+            let elapsed = Date().timeIntervalSince(startedAt)
 
-        #expect(elapsed < 1)
-        #expect(sink.cancelCount == 1)
-        #expect(sink.isClosed)
-        #expect(writer.snapshot.droppedRecords >= 2)
-        #expect(writer.snapshot.droppedBytes >= 4)
-        writer.close(timeout: 1)
-        #expect(sink.cancelCount == 1)
+            #expect(elapsed < 1)
+            #expect(sink.cancelCount == 1)
+            #expect(sink.isClosed)
+            #expect(writer.snapshot.droppedRecords >= 2)
+            #expect(writer.snapshot.droppedBytes >= 4)
+            writer.close(timeout: 1)
+            #expect(sink.cancelCount == 1)
+        }
     }
 }

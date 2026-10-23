@@ -679,11 +679,11 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         defer { try? FileManager.default.removeItem(at: root) }
         let cancelledOutput = root.appending(path: "cancelled.flac")
         let completedOutput = root.appending(path: "completed.flac")
-        let samples = (0..<(3 * 4_096 + 17)).map { index in
+        let samples: [Float] = (0..<(3 * 4_096 + 17)).map { index -> Float in
             Float((index % 101) - 50) / 64
         }
         let cancelledReader = try CancellationOnSecondReadTimelineAudio(samples: samples, cancelsOnSecondRead: true)
-        let cancelledTask = Task.detached {
+        let cancelledTask = Task.detached(executorPreference: BlockingIOExecutor.shared) {
             try RecordingFLAC.write(reader: cancelledReader, to: cancelledOutput, sessionURL: root)
         }
 
@@ -692,12 +692,16 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             Issue.record("FLAC encoding should stop after the reader cancels its task")
         } catch is CancellationError {
         }
-        #expect(cancelledReader.requests.count == 2)
-        #expect(cancelledReader.requests.count < (samples.count + 4_095) / 4_096)
+        let cancelledReadCount: Int = cancelledReader.requests.count
+        let completeReadCount: Int = (samples.count + 4_095) / 4_096
+        #expect(cancelledReadCount == 2)
+        #expect(cancelledReadCount < completeReadCount)
 
-        let completeReader = try CancellationOnSecondReadTimelineAudio(samples: samples, cancelsOnSecondRead: false)
-        try RecordingFLAC.write(reader: completeReader, to: completedOutput, sessionURL: root)
-        let decoded = try FLACTimelineReader(url: completedOutput, info: completeReader.info, sessionURL: root)
-        try decoded.validateAudio(against: completeReader)
+        try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+            let completeReader = try CancellationOnSecondReadTimelineAudio(samples: samples, cancelsOnSecondRead: false)
+            try RecordingFLAC.write(reader: completeReader, to: completedOutput, sessionURL: root)
+            let decoded = try FLACTimelineReader(url: completedOutput, info: completeReader.info, sessionURL: root)
+            try decoded.validateAudio(against: completeReader)
+        }.value
     }
 }

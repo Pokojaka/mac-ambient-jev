@@ -33,24 +33,27 @@ private func setDirectoryWriteDenial(_ directory: URL, deny: Bool) throws {
                                            deny ? "\(account):(WD,AD,WEA,WA)" : account])
 }
 
+// Keep Windows subprocess waits and deferred ACL cleanup off the cooperative executor.
 @Test func windowsReadOnlyBoundaryAllowsReadsAndRejectsWrites() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try SessionWriter(sessionURL: root)
-    try await writer.append(EventDraft(eventType: "test", sessionID: UUID(), payload: "read-only"))
-    let events = root.appending(path: "events.jsonl")
-    let bytes = try SessionFileAccess.read(events, relativeTo: root)
-    try setDirectoryWriteDenial(root, deny: true)
-    defer {
-        do { try setDirectoryWriteDenial(root, deny: false) }
-        catch { Issue.record(error) }
+    try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try SessionWriter(sessionURL: root)
+        try await writer.append(EventDraft(eventType: "test", sessionID: UUID(), payload: "read-only"))
+        let events = root.appending(path: "events.jsonl")
+        let bytes = try SessionFileAccess.read(events, relativeTo: root)
+        try setDirectoryWriteDenial(root, deny: true)
+        defer {
+            do { try setDirectoryWriteDenial(root, deny: false) }
+            catch { Issue.record(error) }
+        }
+        #expect(try SessionFileAccess.read(events, relativeTo: root) == bytes)
+        #expect(try SessionWriter.readDurableLog(eventsURL: events) == bytes)
+        #expect(try SessionFileAccess.fileSize(events, relativeTo: root) == bytes.count)
+        #expect(try SessionFileAccess.contentsOfDirectory(root, relativeTo: root).map(\.lastPathComponent).contains("events.jsonl"))
+        #expect(throws: CocoaError.self) { try SessionFileAccess.writeAtomically(Data(), to: events, relativeTo: root) }
+        #expect(try SessionFileAccess.read(events, relativeTo: root) == bytes)
     }
-    #expect(try SessionFileAccess.read(events, relativeTo: root) == bytes)
-    #expect(try SessionWriter.readDurableLog(eventsURL: events) == bytes)
-    #expect(try SessionFileAccess.fileSize(events, relativeTo: root) == bytes.count)
-    #expect(try SessionFileAccess.contentsOfDirectory(root, relativeTo: root).map(\.lastPathComponent).contains("events.jsonl"))
-    #expect(throws: CocoaError.self) { try SessionFileAccess.writeAtomically(Data(), to: events, relativeTo: root) }
-    #expect(try SessionFileAccess.read(events, relativeTo: root) == bytes)
 }
 
 @Test func windowsLongUnicodeBoundaryRoundTrips() throws {
@@ -99,25 +102,27 @@ private func makeJunction(_ link: URL, to destination: URL) throws {
     try #require(process.terminationStatus == 0)
 }
 
-@Test func windowsJunctionsCannotRedirectSessionOperations() throws {
-    let temporary = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: temporary) }
-    let root = temporary.appending(path: "session")
-    let outside = temporary.appending(path: "outside")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-    let sentinel = outside.appending(path: "sentinel")
-    let bytes = Data("outside".utf8)
-    try bytes.write(to: sentinel)
-    let junction = root.appending(path: "audio")
-    try makeJunction(junction, to: outside)
-    let redirected = junction.appending(path: "sentinel")
-    #expect(throws: CocoaError.self) { _ = try SessionFileAccess.read(redirected, relativeTo: root) }
-    #expect(throws: CocoaError.self) { try SessionFileAccess.writeAtomically(Data(), to: redirected, relativeTo: root) }
-    #expect(throws: CocoaError.self) { _ = try SessionFileAccess.contentsOfDirectory(junction, relativeTo: root) }
-    #expect(throws: CocoaError.self) { try SessionFileAccess.removeIfPresent(junction, relativeTo: root) }
-    #expect(throws: CocoaError.self) { _ = try SessionFileAccess.read(redirected, relativeTo: junction) }
-    #expect(try Data(contentsOf: sentinel) == bytes)
+@Test func windowsJunctionsCannotRedirectSessionOperations() async throws {
+    try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+        let temporary = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let root = temporary.appending(path: "session")
+        let outside = temporary.appending(path: "outside")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sentinel = outside.appending(path: "sentinel")
+        let bytes = Data("outside".utf8)
+        try bytes.write(to: sentinel)
+        let junction = root.appending(path: "audio")
+        try makeJunction(junction, to: outside)
+        let redirected = junction.appending(path: "sentinel")
+        #expect(throws: CocoaError.self) { _ = try SessionFileAccess.read(redirected, relativeTo: root) }
+        #expect(throws: CocoaError.self) { try SessionFileAccess.writeAtomically(Data(), to: redirected, relativeTo: root) }
+        #expect(throws: CocoaError.self) { _ = try SessionFileAccess.contentsOfDirectory(junction, relativeTo: root) }
+        #expect(throws: CocoaError.self) { try SessionFileAccess.removeIfPresent(junction, relativeTo: root) }
+        #expect(throws: CocoaError.self) { _ = try SessionFileAccess.read(redirected, relativeTo: junction) }
+        #expect(try Data(contentsOf: sentinel) == bytes)
+    }
 }
 
 @Test func windowsDefaultPathsUseLocalStorageWithoutMacContainers() throws {

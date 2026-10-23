@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 import CMiniaudio
+import MacAmbientJevCore
 
 private let errorNotFound: Int32 = 1168
 private let errorInvalidParameter: Int32 = 87
@@ -53,39 +54,42 @@ private final class PublisherBox: @unchecked Sendable {
 struct WindowsCaptureEnvironmentTests {
     /// The publisher stores a coherent set (all fields derived from one counter). A reader must
     /// always get a coherent set and never a "retry" error, however the publisher is scheduled.
-    @Test func testSnapshotIsAlwaysCoherentAndNeverRetries() throws {
-        var raw: OpaquePointer?
-        #expect(mja_environment_state_create(&raw) == 0)
-        let state = try #require(raw)
-        defer { mja_environment_state_destroy(state) }
-        mja_environment_state_publish(state, 1, 2, 1, 0)
+    @Test func testSnapshotIsAlwaysCoherentAndNeverRetries() async throws {
+        // Run the stopAndWait join on the dedicated thread executor.
+        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            var raw: OpaquePointer?
+            #expect(mja_environment_state_create(&raw) == 0)
+            let state = try #require(raw)
+            defer { mja_environment_state_destroy(state) }
+            mja_environment_state_publish(state, 1, 2, 1, 0)
 
-        let box = PublisherBox(state: state)
-        let publisher = Thread {
-            defer { box.markFinished() }
-            var value: UInt64 = 2
-            while !box.isStopped {
-                mja_environment_state_publish(box.state, value, value + 1, Int32(value & 1), 0)
-                value += 1
+            let box = PublisherBox(state: state)
+            let publisher = Thread {
+                defer { box.markFinished() }
+                var value: UInt64 = 2
+                while !box.isStopped {
+                    mja_environment_state_publish(box.state, value, value + 1, Int32(value & 1), 0)
+                    value += 1
+                }
             }
-        }
-        publisher.start()
-        // A stop request is not a join; wait for completion before native state is destroyed.
-        defer { box.stopAndWait() }
+            publisher.start()
+            // A stop request is not a join; wait for completion before native state is destroyed.
+            defer { box.stopAndWait() }
 
-        var incoherent = 0
-        var failed = 0
-        for _ in 0..<1_000_000 {
-            var observed: UInt64 = 0
-            var published: UInt64 = 0
-            var outputState: Int32 = 0
-            var error: Int32 = 0
-            mja_environment_state_snapshot(state, &observed, &published, &outputState, &error)
-            if error != 0 { failed += 1 }
-            if published != observed + 1 || outputState != Int32(observed & 1) { incoherent += 1 }
+            var incoherent = 0
+            var failed = 0
+            for _ in 0..<1_000_000 {
+                var observed: UInt64 = 0
+                var published: UInt64 = 0
+                var outputState: Int32 = 0
+                var error: Int32 = 0
+                mja_environment_state_snapshot(state, &observed, &published, &outputState, &error)
+                if error != 0 { failed += 1 }
+                if published != observed + 1 || outputState != Int32(observed & 1) { incoherent += 1 }
+            }
+            #expect(failed == 0)
+            #expect(incoherent == 0)
         }
-        #expect(failed == 0)
-        #expect(incoherent == 0)
     }
 
     @Test func testSnapshotOfMissingStateReportsInvalidParameter() {

@@ -46,11 +46,12 @@ private func lines(_ events: [EngineTransportEvent]) -> [String] {
         source.feed(String(requestLine(3, "state.get").dropFirst(10)))
         source.finish()
         let events = await collect(transport, count: 4)
-        #expect(lines(events) == [
-            String(requestLine(1, "hello").dropLast()),
-            String(requestLine(2, "state.get").dropLast()),
-            String(requestLine(3, "state.get").dropLast()),
-        ])
+        let actualLines: [String] = lines(events)
+        let expectedHello: String = String(requestLine(1, "hello").dropLast())
+        let expectedSecondState: String = String(requestLine(2, "state.get").dropLast())
+        let expectedThirdState: String = String(requestLine(3, "state.get").dropLast())
+        let expectedLines: [String] = [expectedHello, expectedSecondState, expectedThirdState]
+        #expect(actualLines == expectedLines)
         #expect(events.last == .endOfInput)
     }
 

@@ -108,7 +108,7 @@ extension EngineApplicationCore: EngineSessionHandling {
         let importer = RetainedSessionImporter(paths: .trustedApplication(paths))
         let retained: RetainedSession
         do {
-            retained = try await Task.detached { try importer.importRetainedSession(audioURL: audioURL) }.value
+            retained = try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try importer.importRetainedSession(audioURL: audioURL) }.value
         } catch {
             var cleanupErrors: [EngineErrorDetail] = []
             var sessionID: UUID?
@@ -279,7 +279,7 @@ extension EngineApplicationCore: EngineSessionHandling {
             break
         }
         do {
-            let folder = try await Task.detached { try SessionExporter().export(session: session, to: directory) }.value
+            let folder = try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try SessionExporter().export(session: session, to: directory) }.value
             savedSessionOperations.completeExport(sessionID: session.sessionID, folder: folder)
             return folder
         } catch {
