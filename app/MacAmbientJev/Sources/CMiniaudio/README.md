@@ -9,7 +9,7 @@
 
 ## 現在の使用方法
 
-`CMiniaudio.c` は WAV / FLAC / MP3 のデコードと、モノラル float32 PCM のサンプルレート変換を実装します。音声キャプチャ／録音の実装はありません。ビルド時には次の定義を実際に設定しています。
+`CMiniaudio.c` は WAV / FLAC / MP3 のデコードと、モノラル float32 PCM のサンプルレート変換を実装します。Windows の WASAPI キャプチャと native safety は `WindowsCapture.inc` と `WindowsCaptureSafety.c` が提供します（挙動は[録音キャプチャ](../../../../docs/capture.md)を参照）。ビルド時には次の定義を実際に設定しています。
 
 ```c
 #define MINIAUDIO_IMPLEMENTATION
@@ -21,7 +21,7 @@
 #define MA_ATOMIC_MODERN_GCC
 ```
 
-Windows (`_WIN32`) ではさらに `MA_ENABLE_WASAPI` を定義します。これはコンパイル設定であり、ここに音声キャプチャ機能が実装されていることを意味しません。`MA_ATOMIC_MODERN_GCC` は全ビルドで明示し、Clang の `__atomic` 組み込みを使う現在のコンパイラー設定です。同梱の miniaudio 0.11.23 ヘッダーは変更していません。参照: [miniaudio 0.11.23 manual](https://miniaud.io/docs/manual/index.html)。
+Windows (`_WIN32`) ではさらに `MA_ENABLE_WASAPI` を定義します。`MA_ATOMIC_MODERN_GCC` は全ビルドで明示し、Clang の `__atomic` 組み込みを使う現在のコンパイラー設定です。同梱の miniaudio 0.11.23 ヘッダーへの変更は、`ma_device_read__wasapi` の先頭に置いた `MJA_WASAPI_PACKET_READ` の hook だけです（`CMiniaudio.c` が Windows でのみ定義し、定義時は元の読み取りループを `#else` 側に残してコンパイルしません）。hook は `GetBuffer` が返すデバイス位置・QPC・フラグをパケットごとに保持して `WindowsCapture.inc` へ渡すためのもので、upstream への差分はこの 4 行（`#if` / `return` / `#else` / `#endif`）です。参照: [miniaudio 0.11.23 manual](https://miniaud.io/docs/manual/index.html)。
 
 Windows の Swift リサンプラーは、入力が 16,000 Hz なら変換せずに入力をそのまま返します。それ以外のレートでは miniaudio 0.11.23 の公開 `ma_linear_resampler` API と order 8 の Butterworth 低域フィルターを使い、モノラル float32 を 16,000 Hz に変換します。`MA_MAX_FILTER_ORDER` はこの vendored header で 8 です。公開 `ma_linear_resampler_config.lpfNyquistFactor` を `0.95` に設定し、Nyquist 周波数より 5% 手前をカットオフにすることで、通過帯域と阻止帯域の間に遷移マージンを設けます。ソースレートを `r` とすると、フィルターレートは `max(r, 16000)`、カットオフは `min(r, 16000) / 2 × 0.95` です。たとえば 48,000 Hz 入力から 16,000 Hz への変換では、カットオフは 7,600 Hz です。
 

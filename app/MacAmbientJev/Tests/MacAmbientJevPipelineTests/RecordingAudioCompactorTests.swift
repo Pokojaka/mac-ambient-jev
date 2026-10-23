@@ -5,6 +5,10 @@ import Testing
 
 private struct Crash: Error {}
 
+private struct MaintenanceOperationFailure: LocalizedError {
+    var errorDescription: String? { "injected maintenance error" }
+}
+
 private func makeLayout() throws -> SessionLayout {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
@@ -189,6 +193,76 @@ func aCrashAtEveryBoundaryConvergesOnTheNextCompaction(boundary: RecordingAudioC
 
     #expect(info == (try checkpoint.info))
     try expectConverged(layout, info: info, samples: recordedSamples)
+}
+
+@Test
+func cancelledCompactionAtPartialWrittenPreservesPCMAndConvergesLater() async throws {
+    let layout = try makeLayout()
+    defer { cleanUp(layout) }
+    let checkpoint = try await recordPCM(layout)
+
+    let wasCancelled = await Task {
+        do {
+            _ = try RecordingAudioCompactor(interrupt: { boundary in
+                if boundary == .partialWritten {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }).compact(layout: layout)
+            return false
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }.value
+
+    #expect(wasCancelled)
+    #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
+    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL) == checkpoint)
+    #expect(!exists(layout.recordingFLACURL))
+    #expect(exists(layout.recordingFLACPartialURL))
+
+    let info = try freshCompactor.compact(layout: layout)
+
+    #expect(info == (try checkpoint.info))
+    try expectConverged(layout, info: info, samples: recordedSamples)
+}
+
+@Test
+func cancelledCompactionKeepsPreviouslyPublishedFLACAfterValidation() async throws {
+    let layout = try makeLayout()
+    defer { cleanUp(layout) }
+    try await recordPCM(layout)
+    try compactOnce(layout, interruptAt: .published)
+    let publishedFLAC = try Data(contentsOf: layout.recordingFLACURL)
+    #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
+    #expect(throws: CancellationError.self) {
+        try validatePublishedFLACOrRemoveIfInvalid(
+            validation: { throw CancellationError() },
+            removeInvalid: { try FileManager.default.removeItem(at: layout.recordingFLACURL) }
+        )
+    }
+    #expect(try Data(contentsOf: layout.recordingFLACURL) == publishedFLAC)
+
+    let wasCancelled = await Task {
+        do {
+            _ = try RecordingAudioCompactor(interrupt: { boundary in
+                if boundary == .stateSaved {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }).compact(layout: layout)
+            return false
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }.value
+
+    #expect(wasCancelled)
+    #expect(try Data(contentsOf: layout.recordingFLACURL) == publishedFLAC)
+    #expect(try SessionAudioStorageStore(layout: layout).load() != .recordingPCM)
+    #expect(exists(layout.processingDirectory))
 }
 
 @Test
@@ -401,6 +475,186 @@ func theMaintainerCompactsARecordingAndRemovesItsTransients() async throws {
 
     #expect(!exists(layout.derivedDirectory))
     try expectConverged(layout, info: try TimelineAudioInfo(committedFrames: Int64(recordedSamples.count), gapEvents: []), samples: recordedSamples)
+}
+
+@Test
+func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncompleted() async throws {
+    let first = try makeLayout()
+    let second = try makeLayout()
+    defer {
+        cleanUp(first)
+        cleanUp(second)
+    }
+    try await recordPCM(first)
+    for layout in [first, second] {
+        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
+        try Data(count: 1).write(to: layout.diarizationInputURL)
+        try Data(count: 1).write(to: layout.recordingFLACPartialURL)
+    }
+    let firstManifest = try first.loadManifest()
+    let secondManifest = try second.loadManifest()
+    let items = [
+        SessionMaintenanceCandidate(
+            sessionID: firstManifest.sessionID, sessionURL: first.sessionURL, maintenance: .compactRecording
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: secondManifest.sessionID, sessionURL: second.sessionURL, maintenance: .removeTransients
+        ),
+    ]
+    let directRunWasCancelled = await Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        do {
+            try SessionStorageMaintainer.run(.removeTransients, layout: second, manifest: secondManifest)
+            return false
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }.value
+    #expect(directRunWasCancelled)
+    #expect(exists(second.derivedDirectory))
+
+    let failures = await Task {
+        await SessionStorageMaintainer.maintain(items) { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+    }.value
+
+    #expect(Set(failures.keys) == Set(items.map(\.sessionID)))
+    for item in items {
+        #expect(failures[item.sessionID] == .interruptedByShutdown(
+            "\(item.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+        ))
+    }
+    let recoveryCandidates = items.map { item in
+        RecoverableSession(
+            manifest: SessionManifest(
+                sessionID: item.sessionID,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                source: .recording(.microphone)
+            ),
+            sessionURL: item.sessionURL,
+            action: .finalize
+        )
+    }
+    let requests = await MainActor.run {
+        SessionProcessingCoordinator.recoveryRequests(
+            candidates: recoveryCandidates,
+            recordingSessionID: nil,
+            maintenanceFailures: failures,
+            pending: []
+        )
+    }
+    #expect(requests.isEmpty)
+    #expect(try SessionAudioStorageStore(layout: first).load() == .recordingPCM)
+    #expect(try SessionAudioStorageStore(layout: second).load() == .recordingPCM)
+    #expect(exists(first.processingDirectory))
+    #expect(exists(first.derivedDirectory))
+    #expect(exists(first.recordingFLACPartialURL))
+    #expect(exists(second.derivedDirectory))
+    #expect(exists(second.recordingFLACPartialURL))
+}
+
+@Test
+func maintenanceCancellationDuringCandidateReportsCurrentAndRemainingButNotCompleted() async throws {
+    let completed = try makeLayout()
+    let interrupted = try makeLayout()
+    let skipped = try makeLayout()
+    defer {
+        cleanUp(completed)
+        cleanUp(interrupted)
+        cleanUp(skipped)
+    }
+    for layout in [completed, skipped] {
+        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
+        try Data(count: 1).write(to: layout.diarizationInputURL)
+        try Data(count: 1).write(to: layout.recordingFLACPartialURL)
+    }
+    let completedManifest = try completed.loadManifest()
+    let interruptedManifest = try interrupted.loadManifest()
+    let skippedManifest = try skipped.loadManifest()
+    let items = [
+        SessionMaintenanceCandidate(
+            sessionID: completedManifest.sessionID, sessionURL: completed.sessionURL, maintenance: .removeTransients
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: interruptedManifest.sessionID, sessionURL: interrupted.sessionURL, maintenance: .compactRecording
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: skippedManifest.sessionID, sessionURL: skipped.sessionURL, maintenance: .removeTransients
+        ),
+    ]
+
+    let failures = await Task {
+        await SessionStorageMaintainer.maintain(items, willMaintain: { _ in }, perform: { item in
+            if item.sessionID == completedManifest.sessionID {
+                let layout = SessionLayout(sessionURL: item.sessionURL)
+                try SessionStorageMaintainer.run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
+                return
+            }
+            if item.sessionID == interruptedManifest.sessionID {
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CancellationError()
+            }
+            Issue.record("Skipped candidate operation should never run")
+            throw Crash()
+        })
+    }.value
+
+    #expect(Set(failures.keys) == Set([interruptedManifest.sessionID, skippedManifest.sessionID]))
+    #expect(failures[completedManifest.sessionID] == nil)
+    for item in items.dropFirst() {
+        #expect(failures[item.sessionID] == .interruptedByShutdown(
+            "\(item.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+        ))
+    }
+    for layout in [completed, interrupted, skipped] {
+        #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
+    }
+    #expect(!exists(completed.derivedDirectory))
+    #expect(!exists(completed.recordingFLACPartialURL))
+    #expect(exists(skipped.derivedDirectory))
+    #expect(exists(skipped.recordingFLACPartialURL))
+}
+
+@Test
+func aRealMaintenanceErrorIsPreservedWhenCancellationAlsoOccurs() async throws {
+    let failed = try makeLayout()
+    let unstarted = try makeLayout()
+    defer {
+        cleanUp(failed)
+        cleanUp(unstarted)
+    }
+    let failedManifest = try failed.loadManifest()
+    let unstartedManifest = try unstarted.loadManifest()
+    let items = [
+        SessionMaintenanceCandidate(
+            sessionID: failedManifest.sessionID, sessionURL: failed.sessionURL, maintenance: .removeTransients
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: unstartedManifest.sessionID, sessionURL: unstarted.sessionURL, maintenance: .removeTransients
+        ),
+    ]
+
+    let failures = await Task {
+        await SessionStorageMaintainer.maintain(items, willMaintain: { _ in }, perform: { item in
+            if item.sessionID == failedManifest.sessionID {
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw MaintenanceOperationFailure()
+            }
+            Issue.record("Unstarted candidate operation should never run")
+            throw Crash()
+        })
+    }.value
+
+    #expect(failures[failedManifest.sessionID] == .failed(
+        "\(failed.sessionURL.lastPathComponent): injected maintenance error"
+    ))
+    #expect(failures[unstartedManifest.sessionID] == .interruptedByShutdown(
+        "\(unstarted.sessionURL.lastPathComponent): 終了処理のため保存整理を中断しました。次回起動時に再実行します"
+    ))
+    #expect(Set(failures.keys) == Set([failedManifest.sessionID, unstartedManifest.sessionID]))
 }
 
 @Test

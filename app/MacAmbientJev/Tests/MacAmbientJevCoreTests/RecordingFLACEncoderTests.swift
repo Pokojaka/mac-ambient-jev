@@ -205,55 +205,57 @@ private struct RecordingFLACFixture {
 }
 
 @Test(.enabled(if: flacExecutable != nil, "PATH に flac が見つからないためスキップします"))
-func flacCLIValidatesFramesAndRoundTripsPCM() throws {
-    guard let executable = flacExecutable else {
-        throw FLACProcessFailure(arguments: [], status: -1, output: "有効化されたテストで PATH に flac が見つかりません")
-    }
-    let fixture = try RecordingFLACFixture()
-    defer { fixture.cleanup() }
+func flacCLIValidatesFramesAndRoundTripsPCM() async throws {
+    try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+        guard let executable = flacExecutable else {
+            throw FLACProcessFailure(arguments: [], status: -1, output: "有効化されたテストで PATH に flac が見つかりません")
+        }
+        let fixture = try RecordingFLACFixture()
+        defer { fixture.cleanup() }
 
-    let sine = (0..<4_097).map { index in
-        Float(0.75 * sin(2.0 * .pi * 440.0 * Double(index) / 16_000.0))
-    }
-    let orderOneRamp = (0..<5).map { Float(10_000 + $0) / 32_768 }
-    let multiBlockTail = deterministicNoise(count: 3 * 4_096 + 17)
-    var cases: [(name: String, samples: [Float])] = [
-        ("sine", sine),
-        ("noise", deterministicNoise(count: 4_097)),
-        ("order1-ramp", orderOneRamp),
-        ("multi-block-tail", multiBlockTail),
-        ("silence", [Float](repeating: 0, count: 4_096)),
-    ]
-    for count in [1, 4_095, 4_096, 4_097] {
-        let samples: [Float] = (0..<count).map { index in index.isMultiple(of: 2) ? -1.5 : 1.5 }
-        cases.append(("clipped-\(count)", samples))
-    }
-
-    for testCase in cases {
-        let flacURL = fixture.root.appending(path: "\(testCase.name).flac")
-        let reader = try SyntheticTimelineAudio(samples: testCase.samples)
-        try RecordingFLAC.write(reader: reader, to: flacURL, sessionURL: fixture.root)
-        try runFLAC(executable, arguments: ["-t", flacURL.path])
-
-        if testCase.name == "order1-ramp" {
-            let bytes = Array(try SessionFileAccess.read(flacURL, relativeTo: fixture.root))
-            let firstSubframeHeader = bytes[42 + 7]
-            #expect((firstSubframeHeader >> 1) & 0x3f == 9)
+        let sine = (0..<4_097).map { index in
+            Float(0.75 * sin(2.0 * .pi * 440.0 * Double(index) / 16_000.0))
+        }
+        let orderOneRamp = (0..<5).map { Float(10_000 + $0) / 32_768 }
+        let multiBlockTail = deterministicNoise(count: 3 * 4_096 + 17)
+        var cases: [(name: String, samples: [Float])] = [
+            ("sine", sine),
+            ("noise", deterministicNoise(count: 4_097)),
+            ("order1-ramp", orderOneRamp),
+            ("multi-block-tail", multiBlockTail),
+            ("silence", [Float](repeating: 0, count: 4_096)),
+        ]
+        for count in [1, 4_095, 4_096, 4_097] {
+            let samples: [Float] = (0..<count).map { index in index.isMultiple(of: 2) ? -1.5 : 1.5 }
+            cases.append(("clipped-\(count)", samples))
         }
 
-        guard ["sine", "noise", "order1-ramp", "multi-block-tail"].contains(testCase.name) else {
-            continue
+        for testCase in cases {
+            let flacURL = fixture.root.appending(path: "\(testCase.name).flac")
+            let reader = try SyntheticTimelineAudio(samples: testCase.samples)
+            try RecordingFLAC.write(reader: reader, to: flacURL, sessionURL: fixture.root)
+            try runFLAC(executable, arguments: ["-t", flacURL.path])
+
+            if testCase.name == "order1-ramp" {
+                let bytes = Array(try SessionFileAccess.read(flacURL, relativeTo: fixture.root))
+                let firstSubframeHeader = bytes[42 + 7]
+                #expect((firstSubframeHeader >> 1) & 0x3f == 9)
+            }
+
+            guard ["sine", "noise", "order1-ramp", "multi-block-tail"].contains(testCase.name) else {
+                continue
+            }
+            let rawURL = fixture.root.appending(path: "\(testCase.name).pcm")
+            try runFLAC(executable, arguments: [
+                "-d", "--force-raw-format", "--endian=little", "--sign=signed",
+                "--output-name=\(rawURL.path)", flacURL.path,
+            ])
+            let expectedRaw = testCase.samples.flatMap { sample -> [UInt8] in
+                let value = UInt16(bitPattern: RecordingFLAC.quantize16(sample)!)
+                return [UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)]
+            }
+            #expect(try SessionFileAccess.read(rawURL, relativeTo: fixture.root) == Data(expectedRaw))
         }
-        let rawURL = fixture.root.appending(path: "\(testCase.name).pcm")
-        try runFLAC(executable, arguments: [
-            "-d", "--force-raw-format", "--endian=little", "--sign=signed",
-            "--output-name=\(rawURL.path)", flacURL.path,
-        ])
-        let expectedRaw = testCase.samples.flatMap { sample -> [UInt8] in
-            let value = UInt16(bitPattern: RecordingFLAC.quantize16(sample)!)
-            return [UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)]
-        }
-        #expect(try SessionFileAccess.read(rawURL, relativeTo: fixture.root) == Data(expectedRaw))
     }
 }
 

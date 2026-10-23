@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Testing
 @testable import MacAmbientJevPipeline
@@ -85,6 +86,115 @@ private actor TestStatusRecorder {
 
     func statuses() -> [String] {
         recorded
+    }
+}
+
+private enum CompactionCancellationProbeError: Error {
+    case cancellationNotObserved
+}
+
+private func waitForSignal(_ semaphore: DispatchSemaphore) async -> Bool {
+    await withCheckedContinuation { continuation in
+        Thread.detachNewThread {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + .seconds(180)) == .success)
+        }
+    }
+}
+
+private final class SessionProcessingAudioTestExecutor: TaskExecutor, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "SessionProcessingAudioTestExecutor")
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        queue.async {
+            job.runSynchronously(on: self.asUnownedTaskExecutor())
+        }
+    }
+}
+
+private final class CompactionExecutorProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedExecutor: UnownedTaskExecutor?
+
+    func recordCurrentExecutor() {
+        let executor = withUnsafeCurrentTask { $0?.unownedTaskExecutor }
+        lock.lock()
+        defer { lock.unlock() }
+        recordedExecutor = executor
+    }
+
+    var executor: UnownedTaskExecutor? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedExecutor
+    }
+}
+
+private final class CompactionCancellationProbe: @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
+    private let cancellationObserved = DispatchSemaphore(value: 0)
+
+    func compact() throws {
+        started.signal()
+        let deadline = DispatchTime.now() + .seconds(180)
+        while !Task.isCancelled {
+            guard DispatchTime.now() < deadline else {
+                throw CompactionCancellationProbeError.cancellationNotObserved
+            }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        cancellationObserved.signal()
+        try Task.checkCancellation()
+    }
+
+    func waitUntilStarted() async -> Bool {
+        await waitForSignal(started)
+    }
+
+    func waitUntilCancellationObserved() async -> Bool {
+        await waitForSignal(cancellationObserved)
+    }
+}
+
+private enum CompactionBoundaryGateError: Error {
+    case releaseTimedOut
+}
+
+private final class CompactionBoundaryGate: @unchecked Sendable {
+    private let published = DispatchSemaphore(value: 0)
+    private let resume = DispatchSemaphore(value: 0)
+
+    func pause(at boundary: RecordingAudioCompactor.Boundary) throws {
+        guard boundary == .published else { return }
+        published.signal()
+        guard resume.wait(timeout: .now() + .seconds(180)) == .success else {
+            throw CompactionBoundaryGateError.releaseTimedOut
+        }
+    }
+
+    func waitUntilPublished() async -> Bool {
+        await waitForSignal(published)
+    }
+
+    func release() {
+        resume.signal()
+    }
+}
+
+private final class CompactionInvocationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var invoked = false
+
+    func markInvoked() {
+        lock.lock()
+        defer { lock.unlock() }
+        invoked = true
+    }
+
+    func wasInvoked() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return invoked
     }
 }
 
@@ -317,6 +427,135 @@ struct SessionProcessingAudioTests {
         let cafReader = try CanonicalCAFReader(url: layout.diarizationInputURL, sessionURL: layout.sessionURL)
         #expect(cafReader.sampleCount == Int64(samples.count))
         #expect(try cafReader.readSamples(frames: 0..<Int64(samples.count)) == expectedSamples)
+    }
+
+    @Test
+    func compactRecordingUsesDedicatedBlockingIOExecutor() async throws {
+        let layout = try makeManualLayout()
+        defer { cleanUp(layout) }
+        let probe = CompactionExecutorProbe()
+        let audio = SessionProcessingAudio(
+            timelineBuilder: TestTimelineBuilder(samples: [], behavior: .valid),
+            compactionOperation: { _ in probe.recordCurrentExecutor() }
+        )
+
+        try await audio.compactRecording(layout: layout)
+
+        let observed: UnownedTaskExecutor? = probe.executor
+        let expected: UnownedTaskExecutor = BlockingIOExecutor.shared.asUnownedTaskExecutor()
+        #expect(observed == expected, "blocking compaction must run on the dedicated I/O executor, not the cooperative pool")
+    }
+
+    @Test
+    func compactRecordingPropagatesParentCancellationToDetachedCompaction() async throws {
+        let executor = SessionProcessingAudioTestExecutor()
+        try await withTaskExecutorPreference(executor) {
+            let layout = try makeManualLayout()
+            defer { cleanUp(layout) }
+            let probe = CompactionCancellationProbe()
+            let audio = SessionProcessingAudio(
+                timelineBuilder: TestTimelineBuilder(samples: [], behavior: .valid),
+                compactionOperation: { _ in try probe.compact() }
+            )
+            let compactionTask = Task {
+                try await audio.compactRecording(layout: layout)
+            }
+
+            #expect(await probe.waitUntilStarted())
+            compactionTask.cancel()
+
+            await #expect(throws: CancellationError.self) {
+                try await compactionTask.value
+            }
+            #expect(await probe.waitUntilCancellationObserved())
+        }
+    }
+
+    @Test
+    func compactRecordingDoesNotLaunchDetachedWorkForPreCancelledParent() async throws {
+        let layout = try makeManualLayout()
+        defer { cleanUp(layout) }
+        let invocation = CompactionInvocationFlag()
+        let audio = SessionProcessingAudio(
+            timelineBuilder: TestTimelineBuilder(samples: [], behavior: .valid),
+            compactionOperation: { _ in invocation.markInvoked() }
+        )
+        let compactionTask = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await audio.compactRecording(layout: layout)
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await compactionTask.value
+        }
+        #expect(!invocation.wasInvoked())
+    }
+
+    @Test
+    func cancelledRealCompactionAtPublishedBoundaryRecoversWithoutReprocessingTranscript() async throws {
+        let executor = SessionProcessingAudioTestExecutor()
+        try await withTaskExecutorPreference(executor) {
+            let layout = try makeManualLayout()
+            defer { cleanUp(layout) }
+            try SessionAudioStorageStore(layout: layout).save(.recordingPCM)
+            let samples = (0..<20_000).map { sin(Float($0) * 0.013) * 0.8 }
+            let checkpoint = try await recordPCM(layout, samples: samples)
+            let eventWriter = try SessionWriter(sessionURL: layout.sessionURL)
+            try await eventWriter.append(EventDraft(
+                eventType: "segment.created",
+                sessionID: UUID(),
+                segmentationRunID: "seg_finalized",
+                segmentID: "segment_000001",
+                sourceStartFrame: 0,
+                sourceEndFrame: Int64(samples.count),
+                payload: EmptyPayload()
+            ))
+            let transcriptLog = try SessionWriter.readDurableLog(eventsURL: layout.eventsURL)
+            let builder = TestTimelineBuilder(samples: [], behavior: .valid)
+            let gate = CompactionBoundaryGate()
+            let interruptedAudio = SessionProcessingAudio(
+                timelineBuilder: builder,
+                compactionOperation: { layout in
+                    _ = try RecordingAudioCompactor(interrupt: { boundary in
+                        try gate.pause(at: boundary)
+                    }).compact(layout: layout)
+                }
+            )
+            let compactionTask = Task {
+                try await interruptedAudio.compactRecording(layout: layout)
+            }
+
+            #expect(await gate.waitUntilPublished())
+            compactionTask.cancel()
+            gate.release()
+            await #expect(throws: CancellationError.self) {
+                try await compactionTask.value
+            }
+
+            let info = try checkpoint.info
+            #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
+            #expect(try AudioCheckpoint.loadRecovered(
+                from: layout.processingDirectory,
+                relativeTo: layout.sessionURL
+            ) == checkpoint)
+            try FLACTimelineReader(
+                url: layout.recordingFLACURL,
+                info: info,
+                sessionURL: layout.sessionURL
+            ).validateAudio()
+            #expect(try SessionWriter.readDurableLog(eventsURL: layout.eventsURL) == transcriptLog)
+
+            let recoveryAudio = SessionProcessingAudio(timelineBuilder: builder)
+            try await recoveryAudio.compactRecording(layout: layout)
+
+            #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingFLAC(info))
+            #expect(!fileExists(layout.processingDirectory))
+            #expect(!fileExists(layout.recordingFLACPartialURL))
+            let reader = try await recoveryAudio.open(.recordedFLAC(info), layout: layout) { _ in }
+            #expect(try reader.readSamples(frameRange: 0..<info.committedFrames) == quantized(samples))
+            #expect(await builder.recordedCalls().isEmpty)
+            #expect(try SessionWriter.readDurableLog(eventsURL: layout.eventsURL) == transcriptLog)
+        }
     }
 
     @Test

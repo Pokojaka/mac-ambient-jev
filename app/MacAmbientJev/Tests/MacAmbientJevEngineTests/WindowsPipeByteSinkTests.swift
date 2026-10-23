@@ -1,0 +1,401 @@
+import Foundation
+import Testing
+import WinSDK
+import MacAmbientJevEngineHost
+import MacAmbientJevEngineProtocol
+import MacAmbientJevCore
+import MacAmbientJevTestSupport
+@testable import MacAmbientJevEngine
+
+private struct PipeTestError: Error, CustomStringConvertible {
+    let description: String
+}
+
+/// An anonymous pipe with a small buffer, like the one P5's shell creates.
+private func makePipe(bufferBytes: DWORD = 4096) throws -> (read: HANDLE, write: HANDLE) {
+    var read: HANDLE?
+    var write: HANDLE?
+    guard CreatePipe(&read, &write, nil, bufferBytes), let read, let write else {
+        throw PipeTestError(description: "CreatePipe failed (Win32 \(GetLastError()))")
+    }
+    return (read, write)
+}
+
+/// Reads the pipe on its own thread, optionally slowly, until the write end closes. `changes` signals after every chunk.
+private final class PipeReader: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let handle: HANDLE
+    private let condition = NSCondition()
+    private var storage = Data()
+    private var completedStorage = false
+    private let pause: TimeInterval
+
+    init(handle: HANDLE, pause: TimeInterval) {
+        self.handle = handle
+        self.pause = pause
+        Thread.detachNewThread { [self] in run() }
+    }
+
+    private func run() {
+        defer {
+            CloseHandle(handle)
+            condition.lock()
+            completedStorage = true
+            condition.broadcast()
+            condition.unlock()
+            changes.signal()
+        }
+
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while true {
+            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
+            var count: DWORD = 0
+            guard ReadFile(handle, &buffer, DWORD(buffer.count), &count, nil), count > 0 else { break }
+            condition.lock()
+            storage.append(contentsOf: buffer[..<Int(count)])
+            condition.unlock()
+            changes.signal()
+        }
+    }
+
+    var data: Data {
+        condition.lock()
+        defer { condition.unlock() }
+        return storage
+    }
+
+    var completed: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return completedStorage
+    }
+
+    func join() {
+        condition.lock()
+        while !completedStorage { condition.wait() }
+        condition.unlock()
+    }
+}
+
+/// Runs a synchronous call that can block, such as cancelling or closing a sink, on its own thread as production does.
+private func blocking(_ body: @escaping @Sendable () -> Void) async {
+    await Task.detached(executorPreference: BlockingIOExecutor.shared, operation: body).value
+}
+
+private func testLimits(deadline: TimeInterval) -> EngineTransportLimits {
+    EngineTransportLimits(
+        maxQueuedRecords: 128,
+        maxQueuedBytes: 8 * 1_048_576,
+        reservedControlRecords: 32,
+        reservedControlBytes: 2 * 1_048_576,
+        maxPendingInputLines: 32,
+        readChunkBytes: 4096,
+        writeDeadlineNanoseconds: UInt64(deadline * 1_000_000_000)
+    )
+}
+
+@Suite(.timeLimit(.minutes(10))) struct WindowsPipeByteSinkTests {
+    @Test func aWriteBlockedOnAFullPipeIsCancelledFromAnotherThread() async throws {
+        let pipe = try makePipe()
+        defer { CloseHandle(pipe.read) }
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        let outcome = Outcome()
+        Thread.detachNewThread {
+            let block = [UInt8](repeating: 0x41, count: 65_536)
+            do {
+                while true {
+                    let written = try block.withUnsafeBytes { try sink.write($0) }
+                    outcome.add(written)
+                }
+            } catch {
+                outcome.finish(error)
+            }
+        }
+
+        do {
+            // 4 KiB fit the pipe buffer; the next write blocks because nobody reads.
+            try await outcome.changes.wait("the write to fill the pipe") { outcome.totalBytes >= 4096 }
+            #expect(outcome.error == nil)
+
+            await blocking { sink.cancelBlockedWrite() }
+            try await outcome.changes.wait("the writer to finish after cancellation") { outcome.completed }
+            #expect(outcome.error as? EngineSinkError == .cancelled)
+        } catch {
+            await blocking {
+                sink.close()
+                outcome.waitUntilFinished()
+            }
+            #expect(outcome.completed)
+            throw error
+        }
+
+        await blocking {
+            sink.close()
+            outcome.waitUntilFinished()
+        }
+        #expect(outcome.completed)
+        #expect(outcome.error as? EngineSinkError == .cancelled)
+        // A cancelled sink refuses further writes.
+        #expect(throws: EngineSinkError.cancelled) {
+            _ = try [UInt8](repeating: 1, count: 4).withUnsafeBytes { try sink.write($0) }
+        }
+    }
+
+    @Test func aClosedReaderIsABrokenPipe() async throws {
+        let pipe = try makePipe()
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        CloseHandle(pipe.read)
+        defer { sink.close() }
+        #expect(throws: EngineSinkError.brokenPipe) {
+            _ = try [UInt8](repeating: 1, count: 16).withUnsafeBytes { try sink.write($0) }
+        }
+    }
+
+    @Test func aDrainingReaderReceivesEveryByteInOrder() async throws {
+        let pipe = try makePipe()
+        let reader = PipeReader(handle: pipe.read, pause: 0)
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        let payload = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ ($0 >> 8)) })
+        let writerDone = Outcome()
+        Thread.detachNewThread {
+            do {
+                var offset = 0
+                while offset < payload.count {
+                    let written = try payload.withUnsafeBytes { try sink.write(UnsafeRawBufferPointer(rebasing: $0[offset...])) }
+                    precondition(written > 0 && written <= WindowsPipeByteSink.chunkBytes)
+                    offset += written
+                }
+                writerDone.finish(nil)
+            } catch {
+                writerDone.finish(error)
+            }
+        }
+
+        do {
+            try await writerDone.changes.wait("the writer to finish") { writerDone.completed }
+            #expect(writerDone.error == nil)
+            if let error = writerDone.error { throw error }
+            try await reader.changes.wait("the reader to receive the payload") { reader.data.count >= payload.count }
+            #expect(reader.data == payload)
+        } catch {
+            await blocking {
+                sink.close()
+                writerDone.waitUntilFinished()
+                reader.join()
+            }
+            #expect(writerDone.completed)
+            #expect(reader.completed)
+            throw error
+        }
+
+        await blocking {
+            sink.close()
+            writerDone.waitUntilFinished()
+            reader.join()
+        }
+        #expect(writerDone.completed)
+        #expect(reader.completed)
+        #expect(writerDone.error == nil)
+        #expect(reader.data == payload)
+    }
+
+    @Test func cancellingAChangeWaitStillCleansPipeWorkers() async throws {
+        let pipe = try makePipe()
+        let reader = PipeReader(handle: pipe.read, pause: 0)
+        let sink = WindowsPipeByteSink(handle: pipe.write)
+        let outcome = Outcome()
+        Thread.detachNewThread {
+            let block = [UInt8](repeating: 0x42, count: 65_536)
+            do {
+                while true {
+                    let written = try block.withUnsafeBytes { try sink.write($0) }
+                    outcome.add(written)
+                }
+            } catch {
+                outcome.finish(error)
+            }
+        }
+
+        do {
+            try await outcome.changes.wait("the pipe writer to start") { outcome.totalBytes >= 4096 }
+            let neverTrue = ChangeSignal()
+            let waiterStarted = Outcome()
+            let waiter = Task {
+                do {
+                    try await neverTrue.wait("a condition that never becomes true") {
+                        waiterStarted.finish(nil)
+                        return false
+                    }
+                    return false
+                } catch is WaitCancelled {
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            try await waiterStarted.changes.wait("the waiter to check its condition") { waiterStarted.completed }
+            waiter.cancel()
+            let wasCancelled = await waiter.value
+            #expect(wasCancelled)
+        } catch {
+            await blocking {
+                sink.close()
+                outcome.waitUntilFinished()
+                reader.join()
+            }
+            #expect(outcome.completed)
+            #expect(reader.completed)
+            throw error
+        }
+
+        await blocking {
+            sink.close()
+            outcome.waitUntilFinished()
+            reader.join()
+        }
+        #expect(outcome.completed)
+        #expect(reader.completed)
+        #expect(outcome.error as? EngineSinkError == .cancelled)
+    }
+
+    @Test func aSlowPipeReaderReceivesEveryTransportRecordIntact() async throws {
+        let pipe = try makePipe()
+        let reader = PipeReader(handle: pipe.read, pause: 0.0002)
+        let transport = EngineTransport(source: IdleSource(), sink: WindowsPipeByteSink(handle: pipe.write), limits: testLimits(deadline: 5))
+        transport.start()
+
+        do {
+            let text = String(repeating: "あ", count: 3000)
+            for id in 1...40 {
+                try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
+                let row = try EngineTranscriptRow(rowID: "r\(id)", startMS: 0, endMS: 10, text: text, headings: [], clauseState: nil)
+                try transport.sendReplaceable(
+                    .rows(try EngineRowsPayload(
+                        sessionID: "s", revision: EngineID(UInt64(id)), kind: .changes, rows: [row], removedRowIDs: [], nextCursor: nil
+                    )),
+                    requestID: nil
+                )
+            }
+            await transport.drain()
+            try await reader.changes.wait("the reader to receive all records") {
+                reader.data.last == 0x0A && ((try? decode(reader.data).count) ?? 0) >= 41
+            }
+            let outputs = try decode(reader.data)
+            #expect(outputs.filter { if case .completed = $0.event { true } else { false } }.count == 40)
+            #expect(outputs.map(\.sequence.value) == outputs.map(\.sequence.value).sorted())
+        } catch {
+            await blocking {
+                transport.close()
+                reader.join()
+            }
+            #expect(reader.completed)
+            throw error
+        }
+
+        await blocking {
+            transport.close()
+            reader.join()
+        }
+        #expect(reader.completed)
+    }
+
+    @Test func aPipeThatIsNeverReadFailsAtTheDeadlineWithoutHangingTheEngine() async throws {
+        let pipe = try makePipe()
+        defer { CloseHandle(pipe.read) }
+        let transport = EngineTransport(source: IdleSource(), sink: WindowsPipeByteSink(handle: pipe.write), limits: testLimits(deadline: 0.5))
+        transport.start()
+        defer { transport.close() }
+        // Enough records to exceed the pipe buffer, which nobody drains.
+        for id in 1...200 {
+            do {
+                try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
+            } catch {
+                break
+            }
+        }
+        var failure: EngineWriteFailure?
+        for await event in transport.events {
+            if case let .writeFailed(reason) = event {
+                failure = reason
+                break
+            }
+        }
+        #expect(failure == .deadlineExceeded)
+    }
+}
+
+private func decode(_ data: Data) throws -> [EngineOutput] {
+    guard data.last == 0x0A else { throw PipeTestError(description: "output does not end with LF") }
+    return try data.dropLast().split(separator: 0x0A, omittingEmptySubsequences: false).map {
+        try EngineCodec.decodeOutput(Data($0))
+    }
+}
+
+/// What a writer thread did; `changes` signals after every update.
+private final class Outcome: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let condition = NSCondition()
+    private var written = 0
+    private var failure: (any Error)?
+    private var completedStorage = false
+
+    func add(_ bytes: Int) {
+        condition.lock()
+        written += bytes
+        condition.unlock()
+        changes.signal()
+    }
+
+    func finish(_ error: (any Error)?) {
+        condition.lock()
+        failure = error
+        completedStorage = true
+        condition.broadcast()
+        condition.unlock()
+        changes.signal()
+    }
+
+    func waitUntilFinished() {
+        condition.lock()
+        while !completedStorage { condition.wait() }
+        condition.unlock()
+    }
+
+    var completed: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return completedStorage
+    }
+
+    var totalBytes: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return written
+    }
+
+    var error: (any Error)? {
+        condition.lock()
+        defer { condition.unlock() }
+        return failure
+    }
+}
+
+/// A source that never delivers anything and ends when closed.
+private final class IdleSource: EngineByteSource, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var closed = false
+
+    func read(maxByteCount: Int) throws -> Data {
+        condition.lock()
+        defer { condition.unlock() }
+        while !closed { condition.wait() }
+        return Data()
+    }
+
+    func close() {
+        condition.lock()
+        closed = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}

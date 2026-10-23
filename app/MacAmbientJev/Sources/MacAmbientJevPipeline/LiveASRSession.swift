@@ -160,6 +160,7 @@ public actor LiveASRSession {
     public func register(
         segments: [SegmentReference]
     ) async throws -> LiveASRProgress {
+        try Task.checkCancellation()
         guard !finalized else {
             return currentProgress()
         }
@@ -171,13 +172,16 @@ public actor LiveASRSession {
     }
 
     private func registerPendingSegments(_ segments: [SegmentReference]) async throws {
+        try Task.checkCancellation()
 
         for segment in segments
         where !registeredSegmentIDs.contains(segment.segmentID)
             && !registeringSegmentIDs.contains(segment.segmentID) {
+            try Task.checkCancellation()
             guard !finalized else { break }
             registeringSegmentIDs.insert(segment.segmentID)
             defer { registeringSegmentIDs.remove(segment.segmentID) }
+            try Task.checkCancellation()
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,
@@ -207,6 +211,7 @@ public actor LiveASRSession {
         checkpoint: AudioCheckpoint,
         onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
     ) async throws -> LiveASRProgress {
+        try Task.checkCancellation()
         guard !finalized else {
             return currentProgress()
         }
@@ -214,6 +219,7 @@ public actor LiveASRSession {
         defer { endWork() }
 
         try await registerPendingSegments(segments)
+        try Task.checkCancellation()
         guard !finalized else {
             return currentProgress()
         }
@@ -230,6 +236,7 @@ public actor LiveASRSession {
 
         if !prepared {
             try await asr.prepare()
+            try Task.checkCancellation()
             prepared = true
         }
 
@@ -242,12 +249,15 @@ public actor LiveASRSession {
         )
 
         for segment in pendingSegments {
+            try Task.checkCancellation()
             guard !finalized else { break }
 
             let input: ASRAudioInput
             do {
                 input = try loader.load(segment: segment)
             } catch {
+                try Task.checkCancellation()
+                if error is CancellationError { throw error }
                 let failed = try await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
                 await onSegmentFinished?(failed, snapshot())
                 continue
@@ -257,11 +267,14 @@ public actor LiveASRSession {
             do {
                 result = try await asr.transcribe(input)
             } catch {
+                try Task.checkCancellation()
+                if error is CancellationError { throw error }
                 let failed = try await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
                 await onSegmentFinished?(failed, snapshot())
                 continue
             }
 
+            try Task.checkCancellation()
             let completed = try await writer.append(EventDraft(
                 eventType: "asr.completed",
                 sessionID: sessionID,
@@ -435,6 +448,7 @@ public actor LiveASRSession {
         kind: ASRFailureKind,
         error: any Error
     ) async throws -> LiveASRSegmentStatus {
+        try Task.checkCancellation()
         _ = try await writer.append(EventDraft(
             eventType: "asr.failed",
             sessionID: sessionID,

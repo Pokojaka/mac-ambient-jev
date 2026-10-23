@@ -83,3 +83,18 @@ func asrAudioLoaderRejectsReversedSegmentRange() async throws {
         ))
     }
 }
+
+@Test
+func asrRunCancellationHasLocalizedDescriptionAndRetainsMetrics() {
+    var metrics = ASRBatchMetrics()
+    metrics.processedAudioSeconds = 12.5
+    metrics.asrCallSeconds = 3.25
+    let cancellation = ASRRunCancellation(metrics: metrics)
+    let erasedError: any Error = cancellation
+    let expectedDescription = "音声認識がキャンセルされました"
+
+    #expect(cancellation.errorDescription == expectedDescription)
+    #expect(cancellation.localizedDescription == expectedDescription)
+    #expect(erasedError.localizedDescription == expectedDescription)
+    #expect(cancellation.metrics == metrics)
+}

@@ -6,6 +6,9 @@ on:
     paths:
       - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevPipeline/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEngineHost/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEngine/**'
       - 'app/MacAmbientJev/Sources/CONNXRuntime/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevONNX/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/**'
@@ -19,11 +22,15 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevONNXTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevVADFixtures/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevCAFFixtures/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevEngineTests/**'
+      - 'app/MacAmbientJev/Tests/CMiniaudioInjected/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevDiarizationMeasurementTests/**'
       - 'scripts/generate_windows_audio_fixtures.py'
@@ -62,12 +69,20 @@ on:
       - 'tools/linux-audio/tests/test_process_recording_acceptance.py'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
+      - 'docs/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'scripts/check_doc_references.py'
+      - 'scripts/test_doc_references.py'
       - '.github/workflows/portable-core.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'app/MacAmbientJev/Sources/MacAmbientJevCore/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevPipeline/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEngineHost/**'
+      - 'app/MacAmbientJev/Sources/MacAmbientJevEngine/**'
       - 'app/MacAmbientJev/Sources/CONNXRuntime/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevONNX/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/**'
@@ -81,11 +96,15 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevCoreTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevONNXTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevVADFixtures/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevCAFFixtures/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/**'
+      - 'app/MacAmbientJev/Tests/MacAmbientJevEngineTests/**'
+      - 'app/MacAmbientJev/Tests/CMiniaudioInjected/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/**'
       - 'app/MacAmbientJev/Tests/MacAmbientJevDiarizationMeasurementTests/**'
       - 'scripts/generate_windows_audio_fixtures.py'
@@ -124,6 +143,11 @@ on:
       - 'tools/linux-audio/tests/test_process_recording_acceptance.py'
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
+      - 'docs/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'scripts/check_doc_references.py'
+      - 'scripts/test_doc_references.py'
       - '.github/workflows/portable-core.yml'
   workflow_dispatch:
     inputs:
@@ -189,9 +213,10 @@ jobs:
           python3 -B scripts/check_portable_core.py
           python3 scripts/test_doc_references.py
           python3 scripts/check_doc_references.py
-      - name: Build Core, Pipeline, miniaudio, ONNX and all evaluators
+      # MacAmbientJevEngine and WindowsSupport are Windows-only, not Linux build products.
+      - name: Build Core, EngineProtocol, EngineHost, Pipeline, PortableRuntime, ONNX and all evaluators
         run: swift build --package-path app/MacAmbientJev
-      - name: Test Core, Pipeline and ONNX
+      - name: Test Core, EngineProtocol, EngineHost, Pipeline, PortableRuntime and ONNX
         run: swift test --package-path app/MacAmbientJev
 
   linux-model-e2e:
@@ -257,5 +282,5 @@ jobs:
           Get-Command flac -CommandType Application -ErrorAction Stop
           flac --version
           if ($LASTEXITCODE -ne 0) { throw 'flac --version failed' }
-      - name: Check and test Core, Pipeline, WindowsSupport and ONNX
+      - name: Windows engine build and EngineProtocol/EngineHost/WindowsSupport fast suites
         run: ./scripts/test-windows.ps1

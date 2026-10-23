@@ -83,10 +83,18 @@ public final class SessionProcessingCoordinator {
 
     public var isDraining: Bool { task != nil }
 
+    public func requestPause() {
+        task?.cancel()
+    }
+
     func waitUntilIdle() async {
         while let task {
             await task.value
         }
+    }
+
+    public func enqueue(_ request: SessionFinalizeRequest) {
+        enqueue(request.pending)
     }
 
     public func enqueue(_ request: PendingProcessing) {
@@ -109,6 +117,7 @@ public final class SessionProcessingCoordinator {
     public func startDrainIfIdle() {
         let effects = requiredEffects
         guard task == nil,
+              !effects.pausesProcessing,
               !effects.processingQueue.isMaintainingStorage else {
             return
         }
@@ -138,7 +147,7 @@ public final class SessionProcessingCoordinator {
     public static func recoveryRequests(
         candidates: [RecoverableSession],
         recordingSessionID: UUID?,
-        maintenanceFailures: [UUID: String],
+        maintenanceFailures: [UUID: SessionMaintenanceIssue],
         pending: [PendingProcessing]
     ) -> [PendingProcessing] {
         candidates
@@ -148,14 +157,8 @@ public final class SessionProcessingCoordinator {
                 !pending.contains { $0.sessionID == candidate.manifest.sessionID }
             }
             .compactMap { candidate in
-                switch candidate.action {
-                case .finalize:
-                    .finalize(sessionID: candidate.manifest.sessionID, metadataPolicy: .reject)
-                case .recoverDecisionRun:
-                    decisionRetryRequest(for: candidate)
-                case .retryContentPriority:
-                    nil
-                }
+                SessionRecoveryPlan(candidate.action)
+                    .launchRecoveryRequest(sessionID: candidate.manifest.sessionID)
             }
     }
 
@@ -165,7 +168,7 @@ public final class SessionProcessingCoordinator {
         maintain: @Sendable (
             [SessionMaintenanceCandidate],
             @Sendable (Int) async -> Void
-        ) async -> [UUID: String]
+        ) async -> [UUID: SessionMaintenanceIssue]
     ) async {
         requiredEffects.processingQueue.beginStorageMaintenance()
         do {
@@ -229,7 +232,7 @@ public final class SessionProcessingCoordinator {
         do {
             let candidates = try scan().candidates
             let requests = candidates.compactMap {
-                Self.decisionRetryRequest(for: $0)
+                SessionRecoveryPlan($0.action).decisionRetryRequest(sessionID: $0.manifest.sessionID)
             }
             for request in requests {
                 enqueue(request)
@@ -239,22 +242,6 @@ public final class SessionProcessingCoordinator {
             }
         } catch {
             recoveryEffects.recoveryDidChange(.retryFailed(error.localizedDescription))
-        }
-    }
-
-    private static func decisionRetryRequest(
-        for candidate: RecoverableSession
-    ) -> PendingProcessing? {
-        switch candidate.action {
-        case .recoverDecisionRun(let boundarySegments, let clauses),
-             .retryContentPriority(let boundarySegments, let clauses):
-            .retryContentPriority(
-                sessionID: candidate.manifest.sessionID,
-                boundarySegments: boundarySegments,
-                clauses: clauses
-            )
-        case .finalize:
-            nil
         }
     }
 
@@ -268,7 +255,9 @@ public final class SessionProcessingCoordinator {
     private func drainProcessingQueue() async {
         let effects = requiredEffects
         await effects.awaitIdleRelease()
-        while let request = effects.processingQueue.dequeue() {
+        while !effects.pausesProcessing,
+              !Task.isCancelled,
+              let request = effects.processingQueue.dequeue() {
             if request.finalizesTranscript, thermalMonitor.isCritical {
                 holdForHeat(request)
                 continue
@@ -306,45 +295,85 @@ public final class SessionProcessingCoordinator {
             case .finishLive(let sessionID, let checkpoint):
                 await effects.waitForLiveASRDrain(sessionID: sessionID)
 
-                if let failure = effects.liveASRFailure(sessionID: sessionID) {
+                if Task.isCancelled || effects.pausesProcessing {
                     await processor.cancelLiveTranscription(sessionID: sessionID)
-                    effects.processingDidChange(.liveFailed(failure))
-                }
-                let result = await processor.finishLiveTranscription(
-                    sessionID: sessionID,
-                    checkpoint: checkpoint,
-                    finalSegments: [],
-                    pacingMode: .normal,
-                    shouldPause: shouldPause,
-                    onPhase: { _ in },
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-                effects.cleanupLiveASRState(sessionID: sessionID)
-                if result.disposition == .paused {
+                    effects.cleanupLiveASRState(sessionID: sessionID)
                     holdForHeat(.finalize(
                         sessionID: sessionID,
                         metadataPolicy: .reject
                     ))
+                    finalization = SessionProcessingResult(
+                        disposition: .paused,
+                        metrics: nil,
+                        message: nil,
+                        noSpeech: false,
+                        retainedTranscript: nil
+                    )
+                } else {
+                    if let failure = effects.liveASRFailure(sessionID: sessionID) {
+                        await processor.cancelLiveTranscription(sessionID: sessionID)
+                        effects.processingDidChange(.liveFailed(failure))
+                    }
+                    let result = await processor.finishLiveTranscription(
+                        sessionID: sessionID,
+                        checkpoint: checkpoint,
+                        finalSegments: [],
+                        pacingMode: .normal,
+                        shouldPause: shouldPause,
+                        onPhase: { _ in },
+                        onStatus: statusHandler,
+                        onUpdate: updateHandler
+                    )
+                    effects.cleanupLiveASRState(sessionID: sessionID)
+                    if result.disposition == .paused {
+                        holdForHeat(.finalize(
+                            sessionID: sessionID,
+                            metadataPolicy: .reject
+                        ))
+                    }
+                    finalization = result
                 }
-                finalization = result
             case .retryContentPriority(let sessionID, let boundarySegments, let clauses):
-                await processor.retryContentPrioritySession(
-                    sessionID: sessionID,
-                    boundarySegments: boundarySegments,
-                    clauses: clauses,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-                effects.refreshSavedSessions()
-                finalization = nil
+                if Task.isCancelled || effects.pausesProcessing {
+                    holdForHeat(request)
+                    finalization = SessionProcessingResult(
+                        disposition: .paused,
+                        metrics: nil,
+                        message: nil,
+                        noSpeech: false,
+                        retainedTranscript: nil
+                    )
+                } else {
+                    await processor.retryContentPrioritySession(
+                        sessionID: sessionID,
+                        boundarySegments: boundarySegments,
+                        clauses: clauses,
+                        onStatus: statusHandler,
+                        onUpdate: updateHandler
+                    )
+                    effects.refreshSavedSessions()
+                    if Task.isCancelled || effects.pausesProcessing {
+                        holdForHeat(request)
+                        finalization = SessionProcessingResult(
+                            disposition: .paused,
+                            metrics: nil,
+                            message: nil,
+                            noSpeech: false,
+                            retainedTranscript: nil
+                        )
+                    } else {
+                        finalization = nil
+                    }
+                }
             }
 
             effects.processingDidChange(.finished(request, finalization))
             if !effects.processingQueue.pending.isEmpty {
                 effects.processingDidChange(.next)
             }
-            if finalization?.disposition == .completed {
+            if finalization?.disposition == .completed,
+               !Task.isCancelled,
+               !effects.pausesProcessing {
                 await effects.autoExportIfEnabled(sessionID: requestSessionID)
             }
             effects.processingQueue.completeCurrent()

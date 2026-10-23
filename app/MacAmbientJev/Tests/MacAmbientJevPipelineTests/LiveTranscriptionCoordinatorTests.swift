@@ -57,6 +57,56 @@ private actor OneShotAsyncGate {
     }
 }
 
+private actor CancellationAwareSleepGate {
+    private var entered = false
+    private var cancelled = false
+    private var waitContinuation: CheckedContinuation<Void, Error>?
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancellationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !cancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                entered = true
+                let ready = enteredWaiters
+                enteredWaiters = []
+                ready.forEach { $0.resume() }
+                waitContinuation = continuation
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilCancelled() async {
+        if cancelled { return }
+        await withCheckedContinuation { continuation in
+            cancellationWaiters.append(continuation)
+        }
+    }
+
+    private func cancel() {
+        guard !cancelled else { return }
+        cancelled = true
+        let ready = cancellationWaiters
+        cancellationWaiters = []
+        ready.forEach { $0.resume() }
+        waitContinuation?.resume(throwing: CancellationError())
+        waitContinuation = nil
+    }
+}
+
 @MainActor
 private final class OneShotAsyncSignal {
     private var signalled = false
@@ -69,6 +119,8 @@ private final class OneShotAsyncSignal {
         waiters = []
         pendingWaiters.forEach { $0.resume() }
     }
+
+    var isSignalled: Bool { signalled }
 
     func wait() async {
         if signalled { return }
@@ -176,11 +228,13 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     private var registrationScript: [RegistrationStep]
     private var processingScript: [ProcessingStep]
     private var registeredBatches: [[SegmentReference]] = []
+    private var registrationCancellationStates: [[Bool]] = []
     private var processedBatches: [RecordedLiveASRBatch] = []
     private var processingCompletions: [ProcessingCompletion] = []
     private var completionWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var cancellationSessions: [UUID] = []
+    private var cancellationWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var startCount = 0
-    private var cancellationCount = 0
 
     init(
         startRunID: String,
@@ -217,14 +271,17 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
         let step = registrationScript.removeFirst()
         registeredBatches.append(segments)
         orderLog.append("register")
+        let cancelledAtEntry = Task.isCancelled
 
         switch step {
         case .succeed:
+            registrationCancellationStates.append([cancelledAtEntry, Task.isCancelled])
             return Self.emptyProgress()
         case .fail(let message):
             throw FakeExecutorError.registration(message)
         case .suspend(let gate):
             await gate.wait()
+            registrationCancellationStates.append([cancelledAtEntry, Task.isCancelled])
             return Self.emptyProgress()
         }
     }
@@ -267,17 +324,26 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     }
 
     func cancelLiveTranscription(sessionID: UUID) async {
-        _ = sessionID
-        cancellationCount += 1
+        cancellationSessions.append(sessionID)
+        let ready = cancellationWaiters.filter { $0.count <= cancellationSessions.count }
+        cancellationWaiters.removeAll { $0.count <= cancellationSessions.count }
+        ready.forEach { $0.continuation.resume() }
     }
 
     func registrations() -> [[SegmentReference]] { registeredBatches }
+    func registrationCancellationSamples() -> [[Bool]] { registrationCancellationStates }
     func processingRecords() -> [RecordedLiveASRBatch] { processedBatches }
     func processingResults() -> [ProcessingCompletion] { processingCompletions }
+    func cancelledSessions() -> [UUID] { cancellationSessions }
 
     func waitForCompletions(_ count: Int) async {
         guard processingCompletions.count < count else { return }
         await withCheckedContinuation { completionWaiters.append((count, $0)) }
+    }
+
+    func waitForCancellations(_ count: Int) async {
+        guard cancellationSessions.count < count else { return }
+        await withCheckedContinuation { cancellationWaiters.append((count, $0)) }
     }
 
     private func recordCompletion(_ completion: ProcessingCompletion) {
@@ -287,7 +353,6 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
         ready.forEach { $0.continuation.resume() }
     }
     func startCalls() -> Int { startCount }
-    func cancellationCalls() -> Int { cancellationCount }
 
     private static func emptyProgress() -> LiveASRProgress {
         LiveASRProgress(
@@ -757,8 +822,221 @@ func pollingDeliversMicProgressBeforeASREnqueueAndStopOwnsPolling() async throws
 }
 
 @MainActor
+@Test(.timeLimit(.minutes(10)))
+func stopVADPollingDuringRegistrationKeepsPollAndFinalSegmentsQueued() async throws {
+    let sessionID = UUID()
+    let state = LiveTranscriptionState()
+    state.begin(sessionID: sessionID)
+    let orderLog = SharedCoordinatorOrderLog()
+    let checkpoint = makeCheckpoint(700)
+    let effects = FakeLiveTranscriptionEffects(
+        recordingSessionID: sessionID,
+        checkpoint: checkpoint,
+        orderLog: orderLog,
+        stopsRecordingOnVADEnqueue: false
+    )
+    let pollSegment = makeSegment("seg_stopped_poll", at: 0)
+    let finalSegment = makeSegment("seg_stopped_final", at: 1)
+    let pollProgress = LiveVADProgress(
+        emittedSegments: [pollSegment], totalSegmentCount: 1,
+        committedFrames: checkpoint.committedFrames, micSpeechLevels: []
+    )
+    let finalProgress = LiveVADProgress(
+        emittedSegments: [finalSegment], totalSegmentCount: 2,
+        committedFrames: checkpoint.committedFrames, micSpeechLevels: []
+    )
+    let vad = FakeLiveVAD(
+        segmentationRunID: "seg_coordinator_test",
+        processScript: [pollProgress], finishScript: [finalProgress]
+    )
+    let registrationGate = OneShotAsyncGate()
+    let processor = FakeLiveTranscriptionExecutor(
+        startRunID: "asr_stop_during_registration_test",
+        registrationScript: [.suspend(registrationGate), .succeed],
+        processingScript: [.succeed, .succeed],
+        orderLog: orderLog
+    )
+    let pollSleepGate = OneShotAsyncGate()
+    let sleepLog = CoordinatorSleepLog()
+    let coordinator = LiveTranscriptionCoordinator(
+        state: state,
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        sleep: { duration in
+            sleepLog.append(duration)
+            await pollSleepGate.wait()
+        }
+    )
+
+    await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)
+    await pollSleepGate.waitUntilEntered()
+    await pollSleepGate.release()
+    await registrationGate.waitUntilEntered()
+
+    // The MainActor task signals and immediately enters stopVADPolling; its synchronous
+    // prefix sets the stop flag before it suspends waiting for the in-flight VAD loop.
+    let stopCallStarted = OneShotAsyncSignal()
+    let stopping = Task { @MainActor in
+        stopCallStarted.signal()
+        await coordinator.stopVADPolling()
+    }
+    await stopCallStarted.wait()
+    await registrationGate.release()
+    await stopping.value
+
+    #expect(await processor.registrationCancellationSamples() == [[false, false]])
+    #expect(await processor.registrations() == [[pollSegment]])
+    #expect(await vad.callCounts().process == 1)
+    #expect(sleepLog.durations == [.milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)])
+    #expect(state.failure(sessionID: sessionID) == nil)
+    #expect(state.vadFailureText == nil)
+    #expect(!effects.events.contains { event in
+        switch event {
+        case .registrationFailed(let id, _), .recognitionFailed(let id, _), .vadFailed(let id, _):
+            return id == sessionID
+        default:
+            return false
+        }
+    })
+
+    await coordinator.finishVAD(sessionID: sessionID, checkpoint: checkpoint)
+    await coordinator.waitForDrain(sessionID: sessionID)
+
+    #expect(await vad.callCounts().finish == 1)
+    #expect(await processor.registrations() == [[pollSegment], [finalSegment]])
+    #expect(await processor.processingRecords() == [
+        RecordedLiveASRBatch(segments: [pollSegment], checkpoint: checkpoint),
+        RecordedLiveASRBatch(segments: [finalSegment], checkpoint: checkpoint)
+    ])
+    #expect(await processor.processingResults() == [
+        .succeeded(taskWasCancelled: false), .succeeded(taskWasCancelled: false)
+    ])
+    #expect(await processor.registrationCancellationSamples() == [
+        [false, false], [false, false]
+    ])
+    #expect(state.failure(sessionID: sessionID) == nil)
+    #expect(state.vadFailureText == nil)
+    #expect(coordinator.isASRIdle)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func stopVADPollingCancelsSleepWithoutPollingAgain() async throws {
+    let sessionID = UUID()
+    let state = LiveTranscriptionState()
+    let orderLog = SharedCoordinatorOrderLog()
+    let checkpoint = makeCheckpoint(750)
+    let effects = FakeLiveTranscriptionEffects(
+        recordingSessionID: sessionID,
+        checkpoint: checkpoint,
+        orderLog: orderLog,
+        stopsRecordingOnVADEnqueue: false
+    )
+    let vad = FakeLiveVAD(
+        segmentationRunID: "seg_coordinator_test",
+        processScript: [], finishScript: []
+    )
+    let processor = FakeLiveTranscriptionExecutor(
+        startRunID: "asr_stop_during_sleep_test",
+        registrationScript: [], processingScript: [], orderLog: orderLog
+    )
+    let sleepGate = CancellationAwareSleepGate()
+    let sleepLog = CoordinatorSleepLog()
+    let coordinator = LiveTranscriptionCoordinator(
+        state: state,
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        sleep: { duration in
+            sleepLog.append(duration)
+            try await sleepGate.wait()
+        }
+    )
+
+    await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)
+    await sleepGate.waitUntilEntered()
+
+    let stopCallStarted = OneShotAsyncSignal()
+    let stopping = Task { @MainActor in
+        stopCallStarted.signal()
+        await coordinator.stopVADPolling()
+    }
+    await stopCallStarted.wait()
+    await sleepGate.waitUntilCancelled()
+    await stopping.value
+
+    #expect(await vad.callCounts().process == 0)
+    #expect(await processor.registrations().isEmpty)
+    #expect(sleepLog.durations == [.milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)])
+    #expect(coordinator.isASRIdle)
+}
+
+@MainActor
 @Test
-func cleanupAllowsInFlightProcessingToSucceedWithoutCancellation() async throws {
+func cancelAndWaitCancelsQueuedDrainAndCleansSuppliedIdleSessions() async throws {
+    let sessionID = UUID()
+    let idleSessionID = UUID()
+    let state = LiveTranscriptionState()
+    let orderLog = SharedCoordinatorOrderLog()
+    let checkpoint = makeCheckpoint(800)
+    let effects = FakeLiveTranscriptionEffects(
+        recordingSessionID: sessionID,
+        checkpoint: checkpoint,
+        orderLog: orderLog,
+        stopsRecordingOnVADEnqueue: false
+    )
+    let processingGate = OneShotAsyncGate()
+    let processor = FakeLiveTranscriptionExecutor(
+        startRunID: "asr_cancel_and_wait_test",
+        registrationScript: [.succeed, .succeed],
+        processingScript: [
+            .suspend(processingGate, outcome: .succeed),
+            .succeed
+        ],
+        orderLog: orderLog
+    )
+    let coordinator = LiveTranscriptionCoordinator(
+        state: state,
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        sleep: { _ in preconditionFailure("キャンセルテストで待機してはいけません") }
+    )
+    let firstBatch = [makeSegment("seg_cancel_first", at: 0)]
+    let secondBatch = [makeSegment("seg_cancel_second", at: 1)]
+
+    await coordinator.enqueue(sessionID: sessionID, segments: firstBatch, checkpoint: checkpoint)
+    await coordinator.enqueue(sessionID: sessionID, segments: secondBatch, checkpoint: checkpoint)
+    await processingGate.waitUntilEntered()
+
+    let cancelAndWait = Task { @MainActor in
+        await coordinator.cancelAndWait(sessionIDs: [idleSessionID])
+    }
+    await processor.waitForCancellations(2)
+
+    #expect(Set(await processor.cancelledSessions()) == Set([sessionID, idleSessionID]))
+    #expect(coordinator.isDraining(sessionID: sessionID))
+    #expect(await processor.processingRecords() == [
+        RecordedLiveASRBatch(segments: firstBatch, checkpoint: checkpoint)
+    ])
+
+    await processingGate.release()
+    await cancelAndWait.value
+
+    #expect(await processor.processingResults() == [.succeeded(taskWasCancelled: true)])
+    #expect(await processor.processingRecords() == [
+        RecordedLiveASRBatch(segments: firstBatch, checkpoint: checkpoint)
+    ])
+    #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
+    #expect(state.pendingSegmentCount(sessionID: sessionID) == 0)
+    #expect(!coordinator.isDraining(sessionID: sessionID))
+    #expect(coordinator.isASRIdle)
+}
+
+@MainActor
+@Test
+func cleanupCancelsInFlightProcessingAndAllowsSuccess() async throws {
     let sessionID = UUID()
     let state = LiveTranscriptionState()
     let orderLog = SharedCoordinatorOrderLog()
@@ -800,15 +1078,16 @@ func cleanupAllowsInFlightProcessingToSucceedWithoutCancellation() async throws 
     #expect(state.failure(sessionID: sessionID) == nil)
     #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
     #expect(!(await processor.processingRecords()).isEmpty)
-    #expect(coordinator.isASRIdle)
+    #expect(!coordinator.isASRIdle)
 
     await processingGate.release()
     await drainWaiter.value
 
+    #expect(coordinator.isASRIdle)
     #expect(await processor.processingRecords() == [
         RecordedLiveASRBatch(segments: batch, checkpoint: checkpoint)
     ])
-    #expect(await processor.processingResults() == [.succeeded(taskWasCancelled: false)])
+    #expect(await processor.processingResults() == [.succeeded(taskWasCancelled: true)])
     #expect(state.failure(sessionID: sessionID) == nil)
     #expect(!effects.events.contains { event in
         if case .recognitionFailed(let eventSessionID, _) = event {
@@ -816,6 +1095,62 @@ func cleanupAllowsInFlightProcessingToSucceedWithoutCancellation() async throws 
         }
         return false
     })
+}
+
+@MainActor
+@Test
+func cancelAndWaitFindsRetiredDrainAfterCleanup() async throws {
+    let sessionID = UUID()
+    let state = LiveTranscriptionState()
+    let orderLog = SharedCoordinatorOrderLog()
+    let checkpoint = makeCheckpoint(850)
+    let effects = FakeLiveTranscriptionEffects(
+        recordingSessionID: sessionID,
+        checkpoint: checkpoint,
+        orderLog: orderLog,
+        stopsRecordingOnVADEnqueue: false
+    )
+    let processingGate = OneShotAsyncGate()
+    let processor = FakeLiveTranscriptionExecutor(
+        startRunID: "asr_retired_cancel_and_wait_test",
+        registrationScript: [.succeed],
+        processingScript: [.suspend(processingGate, outcome: .succeed)],
+        orderLog: orderLog
+    )
+    let coordinator = LiveTranscriptionCoordinator(
+        state: state,
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        sleep: { _ in preconditionFailure("退役ドレインのキャンセルテストで待機してはいけません") }
+    )
+    let batch = [makeSegment("seg_retired_cancel_and_wait", at: 0)]
+
+    await coordinator.enqueue(sessionID: sessionID, segments: batch, checkpoint: checkpoint)
+    await processingGate.waitUntilEntered()
+    coordinator.cleanup(sessionID: sessionID)
+
+    #expect(!coordinator.isDraining(sessionID: sessionID))
+    #expect(!coordinator.isASRIdle)
+
+    let cancelAndWaitFinished = OneShotAsyncSignal()
+    let cancelAndWait = Task { @MainActor in
+        await coordinator.cancelAndWait(sessionIDs: [sessionID])
+        cancelAndWaitFinished.signal()
+    }
+    await processor.waitForCancellations(1)
+    await Task.yield()
+
+    #expect(await processor.cancelledSessions() == [sessionID])
+    #expect(!cancelAndWaitFinished.isSignalled)
+    #expect(!coordinator.isASRIdle)
+
+    await processingGate.release()
+    await cancelAndWait.value
+
+    #expect(cancelAndWaitFinished.isSignalled)
+    #expect(await processor.processingResults() == [.succeeded(taskWasCancelled: true)])
+    #expect(coordinator.isASRIdle)
 }
 
 @MainActor
@@ -865,7 +1200,7 @@ func cleanupSuppressesFailureFromInFlightProcessing() async throws {
         RecordedLiveASRBatch(segments: batch, checkpoint: checkpoint)
     ])
     #expect(await processor.processingResults() == [
-        .failed("遅れて到着した認識失敗", taskWasCancelled: false)
+        .failed("遅れて到着した認識失敗", taskWasCancelled: true)
     ])
     #expect(state.failure(sessionID: sessionID) == nil)
     #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
@@ -957,7 +1292,7 @@ func cleanupOldDrainCannotReplaceStateOrRemoveNewSameSessionDrain() async throws
         RecordedLiveASRBatch(segments: secondNewBatch, checkpoint: latestNewCheckpoint)
     ])
     #expect(await processor.processingResults() == [
-        .failed("古いドレインの認識失敗", taskWasCancelled: false),
+        .failed("古いドレインの認識失敗", taskWasCancelled: true),
         .succeeded(taskWasCancelled: false),
         .succeeded(taskWasCancelled: false)
     ])

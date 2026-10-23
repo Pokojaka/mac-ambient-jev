@@ -74,7 +74,7 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         )
     }
 
-    private static func validatedThreads(_ threads: Int?, logicalCPUCount: Int) throws -> Int {
+    static func validatedThreads(_ threads: Int?, logicalCPUCount: Int) throws -> Int {
         guard let threads else {
             throw PortableProcessingConfigurationError.invalidThreads(reason: "必須です")
         }

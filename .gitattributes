@@ -1,2 +1,5 @@
 # Test resources are compared, hashed or size-pinned byte for byte, so checkout must not rewrite line endings.
 app/MacAmbientJev/Tests/*/Resources/** -text
+app/MacAmbientJev/Tests/*/Fixtures/** -text
+# The engine protocol doc test decodes the examples in this file byte for byte against the fixtures.
+docs/windows.md text eol=lf

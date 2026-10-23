@@ -287,66 +287,68 @@ struct PortableFLACTimelineTests {
     }
 
     @Test(.enabled(if: referenceFLACExecutable != nil, "PATH に flac がありません"))
-    func flacTimelineReadsReferenceEncoderFixedAndLPCStreams() throws {
-        guard let executable = referenceFLACExecutable else {
-            throw PortableFLACProcessFailure(
-                arguments: [],
-                status: -1,
-                output: "PATH に flac がありません。有効化されたテストで実行ファイルを解決できませんでした。"
-            )
-        }
-        let fixture = try PortableFLACTimelineFixture()
-        defer { fixture.cleanup() }
-        let mixedSamples = mixedReferenceSamples(count: 3 * 4_096 + 17)
-        let quantizedMixed = mixedSamples.map { sample -> Int16 in
-            guard let value = RecordingFLAC.quantize16(sample) else {
-                preconditionFailure("このフィクスチャでは有限値のサンプルが必要です")
+    func flacTimelineReadsReferenceEncoderFixedAndLPCStreams() async throws {
+        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            guard let executable = referenceFLACExecutable else {
+                throw PortableFLACProcessFailure(
+                    arguments: [],
+                    status: -1,
+                    output: "PATH に flac がありません。有効化されたテストで実行ファイルを解決できませんでした。"
+                )
             }
-            return value
-        }
-        let wastedBitQuantized = quantizedMixed.map { value in (value / 8) * 8 }
-        #expect(wastedBitQuantized.allSatisfy { $0.isMultiple(of: 8) })
-        #expect(wastedBitQuantized.contains { $0 != 0 })
-        let wastedBitSamples = wastedBitQuantized.map { Float($0) / 32_768 }
+            let fixture = try PortableFLACTimelineFixture()
+            defer { fixture.cleanup() }
+            let mixedSamples = mixedReferenceSamples(count: 3 * 4_096 + 17)
+            let quantizedMixed = mixedSamples.map { sample -> Int16 in
+                guard let value = RecordingFLAC.quantize16(sample) else {
+                    preconditionFailure("このフィクスチャでは有限値のサンプルが必要です")
+                }
+                return value
+            }
+            let wastedBitQuantized = quantizedMixed.map { value in (value / 8) * 8 }
+            #expect(wastedBitQuantized.allSatisfy { $0.isMultiple(of: 8) })
+            #expect(wastedBitQuantized.contains { $0 != 0 })
+            let wastedBitSamples = wastedBitQuantized.map { Float($0) / 32_768 }
 
-        let cases: [(name: String, samples: [Float], arguments: [String], laxLargeBlock: Bool)] = [
-            ("mixed-fixed", mixedSamples, ["-0"], false),
-            ("mixed-lpc", mixedSamples, ["-8"], false),
-            ("wasted-bits", wastedBitSamples, ["-8"], false),
-            (
-                "lax-large-block",
-                mixedReferenceSamples(count: 65_535 + 17),
-                ["-8", "--lax", "-b", "65535", "-l", "32"],
-                true
-            ),
-        ]
-
-        for testCase in cases {
-            let source = try DeterministicTimelineAudio(samples: testCase.samples)
-            let expected = quantizedTimelineSamples(testCase.samples)
-            let rawURL = fixture.file("\(testCase.name).raw")
-            let outputURL = fixture.file("\(testCase.name).flac")
-            try SessionFileAccess.writeAtomically(rawSignedPCM16(testCase.samples), to: rawURL, relativeTo: fixture.root)
-            try runReferenceFLAC(executable, arguments: [
-                "--force-raw-format", "--endian=little", "--sign=signed",
-                "--channels=1", "--bps=16", "--sample-rate=16000",
-            ] + testCase.arguments + [rawURL.path, "-o", outputURL.path])
-
-            let reader = try fixture.reader(at: outputURL, committedFrames: Int64(testCase.samples.count))
-            try reader.validateAudio()
-            try reader.validateAudio(against: source)
-            #expect(try reader.readSamples(frameRange: 0..<Int64(testCase.samples.count)) == expected)
-            let referenceRanges: [Range<Int64>] = [
-                4_093..<4_102,
-                8_189..<8_198,
-                2_337..<2_401,
+            let cases: [(name: String, samples: [Float], arguments: [String], laxLargeBlock: Bool)] = [
+                ("mixed-fixed", mixedSamples, ["-0"], false),
+                ("mixed-lpc", mixedSamples, ["-8"], false),
+                ("wasted-bits", wastedBitSamples, ["-8"], false),
+                (
+                    "lax-large-block",
+                    mixedReferenceSamples(count: 65_535 + 17),
+                    ["-8", "--lax", "-b", "65535", "-l", "32"],
+                    true
+                ),
             ]
-            for range in referenceRanges {
-                #expect(try reader.readSamples(frameRange: range) == Array(expected[Int(range.lowerBound)..<Int(range.upperBound)]))
-            }
-            if testCase.laxLargeBlock {
-                let range: Range<Int64> = 65_532..<65_540
-                #expect(try reader.readSamples(frameRange: range) == Array(expected[Int(range.lowerBound)..<Int(range.upperBound)]))
+
+            for testCase in cases {
+                let source = try DeterministicTimelineAudio(samples: testCase.samples)
+                let expected = quantizedTimelineSamples(testCase.samples)
+                let rawURL = fixture.file("\(testCase.name).raw")
+                let outputURL = fixture.file("\(testCase.name).flac")
+                try SessionFileAccess.writeAtomically(rawSignedPCM16(testCase.samples), to: rawURL, relativeTo: fixture.root)
+                try runReferenceFLAC(executable, arguments: [
+                    "--force-raw-format", "--endian=little", "--sign=signed",
+                    "--channels=1", "--bps=16", "--sample-rate=16000",
+                ] + testCase.arguments + [rawURL.path, "-o", outputURL.path])
+
+                let reader = try fixture.reader(at: outputURL, committedFrames: Int64(testCase.samples.count))
+                try reader.validateAudio()
+                try reader.validateAudio(against: source)
+                #expect(try reader.readSamples(frameRange: 0..<Int64(testCase.samples.count)) == expected)
+                let referenceRanges: [Range<Int64>] = [
+                    4_093..<4_102,
+                    8_189..<8_198,
+                    2_337..<2_401,
+                ]
+                for range in referenceRanges {
+                    #expect(try reader.readSamples(frameRange: range) == Array(expected[Int(range.lowerBound)..<Int(range.upperBound)]))
+                }
+                if testCase.laxLargeBlock {
+                    let range: Range<Int64> = 65_532..<65_540
+                    #expect(try reader.readSamples(frameRange: range) == Array(expected[Int(range.lowerBound)..<Int(range.upperBound)]))
+                }
             }
         }
     }

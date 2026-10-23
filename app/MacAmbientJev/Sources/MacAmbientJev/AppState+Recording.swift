@@ -10,7 +10,7 @@ import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 import UniformTypeIdentifiers
 
-extension AppState: RecordingFinishEffects {
+extension AppState: RecordingFinishEffects, RecordingStartEffects {
     func toggleRecording() async {
         switch recordingPhase {
         case .starting:
@@ -65,121 +65,108 @@ extension AppState: RecordingFinishEffects {
             return
         }
 
-        let sessionID = UUID()
-        recording.start(sessionID: sessionID)
+        micInputVolumeAutomaticForStart = automaticMicInputVolume
+        await RecordingStartCoordinator(sessionsRoot: paths.sessionsRoot)
+            .start(sessionID: UUID(), effects: self)
+    }
+
+    func recordingStartDidBegin(sessionID: UUID) {
         if statusTone != .warning {
             setCaptureStatus(UserFacingStatus.startingRecording.text, tone: .neutral)
         }
+    }
 
-        var createdSessionURL: URL?
+    func bootstrapSession(sessionID: UUID) throws -> URL {
+        try prepareSession(sessionID: sessionID, source: .recording(captureSource))
+    }
 
-        do {
-            let sessionURL = try prepareSession(sessionID: sessionID, source: .recording(captureSource))
-            createdSessionURL = sessionURL
-            if captureSource == .microphone {
-                micInputSessionID = sessionID
-                captureEngine.configureMicInputVolume(
-                    automaticAdjustmentEnabled: automaticMicInputVolume,
-                    onStatus: { [weak self] id, status in
-                        guard let self, self.micInputSessionID == id else { return }
-                        self.micInputStatus = status
-                    }
-                )
+    func startCapture(
+        sessionID: UUID,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws {
+        if captureSource == .microphone {
+            guard let automaticMicInputVolume = micInputVolumeAutomaticForStart else {
+                preconditionFailure("マイク入力音量の自動調整設定が録音開始前に読み込まれていません")
             }
-            try await captureEngine.start(
-                sessionID: sessionID,
-                source: captureSource,
-                onFailure: { [weak self] message in
-                    guard let self else { return }
-                    if !self.recording.deferFailureWhileStarting(sessionID: sessionID, message: message) {
-                        self.captureDidFail(sessionID: sessionID, message: message)
-                    }
-                },
-                onWarning: { [weak self] message in
-                    guard let self, self.recordingSessionID == sessionID else { return }
-                    if let previous = self.captureWarningText {
-                        if !previous.contains(message) {
-                            self.captureWarningText = previous + " / " + message
-                        }
-                    } else {
-                        self.captureWarningText = message
-                    }
-                },
-                onPermissionWaiting: { [weak self] in
-                    guard let self, self.recordingSessionID == sessionID else { return }
-                    self.setCaptureStatus("システム音声の録音許可を待っています", tone: .neutral)
-                },
-                onDropouts: { [weak self] count in
-                    guard let self, self.recordingSessionID == sessionID else { return }
-                    self.dropoutCount = count
-                },
-                onSilenceChanged: { [weak self] silent in
-                    guard let self, self.recordingSessionID == sessionID else { return }
-                    self.isMicrophoneSilent = silent
+            micInputSessionID = sessionID
+            captureEngine.configureMicInputVolume(
+                automaticAdjustmentEnabled: automaticMicInputVolume,
+                onStatus: { [weak self] id, status in
+                    guard let self, self.micInputSessionID == id else { return }
+                    self.micInputStatus = status
                 }
             )
-            markRecordingStarted(sessionID: sessionID)
-            if let failure = recording.takePendingFailure(sessionID: sessionID) {
-                captureDidFail(sessionID: sessionID, message: failure)
-                return
-            }
-            showNewSession(sessionID)
-            setCaptureStatus(captureSource == .systemAudio ? "システム音声を録音中" : "マイクを録音中", tone: .recording)
-            if !pausesProcessing {
-                prepareASRModel()
-            }
-            do {
-                try await startLiveVAD(sessionID: sessionID)
-            } catch {
-                guard isCurrentRecording(sessionID) else { return }
-                liveTranscription.vadFailureText = error.localizedDescription
-                processingStatusText =
-                    "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
-                reportMicSpeechMonitoringUnavailable(sessionID: sessionID)
-            }
-        } catch {
-            _ = recording.takePendingFailure(sessionID: sessionID)
-            endMicInputSession()
-            captureWarningText = nil
-            isMicrophoneSilent = false
-            var removalFailure: String?
-            if let sessionURL = createdSessionURL {
-                let processing = SessionLayout(sessionURL: sessionURL).processingDirectory
-                let keepSession: Bool
-                do {
-                    let checkpoint = try AudioCheckpoint.loadRecovered(from: processing, relativeTo: sessionURL)
-                    keepSession = try checkpoint?.info.hasCapturedAudio ?? false
-                } catch {
-                    // Damaged durable data must remain available for recovery/diagnosis.
-                    keepSession = true
-                }
-                if keepSession {
-                    refreshSavedSessions()
-                } else {
-                    do {
-                        try SessionFileAccess.removeIfPresent(sessionURL, relativeTo: paths.sessionsRoot)
-                    } catch {
-                        removalFailure = "空の録音フォルダを削除できませんでした: \(error.localizedDescription)"
-                        refreshSavedSessions()
-                    }
-                }
-            }
-            recording.finish()
-            if case AudioCaptureEngineError.cancelled = error, removalFailure == nil {
-                setCaptureStatus("録音の開始を中止しました", tone: .neutral)
-            } else {
-                setCaptureStatus(
-                    [error.localizedDescription, removalFailure].compactMap { $0 }.joined(separator: "。"),
-                    tone: .error
-                )
-            }
-            releaseIdleResourcesIfIdle()
         }
+        try await captureEngine.start(
+            sessionID: sessionID,
+            source: captureSource,
+            onFailure: onFailure,
+            onWarning: { [weak self] message in
+                guard let self, self.recordingSessionID == sessionID else { return }
+                if let previous = self.captureWarningText {
+                    if !previous.contains(message) {
+                        self.captureWarningText = previous + " / " + message
+                    }
+                } else {
+                    self.captureWarningText = message
+                }
+            },
+            onPermissionWaiting: { [weak self] in
+                guard let self, self.recordingSessionID == sessionID else { return }
+                self.setCaptureStatus("システム音声の録音許可を待っています", tone: .neutral)
+            },
+            onDropouts: { [weak self] count in
+                guard let self, self.recordingSessionID == sessionID else { return }
+                self.dropoutCount = count
+            },
+            onSilenceChanged: { [weak self] silent in
+                guard let self, self.recordingSessionID == sessionID else { return }
+                self.isMicrophoneSilent = silent
+            }
+        )
     }
 
     func markRecordingStarted(sessionID: UUID) {
         recording.didStart(sessionID: sessionID)
         liveTranscription.begin(sessionID: sessionID)
+    }
+
+    func captureDidFailDuringStart(sessionID: UUID, message: String) {
+        captureDidFail(sessionID: sessionID, message: message)
+    }
+
+    func recordingDidStart(sessionID: UUID) {
+        showNewSession(sessionID)
+        setCaptureStatus(captureSource == .systemAudio ? "システム音声を録音中" : "マイクを録音中", tone: .recording)
+        if !pausesProcessing {
+            prepareASRModel()
+        }
+    }
+
+    func startLiveSession(sessionID: UUID) async throws {
+        try await startLiveVAD(sessionID: sessionID)
+    }
+
+    func liveSessionStartDidFail(sessionID: UUID, error: any Error) {
+        liveTranscription.vadFailureText = error.localizedDescription
+        processingStatusText =
+            "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
+        reportMicSpeechMonitoringUnavailable(sessionID: sessionID)
+    }
+
+    func recordingStartWillCleanUp() {
+        endMicInputSession()
+        captureWarningText = nil
+        isMicrophoneSilent = false
+    }
+
+    func recordingStartDidFail(_ failure: RecordingStartFailure) {
+        switch failure {
+        case .cancelled:
+            setCaptureStatus("録音の開始を中止しました", tone: .neutral)
+        case .failed(let message):
+            setCaptureStatus(message, tone: .error)
+        }
     }
 
     @discardableResult

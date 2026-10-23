@@ -56,7 +56,8 @@ Invoke-Step 'Qwen3-ASR model fetcher self-test' { python -B scripts/test_fetch_q
 Invoke-Step 'pinned download self-test' { python -B scripts/test_pinned_download.py }
 Invoke-Step 'Silero reference generator self-test' { python -B scripts/test_generate_silero_reference.py }
 Invoke-Step 'Qwen3-ASR token reference generator self-test' { python -B scripts/test_generate_qwen3_asr_token_reference.py }
-Invoke-Step 'Swift build portable Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
+Invoke-Step 'Swift build EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
+Invoke-Step 'Swift build Windows MacAmbientJevEngine executable' { swift build --package-path app/MacAmbientJev --product MacAmbientJevEngine }
 
 Write-Host '==> resolve Swift debug bin path'
 $binPathLines = @(& swift build --package-path app/MacAmbientJev --show-bin-path)
@@ -75,7 +76,21 @@ $destinationDll = Join-Path $binDir 'onnxruntime.dll'
 Copy-Item -LiteralPath $runtimeDll -Destination $destinationDll -Force -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $destinationDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied to the Swift debug bin directory: $destinationDll" }
 
-Invoke-Step 'Swift test portable Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
+$swiftExecutable = (Get-Command swift -CommandType Application -ErrorAction Stop).Source
+$swiftToolchainDirectory = Split-Path -Parent $swiftExecutable
+$clangPath = Join-Path $swiftToolchainDirectory 'clang.exe'
+if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { throw "Swift toolchain clang.exe is missing at the expected path: $clangPath" }
+$injectedTestSource = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) 'app/MacAmbientJev/Tests/CMiniaudioInjected/WindowsCaptureSafetyInjectedTests.c'))
+$injectedTestExecutable = Join-Path $binDir 'WindowsCaptureSafetyInjectedTests.exe'
+Invoke-Step 'Compile Windows capture safety injected C tests' { & $clangPath $injectedTestSource -o $injectedTestExecutable -lole32 }
+if (-not (Test-Path -LiteralPath $injectedTestExecutable -PathType Leaf)) { throw "Windows capture safety injected test executable was not produced: $injectedTestExecutable" }
+Invoke-Step 'Run Windows capture safety injected C tests' { & $injectedTestExecutable }
+
+Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
+
+Invoke-Step 'engine acceptance driver self-test' { python -B scripts/test_engine_acceptance.py }
+Invoke-Step 'engine acceptance FLAC validator self-test' { python -B scripts/test_engine_acceptance_flac.py }
+Invoke-Step 'deterministic engine acceptance' { python -B scripts/engine_acceptance.py deterministic --executable (Join-Path $binDir 'MacAmbientJevEngineHarness.exe') }
 
 if ($FullModel) {
     function Get-SinglePath([string]$Name, [object[]]$Lines) {
@@ -130,6 +145,7 @@ if ($FullModel) {
 
     Invoke-Step 'Swift build release ProcessRecording' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevProcessRecording }
     Invoke-Step 'Swift build release EvaluateASR' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevEvaluateASR }
+    Invoke-Step 'Swift build release EngineHarness' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevEngineHarness }
     $releaseBinLines = @(& swift build --package-path app/MacAmbientJev -c release --show-bin-path)
     $releaseBinDir = [System.IO.Path]::GetFullPath((Get-SinglePath 'Swift release bin path lookup' $releaseBinLines))
     if (-not (Test-Path -LiteralPath $releaseBinDir -PathType Container)) { throw "Swift release bin directory does not exist: $releaseBinDir" }
@@ -143,6 +159,13 @@ if ($FullModel) {
             --executable (Join-Path $releaseBinDir 'MacAmbientJevProcessRecording.exe') `
             --evaluator (Join-Path $releaseBinDir 'MacAmbientJevEvaluateASR.exe') `
             --fixture $fixture
+    }
+    Invoke-Step 'full-model engine acceptance' {
+        python -B scripts/engine_acceptance.py full-model `
+            --executable (Join-Path $releaseBinDir 'MacAmbientJevEngineHarness.exe') `
+            --process-recording (Join-Path $releaseBinDir 'MacAmbientJevProcessRecording.exe') `
+            --fixture $fixture `
+            --threads 2
     }
     Write-Host 'Windows full-model verification passed'
 }

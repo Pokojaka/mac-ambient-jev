@@ -151,13 +151,13 @@ public struct SessionFileProcessingService: Sendable {
     }
 
     public func inspect(sessionID: UUID) throws -> Inspection {
-        let validatedPaths = try validatedPaths()
+        let validatedPaths = try validatedPaths().paths
         do {
             let inspection = try SessionRecoveryScanner(sessionsRoot: validatedPaths.sessionsRoot)
                 .inspect(sessionID: sessionID)
             return Inspection(
                 sessionID: sessionID,
-                action: actionName(inspection.recovery?.action),
+                action: SessionRecoveryPlan(inspection.recovery?.action).inspectionName,
                 maintenance: inspection.maintenance?.rawValue
             )
         } catch SessionRecoveryScannerError.missingAudio,
@@ -185,7 +185,7 @@ public struct SessionFileProcessingService: Sendable {
         _ request: ImportRequest,
         callbacks: Callbacks
     ) async throws -> SessionProcessingResult {
-        let operationPaths = try validatedPaths()
+        let validated = try validatedPaths()
         guard FileManager.default.fileExists(atPath: request.audioURL.path) else {
             throw SessionFileProcessingError.audioFileNotFound(request.audioURL.path)
         }
@@ -199,42 +199,47 @@ public struct SessionFileProcessingService: Sendable {
             withDecisions: request.withDecisions,
             context: "audio \(request.audioURL.path)"
         )
-        let sessionID = UUID()
-        let sessionURL: URL
+        let retained: RetainedSession
         do {
-            sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
-                paths: operationPaths,
-                sessionID: sessionID,
-                source: .imported(originalFilename: request.audioURL.lastPathComponent),
-                createdAt: Date(),
-                timeZone: .current
-            )
-        } catch {
-            throw SessionFileProcessingError.processingFailed(
-                "creating an import session for \(request.audioURL.path) beneath \(operationPaths.sessionsRoot.path) failed: \(error.localizedDescription)"
-            )
+            retained = try RetainedSessionImporter(paths: validated).importRetainedSession(audioURL: request.audioURL)
+        } catch let error as RetainedImportError {
+            switch error {
+            case .bootstrap(let underlying):
+                throw SessionFileProcessingError.processingFailed(
+                    "creating an import session for \(request.audioURL.path) beneath \(validated.paths.sessionsRoot.path) failed: \(underlying.localizedDescription)"
+                )
+            case .copy(let sessionID, let sessionURL, let underlying):
+                await callbacks.onEvent(.sessionCreated(sessionID: sessionID, sessionURL: sessionURL))
+                await cleanupTemporarySession(
+                    sessionURL: sessionURL,
+                    keepSession: request.keepSession,
+                    callbacks: callbacks
+                )
+                throw SessionFileProcessingError.processingFailed(
+                    "importing audio \(request.audioURL.path) into session \(sessionURL.path) failed: \(underlying.localizedDescription)"
+                )
+            }
         }
 
-        await callbacks.onEvent(.sessionCreated(sessionID: sessionID, sessionURL: sessionURL))
+        await callbacks.onEvent(.sessionCreated(sessionID: retained.sessionID, sessionURL: retained.sessionURL))
 
         do {
             let result = try await processImport(
                 request,
-                sessionID: sessionID,
-                sessionURL: sessionURL,
-                paths: operationPaths,
+                retained: retained,
+                paths: validated.paths,
                 resources: resources,
                 callbacks: callbacks
             )
             await cleanupTemporarySession(
-                sessionURL: sessionURL,
+                sessionURL: retained.sessionURL,
                 keepSession: request.keepSession,
                 callbacks: callbacks
             )
             return result
         } catch {
             await cleanupTemporarySession(
-                sessionURL: sessionURL,
+                sessionURL: retained.sessionURL,
                 keepSession: request.keepSession,
                 callbacks: callbacks
             )
@@ -246,7 +251,7 @@ public struct SessionFileProcessingService: Sendable {
         _ request: ResumeRequest,
         callbacks: Callbacks
     ) async throws -> SessionProcessingResult {
-        let operationPaths = try validatedPaths()
+        let operationPaths = try validatedPaths().paths
         let sessionURL = try Self.resolveResumeSession(
             sessionID: request.sessionID,
             root: operationPaths.sessionsRoot,
@@ -254,10 +259,8 @@ public struct SessionFileProcessingService: Sendable {
         )
         let scanner = SessionRecoveryScanner(sessionsRoot: operationPaths.sessionsRoot)
         let initialInspection = try scanner.inspect(sessionID: request.sessionID)
-        let requiresInference = needsInference(
-            for: initialInspection.recovery?.action,
-            withDecisions: request.withDecisions
-        )
+        let requiresInference = SessionRecoveryPlan(initialInspection.recovery?.action)
+            .requiresInference(withDecisions: request.withDecisions)
         let resources: SessionFileProcessingResources?
         if requiresInference {
             resources = try processingResources(
@@ -284,8 +287,8 @@ public struct SessionFileProcessingService: Sendable {
         }
 
         let currentInspection = try scanner.inspect(sessionID: request.sessionID)
-        switch currentInspection.recovery?.action {
-        case .finalize?:
+        switch SessionRecoveryPlan(currentInspection.recovery?.action) {
+        case .finalize:
             guard let resources else {
                 throw SessionFileProcessingError.processingFailed(
                     "finalization for session \(sessionURL.path) requires processing resources, but the initial recovery inspection did not"
@@ -298,8 +301,8 @@ public struct SessionFileProcessingService: Sendable {
                 resources: resources,
                 callbacks: callbacks
             )
-        case .recoverDecisionRun(let boundarySegments, let clauses)?,
-             .retryContentPriority(let boundarySegments, let clauses)?:
+        case .recoverDecisionRun(let boundarySegments, let clauses),
+             .retryContentPriority(let boundarySegments, let clauses):
             guard request.withDecisions else {
                 try exportTranscript(
                     sessionURL: sessionURL,
@@ -323,7 +326,7 @@ public struct SessionFileProcessingService: Sendable {
                 resources: resources,
                 callbacks: callbacks
             )
-        case nil:
+        case .none:
             try exportTranscript(
                 sessionURL: sessionURL,
                 outputURL: request.outputURL,
@@ -336,59 +339,48 @@ public struct SessionFileProcessingService: Sendable {
 
     private func processImport(
         _ request: ImportRequest,
-        sessionID: UUID,
-        sessionURL: URL,
+        retained: RetainedSession,
         paths: AppPaths,
         resources: SessionFileProcessingResources,
         callbacks: Callbacks
     ) async throws -> SessionProcessingResult {
+        let sessionURL = retained.sessionURL
+        let processor = makeProcessor(paths: paths, resources: resources)
+        let collector = ProcessingResultCollector()
         do {
-            do {
-                _ = try AudioImporter().importFile(request.audioURL, into: sessionURL)
-            } catch {
-                throw SessionFileProcessingError.processingFailed(
-                    "importing audio \(request.audioURL.path) into session \(sessionURL.path) failed: \(error.localizedDescription)"
-                )
-            }
-
-            let processor = makeProcessor(paths: paths, resources: resources)
-            let collector = ProcessingResultCollector()
-            do {
-                await callbacks.onStatus("処理を開始します: \(request.audioURL.path)")
-                let result = await processor.processSession(
-                    sessionID: sessionID,
-                    pacingMode: request.pacingMode,
-                    shouldPause: callbacks.shouldPause,
-                    onPhase: callbacks.onPhase,
-                    metadataPolicy: .reject,
-                    onStatus: callbacks.onStatus,
-                    onUpdate: updateHandler(callbacks: callbacks, collector: collector)
-                )
-                guard result.disposition == .completed else {
-                    await processor.releaseIdleResources()
-                    return result
-                }
-                let state = await collector.snapshot().state
-                guard state == .complete else {
-                    throw SessionFileProcessingError.processingFailed(
-                        "finalizing imported audio \(request.audioURL.path) in session \(sessionURL.path) returned completed without a complete transcript update (state: \(describe(state)))"
-                    )
-                }
-                try exportTranscript(
-                    sessionURL: sessionURL,
-                    outputURL: request.outputURL,
-                    withDecisions: request.withDecisions
-                )
-                await callbacks.onEvent(.exported(request.outputURL))
+            await callbacks.onStatus("処理を開始します: \(request.audioURL.path)")
+            let result = await processor.processSession(
+                sessionID: retained.finalize.sessionID,
+                pacingMode: request.pacingMode,
+                shouldPause: callbacks.shouldPause,
+                onPhase: callbacks.onPhase,
+                metadataPolicy: retained.finalize.metadataPolicy,
+                onStatus: callbacks.onStatus,
+                onUpdate: updateHandler(callbacks: callbacks, collector: collector)
+            )
+            guard result.disposition == .completed else {
                 await processor.releaseIdleResources()
                 return result
-            } catch {
-                await processor.releaseIdleResources()
-                throw error
             }
+            let state = await collector.snapshot().state
+            guard state == .complete else {
+                throw SessionFileProcessingError.processingFailed(
+                    "finalizing imported audio \(request.audioURL.path) in session \(sessionURL.path) returned completed without a complete transcript update (state: \(describe(state)))"
+                )
+            }
+            try exportTranscript(
+                sessionURL: sessionURL,
+                outputURL: request.outputURL,
+                withDecisions: request.withDecisions
+            )
+            await callbacks.onEvent(.exported(request.outputURL))
+            await processor.releaseIdleResources()
+            return result
         } catch let error as SessionFileProcessingError {
+            await processor.releaseIdleResources()
             throw error
         } catch {
+            await processor.releaseIdleResources()
             throw SessionFileProcessingError.processingFailed(
                 "processing imported audio \(request.audioURL.path) in session \(sessionURL.path) failed: \(error.localizedDescription)"
             )
@@ -611,42 +603,13 @@ public struct SessionFileProcessingService: Sendable {
         }
     }
 
-    private func validatedPaths() throws -> AppPaths {
-        let root = try SessionsRootPolicy.validated(
-            paths.sessionsRoot,
-            protectedRoots: protectedRoots,
-            fileManager: .default
-        )
-        return AppPaths(
-            applicationSupportURL: paths.applicationSupportURL,
-            cacheURL: paths.cacheURL,
-            sessionsRootOverride: root
-        )
+    private func validatedPaths() throws -> ValidatedSessionPaths {
+        try ValidatedSessionPaths.externalRoot(paths, protectedRoots: protectedRoots)
     }
 
     private func sameResolvedPath(_ left: URL, _ right: URL) -> Bool {
         left.resolvingSymlinksInPath().standardizedFileURL.pathComponents.map { $0.lowercased() }
             == right.resolvingSymlinksInPath().standardizedFileURL.pathComponents.map { $0.lowercased() }
-    }
-
-    private func actionName(_ action: RecoverableProcessingAction?) -> String {
-        switch action {
-        case .finalize?: "finalize"
-        case .recoverDecisionRun?: "recoverDecisionRun"
-        case .retryContentPriority?: "retryContentPriority"
-        case nil: "none"
-        }
-    }
-
-    private func needsInference(
-        for action: RecoverableProcessingAction?,
-        withDecisions: Bool
-    ) -> Bool {
-        switch action {
-        case .finalize?: true
-        case .recoverDecisionRun?, .retryContentPriority?: withDecisions
-        case nil: false
-        }
     }
 
     private func describe(_ state: ProcessingState) -> String {

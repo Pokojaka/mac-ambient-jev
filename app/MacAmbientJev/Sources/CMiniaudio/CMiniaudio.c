@@ -8,6 +8,9 @@
 
 #if defined(_WIN32)
 #include <io.h>
+#include "WindowsCaptureEnvironment.h"
+static int32_t mja_capture_packet_read(void *device, uint32_t *frames_read);
+#define MJA_WASAPI_PACKET_READ(d, n) mja_capture_packet_read((void *)(d), (uint32_t *)(n))
 #define MA_ENABLE_WASAPI
 #else
 #include <sys/types.h>
@@ -22,6 +25,10 @@
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
 #define MA_ATOMIC_MODERN_GCC
 #include "include/miniaudio.h"
+
+#if defined(_WIN32)
+#include "WindowsCapture.inc"
+#endif
 
 struct mja_resampler {
     ma_linear_resampler resampler;

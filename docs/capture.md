@@ -122,6 +122,32 @@ writer 障害時は録音を停止し、赤い障害表示を維持しながら�
 
 システム音声タップの停止では、各資源の解放をすべて試み、失敗した操作名を付けて「システム音声の取得資源を解放できませんでした（…）。アプリを終了して開き直してください」というエラーを返します。開始失敗に伴う解放失敗は元のエラーと併記します。録音保存が成功し、解放だけが失敗した通常停止では、音声を保持し警告として表示します。writer 障害や入力障害による自動停止では元の障害表示を維持し、停止時に発生した別の解放・停止エラーも赤い表示に併記します。同じ原因が重複して返された場合は一度だけ表示します。
 
+## Windows のキャプチャ
+
+Windows では miniaudio の WASAPI（共有モードのみ）でマイク（`ma_device_type_capture`）とシステム音声（`ma_device_type_loopback`、再生エンドポイントを選択）を取得します。排他モード・他 backend・形式の代替経路はありません。同時に録音する入力元は一つです。入力デバイスは「既定」または列挙したエンドポイント ID のどちらかを明示し、既定は開始時に解決して固定します。エンドポイントの無効化・切替・形式変更・中断は、別デバイスへ切り替えず録音を停止してエラーにします。エンドポイント一覧は `WindowsWASAPICaptureFactory.devices(source:)` が返します（`devices.list` 用）。
+
+**パケット hook。** 標準の miniaudio コールバックにはタイムスタンプがなく、WASAPI の GetBuffer はデバイス位置と QPC を捨てます。そこで同梱ヘッダーの `ma_device_read__wasapi` に、`MJA_WASAPI_PACKET_READ` が定義されている場合だけ元の読み取りループを置き換える 4 行の hook を加えています。hook は GetBuffer のパケットを、フレーム数・デバイス位置・QPC（100 ns 単位）・フラグとともに最大 512 フレームに分割して渡し、分割後も元パケットの位置と offset を保持します。この経路が取得モードの唯一の入力で、通常の data callback は何も処理しません。native PCM（u8 / s16 / s24 / s32 / f32）は有界な scratch で float32 に変換し、チャンネル数とソースレートは保持します。チャンネル平均は `TimestampedMonoSink`、SRC は `AudioCaptureDrain` で一度だけ行います。
+
+**タイムスタンプ。** デバイスフレームを録音開始時の QPC epoch からの座標へ写します。QPC の経過とデバイス位置の差が許容（2 フレームまたは 2 ms の大きい方）を超える前進は、ループバックで直近の健全性通知が明示的に idle の場合に限り、フラグなしでも受け入れます。active 状態または健全性通知がない場合は `.timestamp` で停止します。`DISCONTINUITY` 付きの前進ジャンプと位置のリセットは、ホスト座標が `sink.lastEndFrame` より前に戻らない場合に受け入れます。再起動・ジャンプ両方の逆行判定は `sink.lastEndFrame` を使います。`TIMESTAMP_ERROR`、その他の逆行・不整合・不正なフラグ／形式／NaN は、欠落時間を推測せず停止します。`SILENT` パケットは有効な無音（`sink.silence`）です。ゼロ値が連続する通常パケットも有効な音声として扱います。`SILENT` でも既知欠落でもない実 PCM の各パケット／断片は、実 PCM の値がすべてゼロでも、開始座標が `sink.lastEndFrame` より前なら `.timestamp` で停止します。実 PCM を切り捨てて合成無音や gap に置き換えません。
+
+**ループバックの無音。** ループバックは再生がない間パケットを返さず、デバイス位置は届けたフレームだけを数えます。同じ native producer thread で、利用可能なパケットを全て読んだ後に健全性を通知します。外部再生（エンジンとその子孫を除くセッションのプロセス）がないと明示的に観測されている間は、watermark の確定済み範囲を有効な無音として埋めます。watermark の未カバー区間が 3 秒以上なら `.suspended` で停止します。再生中にパケットが 3 秒届かない場合、worker heartbeat が 3 秒途切れる場合、再生状態が不明な場合も停止します。マイクのパケット途絶は共通の 3 秒 stall 判定に従います。
+
+- **健全性補填と末尾 gap の 250 ms 猶予。** ループバックの健全性通知による無音補填と、再生終了時（出力状態 1→0）の末尾 gap は、watermark から 250 ms 引いた確定済み位置までに限ります。これは遅れて届く音声を決して先回りしない保証ではありません。実 PCM がすでに書き込まれた範囲へ後から重なった場合は、切り捨てず `.timestamp` で停止します。末尾 gap が 3 秒以上なら停止し、それより後ろは後続の idle 健全性通知で無音として補います。
+- **無再生区間からの復帰と再アンカー。** 初回パケットは初期アンカーとして設定し、その前を補填しません。ループバックの前進再アンカーで、直近の健全性通知が明示的に idle なら、`[sink.lastEndFrame, hostFrame)` をパケットより先に有効な無音で埋めます。これは gap／dropout ではなく、区間が 3 秒未満の場合だけ行います。3 秒以上なら `.suspended` で停止します。前進 QPC mismatch がフラグなしで受け入れられるのはこの idle loopback に限り、active 状態または健全性通知がまだない場合は `.timestamp` で停止します。`DISCONTINUITY` 付きの前進ジャンプ／位置リセットは、ホスト座標が `sink.lastEndFrame` より前に戻らない場合に受け入れます。active 中のジャンプで無音補填はせず、リング上の gap として扱います。マイクの QPC 前進はフラグがなければ停止します。
+
+**環境監視。** 専用スレッドが 100 ms ごとに、エンドポイントの有効性、既定デバイスの変更（既定を選んだ場合）、ループバックでは外部再生の有無を観測します。デバイス列挙子はこのスレッドで一度だけ作って使い回し、COM も同じスレッドで一度だけ初期化します。ループバックの session manager／probe は、endpoint の GetState が `ACTIVE` を返した後、必要になった時点で遅延作成します。非 active 状態または GetState 失敗では probe を破棄し、後続の明示的な poll があれば新しい probe を作ります。ただし実際の監視 worker はそのエラーで停止し、自動再接続・再試行をしません。GetSessionEnumerator の失敗もそのまま伝播し、再試行しません。プロセスツリーはアクティブなセッションの PID 集合が変わったときだけ作り直します（生存中の PID の親子関係は変わりません）。値は SRWLOCK で守り、読み取り側は一貫した 4 つ組（観測開始 QPC、完了 QPC、出力状態、エラー）を得ます。「書き込み中」エラーはありません。生存確認は完了 QPC から 1 秒（10 周期）で、遅くても完了する監視は異常ではありません。外部セッションの PID は次の規則で決めます。
+
+- 先にアクティブなセッションを列挙し、その後でプロセスを snapshot します。セッションの PID が snapshot に無ければ、列挙後に終了したプロセスであり、自プロセスにも子孫にもなり得ないので読み飛ばします。自プロセスが snapshot に無い場合だけ不整合として停止します。
+- 複数プロセスにまたがるセッション（`AUDCLNT_S_NO_SINGLE_PROCESS`）は自プロセスだけのものではないため、致命にせず、システム音声と同じ PID 0 の外部セッションとして扱います。自プロセスの音声を外部と誤認しても、ループバックはその音声も取得するためパケットが届き、害はありません。逆に外部再生を見落とすと実音声を無音で置き換えるため、安全側に倒します。
+
+**安全機能。** 共通の capture safety の定数（最初のバッファと stall は 3 秒、無音通知 30 秒、開始予約 601,600,000 bytes、停止下限 128,000,000 bytes、30 秒ごとの確認）をそのまま使います。空き容量は検証済みの録音ディレクトリを GetDiskFreeSpaceExW に渡し、呼び出し元が使える空き bytes を Int64 に変換します（BOOL と GetLastError を確認し、Int64 の上限超過はエラー）。NULL や現在のドライブは使いません。開始前に取得できなければ録音しません。録音中の取得失敗は警告、下限未満は停止です。スリープ防止は専用の native スレッドが SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) を取得し、解放イベントを無期限に待ち（定期的な起床はしません）、同じスレッドで `ES_CONTINUOUS` を指定して解放します。終了時に解放イベントの SetEvent が失敗した場合は無期限 join を行わず、worker が使う owner とハンドルを保持して cleanup error を返します。信号に成功した場合は worker の無期限 join を行い、join に成功した場合に限ってハンドルと owner を破棄します。取得失敗は開始エラー、解放失敗は報告します。ディスプレイ関連のフラグは使いません。蓋を閉じる操作や利用者が選ぶスリープは防げず、想定外の中断では録音を停止して復旧可能な音声を残します。停止は native producer を join してからリングの末尾を確定し、`drain.finish()`、資源解放の順で行います。writer 障害では健全な checkpoint を[共通確定処理](final.md)へ送ります。
+
+Windows には入力音量の自動調整がなく、能力表示は `automatic_input_volume: "none"` です。熱状態の監視もなく、`WindowsNoThermalMonitoring` を注入して `thermal_monitoring: "none"` と表示し、常温を装う値は返しません。
+
+WindowsSupport の ingress unit tests は仮想時計と座標・無音・gap・障害を指定し、idle からの再開時の無音補填、合成無音との重複拒否、active／idle 状態に応じた再アンカーの扱いを検証します。これらの unit tests は実際の sink と ring を使います。別の source integration fake tests は、さらに drain・SRC・writer も通します。fake は本番の protocol と実行ファイルからは使えません。native 側は `app/MacAmbientJev/Tests/CMiniaudioInjected/WindowsCaptureSafetyInjectedTests.c` を Windows clang で `clang <file> -o <一時 exe> -lole32` としてビルドし、SwiftPM tests とは別に実行します。ローカルで差し替えた Win32／COM 呼び出しを通じて同梱実装そのものを検証し、音声ハードウェアは使いません。
+
+snapshot publisher stress test は 1,000,000 回読み取りを行い、teardown は publisher の完了を待ってから native state を解放します。
+
 ## 実装の根拠
 
 - [録音開始・停止・障害表示](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+Recording.swift)、[キャプチャ本体](../app/MacAmbientJev/Sources/MacAmbientJevCapture/AudioCaptureEngine.swift)、[macOS provider の空き容量と入力監視](../app/MacAmbientJev/Sources/MacAmbientJevCapture/MacCaptureProviders.swift)、[portable な capture lifecycle / policy](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/CaptureSafety.swift)
@@ -129,3 +155,4 @@ writer 障害時は録音を停止し、赤い障害表示を維持しながら�
 - [リング容量](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[保存エラー](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[取得音声の判定](../app/MacAmbientJev/Sources/MacAmbientJevCore/TimelineAudio.swift)
 - [入力音量 policy](../app/MacAmbientJev/Sources/MacAmbientJevCore/MicGainPolicy.swift)、[音量 ownership と復元](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/MicInputVolumeController.swift)、[設定初期値](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[設定 UI](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)
 - [日本語表示文言](../app/MacAmbientJev/Sources/MacAmbientJevCore/UserFacingStatus.swift)、[表示色・状態の分離](../app/MacAmbientJev/Sources/MacAmbientJev/MacAmbientJevApp.swift)、[読み込みのチャンネル構成](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)
+- [Windows のキャプチャ源](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsCaptureSource.swift)、[パケット ingress](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsCaptureIngress.swift)、[安全 adapter](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsCaptureSafety.swift)、[WASAPI factory](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsWASAPICaptureFactory.swift)、[native wrapper](../app/MacAmbientJev/Sources/CMiniaudio/WindowsCapture.inc)

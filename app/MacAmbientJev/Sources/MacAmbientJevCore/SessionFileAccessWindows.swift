@@ -228,6 +228,27 @@ public enum SessionFileAccess {
         try check(msj_flush(sourceParent.raw), url: source.deletingLastPathComponent())
     }
 
+    /// Moves a real directory to a name that does not exist yet. An existing destination is an error,
+    /// so a published directory is never replaced or merged in place.
+    public static func renameDirectory(_ source: URL, to destination: URL, relativeTo root: URL) throws {
+        let sourceParent = try parent(of: source, relativeTo: root, writable: true)
+        let destinationParent = try parent(of: destination, relativeTo: root, writable: true)
+        let entry = try child(sourceParent, name: source.lastPathComponent, url: source,
+                              kind: 1, writable: true, deletable: true)
+        do { _ = try child(destinationParent, name: destination.lastPathComponent, url: destination, kind: -1) }
+        catch {
+            guard isMissing(error) else { throw error }
+            try check(msj_flush(entry.raw), url: source)
+            try destination.lastPathComponent.withCString(encodedAs: UTF16.self) {
+                try check(msj_rename(entry.raw, destinationParent.raw, $0), url: destination)
+            }
+            try check(msj_flush(destinationParent.raw), url: destination.deletingLastPathComponent())
+            try check(msj_flush(sourceParent.raw), url: source.deletingLastPathComponent())
+            return
+        }
+        throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
+    }
+
     public static func synchronize(_ url: URL, relativeTo root: URL, isDirectory: Bool = false) throws {
         if isDirectory {
             let handle = try directory(url, relativeTo: root, writable: true)

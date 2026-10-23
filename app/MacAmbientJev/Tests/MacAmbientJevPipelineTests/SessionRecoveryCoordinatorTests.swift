@@ -237,6 +237,7 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
     let finalizeID = UUID()
     let decisionID = UUID()
     let maintenanceFailureID = UUID()
+    let maintenanceInterruptedID = UUID()
     let alreadyPendingID = UUID()
     let publishedRetryID = UUID()
     let previous = SessionRecoveryStatusSnapshot(processing: "ongoing", transcript: "prior transcript")
@@ -262,6 +263,7 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
         recoveryCandidate(recordingID, action: .finalize),
         recoveryCandidate(decisionID, action: .recoverDecisionRun(boundarySegments: segments, clauses: clauses)),
         recoveryCandidate(maintenanceFailureID, action: .finalize),
+        recoveryCandidate(maintenanceInterruptedID, action: .finalize),
         recoveryCandidate(alreadyPendingID, action: .finalize),
         recoveryCandidate(publishedRetryID, action: .retryContentPriority(boundarySegments: segments, clauses: clauses))
     ]
@@ -269,6 +271,10 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
         sessionURL: URL(fileURLWithPath: "/recovery/broken"),
         message: "manifest unavailable"
     )
+    let maintenanceIssues: [UUID: SessionMaintenanceIssue] = [
+        maintenanceFailureID: .failed("maintenance failed"),
+        maintenanceInterruptedID: .interruptedByShutdown("maintenance interrupted")
+    ]
     let executor = RecoveryTestExecutor(
         finalizationIDs: [finalizeID],
         retryIDs: [alreadyPendingID, decisionID]
@@ -281,7 +287,11 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
         scan: {
             SessionRecoveryScan(
                 candidates: candidates,
-                maintenance: [maintenanceCandidate(recordingID), maintenanceCandidate(maintenanceFailureID)],
+                maintenance: [
+                    maintenanceCandidate(recordingID),
+                    maintenanceCandidate(maintenanceFailureID),
+                    maintenanceCandidate(maintenanceInterruptedID)
+                ],
                 failures: [scanFailure]
             )
         },
@@ -290,22 +300,27 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
             maintenanceLog.append("maintaining:\(wasMaintaining)")
             maintenanceLog.append("items:\(items.map(\.sessionID).map(\.uuidString).joined(separator: ","))")
             await willMaintain(items.count)
-            return [maintenanceFailureID: "maintenance failed"]
+            return maintenanceIssues
         }
     )
 
-    #expect(maintenanceLog.values == ["maintaining:true", "items:\(maintenanceFailureID.uuidString)"])
+    #expect(maintenanceLog.values == [
+        "maintaining:true",
+        "items:\(maintenanceFailureID.uuidString),\(maintenanceInterruptedID.uuidString)"
+    ])
     #expect(effects.recoveryEvents == [
-        .maintenanceStarted(1),
-        .maintenanceFinished(count: 1, previous: previous),
+        .maintenanceStarted(2),
+        .maintenanceFinished(count: 2, previous: previous),
         .recovering(2),
         .reportedFailures(
             scanFailures: [scanFailure],
-            maintenanceFailures: [maintenanceFailureID: "maintenance failed"],
+            maintenanceFailures: maintenanceIssues,
             hasRecoveries: true
         )
     ])
     #expect(effects.processingQueue.pending.map(\.sessionID) == [alreadyPendingID, finalizeID, decisionID])
+    #expect(!effects.processingQueue.pending.map(\.sessionID).contains(maintenanceFailureID))
+    #expect(!effects.processingQueue.pending.map(\.sessionID).contains(maintenanceInterruptedID))
     #expect(!effects.processingQueue.isMaintainingStorage)
 
     effects.releaseIdle()

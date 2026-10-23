@@ -11,10 +11,16 @@ CHECK_SCRIPT = pathlib.Path(__file__).resolve().with_name("check_portable_core.p
 DEFAULT_ROOTS = (
     "app/MacAmbientJev/Sources/MacAmbientJevCore",
     "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+    "app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol",
+    "app/MacAmbientJev/Sources/MacAmbientJevEngineHost",
     "app/MacAmbientJev/Sources/MacAmbientJevDiarization",
     "app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement",
     "app/MacAmbientJev/Sources/MacAmbientJevONNX",
     "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime",
+)
+WINDOWS_ONLY_ROOTS = (
+    "app/MacAmbientJev/Sources/MacAmbientJevEngine",
+    "app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport",
 )
 
 
@@ -58,6 +64,29 @@ class PortableImportTests(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertEqual(self.violations(f"#if os(macOS)\nimport {module}\n#endif"), [module])
 
+    def test_engine_module_is_rejected_even_when_windows_guarded(self):
+        source = "#if os(Windows)\nimport MacAmbientJevEngine\n#endif"
+        self.assertEqual(self.violations(source), ["MacAmbientJevEngine"])
+
+    def test_windows_support_requires_positive_windows_guard(self):
+        rejected_sources = [
+            "import MacAmbientJevWindowsSupport",
+            "#if DEBUG\nimport MacAmbientJevWindowsSupport\n#endif",
+            "#if os(Linux)\nimport MacAmbientJevWindowsSupport\n#endif",
+            "#if !os(Windows)\nimport MacAmbientJevWindowsSupport\n#endif",
+        ]
+        for source in rejected_sources:
+            with self.subTest(source=source):
+                self.assertEqual(self.violations(source), ["MacAmbientJevWindowsSupport"])
+
+        allowed_sources = [
+            "#if os(Windows)\nimport MacAmbientJevWindowsSupport\n#endif",
+            "#if os(Windows)\n#if DEBUG\nimport MacAmbientJevWindowsSupport\n#endif\n#endif",
+        ]
+        for source in allowed_sources:
+            with self.subTest(source=source):
+                self.assertEqual(self.violations(source), [])
+
     def test_os_import_requires_its_own_positive_guard(self):
         for module in ["Darwin", "Glibc", "WinSDK"]:
             with self.subTest(module=module):
@@ -96,17 +125,49 @@ class PortableImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.write_fixture(directory, DEFAULT_ROOTS[0], "import Foundation")
             self.write_fixture(directory, DEFAULT_ROOTS[1], "import AVFoundation")
-            self.write_fixture(directory, DEFAULT_ROOTS[2], "import CoreML")
-            self.write_fixture(directory, DEFAULT_ROOTS[3], "import FluidAudio")
-            self.write_fixture(directory, DEFAULT_ROOTS[4], "import Foundation")
-            self.write_fixture(directory, DEFAULT_ROOTS[5], "import Foundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[2], "import AppKit")
+            self.write_fixture(directory, DEFAULT_ROOTS[3], "import WinSDK")
+            self.write_fixture(directory, DEFAULT_ROOTS[4], "import CoreML")
+            self.write_fixture(directory, DEFAULT_ROOTS[5], "import FluidAudio")
+            self.write_fixture(directory, DEFAULT_ROOTS[6], "import Foundation")
+            self.write_fixture(directory, DEFAULT_ROOTS[7], "import Foundation")
 
             result = self.run_default_cli(directory)
 
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn("AVFoundation", result.stderr)
-            self.assertIn("CoreML", result.stderr)
-            self.assertIn("FluidAudio", result.stderr)
+            for module in ["AVFoundation", "AppKit", "WinSDK", "CoreML", "FluidAudio"]:
+                with self.subTest(module=module):
+                    self.assertIn(module, result.stderr)
+            self.assertIn(str(pathlib.PurePath(DEFAULT_ROOTS[2])), result.stderr)
+            self.assertIn(str(pathlib.PurePath(DEFAULT_ROOTS[3])), result.stderr)
+
+    def test_cli_rejects_platform_imports_in_each_engine_root(self):
+        sources = [
+            ("import AppKit", "AppKit"),
+            ("#if os(macOS)\nimport AVFoundation\n#endif", "AVFoundation"),
+            ("import WinSDK", "WinSDK"),
+            (
+                "#if os(Windows)\nimport MacAmbientJevEngine\n#endif",
+                "MacAmbientJevEngine",
+            ),
+            ("import MacAmbientJevWindowsSupport", "MacAmbientJevWindowsSupport"),
+        ]
+        for engine_root in DEFAULT_ROOTS[2:4]:
+            for source, module in sources:
+                with self.subTest(engine_root=engine_root, module=module):
+                    with tempfile.TemporaryDirectory() as directory:
+                        for root in DEFAULT_ROOTS:
+                            self.write_fixture(
+                                directory,
+                                root,
+                                source if root == engine_root else "import Foundation",
+                            )
+
+                        result = self.run_default_cli(directory)
+
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn(str(pathlib.PurePath(engine_root)), result.stderr)
+                        self.assertIn(module, result.stderr)
 
     def test_cli_requires_all_default_roots(self):
         for missing_root in DEFAULT_ROOTS:
@@ -122,16 +183,33 @@ class PortableImportTests(unittest.TestCase):
                     self.assertIn(pathlib.Path(missing_root).name, result.stderr)
                     self.assertIn("not found", result.stderr)
 
+    def test_cli_ignores_windows_only_source_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for root in DEFAULT_ROOTS:
+                self.write_fixture(directory, root, "import Foundation")
+            for root in WINDOWS_ONLY_ROOTS:
+                self.write_fixture(directory, root, "import WinSDK")
+
+            result = self.run_default_cli(directory)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cli_passes_when_all_default_roots_are_valid(self):
         with tempfile.TemporaryDirectory() as directory:
             for root in DEFAULT_ROOTS:
                 self.write_fixture(directory, root, "import Foundation")
+            for root in WINDOWS_ONLY_ROOTS:
+                self.assertFalse((pathlib.Path(directory) / root).exists())
 
             result = self.run_default_cli(directory)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(
-                result.stdout.startswith("Portable Core / Pipeline / Diarization / ONNX / PortableRuntime import check passed"),
+                result.stdout.startswith("Portable Core / Pipeline / EngineProtocol / EngineHost / Diarization / ONNX / PortableRuntime import check passed"),
+                result.stdout,
+            )
+            self.assertTrue(
+                result.stdout.rstrip().endswith(f"({', '.join(DEFAULT_ROOTS)})"),
                 result.stdout,
             )
 

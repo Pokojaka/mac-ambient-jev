@@ -1,6 +1,195 @@
 # Windows の共通コア
 
-Windows では Swift 6.2 で共通 Core / Pipeline、WindowsSupport、ONNX、PortableRuntime、評価 CLI 3 本、full-session file CLI `MacAmbientJevProcessRecording`、file transcription CLI `MacAmbientJevTranscribeFile`、および Core / Pipeline / WindowsSupport / ONNX / PortableRuntime / ProcessRecording / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と2つの file CLI を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。`MacAmbientJevProcessRecording` は音声ファイルを session に import して full-session finalization / recovery を実行します。`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) と ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter を使う別の評価 CLI で、WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming decoder と SRC に委譲します。Windows に microphone / system-audio live capture、GUI、インストーラーはありません。PortableRuntime の live VAD API はありますが、Windows live capture 経路はありません。macOS の app は Apple Silicon と macOS 15 以降で動作します。
+Windows では Swift 6.2 で共通 Core / Pipeline / EngineProtocol / EngineHost、WindowsSupport、ONNX、PortableRuntime、Windows engine process、評価 CLI 3 本、full-session file CLI `MacAmbientJevProcessRecording`、file transcription CLI `MacAmbientJevTranscribeFile`、および Core / Pipeline / EngineProtocol / EngineHost / WindowsSupport / ONNX / PortableRuntime / Engine / ProcessRecording / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と2つの file CLI を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。`MacAmbientJevProcessRecording` は音声ファイルを session に import して full-session finalization / recovery を実行します。`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) と ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter を使う別の評価 CLI で、WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming decoder と SRC に委譲します。Windows の engine process `MacAmbientJevEngine.exe` は WASAPI の microphone / system-audio capture を持ち、GUI とインストーラーはありません。macOS の app は Apple Silicon と macOS 15 以降で動作します。
+
+## MacAmbientJevEngineProtocol NDJSON v1
+
+この節は portable `MacAmbientJevEngineProtocol` ライブラリの現行 wire 仕様です。Windows 専用の `MacAmbientJevEngine.exe` はこの protocol を使い、NDJSON transport・WASAPI capture・PortableRuntime inference を composition します（実行時の規則は[エンジンの composition](#エンジンの-composition起動時復旧と実行ファイル)を参照）。型と厳密 codec は Foundation の Codable / [Foundation JSONEncoder](https://developer.apple.com/documentation/foundation/jsonencoder) / JSONDecoder を使います（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。行 framing は [NDJSON 1.0](https://raw.githubusercontent.com/ndjson/ndjson-spec/master/README.md) に従います。
+
+実装: [`EngineProtocolVersion.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineProtocolVersion.swift)、[`EngineWireSupport.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineWireSupport.swift)、[`EngineCommands.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineCommands.swift)、[`EngineEventPayloads.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineEventPayloads.swift)、[`EngineEvents.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineEvents.swift)、[`EngineCodec.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineCodec.swift)。対応 tests: [`EngineProtocolVersionTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolVersionTests.swift)、[`EngineProtocolLexicalTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolLexicalTests.swift)、[`EngineProtocolCommandTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolCommandTests.swift)、[`EngineProtocolEventPayloadTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolEventPayloadTests.swift)、[`EngineProtocolEventTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolEventTests.swift)、[`EngineProtocolCodecTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolCodecTests.swift)、[`EngineProtocolGoldenTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolGoldenTests.swift)、[`EngineProtocolDocumentationTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolDocumentationTests.swift)。
+
+### Envelope、ID、line framing
+
+Request object は正確に `{version, request_id, command, payload}`、output object は正確に `{version, sequence, request_id, event, payload}` です。wire は binary UTF-8 bytes で、BOM は使いません。全 key は snake_case、`version` は JSON integer の literal `1`。request `payload` と output `payload` は常に object です。required key の欠落、null/wrong type、unknown key/value、camelCase alias は、ネストした object を含め拒否します。nullable field も key 自体は必須で、値がないときは明示的な JSON `null` を使います。
+
+`request_id` と `sequence` は JSON number でなく、正の canonical decimal UInt64 string (`1`...`18446744073709551615`) です。先頭ゼロ、符号、空白、範囲外値は不可です。接続の最初の request は `hello` / ID `1` の組だけを受け入れ、その後の ID は厳密増加し、間の欠番は許容します。output sequence も `1` から厳密増加し、欠番は許容します。revision は同じ正の canonical decimal UInt64 string domain です。これらの envelope/ID schema と、admission order helper (`EngineRequestOrder` / `EngineSequenceOrder`) は分離されています。
+
+`session_id`、`folder_id`、`row_id` は空でない不透明文字列です。UUID 形式を要求せず、読み取れない folder に架空の session ID を割り当てません。device endpoint ID も不透明な空でない文字列です。cursor は構文を解釈しない不透明文字列で、初回は `null`、返された次ページ cursor は空でない文字列です。revision を持つ transcript query も初回 revision は `null` にします。
+
+`EngineCodec.decodeRequest(_:)` / `decodeOutput(_:)` は LF/CRLF delimiter を含まない1 record の UTF-8 bytes を受け取ります。`EngineLineFramer` が fragmented/coalesced input を分割し delimiter を除去します。LF と CRLF を受け入れ、blank line、bare CR、BOM、invalid UTF-8、partial final line を拒否します。EOF 時は buffer が空なら正常、途中の record があれば error です。framer はいずれかの framing/validation failure で terminal に閉じ、以後の append/finish は拒否します。codec の encoder は compact JSON、stable sorted keys、unescaped slash を出力し、record ごとに LF を1つ付けます。
+
+lexical validation は root object、JSON grammar、有限数値、重複 object key（escape 展開後も含む）、nesting depth を typed decode より先に検査します。typed decode はすべての object level の unknown fields と enum values を拒否します。
+
+| 定数 | 制約 |
+| --- | --- |
+| `max_line_bytes = 1048576` | CRLF delimiter を除く record は最大 1 MiB。complete envelope/page も同じ record 上限内。 |
+| `max_depth = 32` | root object を depth 1 とする object/array nesting 上限。 |
+| transcript page / tail rows-array budget = 700000 bytes | `transcript.read` page と `transcript.watch` tail の rows 配列に使える予算。row ごとの canonical JSON UTF-8 byte 数と配列 comma を実際に数え、文字数や推定値は使わない。 |
+| `max_row_bytes = 262144` | 個々の compact encoded row の上限。key と JSON escaping を含み、LF は含めない。1行でも超える row は `row_too_large` error。 |
+| session list count | request `limit` は 1...100。 |
+| transcript page count | request `limit` は 1...200、`EngineTranscriptPage.rows` は最大 200。 |
+| row changes | `rows.count + removed_row_ids.count <= 200`。 |
+| state queue | `EngineState.queue` は最大 16 operation。 |
+
+host が request admission を最大 16 件に制限する場合、それは host contract であり、個別 envelope を検証する codec の機能ではありません。codec は上記の型・record・row 制約を検証します。
+
+### Commands と completed result
+
+`payload` key は各行に示すものだけで、すべて必須です。`EngineResult` は `completed` の `{command, result}` object で、result は対応する型または `{}` です。
+
+| Command | 必須 payload | completed result / 意味 |
+| --- | --- | --- |
+| `hello` | `EngineEmptyPayload` `{}` | `EngineReadyPayload`。capabilities と現在の revisioned state。最初の request のみ。 |
+| `state.get` | `EngineEmptyPayload` `{}` | `EngineState`。現在の revisioned state。 |
+| `devices.list` | `EngineDevicesListPayload` `{source: EngineSource}` | `EngineDevicesResult`。source ごとの endpoint と明示された default selection。 |
+| `recording.start` | `EngineRecordingStartPayload` `{source: EngineSource, device: EngineDevice}` | `EngineSessionPayload`。開始が成功してから session ID を返す。 |
+| `recording.stop` | `EngineSessionPayload` `{session_id: String}` | `EngineSessionPayload`。durable stop と finalization queue への追加後に完了し、transcript finalization は待たない。 |
+| `session.import` | `EngineImportPayload` `{input_path: String}` | `EngineSessionPayload`。source を retained import として保存し finalization queue に追加後に完了し、final transcript は待たない。 |
+| `session.reprocess` | `EngineSessionPayload` `{session_id: String}` | `EngineSessionPayload`。要求した reprocess work が終端状態になってから完了。 |
+| `session.retry_decisions` | `EngineSessionPayload` `{session_id: String}` | `EngineSessionPayload`。要求した decisions retry が終端状態になってから完了。 |
+| `session.list` | `EngineSessionListPayload` `{cursor: String|null, limit: Int}` | `EngineSessionListResult`。unreadable folder も stable `folder_id` と error 付きで含む。 |
+| `transcript.read` | `EngineTranscriptReadPayload` `{session_id: String, revision: EngineID|null, cursor: String|null, limit: Int}` | `EngineTranscriptPage`。engine が投影済みの revisioned page。stale revision/cursor は error。 |
+| `transcript.watch` | `EngineSessionPayload` `{session_id: String}` | `EngineTranscriptPage`。single selected session の bounded tail snapshot を返し、以降は revisioned `rows` event を送る。 |
+| `session.export` | `EngineExportPayload` `{session_id: String, destination_path: String}` | `EngineExportResult`。明示 destination へ `transcript.txt` と audio（recording は `audio.flac`、import は retained original）を含む bundle を publication した後に完了。 |
+| `settings.get` | `EngineEmptyPayload` `{}` | `EngineSettingsResult`。settings と revision。未設定時は `settings_required` / validation error。 |
+| `settings.replace` | `EngineSettingsReplacePayload` `{expected_revision: EngineID|null, settings: EngineSettings}` | `EngineSettingsResult`。10 field 全体の strict replacement。`expected_revision: null` は first setup のみ。busy 中に recording/model/state と競合する replacement は host が `busy` error で拒否する。 |
+| `models.prepare` | `EngineEmptyPayload` `{}` | `{}`。installed model profile の検証・load と progress。download はしない。 |
+| `shutdown` | `EngineEmptyPayload` `{}` | `{}`。host が capture を安全に停止し resource を release した後に terminal completion して終了する。 |
+
+### Nested model の exact schema
+
+次表の object は列挙した key のみを持ちます。略記 `T?` は必須 key の値が `T` または明示的 `null` であることを示します。array の要素も記載した型どおりです。
+
+| Swift 型 | exact fields と検証 |
+| --- | --- |
+| `EngineRequest` | `{version: Int (=1), request_id: EngineID, command: EngineCommandName, payload: command に対応する payload union}`。 |
+| `EngineOutput` | `{version: Int (=1), sequence: EngineID, request_id: EngineID|null, event: EngineEventName, payload: event に対応する payload union}`。 |
+| `EngineCommand` | `command` ごとに対応する payload 型を選ぶ union。正確な key/value は上表の command 行。 |
+| `EngineEvent` | `event` ごとに対応する payload 型を選ぶ union。正確な payload 型は下の Events 表。 |
+| `EngineEmptyPayload` | `{}` のみ。 |
+| `EngineDevicesListPayload` | `source: EngineSource`。 |
+| `EngineRecordingStartPayload` | `source: EngineSource`, `device: EngineDevice`。 |
+| `EngineImportPayload` | `input_path: String`。空不可。 |
+| `EngineSessionListPayload` | `cursor: String|null`, `limit: Int` (1...100)。 |
+| `EngineTranscriptReadPayload` | `session_id: String`, `revision: EngineID|null`, `cursor: String|null`, `limit: Int` (1...200)。session ID は空不可。 |
+| `EngineExportPayload` | `session_id: String`, `destination_path: String`。両方空不可。 |
+| `EngineSettingsReplacePayload` | `expected_revision: EngineID|null`, `settings: EngineSettings`。 |
+| `EngineDevice` | `{kind: "default"}` または `{kind: "id", id: String}`。後者の id は空不可。 |
+| `EngineSettings` | `schema_version: Int` (=1), `source: EngineSource`, `device: EngineDevice`, `asr_size: EngineASRSize`, `execution_provider: EngineExecutionProvider`, `threads: Int` (1...4), `low_heat: Bool`, `decisions_enabled: Bool`, `automatic_export: Bool`, `export_destination_path: String?` (null または空でない)。全10 key 必須。 |
+| `EngineCapabilities` | `sources: [EngineSource]`, `asr_sizes: [EngineASRSize]`, `execution_providers: [EngineExecutionProvider]`, `maximum_threads: Int` (1...4), `automatic_input_volume: EngineUnavailableCapability`, `thermal_monitoring: EngineUnavailableCapability`。3 arrays は空でなく各 raw value unique。 |
+| `EngineRecordingState` | `session_id: String`, `source: EngineSource`, `device: EngineDevice`, `phase: EngineRecordingPhase`。session ID は空不可。 |
+| `EngineQueuedOperation` | `session_id: String`, `stage: EngineStage`。session ID は空不可。 |
+| `EngineState` | `revision: EngineID`, `screen: EngineScreen`, `setup: EngineSetupStatus`, `recovery: EngineRecoveryStatus`, `recording: EngineRecordingState|null`, `queue: [EngineQueuedOperation]` (最大16), `failures: [EngineFailure]`。 |
+| `EngineReadyPayload` | `capabilities: EngineCapabilities`, `state: EngineState`。 |
+| `EngineDeviceInfo` | `id: String`, `name: String`, `is_default: Bool`。id/name は空不可。 |
+| `EngineDevicesResult` | `source: EngineSource`, `devices: [EngineDeviceInfo]`, `default_device_id: String|null`。device ID は一意。default device は最大1つで、nullable ID は `is_default: true` の唯一の endpoint と一致する（ID null の場合は default flag もない）。 |
+| `EngineSettingsResult` | `revision: EngineID`, `settings: EngineSettings`。 |
+| `EngineSessionSummary` | `folder_id: String`, `session_id: String|null`, `status: EngineSessionStatus`, `error: EngineFailure|null`。folder ID は一意・空不可。`unreadable` は session ID null と error 必須、それ以外は session ID 必須。 |
+| `EngineSessionListResult` | `sessions: [EngineSessionSummary]` (最大100、folder ID unique), `next_cursor: String|null`。 |
+| `EngineTranscriptRow` | `row_id: String`, `start_ms: Int64`, `end_ms: Int64`, `text: String`, `headings: [EngineSpeakerLabel]`, `clause_state: EngineClauseState|null`。row ID は空不可。時刻は wall-clock でなく session audio の 0 起点 millisecond timeline、双方 nonnegative、`end_ms >= start_ms`。text は空白だけでない。 |
+| `EngineTranscriptPage` | `session_id: String`, `revision: EngineID`, `rows: [EngineTranscriptRow]` (最大200、row ID unique), `next_cursor: String|null`。 |
+| `EngineRowsPayload` | `session_id: String`, `revision: EngineID`, `kind: EngineRowsKind`, `rows: [EngineTranscriptRow]`, `removed_row_ids: [String]`, `next_cursor: String|null`。upsert/removed ID は各々と相互で一意、removed ID は空不可、両配列合計最大200。`snapshot` は removed rows なし、`changes` と `reload_required` の cursor は null、`reload_required` は rows と removed IDs が空。 |
+| `EngineProgressPayload` | `stage: EngineStage`, `completed_units: UInt64`, `total_units: UInt64|null`, `session_id: String|null`。units は JSON integer **number** で ID string ではない。total がある場合 completed は total 以下。 |
+| `EngineErrorDetail` | `domain: String`, `code: String`, `message: String`, `path: String|null`, `device_id: String|null`。domain/code/message は空不可。nullable path/device ID は null または空でない。 |
+| `EngineFailure` | `code: EngineErrorCode`, `message: String`, `stage: EngineStage`, `request_id: EngineID|null`, `session_id: String|null`, `severity: EngineSeverity`, `recovery_action: EngineRecoveryAction`, `details: [EngineErrorDetail]`, `cleanup_errors: [EngineErrorDetail]`。message は空でない Japanese user-facing text。`details` と `cleanup_errors` は raw native domain/code/message/path/device ID を保持する。 |
+| `EngineExportResult` | `session_id: String`, `destination_path: String`; 両方空不可。 |
+| `EngineAcceptedPayload` | `command: EngineCommandName`。 |
+| `EngineResult` | `{command: EngineCommandName, result: <対応 command の型>}`。各 command の result 型は上表の Commands 欄、model prepare/shutdown は空 object。 |
+| `EngineSessionPayload` | `{session_id: String}`。空不可。request と session 操作の結果で共有。 |
+
+settings `threads` の wire 検査は明示範囲 `1...4` です。host は machine ごとの上限を検査する際 `logicalCPUCount` を注入して `threads <= min(4, logicalCPUCount)` を検証します。decode は CPU 数を読み取ったり推定したりしません。`execution_provider` は `cpu` のみで、CPU-only の選択可能な `asr_size` は `0.6b` と `1.7b` です。`low_heat` は pacing を選ぶ必須 boolean、`decisions_enabled` と `automatic_export` も必須 boolean です。`automatic_export: true` でも `export_destination_path: null` は visibly unconfigured で、Desktop を含む保存先を推測しません。
+
+Stable raw values:
+
+- `EngineSource`: `microphone`, `system_audio`; `EngineASRSize`: `0.6b`, `1.7b`; `EngineExecutionProvider`: `cpu`; `EngineUnavailableCapability`: `none`.
+- `EngineDevice.kind`: `default`, `id`.
+- `EngineCommandName`: `hello`, `state.get`, `devices.list`, `recording.start`, `recording.stop`, `session.import`, `session.reprocess`, `session.retry_decisions`, `session.list`, `transcript.read`, `transcript.watch`, `session.export`, `settings.get`, `settings.replace`, `models.prepare`, `shutdown`.
+- `EngineEventName`: `ready`, `state`, `accepted`, `completed`, `progress`, `rows`, `error`.
+- `EngineScreen`: `idle`, `live`, `finalizing`, `finalized`; `EngineSetupStatus`: `settings_required`, `models_required`, `ready`; `EngineRecoveryStatus`: `pending`, `running`, `completed`, `failed`; `EngineRecordingPhase`: `starting`, `recording`, `stopping`; `EngineSessionStatus`: `unreadable`, `recording`, `queued`, `processing`, `finalized`, `failed`.
+- `EngineSpeakerLabel`: `Speaker 1`, `Speaker 2`, `Speaker 3`, `Speaker 4`, `Speaker 5`, `Speaker 6`, `Speaker 7`, `OTHER`, `UNKNOWN`. These are materialized headings; the client does not infer speakers.
+- `EngineClauseState`: `awaiting_next_segment`, `boundary_pending`, `priority_pending`, `classified`; unavailable value is represented by nullable `clause_state: null`.
+- `EngineRowsKind`: `snapshot`, `changes`, `reload_required`.
+- `EngineStage`: `startup`, `settings`, `devices`, `capture`, `import`, `recovery`, `maintenance`, `validating_models`, `loading_models`, `vad`, `diarization`, `asr`, `decisions`, `finalization`, `export`, `shutdown`, `protocol`.
+- `EngineErrorCode`: `invalid_request`, `unsupported_version`, `invalid_request_id`, `hello_required`, `busy`, `settings_required`, `invalid_settings`, `stale_revision`, `invalid_cursor`, `session_not_found`, `device_not_found`, `device_failure`, `capture_failure`, `disk_space`, `power_failure`, `filesystem`, `model_missing`, `model_corrupt`, `model_failure`, `processing_failure`, `export_failure`, `row_too_large`, `cancelled`, `internal_error`.
+- `EngineSeverity`: `warning`, `error`, `fatal`.
+- `EngineRecoveryAction`: `none`, `replace_settings`, `prepare_models`, `retry`, `reprocess`, `retry_decisions`, `select_device`, `free_disk_space`, `inspect_session`, `restart`.
+
+### Events、correlation、revision
+
+全 event は共通 output envelope を使い、payload は下表の正確な型です。`ready` の top-level `request_id` は null、`accepted` / `completed` は非 null。`error` の envelope `request_id` と `EngineFailure.request_id` は同値です。`state`、`progress`、`rows` は相関 ID を null または該当 request ID にできます。
+
+| event | payload | 意味 |
+| --- | --- | --- |
+| `ready` | `EngineReadyPayload` | capabilities と初期 state。unsolicited。 |
+| `state` | `EngineState` | revisioned current state。 |
+| `accepted` | `EngineAcceptedPayload` | request の command を確認。 |
+| `completed` | `EngineResult` | command に対応する typed terminal result。 |
+| `progress` | `EngineProgressPayload` | stage progress。`completed_units` は UInt64 JSON number、`total_units` は必須 nullable UInt64 JSON number。 |
+| `rows` | `EngineRowsPayload` | 選択 session の revisioned projected row snapshot/changes/reload marker。 |
+| `error` | `EngineFailure` | stable code、Japanese message、stage、severity/recovery action、native details と cleanup errors。 |
+
+valid admitted request ごとに `accepted` 1つ、その後 terminal `completed` または `error` 1つを返すことは **host contract** です。`EngineCodec` は個々の envelope/schema/correlation を検査するだけで、process-wide event lifecycle を保証しません。background processing failure は unsolicited `error` / state として報告し、既に完了した stop/import command の結果を遡って変更しません。
+
+Rows snapshot にはその revision の row set を、`changes` には distinct row upsert と removals を載せます。`transcript.read` は cursor の位置から最大200 rows、`transcript.watch` は最大200 rowsの最新 tail を返し、rows 配列は実際の canonical JSON row bytes と comma を数えて700000 bytesの budget内に収めます。個々のrowが262144 bytesを超える場合は `row_too_large` error です。`changes` が200件またはこの byte budgetを超える場合、および出力待ち行列で change stream が coalesce / 失効する場合は `reload_required` にし、row data は持たせず client に再読込させます。
+
+`transcript.read` は `revision: null` で immutable な read snapshot を開始または置き換えます。snapshot は engine 全体で1つだけ保持され、現在の watch projection / read cache から独立します。同じ session または別 session の新しい read snapshot を確立すると、前の snapshot を置き換えます。続きの page は同じ revision と cursor で読みます。live transcript の追記・変更・削除があっても既存 snapshot は変わらず、その snapshot を続けられます。保持 snapshot がない場合でも、指定 revision が現在の最新 revision と一致すれば、その revision の snapshot を確立できます。保持 snapshot と現在の revision のいずれにも一致しない revision は `stale_revision`、一致しない cursor は `invalid_cursor` error です。final transcript publication は内容が同じ場合も新しい revision を発行し、対象 session の read snapshot を無効化するとともに、その session の watch 側の既存 cursor を失効させて `reload_required` を送ります。watch の revision は live update ごとに引き続き変わります。
+
+incremental projection cache は materialized segment のうち変化したものだけを投影・diff し、run 全体の speaker mapping は保持します。ただし現在の上流 API は毎回 snapshot 全体を渡すため、入力の走査は O(n) で、cache array も全体を組み立てます。したがって bounded-memory または O(1) 更新の保証ではありません。
+
+`EngineCodec.trustedRequestID(in:)` は entire record の lexical validation 後に限り canonical `request_id` を取り出します。全 record が lexical-valid で ID も canonical の場合だけ error correlation に利用し、それ以外の error ID は null です。invalid request は side effect を起こしません。最初の unsupported version は error を出して process を終了する扱いが host の責務です。EOF disconnect 時の durable recording stop も host responsibility で、protocol codec が実行する処理ではありません。
+
+### 独立 wire example corpus
+
+次の46 record は [`wire-v1.ndjson`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson) fixture からそのまま転記した独立例 corpus です。1つの process timeline ではなく、request ID / sequence / session lifecycle は例ごとに独立しており相互に整合する必要はありません。golden test と documentation test が全行を strict decode し、encoder bytes とも照合します。
+
+```ndjson engine-protocol-v1
+{"command":"hello","payload":{},"request_id":"1","version":1}
+{"command":"state.get","payload":{},"request_id":"2","version":1}
+{"command":"devices.list","payload":{"source":"microphone"},"request_id":"3","version":1}
+{"command":"recording.start","payload":{"device":{"id":"wasapi-loopback-42","kind":"id"},"source":"system_audio"},"request_id":"4","version":1}
+{"command":"recording.start","payload":{"device":{"kind":"default"},"source":"microphone"},"request_id":"5","version":1}
+{"command":"recording.stop","payload":{"session_id":"session-live"},"request_id":"6","version":1}
+{"command":"session.import","payload":{"input_path":"D:/Recordings/meeting.wav"},"request_id":"7","version":1}
+{"command":"session.reprocess","payload":{"session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"8","version":1}
+{"command":"session.retry_decisions","payload":{"session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"9","version":1}
+{"command":"session.list","payload":{"cursor":null,"limit":20},"request_id":"10","version":1}
+{"command":"transcript.read","payload":{"cursor":"rows-cursor-1","limit":75,"revision":"184","session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"11","version":1}
+{"command":"transcript.watch","payload":{"session_id":"session-live"},"request_id":"12","version":1}
+{"command":"session.export","payload":{"destination_path":"D:/Published/meeting-bundle","session_id":"session-finalized-2025-03-08T10-22-31Z"},"request_id":"13","version":1}
+{"command":"settings.get","payload":{},"request_id":"14","version":1}
+{"command":"settings.replace","payload":{"expected_revision":null,"settings":{"asr_size":"0.6b","automatic_export":true,"decisions_enabled":true,"device":{"kind":"default"},"execution_provider":"cpu","export_destination_path":null,"low_heat":true,"schema_version":1,"source":"microphone","threads":3}},"request_id":"15","version":1}
+{"command":"models.prepare","payload":{},"request_id":"16","version":1}
+{"command":"session.import","payload":{"input_path":"D:/Recordings/second-meeting.wav"},"request_id":"17","version":1}
+{"command":"shutdown","payload":{},"request_id":"18446744073709551615","version":1}
+{"event":"ready","payload":{"capabilities":{"asr_sizes":["0.6b","1.7b"],"automatic_input_volume":"none","execution_providers":["cpu"],"maximum_threads":4,"sources":["microphone","system_audio"],"thermal_monitoring":"none"},"state":{"failures":[],"queue":[],"recording":null,"recovery":"pending","revision":"1","screen":"idle","setup":"settings_required"}},"request_id":null,"sequence":"1","version":1}
+{"event":"state","payload":{"failures":[{"cleanup_errors":[{"code":"ERROR_INVALID_HANDLE","device_id":null,"domain":"Win32","message":"録音ハンドルの解放にも失敗しました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live"}],"code":"device_failure","details":[{"code":"AUDCLNT_E_DEVICE_INVALIDATED","device_id":"wasapi-mic-17","domain":"WASAPI","message":"録音デバイスが切断されました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live/audio.wav"}],"message":"録音デバイスが利用できず、クリーンアップにも失敗しました","recovery_action":"select_device","request_id":"4","session_id":"session-live","severity":"error","stage":"capture"}],"queue":[{"session_id":"session-queued-2","stage":"asr"},{"session_id":"session-queued-3","stage":"decisions"}],"recording":{"device":{"id":"wasapi-loopback-42","kind":"id"},"phase":"recording","session_id":"session-live","source":"system_audio"},"recovery":"running","revision":"42","screen":"live","setup":"ready"},"request_id":null,"sequence":"2","version":1}
+{"event":"accepted","payload":{"command":"session.import"},"request_id":"7","sequence":"3","version":1}
+{"event":"progress","payload":{"completed_units":1,"session_id":null,"stage":"import","total_units":4},"request_id":"7","sequence":"4","version":1}
+{"event":"progress","payload":{"completed_units":2,"session_id":"session-imported-second","stage":"import","total_units":null},"request_id":"17","sequence":"5","version":1}
+{"event":"error","payload":{"cleanup_errors":[{"code":"E_TEMP_CLEANUP","device_id":null,"domain":"filesystem","message":"一時ファイルの削除に失敗しました","path":"C:/Users/Aki/AppData/Local/Temp/import-stage"}],"code":"filesystem","details":[{"code":"ERROR_ACCESS_DENIED","device_id":null,"domain":"Win32","message":"アクセスが拒否されました","path":"D:/Recordings/meeting.wav"}],"message":"インポート元を読み取れませんでした","recovery_action":"retry","request_id":"7","session_id":null,"severity":"error","stage":"import"},"request_id":"7","sequence":"6","version":1}
+{"event":"completed","payload":{"command":"hello","result":{"capabilities":{"asr_sizes":["0.6b","1.7b"],"automatic_input_volume":"none","execution_providers":["cpu"],"maximum_threads":4,"sources":["microphone","system_audio"],"thermal_monitoring":"none"},"state":{"failures":[],"queue":[],"recording":null,"recovery":"pending","revision":"1","screen":"idle","setup":"settings_required"}}},"request_id":"1","sequence":"7","version":1}
+{"event":"completed","payload":{"command":"state.get","result":{"failures":[{"cleanup_errors":[{"code":"ERROR_INVALID_HANDLE","device_id":null,"domain":"Win32","message":"録音ハンドルの解放にも失敗しました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live"}],"code":"device_failure","details":[{"code":"AUDCLNT_E_DEVICE_INVALIDATED","device_id":"wasapi-mic-17","domain":"WASAPI","message":"録音デバイスが切断されました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live/audio.wav"}],"message":"録音デバイスが利用できず、クリーンアップにも失敗しました","recovery_action":"select_device","request_id":"4","session_id":"session-live","severity":"error","stage":"capture"}],"queue":[{"session_id":"session-queued-2","stage":"asr"},{"session_id":"session-queued-3","stage":"decisions"}],"recording":{"device":{"id":"wasapi-loopback-42","kind":"id"},"phase":"recording","session_id":"session-live","source":"system_audio"},"recovery":"running","revision":"42","screen":"live","setup":"ready"}},"request_id":"2","sequence":"8","version":1}
+{"event":"completed","payload":{"command":"devices.list","result":{"default_device_id":"wasapi-loopback-42","devices":[{"id":"wasapi-loopback-42","is_default":true,"name":"Speakers (High Definition Audio)"},{"id":"wasapi-loopback-73","is_default":false,"name":"USB Audio Output"}],"source":"system_audio"}},"request_id":"3","sequence":"9","version":1}
+{"event":"completed","payload":{"command":"recording.start","result":{"session_id":"session-live"}},"request_id":"4","sequence":"10","version":1}
+{"event":"completed","payload":{"command":"recording.start","result":{"session_id":"session-microphone"}},"request_id":"5","sequence":"11","version":1}
+{"event":"completed","payload":{"command":"recording.stop","result":{"session_id":"session-live"}},"request_id":"6","sequence":"12","version":1}
+{"event":"completed","payload":{"command":"session.import","result":{"session_id":"session-imported-second"}},"request_id":"17","sequence":"13","version":1}
+{"event":"completed","payload":{"command":"session.reprocess","result":{"session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"8","sequence":"14","version":1}
+{"event":"completed","payload":{"command":"session.retry_decisions","result":{"session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"9","sequence":"15","version":1}
+{"event":"completed","payload":{"command":"session.list","result":{"next_cursor":"folder-page-cursor-2","sessions":[{"error":{"cleanup_errors":[],"code":"filesystem","details":[{"code":"fileReadCorruptFile","device_id":null,"domain":"Foundation.FileManager","message":"メタデータの形式が正しくありません","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17/session.json"}],"message":"セッション情報を読み取れません","recovery_action":"inspect_session","request_id":null,"session_id":null,"severity":"warning","stage":"recovery"},"folder_id":"stable-folder-id-corrupt-metadata-17","session_id":null,"status":"unreadable"},{"error":null,"folder_id":"session-folder-2025-03-08-live","session_id":"session-finalized-2025-03-08T10-22-31Z","status":"finalized"}]}},"request_id":"10","sequence":"16","version":1}
+{"event":"completed","payload":{"command":"transcript.read","result":{"next_cursor":"rows-cursor-after-2","revision":"184","rows":[{"clause_state":null,"end_ms":900,"headings":["Speaker 1"],"row_id":"row-1","start_ms":0,"text":"おはよう、世界😀\n次の行です"},{"clause_state":"awaiting_next_segment","end_ms":2150,"headings":["Speaker 2"],"row_id":"row-2","start_ms":1250,"text":"日本語の発話 2 😀"}],"session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"11","sequence":"17","version":1}
+{"event":"completed","payload":{"command":"transcript.watch","result":{"next_cursor":null,"revision":"185","rows":[{"clause_state":"boundary_pending","end_ms":3400,"headings":["Speaker 3"],"row_id":"row-3","start_ms":2500,"text":"日本語の発話 3 😀"},{"clause_state":"priority_pending","end_ms":4650,"headings":["Speaker 4"],"row_id":"row-4","start_ms":3750,"text":"日本語の発話 4 😀"}],"session_id":"session-live"}},"request_id":"12","sequence":"18","version":1}
+{"event":"completed","payload":{"command":"session.export","result":{"destination_path":"D:/Published/meeting-bundle","session_id":"session-finalized-2025-03-08T10-22-31Z"}},"request_id":"13","sequence":"19","version":1}
+{"event":"completed","payload":{"command":"settings.get","result":{"revision":"8","settings":{"asr_size":"0.6b","automatic_export":true,"decisions_enabled":true,"device":{"kind":"default"},"execution_provider":"cpu","export_destination_path":"D:/Ambient Exports","low_heat":true,"schema_version":1,"source":"microphone","threads":3}}},"request_id":"14","sequence":"20","version":1}
+{"event":"completed","payload":{"command":"settings.replace","result":{"revision":"9","settings":{"asr_size":"0.6b","automatic_export":true,"decisions_enabled":true,"device":{"kind":"default"},"execution_provider":"cpu","export_destination_path":"D:/Ambient Exports","low_heat":true,"schema_version":1,"source":"microphone","threads":3}}},"request_id":"15","sequence":"21","version":1}
+{"event":"completed","payload":{"command":"models.prepare","result":{}},"request_id":"16","sequence":"22","version":1}
+{"event":"completed","payload":{"command":"shutdown","result":{}},"request_id":"18446744073709551615","sequence":"23","version":1}
+{"event":"rows","payload":{"kind":"snapshot","next_cursor":"live-rows-page-2","removed_row_ids":[],"revision":"186","rows":[{"clause_state":null,"end_ms":900,"headings":["Speaker 1"],"row_id":"row-1","start_ms":0,"text":"おはよう、世界😀\n次の行です"},{"clause_state":"awaiting_next_segment","end_ms":2150,"headings":["Speaker 2"],"row_id":"row-2","start_ms":1250,"text":"日本語の発話 2 😀"},{"clause_state":"boundary_pending","end_ms":3400,"headings":["Speaker 3"],"row_id":"row-3","start_ms":2500,"text":"日本語の発話 3 😀"},{"clause_state":"priority_pending","end_ms":4650,"headings":["Speaker 4"],"row_id":"row-4","start_ms":3750,"text":"日本語の発話 4 😀"},{"clause_state":"classified","end_ms":5900,"headings":["Speaker 5"],"row_id":"row-5","start_ms":5000,"text":"日本語の発話 5 😀"},{"clause_state":"classified","end_ms":7150,"headings":["Speaker 6"],"row_id":"row-6","start_ms":6250,"text":"日本語の発話 6 😀"},{"clause_state":"awaiting_next_segment","end_ms":8400,"headings":["Speaker 7"],"row_id":"row-7","start_ms":7500,"text":"日本語の発話 7 😀"},{"clause_state":"boundary_pending","end_ms":9650,"headings":["OTHER"],"row_id":"row-8","start_ms":8750,"text":"日本語の発話 8 😀"},{"clause_state":"priority_pending","end_ms":10900,"headings":["UNKNOWN"],"row_id":"row-9","start_ms":10000,"text":"日本語の発話 9 😀"}],"session_id":"session-live"},"request_id":null,"sequence":"24","version":1}
+{"event":"rows","payload":{"kind":"changes","next_cursor":null,"removed_row_ids":["row-stale-4"],"revision":"187","rows":[{"clause_state":"classified","end_ms":12150,"headings":["Speaker 3"],"row_id":"row-10","start_ms":11250,"text":"変更された発話 😺"}],"session_id":"session-live"},"request_id":null,"sequence":"25","version":1}
+{"event":"rows","payload":{"kind":"reload_required","next_cursor":null,"removed_row_ids":[],"revision":"188","rows":[],"session_id":"session-live"},"request_id":null,"sequence":"26","version":1}
+{"event":"error","payload":{"cleanup_errors":[],"code":"processing_failure","details":[{"code":"MODEL_EXECUTION_FAILED","device_id":null,"domain":"PortableRuntime","message":"推論処理を完了できませんでした","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/models/asr/model.onnx"}],"message":"バックグラウンド処理に失敗しました。セッションを確認してください","recovery_action":"reprocess","request_id":null,"session_id":"session-background-8","severity":"warning","stage":"asr"},"request_id":null,"sequence":"27","version":1}
+{"event":"error","payload":{"cleanup_errors":[{"code":"ERROR_INVALID_HANDLE","device_id":null,"domain":"Win32","message":"録音ハンドルの解放にも失敗しました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live"}],"code":"device_failure","details":[{"code":"AUDCLNT_E_DEVICE_INVALIDATED","device_id":"wasapi-mic-17","domain":"WASAPI","message":"録音デバイスが切断されました","path":"C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-live/audio.wav"}],"message":"録音デバイスが利用できず、クリーンアップにも失敗しました","recovery_action":"select_device","request_id":"4","session_id":"session-live","severity":"error","stage":"capture"},"request_id":"4","sequence":"28","version":1}
+```
 
 ## ONNX Runtime
 
@@ -176,7 +365,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Full-session processing failed' }
 
 ## ファイル文字起こし CLI
 
-`MacAmbientJevTranscribeFile` は Linux / Windows で音声ファイルを VAD 区間ごとに文字起こしし、区間と評価 artifact を出力する計測用 portable CLI です。参照文や評価規則は受け取らず、CER は `MacAmbientJevEvaluateASR` で別途計算します。実行 helper は [`FileTranscriptionPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FileTranscriptionPipeline.swift) で、`SileroFinalTranscriptVADSegmenter`、`PipelineCoordinator`、`ASRAudioLoader` を組み合わせます。この helper は mandatory diarization を含む full-session `FinalTranscriptPipeline` ではありません。話者分離・speaker-turn による区間分割、話者 tagger、thermal / pacing flag はありません。Windows の full-session file-import path は前節の `MacAmbientJevProcessRecording` です。Windows に live capture と GUI はありません。
+`MacAmbientJevTranscribeFile` は Linux / Windows で音声ファイルを VAD 区間ごとに文字起こしし、区間と評価 artifact を出力する計測用 portable CLI です。参照文や評価規則は受け取らず、CER は `MacAmbientJevEvaluateASR` で別途計算します。実行 helper は [`FileTranscriptionPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FileTranscriptionPipeline.swift) で、`SileroFinalTranscriptVADSegmenter`、`PipelineCoordinator`、`ASRAudioLoader` を組み合わせます。この helper は mandatory diarization を含む full-session `FinalTranscriptPipeline` ではありません。話者分離・speaker-turn による区間分割、話者 tagger、thermal / pacing flag はありません。Windows の full-session file-import path は前節の `MacAmbientJevProcessRecording` です。Windows の engine は live capture をサポートしますが、GUI はありません。
 
 確定処理の区間規則は [Silero VAD の区間検出](#silero-vad-の区間検出) と同じで、chunk 4,096 sample / 256 ms、開始閾値 0.50・終了閾値 0.35、pre-roll 0.10 秒、最大区間 14.0 秒、無音 0.75 秒、分割探索 2.0 秒、energy frame 0.02 秒、独立区間の最短 0.5 秒です。
 
@@ -276,7 +465,7 @@ Windows では [`PortableImportedAudioTimelineBuilder`](../app/MacAmbientJev/Sou
 
 Media Foundation AAC Source Reader は decode した native frames を canonical timeline に含め、AAC encoder priming / padding を除去しません。また、Media Foundation は AAC encoder priming を示す marker を付けません。Apple が encode した M4A は一般に 48 kHz で 2,112 frames（約 44 ms）の priming を含みます。Windows import ではこの priming を保持するため、Mac import より duration が長くなり、信号・イベント時刻も priming 分だけ後ろになります。Windows は累積 source extent を丸めた frame 境界まで出力します。一方、AVAudioConverter は EOS まで drain して正確な変換長の floor または ceil にあたる出力を保持します。同じ decoded source extent を SRC した場合、終端 frame 数は boundary rounding により Apple と Windows で最大 1 frame 異なることがあります。これは AAC priming の保持による差とは別です。sample 値も platform 間で bit-identical ではありません。
 
-[`ImportedAudioTimelineWriter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineWriter.swift) は Core の共通 API で、mono canonical PCM を5秒単位の durable storage chunk と checkpoint に書き込みます。WindowsSupport の builder がこれを使い、timeline metadata は builder の呼び出し側が公開します。Pipeline の [`SessionProcessingAudio`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingAudio.swift) は共通 builder の注入を必須とし、recording reader を [`SessionAudioReaders`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionAudioReaders.swift)、recording compaction を [`RecordingAudioCompactor`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/RecordingAudioCompactor.swift) に委譲します。import timeline を作る場合は built `ProcessingTimelineReader` を検証して `.importedOriginal(reader.info)` を保存し、CAF export は Core の [`ProcessingTimelineAudioExporter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineAudioExporter.swift) が担います。これは session processing の責務で、`MacAmbientJevTranscribeFile` は一時 scratch directory を使う standalone file-processing CLI です。Windows live capture と GUI はありません。WASAPI backend は capture path 向けに CMiniaudio にコンパイルされますが、Windows の capture 実装はありません。
+[`ImportedAudioTimelineWriter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineWriter.swift) は Core の共通 API で、mono canonical PCM を5秒単位の durable storage chunk と checkpoint に書き込みます。WindowsSupport の builder がこれを使い、timeline metadata は builder の呼び出し側が公開します。Pipeline の [`SessionProcessingAudio`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingAudio.swift) は共通 builder の注入を必須とし、recording reader を [`SessionAudioReaders`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionAudioReaders.swift)、recording compaction を [`RecordingAudioCompactor`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/RecordingAudioCompactor.swift) に委譲します。import timeline を作る場合は built `ProcessingTimelineReader` を検証して `.importedOriginal(reader.info)` を保存し、CAF export は Core の [`ProcessingTimelineAudioExporter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineAudioExporter.swift) が担います。これは session processing の責務で、`MacAmbientJevTranscribeFile` は一時 scratch directory を使う standalone file-processing CLI です。Windows の engine は WASAPI live capture をサポートしますが、GUI はありません。WASAPI backend は capture path 向けに CMiniaudio にコンパイルされます。
 
 ### WindowsSupport テスト
 
@@ -822,7 +1011,7 @@ CWindowsSession が開く handle は継承不可です（CreateFileW に SECURIT
 子プロセスが一時ファイルの handle を持ち続けて公開の改名を妨げることはありません。
 
 Windows で実行するテストは、fixture の書き込みに Foundation の `Data.write(to:options: .atomic)` を使いません。
-Swift 6.2 の Foundation は `.atomic` の一時ファイルを継承可能な CRT handle（`_wsopen_s`、FILE_SHARE_DELETE なし）で開き、閉じた直後に MoveFileExW で改名します（[Data+Writing.swift](https://github.com/swiftlang/swift-foundation/blob/swift-6.2-RELEASE/Sources/FoundationEssentials/Data/Data%2BWriting.swift)）。
+Swift 6.2 の Foundation は `.atomic` の一時ファイルを MSVC 170 UCRT の継承可能な CRT handle（[`_wsopen_s`](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/sopen-wsopen?view=msvc-170)、`FILE_SHARE_DELETE` なし）で開き、閉じた直後に MoveFileExW で改名します（[Data+Writing.swift](https://github.com/swiftlang/swift-foundation/blob/swift-6.2-RELEASE/Sources/FoundationEssentials/Data/Data%2BWriting.swift)）。
 同じテストプロセスで `Process.run()` が並行すると、CreateProcessW の `bInheritHandles` が TRUE のため子プロセスがその handle を継承し（[Process.swift](https://github.com/swiftlang/swift-corelibs-foundation/blob/swift-6.2-RELEASE/Sources/Foundation/Process.swift)）、改名が ERROR_SHARING_VIOLATION（32）になり、NSCocoaErrorDomain Code=513 で失敗します。
 `.atomic` を付けない `Data.write(to:)` は継承不可の CreateFileW handle を使うため、この競合は起きません。
 
@@ -835,3 +1024,211 @@ handle を閉じるまで保持します。復旧の途中で破損した末尾�
 
 PCM chunk 一覧は大文字に変換した名前でも一意である必要があります。
 大小文字を区別しないファイルシステムで同じ音声を二重に数える索引を拒否します。
+
+## エンジン設定とアプリケーション root lock
+
+`MacAmbientJevEngineHost` の `EngineSettingsStore` は、アプリ root（`AppPaths.root`）直下の settings.json を読み書きします。パスは `AppPaths` だけから決め、環境変数や追加のパス計算を使いません。
+ファイルは `{"revision":"<EngineID>","settings":{…}}` の 1 object で、プロトコルの `EngineSettingsResult`（`settings` は `EngineSettings`）をそのまま使い、別のスキーマはありません。`schema_version` は 1 だけを受け付け、未知のフィールド、重複キー、欠落フィールド、型違いは読み込み時に拒否します。`threads` は `1...min(4, logicalCPUCount)` で、`logicalCPUCount` は呼び出し側が明示的に渡します。
+`load()` は次の結果になります。
+
+| ファイルの状態 | 結果 |
+|---|---|
+| なし | `EngineSettingsError.required`（`settings_required`、復旧は `replace_settings`）。何も作りません |
+| 読めて有効 | revision 付きの設定 |
+| 不正（JSON、スキーマ、threads の上限超過） | `EngineSettingsError.corrupt`（`invalid_settings`）。既定値、移行、部分的な読み込みはありません |
+| symlink、通常ファイルでない、I/O エラー | `EngineSettingsError.filesystem` |
+
+`replace(expectedRevision:settings:)` は設定を検証し、現在の revision が `expectedRevision` と一致するときだけ revision を 1 進めて保存します。ファイルがないときの `expectedRevision` は `nil` だけです。不一致は `staleRevision` で、書き込みません。不正なファイルは `expectedRevision == nil` の全体置換だけが修復し、revision は 1 から始まります。保存は `SessionFileAccess.writeAtomically`（固定した親 handle、同期後の原子的な公開、ディレクトリ同期）です。`load` と `replace` の直列化は engine controller が行います。
+
+`ApplicationRootLock.acquire(paths:)` はアプリ root を作成し、`engine.lock` を開いて排他 lock を取ります。2 つ目の engine は `alreadyRunning` で失敗します。lock は開いたファイルに属し、プロセスが終了すると OS が解放します。macOS / Linux は flock（LOCK_EX と LOCK_NB）、Windows は [LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)（LOCKFILE_EXCLUSIVE_LOCK と LOCKFILE_FAIL_IMMEDIATELY）で、ERROR_LOCK_VIOLATION が `alreadyRunning` になります。Windows の lock tests は同一プロセス内の 2 つ目の lock と、別プロセスの 2 つ目の engine を対象にします。
+
+## インストール済みモデルの検証と読み込み
+
+`models.prepare` は `PortableModelPreparationService.prepare(configuration:onProgress:)` で実装します。ダウンロード、代替モデル、モデルや decisions の自動無効化はありません。
+モデルはアプリ root の models 配下に次の配置で置きます。名前は同梱の pin とマニフェストから `PortableInstalledModelLayout` が作ります。
+
+| モデル | 配置 |
+|---|---|
+| Silero VAD | `silero/<commit>/silero_vad_16k_op15.onnx` |
+| Qwen3-ASR | `qwen3-asr-<0.6b\|1.7b>-int4-<commit>/`（`fetch_qwen3_asr_model.py <size> <models root>` が作るディレクトリ） |
+| Community-1 | `community1/<同梱マニフェスト bytes の SHA-256>/` |
+| 発話文タガー | `clause-tagger/<release tag>/clause-tagger-onnx/`（decisions 有効時だけ） |
+
+`PortableProcessingConfiguration.installed(layout:qwen3Size:threads:logicalCPUCount:withDecisions:)` は設定から型付きの configuration を作ります。threads の検証は `resolve` と同じ関数を使い、パスの存在は確認しません。
+
+`prepare` は全モデルを検証してから、全モデルを読み込みます。VAD、ASR、diarization、（decisions 有効時）タガーの順です。検証は存在、通常ファイル、サイズ、streaming SHA-256 を見ます（Silero はサイズの pin がなく SHA-256 のみ）。読み込みは Silero の ONNX session、`ONNXQwen3ASREngine.prepare()`、`ONNXCommunity1DiarizationEngine.prepare()`、`ONNXClauseTagger` の生成で、認識や decisions のリクエストは作りません。読み込んだモデルは次のモデルの前に解放するため、`prepare` は後続の処理が使う engine を温めず、読み込めることの確認だけを行います。
+進捗は `PortableModelPreparationProgress`（`stage` は `validating` / `loading`、`model`、`completed`、`total`）です。各モデルの開始時に `completed` = 完了済みの数で通知し、各 stage の最後に `model == nil`、`completed == total` を通知します。単位はモデル数で、1 ファイル内の byte 進捗はありません。
+失敗は `PortableModelPreparationError` です。`missing` と `invalid` は期待するパスと配置手順（fetch コマンド）を含み、`loadFailed` はモデルとパスを含みます。ホストは `missing` を `model_missing`、`invalid` を `model_corrupt`、`loadFailed` を `model_failure` に対応させ、復旧は `prepare_models` です。
+
+## エンジンの NDJSON transport とコマンド dispatcher
+
+`MacAmbientJevEngineHost` は、プロトコル（`MacAmbientJevEngineProtocol`）の codec の上に、stdin/stdout の有界 transport と main actor の dispatcher を実装します。どちらも Foundation とプロトコル module だけに依存し、macOS と Linux で build と test が通ります。実装は [`EngineTransport.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransport.swift)、[`EngineTransportOutput.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportOutput.swift)、[`EngineTransportIO.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportIO.swift)、[`EngineTransportLimits.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportLimits.swift)、[`EngineController.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineController.swift)、[`EngineHandlers.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineHandlers.swift) です。テストは [`EngineTransportInputTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportInputTests.swift)、[`EngineTransportOutputTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportOutputTests.swift)、[`EngineTransportPipeTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportPipeTests.swift)、[`EngineControllerTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineControllerTests.swift)、[`EngineSettingsStoreHandlerTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineSettingsStoreHandlerTests.swift) です。プロセスを起動せず、スクリプト化した source / sink と実際の POSIX pipe で検証します（POSIX pipe のテストは Windows では build せず、Windows の pipe は `MacAmbientJevEngineTests` が検証します）。
+
+### 入力 lane
+
+`EngineTransport` は専用 thread で `EngineByteSource` から生の bytes を読み、`EngineLineFramer` に渡します。テキスト変換や code page は使いません。`FileHandleByteSource` は OS の read を 1 回ずつ呼び（POSIX は `read`、Windows は ReadFile。pipe の終端 `ERROR_BROKEN_PIPE` は EOF）、record の一部が届いた時点で返します。Windows の executable は ReadFile の取り消しに対応した `WindowsPipeByteSource` を使います（下記）。
+chunk は LF ごとに framer へ渡すため、不正な行の前に完成した record は失われず、先に `line` として届きます。framer が失敗した時点で入力 lane は止まります。
+controller に渡したが `lineHandled()` が呼ばれていない行は最大 32 件で、超えると入力 lane が読み取りを止め、pipe の backpressure になります。
+
+`EngineTransport.events` は次の event を 1 つの consumer に渡します。
+
+| event | 意味 |
+|---|---|
+| `line` | delimiter を除いた、字句検査済みの 1 record |
+| `endOfInput` | record の境界での EOF |
+| `protocolViolation` | framing / 字句違反。最後の行が LF で終わらない EOF は `partialFinalLine` |
+| `readFailed` | 入力の read エラー |
+| `writeFailed` | 出力 writer の失敗（下記） |
+
+### 出力 writer
+
+stdout へ書くのは専用の writer thread 1 つだけです。record を 1 件ずつ、部分書き込みを繰り返して LF まで書きます。診断は stderr にだけ出し、stdout には NDJSON の record 以外を一切書きません。`sequence` は enqueue 時に 1 から連番で付けます。encode に失敗した record は番号を消費しません。
+
+出力待ち行列は最大 128 record / 8 MiB（`EngineTransportLimits.production`）です。そのうち 32 record / 2 MiB は `accepted`、`completed`、`error`、`ready` のために空けておき、置き換え可能な event は残りだけを使います。
+
+| event | 扱い |
+|---|---|
+| `ready`、`accepted`、`completed`、`error` | 結合も破棄もしません。待ち行列が満杯なら送信側が writer の空きを待ちます |
+| `state` | 待ち行列に 1 件だけ残し、新しいものが古いものを置き換えます |
+| `progress` | session とステージごとに置き換えます。枠が足りないときは最も古い `progress` を捨てます |
+| `rows` | 枠が足りないとき、その session の待ち行列上の `rows` を 1 件の `reload_required`（最新の revision）にまとめます。完全な変更列を装いません |
+
+置き換え可能な event の枠に収まらず、結合できる古い event もないときは `replaceableOverflow` を呼び出し元に返します（黙って捨てません）。
+
+出力が失敗すると、writer は最初の失敗だけを記録し、ブロック中の write を cancel し、sink を閉じ、`writeFailed` を通知します。失敗は次の 3 種類です。
+
+| 失敗 | 条件 |
+|---|---|
+| `deadlineExceeded` | 書き込み中に 1 byte も進まない状態が 5 秒続いた（部分書き込みが進めば deadline は延びる） |
+| `brokenPipe` | 読み手が閉じた |
+| `failed` | その他の write エラー |
+
+ブロック中の write を止める OS 固有の処理は `EngineByteSink` が持ちます。`cancelBlockedWrite()` は別 thread から呼ばれ、実行中の `write` を `cancelled` で戻らせます。移植可能な既定の `PosixByteSink` は、`poll` を短い間隔で繰り返し、`PIPE_BUF` 以下ずつ書くことで、満杯の pipe を flag で止められるようにします（fd の状態 flag は変えず、SIGPIPE は process 全体で無視して `brokenPipe` にします）。Windows の executable は WriteFile と [CancelSynchronousIo](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelsynchronousio) を使う sink を渡します。
+
+### dispatcher
+
+`EngineController`（`@MainActor`）が `run()` で transport を開始し、`ready` を送ってから `events` を処理します。
+
+- 最初の request は `hello` で `request_id` は `1` です。以後は厳密に増加します（`EngineRequestOrder`）。違反は `hello_required` / `invalid_request_id` / `invalid_request`（2 回目の `hello`）の `error` 1 件で拒否します。このとき `accepted` は送らず、副作用もありません。順序を満たした request の id は、あとで `busy` になっても high-water mark に含まれます。
+- request を解釈できない場合（未知の command、未知の field など）は、字句検査に通る行から信頼できる `request_id` を取り出せるときだけそれを付け、`invalid_request` の `error` を返して接続を続けます。framing / 字句違反（重複 key、不正 JSON など）と `unsupported_version` は `error`（`fatal`）を送ったあと、接続を終了します。
+- 受理した request は同時に最大 16 件です。`recording.stop` と `shutdown` 用に 2 件を予約し、それ以外の command は 14 件までで、超えると `busy` の `error` 1 件で拒否します（`EngineAdmissionLimits.production`）。
+- 受理すると `accepted` を送り、handler を main actor 上の task で実行し、`completed` か `error` のどちらか 1 件だけを送ります。handler が投げた `EngineCommandError` はそのまま、Swift の取り消しエラーは `cancelled`、それ以外は `internal_error`（元のエラーを detail に保持）です。`shutdown` は dispatcher が直接処理します。
+- handler は `EngineStateHandling`、`EngineRecordingHandling`、`EngineSessionHandling`、`EngineTranscriptHandling`、`EngineSettingsHandling`、`EngineModelsHandling`、`EngineShutdownHandling` の protocol で注入します。実際の実装は Windows の composition 層が組み立てます。`EngineSettingsStoreHandler` は `settings.get` / `settings.replace` を `EngineSettingsStore` につなぐ実装で、実行中の作業と衝突する置換は呼び出し側が渡す条件で `busy` として拒否します。
+- handler は `EngineRequestContext` の `EngineEventEmitter` で、request に紐づく `progress` や、request を持たない `state` / `rows` / background の `error` を送ります。
+
+### 終了
+
+`run()` は終了理由 `EngineExit` を返し、`processExitCode` が process の終了コードです。
+
+| 理由 | `shutdown` handler の reason | コード |
+|---|---|---|
+| `shutdown` request の完了 | `requested` | 0 |
+| EOF（record の境界） | `inputClosed` | 0 |
+| framing / プロトコル違反、最後の行が LF で終わらない EOF | `protocolError` | 3 |
+| 入力の read エラー | `inputFailed` | 4 |
+| 出力の失敗（deadline、broken pipe） | `outputFailed` | 5 |
+| `shutdown` handler の失敗 | なし | 6 |
+| fatal capture failure（durable stop 後） | `captureFailed` | 7 |
+| `ready` の準備に失敗 | なし | 2 |
+
+終了時は `shutdown` handler を 1 回呼び、capture の durable な停止と推論の安全な取り消しを任せます。`ready` の準備に失敗した場合も `EngineProcess` が safe shutdown を先に実行します。その後、終端を受け取っていない受理済み request には `cancelled` の `error` を送ります。出力が失敗した場合は何も書かず、`shutdown` handler の実行後すぐ終了します。それ以外は待ち行列を書き切ってから transport を閉じます。startup maintenance は shutdown pause で cancel され、process は startup task の完了を待って root lock を保持します。
+fatal capture failure は capture session の durable stop を待ち、録音データを次回起動の pending recovery に残して終了します。通常の `recording.stop` と異なり、この process では auto finalization を続行せず、復旧を次回起動に委ねます。capture failure の unsolicited fatal error を出力できる場合は送信し、exit code 7 で終了します。
+EOF は client が消えたときの安全な切断として扱い、終了コードは通常 0 です（shutdown handler の失敗は exit code 6）。dispatcher は shutdown handler の完了を待ち、native inference を強制 preempt しません。shutdown handler 完了後、終端結果をまだ持たない他の受理済み request は `cancelled` として終了します。
+
+
+## エンジンの composition、起動時復旧と実行ファイル
+
+### composition
+
+`EngineApplication`（`MacAmbientJevEngineHost`）が `EngineController` の handler 全部を実装します。1 つの `@MainActor` 型が録音 lifecycle、処理 queue と claim、設定、選択中 transcript、request の完了待ちを持ち、Mac の `AppState` と同じ共有部品を使います。録音開始は `RecordingStartCoordinator`、停止は `LiveTranscriptionCoordinator.finishRecording`、確定・再処理・判定の再試行は `SessionProcessingCoordinator`、取り込みは `RetainedSessionImporter`、書き出しは `SessionExporter`、transcript の行は Mac の画面と `transcript.txt` が共有する `LiveTranscriptProjection` です。
+
+capture と推論は注入します。`EngineCaptureProviding`（Windows は `WindowsEngineCapture`、`WindowsCaptureSource` と WASAPI、`WindowsCaptureDiskSpaceProvider`、`WindowsRecordingPowerProvider` を使う）と `EngineInferenceProviding`（Windows は `PortableEngineInference`、`PortableModelPreparationService` と `PortableSessionEngineBundle` を使う）です。テストは fake を注入します。processing と live の coordinator は `EngineProcessorGateway` 経由で現在の `NativeSessionProcessor` に委譲するため、設定のモデル profile が変わると processor だけを作り直せます。processor がないとき（モデル未準備）は処理が `models.prepare` を促すエラーで失敗し、代替では動きません。
+
+主な規則です。
+
+- `setup` は、設定がなければ `settings_required`、設定があり `models.prepare` が成功していなければ `models_required`、両方あれば `ready` です。`recording.start` は `ready` でなければ `settings_required` / `model_missing`（復旧は `prepare_models`）で拒否します。キューに入った処理は `ready` になるまで開始しません（`pausesProcessing`）。
+- `models.prepare` 実行中は排他的な準備状態です。`settings.replace`、`recording.start` と user processing（`session.import` / `session.reprocess` / `session.retry_decisions`）を `busy` で拒否します。`shutdown` が始まると準備を cancel し、完了した準備結果も inference / processor として late install しません。
+- user processing queue の上限16件は `current`・`pending`・`thermallyHeld` を合算して数えます。モデル未準備で準備処理も実行中でないときは、`session.import` は retained original を保存して queue が空くまでの上限内で enqueue でき、モデルが `ready` になるまで待機します。上限を超える新規 user processing は `busy` です。この queue 上限は controller の最大16 concurrent requests とは別の制限です。
+- `recording.start` は、録音中・取り込み中、起動時の整理中、確定処理が走っているか待っているときは `busy` です。`recording.stop` は capture の durable な停止と確定処理の enqueue が済んだ時点で完了し、transcript の確定は待ちません。fatal capture failure の場合は durable stop して保存済み音声を pending recovery に残し、auto finalization を続けず、unsolicited `capture_failure` / `fatal` error を送り process exit code 7 で終了します。次回起動の recovery がこの session を queue に入れ直します。
+- `session.reprocess` と `session.retry_decisions` は settings と準備済みモデルを要求し、モデル未準備なら queue に入れず直ちに `model_missing` / `prepare_models`、`models.prepare` 実行中なら `busy` で失敗します。受け付けた処理は終端結果になってから完了します（失敗は `processing_failure`、中断は `cancelled`）。モデル未準備でも準備中でなければ、`session.import` は retained original を保持して finalization queue に enqueue した時点で完了し、モデル準備後まで待機します。
+- `session.export` は `transcript.txt` と音声（録音は `audio.flac`、取り込みは original）を destination の下に session フォルダー名で公開し、公開した bundle フォルダーの path を `destination_path` で返します。Import / export の mutation は detached file copy、cleanup、bookkeeping を含む全体を EngineApplication core が所有し、caller の cancel 後も登録済み mutation として完了まで追跡します。shutdown は新しい mutation を拒否し、登録済みの mutation が完了するまで待ってから root lock を解放します。既に開始した copy / export は完了まで実行します。自動書き出しは設定の `automatic_export` と `export_destination_path` を使い、有効で destination が null のときは何もせず書き出し先未設定の `error` を報告します。pause 後に新たな retry や自動書き出しは開始しません。
+- `settings.replace` は、モデル profile（`asr_size`、`execution_provider`、`threads`、`decisions_enabled`）が変わる置換を作業中は `busy` で拒否します。profile が変わった置換は準備済み状態を破棄し `models_required` に戻します。`low_heat` は確定処理の pacing に反映します。
+- `transcript.watch` は選択中の 1 session を切り替え、末尾最大 200 行を返します。以後はその session の行変更を `rows` event（`changes`、一度に 200 件を超える変更は `reload_required`）で送り、live update で watch revision を進めます。live update ごとに、matching watch / read cache の projection 結果と encoding 結果を行単位で集約し、失敗 marker を row ID、失敗した段階の入力（projection では source segment、encoding では projected row / removal）、failure の組として追跡します。話者 context が不確かなため projection を skip した行など、段階の成功を確認できない marker は保持します。marker は失敗した段階で修復が検証された場合、行の削除・rowless が検証された場合、または final publication を読み込んだ場合にだけ消去します。記録済みの組と同じ失敗は報告せず、新しい組だけを報告するため、同じ失敗が続く update や無関係な行の変更では再報告せず、失敗行の入力または failure が変われば再報告します。failure tracking は source 順の最大16件（`state.failures` の上限）で、それを超えた行は先行する枠が空くまで報告しません。失敗した update は projection の dirty retry state を保持しますが、incremental projection の commit、公開 rows、および revision は更新しません。update で対象になった全行の projection と encoding が検証された場合だけ cache / revision に反映されます。この source-side 抑止で wire schema は変わりません。`transcript.read` は `revision: null` で read snapshot を開始または置き換え、後続 page は同じ revision / cursor を使います。live edit / removal / append ではこの snapshot を変えません。snapshot がない場合も指定 revision が現在の最新 revision と一致すれば snapshot を確立でき、保持 snapshot と最新 revision のいずれにも一致しない revision は `stale_revision`、cursor が一致しない場合は `invalid_cursor` です。final publication は対象 session の read snapshot を無効化します（詳細は `Events、correlation、revision` 節）。
+- state の `failures` は直近16件を保持する履歴であり、failure の重複排除 domain ではありません。同一 failure の coalescing は未送信 pending / in-flight error の間だけで、既に delivery 済みの failure と同一の発生も再送します（例: 2回目の「音声が30秒以上無音です」warning）。app の未送信 error event は最大16件を保留し、超過時は transport admission 前の最古 pending error を置き換え、bounded `EngineLog` marker を出します。最新の failure は `state.failures` に残ります。error sender は1つで、最大1件だけを in-flight にします。transport に admission 済みの reliable `error` と terminal reply は置き換えません。unsolicited `state` / `error` / `rows` は `completed(hello)` が transport に正常に enqueue されるまで gate し、その後 current state を発行します。shutdown で gate を閉じた後は再開せず、in-flight error sender の完了を待ってから `completed(shutdown)` を送り、遅れて background event を出しません。したがって終了処理による maintenance 中断 warning が gate 閉鎖後に必ず送信されるわけではありません。
+- `shutdown`（EOF などの切断も同じ）は pause gate を閉じて startup maintenance task、processing drain、decision retry を cancel し、開始中の録音を取り消し、録音中なら durable に停止します。停止済み session と fatal capture session では残った live ASR backlog を drain せず、active / retired live worker を cancel して完了を待ちます。durable 音声は次回 recovery 用に残ります。既に実行中の native inference call は強制 preempt せず、その call が戻る必要があります。ローカル run 公開前に finalization が中断された場合は `paused` metadata の保存を試みます。保存に成功すれば `paused` を永続化し、次回起動の scanner が `.finalize` として再 enqueue します。保存に失敗した場合は元の中断理由と保存エラーを含む明示的な処理エラー結果を返し、`failFinalization` は呼ばず、既存の `running` / `paused` metadata を保ちます。次回 scanner は残った状態から `.finalize` として再 enqueue します。したがって `paused` が durable なのは metadata 保存に成功した場合に限られます。ローカル run 公開後は finalization attempt の `complete` を保ち、録音 compaction が未完了なら次回起動の storage maintenance で再開し、ASR を再実行しません。実行中 finalization が安全に pause するまで最大30秒待ち、間に合わなければ `shutdown` は失敗して exit code 6 になります。shutdown は登録済み import / export mutation も完了まで待ちます。
+
+録音 compaction は pause signal と interrupt callback で取り消します。通常の `closeStorage` から起動する detached compaction は cancellation handler で親 task の shutdown cancellation を detached task に転送し、startup storage maintenance も shutdown cancellation を compactor / encoder まで伝えます。録音用 FLAC encoder は最大4096 sample frames の block で符号化し、validation は各 FLAC frame を decode・検査します。これは他の FLAC reader が block size を4096 sample frames に固定する保証ではありません。encode / validation 中は cancellation を確認するため、detached encode が uninterruptible になることはありません。cancel は filesystem failure として報告せず、残る PCM と partial FLAC は次回起動の recovery / compaction が回復可能な状態として扱います。process はこれらの処理完了を待ってから root lock を解放します。
+
+共通 Core の [`BlockingIOExecutor.swift`](../app/MacAmbientJev/Sources/MacAmbientJevCore/BlockingIOExecutor.swift) が公開する `BlockingIOExecutor.shared` は Swift の TaskExecutor で、enqueue された各 job を専用の Foundation Thread で実行します。単一の serial global bottleneck は作りません。Swift 6.2 の [Executor.swift](https://raw.githubusercontent.com/swiftlang/swift/swift-6.2-RELEASE/stdlib/public/Concurrency/Executor.swift) は task executor preference と default actor の実行場所を説明します。[SE-0417](https://raw.githubusercontent.com/swiftlang/swift-evolution/main/proposals/0417-task-executor-preference.md) が示す unstructured Task.detached の非継承は Swift 6.0 でも当てはまります。ここで述べる配置は各 helper が明示する範囲です。Engine の retained `session.import` / `session.export`、Pipeline の [`SessionProcessingAudio`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingAudio.swift) の同期 `compactRecording`、PortableRuntime の [`PortableModelPreparationService`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableModelPreparationService.swift) による同期 asset hash 検証と Silero / clause tagger 構築は、必要な同期 blocking closure に `BlockingIOExecutor.shared` を明示します。PortableRuntime の既定 [`ONNXQwen3ASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXQwen3ASREngine.swift) loader は同期 `Qwen3ASRONNXModel` constructor を Task.detached(executorPreference: BlockingIOExecutor.shared) で実行して結果を待ちます。注入された async loader はそのまま呼びます。既定 [`ONNXCommunity1DiarizationEngine`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXCommunity1DiarizationEngine.swift) loader は、actor-isolated な `prepareSynchronously()` の同期 body を `withTaskExecutorPreference(BlockingIOExecutor.shared)` 内で実行し、pinned asset hash の検証、ONNX environment / sessions の作成、actor が所有する non-Sendable kernel の構築を行います。`diarize` と `unload` は actor entry 後に suspension point がないため、この kernel の利用と解放は直列です。Community loader を async body 全体で包むことや、preference が任意の task へ推移的に継承されることは意味しません。専用 thread に載せるのは同期 blocking work だけです。`task.value` の読み取り・待機は async wait であり、timeout の延長や retry で blocking I/O を補うものではありません。
+
+### 起動時復旧
+
+`EngineApplication.start()` は、`hello` より前に storage maintenance を始めます。maintenance の間は録音・取り込み・再処理を `busy` で拒否します。続いて `SessionProcessingCoordinator.recoverPendingSessions`（共有の `SessionRecoveryScanner` と `SessionRecoveryPlan`）が、強制終了で残った session（録音中だった session、確定処理の途中だった session）の storage maintenance と確定処理を行います。maintenance result は session ID ごとの map で、完了した候補は含まず、実エラーになった候補と shutdown interruption された現在・残りの未実行候補には未完了 item を含めます。map にある候補は maintenance 済みとして扱わず、確定処理にも enqueue しません。issue を engine failure として報告する場合、`SessionMaintenanceIssue.failed` は `filesystem` / `error` / `inspect_session`、`interruptedByShutdown` は `cancelled` / `warning` / `restart` とし、stage はどちらも `maintenance` です。中断 message は shutdown による interruption と次回起動時の再実行を示し、disk error ではありません。両方とも実際に maintenance が成功するまで recovery から除外します。成功した候補の後で `SessionRecoveryPlan` による復旧を enqueue します。結果は state の `recovery`（`running` → `completed`、scan 全体の失敗は `failed`、モデル未準備で待機中は `pending`）と failures に出ます。壊れた folder は個別の `error`（`recovery` / `maintenance`、復旧は `inspect_session`）で、他の session の復旧は続きます。設定やモデルがないと enqueue された復旧は待機し、`models.prepare` の成功後に実行します。一覧と読み取りは復旧中も使えます。shutdown pause は startup maintenance / recovery task を cancel し、その task の完了を待ちます。`ready` の準備失敗時も `EngineProcess` は safe shutdown を先に呼び、startup task の完了後に終了します。startup task や登録済み mutation が終わるまで root lock は保持され、shutdown の最終化と診断出力の後に解放されます。lock 解放後は直ちに終了 code を返します。
+
+### 実行ファイル
+
+`MacAmbientJevEngine.exe`（Windows のみ）は `[--local-app-data <絶対パス>]` だけを受け付けます。省略すると `AppPaths.systemDefault`（SHGetKnownFolderPath の LocalAppData）を使い、指定すると LocalAppData の代わりにそのフォルダーを使います（`<フォルダー>/mac-ambient-jev` が application root）。テストと配置先の変更用で、環境変数や既定値への fallback はありません。
+
+[`EngineProcess.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) の `EngineProcess.run()` は path 解決より先に [`EngineLog`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineTransportIO.swift) を初期化し、継承された client stderr の複製を含む bounded diagnostic writer を用意します。起動順は、path 解決、`engine.lock`（LockFileEx）の取得、`WindowsPipeByteSink.claimStandardOutput()` による NDJSON stdout の確保、native stdout capture pipe への redirect、transport と `EngineApplication` の構築、起動時復旧の開始、`EngineController.run()` です。`EngineProcess.withLockedRoot` は lock 取得後の operation error を捕捉して `EngineLog` に記録し、logger を閉じてから root lock を解放します。`run()` の外側の catch は lock 取得前の startup error だけを扱い、外側の logger close は lock 内で既に閉じた場合も安全です。ready の準備に失敗した場合は safe shutdown を呼んで startup task 完了を待ってから終了します。別 engine が lock を保持している場合は stdout に書かず、複製した client stderr に理由を出して exit code 2 で終了します。引数の誤りも exit code 2 です。
+
+stdout は NDJSON record だけです。`WindowsPipeByteSink.claimStandardOutput()` は client の stdout handle を複製して transport 専用に確保します。その後 [`WindowsDiagnosticCapture`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/WindowsDiagnosticCapture.swift) は native stdout だけを private anonymous pipe に redirect し、CRT の fd 1 は [`_dup2`](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/dup-dup2?view=msvc-170)、Win32 の `STD_OUTPUT_HANDLE` は Windows 2000 以降の [SetStdHandle](https://learn.microsoft.com/en-us/windows/console/setstdhandle) でその pipe に接続します。fd 2 と `STD_ERROR_HANDLE` は一切 redirect しません。raw native stderr と Swift runtime の fatal / precondition / crash output は client の実 stderr に届き、client が stderr を drain しなければ uncontrolled runtime write が block することがあります。stderr redirect や native stderr の nonblocking 保証はありません。Swift の own logs は `EngineLog` が初期化時に複製した client stderr へ bounded `EngineDiagnosticWriter` 経由で送ります。stdout capture または transport stdout の setup が失敗した場合も、redirect なしで続行する fallback はありません。
+
+`EngineLog` は [`EngineDiagnosticWriter`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineDiagnosticWriter.swift) の bounded queue を使います。queued record 128 件・queued bytes 262144 bytes・1 record あたり 16384 bytes（末尾 LF を含む）が上限で、これとは別に最大 1 bounded record が writer で in-flight です。超過・oversized record は切り詰めず record 全体を drop し、record 数と LF を含む byte 数を数えます。stderr が再び書き込み可能になったら、drop 数を ASCII の `engine diagnostics overflow: dropped_records=N dropped_bytes=N\n` marker で報告してから残った record を出力します。各 log 呼び出しは bounded queue に追加するだけで、log ごとの async task を作りません。blocked sink に対する [`EngineDiagnosticWriterTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineDiagnosticWriterTests.swift) は producer が止まらないことを検査します。専用 stderr writer は1本です。Windows の [`EngineStandardErrorSink`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineStandardErrorSink.swift) は継承 stderr の duplicate handle に WriteFile し、満杯の pipe での書き込みは CancelSynchronousIo で取り消せます。close は最大0.25秒 queue を drain し、その後も書き込みが止まっていれば cancel します。
+
+native stdout capture は [CreatePipe function](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createpipe) に 65536-byte の pipe buffer size を要求しますが、これは OS への hint であり、実際の buffer capacity は保証されません。専用 drain thread は最大4096-byteの arbitrary byte chunk を `EngineLog` queue に渡し、protocol record / NDJSON line として扱いません。native stdout capture flood test は capture drain を、blocked sink の [`EngineDiagnosticWriterTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineDiagnosticWriterTests.swift) は own Swift log producer の bounded な書き込みを検査します。raw native stderr はこの pipe / logger を通らず client stderr に直接書かれ、client が drain しない場合に block し得ます。
+
+- 出力: `WindowsPipeByteSink` は WriteFile を 4096 byte 以下ずつ呼びます（pipe への blocking write は全 byte が渡るまで戻らないため、進捗を deadline で観測できる粒度にする）。`cancelBlockedWrite()` は writer thread に [CancelSynchronousIo](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelsynchronousio) を、書き込みが戻るまで繰り返して送ります。`ERROR_BROKEN_PIPE` / `ERROR_NO_DATA` は `brokenPipe` です。
+- 入力: `WindowsPipeByteSource` は ReadFile を呼び、`close()` で読み取り中の thread に CancelSynchronousIo を送ります。client が接続したまま `shutdown` を送ると、入力 thread は ReadFile で待っています。handle を CloseHandle で閉じようとすると戻らず process が終了しないため、取り消してから閉じずに process 終了に任せます。
+- 終了 code は `EngineExit.processExitCode` です（0: `shutdown` 要求または EOF、2: 起動失敗、3: protocol 違反、4: 入力エラー、5: 出力失敗、6: shutdown の失敗、7: fatal capture failure）。fatal な transport / capture failure では capture を durable に停止してから非 0 で終了します。
+
+テスト: [`EngineApplicationTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTests.swift)（全 OS。fake capture の録音→停止→確定→書き出し、強制終了後の起動時復旧、モデル未準備での復旧待機、shutdown 中の finalization 中断と新しい `EngineApplication` / processor instance による次回起動時の再確定、settings の busy 拒否、fatal capture failure 後の durable stop / pending recovery / exit 7）、[`EngineApplicationConcurrencyTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationConcurrencyTests.swift)（startup cancel と root lock の保持、停止済み録音および recording phase が idle になった fatal capture session の live ASR backlog teardown、共有 mutation registry への登録・cancel / throw 後の cleanup と shutdown 待機）、[`EngineApplicationFailureDeliveryTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift)（pending / in-flight failure の coalescing、delivery 済みの同一 failure の再送〔2回目の30秒無音 warning を含む〕、bounded pending delivery、hello 完了後の state 公開、shutdown 中の in-flight error 完了と late event 抑止）、[`EngineApplicationTranscriptTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTranscriptTests.swift)（oversized watched row の source-side row ID / row content revision dedupe、無関係な更新での再報告抑止、row 内容変更後の再報告、修復後の marker 解除）、[`EngineDiagnosticWriterTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineDiagnosticWriterTests.swift)（bounded queue、producer を止めない blocked sink、overflow marker、oversized record の drop、bounded close）、[`WindowsDiagnosticCaptureTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsDiagnosticCaptureTests.swift)（Windows。client stderr が止まった状態での native stdout capture flood、stderr handle を変更しないこと、fatal / precondition output が original stderr に届くこと、stdout pollution capture と capture cancellation）、[`WindowsPipeByteSinkTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsPipeByteSinkTests.swift)（満杯の pipe の取り消し、broken pipe、全 byte の順序、遅い reader、deadline）、[`EngineProcessTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/EngineProcessTests.swift)（build 済み exe を子プロセスで起動し、stdout が NDJSON だけであること、`shutdown` と EOF の終了 code、protocol 違反、二重起動 lock failure）。process test は子が親の継承可能な handle を引き継ぐため直列に実行します。
+
+共通 Pipeline の [`LiveASRSessionTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveASRSessionTests.swift) と [`LiveTranscriptionCoordinatorTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveTranscriptionCoordinatorTests.swift) は、live segment registration、registration 中の停止・取消、共有 queue / processor の race を検査します。[`FinalTranscriptPipelineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FinalTranscriptPipelineTests.swift) は公開前の cancellation が `paused` として保存され scanner が次回 finalize すること、公開済み run は `complete` を保ち compaction の再開に ASR を使わないことを検査します。[`SessionProcessingAudioTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionProcessingAudioTests.swift) と [`RecordingAudioCompactorTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift) は detached compaction への cancellation forwarding と startup maintenance の中断・未実行候補の明示的な map item、および未完了候補を recovery queue に enqueue しないことを検査します。
+
+fake canonical capture は既に canonical な sample を identity converter で送り、実際の `TimestampedMonoSink` → `AudioBlockRing` → `AudioCaptureDrain` → `DurableAudioWriter` と Core の recording FLAC encoder / reader を通して durable frames と FLAC MD5 を検査します。この fake converter は identity なので、Windows platform SRC を検証するものではありません（SRC は WindowsSupport の別 test target が担当します）。
+
+Engine transport の blocking input / stdout write と watchdog wait、および scripted blocking source / sink は専用 thread で動きます。[`EngineTransportOutputTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportOutputTests.swift) の coalescing / backpressure cases は writer を開始する前に queue を埋めてから `start()` するため、write deadline はテストの進み具合を測りません。producer task は test-owned の TransportTestExecutor（serial DispatchQueue backed TaskExecutor）で動き、default pool の進行に依存しません。[`EngineDiagnosticWriterTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineDiagnosticWriterTests.swift) の `close`、[`WindowsPipeByteSinkTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsPipeByteSinkTests.swift) の sink cancel / close、[`EngineApplicationConcurrencyTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationConcurrencyTests.swift) の FLAC cancellation / retry は Task.detached(executorPreference:) で、[`FLACTimelineReaderTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/FLACTimelineReaderTests.swift) と [`RecordingFLACEncoderTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/RecordingFLACEncoderTests.swift) の FLAC subprocess tests、[`WindowsSessionBoundaryTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/WindowsSessionBoundaryTests.swift) の Windows subprocess 部分、[`WindowsTokenizerMemoryTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/WindowsTokenizerMemoryTests.swift) の memory test、[`WindowsCaptureEnvironmentTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/WindowsCaptureEnvironmentTests.swift) の publisher-join test は await を含まない `withTaskExecutorPreference` で、同期 blocking 呼び出しだけを `BlockingIOExecutor.shared` に載せます。POSIX pipe の [`EngineTransportPipeTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTransportPipeTests.swift) と [`ONNXCommunity1DiarizationEngineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift) は executor を指定しません。Pipeline の semaphore helper も Dispatch global pool ではなく、専用 Foundation Thread と checked continuation を使います。deadline を試さない transport cases と slow-reader cases は5秒の deadline を保ち、deadline 専用 cases だけ短い test deadline を指定します。
+
+## 偽キャプチャ engine テストハーネス
+
+[MacAmbientJevEngineHarness](../app/MacAmbientJev/Tests/MacAmbientJevEngineHarness/HarnessMain.swift) は [Package.swift](../app/MacAmbientJev/Package.swift) が提供する独立 test executable product で、app/MacAmbientJev の Tests/MacAmbientJevEngineHarness にあります。本番用 fake flag は追加せず、本番 `MacAmbientJevEngine.exe` は Windows 専用のままです。CLI の6引数 `--root`、`--fixture`、`--sample-rate`、`--channels`、`--inference`、`--threads` はすべて必須です。root は絶対 path の既存 directory、fixture は絶対 path の既存 file、sample rate は `16000|44100|48000`、channels は `1..8`、inference は `deterministic|portable`、threads は `1...min(4, logicalCPUCount)` です。`portable` は Linux / Windows のみで利用でき、PortableRuntime を build しない macOS では明示的な起動エラーになります。harness での fake capture・推論選択は test-only であり、本番 executable に flag や hardware 利用を加えません。
+
+この受け入れ harness は stdin / stdout に test-only の [`HarnessPipeIO.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHarness/HarnessPipeIO.swift) を使い、実際の `EngineTransport` / `EngineController` / `EngineApplication` を通します。一方、出荷する [`WindowsPipeIO.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/WindowsPipeIO.swift) と [`EngineProcess.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) の `EngineProcess.run()` にある標準ハンドルの設定・redirect や本番起動時の組み立ては、deterministic / full-model のどちらの acceptance でも対象外です。この対象外範囲は、acceptance をどの OS で実行しても Windows VM を含めて変わりません。本番 executable を別途 build しても、acceptance がこの起動 wiring を検証したことにはなりません。
+
+[FileCaptureProvider](../app/MacAmbientJev/Tests/MacAmbientJevEngineE2ESupport/FileCapture.swift) は header なし raw interleaved little-endian Float32 fixture を最大512 source framesずつ読みます。16 kHz / 44.1 kHz / 48 kHz と1〜8 channelを受け付け、実際の `TimestampedMonoSink` → `AudioBlockRing` → `AudioCaptureDrain`（連続 SRC）→ `DurableAudioWriter` を通します。macOS は MacAmbientJevAppleSupport、Windows は MacAmbientJevWindowsSupport の `CanonicalAudioResampler` を使います。Linux は16 kHz canonical identity のみを受け付け、非 canonical rate は拒否し、SRC や別経路への fallback はありません。有限 fixture 全体を `recording.start` 中に送り、最終 packet の直前に実 writer の checkpoint を永続化します。process は fixture を全部受け取った後も recording 状態を保ち、最終 packet の tail は `recording.stop` まで checkpoint に含めません。
+
+Deterministic acceptance は実際の [EngineApplication](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication.swift) と [NativeSessionProcessor](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift) で recovery・compaction・catalog・export を行い、[DeterministicInferenceProvider](../app/MacAmbientJev/Tests/MacAmbientJevEngineE2ESupport/DeterministicInference.swift) が VAD / ASR / diarization を決定的に置き換えます。強制終了 scenario は `0 < committedFrames < fullFixtureFrames` の実 checkpoint を確認し、次 process の実 recovery 後に retained / exported FLAC の両方が検証済み checkpoint PCM prefix と完全一致し、未 checkpoint tail を補わないことを検査します。これは hardware capture や実モデル推論の精度の証拠ではありません。
+
+### full-model portable inference acceptance
+
+`engine_acceptance.py full-model` は Linux / Windows の test-only harness で実 PortableRuntime inference と decisions を実行し、同じ音声を使う ProcessRecording CLI baseline と host 出力を比較します。macOS では PortableRuntime が build されないため、この mode は明示的なエラーで終了します。必須 CLI 引数は `--executable PATH`、`--process-recording PATH`、`--fixture PATH`、`--threads N` です。thread 数に既定値はなく、Linux / Windows runners は `2` を渡します。Linux の no-build invocation は次のとおりです。
+
+<pre><code>python3 -B scripts/engine_acceptance.py full-model &#45;&#45;executable /absolute/path/to/MacAmbientJevEngineHarness &#45;&#45;process-recording /absolute/path/to/MacAmbientJevProcessRecording &#45;&#45;fixture app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav &#45;&#45;threads 2</code></pre>
+
+fixture は上記 `日本語音声 fixture` の `long` row（18.464 秒）を使います。既存の [`process_recording_acceptance.py`](../tools/linux-audio/process_recording_acceptance.py) helper が使う reference SHA-256 と sample count はこの row から読み、full-model driver はその pin に対する非圧縮 PCM16 / 16 kHz mono WAV を再検証します。PCM16 値は `/32768` で Float32 に変換し、同じ PCM16 source WAV も保持して baseline と比較します。Linux は16 kHz mono identity のみです。Windows は加えて各 sample を3回繰り返し、両 channel に出力する48 kHz stereo WAV / Float32 fixture を生成します。この入力は engine host の Windows `CanonicalAudioResampler` に渡り、実 SRC を通ります。fixture の3倍反復は入力生成だけの規則で、推論 fallback はありません。
+
+Portable harness は既存の ProcessRecording acceptance helper と同じ5つの必須 model 環境変数 `MAC_AMBIENT_JEV_SILERO_MODEL`、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`、`QWEN3_ASR_ONNX_MODEL_SIZE`、`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY`、`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` を使います。欠落・空値・不正 path / size は失敗し、別モデルへ切り替えません。engine settings の ASR size と threads は環境設定 / `--threads` に一致し、`decisions_enabled` は true でなければなりません。host は `execution_provider=cpu`、`low_heat=false`、`automatic_export=false`（destination は null）を設定し、`models.prepare` は実際の pinned model files を検証して load します。
+
+各 host scenario は fake file capture から start、stop、実 finalization を行います。retained FLAC と2回の export FLAC は全 frame decode、CRC-8 / CRC-16、STREAMINFO PCM MD5、frame/sample count を検証し、retained と各 export の PCM / FLAC bytes、反復した export bundle の bytes が一致することを確認します。16 kHz mono scenario の canonical PCM は元 source WAV の全 sample と完全一致します。別の ProcessRecording baseline は同じ source WAV に `--keep-session --with-decisions --threads N` を指定して処理します（runner は N=2 を渡し、baseline には low-heat 設定を付けません）。Windows の full-model driver は、Python / harness が所有する filesystem checks では path の extended Windows spelling を維持し、ProcessRecording CLI には既存の `SessionsRootPolicy` に渡す path として通常の絶対 DOS / UNC spelling を明示します（retry / fallback は行わず、policy も弱めません）。
+
+host shutdown 後、ProcessRecording CLI の read-only `--resume-session` mode は既に公開済み event を読み取り JSON を materialize します。resume の前後で `events.jsonl` と `processing_metadata.json` の bytes が変わらないことを確認します。baseline と host の JSON は semantic leaf ごとに型・key・配列順も含めて厳密比較します。比較対象には segment ID、source segment ID、開始・終了時刻、raw `text` と `display_text`、speakers / confidence、clause state、clause slice の ranges / priorities / retry state を含みます。canonicalize する lineage は `source.segmentation_run_id`、`source.asr_run_id`、`source.asr_event_seq`、`clause_slices[].reference.boundary_run_id`、`clause_slices[].reference.clause_id` の5 path だけで、clause ID 間の alias equality は保ちます。text normalization、数値 epsilon、その他の field 除外はありません。別々の inference run ID は異なるため JSON 全体の byte equality とはせず、この5 lineage path 以外の意味内容が完全一致することを検査します。不一致では segment / field / text mismatch 数と最初の field path を出し、scenario ごとに segment・比較 field・text・FLAC frame/sample/MD5 の値も表示します。`transcript.read` は baseline の display projection と一致し、exported `transcript.txt` は `transcript.read` rows の整形結果と bytes 単位で一致します。
+
+これらは test-only file capture による EngineHost / PortableRuntime の acceptance で、microphone / system-audio hardware、WASAPI 実機、出荷 executable の pipe wiring、manual 操作や long-duration operation を検証しません。数値 suite や acceptance の実行結果から、この文書に測定値や品質保証を追加するものではありません。
+
+Deterministic acceptance の検証用 fixture は反復しない、frame ごとに厳密単調増加する ramp で、各 channel に異なる offset を与えます。channel を mono にした source signal は `(-16000 + frame * 16000 / rate) / 32768` です。16 kHz identity では canonical PCM の全 sample（両端を含む）と、強制終了前に commit 済みの各 chunk を global sample index `i` に対する `i - 16000` と完全一致させます。44.1 kHz / 48 kHz SRC は連続 ramp を出力時刻で独立に評価し、canonical sample index `i` の期待値 `i - 16000` との interior 差を絶対値 8 LSB 以下とします。SRC では先頭・末尾各256 sample だけを filter の開始・EOS 過渡として除外し、identity 検査からは除外しません。ramp の曲率は0で unity-DC filter はその傾きを保ち、遅延補償と量子化を考慮した8 LSB の上限は十分に保守的です。512 source-frame のずれは約171 LSB（48 kHz）/ 186 LSB（44.1 kHz）で8 LSBを大きく上回るため、chunk の並べ替え・重複や、入力を無視する定数出力 converter を検出します。driver の self-tests は channel ramp、identity の両端、endpoint の破損、8 LSB を許容し9 LSB を拒否する境界、定数出力の拒否、512-frame chunk の並べ替え・重複の検査を含みます。
+
+Swift 6.2 の build と、build 済み executable path を必須入力する no-build acceptance は次のとおりです（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Windows の `scripts/test-windows.ps1` は package build 後、`swift build --show-bin-path` で解決した `$binDir\MacAmbientJevEngineHarness.exe` を driver に渡します。acceptance command は既存 executable を使い、build は行わず、deterministic acceptance を実行します。
+
+```bash
+swift build --package-path app/MacAmbientJev --product MacAmbientJevEngineHarness
+```
+
+<pre><code>python3 -B scripts/engine_acceptance.py deterministic &#45;&#45;executable /absolute/path/to/MacAmbientJevEngineHarness</code></pre>
+
+<pre><code>python -B scripts/engine_acceptance.py deterministic &#45;&#45;executable "C:\absolute\path\to\MacAmbientJevEngineHarness.exe"</code></pre>
+
+[engine_acceptance.py](../scripts/engine_acceptance.py) は child を binary stdin/stdout/stderr pipes で起動し、stdout を strict NDJSON として検査しながら stdout/stderr を drain し、I/O と scenario の deadline を適用します（[Python 3.12 `subprocess`](https://docs.python.org/3.12/library/subprocess.html)）。native profile 専用の [engine_acceptance_flac.py](../scripts/engine_acceptance_flac.py) は全 frame を decode し、constant / verbatim / fixed-predictor 4-bit Rice subframe、CRC-8 / CRC-16、STREAMINFO PCM MD5、正確な frame/sample count と canonical PCM を検証します。これは限定した `RecordingFLAC` profile validator であり、一般 FLAC decoder の実装を主張しません（[RFC 9639, December 2024](https://www.rfc-editor.org/rfc/rfc9639.html)）。driver と validator の self-test は `python3 -B scripts/test_engine_acceptance.py` と `python3 -B scripts/test_engine_acceptance_flac.py` です。
+
+Windows driver の long-path scenario は260文字超の root path を作り、Unicode / space を含む path、child directory の reparse-point export rejection、再 export の byte 不変性も扱います。driver は Python が所有する一時 path に `\\?\C:\...` または `\\?\UNC\server\share\...` の extended absolute spelling を明示して使うため、260文字超 scenario は system registry の設定や default fallback に依存しません（[Microsoft: Maximum Path Length Limitation](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation)、updated 2024-07-16）。選択した root path の symlink 解決は許容し、reparse-point rejection の検査境界は export root 内の child です。SRC・multichannel/timestamp/restart・overflow・idle loopback・stall・disk error/low space・power error・healthy writer prefix は既存の [CanonicalAudioResamplerTests](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/CanonicalAudioResamplerTests.swift)、[WindowsCaptureIngressTests](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/WindowsCaptureIngressTests.swift)、[WindowsNativeCapturePacketTests](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/WindowsNativeCapturePacketTests.swift)、[WindowsCaptureSourceTests](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/WindowsCaptureSourceTests.swift)、[WindowsCaptureSafetyTests](../app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/WindowsCaptureSafetyTests.swift) が扱うため、ここでは重複させません。
+
+[EngineP4FloodEvidenceTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineP4FloodEvidenceTests.swift) の4 tests は production limits で `P4_BOUND` counters を出し、stdout queue 128 records + 1 in-flight、8 MiB queued-byte cap、stdin 1 MiB line cap、admission 16 slots（2 reserved、14 ordinary）を検査します。これは4時間/RSS gate、paging、resource preflight の証拠ではなく、既存 live/history の unbounded measurement は対象外です。

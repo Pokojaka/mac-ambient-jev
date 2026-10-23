@@ -1,6 +1,18 @@
 import Foundation
 import MacAmbientJevCore
 
+public enum SessionMaintenanceIssue: Sendable, Equatable {
+    case failed(String)
+    case interruptedByShutdown(String)
+
+    public var message: String {
+        switch self {
+        case .failed(let message), .interruptedByShutdown(let message):
+            message
+        }
+    }
+}
+
 public struct SessionRecoveryStatusSnapshot: Sendable, Equatable {
     public let processing: String?
     public let transcript: String
@@ -17,7 +29,7 @@ public enum SessionRecoveryEvent: Sendable, Equatable {
     case recovering(Int)
     case reportedFailures(
         scanFailures: [SessionRecoveryFailure],
-        maintenanceFailures: [UUID: String],
+        maintenanceFailures: [UUID: SessionMaintenanceIssue],
         hasRecoveries: Bool
     )
     case failed(String)

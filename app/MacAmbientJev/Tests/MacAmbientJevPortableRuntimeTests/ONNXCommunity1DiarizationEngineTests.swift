@@ -1,21 +1,27 @@
+import Dispatch
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevTestSupport
 import Testing
 @testable import MacAmbientJevDiarization
 @testable import MacAmbientJevPortableRuntime
 
 private final class RunLog: @unchecked Sendable {
     private let lock = NSLock()
+    let changes = ChangeSignal()
     private var loads = 0
+    private var loadExecutorMatches: [Bool] = []
     private var runs = 0
     private var inFlight = 0
     private var peak = 0
     private var requests: [(sampleCount: Int64, firstSamples: [Float])] = []
 
-    func recordLoad() {
+    func recordLoad(onBlockingIOExecutor: Bool) {
         lock.lock()
         loads += 1
+        loadExecutorMatches.append(onBlockingIOExecutor)
         lock.unlock()
+        changes.signal()
     }
 
     func begin(sampleCount: Int64, firstSamples: [Float]) {
@@ -25,18 +31,61 @@ private final class RunLog: @unchecked Sendable {
         peak = max(peak, inFlight)
         requests.append((sampleCount, firstSamples))
         lock.unlock()
+        changes.signal()
     }
 
     func end() {
         lock.lock()
         inFlight -= 1
         lock.unlock()
+        changes.signal()
     }
 
-    var snapshot: (loads: Int, runs: Int, peak: Int, inFlight: Int, requests: [(sampleCount: Int64, firstSamples: [Float])]) {
+    var snapshot: (loads: Int, loadExecutorMatches: [Bool], runs: Int, peak: Int, inFlight: Int, requests: [(sampleCount: Int64, firstSamples: [Float])]) {
         lock.lock()
         defer { lock.unlock() }
-        return (loads, runs, peak, inFlight, requests)
+        return (loads, loadExecutorMatches, runs, peak, inFlight, requests)
+    }
+}
+
+private final class KernelRunGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+    private var isReleased = false
+
+    func wait() {
+        releaseSemaphore.wait()
+    }
+
+    func release() {
+        lock.lock()
+        guard !isReleased else {
+            lock.unlock()
+            return
+        }
+        isReleased = true
+        lock.unlock()
+        releaseSemaphore.signal()
+    }
+}
+
+private final class WaitConditionProbe: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var hasEvaluatedCondition = false
+
+    func evaluateFalse() -> Bool {
+        lock.lock()
+        hasEvaluatedCondition = true
+        lock.unlock()
+        changes.signal()
+        return false
+    }
+
+    var conditionWasEvaluated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasEvaluatedCondition
     }
 }
 
@@ -44,16 +93,25 @@ private let testProvenance = RunProvenance(
     engine: "fake-community1", model: nil, version: "test", configuration: [:]
 )
 
-private func fakeEngine(directory: URL, log: RunLog, runDelay: TimeInterval = 0) -> ONNXCommunity1DiarizationEngine {
+private func fakeEngine(
+    directory: URL,
+    log: RunLog,
+    runDelay: TimeInterval = 0,
+    runGate: KernelRunGate? = nil
+) -> ONNXCommunity1DiarizationEngine {
     ONNXCommunity1DiarizationEngine(
         modelDirectory: directory,
         provenance: testProvenance,
         loadKernel: { _ in
-            log.recordLoad()
+            let isBlockingIOExecutor = withUnsafeCurrentTask {
+                $0?.unownedTaskExecutor == BlockingIOExecutor.shared.asUnownedTaskExecutor()
+            }
+            log.recordLoad(onBlockingIOExecutor: isBlockingIOExecutor)
             return Community1DiarizationKernel { sampleCount, readFrames in
                 let head = try readFrames(0..<min(sampleCount, 4))
                 log.begin(sampleCount: sampleCount, firstSamples: head)
                 defer { log.end() }
+                runGate?.wait()
                 if runDelay > 0 { Thread.sleep(forTimeInterval: runDelay) }
                 return [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: sampleCount, confidence: 1)]
             }
@@ -67,6 +125,7 @@ private func temporaryDirectory() throws -> URL {
     return url
 }
 
+@Suite(.timeLimit(.minutes(10)))
 struct ONNXCommunity1DiarizationEngineTests {
     @Test
     func prepareAndUnloadAreIdempotentAndPrepareLoadsAgainAfterUnload() async throws {
@@ -86,6 +145,23 @@ struct ONNXCommunity1DiarizationEngineTests {
         try await engine.prepare()
         #expect(await engine.isPrepared)
         #expect(log.snapshot.loads == 2)
+    }
+
+    @Test
+    func concurrentPreparesLoadOnceOnTheBlockingIOExecutor() async throws {
+        let log = RunLog()
+        let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<5 {
+                group.addTask { try await engine.prepare() }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(log.snapshot.loads == 1)
+        #expect(log.snapshot.loadExecutorMatches == [true])
+        #expect(await engine.isPrepared)
     }
 
     @Test
@@ -180,19 +256,62 @@ struct ONNXCommunity1DiarizationEngineTests {
         let session = try Community1CAFSession(samples: [0.1, 0.2, 0.3, 0.4])
         defer { session.cleanup() }
         let log = RunLog()
-        let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log, runDelay: 0.1)
+        let gate = KernelRunGate()
+        let engine = fakeEngine(directory: URL(fileURLWithPath: "/models"), log: log, runGate: gate)
         try await engine.prepare()
 
-        async let running = engine.diarize(fileURL: session.cafURL, canonicalSampleRate: 16_000, sessionURL: session.root)
-        while log.snapshot.runs == 0 { await Task.yield() }
-        await engine.unload()
+        let running = Task {
+            try await engine.diarize(fileURL: session.cafURL, canonicalSampleRate: 16_000, sessionURL: session.root)
+        }
+        var unloading: Task<Void, Never>?
+        do {
+            try await log.changes.wait("diarize run entry") { log.snapshot.runs > 0 }
+            unloading = Task { await engine.unload() }
 
-        #expect(log.snapshot.inFlight == 0)
-        #expect(try await running.count == 1)
-        #expect(await engine.isPrepared == false)
+            #expect(log.snapshot.inFlight == 1)
+            gate.release()
+            let spans = try await running.value
+            if let unloading { await unloading.value }
+
+            #expect(log.snapshot.inFlight == 0)
+            #expect(spans.count == 1)
+            #expect(await engine.isPrepared == false)
+        } catch {
+            gate.release()
+            do {
+                _ = try await running.value
+            } catch {}
+            if let unloading { await unloading.value }
+            throw error
+        }
+    }
+
+    @Test
+    func cancellationStopsAChangeSignalWait() async throws {
+        let probe = WaitConditionProbe()
+        let neverChanges = ChangeSignal()
+        let waiting = Task {
+            try await neverChanges.wait("cancelled condition") { probe.evaluateFalse() }
+        }
+
+        do {
+            try await probe.changes.wait("waiter condition to be evaluated") { probe.conditionWasEvaluated }
+        } catch {
+            waiting.cancel()
+            do {
+                _ = try await waiting.value
+            } catch {}
+            throw error
+        }
+        waiting.cancel()
+
+        await #expect(throws: WaitCancelled.self) {
+            try await waiting.value
+        }
     }
 }
 
+@Suite(.timeLimit(.minutes(10)))
 struct ONNXCommunity1DiarizationEngineModelDirectoryTests {
     private func engine(directory: URL) throws -> ONNXCommunity1DiarizationEngine {
         try ONNXCommunity1DiarizationEngine(modelDirectory: directory, intraOpThreads: 1)

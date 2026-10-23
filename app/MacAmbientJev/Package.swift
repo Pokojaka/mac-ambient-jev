@@ -7,6 +7,8 @@ import Foundation
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
     .library(name: "MacAmbientJevPipeline", targets: ["MacAmbientJevPipeline"]),
+    .library(name: "MacAmbientJevEngineProtocol", targets: ["MacAmbientJevEngineProtocol"]),
+    .library(name: "MacAmbientJevEngineHost", targets: ["MacAmbientJevEngineHost"]),
     .library(name: "MacAmbientJevDiarization", targets: ["MacAmbientJevDiarization"]),
     .executable(
         name: "MacAmbientJevEvaluateSession",
@@ -23,6 +25,10 @@ var products: [Product] = [
     .executable(
         name: "MacAmbientJevProcessRecording",
         targets: ["MacAmbientJevProcessRecording"]
+    ),
+    .executable(
+        name: "MacAmbientJevEngineHarness",
+        targets: ["MacAmbientJevEngineHarness"]
     )
 ]
 
@@ -43,6 +49,11 @@ coreDependencies.append("CWindowsSession")
 var targets: [Target] = [
     .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
+    .target(name: "MacAmbientJevEngineProtocol"),
+    .target(
+        name: "MacAmbientJevEngineHost",
+        dependencies: ["MacAmbientJevEngineProtocol", "MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
     .target(
         name: "MacAmbientJevDiarization",
         dependencies: ["MacAmbientJevCore"],
@@ -82,6 +93,11 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevClauseTaggerFixtures",
         resources: [.copy("Resources")]
     ),
+    // Deadline-free waits for test doubles, shared by the engine test targets.
+    .target(
+        name: "MacAmbientJevTestSupport",
+        path: "Tests/MacAmbientJevTestSupport"
+    ),
     .testTarget(
         name: "MacAmbientJevCoreTests",
         dependencies: [
@@ -93,6 +109,16 @@ var targets: [Target] = [
     .testTarget(
         name: "MacAmbientJevPipelineTests",
         dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevEngineProtocolTests",
+        dependencies: ["MacAmbientJevEngineProtocol"],
+        // The golden NDJSON is read through #filePath, so it is not a bundled resource.
+        exclude: ["Fixtures"]
+    ),
+    .testTarget(
+        name: "MacAmbientJevEngineHostTests",
+        dependencies: ["MacAmbientJevEngineHost", "MacAmbientJevTestSupport"]
     ),
     .testTarget(
         name: "MacAmbientJevDiarizationMeasurementTests",
@@ -113,7 +139,7 @@ var targets: [Target] = [
 targets.append(.target(
     name: "CMiniaudio",
     exclude: ["README.md"],
-    linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("uuid")]
+    linkerSettings: [.linkedLibrary("kernel32"), .linkedLibrary("ole32"), .linkedLibrary("uuid")]
 ))
 #elseif os(Linux)
 targets.append(.target(
@@ -137,7 +163,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevWindowsSupport",
-    dependencies: ["MacAmbientJevCore", "CMiniaudio", "CWindowsAudio"]
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "CMiniaudio", "CWindowsAudio"]
 ))
 targets.append(.testTarget(
     name: "MacAmbientJevWindowsSupportTests",
@@ -226,6 +252,36 @@ let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-Xcc", "-I\(onnxRuntimeIncludeDirectory.path)"])
 ]
 
+#if os(Windows)
+products.append(.executable(
+    name: "MacAmbientJevEngine",
+    targets: ["MacAmbientJevEngine"]
+))
+targets.append(.executableTarget(
+    name: "MacAmbientJevEngine",
+    dependencies: [
+        "MacAmbientJevCore",
+        "MacAmbientJevPipeline",
+        "MacAmbientJevEngineProtocol",
+        "MacAmbientJevEngineHost",
+        "MacAmbientJevPortableRuntime",
+        "MacAmbientJevWindowsSupport"
+    ],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevEngineTests",
+    dependencies: [
+        "MacAmbientJevEngine",
+        "MacAmbientJevCore",
+        "MacAmbientJevEngineProtocol",
+        "MacAmbientJevEngineHost",
+        "MacAmbientJevTestSupport"
+    ],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+#endif
+
 products.append(.executable(
     name: "MacAmbientJevDiarizeFile",
     targets: ["MacAmbientJevDiarizeFile"]
@@ -291,7 +347,8 @@ targets.append(.testTarget(
         "MacAmbientJevCore",
         "MacAmbientJevDiarization",
         "MacAmbientJevVADFixtures",
-        "MacAmbientJevClauseTaggerFixtures"
+        "MacAmbientJevClauseTaggerFixtures",
+        "MacAmbientJevTestSupport"
     ],
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
@@ -510,6 +567,54 @@ targets += [
         dependencies: processRecordingTestDependencies,
         exclude: processRecordingTestExcludes,
         swiftSettings: onnxRuntimeIncludeSwiftSettings
+    )
+]
+
+var engineE2ESupportDependencies: [Target.Dependency] = [
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevEngineHost",
+    "MacAmbientJevEngineProtocol"
+]
+#if os(Windows)
+engineE2ESupportDependencies.append("MacAmbientJevWindowsSupport")
+#elseif os(macOS)
+engineE2ESupportDependencies.append("MacAmbientJevAppleSupport")
+#endif
+
+var engineHarnessDependencies: [Target.Dependency] = [
+    "MacAmbientJevEngineE2ESupport",
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevEngineHost",
+    "MacAmbientJevEngineProtocol"
+]
+#if os(Linux) || os(Windows)
+engineHarnessDependencies.append("MacAmbientJevPortableRuntime")
+#endif
+
+targets += [
+    .target(
+        name: "MacAmbientJevEngineE2ESupport",
+        dependencies: engineE2ESupportDependencies,
+        path: "Tests/MacAmbientJevEngineE2ESupport"
+    ),
+    .executableTarget(
+        name: "MacAmbientJevEngineHarness",
+        dependencies: engineHarnessDependencies,
+        path: "Tests/MacAmbientJevEngineHarness",
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
+    ),
+    .testTarget(
+        name: "MacAmbientJevEngineE2ETests",
+        dependencies: [
+            "MacAmbientJevEngineE2ESupport",
+            "MacAmbientJevCore",
+            "MacAmbientJevPipeline",
+            "MacAmbientJevEngineHost",
+            "MacAmbientJevEngineProtocol"
+        ],
+        path: "Tests/MacAmbientJevEngineE2ETests"
     )
 ]
 

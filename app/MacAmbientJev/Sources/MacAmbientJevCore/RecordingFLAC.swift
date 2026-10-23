@@ -36,6 +36,7 @@ public enum RecordingFLAC {
 
     /// Writes exactly committedFrames samples. The caller validates the source reader.
     public static func write(reader: any TimelineAudioReading, to url: URL, sessionURL: URL) throws {
+        try Task.checkCancellation()
         let totalFrames = reader.info.committedFrames
         guard totalFrames > 0 else { throw RecordingFLACError.emptyRecording }
         guard totalFrames <= maximumStreamFrames else { throw RecordingFLACError.tooManyFrames }
@@ -63,6 +64,7 @@ public enum RecordingFLAC {
         samples.reserveCapacity(blockFrames)
 
         while frameStart < totalFrames {
+            try Task.checkCancellation()
             let count = Int(min(Int64(blockFrames), totalFrames - frameStart))
             let frameEnd = frameStart + Int64(count)
             let range = frameStart..<frameEnd
@@ -81,6 +83,7 @@ public enum RecordingFLAC {
             md5.update(samples: samples)
 
             let frame = encodeFrame(samples: samples, frameNumber: frameNumber, workspace: &workspace)
+            try Task.checkCancellation()
             try handle.write(contentsOf: Data(frame))
             minimumFrameSize = min(minimumFrameSize, frame.count)
             maximumFrameSize = max(maximumFrameSize, frame.count)
@@ -88,6 +91,7 @@ public enum RecordingFLAC {
             frameNumber += 1
         }
 
+        try Task.checkCancellation()
         let digest = md5.finalize()
         let streamInfo = makeStreamInfo(
             totalFrames: UInt64(totalFrames),

@@ -235,7 +235,9 @@ private func everyOutcomeRemovesTheDiarizationInputAndTheImportTimeline(outcome:
         fixture.processor(engines(for: outcome, observations: observations)), shouldPause: outcome == .paused
     )
 
-    #expect(result.disposition == (outcome.completes ? .completed : outcome == .paused ? .paused : .failed))
+    #expect(result.disposition == (
+        outcome.completes ? .completed : outcome == .paused || outcome == .diarizationCancelled ? .paused : .failed
+    ))
     #expect(observations.sawDiarizationInput == outcome.reachesDiarization)
     expectNoTransients(fixture)
     let storage = try SessionAudioStorageStore(layout: fixture.layout).load()
@@ -258,6 +260,13 @@ private func everyOutcomeRemovesTheDiarizationInputAndTheImportTimeline(outcome:
     case (.imported, _):
         #expect(exists(fixture.layout.audioDirectory.appending(path: "original.caf")))
         #expect(!exists(fixture.layout.recordingFLACURL))
+    }
+    if result.disposition == .paused {
+        let metadata = try #require(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load())
+        #expect(metadata.finalizationAttempt?.state == .paused)
+        let recovery = try SessionRecoveryScanner(sessionsRoot: fixture.paths.sessionsRoot)
+            .inspect(sessionID: fixture.sessionID).recovery
+        #expect(recovery?.action == .finalize)
     }
 }
 
@@ -446,7 +455,10 @@ func aCleanupFailureDuringAPauseStaysPausedAndReportsTheCleanupError() async thr
     )
 
     #expect(result.disposition == .paused)
-    #expect(await recorder.statuses.contains { $0.hasPrefix("音声の一時ファイルを削除できませんでした: ") })
+    let message = try #require(result.message)
+    #expect(message.contains(UserFacingStatus.finalizationPausedForHeat.text))
+    #expect(message.contains("音声の一時ファイルを削除できませんでした: "))
+    #expect(await recorder.statuses.last == message)
     let attempt = try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.finalizationAttempt
     #expect(attempt?.state == .paused)
 }

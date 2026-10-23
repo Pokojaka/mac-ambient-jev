@@ -36,6 +36,11 @@ enum FinalTranscriptPipelineOutcome: Sendable {
     case paused(metrics: ASRBatchMetrics)
 }
 
+/// Cancellation with the ASR metrics gathered before it (nil when ASR never started).
+struct FinalTranscriptPipelineCancellation: Error {
+    let metrics: ASRBatchMetrics?
+}
+
 /// A pipeline failure with the ASR metrics gathered before it (nil when ASR never started).
 struct FinalTranscriptPipelineFailure: Error, LocalizedError {
     let message: String
@@ -77,7 +82,7 @@ struct FinalTranscriptPipeline: Sendable {
     let audioHandling: any SessionProcessingAudioHandling
     let sleep: @Sendable (Duration) async throws -> Void
 
-    /// - Throws: `FinalTranscriptPipelineFailure`.
+    /// - Throws: `FinalTranscriptPipelineCancellation` or `FinalTranscriptPipelineFailure`.
     func process(
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         pacingMode: ASRPacingMode,
@@ -86,6 +91,7 @@ struct FinalTranscriptPipeline: Sendable {
     ) async throws -> FinalTranscriptPipelineOutcome {
         var asrMetrics: ASRBatchMetrics?
         do {
+            try Task.checkCancellation()
             return try await run(
                 onStatus: onStatus,
                 pacingMode: pacingMode,
@@ -93,7 +99,16 @@ struct FinalTranscriptPipeline: Sendable {
                 onPhase: onPhase,
                 asrMetrics: &asrMetrics
             )
+        } catch let cancellation as ASRRunCancellation {
+            throw FinalTranscriptPipelineCancellation(metrics: cancellation.metrics)
+        } catch is CancellationError {
+            throw FinalTranscriptPipelineCancellation(metrics: asrMetrics)
+        } catch let cancellation as FinalTranscriptPipelineCancellation {
+            throw cancellation
         } catch {
+            if Task.isCancelled {
+                throw FinalTranscriptPipelineCancellation(metrics: asrMetrics)
+            }
             throw FinalTranscriptPipelineFailure(
                 message: error.localizedDescription,
                 metrics: asrMetrics
@@ -117,15 +132,18 @@ struct FinalTranscriptPipeline: Sendable {
         let diarizationRunID = "diar_final_\(UUID().uuidString.lowercased())"
 
         func startRun(_ stage: ProcessingStage, _ runID: String, _ provenance: RunProvenance) async throws {
+            try Task.checkCancellation()
             try await writer.append(EventDraft(
                 eventType: "processing.run.started",
                 sessionID: sessionID,
                 processingRunID: runID,
                 payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
             ))
+            try Task.checkCancellation()
         }
 
         func completeEmptyRun(_ stage: ProcessingStage, _ runID: String) async throws {
+            try Task.checkCancellation()
             try await writer.append(EventDraft(
                 eventType: "processing.run.completed",
                 sessionID: sessionID,
@@ -137,6 +155,7 @@ struct FinalTranscriptPipeline: Sendable {
                     failedCount: 0
                 )
             ))
+            try Task.checkCancellation()
         }
 
         await onStatus(UserFacingStatus.detectingSpeech.text)
@@ -187,6 +206,7 @@ struct FinalTranscriptPipeline: Sendable {
         try await startRun(.asr, asrRunID, asr.provenance)
         var pendingSince: [String: Date] = [:]
         for segment in vadSegments {
+            try Task.checkCancellation()
             let created = try await writer.append(EventDraft(
                 eventType: "segment.created",
                 sessionID: sessionID,
@@ -196,6 +216,7 @@ struct FinalTranscriptPipeline: Sendable {
                 sourceEndFrame: segment.endFrame,
                 payload: EmptyPayload()
             ))
+            try Task.checkCancellation()
             transcriptEvents.append(.segmentCreated(
                 seq: created.eventSeq,
                 segmentationRunID: segmentationRunID,
@@ -203,6 +224,7 @@ struct FinalTranscriptPipeline: Sendable {
                 startFrame: segment.startFrame,
                 endFrame: segment.endFrame
             ))
+            try Task.checkCancellation()
             let pending = try await writer.append(EventDraft(
                 eventType: "asr.pending",
                 sessionID: sessionID,
@@ -213,8 +235,10 @@ struct FinalTranscriptPipeline: Sendable {
                 sourceEndFrame: segment.endFrame,
                 payload: EmptyPayload()
             ))
+            try Task.checkCancellation()
             pendingSince[segment.segmentID] = pending.createdAt
         }
+        try Task.checkCancellation()
         try await writer.append(EventDraft(
             eventType: "processing.run.completed",
             sessionID: sessionID,
@@ -226,6 +250,7 @@ struct FinalTranscriptPipeline: Sendable {
                 failedCount: 0
             )
         ))
+        try Task.checkCancellation()
         let asrCoordinator = PipelineCoordinator(
             sessionID: sessionID,
             segmentationRunID: segmentationRunID,
@@ -244,6 +269,7 @@ struct FinalTranscriptPipeline: Sendable {
             existingEvents: transcriptEvents
         )
         asrMetrics = asrResult.metrics
+        try Task.checkCancellation()
         switch asrResult.disposition {
         case .completed:
             break
@@ -271,12 +297,14 @@ struct FinalTranscriptPipeline: Sendable {
             ]
         )
 
+        let materializedSegments = try materializer.materialize(
+            events: transcriptEvents,
+            activeRuns: activeRuns
+        )
+        try Task.checkCancellation()
         return .completed(FinalTranscriptPipelineResult(
             activeRuns: activeRuns,
-            materializedSegments: try materializer.materialize(
-                events: transcriptEvents,
-                activeRuns: activeRuns
-            ),
+            materializedSegments: materializedSegments,
             completedCount: asrResult.completedCount,
             metrics: asrResult.metrics
         ))

@@ -29,10 +29,48 @@ struct ClauseTaggerTokenizerConfiguration: Sendable {
     let unknownID: Int
     let addedTokens: [AddedToken]
 
+    private struct Document: Decodable {
+        let value: JSONValue
+
+        init(from decoder: any Decoder) throws {
+            value = try Self.shape.decode(from: decoder)
+        }
+
+        static let shape: JSONShape = .object([
+            "version": .string,
+            "truncation": .null,
+            "padding": .null,
+            "added_tokens": .array(.object([
+                "id": .integer,
+                "content": .string,
+                "single_word": .boolean,
+                "lstrip": .boolean,
+                "rstrip": .boolean,
+                "normalized": .boolean,
+                "special": .boolean
+            ])),
+            "normalizer": .null,
+            "pre_tokenizer": .object([
+                "type": .string,
+                "replacement": .string,
+                "prepend_scheme": .string,
+                "split": .boolean
+            ]),
+            "post_processor": JSONShape(expecting: ClauseTaggerTokenizerConfiguration.expectedPostProcessor),
+            "decoder": JSONShape(expecting: ClauseTaggerTokenizerConfiguration.expectedDecoder),
+            "model": .object([
+                "type": .string,
+                "unk_id": .integer,
+                "vocab": .array(.tuple([.string, .number])),
+                "byte_fallback": .boolean
+            ])
+        ])
+    }
+
     init(data: Data) throws {
         let document: JSONValue
         do {
-            document = try JSONDecoder().decode(JSONValue.self, from: data)
+            document = try JSONDecoder().decode(Document.self, from: data).value
         } catch let error as DecodingError {
             throw ClauseTaggerTokenizerError.invalidConfiguration(
                 "tokenizer.json\(Self.decodingPath(for: error)): \(Self.decodingDescription(for: error))"
@@ -410,7 +448,7 @@ struct ClauseTaggerTokenizerConfiguration: Sendable {
     }
 }
 
-private indirect enum JSONValue: Decodable {
+private indirect enum JSONValue {
     case null
     case boolean(Bool)
     case integer(Int)
@@ -418,52 +456,122 @@ private indirect enum JSONValue: Decodable {
     case string(String)
     case array([JSONValue])
     case object([String: JSONValue])
+}
 
-    private struct DynamicKey: CodingKey {
-        let stringValue: String
-        let intValue: Int?
+private indirect enum JSONShape: Sendable {
+    case null
+    case boolean
+    case integer
+    case number
+    case string
+    case array(JSONShape)
+    case tuple([JSONShape])
+    case object([String: JSONShape])
 
-        init?(stringValue: String) {
-            self.stringValue = stringValue
-            intValue = nil
-        }
-
-        init?(intValue: Int) {
-            self.intValue = intValue
-            stringValue = String(intValue)
+    init(expecting value: JSONValue) {
+        switch value {
+        case .null:
+            self = .null
+        case .boolean:
+            self = .boolean
+        case .integer:
+            self = .integer
+        case .number:
+            self = .number
+        case .string:
+            self = .string
+        case let .array(values):
+            self = .tuple(values.map { JSONShape(expecting: $0) })
+        case let .object(values):
+            self = .object(values.mapValues { JSONShape(expecting: $0) })
         }
     }
 
-    init(from decoder: Decoder) throws {
-        if let keyed = try? decoder.container(keyedBy: DynamicKey.self) {
-            var object: [String: JSONValue] = [:]
-            for key in keyed.allKeys {
-                object[key.stringValue] = try keyed.decode(JSONValue.self, forKey: key)
+    func decode(from decoder: any Decoder) throws -> JSONValue {
+        switch self {
+        case .null:
+            let container = try decoder.singleValueContainer()
+            guard container.decodeNil() else {
+                throw DecodingError.typeMismatch(
+                    NSNull.self,
+                    .init(codingPath: decoder.codingPath, debugDescription: "expected null")
+                )
             }
-            self = .object(object)
-            return
-        }
-
-        if var unkeyed = try? decoder.unkeyedContainer() {
+            return .null
+        case .boolean:
+            return .boolean(try decoder.singleValueContainer().decode(Bool.self))
+        case .integer:
+            return .integer(try decoder.singleValueContainer().decode(Int.self))
+        case .number:
+            return .number(try decoder.singleValueContainer().decode(Double.self))
+        case .string:
+            return .string(try decoder.singleValueContainer().decode(String.self))
+        case let .array(elementShape):
+            var container = try decoder.unkeyedContainer()
             var values: [JSONValue] = []
-            while !unkeyed.isAtEnd {
-                values.append(try unkeyed.decode(JSONValue.self))
+            while !container.isAtEnd {
+                values.append(try elementShape.decode(from: container.superDecoder()))
             }
-            self = .array(values)
-            return
+            return .array(values)
+        case let .tuple(expectedShapes):
+            var container = try decoder.unkeyedContainer()
+            guard container.count == expectedShapes.count else {
+                let foundCount = container.count.map { String($0) } ?? "unknown"
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "expected tuple with \(expectedShapes.count) elements; found \(foundCount)"
+                    )
+                )
+            }
+            var values: [JSONValue] = []
+            values.reserveCapacity(expectedShapes.count)
+            for shape in expectedShapes {
+                values.append(try shape.decode(from: container.superDecoder()))
+            }
+            return .array(values)
+        case let .object(expectedFields):
+            let container = try decoder.container(keyedBy: DynamicKey.self)
+            let keys = container.allKeys
+            let actualKeys = Set(keys.map(\.stringValue))
+            if let unknown = actualKeys.subtracting(expectedFields.keys).sorted().first {
+                let key = DynamicKey(stringValue: unknown)!
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath + [key],
+                        debugDescription: "unknown key"
+                    )
+                )
+            }
+            if let missing = Set(expectedFields.keys).subtracting(actualKeys).sorted().first {
+                let key = DynamicKey(stringValue: missing)!
+                throw DecodingError.keyNotFound(
+                    key,
+                    .init(codingPath: decoder.codingPath, debugDescription: "required key is missing")
+                )
+            }
+            var values: [String: JSONValue] = [:]
+            values.reserveCapacity(keys.count)
+            for key in keys {
+                let shape = expectedFields[key.stringValue]!
+                values[key.stringValue] = try shape.decode(from: container.superDecoder(forKey: key))
+            }
+            return .object(values)
         }
+    }
+}
 
-        let scalar = try decoder.singleValueContainer()
-        if scalar.decodeNil() {
-            self = .null
-        } else if let value = try? scalar.decode(Bool.self) {
-            self = .boolean(value)
-        } else if let value = try? scalar.decode(String.self) {
-            self = .string(value)
-        } else if let value = try? scalar.decode(Int.self) {
-            self = .integer(value)
-        } else {
-            self = .number(try scalar.decode(Double.self))
-        }
+private struct DynamicKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        intValue = nil
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
     }
 }

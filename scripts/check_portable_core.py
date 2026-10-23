@@ -28,6 +28,7 @@ FORBIDDEN_IMPORTS = {
     "MacAmbientJevRuntime",
     "MacAmbientJevAppleSupport",
     "MacAmbientJevCapture",
+    "MacAmbientJevEngine",
 }
 
 IMPORT_RE = re.compile(
@@ -38,6 +39,7 @@ PLATFORM_GUARDS = {
     "Darwin": {"canImport(Darwin)", "os(macOS)", "os(iOS)", "os(tvOS)", "os(watchOS)", "os(visionOS)"},
     "Glibc": {"canImport(Glibc)", "os(Linux)"},
     "WinSDK": {"canImport(WinSDK)", "os(Windows)"},
+    "MacAmbientJevWindowsSupport": {"os(Windows)"},
 }
 
 
@@ -88,6 +90,8 @@ def main() -> int:
         default=[
             "app/MacAmbientJev/Sources/MacAmbientJevCore",
             "app/MacAmbientJev/Sources/MacAmbientJevPipeline",
+            "app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol",
+            "app/MacAmbientJev/Sources/MacAmbientJevEngineHost",
             "app/MacAmbientJev/Sources/MacAmbientJevDiarization",
             "app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement",
             "app/MacAmbientJev/Sources/MacAmbientJevONNX",
@@ -100,7 +104,7 @@ def main() -> int:
     missing_roots = [root for root in [*roots, tests_root] if not root.is_dir()]
     if missing_roots:
         for root in missing_roots:
-            print(f"portable Core/Pipeline/Diarization/ONNX/PortableRuntime directory not found: {root}", file=sys.stderr)
+            print(f"portable Core/Pipeline/EngineProtocol/EngineHost/Diarization/ONNX/PortableRuntime directory not found: {root}", file=sys.stderr)
         return 2
 
     violations = [violation for root in roots for violation in scan(root)]
@@ -116,7 +120,7 @@ def main() -> int:
             )
         return 1
 
-    print(f"Portable Core / Pipeline / Diarization / ONNX / PortableRuntime import check passed ({', '.join(args.roots)})")
+    print(f"Portable Core / Pipeline / EngineProtocol / EngineHost / Diarization / ONNX / PortableRuntime import check passed ({', '.join(args.roots)})")
     return 0
 
 

@@ -194,6 +194,26 @@ public enum SessionFileAccess {
         try synchronizeDescriptor(destinationParent, url: destination.deletingLastPathComponent())
     }
 
+    /// Moves a real directory to a name that does not exist yet. An existing destination is an error,
+    /// so a published directory is never replaced or merged in place.
+    public static func renameDirectory(_ source: URL, to destination: URL, relativeTo root: URL) throws {
+        let sourceParent = try parentDirectory(of: source, relativeTo: root)
+        defer { close(sourceParent) }
+        let destinationParent = try parentDirectory(of: destination, relativeTo: root)
+        defer { close(destinationParent) }
+        var info = stat()
+        guard fstatat(sourceParent, source.lastPathComponent, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw failure(source) }
+        guard info.st_mode & S_IFMT == S_IFDIR else { throw unsafe(source) }
+        if fstatat(destinationParent, destination.lastPathComponent, &info, AT_SYMLINK_NOFOLLOW) == 0 {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
+        }
+        guard errno == ENOENT else { throw failure(destination) }
+        guard renameat(sourceParent, source.lastPathComponent, destinationParent, destination.lastPathComponent) == 0 else {
+            throw failure(destination)
+        }
+        try synchronizeDescriptor(destinationParent, url: destination.deletingLastPathComponent())
+    }
+
     public static func synchronize(_ url: URL, relativeTo root: URL, isDirectory: Bool = false) throws {
         let descriptor: Int32
         if isDirectory { descriptor = try directory(url, relativeTo: root) }

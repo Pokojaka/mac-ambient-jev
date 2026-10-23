@@ -27,8 +27,9 @@ final class Community1DiarizationKernel {
 
 /// The Linux and Windows diarization engine: the portable Community-1 kernel over ONNX Runtime.
 ///
-/// The actor owns the sessions. `prepare`, `diarize` and `unload` contain no suspension point after
-/// actor entry, so calls run one at a time; `unload` therefore waits for a running `diarize`.
+/// The actor owns the sessions. `prepare` runs its synchronous loading body on dedicated threads
+/// while retaining actor isolation. `diarize` and `unload` contain no suspension point after actor
+/// entry, so those calls run one at a time; `unload` therefore waits for a running `diarize`.
 /// Every `diarize` call builds its own evidence, so a second call never sees the first call's speakers.
 public actor ONNXCommunity1DiarizationEngine: DiarizationEngine {
     private nonisolated let provenanceValue: RunProvenance
@@ -73,6 +74,12 @@ public actor ONNXCommunity1DiarizationEngine: DiarizationEngine {
     }
 
     public func prepare() async throws {
+        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            try prepareSynchronously()
+        }
+    }
+
+    private func prepareSynchronously() throws {
         if kernel != nil { return }
         kernel = try loadKernel(modelDirectory)
     }

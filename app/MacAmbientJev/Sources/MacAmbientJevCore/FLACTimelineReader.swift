@@ -179,6 +179,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
     }
 
     private func validateSequentially(against source: (any TimelineAudioReading)?) throws {
+        try Task.checkCancellation()
         let reader = FLACBitReader(handle: handle)
         try reader.seek(to: streamMetadata.firstAudioOffset)
 
@@ -189,6 +190,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         var nominalBlockSize: Int?
 
         while decodedFrames < streamMetadata.totalFrames {
+            try Task.checkCancellation()
             if try reader.atEnd() {
                 throw FLACTimelineReaderError.decodedFrameCountMismatch(
                     expected: streamMetadata.totalFrames,
@@ -258,6 +260,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         guard digest.finalize() == streamMetadata.md5 else {
             throw FLACTimelineReaderError.md5Mismatch
         }
+        try Task.checkCancellation()
         frameIndex = records
     }
 
@@ -400,6 +403,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         from handle: FileHandle,
         metadata: StreamMetadata
     ) throws -> [FrameRecord] {
+        try Task.checkCancellation()
         let reader = FLACBitReader(handle: handle)
         try reader.seek(to: metadata.firstAudioOffset)
 
@@ -409,6 +413,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         var nominalBlockSize: Int?
 
         while decodedFrames < metadata.totalFrames {
+            try Task.checkCancellation()
             if try reader.atEnd() {
                 throw FLACTimelineReaderError.decodedFrameCountMismatch(
                     expected: metadata.totalFrames,
@@ -452,6 +457,7 @@ public final class FLACTimelineReader: TimelineAudioReading, @unchecked Sendable
         guard try reader.atEnd() else {
             throw FLACTimelineReaderError.trailingGarbage(offset: reader.offset)
         }
+        try Task.checkCancellation()
         return records
     }
 
