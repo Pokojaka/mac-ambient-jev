@@ -74,14 +74,25 @@ public final class FileHandleByteSource: EngineByteSource, @unchecked Sendable {
     }
 }
 
-enum EngineLog {
-    /// Diagnostics go to stderr only; stdout carries NDJSON records exclusively.
-    static func write(_ message: String) {
-        do {
-            try FileHandle.standardError.write(contentsOf: Data((message + "\n").utf8))
-        } catch {
-            return
-        }
+public enum EngineLog {
+    private static let writer = EngineDiagnosticWriter(
+        sink: EngineStandardErrorSink(),
+        maxRecords: 128,
+        maxBytes: 262_144,
+        maxRecordBytes: 16_384
+    )
+
+    /// Queues a bounded diagnostic record to stderr; stdout remains reserved for NDJSON records.
+    public static func write(_ message: String) {
+        writer.write(message)
+    }
+
+    public static func close(timeout: TimeInterval) {
+        writer.close(timeout: timeout)
+    }
+
+    public static func snapshot() -> EngineDiagnosticSnapshot {
+        writer.snapshot
     }
 }
 

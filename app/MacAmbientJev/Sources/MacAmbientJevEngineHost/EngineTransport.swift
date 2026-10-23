@@ -10,6 +10,7 @@ public enum EngineTransportEvent: Equatable, Sendable {
     case protocolViolation(EngineProtocolError)
     case readFailed(String)
     case writeFailed(EngineWriteFailure)
+    case captureFailed(String)
 }
 
 /// The engine's byte transport: a dedicated input lane feeding `EngineLineFramer`, and one stdout writer.
@@ -60,6 +61,10 @@ public final class EngineTransport: @unchecked Sendable {
 
     public func lineHandled() {
         lane.lineHandled()
+    }
+
+    public func captureFailed(_ message: String) {
+        continuation.yield(.captureFailed(message))
     }
 
     /// Returns once every record queued so far has been written, or the writer failed.

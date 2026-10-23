@@ -59,6 +59,8 @@ public final class LiveTranscriptionCoordinator {
     private var vadTask: Task<Void, Never>?
     private var asrTasks: [UUID: Task<Void, Never>] = [:]
     private var asrTaskIDs: [UUID: UUID] = [:]
+    private var retiredASRTasks: [UUID: Task<Void, Never>] = [:]
+    private var retiredASRTaskSessionIDs: [UUID: UUID] = [:]
 
     public init(
         state: LiveTranscriptionState,
@@ -75,7 +77,7 @@ public final class LiveTranscriptionCoordinator {
     }
 
     public var isASRIdle: Bool {
-        asrTasks.isEmpty && state.isQueueEmpty
+        asrTasks.isEmpty && retiredASRTasks.isEmpty && state.isQueueEmpty
     }
 
     public func isDraining(sessionID: UUID) -> Bool {
@@ -268,7 +270,42 @@ public final class LiveTranscriptionCoordinator {
         }
     }
 
+    public func cancelAndWait(sessionIDs: Set<UUID>) async {
+        let activeTasks = asrTasks.map { (sessionID: $0.key, task: $0.value) }
+        let retiredTasks = retiredASRTasks.map { (taskID: $0.key, task: $0.value) }
+        let retiredSessionIDs = Set(retiredTasks.compactMap {
+            retiredASRTaskSessionIDs[$0.taskID]
+        })
+        let allSessionIDs = sessionIDs
+            .union(activeTasks.map { $0.sessionID })
+            .union(retiredSessionIDs)
+
+        for (_, task) in activeTasks {
+            task.cancel()
+        }
+        for (_, task) in retiredTasks {
+            task.cancel()
+        }
+        for sessionID in allSessionIDs {
+            await processor.cancelLiveTranscription(sessionID: sessionID)
+        }
+        for (_, task) in activeTasks {
+            await task.value
+        }
+        for (_, task) in retiredTasks {
+            await task.value
+        }
+        for sessionID in allSessionIDs {
+            cleanup(sessionID: sessionID)
+        }
+    }
+
     public func cleanup(sessionID: UUID) {
+        if let task = asrTasks[sessionID], let taskID = asrTaskIDs[sessionID] {
+            task.cancel()
+            retiredASRTasks[taskID] = task
+            retiredASRTaskSessionIDs[taskID] = sessionID
+        }
         asrTasks.removeValue(forKey: sessionID)
         asrTaskIDs.removeValue(forKey: sessionID)
         state.cleanup(sessionID: sessionID)
@@ -333,6 +370,14 @@ public final class LiveTranscriptionCoordinator {
     }
 
     private func drain(sessionID: UUID, taskID: UUID) async {
+        defer {
+            retiredASRTasks[taskID] = nil
+            retiredASRTaskSessionIDs[taskID] = nil
+            if asrTaskIDs[sessionID] == taskID {
+                asrTasks[sessionID] = nil
+                asrTaskIDs[sessionID] = nil
+            }
+        }
         let effects = requiredEffects
         await effects.awaitIdleRelease()
         guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }

@@ -35,6 +35,97 @@ import MacAmbientJevEngineProtocol
         _ = await h.exit()
     }
 
+    @Test func helloCompletionHookRunsAfterCompletedIsQueued() async throws {
+        let h = EngineHarness()
+        let state = try sampleState(revision: 42)
+        let emitter = EngineEventEmitter(transport: h.transport)
+        h.fake.onHelloDidComplete = { try? emitter.state(state) }
+        h.start()
+        h.send(1, "hello")
+
+        try await h.waitForOutputs("hello completion and unsolicited state") { outputs in
+            outputs.contains { output in
+                if case .state = output.event { true } else { false }
+            }
+        }
+
+        let outputs = try h.outputs
+        let completedIndex = try #require(outputs.firstIndex { output in
+            output.requestID?.value == 1 && { if case .completed(.hello) = output.event { true } else { false } }()
+        })
+        let stateIndex = try #require(outputs.firstIndex { output in
+            output.requestID == nil && { if case let .state(value) = output.event { value == state } else { false } }()
+        })
+        #expect(completedIndex < stateIndex)
+        #expect(h.fake.helloCompletionCount == 1)
+
+        h.source.finish()
+        _ = await h.exit()
+    }
+
+    @Test func heldHelloDoesNotCompleteUntilItsHandlerReturns() async throws {
+        let h = EngineHarness()
+        h.fake.heldCommands = ["hello"]
+        h.start()
+        h.send(1, "hello")
+        try await waitOnMain("hello handler to be held") { h.fake.heldCount == 1 }
+
+        var mainActorTaskRan = false
+        let mainActorTask = Task { @MainActor in mainActorTaskRan = true }
+        await mainActorTask.value
+        #expect(mainActorTaskRan)
+        #expect(h.fake.helloCompletionCount == 0)
+
+        h.fake.heldCommands = []
+        h.fake.releaseAll()
+        try await h.waitForOutputs("held hello completion") { outputs in
+            outputs.contains { output in
+                output.requestID?.value == 1 && { if case .completed(.hello) = output.event { true } else { false } }()
+            }
+        }
+        #expect(h.fake.helloCompletionCount == 1)
+        h.source.finish()
+        _ = await h.exit()
+    }
+
+    @Test func failingHelloDoesNotRunCompletionHook() async throws {
+        let h = EngineHarness()
+        h.fake.failingCommands["hello"] = FakeFailure()
+        h.start()
+        h.send(1, "hello")
+        try await h.waitForOutputs("failed hello") { outputs in
+            outputs.contains { output in
+                output.requestID?.value == 1 && { if case .error = output.event { true } else { false } }()
+            }
+        }
+        #expect(try h.events(for: 1) == ["accepted", "error:internal_error"])
+        #expect(h.fake.helloCompletionCount == 0)
+        h.source.finish()
+        _ = await h.exit()
+    }
+
+    @Test func cancelledHeldHelloCannotRunCompletionHookAfterShutdown() async throws {
+        let h = EngineHarness()
+        h.fake.heldCommands = ["hello"]
+        h.start()
+        h.send(1, "hello")
+        try await waitOnMain("hello handler to be held") { h.fake.heldCount == 1 }
+
+        h.send(2, "shutdown")
+        #expect(await h.exit() == .shutdownRequested)
+        #expect(try h.events(for: 1) == ["accepted", "error:cancelled"])
+        #expect(h.fake.helloCompletionCount == 0)
+
+        h.fake.heldCommands = []
+        h.fake.releaseAll()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(h.fake.helloCompletionCount == 0)
+        #expect(try h.events(for: 1) == ["accepted", "error:cancelled"])
+        #expect(try h.outputs.filter { output in
+            if case .state = output.event { true } else { false }
+        }.isEmpty)
+    }
+
     @Test func firstRequestIDMustBeOne() async throws {
         let h = EngineHarness()
         h.start()
@@ -205,6 +296,36 @@ import MacAmbientJevEngineProtocol
         h.fake.releaseAll()
         try await Task.sleep(nanoseconds: 100_000_000)
         #expect(try h.events(for: 2) == ["accepted", "error:cancelled"])
+        #expect(h.sink.closed)
+    }
+
+    @Test func captureFailureShutsDownCancelsInFlightWorkAndExitsSeven() async throws {
+        let h = EngineHarness()
+        h.fake.heldCommands = ["session.reprocess"]
+        h.start()
+        try await hello(h)
+        h.send(2, "session.reprocess", payload: "{\"session_id\":\"s\"}")
+        try await waitOnMain("held") { h.fake.heldCount == 1 }
+
+        let reason = "audio capture device was lost"
+        h.transport.captureFailed(reason)
+        let exit = await h.exit()
+
+        #expect(exit == .captureFailed(reason))
+        #expect(exit.processExitCode == 7)
+        #expect(h.fake.shutdownReasons == [.captureFailed])
+        #expect(try h.events(for: 2) == ["accepted", "error:cancelled"])
+        h.fake.heldCommands = []
+        h.fake.releaseAll()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(try h.events(for: 2) == ["accepted", "error:cancelled"])
+
+        let bytes = h.sink.received
+        #expect(bytes.last == 0x0A)
+        #expect(!bytes.contains(0x0D))
+        let outputs = try ScriptedSink.decodeOutputs(bytes)
+        #expect(outputs.map(\.sequence.value) == Array(1...UInt64(outputs.count)))
+        #expect(outputs.contains { $0.requestID?.value == 2 && { if case .error = $0.event { true } else { false } }($0) })
         #expect(h.sink.closed)
     }
 

@@ -18,7 +18,7 @@ public enum RecordingAudioCompactorError: LocalizedError, Equatable {
 /// Converts a finalized PCM recording to `audio/recording.flac` and removes the PCM.
 /// `audio/storage.json` switches authority only after the FLAC is verified and published.
 public struct RecordingAudioCompactor: Sendable {
-    /// Durable boundaries where tests can stop the process. Production passes nil.
+    /// Optional callback at durable boundaries; production checks cancellation at each boundary.
     public enum Boundary: Sendable, Equatable {
         case partialWritten, partialSynchronized, partialVerified, published, stateSaved, pcmRemovalStarted
     }
@@ -33,6 +33,7 @@ public struct RecordingAudioCompactor: Sendable {
     /// `audio/recording.flac`, no `audio/processing`, no partial. Idempotent; safe to call
     /// again after a crash at any boundary. Returns the stored info.
     public func compact(layout: SessionLayout) throws -> TimelineAudioInfo {
+        try Task.checkCancellation()
         let store = SessionAudioStorageStore(layout: layout)
         let info: TimelineAudioInfo
         switch try store.load() {
@@ -44,7 +45,7 @@ public struct RecordingAudioCompactor: Sendable {
         case .recordingPCM:
             info = try publishFLAC(layout: layout)
             try store.save(.recordingFLAC(info))
-            try interrupt?(.stateSaved)
+            try notify(.stateSaved)
         }
         try removePCM(layout: layout)
         return info
@@ -57,38 +58,68 @@ public struct RecordingAudioCompactor: Sendable {
         }
         let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
         try pcm.validateAudio()
+        try Task.checkCancellation()
         try SessionFileAccess.removeIfPresent(layout.recordingFLACPartialURL, relativeTo: layout.sessionURL)
 
         if try SessionFileAccess.isDirectoryIfPresent(layout.recordingFLACURL, relativeTo: layout.sessionURL) != nil {
-            do {
-                try FLACTimelineReader(url: layout.recordingFLACURL, info: pcm.info, sessionURL: layout.sessionURL).validateAudio(against: pcm)
-                return pcm.info
-            } catch {
-                try SessionFileAccess.removeIfPresent(layout.recordingFLACURL, relativeTo: layout.sessionURL)
-            }
+            let isValid = try validatePublishedFLACOrRemoveIfInvalid(
+                validation: {
+                    try FLACTimelineReader(url: layout.recordingFLACURL, info: pcm.info, sessionURL: layout.sessionURL)
+                        .validateAudio(against: pcm)
+                },
+                removeInvalid: {
+                    try SessionFileAccess.removeIfPresent(layout.recordingFLACURL, relativeTo: layout.sessionURL)
+                }
+            )
+            if isValid { return pcm.info }
         }
 
         let partial = layout.recordingFLACPartialURL
         try RecordingFLAC.write(reader: pcm, to: partial, sessionURL: layout.sessionURL)
-        try interrupt?(.partialWritten)
+        try notify(.partialWritten)
         try DurableFile.synchronize(partial, relativeTo: layout.sessionURL)
-        try interrupt?(.partialSynchronized)
+        try notify(.partialSynchronized)
         try FLACTimelineReader(url: partial, info: pcm.info, sessionURL: layout.sessionURL).validateAudio(against: pcm)
-        try interrupt?(.partialVerified)
+        try notify(.partialVerified)
         try DurableFile.rename(partial, to: layout.recordingFLACURL, relativeTo: layout.sessionURL)
-        try interrupt?(.published)
+        try notify(.published)
         return pcm.info
     }
 
     private func removePCM(layout: SessionLayout) throws {
+        try Task.checkCancellation()
         if try SessionFileAccess.isDirectoryIfPresent(layout.processingDirectory, relativeTo: layout.sessionURL) != nil {
-            try interrupt?(.pcmRemovalStarted)
+            try notify(.pcmRemovalStarted)
+            try Task.checkCancellation()
             try SessionFileAccess.removeIfPresent(layout.processingDirectory, relativeTo: layout.sessionURL)
             try DurableFile.synchronize(layout.audioDirectory, relativeTo: layout.sessionURL, isDirectory: true)
         }
+        try Task.checkCancellation()
         try SessionFileAccess.removeIfPresent(layout.recordingFLACPartialURL, relativeTo: layout.sessionURL)
     }
 
+    private func notify(_ boundary: Boundary) throws {
+        try Task.checkCancellation()
+        try interrupt?(boundary)
+        try Task.checkCancellation()
+    }
+
+}
+
+func validatePublishedFLACOrRemoveIfInvalid(
+    validation: () throws -> Void,
+    removeInvalid: () throws -> Void
+) throws -> Bool {
+    do {
+        try validation()
+        return true
+    } catch let error as CancellationError {
+        throw error
+    } catch {
+        try Task.checkCancellation()
+        try removeInvalid()
+        return false
+    }
 }
 
 /// Runs the storage work `SessionStorageMaintenance.required` reported for a session.
@@ -96,12 +127,14 @@ public enum SessionStorageMaintainer {
     public static func run(
         _ maintenance: SessionStorageMaintenance, layout: SessionLayout, manifest: SessionManifest
     ) throws {
+        try Task.checkCancellation()
         switch maintenance {
         case .compactRecording:
-            _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
+            _ = try RecordingAudioCompactor(interrupt: { _ in try Task.checkCancellation() }).compact(layout: layout)
         case .removeTransients:
             break
         }
+        try Task.checkCancellation()
         try SessionTransientAudio.remove(layout: layout, source: manifest.source)
     }
 }
@@ -117,10 +150,14 @@ extension SessionStorageMaintainer {
         await willMaintain(items.count)
         var failures: [UUID: String] = [:]
         for item in items {
+            if Task.isCancelled { break }
             do {
                 let layout = SessionLayout(sessionURL: item.sessionURL)
                 try run(item.maintenance, layout: layout, manifest: try layout.loadManifest())
+            } catch is CancellationError {
+                break
             } catch {
+                if Task.isCancelled { break }
                 failures[item.sessionID] = "\(item.sessionURL.lastPathComponent): \(error.localizedDescription)"
             }
         }

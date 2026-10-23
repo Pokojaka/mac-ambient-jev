@@ -192,6 +192,76 @@ func aCrashAtEveryBoundaryConvergesOnTheNextCompaction(boundary: RecordingAudioC
 }
 
 @Test
+func cancelledCompactionAtPartialWrittenPreservesPCMAndConvergesLater() async throws {
+    let layout = try makeLayout()
+    defer { cleanUp(layout) }
+    let checkpoint = try await recordPCM(layout)
+
+    let wasCancelled = await Task {
+        do {
+            _ = try RecordingAudioCompactor(interrupt: { boundary in
+                if boundary == .partialWritten {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }).compact(layout: layout)
+            return false
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }.value
+
+    #expect(wasCancelled)
+    #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
+    #expect(try AudioCheckpoint.loadRecovered(from: layout.processingDirectory, relativeTo: layout.sessionURL) == checkpoint)
+    #expect(!exists(layout.recordingFLACURL))
+    #expect(exists(layout.recordingFLACPartialURL))
+
+    let info = try freshCompactor.compact(layout: layout)
+
+    #expect(info == (try checkpoint.info))
+    try expectConverged(layout, info: info, samples: recordedSamples)
+}
+
+@Test
+func cancelledCompactionKeepsPreviouslyPublishedFLACAfterValidation() async throws {
+    let layout = try makeLayout()
+    defer { cleanUp(layout) }
+    try await recordPCM(layout)
+    try compactOnce(layout, interruptAt: .published)
+    let publishedFLAC = try Data(contentsOf: layout.recordingFLACURL)
+    #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
+    #expect(throws: CancellationError.self) {
+        try validatePublishedFLACOrRemoveIfInvalid(
+            validation: { throw CancellationError() },
+            removeInvalid: { try FileManager.default.removeItem(at: layout.recordingFLACURL) }
+        )
+    }
+    #expect(try Data(contentsOf: layout.recordingFLACURL) == publishedFLAC)
+
+    let wasCancelled = await Task {
+        do {
+            _ = try RecordingAudioCompactor(interrupt: { boundary in
+                if boundary == .stateSaved {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }).compact(layout: layout)
+            return false
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }.value
+
+    #expect(wasCancelled)
+    #expect(try Data(contentsOf: layout.recordingFLACURL) == publishedFLAC)
+    #expect(try SessionAudioStorageStore(layout: layout).load() != .recordingPCM)
+    #expect(exists(layout.processingDirectory))
+}
+
+@Test
 func compactingAgainChangesNothing() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
@@ -401,6 +471,59 @@ func theMaintainerCompactsARecordingAndRemovesItsTransients() async throws {
 
     #expect(!exists(layout.derivedDirectory))
     try expectConverged(layout, info: try TimelineAudioInfo(committedFrames: Int64(recordedSamples.count), gapEvents: []), samples: recordedSamples)
+}
+
+@Test
+func maintenanceCancellationStopsBeforeNextCandidateWithoutFailures() async throws {
+    let first = try makeLayout()
+    let second = try makeLayout()
+    defer {
+        cleanUp(first)
+        cleanUp(second)
+    }
+    try await recordPCM(first)
+    for layout in [first, second] {
+        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
+        try Data(count: 1).write(to: layout.diarizationInputURL)
+        try Data(count: 1).write(to: layout.recordingFLACPartialURL)
+    }
+    let firstManifest = try first.loadManifest()
+    let secondManifest = try second.loadManifest()
+    let items = [
+        SessionMaintenanceCandidate(
+            sessionID: firstManifest.sessionID, sessionURL: first.sessionURL, maintenance: .compactRecording
+        ),
+        SessionMaintenanceCandidate(
+            sessionID: secondManifest.sessionID, sessionURL: second.sessionURL, maintenance: .removeTransients
+        ),
+    ]
+    let directRunWasCancelled = await Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        do {
+            try SessionStorageMaintainer.run(.removeTransients, layout: second, manifest: secondManifest)
+            return false
+        } catch is CancellationError {
+            return true
+        } catch {
+            return false
+        }
+    }.value
+    #expect(directRunWasCancelled)
+    #expect(exists(second.derivedDirectory))
+
+    let failures = await Task {
+        await SessionStorageMaintainer.maintain(items) { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+    }.value
+
+    #expect(failures.isEmpty)
+    #expect(try SessionAudioStorageStore(layout: first).load() == .recordingPCM)
+    #expect(exists(first.processingDirectory))
+    #expect(exists(first.derivedDirectory))
+    #expect(exists(first.recordingFLACPartialURL))
+    #expect(exists(second.derivedDirectory))
+    #expect(exists(second.recordingFLACPartialURL))
 }
 
 @Test

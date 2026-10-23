@@ -23,6 +23,36 @@ func waitOnMain(timeout: TimeInterval = 5, _ what: String, _ condition: @MainAct
     }
 }
 
+/// Serial task executor for tests whose producer tasks must not depend on the cooperative pool.
+final class TransportTestExecutor: TaskExecutor, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "TransportTestExecutor")
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        queue.async {
+            job.runSynchronously(on: self.asUnownedTaskExecutor())
+        }
+    }
+}
+
+/// Counts only sends that returned successfully from EngineTransport.send.
+final class SuccessfulSendCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
 func testLimits(
     maxRecords: Int = 128,
     maxBytes: Int = 8 * 1_048_576,
@@ -51,6 +81,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
     private var isClosed = false
     private var failure: EngineSinkError?
     private var cancels = 0
+    private var entered = 0
     private let acceptPerCall: Int
     private let delayPerCall: TimeInterval
 
@@ -62,6 +93,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
 
     func write(_ bytes: UnsafeRawBufferPointer) throws -> Int {
         condition.lock()
+        entered += 1
         while blocked && !cancelled && !isClosed { condition.wait() }
         if cancelled || isClosed {
             condition.unlock()
@@ -114,6 +146,13 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         return storage
+    }
+
+    /// Calls that reached the sink, including one still blocked.
+    var enteredWrites: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return entered
     }
 
     var cancelCount: Int {

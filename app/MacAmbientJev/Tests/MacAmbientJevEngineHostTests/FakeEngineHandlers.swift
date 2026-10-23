@@ -13,6 +13,8 @@ final class FakeEngineHandlers:
 {
     private(set) var calls: [String] = []
     private(set) var shutdownReasons: [EngineShutdownReason] = []
+    private(set) var helloCompletionCount = 0
+    var onHelloDidComplete: (@MainActor () -> Void)?
     var heldCommands: Set<String> = []
     var failingCommands: [String: Error] = [:]
     var shutdownError: Error?
@@ -45,6 +47,16 @@ final class FakeEngineHandlers:
     func ready() async throws -> EngineReadyPayload {
         calls.append("ready")
         return try sampleReady()
+    }
+
+    func hello() async throws -> EngineReadyPayload {
+        try await enter("hello")
+        return try sampleReady()
+    }
+
+    func helloDidComplete() {
+        helloCompletionCount += 1
+        onHelloDidComplete?()
     }
 
     func state() async throws -> EngineState {

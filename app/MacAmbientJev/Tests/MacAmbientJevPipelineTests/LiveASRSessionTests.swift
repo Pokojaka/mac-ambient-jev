@@ -651,6 +651,74 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
 }
 
 @Test(.timeLimit(.minutes(10)))
+func cancelledLiveASRProcessingRetainsRegisteredSegmentsForRetry() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
+    try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
+    let checkpoint = await audio.committedSnapshot()
+    let engine = SuspendedASREngine()
+    let session = LiveASRSession(
+        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
+        asrRunID: "asr_live_test", processingDirectory: root,
+        writer: try SessionWriter(sessionURL: root), asr: engine,
+        sampleRate: checkpoint.sampleRate,
+        clauseBoundaryRunID: nil,
+        contentPriorityRunID: nil
+    )
+    let segments = (0..<3).map { index in
+        SegmentReference(
+            segmentationRunID: "seg_live_test", segmentID: "seg_00000\(index + 1)",
+            startFrame: Int64(index) * 4_000, endFrame: Int64(index + 1) * 4_000
+        )
+    }
+    _ = try await session.register(segments: segments)
+
+    let processing = Task {
+        try await session.process(segments: segments, checkpoint: checkpoint)
+    }
+    await engine.waitUntilTranscribing()
+    processing.cancel()
+    await engine.resume()
+
+    do {
+        _ = try await processing.value
+        Issue.record("cancelled processing unexpectedly completed")
+    } catch is CancellationError {
+    } catch {
+        Issue.record("cancelled processing threw an unexpected error: \(error)")
+    }
+    #expect(await engine.count() == 1)
+
+    let eventsURL = root.appending(path: "events.jsonl")
+    let cancelledEvents = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL)).lines.map { line in
+        let event = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+        return (type: try #require(event["event_type"] as? String), segmentID: event["segment_id"] as? String)
+    }
+    #expect(cancelledEvents.filter { $0.type == "segment.created" }.compactMap(\.segmentID) == segments.map(\.segmentID))
+    #expect(cancelledEvents.allSatisfy { $0.type != "asr.completed" && $0.type != "asr.failed" })
+
+    let retried = try await session.process(segments: segments, checkpoint: checkpoint)
+    #expect(retried.completedCount == segments.count)
+    #expect(retried.failedCount == 0)
+    #expect(retried.pendingCount == 0)
+    #expect(retried.materializedSegments.count == segments.count)
+    #expect(await engine.count() == segments.count + 1)
+
+    let recoveredEvents = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL)).lines.map { line in
+        let event = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+        return (type: try #require(event["event_type"] as? String), segmentID: event["segment_id"] as? String)
+    }
+    let completedSegmentIDs = recoveredEvents
+        .filter { $0.type == "asr.completed" }
+        .compactMap(\.segmentID)
+    #expect(completedSegmentIDs == segments.map(\.segmentID))
+    #expect(recoveredEvents.allSatisfy { $0.type != "asr.failed" })
+}
+
+@Test(.timeLimit(.minutes(10)))
 func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

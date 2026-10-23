@@ -12,6 +12,8 @@ public enum EngineShutdownReason: Equatable, Sendable {
     case inputFailed
     /// stdout failed: broken pipe, write error or the write deadline.
     case outputFailed
+    /// Capture failed; the host must finish durable shutdown before exiting.
+    case captureFailed
 }
 
 /// Emits unsolicited and request-correlated events. Replaceable events never suspend and may be coalesced
@@ -33,6 +35,10 @@ public struct EngineEventEmitter: Sendable {
 
     public func rows(_ rows: EngineRowsPayload) throws {
         try transport.sendReplaceable(.rows(rows), requestID: nil)
+    }
+
+    public func captureFailed(_ message: String) -> Void {
+        transport.captureFailed(message)
     }
 
     /// A background failure that no request awaits.
@@ -102,7 +108,13 @@ public struct EngineCommandError: Error, Sendable, Equatable {
 
 @MainActor
 public protocol EngineStateHandling {
+    /// The payload of the unsolicited `ready` event, produced before the first request is read.
     func ready() async throws -> EngineReadyPayload
+    /// The `hello` result. It follows `ready`.
+    func hello() async throws -> EngineReadyPayload
+    /// Called synchronously only after the successful terminal `hello` reply has been queued on reliable FIFO stdout.
+    /// Implementations may begin unsolicited app state, error, and rows events only after this hook.
+    func helloDidComplete()
     func state() async throws -> EngineState
 }
 

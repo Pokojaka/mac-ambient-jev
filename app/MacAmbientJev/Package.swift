@@ -251,9 +251,22 @@ products.append(.executable(
 targets.append(.executableTarget(
     name: "MacAmbientJevEngine",
     dependencies: [
+        "MacAmbientJevCore",
+        "MacAmbientJevPipeline",
+        "MacAmbientJevEngineProtocol",
         "MacAmbientJevEngineHost",
         "MacAmbientJevPortableRuntime",
         "MacAmbientJevWindowsSupport"
+    ],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevEngineTests",
+    dependencies: [
+        "MacAmbientJevEngine",
+        "MacAmbientJevCore",
+        "MacAmbientJevEngineProtocol",
+        "MacAmbientJevEngineHost"
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))

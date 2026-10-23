@@ -11,6 +11,7 @@ public enum EngineExit: Equatable, Sendable {
     case outputFailed(EngineWriteFailure)
     case shutdownFailed(String)
     case startupFailed(String)
+    case captureFailed(String)
 
     /// 0 for a requested shutdown or a clean disconnect; non-zero for every failure.
     public var processExitCode: Int32 {
@@ -21,6 +22,7 @@ public enum EngineExit: Equatable, Sendable {
         case .outputFailed: 5
         case .shutdownFailed: 6
         case .startupFailed: 2
+        case .captureFailed: 7
         }
     }
 }
@@ -94,6 +96,8 @@ public final class EngineController {
             return await disconnect(reason: .inputFailed, exit: .inputFailed(reason), canWrite: true)
         case let .writeFailed(failure):
             return await disconnect(reason: .outputFailed, exit: .outputFailed(failure), canWrite: false)
+        case let .captureFailed(message):
+            return await disconnect(reason: .captureFailed, exit: .captureFailed(message), canWrite: true)
         }
     }
 
@@ -193,7 +197,8 @@ public final class EngineController {
         let context = EngineRequestContext(requestID: id, events: emitter)
         do {
             let result = try await dispatch(request.command, context: context)
-            await finish(id, .completed(result))
+            let sent = await finish(id, .completed(result))
+            if sent, request.command.name == .hello { handlers.state.helloDidComplete() }
         } catch {
             await finish(id, Self.failure(for: error, requestID: id))
         }
@@ -202,7 +207,7 @@ public final class EngineController {
     private func dispatch(_ command: EngineCommand, context: EngineRequestContext) async throws -> EngineResult {
         switch command {
         case .hello:
-            return .hello(try await handlers.state.ready())
+            return .hello(try await handlers.state.hello())
         case .stateGet:
             return .stateGet(try await handlers.state.state())
         case let .devicesList(payload):
@@ -238,12 +243,15 @@ public final class EngineController {
     }
 
     /// Emits the terminal reply once. A request already finished, for example cancelled by shutdown, is ignored.
-    private func finish(_ id: EngineID, _ event: EngineEvent) async {
-        guard inFlight.removeValue(forKey: id) != nil else { return }
+    @discardableResult
+    private func finish(_ id: EngineID, _ event: EngineEvent) async -> Bool {
+        guard inFlight.removeValue(forKey: id) != nil else { return false }
         do {
             try await transport.send(event, requestID: id)
+            return true
         } catch {
             EngineLog.write("terminal reply for request \(id.rawValue) not sent: \(error)")
+            return false
         }
     }
 
