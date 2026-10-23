@@ -86,9 +86,7 @@ Invoke-Step 'Compile Windows capture safety injected C tests' { & $clangPath $in
 if (-not (Test-Path -LiteralPath $injectedTestExecutable -PathType Leaf)) { throw "Windows capture safety injected test executable was not produced: $injectedTestExecutable" }
 Invoke-Step 'Run Windows capture safety injected C tests' { & $injectedTestExecutable }
 
-# Host transport tests intentionally block fake sinks with short write deadlines; run them separately so model/tokenizer workload cannot delay sink-release continuations.
-Invoke-Step 'Swift test portable EngineHost fast suite' { swift test --package-path app/MacAmbientJev --filter MacAmbientJevEngineHostTests }
-Invoke-Step 'Swift test EngineProtocol/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX remaining suites' { swift test --package-path app/MacAmbientJev --skip-build --skip MacAmbientJevEngineHostTests }
+Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
 
 # Fake-capture acceptance integration point (job 7A).
 # Lead inserts the exact command after merge; no acceptance driver is run here yet.

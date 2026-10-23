@@ -24,14 +24,13 @@ swift test --package-path app/MacAmbientJev --filter 'MacAmbientJevEngineProtoco
 | Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) は fetch / check の後、manifest dump と unfiltered build / test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と `MacAmbientJevEngine` product は Linux target ではありません。通常の Linux CI fast job は同じ fetch/check 後に直接 package build / test を実行し、`linux-model-e2e` job の範囲は変わりません。 |
 | Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は EngineProtocol / EngineHost / WindowsSupport / PortableRuntime 等を build し、`MacAmbientJevEngine` product も明示 build します。native injected C tests の後、Swift tests は以下の2 passで実行し、Windows で適用される全 suite（新しい portable fast suites を含む）を各1回実行します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意します。 |
 
-Windows runner の Swift test command は次の順で fail-fast に実行します。
+Windows runner の Swift test command は次のとおりです。
 
 ```powershell
-swift test --package-path app/MacAmbientJev --filter MacAmbientJevEngineHostTests
-swift test --package-path app/MacAmbientJev --skip-build --skip MacAmbientJevEngineHostTests
+swift test --package-path app/MacAmbientJev
 ```
 
-最初の pass は `--filter` で EngineHost を実行し、test targets を build します。続く `--skip-build` pass はその build を再利用し、`--skip` で EngineHost を除いた applicable suites を実行します。2 pass で EngineProtocol / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows の test set 全体を重複なくカバーします。EngineHost の transport tests は fake sink を意図的に block したまま短い write deadline を使うため、model / tokenizer workload とは別に先行実行します。
+1 回の `swift test` で EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows の test set 全体を実行します。
 
 Linux CI fast job の package command は次のとおりです（先行する fetch / check step の後に実行します）。
 
