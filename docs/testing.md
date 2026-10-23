@@ -35,30 +35,45 @@ Windows の few-core run では、必須 asset setup を保つため同じ Power
 
 `swift test --parallel --num-workers 2` だけでは processor affinity は保証されません。
 
-`MacAmbientJevEngine` executable product は Windows 専用で、Linux に engine executable product はありません。Windows runner は package build に加えて `--product MacAmbientJevEngine` を明示して build します。package / product build と portable unit tests は engine process を実行せず、process acceptance を確立しません。
+本番 `MacAmbientJevEngine` executable product は Windows 専用です。別の test-only executable product `MacAmbientJevEngineHarness` は macOS・Linux・Windows 向けで、Linux では canonical 16 kHz identity のみを受け付けます（SRC はありません）。fake capture は production engine の機能ではありません。Windows runner は package build に加えて本番 `--product MacAmbientJevEngine` も明示して build します。build と portable unit tests だけでは engine process acceptance を確立しません。
 
 | OS / 手順 | 現行 build / test 範囲 |
 | --- | --- |
 | macOS | `MacAmbientJevEngineProtocol` / `MacAmbientJevEngineHost` の portable tests を実行できます。上の focused command はこの手動確認用です。通常の macOS 検証は後述の AGENTS 指定コマンドを変更せず実行します。 |
-| Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) は fetch / check の後、manifest dump と unfiltered build / test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と `MacAmbientJevEngine` product は Linux target ではありません。通常の Linux CI fast job は同じ fetch/check 後に直接 package build / test を実行し、`linux-model-e2e` job の範囲は変わりません。 |
-| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は EngineProtocol / EngineHost / WindowsSupport / PortableRuntime 等を build し、`MacAmbientJevEngine` product も明示 build します。native injected C tests の後、Windows で適用される全 Swift test suite（新しい portable fast suites を含む）を unfiltered な1回の `swift test` で実行します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意します。 |
+| Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) は fetch / check の後、manifest dump と unfiltered build / test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と本番 `MacAmbientJevEngine` product は Linux target ではありません。通常の Linux CI fast job は同じ fetch/check 後に直接 package build / test を実行し、`linux-model-e2e` job の範囲は変わりません。 |
+| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は unfiltered package build で test-only `MacAmbientJevEngineHarness` を含む products を build し、本番 `MacAmbientJevEngine` product も明示 build します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意し、native injected C tests の後に unfiltered `swift test` を1回実行します。その後、engine acceptance driver と FLAC validator の self-tests、fake-capture engine process acceptance を順に実行します。 |
 
-Windows runner の Swift test command は次のとおりです。
+Windows runner の unfiltered Swift test command は次のとおりです。
 
 ```powershell
 swift test --package-path app/MacAmbientJev
 ```
 
-1 回の `swift test` で EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows の test set 全体を実行します。
+1 回の `swift test` で EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows の test set 全体を実行します。runner は既存の `swift build --show-bin-path` lookup で `$binDir` を解決し、unfiltered package build が生成した `MacAmbientJevEngineHarness.exe` を指定します。native injected C tests の後にこの Swift test を実行し、その後 driver と FLAC validator の Python self-tests、fake-capture process acceptance を実行します。Python driver は build を行いません。
 
-Linux CI fast job の package command は次のとおりです（先行する fetch / check step の後に実行します）。
+[`test_engine_acceptance.py`](../scripts/test_engine_acceptance.py) と [`test_engine_acceptance_flac.py`](../scripts/test_engine_acceptance_flac.py) は no-build self-tests です。build 済み test-only harness がある場合、[`engine_acceptance.py`](../scripts/engine_acceptance.py) は次の no-build acceptance command で実行できます。Windows runner は `$binDir` から `.exe` の完全 path を渡します。
+
+<pre><code>python -B scripts/engine_acceptance.py &#45;&#45;executable "C:\absolute\path\to\MacAmbientJevEngineHarness.exe"</code></pre>
+
+macOS / Linux では build 済み harness の path を指定します。self-tests と driver は `python3` で起動します。
+
+```bash
+python3 -B scripts/test_engine_acceptance.py
+python3 -B scripts/test_engine_acceptance_flac.py
+```
+
+<pre><code>python3 -B scripts/engine_acceptance.py &#45;&#45;executable /absolute/path/to/MacAmbientJevEngineHarness</code></pre>
+
+`MacAmbientJevEngineHarness` は全 platform 向け test-only product ですが、Linux の harness は canonical 16 kHz identity のみです。Linux CI workflow にこの Python process acceptance driver は組み込まれていません。偽キャプチャ harness の動作と acceptance の詳細は [偽キャプチャ engine テストハーネス](windows.md#偽キャプチャ-engine-テストハーネス) を参照してください。Linux CI fast job の package command は次のとおりです（先行する fetch / check step の後に実行します）。
 
 ```bash
 swift build --package-path app/MacAmbientJev
 swift test --package-path app/MacAmbientJev
 ```
 
-Linux / Windows の PortableRuntime tests が使う pinned asset path は runner が fetch して既存の必須環境変数に設定します。WindowsSupport の fake capture tests と native injected C tests は実 audio hardware を使わず、実機 WASAPI の動作を保証しません。現在の `test-windows.ps1` には `Fake-capture acceptance integration point (job 7A)` というコメントだけがあり、fake-capture acceptance は実行しません。`-FullModel` は既存の model numerical tests と ProcessRecording acceptance driver を追加実行しますが、host / fake-capture acceptance ではありません。
+Linux / Windows の PortableRuntime tests が使う pinned asset path は runner が fetch して既存の必須環境変数に設定します。WindowsSupport の fake capture tests と native injected C tests は実 audio hardware を使わず、実機 WASAPI の動作を保証しません。fake-capture process acceptance は test-only harness と deterministic inference を使い、hardware capture や実モデルを使った EngineHost / fake-capture E2E を検証しません。`-FullModel` が追加するのは既存の実モデル numerical tests と `MacAmbientJevProcessRecording` acceptance driver であり、実モデルを使った engine-host/fake-capture E2E ではありません。
+
+fake-capture process acceptance は stdin / stdout に test-only の [`HarnessPipeIO.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHarness/HarnessPipeIO.swift) を使い、実 `EngineTransport` / `EngineController` / `EngineApplication` を実行しますが、出荷する [`WindowsPipeIO.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/WindowsPipeIO.swift) と [`EngineProcess.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) の `EngineProcess.run()` 起動 wiring（標準ハンドルの設定・redirect、本番起動時の組み立て）は、どの OS で acceptance を実行しても対象外です。Windows VM での acceptance もこの範囲を変えず、本番 executable を別途 build しても補われません。fixture signal の検証条件は [偽キャプチャ engine テストハーネス](windows.md#偽キャプチャ-engine-テストハーネス) を参照してください。
 
 ### Windows native capture-safety injected C test
 
