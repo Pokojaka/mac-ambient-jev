@@ -3,16 +3,21 @@
 
 from __future__ import annotations
 
+import argparse
+import copy
+import importlib.util
 import json
 import math
 import os
 import queue
+import re
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import wave
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -24,6 +29,9 @@ MAX_STDERR_BYTES = 65_536
 STDIO_TIMEOUT_SECONDS = 30.0
 SCENARIO_TIMEOUT_SECONDS = 240.0
 FINALIZATION_TIMEOUT_SECONDS = 180.0
+FULL_MODEL_SCENARIO_TIMEOUT_SECONDS = 1_200.0
+FULL_MODEL_STDIO_TIMEOUT_SECONDS = 300.0
+FULL_MODEL_FINALIZATION_TIMEOUT_SECONDS = 600.0
 TRANSCRIPT_TEXT = "エンジンの受け入れテストです。"
 TRANSCRIPT_FILE = "[00:00] Speaker 1: エンジンの受け入れテストです。\n"
 EXPECTED_SETTINGS: dict[str, Any] = {
@@ -94,6 +102,38 @@ def _extended_path_spelling(path: str | os.PathLike[str], *, windows: bool | Non
     return extended_prefix + spelling
 
 
+def _process_recording_path(path: str | os.PathLike[str], *, windows: bool) -> str:
+    """Format a canonical path for ProcessRecording's ordinary Windows root policy."""
+    if not windows:
+        return str(path)
+
+    spelling = os.fspath(path)
+    if not isinstance(spelling, str):
+        raise AcceptanceError(f"path must be text, got {type(spelling).__name__}")
+    backslash = "\\"
+    normalized = spelling.replace("/", backslash)
+    extended_prefix = backslash * 2 + "?" + backslash
+    unc_namespace_prefix = "UNC" + backslash
+    if normalized.startswith(backslash * 2 + "." + backslash):
+        raise AcceptanceError(f"unsupported Windows path namespace: {spelling!r}")
+    if normalized.startswith(extended_prefix):
+        namespace_path = normalized[len(extended_prefix):]
+        if not namespace_path.casefold().startswith(unc_namespace_prefix.casefold()) and re.match(
+            r"^[A-Za-z]:" + re.escape(backslash), namespace_path
+        ) is None:
+            raise AcceptanceError(f"unsupported Windows path namespace: {spelling!r}")
+
+    extended = _extended_path_spelling(path, windows=True)
+    unc_prefix = extended_prefix + unc_namespace_prefix
+    if extended[:len(unc_prefix)].casefold() == unc_prefix.casefold():
+        return backslash * 2 + extended[len(unc_prefix):]
+    if extended.startswith(extended_prefix):
+        drive_path = extended[len(extended_prefix):]
+        if re.match(r"^[A-Za-z]:" + re.escape(backslash), drive_path) is not None:
+            return drive_path
+    raise AcceptanceError(f"unsupported Windows path namespace: {spelling!r}")
+
+
 def _resolve_path(path: Path, *, strict: bool) -> Path:
     """Resolve a path while keeping the extended Windows spelling intact."""
     normalized = Path(_extended_path_spelling(path))
@@ -159,10 +199,36 @@ def _put_until_stopped(target: queue.Queue[Any], item: Any, stopped: threading.E
 class EngineChild:
     """One strictly checked binary-pipe connection to the real harness executable."""
 
-    def __init__(self, executable: Path, root: Path, fixture: Path, rate: int, channels: int):
-        self.deadline = time.monotonic() + SCENARIO_TIMEOUT_SECONDS
+    def __init__(
+        self,
+        executable: Path,
+        root: Path,
+        fixture: Path,
+        rate: int,
+        channels: int,
+        *,
+        inference: str,
+        threads: int,
+        scenario_timeout: float,
+        stdio_timeout: float,
+    ):
+        if inference not in {"deterministic", "portable"}:
+            raise AcceptanceError(f"unsupported inference mode: {inference!r}")
+        if type(threads) is not int or threads <= 0:
+            raise AcceptanceError(f"threads must be a positive integer, got {threads!r}")
+        if scenario_timeout <= 0 or stdio_timeout <= 0:
+            raise AcceptanceError("scenario and stdio timeouts must be positive")
+        self.inference = inference
+        self.threads = threads
+        self.scenario_timeout = scenario_timeout
+        self.stdio_timeout = stdio_timeout
+        self.deadline = time.monotonic() + scenario_timeout
         argv = [
             str(executable),
+            "--inference",
+            inference,
+            "--threads",
+            str(threads),
             "--root",
             str(root),
             "--fixture",
@@ -185,7 +251,7 @@ class EngineChild:
             raise AcceptanceError(f"cannot launch engine harness {executable}: {error}") from error
         if self.process.stdin is None or self.process.stdout is None or self.process.stderr is None:
             self.process.kill()
-            self.process.wait(timeout=STDIO_TIMEOUT_SECONDS)
+            self.process.wait(timeout=self.stdio_timeout)
             raise AcceptanceError("engine harness pipes were not created")
         self.stdin = self.process.stdin
         self.stdout = self.process.stdout
@@ -219,7 +285,7 @@ class EngineChild:
     def remaining(self, context: str) -> float:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise AcceptanceError(f"{context}: scenario exceeded its {SCENARIO_TIMEOUT_SECONDS:g}s deadline")
+            raise AcceptanceError(f"{context}: scenario exceeded its {self.scenario_timeout:g}s deadline")
         return remaining
 
     def _thread_error(self) -> str | None:
@@ -291,7 +357,7 @@ class EngineChild:
     def _read_record(self, context: str) -> bytes | object:
         if self.stdout_eof:
             return _EOF
-        timeout = min(STDIO_TIMEOUT_SECONDS, self.remaining(context))
+        timeout = min(self.stdio_timeout, self.remaining(context))
         try:
             item = self.records.get(timeout=timeout)
         except queue.Empty as error:
@@ -454,7 +520,7 @@ class EngineChild:
             finally:
                 finished.set()
 
-        timeout = min(STDIO_TIMEOUT_SECONDS, self.remaining(context))
+        timeout = min(self.stdio_timeout, self.remaining(context))
         write_deadline = time.monotonic() + timeout
         writer = threading.Thread(target=write_input, name="engine-acceptance-input-writer", daemon=False)
         self.write_thread = writer
@@ -490,16 +556,16 @@ class EngineChild:
                 if self.process.poll() is None:
                     failures.append(f"could not kill child: {error}")
         try:
-            self.process.wait(timeout=STDIO_TIMEOUT_SECONDS)
+            self.process.wait(timeout=self.stdio_timeout)
         except subprocess.TimeoutExpired:
-            failures.append(f"killed child was not reaped within {STDIO_TIMEOUT_SECONDS:g}s")
+            failures.append(f"killed child was not reaped within {self.stdio_timeout:g}s")
         try:
             self.close_stdin()
         except AcceptanceError as error:
             failures.append(str(error))
-        writer.join(timeout=STDIO_TIMEOUT_SECONDS)
+        writer.join(timeout=self.stdio_timeout)
         if writer.is_alive():
-            failures.append(f"{writer.name} did not stop within {STDIO_TIMEOUT_SECONDS:g}s")
+            failures.append(f"{writer.name} did not stop within {self.stdio_timeout:g}s")
         return "; ".join(failures) if failures else None
 
     def close_stdin(self) -> None:
@@ -574,7 +640,7 @@ class EngineChild:
 
     def wait_for_exit(self, expected_code: int | None, context: str) -> int:
         self.close_stdin()
-        timeout = min(STDIO_TIMEOUT_SECONDS, self.remaining(context))
+        timeout = min(self.stdio_timeout, self.remaining(context))
         try:
             code = self.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired as error:
@@ -587,11 +653,13 @@ class EngineChild:
         return code
 
     def _join_threads(self, context: str) -> None:
-        deadline = min(self.deadline, time.monotonic() + STDIO_TIMEOUT_SECONDS)
+        deadline = min(self.deadline, time.monotonic() + self.stdio_timeout)
         for thread in (self.stdout_thread, self.stderr_thread):
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
             if thread.is_alive():
-                raise AcceptanceError(f"{context}: {thread.name} did not stop within 30s; {self.diagnostic()}")
+                raise AcceptanceError(
+                    f"{context}: {thread.name} did not stop within {self.stdio_timeout:g}s; {self.diagnostic()}"
+                )
         thread_error = self._thread_error()
         if thread_error:
             raise AcceptanceError(f"{context}: {thread_error}; {self.diagnostic()}")
@@ -600,9 +668,11 @@ class EngineChild:
         if self.process.poll() is None:
             self.process.kill()
         try:
-            code = self.process.wait(timeout=STDIO_TIMEOUT_SECONDS)
+            code = self.process.wait(timeout=self.stdio_timeout)
         except subprocess.TimeoutExpired as error:
-            raise AcceptanceError(f"{context}: killed child was not reaped within 30s") from error
+            raise AcceptanceError(
+                f"{context}: killed child was not reaped within {self.stdio_timeout:g}s"
+            ) from error
         self.close_stdin()
         self._drain_to_eof(f"draining stdout after {context}")
         self._join_threads(context)
@@ -622,9 +692,9 @@ class EngineChild:
                 if self.process.poll() is None:
                     failures.append(f"could not kill engine child: {error}")
         try:
-            self.process.wait(timeout=STDIO_TIMEOUT_SECONDS)
+            self.process.wait(timeout=self.stdio_timeout)
         except subprocess.TimeoutExpired:
-            failures.append(f"engine child was not reaped within {STDIO_TIMEOUT_SECONDS:g}s")
+            failures.append(f"engine child was not reaped within {self.stdio_timeout:g}s")
         except Exception as error:
             failures.append(f"waiting for engine child failed: {error}")
         try:
@@ -635,21 +705,21 @@ class EngineChild:
         for thread in (self.stdout_thread, self.stderr_thread, self.write_thread):
             if thread is None:
                 continue
-            thread.join(timeout=STDIO_TIMEOUT_SECONDS)
+            thread.join(timeout=self.stdio_timeout)
             if thread.is_alive() and thread is self.stdout_thread:
                 try:
                     self.stdout.close()
                 except Exception as error:
                     failures.append(f"closing engine stdout failed: {error}")
-                thread.join(timeout=STDIO_TIMEOUT_SECONDS)
+                thread.join(timeout=self.stdio_timeout)
             elif thread.is_alive() and thread is self.stderr_thread:
                 try:
                     self.stderr.close()
                 except Exception as error:
                     failures.append(f"closing engine stderr failed: {error}")
-                thread.join(timeout=STDIO_TIMEOUT_SECONDS)
+                thread.join(timeout=self.stdio_timeout)
             if thread.is_alive():
-                failures.append(f"{thread.name} did not stop within {STDIO_TIMEOUT_SECONDS:g}s")
+                failures.append(f"{thread.name} did not stop within {self.stdio_timeout:g}s")
         for name, stream in (("stdout", self.stdout), ("stderr", self.stderr)):
             try:
                 stream.close()
@@ -1186,7 +1256,11 @@ def run_audio_scenario(
     export_destination: Path,
     reparse_export: tuple[Path, Path, Path] | None = None,
 ) -> dict[str, Any]:
-    with EngineChild(executable, root, fixture, rate, channels) as child:
+    with EngineChild(
+        executable, root, fixture, rate, channels,
+        inference="deterministic", threads=1,
+        scenario_timeout=SCENARIO_TIMEOUT_SECONDS, stdio_timeout=STDIO_TIMEOUT_SECONDS,
+    ) as child:
         _setup_new_session(child)
         session_id = _start_recording(child)
         recording_rows = _list_sessions(child)
@@ -1227,7 +1301,11 @@ def run_forced_kill_recovery(
     source_frames: int,
     export_destination: Path,
 ) -> None:
-    with EngineChild(executable, root, fixture, 16_000, 2) as child:
+    with EngineChild(
+        executable, root, fixture, 16_000, 2,
+        inference="deterministic", threads=1,
+        scenario_timeout=SCENARIO_TIMEOUT_SECONDS, stdio_timeout=STDIO_TIMEOUT_SECONDS,
+    ) as child:
         _setup_new_session(child)
         session_id = _start_recording(child)
         rows = _list_sessions(child)
@@ -1245,7 +1323,11 @@ def run_forced_kill_recovery(
             f"committed_chunks={len(committed_chunk_bytes)} chunk_bytes={expected_chunk_sizes} kill_exit={code}"
         )
 
-    with EngineChild(executable, root, fixture, 16_000, 2) as child:
+    with EngineChild(
+        executable, root, fixture, 16_000, 2,
+        inference="deterministic", threads=1,
+        scenario_timeout=SCENARIO_TIMEOUT_SECONDS, stdio_timeout=STDIO_TIMEOUT_SECONDS,
+    ) as child:
         child.wait_ready()
         hello = child.call_empty("hello")
         if not isinstance(hello, dict) or not isinstance(hello.get("state"), dict):
@@ -1303,7 +1385,11 @@ def run_protocol_rejection(
     sessions_root = root / "mac-ambient-jev" / "sessions"
     if _session_tree_has_mutations(sessions_root):
         raise AcceptanceError(f"protocol rejection test root already has session data: {sessions_root}")
-    with EngineChild(executable, root, fixture, 16_000, 2) as child:
+    with EngineChild(
+        executable, root, fixture, 16_000, 2,
+        inference="deterministic", threads=1,
+        scenario_timeout=SCENARIO_TIMEOUT_SECONDS, stdio_timeout=STDIO_TIMEOUT_SECONDS,
+    ) as child:
         child.wait_ready()
         child.protocol_failure_expected = True
         if oversized:
@@ -1326,14 +1412,16 @@ def run_protocol_rejection(
 
             writer = threading.Thread(target=oversized_writer, name="engine-acceptance-oversized-writer", daemon=True)
             writer.start()
-            timeout = min(STDIO_TIMEOUT_SECONDS, child.remaining("oversized request termination"))
+            timeout = min(child.stdio_timeout, child.remaining("oversized request termination"))
             try:
                 code = child.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired as error:
                 raise AcceptanceError(f"oversized request did not terminate within {timeout:g}s") from error
-            writer.join(timeout=STDIO_TIMEOUT_SECONDS)
+            writer.join(timeout=child.stdio_timeout)
             if writer.is_alive():
-                raise AcceptanceError("oversized request writer did not stop within 30s")
+                raise AcceptanceError(
+                    f"oversized request writer did not stop within {child.stdio_timeout:g}s"
+                )
             if sent < MAX_RECORD_BYTES + 1:
                 raise AcceptanceError(f"oversized writer sent only {sent} bytes before the child exited")
             if write_errors and (
@@ -1397,10 +1485,279 @@ def _check_owned_path(owner: Path, path: Path) -> None:
         raise AcceptanceError(f"refusing to use path outside owned temporary directory: {path}") from error
 
 
-def _resolve_executable(argv: list[str]) -> Path:
-    if len(argv) != 2 or argv[0] != "--executable":
-        raise AcceptanceError("usage: python3 -B scripts/engine_acceptance.py --executable PATH")
-    candidate = Path(argv[1])
+PUBLISHED_SEGMENT_KEYS = {
+    "segment_id", "source", "start_ms", "end_ms", "text", "display_text",
+    "speakers", "clause_state", "clause_slices",
+}
+EXCLUDED_LINEAGE_FIELDS = (
+    "source.segmentation_run_id", "source.asr_run_id", "source.asr_event_seq",
+    "clause_slices[].reference.boundary_run_id", "clause_slices[].reference.clause_id",
+)
+
+
+def _load_process_recording_acceptance() -> Any:
+    path = Path(__file__).resolve().parents[1] / "tools/linux-audio/process_recording_acceptance.py"
+    spec = importlib.util.spec_from_file_location("process_recording_acceptance", path)
+    if spec is None or spec.loader is None:
+        raise AcceptanceError(f"cannot import ProcessRecording acceptance helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _validate_speech_fixture(helper: Any, fixture: Path) -> tuple[int, int, str]:
+    try:
+        _, expected_sha256, expected_samples = helper.load_reference()
+        duration_ms = helper.inspect_fixture(fixture, expected_sha256, expected_samples)
+        # Python 3.12 wave reads PCM extensible; this acceptance input still requires PCM16.
+        with wave.open(str(fixture), "rb") as audio:
+            if audio.getcomptype() != "NONE":
+                raise AcceptanceError(f"fixture must be uncompressed PCM, got {audio.getcomptype()!r}")
+            if audio.getsampwidth() != 2:
+                raise AcceptanceError(f"fixture must be PCM16, got {audio.getsampwidth() * 8}-bit")
+            if audio.getnchannels() != 1 or audio.getframerate() != 16_000:
+                raise AcceptanceError("fixture must be 16 kHz mono PCM16")
+            frames = audio.getnframes()
+            if frames <= 0 or frames != expected_samples:
+                raise AcceptanceError(f"fixture must be nonempty and contain {expected_samples} frames, got {frames}")
+    except (OSError, EOFError, wave.Error, helper.AcceptanceFailure) as error:
+        raise AcceptanceError(f"invalid ProcessRecording reference fixture: {error}") from error
+    return frames, duration_ms, expected_sha256
+
+
+def _write_speech_inputs(
+    fixture: Path, f32_path: Path, source_wav: Path, *, rate: int, channels: int
+) -> int:
+    """Convert bounded PCM16 packets; 48 kHz is explicit 3x repetition in both channels."""
+    if (rate, channels) not in {(16_000, 1), (48_000, 2)}:
+        raise AcceptanceError(f"unsupported speech fixture conversion {rate} Hz/{channels} channels")
+    if f32_path.exists() or source_wav.exists():
+        raise AcceptanceError("speech fixture output path already exists")
+    frames_written = 0
+    try:
+        with wave.open(str(fixture), "rb") as source, f32_path.open("xb") as raw, wave.open(str(source_wav), "wb") as wav:
+            if source.getcomptype() != "NONE" or source.getsampwidth() != 2:
+                raise AcceptanceError("speech source changed after PCM16 validation")
+            if source.getframerate() != 16_000 or source.getnchannels() != 1:
+                raise AcceptanceError("speech source changed after 16 kHz mono validation")
+            wav.setnchannels(channels)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+            while True:
+                packet = source.readframes(2_048)
+                if not packet:
+                    break
+                if len(packet) % 2:
+                    raise AcceptanceError("PCM16 fixture ended with a partial sample")
+                samples = list(struct.unpack("<" + "h" * (len(packet) // 2), packet))
+                if not samples:
+                    continue
+                if rate == 16_000:
+                    expanded = samples
+                else:
+                    expanded = [sample for sample in samples for _ in range(3) for _channel in range(2)]
+                pcm = struct.pack("<" + "h" * len(expanded), *expanded)
+                raw.write(struct.pack("<" + "f" * len(expanded), *(sample / 32_768 for sample in expanded)))
+                wav.writeframesraw(pcm)
+                frames_written += len(expanded) // channels
+        if frames_written == 0:
+            raise AcceptanceError("speech fixture conversion produced no frames")
+    except (OSError, EOFError, wave.Error, struct.error) as error:
+        raise AcceptanceError(f"cannot convert bounded PCM16 speech packets: {error}") from error
+    if rate == 48_000 and frames_written % 3 != 0:
+        raise AcceptanceError("explicit 48 kHz fixture upsampling produced a partial 3x group")
+    return frames_written
+
+
+def _validate_speech_flac_file(
+    path: Path, source_frames: int, rate: int, context: str, *, expected_source_wav: Path | None
+) -> dict[str, Any]:
+    try:
+        result = validate_flac(path)
+    except (OSError, ValueError) as error:
+        raise AcceptanceError(f"{context}: invalid FLAC at {path}: {error}") from error
+    if result.get("sample_rate") != 16_000 or result.get("channels") != 1 or result.get("bits_per_sample") != 16:
+        raise AcceptanceError(f"{context}: FLAC is not canonical mono 16 kHz/16-bit: {result!r}")
+    samples = result.get("samples")
+    if not isinstance(samples, list) or any(type(sample) is not int or not -32_768 <= sample <= 32_767 for sample in samples):
+        raise AcceptanceError(f"{context}: decoder did not return finite signed-16-bit PCM samples")
+    if result.get("sample_count") != len(samples):
+        raise AcceptanceError(f"{context}: FLAC sample count and decoded PCM length disagree")
+    if result.get("frame_count") != (len(samples) + 4_095) // 4_096:
+        raise AcceptanceError(f"{context}: FLAC frame count does not match decoded PCM length")
+    quotient, remainder = divmod(source_frames * 16_000, rate)
+    permitted = {quotient, quotient + (1 if remainder else 0)}
+    if len(samples) not in permitted:
+        raise AcceptanceError(f"{context}: canonical sample count {len(samples)} is not in {sorted(permitted)}")
+    if expected_source_wav is not None:
+        if rate != 16_000:
+            raise AcceptanceError(f"{context}: source-WAV identity comparison is only valid at 16 kHz")
+        try:
+            with wave.open(str(expected_source_wav), "rb") as source:
+                if source.getcomptype() != "NONE" or source.getsampwidth() != 2:
+                    raise AcceptanceError(f"{context}: expected source WAV is not uncompressed PCM16")
+                if source.getframerate() != 16_000 or source.getnchannels() != 1:
+                    raise AcceptanceError(f"{context}: expected source WAV is not 16 kHz mono")
+                source_count = 0
+                while True:
+                    packet = source.readframes(2_048)
+                    if not packet:
+                        break
+                    if len(packet) % 2:
+                        raise AcceptanceError(f"{context}: expected source WAV ends with a partial PCM16 sample")
+                    expected = struct.unpack("<" + "h" * (len(packet) // 2), packet)
+                    for offset, sample in enumerate(expected):
+                        index = source_count + offset
+                        actual = samples[index] if index < len(samples) else None
+                        if actual != sample:
+                            raise AcceptanceError(
+                                f"{context}: canonical PCM differs from source PCM16 at sample {index}: "
+                                f"expected={sample} actual={actual}"
+                            )
+                    source_count += len(expected)
+                if source_count != len(samples):
+                    raise AcceptanceError(
+                        f"{context}: canonical PCM sample count differs from source WAV: "
+                        f"source={source_count} decoded={len(samples)}"
+                    )
+        except (OSError, EOFError, wave.Error) as error:
+            raise AcceptanceError(f"{context}: cannot read exact PCM16 source WAV {expected_source_wav}: {error}") from error
+    return result
+
+
+def normalize_published_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Canonicalize only schema-known run/event/clause identity fields."""
+    normalized = copy.deepcopy(segments)
+    if any(not isinstance(segment, dict) or set(segment) != PUBLISHED_SEGMENT_KEYS for segment in normalized):
+        raise AcceptanceError("published segments do not match the explicit materialized-segment schema")
+    segmentation_runs: set[str] = set()
+    asr_runs: set[str] = set()
+    boundary_runs: set[str] = set()
+    clause_aliases: dict[str, str] = {}
+    for segment in normalized:
+        source = segment["source"]
+        if not isinstance(source, dict) or set(source) != {
+            "segmentation_run_id", "segment_id", "asr_run_id", "asr_event_seq"
+        }:
+            raise AcceptanceError(f"segment source does not match SegmentTextReference schema: {source!r}")
+        if not isinstance(source["segmentation_run_id"], str) or not source["segmentation_run_id"]:
+            raise AcceptanceError("source.segmentation_run_id must be nonempty text")
+        if not isinstance(source["asr_run_id"], str) or not source["asr_run_id"]:
+            raise AcceptanceError("source.asr_run_id must be nonempty text")
+        if type(source["asr_event_seq"]) is not int or source["asr_event_seq"] <= 0:
+            raise AcceptanceError("source.asr_event_seq must be a positive integer")
+        if source["segment_id"] != segment["segment_id"]:
+            raise AcceptanceError("source.segment_id must match and preserve the published segment_id")
+        segmentation_runs.add(source["segmentation_run_id"])
+        asr_runs.add(source["asr_run_id"])
+        slices = segment["clause_slices"]
+        if not isinstance(slices, list):
+            raise AcceptanceError("clause_slices must be an array")
+        for clause_slice in slices:
+            if not isinstance(clause_slice, dict) or set(clause_slice) != {
+                "reference", "source_range", "priority", "needs_retry"
+            }:
+                raise AcceptanceError(f"clause slice does not match ClauseRowSlice schema: {clause_slice!r}")
+            reference = clause_slice["reference"]
+            if not isinstance(reference, dict) or set(reference) != {"boundary_run_id", "clause_id"}:
+                raise AcceptanceError(f"clause reference does not match ClauseReference schema: {reference!r}")
+            boundary_id, clause_id = reference["boundary_run_id"], reference["clause_id"]
+            if not isinstance(boundary_id, str) or not boundary_id or not isinstance(clause_id, str) or not clause_id:
+                raise AcceptanceError("clause run and derived clause IDs must be nonempty text")
+            boundary_runs.add(boundary_id)
+            if clause_id not in clause_aliases:
+                clause_aliases[clause_id] = f"derived-clause-{len(clause_aliases) + 1}"
+            reference["boundary_run_id"] = "<boundary-run>"
+            reference["clause_id"] = clause_aliases[clause_id]
+        source["segmentation_run_id"] = "<segmentation-run>"
+        source["asr_run_id"] = "<asr-run>"
+        source["asr_event_seq"] = "<asr-event-sequence>"
+    if len(segmentation_runs) != 1 or len(asr_runs) != 1 or len(boundary_runs) != 1:
+        raise AcceptanceError(
+            "published segments must reference exactly one active segmentation, ASR, and boundary run; "
+            f"got {len(segmentation_runs)}, {len(asr_runs)}, {len(boundary_runs)}"
+        )
+    return normalized
+
+
+def _semantic_differences(left: Any, right: Any, path: str = "segments") -> list[tuple[str, Any, Any]]:
+    if type(left) is not type(right):
+        return [(path, left, right)]
+    if isinstance(left, dict):
+        differences: list[tuple[str, Any, Any]] = []
+        for key in sorted(set(left) | set(right)):
+            if key not in left or key not in right:
+                differences.append((f"{path}.{key}", left.get(key), right.get(key)))
+            else:
+                differences.extend(_semantic_differences(left[key], right[key], f"{path}.{key}"))
+        return differences
+    if isinstance(left, list):
+        differences = []
+        for index in range(max(len(left), len(right))):
+            if index >= len(left) or index >= len(right):
+                differences.append((f"{path}[{index}]", left[index] if index < len(left) else None,
+                                   right[index] if index < len(right) else None))
+            else:
+                differences.extend(_semantic_differences(left[index], right[index], f"{path}[{index}]"))
+        return differences
+    return [] if left == right else [(path, left, right)]
+
+
+def _semantic_field_count(value: Any) -> int:
+    if isinstance(value, dict):
+        return sum(_semantic_field_count(child) for child in value.values())
+    if isinstance(value, list):
+        return sum(_semantic_field_count(child) for child in value)
+    return 1
+
+
+def _compared_semantic_field_count(normalized: list[dict[str, Any]]) -> int:
+    semantic = copy.deepcopy(normalized)
+    for segment in semantic:
+        source = segment["source"]
+        for key in ("segmentation_run_id", "asr_run_id", "asr_event_seq"):
+            source.pop(key)
+        for clause_slice in segment["clause_slices"]:
+            reference = clause_slice["reference"]
+            reference.pop("boundary_run_id")
+            reference.pop("clause_id")
+    return _semantic_field_count(semantic)
+
+
+def compare_published_segments(
+    baseline: list[dict[str, Any]], host: list[dict[str, Any]]
+) -> dict[str, int]:
+    normalized_baseline = normalize_published_segments(baseline)
+    normalized_host = normalize_published_segments(host)
+    differences = _semantic_differences(normalized_baseline, normalized_host)
+    mismatched_segments = sum(
+        bool(_semantic_differences(
+            normalized_baseline[index] if index < len(normalized_baseline) else None,
+            normalized_host[index] if index < len(normalized_host) else None,
+            f"segments[{index}]",
+        ))
+        for index in range(max(len(normalized_baseline), len(normalized_host)))
+    )
+    text_mismatches = sum(
+        baseline[index].get(key) != host[index].get(key)
+        for index in range(min(len(baseline), len(host)))
+        for key in ("text", "display_text")
+    ) + abs(len(baseline) - len(host))
+    if differences:
+        path, left, right = differences[0]
+        raise AcceptanceError(
+            f"semantic comparison failed: segment_mismatches={mismatched_segments} "
+            f"field_mismatches={len(differences)} text_mismatches={text_mismatches} "
+            f"first_differing_field={path} "
+            f"baseline={left!r} host={right!r}"
+        )
+    return {
+        "segment_count": len(baseline), "segment_mismatches": 0,
+        "text_mismatches": 0, "semantic_fields": _compared_semantic_field_count(normalized_baseline),
+    }
+
+
+def _resolve_executable(candidate: Path) -> Path:
     if not candidate.exists() or not candidate.is_file():
         raise AcceptanceError(f"--executable must identify an existing file: {candidate}")
     executable = candidate.resolve(strict=True)
@@ -1409,6 +1766,364 @@ def _resolve_executable(argv: list[str]) -> Path:
     if os.name != "nt" and not os.access(executable, os.X_OK):
         raise AcceptanceError(f"--executable is not executable: {executable}")
     return executable
+
+
+def _full_model_settings(asr_size: str, threads: int) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "source": "microphone",
+        "device": {"kind": "default"},
+        "asr_size": asr_size,
+        "execution_provider": "cpu",
+        "threads": threads,
+        "low_heat": False,
+        "decisions_enabled": True,
+        "automatic_export": False,
+        "export_destination_path": None,
+    }
+
+
+def _read_transcript_rows(child: EngineChild, session_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    cursor: Any = None
+    seen_cursors: set[str] = set()
+    while True:
+        result = child.call(
+            "transcript.read",
+            {"session_id": session_id, "revision": None, "cursor": cursor, "limit": 200},
+        )
+        if not isinstance(result, dict) or result.get("session_id") != session_id:
+            raise AcceptanceError(f"transcript.read returned the wrong session: {result!r}")
+        page = result.get("rows")
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            raise AcceptanceError(f"transcript.read returned invalid rows: {page!r}")
+        rows.extend(page)
+        next_cursor = result.get("next_cursor")
+        if next_cursor is None:
+            return rows
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            raise AcceptanceError(f"transcript.read returned an invalid or repeated cursor: {next_cursor!r}")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+
+def _format_transcript_rows(rows: list[dict[str, Any]]) -> bytes:
+    lines: list[str] = []
+    for row in rows:
+        start = row.get("start_ms")
+        headings = row.get("headings")
+        text = row.get("text")
+        if type(start) is not int or start < 0 or not isinstance(headings, list) or not headings:
+            raise AcceptanceError(f"transcript row lacks a valid start time or speaker headings: {row!r}")
+        if any(not isinstance(label, str) or not label for label in headings) or not isinstance(text, str):
+            raise AcceptanceError(f"transcript row has invalid headings or text: {row!r}")
+        total_seconds = start // 1000
+        timestamp = f"{total_seconds // 60:02d}:{total_seconds % 60:02d}"
+        single_line = re.sub(r"\r\n|[\r\n\u2028\u2029]", " ", text)
+        lines.append(f"[{timestamp}] {' / '.join(headings)}: {single_line}\n")
+    return "".join(lines).encode("utf-8")
+
+
+def _project_baseline_rows(helper: Any, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    labels = helper.make_speaker_labels(segments)
+    projected: list[dict[str, Any]] = []
+    for segment in segments:
+        text = segment["display_text"]
+        if not text.strip():
+            continue
+        projected.append({
+            "start_ms": segment["start_ms"],
+            "end_ms": segment["end_ms"],
+            "text": text,
+            "headings": helper.turn_labels(segment, labels),
+        })
+    return projected
+
+
+def _compare_projected_rows(
+    projected: list[dict[str, Any]], actual_rows: list[dict[str, Any]], context: str
+) -> None:
+    actual = [
+        {key: row.get(key) for key in ("start_ms", "end_ms", "text", "headings")}
+        for row in actual_rows
+    ]
+    differences = _semantic_differences(projected, actual, "transcript_rows")
+    if differences:
+        path, left, right = differences[0]
+        raise AcceptanceError(
+            f"{context}: display projection mismatch count={len(differences)} "
+            f"first_differing_field={path} projected={left!r} transcript.read={right!r}"
+        )
+
+
+def _run_process_recording(
+    arguments: list[str], environment: dict[str, str], label: str
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            arguments,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=FULL_MODEL_SCENARIO_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise AcceptanceError(f"{label} timed out after {FULL_MODEL_SCENARIO_TIMEOUT_SECONDS:g}s") from error
+    if result.returncode != 0:
+        raise AcceptanceError(
+            f"{label} exited with {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result
+
+
+def _baseline_process_recording_command(
+    executable: Path,
+    sessions_root: Path,
+    source_wav: Path,
+    output: Path,
+    threads: int,
+    *,
+    windows: bool,
+) -> list[str]:
+    return [
+        str(executable), "--sessions-root", _process_recording_path(sessions_root, windows=windows),
+        "--keep-session", "--with-decisions", "--threads", str(threads),
+        _process_recording_path(source_wav, windows=windows),
+        _process_recording_path(output, windows=windows),
+    ]
+
+
+def _host_resume_process_recording_command(
+    executable: Path,
+    session_id: str,
+    sessions_root: Path,
+    output: Path,
+    threads: int,
+    *,
+    windows: bool,
+) -> list[str]:
+    return [
+        str(executable), "--resume-session", session_id, "--sessions-root",
+        _process_recording_path(sessions_root, windows=windows),
+        "--with-decisions", "--threads", str(threads),
+        _process_recording_path(output, windows=windows),
+    ]
+
+
+def _check_process_recording_provenance(
+    helper: Any, session: Path, segments: list[dict[str, Any]], expected_model: str, threads: int
+) -> None:
+    events = helper.read_events(session)
+    metadata = helper.load_json(session / "processing_metadata.json")
+    run_ids = helper.check_runs(events, metadata, expected_model, threads)
+    helper.check_export_matches_events(segments, events, run_ids["asr"])
+
+
+def run_full_model_scenario(
+    executable: Path,
+    process_recording: Path,
+    fixture: Path,
+    source_wav: Path,
+    source_frames: int,
+    rate: int,
+    channels: int,
+    duration_ms: int,
+    threads: int,
+    helper: Any,
+    environment: dict[str, str],
+    expected_model: str,
+    asr_size: str,
+    label: str,
+    owner: Path,
+) -> dict[str, Any]:
+    root = _make_root(owner, f"{label}-engine-root")
+    settings = _full_model_settings(asr_size, threads)
+    engine_session_dir: Path
+    session_id: str
+    transcript_rows: list[dict[str, Any]]
+    retained: dict[str, Any]
+    events_before: bytes
+    metadata_before: bytes
+    export_text: bytes
+    with EngineChild(
+        executable, root, fixture, rate, channels,
+        inference="portable", threads=threads,
+        scenario_timeout=FULL_MODEL_SCENARIO_TIMEOUT_SECONDS,
+        stdio_timeout=FULL_MODEL_STDIO_TIMEOUT_SECONDS,
+    ) as child:
+        child.wait_ready()
+        hello = child.call_empty("hello")
+        if not isinstance(hello, dict) or not isinstance(hello.get("state"), dict):
+            raise AcceptanceError(f"{label}: hello returned an invalid ready state: {hello!r}")
+        replaced = child.call("settings.replace", {"expected_revision": None, "settings": settings})
+        if not isinstance(replaced, dict) or replaced.get("settings") != settings:
+            raise AcceptanceError(f"{label}: settings.replace did not echo every required setting: {replaced!r}")
+        prepared = child.call_empty("models.prepare")
+        if not isinstance(prepared, dict):
+            raise AcceptanceError(f"{label}: models.prepare returned an invalid result: {prepared!r}")
+        _wait_for_recovery(child)
+        session_id = _start_recording(child)
+        recording_rows = _list_sessions(child)
+        active = [row for row in recording_rows if row.get("session_id") == session_id]
+        if len(active) != 1 or active[0].get("status") != "recording":
+            raise AcceptanceError(f"{label}: recording catalog entry was not unique and recording: {recording_rows!r}")
+        _paths_for_session(root, _required_folder_id(active[0], f"{label} recording catalog row"))
+        stop = child.call("recording.stop", {"session_id": session_id})
+        if not isinstance(stop, dict) or stop.get("session_id") != session_id:
+            raise AcceptanceError(f"{label}: recording.stop returned the wrong session: {stop!r}")
+        finalized = _wait_finalized(child, session_id, FULL_MODEL_FINALIZATION_TIMEOUT_SECONDS)
+        engine_session_dir = _paths_for_session(root, _required_folder_id(finalized, f"{label} finalized catalog row"))
+        state = child.call_empty("state.get")
+        if not isinstance(state, dict) or state.get("queue") != []:
+            raise AcceptanceError(f"{label}: processing queue was not empty after finalization: {state!r}")
+        transcript_rows = _read_transcript_rows(child, session_id)
+        retained = _validate_speech_flac_file(
+            engine_session_dir / "audio" / "recording.flac", source_frames, rate,
+            f"{label} retained recording", expected_source_wav=source_wav if rate == 16_000 else None,
+        )
+        export_destination = owner / f"{label}-exports"
+        first_bundle: dict[str, bytes] | None = None
+        for export_number in (1, 2):
+            result = child.call(
+                "session.export", {"session_id": session_id, "destination_path": str(export_destination)}
+            )
+            if not isinstance(result, dict) or result.get("session_id") != session_id:
+                raise AcceptanceError(f"{label}: session.export #{export_number} returned invalid data: {result!r}")
+            if not isinstance(result.get("destination_path"), str):
+                raise AcceptanceError(f"{label}: session.export #{export_number} omitted destination_path")
+            bundle = _resolve_path(Path(_extended_path_spelling(result["destination_path"])), strict=True)
+            expected_bundle = _resolve_path(export_destination / engine_session_dir.name, strict=True)
+            if bundle != expected_bundle:
+                raise AcceptanceError(f"{label}: export wrote to {bundle}, expected {expected_bundle}")
+            names = sorted(path.name for path in bundle.iterdir())
+            if names != ["audio.flac", "transcript.txt"]:
+                raise AcceptanceError(f"{label}: export bundle names differ: {names!r}")
+            audio_path = bundle / "audio.flac"
+            exported = _validate_speech_flac_file(
+                audio_path, source_frames, rate, f"{label} exported FLAC #{export_number}",
+                expected_source_wav=source_wav if rate == 16_000 else None,
+            )
+            retained_path = engine_session_dir / "audio" / "recording.flac"
+            if audio_path.read_bytes() != retained_path.read_bytes():
+                raise AcceptanceError(f"{label}: exported FLAC is not byte-identical to retained FLAC")
+            if exported["samples"] != retained["samples"]:
+                raise AcceptanceError(f"{label}: exported decoded PCM differs from retained PCM")
+            exported_text = (bundle / "transcript.txt").read_bytes()
+            if exported_text != _format_transcript_rows(transcript_rows):
+                raise AcceptanceError(f"{label}: transcript.txt differs from formatted transcript.read rows")
+            bundle_bytes = {name: (bundle / name).read_bytes() for name in names}
+            if first_bundle is None:
+                first_bundle = bundle_bytes
+                export_text = exported_text
+            elif bundle_bytes != first_bundle:
+                raise AcceptanceError(f"{label}: repeated export changed bundle bytes")
+        events_path = engine_session_dir / "events.jsonl"
+        metadata_path = engine_session_dir / "processing_metadata.json"
+        events_before = events_path.read_bytes()
+        metadata_before = metadata_path.read_bytes()
+        child.call_empty("shutdown")
+        child.wait_for_exit(0, f"{label} shutdown")
+
+    baseline_sessions = owner / f"{label}-baseline-sessions"
+    baseline_sessions.mkdir()
+    baseline_output = owner / f"{label}-baseline-segments.json"
+    process_recording_windows = sys.platform == "win32"
+    baseline_command = _baseline_process_recording_command(
+        process_recording, baseline_sessions, source_wav, baseline_output, threads,
+        windows=process_recording_windows,
+    )
+    baseline_result = _run_process_recording(baseline_command, environment, f"{label} baseline CLI")
+    baseline_id = helper.parse_session_id(baseline_result.stdout)
+    baseline_session_dir = helper.find_session_directory(baseline_sessions, baseline_id)
+    baseline_segments = helper.read_segments(baseline_output)
+    helper.check_segments(baseline_segments, duration_ms)
+    helper.check_speakers(baseline_segments, duration_ms)
+    _check_process_recording_provenance(helper, baseline_session_dir, baseline_segments, expected_model, threads)
+
+    host_output = owner / f"{label}-host-resume-segments.json"
+    host_sessions = root / "mac-ambient-jev" / "sessions"
+    host_command = _host_resume_process_recording_command(
+        process_recording, session_id, host_sessions, host_output, threads,
+        windows=process_recording_windows,
+    )
+    _run_process_recording(host_command, environment, f"{label} host read-only resume")
+    if (engine_session_dir / "events.jsonl").read_bytes() != events_before:
+        raise AcceptanceError(f"{label}: host resume changed events.jsonl; it must only materialize published events")
+    if (engine_session_dir / "processing_metadata.json").read_bytes() != metadata_before:
+        raise AcceptanceError(f"{label}: host resume changed processing_metadata.json")
+    host_segments = helper.read_segments(host_output)
+    helper.check_segments(host_segments, duration_ms)
+    helper.check_speakers(host_segments, duration_ms)
+    _check_process_recording_provenance(helper, engine_session_dir, host_segments, expected_model, threads)
+    comparison = compare_published_segments(baseline_segments, host_segments)
+    _compare_projected_rows(
+        _project_baseline_rows(helper, baseline_segments), transcript_rows,
+        f"{label} baseline projection versus host transcript.read",
+    )
+
+    raw_characters = sum(len(segment["text"]) for segment in baseline_segments)
+    display_characters = sum(len(segment["display_text"]) for segment in baseline_segments)
+    print(
+        f"scenario={label} source_frames={source_frames} canonical_samples={retained['sample_count']} "
+        f"flac_frames={retained['frame_count']} pcm_md5={retained['md5']} threads={threads} "
+        f"segments={comparison['segment_count']} baseline_segments={len(baseline_segments)} "
+        f"host_segments={len(host_segments)} raw_text_characters={raw_characters} "
+        f"display_text_characters={display_characters} text_mismatches={comparison['text_mismatches']} "
+        f"segment_mismatches={comparison['segment_mismatches']} "
+        f"compared_semantic_fields={comparison['semantic_fields']} "
+        f"excluded_lineage_fields={','.join(EXCLUDED_LINEAGE_FIELDS)} transcript_bytes={len(export_text)}"
+    )
+    return retained
+
+
+def run_full_model(
+    executable: Path, process_recording: Path, fixture: Path, threads: int
+) -> None:
+    if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+        raise AcceptanceError(f"full-model portable acceptance is unavailable on {sys.platform}; Mac is not portable")
+    helper = _load_process_recording_acceptance()
+    try:
+        environment = os.environ.copy()
+        models = helper.require_model_environment(environment)
+        fixture_frames, duration_ms, _ = _validate_speech_fixture(helper, fixture)
+        executable = _resolve_executable(executable)
+        process_recording = helper.require_executable(process_recording.resolve(strict=True), "ProcessRecording executable")
+        expected_model = helper.expected_asr_model(models[helper.QWEN3_SIZE_VARIABLE])
+    except helper.AcceptanceFailure as error:
+        raise AcceptanceError(str(error)) from error
+    if threads <= 0:
+        raise AcceptanceError("--threads must be a positive integer")
+    asr_size = models[helper.QWEN3_SIZE_VARIABLE]
+    temporary_parent: str | None = None
+    if os.name == "nt":
+        temporary_parent = str(_resolve_path(Path(tempfile.gettempdir()), strict=True))
+    with tempfile.TemporaryDirectory(prefix="portable speech acceptance ", dir=temporary_parent) as temporary:
+        owner = _resolve_path(Path(_extended_path_spelling(temporary)), strict=True)
+        fixture_directory = owner / "fixtures"
+        fixture_directory.mkdir()
+        scenarios = [(16_000, 1, "speech-16000-mono")]
+        if sys.platform == "win32":
+            scenarios.append((48_000, 2, "speech-48000-stereo-explicit-3x-upsampling"))
+            print("fixture_upsampling=repeat_each_original_PCM16_sample_3_times_into_both_channels_for_source_input_only; capture_SRC=Windows_CanonicalAudioResampler")
+        for rate, channels, label in scenarios:
+            f32_path = fixture_directory / f"{label}.f32le"
+            source_wav = fixture_directory / f"{label}.wav"
+            source_frames = _write_speech_inputs(
+                fixture, f32_path, source_wav, rate=rate, channels=channels
+            )
+            expected_source_frames = fixture_frames if rate == 16_000 else fixture_frames * 3
+            if source_frames != expected_source_frames:
+                raise AcceptanceError(
+                    f"{label}: generated source frame count {source_frames} differs from pinned fixture-derived "
+                    f"count {expected_source_frames}"
+                )
+            run_full_model_scenario(
+                executable, process_recording, f32_path, source_wav, source_frames,
+                rate, channels, duration_ms, threads, helper,
+                environment, expected_model, asr_size, label, owner,
+            )
+    print("acceptance=passed")
 
 
 def run(executable: Path) -> None:
@@ -1501,10 +2216,42 @@ def run(executable: Path) -> None:
     print("acceptance=passed")
 
 
-def main() -> int:
+def positive_int(value: str) -> int:
+    if not value or not value.isascii() or not value.isdecimal():
+        raise argparse.ArgumentTypeError("must be a positive decimal integer")
     try:
-        executable = _resolve_executable(sys.argv[1:])
-        run(executable)
+        parsed = int(value, 10)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive decimal integer") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive decimal integer")
+    return parsed
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    deterministic = commands.add_parser("deterministic", help="run the existing deterministic harness scenarios")
+    deterministic.add_argument("--executable", type=Path, required=True, help="engine harness executable")
+    full_model = commands.add_parser("full-model", help="compare portable live recording with ProcessRecording")
+    full_model.add_argument("--executable", type=Path, required=True, help="engine harness executable")
+    full_model.add_argument("--process-recording", type=Path, required=True, help="ProcessRecording executable")
+    full_model.add_argument("--fixture", type=Path, required=True, help="pinned 16 kHz mono PCM16 fixture")
+    full_model.add_argument("--threads", type=positive_int, required=True, help="portable inference thread count")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        arguments = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+        if arguments.command == "deterministic":
+            run(_resolve_executable(arguments.executable))
+        elif arguments.command == "full-model":
+            run_full_model(
+                arguments.executable, arguments.process_recording, arguments.fixture, arguments.threads
+            )
+        else:
+            raise AcceptanceError(f"unsupported acceptance subcommand: {arguments.command!r}")
     except AcceptanceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

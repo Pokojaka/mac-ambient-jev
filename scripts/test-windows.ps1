@@ -90,7 +90,7 @@ Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime
 
 Invoke-Step 'engine acceptance driver self-test' { python -B scripts/test_engine_acceptance.py }
 Invoke-Step 'engine acceptance FLAC validator self-test' { python -B scripts/test_engine_acceptance_flac.py }
-Invoke-Step 'fake-capture engine process acceptance' { python -B scripts/engine_acceptance.py --executable (Join-Path $binDir 'MacAmbientJevEngineHarness.exe') }
+Invoke-Step 'deterministic engine acceptance' { python -B scripts/engine_acceptance.py deterministic --executable (Join-Path $binDir 'MacAmbientJevEngineHarness.exe') }
 
 if ($FullModel) {
     function Get-SinglePath([string]$Name, [object[]]$Lines) {
@@ -145,6 +145,7 @@ if ($FullModel) {
 
     Invoke-Step 'Swift build release ProcessRecording' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevProcessRecording }
     Invoke-Step 'Swift build release EvaluateASR' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevEvaluateASR }
+    Invoke-Step 'Swift build release EngineHarness' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevEngineHarness }
     $releaseBinLines = @(& swift build --package-path app/MacAmbientJev -c release --show-bin-path)
     $releaseBinDir = [System.IO.Path]::GetFullPath((Get-SinglePath 'Swift release bin path lookup' $releaseBinLines))
     if (-not (Test-Path -LiteralPath $releaseBinDir -PathType Container)) { throw "Swift release bin directory does not exist: $releaseBinDir" }
@@ -158,6 +159,13 @@ if ($FullModel) {
             --executable (Join-Path $releaseBinDir 'MacAmbientJevProcessRecording.exe') `
             --evaluator (Join-Path $releaseBinDir 'MacAmbientJevEvaluateASR.exe') `
             --fixture $fixture
+    }
+    Invoke-Step 'full-model engine acceptance' {
+        python -B scripts/engine_acceptance.py full-model `
+            --executable (Join-Path $releaseBinDir 'MacAmbientJevEngineHarness.exe') `
+            --process-recording (Join-Path $releaseBinDir 'MacAmbientJevProcessRecording.exe') `
+            --fixture $fixture `
+            --threads 2
     }
     Write-Host 'Windows full-model verification passed'
 }

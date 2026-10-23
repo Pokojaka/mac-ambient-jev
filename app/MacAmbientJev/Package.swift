@@ -582,6 +582,17 @@ engineE2ESupportDependencies.append("MacAmbientJevWindowsSupport")
 engineE2ESupportDependencies.append("MacAmbientJevAppleSupport")
 #endif
 
+var engineHarnessDependencies: [Target.Dependency] = [
+    "MacAmbientJevEngineE2ESupport",
+    "MacAmbientJevCore",
+    "MacAmbientJevPipeline",
+    "MacAmbientJevEngineHost",
+    "MacAmbientJevEngineProtocol"
+]
+#if os(Linux) || os(Windows)
+engineHarnessDependencies.append("MacAmbientJevPortableRuntime")
+#endif
+
 targets += [
     .target(
         name: "MacAmbientJevEngineE2ESupport",
@@ -590,14 +601,9 @@ targets += [
     ),
     .executableTarget(
         name: "MacAmbientJevEngineHarness",
-        dependencies: [
-            "MacAmbientJevEngineE2ESupport",
-            "MacAmbientJevCore",
-            "MacAmbientJevPipeline",
-            "MacAmbientJevEngineHost",
-            "MacAmbientJevEngineProtocol"
-        ],
-        path: "Tests/MacAmbientJevEngineHarness"
+        dependencies: engineHarnessDependencies,
+        path: "Tests/MacAmbientJevEngineHarness",
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .testTarget(
         name: "MacAmbientJevEngineE2ETests",

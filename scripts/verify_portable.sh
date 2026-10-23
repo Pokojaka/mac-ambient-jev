@@ -48,11 +48,18 @@ run_full_model() {
 
   swift build --package-path "$PACKAGE" -c release --product MacAmbientJevProcessRecording
   swift build --package-path "$PACKAGE" -c release --product MacAmbientJevEvaluateASR
+  swift build --package-path "$PACKAGE" -c release --product MacAmbientJevEngineHarness
   bin_path="$(swift build --package-path "$PACKAGE" -c release --show-bin-path)"
+  fixture="$PACKAGE/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav"
   python3 "$ROOT/tools/linux-audio/process_recording_acceptance.py" \
     --executable "$bin_path/MacAmbientJevProcessRecording" \
     --evaluator "$bin_path/MacAmbientJevEvaluateASR" \
-    --fixture "$PACKAGE/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav"
+    --fixture "$fixture"
+  python3 -B "$ROOT/scripts/engine_acceptance.py" full-model \
+    --executable "$bin_path/MacAmbientJevEngineHarness" \
+    --process-recording "$bin_path/MacAmbientJevProcessRecording" \
+    --fixture "$fixture" \
+    --threads 2
   echo "Portable full-model verification passed"
 }
 

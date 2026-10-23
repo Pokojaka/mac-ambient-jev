@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import struct
 import subprocess
@@ -11,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -28,6 +31,8 @@ def _bare_child() -> acceptance.EngineChild:
     child.thread_error_lock = threading.Lock()
     child.stderr_tail = bytearray()
     child.stderr_lock = threading.Lock()
+    child.stdio_timeout = acceptance.STDIO_TIMEOUT_SECONDS
+    child.scenario_timeout = acceptance.SCENARIO_TIMEOUT_SECONDS
     return child
 
 
@@ -86,6 +91,79 @@ class ExtendedWindowsPathTests(unittest.TestCase):
         self.assertEqual(acceptance._extended_path_spelling(path, windows=False), path)
 
 
+class ProcessRecordingPathTests(unittest.TestCase):
+    def test_drive_paths_use_ordinary_spelling_from_both_forms(self) -> None:
+        expected = r"C:\acceptance root\fixture.wav"
+        self.assertEqual(acceptance._process_recording_path(Path(expected), windows=True), expected)
+        self.assertEqual(
+            acceptance._process_recording_path(Path(r"\\?\C:\acceptance root\fixture.wav"), windows=True),
+            expected,
+        )
+
+    def test_unc_paths_use_ordinary_spelling_from_both_forms(self) -> None:
+        expected = r"\\server\share\acceptance root"
+        self.assertEqual(acceptance._process_recording_path(Path(expected), windows=True), expected)
+        self.assertEqual(
+            acceptance._process_recording_path(Path(r"\\?\UNC\server\share\acceptance root"), windows=True),
+            expected,
+        )
+
+    def test_command_argv_uses_ordinary_spelling_for_each_windows_path(self) -> None:
+        process_recording = Path(r"C:\tools\ProcessRecording.exe")
+        baseline = acceptance._baseline_process_recording_command(
+            process_recording,
+            Path(r"\\?\C:\acceptance\baseline-sessions"),
+            Path(r"\\?\C:\acceptance\source.wav"),
+            Path(r"\\?\C:\acceptance\baseline.json"),
+            2,
+            windows=True,
+        )
+        self.assertEqual(
+            baseline,
+            [
+                str(process_recording), "--sessions-root", r"C:\acceptance\baseline-sessions",
+                "--keep-session", "--with-decisions", "--threads", "2",
+                r"C:\acceptance\source.wav", r"C:\acceptance\baseline.json",
+            ],
+        )
+        host = acceptance._host_resume_process_recording_command(
+            process_recording,
+            "session-1",
+            Path(r"\\?\UNC\server\share\sessions"),
+            Path(r"\\?\UNC\server\share\host.json"),
+            2,
+            windows=True,
+        )
+        self.assertEqual(
+            host,
+            [
+                str(process_recording), "--resume-session", "session-1", "--sessions-root",
+                r"\\server\share\sessions", "--with-decisions", "--threads", "2",
+                r"\\server\share\host.json",
+            ],
+        )
+
+    def test_posix_path_is_unchanged(self) -> None:
+        path = Path("/tmp/acceptance fixture.wav")
+        self.assertEqual(acceptance._process_recording_path(path, windows=False), str(path))
+
+    def test_unsupported_windows_namespaces_are_rejected(self) -> None:
+        for path in (
+            r"\\.\C:\fixture.wav",
+            r"\\?\Volume{12345678-1234-1234-1234-123456789012}\fixture.wav",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\fixture.wav",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                acceptance.AcceptanceError, "unsupported Windows path namespace"
+            ):
+                acceptance._process_recording_path(Path(path), windows=True)
+
+    def test_relative_and_dot_component_paths_are_rejected(self) -> None:
+        for path in (r"relative\fixture.wav", r"C:\acceptance\..\fixture.wav", r"\\?\C:\acceptance\.\fixture.wav"):
+            with self.subTest(path=path), self.assertRaises(acceptance.AcceptanceError):
+                acceptance._process_recording_path(path, windows=True)
+
+
 class StrictJSONTests(unittest.TestCase):
     def test_duplicate_object_keys_are_rejected(self) -> None:
         with self.assertRaisesRegex(acceptance.AcceptanceError, "duplicate JSON object key"):
@@ -105,6 +183,22 @@ class StrictJSONTests(unittest.TestCase):
 
 
 class EnvelopeAndRequestTests(unittest.TestCase):
+    def test_engine_launch_passes_explicit_inference_and_threads(self) -> None:
+        process = Mock()
+        process.stdin = Mock()
+        process.stdout = Mock()
+        process.stderr = Mock()
+        with (
+            patch.object(acceptance.subprocess, "Popen", return_value=process) as popen,
+            patch.object(acceptance.threading, "Thread", side_effect=[Mock(), Mock()]),
+        ):
+            acceptance.EngineChild(
+                Path("engine"), Path("root"), Path("fixture.f32le"), 48_000, 2,
+                inference="portable", threads=3, scenario_timeout=10, stdio_timeout=2,
+            )
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[1:5], ["--inference", "portable", "--threads", "3"])
+
     def test_sequence_must_increase_strictly(self) -> None:
         child = _bare_child()
         child._dispatch(_envelope("1", "ready", None, {}), "ready")
@@ -502,7 +596,7 @@ class RawSendDeadlineTests(unittest.TestCase):
         child.deadline = time.monotonic() + 10
         child.write_thread = None
         try:
-            with patch.object(acceptance, "STDIO_TIMEOUT_SECONDS", 0.15):
+            with patch.object(child, "stdio_timeout", 0.15):
                 with self.assertRaisesRegex(acceptance.AcceptanceError, "stdin write exceeded 0.15s deadline"):
                     child.send_raw(b"x" * (2 * 1024 * 1024), context="blocked-write self-test")
             self.assertIsNotNone(process.poll(), "timed-out writer did not kill and reap its child")
@@ -525,6 +619,7 @@ class RawSendDeadlineTests(unittest.TestCase):
     def test_close_reports_child_reap_timeout(self) -> None:
         child = acceptance.EngineChild.__new__(acceptance.EngineChild)
         child.closed = False
+        child.stdio_timeout = acceptance.STDIO_TIMEOUT_SECONDS
         child.process = Mock()
         child.process.poll.return_value = None
         child.process.wait.side_effect = subprocess.TimeoutExpired("fake-engine", 30)
@@ -548,6 +643,216 @@ class RawSendDeadlineTests(unittest.TestCase):
         with self.assertRaisesRegex(acceptance.AcceptanceError, "send deadline; cleanup also failed: reap timeout") as caught:
             child.__exit__(acceptance.AcceptanceError, original, None)
         self.assertIs(caught.exception.__cause__, original)
+
+
+def _speech_segment() -> dict[str, object]:
+    return {
+        "segment_id": "segment-1",
+        "source": {
+            "segmentation_run_id": "seg-uuid-a",
+            "segment_id": "segment-1",
+            "asr_run_id": "asr-uuid-a",
+            "asr_event_seq": 17,
+        },
+        "start_ms": 100,
+        "end_ms": 900,
+        "text": "これは日本語です。",
+        "display_text": "これは日本語です。",
+        "speakers": [{"id": "speaker-1", "start_ms": 100, "end_ms": 900, "confidence": 0.91}],
+        "clause_state": "classified",
+        "clause_slices": [{
+            "reference": {"boundary_run_id": "boundary-uuid-a", "clause_id": "clause-a"},
+            "source_range": {"start": 0, "end": 9},
+            "priority": "primary",
+            "needs_retry": False,
+        }],
+    }
+
+
+def _clone(value: object) -> object:
+    return json.loads(json.dumps(value))
+
+
+class FullModelInputTests(unittest.TestCase):
+    def test_subcommands_and_every_required_flag(self) -> None:
+        parser = acceptance.build_parser()
+        invalid_arguments = [
+            [],
+            ["deterministic"],
+            ["full-model"],
+            ["full-model", "--executable", "engine"],
+            ["full-model", "--executable", "engine", "--process-recording", "cli"],
+            ["full-model", "--executable", "engine", "--process-recording", "cli", "--fixture", "fixture.wav"],
+        ]
+        for arguments in invalid_arguments:
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(arguments)
+        parsed = parser.parse_args(["deterministic", "--executable", "engine"])
+        self.assertEqual(parsed.command, "deterministic")
+        parsed = parser.parse_args([
+            "full-model", "--executable", "engine", "--process-recording", "cli",
+            "--fixture", "fixture.wav", "--threads", "2",
+        ])
+        self.assertEqual(parsed.command, "full-model")
+        self.assertEqual(parsed.threads, 2)
+
+    def test_invalid_threads_are_rejected(self) -> None:
+        parser = acceptance.build_parser()
+        prefix = [
+            "full-model", "--executable", "engine", "--process-recording", "cli",
+            "--fixture", "fixture.wav", "--threads",
+        ]
+        for invalid in ("0", "-1", "+2", "many"):
+            with self.subTest(value=invalid), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args([*prefix, invalid])
+
+    def test_full_model_rejects_macos_before_environment_or_path_checks(self) -> None:
+        with patch.object(acceptance.sys, "platform", "darwin"):
+            with self.assertRaisesRegex(acceptance.AcceptanceError, "unavailable on darwin"):
+                acceptance.run_full_model(
+                    Path("missing-engine"), Path("missing-process-recording"), Path("missing-fixture.wav"), 1
+                )
+
+    def test_model_environment_is_required(self) -> None:
+        helper = acceptance._load_process_recording_acceptance()
+        with self.assertRaisesRegex(helper.AcceptanceFailure, "MAC_AMBIENT_JEV_SILERO_MODEL is required"):
+            helper.require_model_environment({})
+
+    def test_pcm16_conversion_is_exact_and_windows_upsampling_repeats_samples(self) -> None:
+        samples = [-32_768, -1, 0, 32_767]
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = Path(temporary)
+            fixture = owner / "source.wav"
+            with wave.open(str(fixture), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(16_000)
+                audio.writeframes(struct.pack("<4h", *samples))
+
+            f32_16 = owner / "canonical.f32le"
+            wav_16 = owner / "canonical.wav"
+            frames_16 = acceptance._write_speech_inputs(
+                fixture, f32_16, wav_16, rate=16_000, channels=1
+            )
+            self.assertEqual(frames_16, len(samples))
+            expected_float = struct.pack("<4f", *(sample / 32_768 for sample in samples))
+            self.assertEqual(f32_16.read_bytes(), expected_float)
+            with wave.open(str(wav_16), "rb") as audio:
+                self.assertEqual((audio.getframerate(), audio.getnchannels(), audio.getsampwidth()), (16_000, 1, 2))
+                self.assertEqual(audio.readframes(100), struct.pack("<4h", *samples))
+
+            f32_48 = owner / "upsampled.f32le"
+            wav_48 = owner / "upsampled.wav"
+            frames_48 = acceptance._write_speech_inputs(
+                fixture, f32_48, wav_48, rate=48_000, channels=2
+            )
+            repeated = [sample for sample in samples for _ in range(3) for _channel in range(2)]
+            self.assertEqual(frames_48, len(samples) * 3)
+            self.assertEqual(f32_48.read_bytes(), struct.pack("<" + "f" * len(repeated), *(v / 32_768 for v in repeated)))
+            with wave.open(str(wav_48), "rb") as audio:
+                self.assertEqual((audio.getframerate(), audio.getnchannels(), audio.getsampwidth()), (48_000, 2, 2))
+                self.assertEqual(audio.readframes(100), struct.pack("<" + "h" * len(repeated), *repeated))
+
+
+class SemanticComparisonTests(unittest.TestCase):
+    def test_unknown_published_segment_key_is_rejected(self) -> None:
+        segment = _speech_segment()
+        segment["unexpected"] = "not part of the schema"
+        with self.assertRaisesRegex(acceptance.AcceptanceError, "explicit materialized-segment schema"):
+            acceptance.normalize_published_segments([segment])
+
+    def test_source_segment_id_must_match_published_segment_id(self) -> None:
+        segment = _speech_segment()
+        segment["source"]["segment_id"] = "different-segment"
+        with self.assertRaisesRegex(acceptance.AcceptanceError, "source.segment_id must match"):
+            acceptance.normalize_published_segments([segment])
+
+    def test_multiple_segmentation_asr_or_boundary_runs_are_rejected(self) -> None:
+        for field, label in (
+            ("segmentation_run_id", "segmentation"),
+            ("asr_run_id", "ASR"),
+        ):
+            with self.subTest(run=label):
+                second = _clone(_speech_segment())
+                second["segment_id"] = "segment-2"
+                second["source"]["segment_id"] = "segment-2"
+                second["source"][field] = f"second-{field}"
+                with self.assertRaisesRegex(acceptance.AcceptanceError, "exactly one active segmentation, ASR, and boundary run"):
+                    acceptance.normalize_published_segments([_speech_segment(), second])
+
+        second = _clone(_speech_segment())
+        second["segment_id"] = "segment-2"
+        second["source"]["segment_id"] = "segment-2"
+        second["clause_slices"][0]["reference"]["boundary_run_id"] = "boundary-run-b"
+        with self.assertRaisesRegex(acceptance.AcceptanceError, "exactly one active segmentation, ASR, and boundary run"):
+            acceptance.normalize_published_segments([_speech_segment(), second])
+
+    def test_clause_aliasing_does_not_merge_distinct_host_clauses(self) -> None:
+        baseline = _speech_segment()
+        baseline["clause_slices"].append(_clone(baseline["clause_slices"][0]))
+        host = _clone(baseline)
+        host["clause_slices"][1]["reference"]["clause_id"] = "host-distinct-clause"
+        with self.assertRaisesRegex(
+            acceptance.AcceptanceError,
+            r"field_mismatches=1 text_mismatches=0 first_differing_field=segments\[0\]\.clause_slices\[1\]\.reference\.clause_id",
+        ):
+            acceptance.compare_published_segments([baseline], [host])
+
+    def test_semantic_failure_reports_text_mismatches(self) -> None:
+        host = _clone(_speech_segment())
+        host["text"] = "different text"
+        with self.assertRaisesRegex(
+            acceptance.AcceptanceError,
+            r"segment_mismatches=1 field_mismatches=1 text_mismatches=1 first_differing_field=",
+        ):
+            acceptance.compare_published_segments([_speech_segment()], [host])
+
+    def test_only_explicit_run_event_and_derived_clause_identity_is_excluded(self) -> None:
+        baseline = [_speech_segment()]
+        host = [_clone(baseline[0])]
+        host_segment = host[0]
+        host_segment["source"].update({
+            "segmentation_run_id": "seg-uuid-b", "asr_run_id": "asr-uuid-b", "asr_event_seq": 82,
+        })
+        host_segment["clause_slices"][0]["reference"].update({
+            "boundary_run_id": "boundary-uuid-b", "clause_id": "clause-derived-elsewhere",
+        })
+        self.assertEqual(acceptance.compare_published_segments(baseline, host), {
+            "segment_count": 1, "segment_mismatches": 0, "text_mismatches": 0,
+            "semantic_fields": acceptance._compared_semantic_field_count(
+                acceptance.normalize_published_segments(baseline)
+            ),
+        })
+        self.assertEqual(baseline[0]["segment_id"], host_segment["segment_id"])
+        self.assertEqual(len(acceptance.EXCLUDED_LINEAGE_FIELDS), 5)
+
+    def test_text_timing_speaker_confidence_and_decision_drift_are_rejected(self) -> None:
+        mutations = {
+            "raw text": ("text", "changed text"),
+            "display text": ("display_text", "changed display"),
+            "timing": ("start_ms", 101),
+        }
+        for label, (field, value) in mutations.items():
+            with self.subTest(field=label):
+                host_segment = _clone(_speech_segment())
+                host_segment[field] = value
+                with self.assertRaisesRegex(acceptance.AcceptanceError, "first_differing_field"):
+                    acceptance.compare_published_segments([_speech_segment()], [host_segment])
+
+        for label, mutate in (
+            ("speaker identity", lambda segment: segment["speakers"][0].update(id="speaker-2")),
+            ("speaker timing", lambda segment: segment["speakers"][0].update(end_ms=899)),
+            ("speaker confidence", lambda segment: segment["speakers"][0].update(confidence=0.90)),
+            ("decision priority", lambda segment: segment["clause_slices"][0].update(priority="low_priority")),
+            ("decision state", lambda segment: segment.update(clause_state="priority_pending")),
+        ):
+            with self.subTest(field=label):
+                host_segment = _clone(_speech_segment())
+                mutate(host_segment)
+                with self.assertRaisesRegex(acceptance.AcceptanceError, "first_differing_field"):
+                    acceptance.compare_published_segments([_speech_segment()], [host_segment])
 
 
 if __name__ == "__main__":
