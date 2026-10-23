@@ -496,7 +496,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             try await fixture.app.core.performMutation {
                 defer { try? FileManager.default.removeItem(at: mutationURL) }
                 await gate.suspend()
-                try Data("mutation completed".utf8).write(to: mutationURL, options: .atomic)
+                try Data("mutation completed".utf8).write(to: mutationURL)
                 mutationCompleted.set(true)
             }
         }
@@ -573,7 +573,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
                 try await fixture.app.core.performMutation {
                     defer { try? FileManager.default.removeItem(at: mutationURL) }
                     await gate.suspend()
-                    try Data("mutation before throw".utf8).write(to: mutationURL, options: .atomic)
+                    try Data("mutation before throw".utf8).write(to: mutationURL)
                     mutationCompleted.set(true)
                     throw GatedMutationFailure.expected
                 }
