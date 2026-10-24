@@ -45,21 +45,38 @@ private enum GatedMutationFailure: Error {
 }
 
 private actor StartupCancellationProbe {
-    private var pauseWasCritical: Bool?
+    private var thermalWasCritical: Bool?
     private var waiter: CheckedContinuation<Bool, Never>?
+    private var cancellationContinuation: CheckedContinuation<Void, Never>?
 
-    func waitForCancellation(pauseGate: EngineProcessingPauseGate) async {
-        while !Task.isCancelled { await Task.yield() }
-        let wasCritical = pauseGate.isCritical
-        pauseWasCritical = wasCritical
+    func waitForCancellation(thermalMonitor: WindowsNoThermalMonitoring) async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    self.cancellationContinuation = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.observeCancellation() }
+        }
+
+        let wasCritical = thermalMonitor.isCritical
+        thermalWasCritical = wasCritical
         let waiter = waiter
         self.waiter = nil
         waiter?.resume(returning: wasCritical)
-        await Task.yield()
+    }
+
+    private func observeCancellation() {
+        let continuation = cancellationContinuation
+        cancellationContinuation = nil
+        continuation?.resume()
     }
 
     func waitUntilObserved() async -> Bool {
-        if let pauseWasCritical { return pauseWasCritical }
+        if let thermalWasCritical { return thermalWasCritical }
         return await withCheckedContinuation { waiter = $0 }
     }
 }
@@ -451,13 +468,13 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         reacquiredLock.release()
     }
 
-    @Test func shutdownCancelsStartupAfterPausingAndLeavesRootLockToOwner() async throws {
+    @Test func shutdownCancelsStartupWithoutThermalPauseAndLeavesRootLockToOwner() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let rootLock = try ApplicationRootLock.acquire(paths: fixture.app.core.paths)
         let probe = StartupCancellationProbe()
         fixture.app.core.startupTask = Task {
-            await probe.waitForCancellation(pauseGate: fixture.app.core.pauseGate)
+            await probe.waitForCancellation(thermalMonitor: fixture.app.core.thermalMonitor)
         }
 
         var shutdownReturned = false
@@ -470,11 +487,11 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             }
         }
 
-        let pauseWasCriticalOnCancellation = await probe.waitUntilObserved()
-        #expect(pauseWasCriticalOnCancellation)
+        let thermalWasCriticalOnCancellation = await probe.waitUntilObserved()
+        #expect(!thermalWasCriticalOnCancellation)
         await shutdownTask.value
         #expect(shutdownReturned)
-        #expect(fixture.app.core.pauseGate.isCritical)
+        #expect(!fixture.app.core.thermalMonitor.isCritical)
         do {
             let concurrentLock = try ApplicationRootLock.acquire(paths: fixture.app.core.paths)
             concurrentLock.release()

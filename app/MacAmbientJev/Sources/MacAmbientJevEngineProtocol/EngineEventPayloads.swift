@@ -419,6 +419,7 @@ public struct EngineState: Codable, Equatable, Sendable {
     @EngineNullable public private(set) var recording: EngineRecordingState?
     public let queue: [EngineQueuedOperation]
     public let failures: [EngineFailure]
+    public let presentation: EnginePresentationState
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case revision
@@ -428,6 +429,7 @@ public struct EngineState: Codable, Equatable, Sendable {
         case recording
         case queue
         case failures
+        case presentation
     }
 
     public init(
@@ -437,7 +439,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         recovery: EngineRecoveryStatus,
         recording: EngineRecordingState?,
         queue: [EngineQueuedOperation],
-        failures: [EngineFailure]
+        failures: [EngineFailure],
+        presentation: EnginePresentationState
     ) throws {
         try enginePayloadRequire(queue.count <= 16, "queue must contain at most 16 operations")
         self.revision = revision
@@ -447,6 +450,7 @@ public struct EngineState: Codable, Equatable, Sendable {
         _recording = EngineNullable(wrappedValue: recording)
         self.queue = queue
         self.failures = failures
+        self.presentation = presentation
     }
 
     public init(from decoder: Decoder) throws {
@@ -458,7 +462,8 @@ public struct EngineState: Codable, Equatable, Sendable {
             recovery: container.decode(EngineRecoveryStatus.self, forKey: .recovery),
             recording: container.decode(EngineNullable<EngineRecordingState>.self, forKey: .recording).wrappedValue,
             queue: container.decode([EngineQueuedOperation].self, forKey: .queue),
-            failures: container.decode([EngineFailure].self, forKey: .failures)
+            failures: container.decode([EngineFailure].self, forKey: .failures),
+            presentation: container.decode(EnginePresentationState.self, forKey: .presentation)
         )
     }
 
@@ -471,6 +476,7 @@ public struct EngineState: Codable, Equatable, Sendable {
         try container.encode(_recording, forKey: .recording)
         try container.encode(queue, forKey: .queue)
         try container.encode(failures, forKey: .failures)
+        try container.encode(presentation, forKey: .presentation)
     }
 }
 

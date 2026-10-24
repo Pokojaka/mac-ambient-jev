@@ -556,7 +556,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
             (FinalizationAttempt(attemptID: "running", state: .running, failureReason: nil), "処理中"),
             (FinalizationAttempt(attemptID: "complete", state: .complete, failureReason: nil), "処理完了"),
             (FinalizationAttempt(attemptID: "failed", state: .failed, failureReason: "decode stopped"), "再処理が必要: decode stopped"),
-            (FinalizationAttempt(attemptID: "paused", state: .paused, failureReason: nil), "一時停止中（発熱）")
+            (FinalizationAttempt(attemptID: "paused", state: .paused, failureReason: nil), "処理は中断されました。次回の起動時に再開できます")
         ]
         for (attempt, expectedText) in stateCases {
             try saveMetadata(at: sessionURL, attempt: attempt, activeRuns: nil, pendingBoundary: [])

@@ -73,13 +73,14 @@ final class EngineApplicationCore {
     let sleep: @MainActor @Sendable (Duration) async throws -> Void
     let shutdownPauseTimeout: Duration
     let gateway = EngineProcessorGateway()
-    let pauseGate = EngineProcessingPauseGate()
+    let thermalMonitor = WindowsNoThermalMonitoring()
     let completions = EngineCompletionRegistry()
 
     // Settings and models
     var settingsResult: EngineSettingsResult?
     var inference: EngineInference?
     var isPreparingModels = false
+    var presentation = EnginePresentation()
     var isShuttingDown = false
     private(set) var mutationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -127,10 +128,10 @@ final class EngineApplicationCore {
     var onBackgroundEventStateChange: (@MainActor () -> Void)?
 
     lazy var processingCoordinator = SessionProcessingCoordinator(
-        effects: self, processor: gateway, thermalMonitor: pauseGate
+        effects: self, processor: gateway, thermalMonitor: thermalMonitor
     )
     lazy var liveCoordinator = LiveTranscriptionCoordinator(
-        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: pauseGate, sleep: sleep
+        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor, sleep: sleep
     )
 
     struct StartAttempt {
@@ -254,7 +255,8 @@ final class EngineApplicationCore {
                 recovery: recoveryStatus,
                 recording: try recordingState(),
                 queue: try queueState(),
-                failures: failures
+                failures: failures,
+                presentation: try presentationState()
             )
         } catch {
             preconditionFailure("engine state fields are valid by construction: \(error)")
@@ -537,6 +539,8 @@ extension EngineApplicationCore: EngineSettingsHandling {
         if let previous, profileDiffers(previous, result.settings) {
             // A changed model profile invalidates the prepared state; no work is running (the handler refused otherwise).
             inference = nil
+            presentation.preparationPhase = .idle
+            presentation.preparationStatusText = nil
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
         }
         stateDidChange()
@@ -571,35 +575,99 @@ extension EngineApplicationCore: EngineModelsHandling {
         // Prepared models stay prepared while work uses them; verifying again would compete with that work.
         if inference != nil, !isIdleForSettingsChange { return }
         isPreparingModels = true
-        defer { isPreparingModels = false }
+        presentation.preparationPhase = .preparing
+        presentation.preparationStatusText = UserFacingStatus.preparingASR.text
+        let preparationID = UUID()
+        presentation.preparationID = preparationID
+        stateDidChange()
+        defer {
+            isPreparingModels = false
+            presentation.preparationID = nil
+            stateDidChange()
+        }
 
         let requestID = context.requestID
         let events = context.events
-        do {
-            try await inferenceProvider.prepare(settings: settings) { progress in
-                let stage: EngineStage = progress.stage == .validating ? .validatingModels : .loadingModels
+        let (progressStream, progressContinuation) = AsyncStream<EngineModelProgress>.makeStream()
+        let progressConsumer = Task { @MainActor [weak self] in
+            var validatingHighWater = 0
+            var loadingHighWater = 0
+            var hasStartedLoading = false
+
+            for await progress in progressStream {
+                guard let self,
+                      self.presentation.preparationID == preparationID,
+                      self.isPreparingModels else { continue }
+
+                let stage: EngineStage
+                let percentage: Int
+                let preparationStatusText: String
+                switch progress.stage {
+                case .validating:
+                    guard !hasStartedLoading else { continue }
+                    let current = Int(
+                        (Double(progress.completed) / Double(progress.total) * 100).rounded(.down)
+                    )
+                    validatingHighWater = max(validatingHighWater, current)
+                    percentage = validatingHighWater
+                    stage = .validatingModels
+                    preparationStatusText = UserFacingStatus.preparingASR.text
+                case .loading:
+                    hasStartedLoading = true
+                    let current = Int(
+                        (Double(progress.completed) / Double(progress.total) * 100).rounded(.down)
+                    )
+                    loadingHighWater = max(loadingHighWater, current)
+                    percentage = loadingHighWater
+                    stage = .loadingModels
+                    preparationStatusText = "音声認識モデルを読み込み中（\(percentage)%）"
+                }
+
                 do {
                     try events.progress(
                         EngineProgressPayload(
-                            stage: stage, completedUnits: UInt64(progress.completed),
-                            totalUnits: UInt64(progress.total), sessionID: nil
+                            stage: stage, completedUnits: UInt64(percentage), totalUnits: 100, sessionID: nil
                         ),
                         requestID: requestID
                     )
                 } catch {
                     EngineLog.write("model progress not sent: \(error)")
                 }
+                self.presentation.preparationStatusText = preparationStatusText
+                self.stateDidChange()
             }
+        }
+        do {
+            do {
+                try await inferenceProvider.prepare(settings: settings) { progress in
+                    precondition(
+                        progress.total > 0 && progress.completed >= 0 && progress.completed <= progress.total,
+                        "model preparation progress must have a positive total and a completed count within range"
+                    )
+                    progressContinuation.yield(progress)
+                }
+            } catch {
+                progressContinuation.finish()
+                await progressConsumer.value
+                throw error
+            }
+            progressContinuation.finish()
+            await progressConsumer.value
+
             try checkModelPreparationCanContinue()
             let prepared = try inferenceProvider.makeInference(settings: settings)
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
             try checkModelPreparationCanContinue()
             inference = prepared
             installProcessor(for: prepared, settings: settings)
+            presentation.preparationPhase = .ready
+            presentation.preparationStatusText = nil
         } catch {
             inference = nil
+            presentation.preparationID = nil
+            presentation.preparationPhase = .failed
+            presentation.preparationStatusText = "準備できませんでした: \(error.localizedDescription)"
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
-            stateDidChange()
             if error is CancellationError {
                 throw EngineFailures.commandError(.cancelled, "モデルの準備が中止されました", stage: .loadingModels)
             }
@@ -608,7 +676,6 @@ extension EngineApplicationCore: EngineModelsHandling {
             )
         }
         updateRecoveryStatus()
-        stateDidChange()
         // Finalizations queued while models were missing, such as launch recovery, can run now.
         processingCoordinator.startDrainIfIdle()
     }
@@ -650,7 +717,6 @@ extension EngineApplicationCore: EngineShutdownHandling {
         let failureEventTaskAtShutdown = failureEventTask
 
         isShuttingDown = true
-        pauseGate.pause()
         processingCoordinator.requestPause()
         var sessionIDs = processingQueue.sessionIDs
         if let recordingSessionID = recording.sessionID {
@@ -665,6 +731,7 @@ extension EngineApplicationCore: EngineShutdownHandling {
         if recording.phase == .recording,
            let sessionID = recording.sessionID,
            recording.beginStopping(sessionID: sessionID) {
+            setRecordingStatus("録音を保存しています", tone: .neutral)
             stateDidChange()
             await runStop(sessionID: sessionID, failureMessage: nil)
         }

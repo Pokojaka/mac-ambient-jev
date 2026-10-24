@@ -122,7 +122,7 @@ extension EngineApplicationCore: EngineSessionHandling {
                 statusText = switch session.processingStatus {
                 case .notProcessed: "未処理"
                 case .running: "処理中"
-                case .paused: "一時停止中（発熱）"
+                case .paused: "処理は中断されました。次回の起動時に再開できます"
                 case .complete: session.hasActiveTranscript ? "文字起こしあり" : "処理完了"
                 case .classificationPending: "文字起こしあり・判定を再試行"
                 case .failed(let reason): "再処理が必要: \(reason ?? "処理に失敗しました")"
@@ -325,6 +325,7 @@ extension EngineApplicationCore: EngineSessionHandling {
             )
         }
         recording.beginImport()
+        setRecordingStatus(UserFacingStatus.importingAudio.text, tone: .neutral)
         stateDidChange()
         defer {
             recording.finish()
@@ -335,7 +336,9 @@ extension EngineApplicationCore: EngineSessionHandling {
         let retained: RetainedSession
         do {
             retained = try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try importer.importRetainedSession(audioURL: audioURL) }.value
+            setRecordingStatus("「\(audioURL.lastPathComponent)」を読み込みました", tone: .neutral)
         } catch {
+            var statusText = "音声ファイルを読み込めませんでした: \(error.localizedDescription)"
             var cleanupErrors: [EngineErrorDetail] = []
             var sessionID: UUID?
             if let retainedError = error as? RetainedImportError, let created = retainedError.createdSession {
@@ -343,11 +346,13 @@ extension EngineApplicationCore: EngineSessionHandling {
                 do {
                     try SessionFileAccess.removeIfPresent(created.sessionURL, relativeTo: paths.sessionsRoot)
                 } catch {
+                    statusText += "（読み込み途中のセッションを削除できませんでした: \(error.localizedDescription)）"
                     cleanupErrors.append(EngineFailures.detail(
                         domain: "import", code: "cleanup", message: error.localizedDescription, path: created.sessionURL.path
                     ))
                 }
             }
+            setRecordingStatus(statusText, tone: .error)
             let underlying = (error as? RetainedImportError)?.underlying ?? error
             throw EngineFailures.commandError(
                 .filesystem, "音声ファイルを読み込めませんでした: \(underlying.localizedDescription)", stage: .importing,

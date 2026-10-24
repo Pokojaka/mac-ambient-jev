@@ -126,7 +126,7 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         do {
             processor = try current().processor
         } catch {
-            await onStatus(error.localizedDescription)
+            await onStatus(.message(error.localizedDescription))
             return
         }
         await processor.retryContentPrioritySession(
@@ -167,32 +167,3 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         )
     }
 }
-
-/// The processing coordinators ask a `ThermalMonitoring` whether to pause finalization. Windows has no thermal
-/// source, so this gate is the pause signal instead: the engine closes it on shutdown so a running finalization
-/// stops at its next boundary and queued work is held, to be recovered on the next launch.
-final class EngineProcessingPauseGate: ThermalMonitoring, @unchecked Sendable {
-    private let lock = NSLock()
-    private var paused = false
-
-    func pause() {
-        lock.lock()
-        paused = true
-        lock.unlock()
-    }
-
-    var isCritical: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return paused
-    }
-
-    var liveASRDecision: LiveASRThermalDecision { .processNow }
-
-    @MainActor
-    func observeChanges(_ onChange: @escaping @MainActor @Sendable () -> Void) -> any ThermalStateObservation {
-        EnginePauseObservation()
-    }
-}
-
-private final class EnginePauseObservation: ThermalStateObservation {}

@@ -304,7 +304,7 @@ private func processFinal(
         shouldPause: { false },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
-        onStatus: { await statuses.append($0) },
+        onStatus: { await statuses.append($0.text) },
         onUpdate: { segments, state in await states.append((segments.map(\.text), state)) }
     )
 }
@@ -906,7 +906,7 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { _ in },
-        onStatus: { await statuses.append($0) },
+        onStatus: { await statuses.append($0.text) },
         onUpdate: { _, _ in }
     )
 
@@ -1108,7 +1108,7 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
         sessionID: sessionID,
         boundarySegments: pending,
         clauses: [],
-        onStatus: { await retryStatuses.append($0) },
+        onStatus: { await retryStatuses.append($0.text) },
         onUpdate: { _, _ in }
     )
     #expect(await retryStatuses.snapshot().last == UserFacingStatus.decisionDeferred.text)

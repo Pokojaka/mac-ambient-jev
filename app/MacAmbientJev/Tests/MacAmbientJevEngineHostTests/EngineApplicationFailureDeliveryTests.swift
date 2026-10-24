@@ -98,21 +98,21 @@ extension EngineApplicationCore {
         _ = try await fixture.app.handlers.state.hello()
         fixture.app.handlers.state.helloDidComplete()
         let sessionID = UUID()
-        let silenceWarning = EngineFailures.failure(
-            code: .captureFailure, message: "音声が30秒以上無音です", stage: .capture,
+        let captureWarning = EngineFailures.failure(
+            code: .captureFailure, message: "録音は保存しましたが、一部の音声が欠落した可能性があります", stage: .capture,
             sessionID: sessionID, severity: .warning, recoveryAction: .none,
             details: [], cleanupErrors: []
         )
 
-        fixture.app.core.report(silenceWarning)
-        #expect(fixture.app.core.failures == [silenceWarning])
+        fixture.app.core.report(captureWarning)
+        #expect(fixture.app.core.failures == [captureWarning])
         await fixture.app.core.failureWorkerFinished()
         fixture.sink.release()
         fixture.transport.start()
         await fixture.transport.drain()
 
-        fixture.app.core.report(silenceWarning)
-        #expect(fixture.app.core.failures == [silenceWarning, silenceWarning])
+        fixture.app.core.report(captureWarning)
+        #expect(fixture.app.core.failures == [captureWarning, captureWarning])
         await fixture.app.core.failureWorkerFinished()
         await fixture.transport.drain()
 
@@ -120,13 +120,13 @@ extension EngineApplicationCore {
         let errors = outputs.compactMap { output -> EngineFailure? in
             if case let .error(failure) = output.event { failure } else { nil }
         }
-        #expect(errors == [silenceWarning, silenceWarning])
+        #expect(errors == [captureWarning, captureWarning])
 
         let stateFailures = outputs.compactMap { output -> [EngineFailure]? in
             if case let .state(state) = output.event { state.failures } else { nil }
         }
-        #expect(stateFailures.contains([silenceWarning]))
-        #expect(stateFailures.contains([silenceWarning, silenceWarning]))
+        #expect(stateFailures.contains([captureWarning]))
+        #expect(stateFailures.contains([captureWarning, captureWarning]))
     }
 
     @Test func distinctFailureFloodIsBoundedAndShutdownPreventsLateErrors() async throws {

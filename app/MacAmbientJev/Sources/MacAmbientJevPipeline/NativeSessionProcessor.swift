@@ -113,8 +113,20 @@ public enum ContentPriorityAccess: Sendable {
 }
 
 public actor NativeSessionProcessor {
+    public enum Status: Sendable, Equatable {
+        case activity(UserFacingStatus)
+        case message(String)
+
+        public var text: String {
+            switch self {
+            case let .activity(status): status.text
+            case let .message(text): text
+            }
+        }
+    }
+
     public typealias DecisionCoordinatorFactory = @Sendable () throws -> DecisionCoordinator
-    public typealias StatusHandler = @Sendable (_ text: String) async -> Void
+    public typealias StatusHandler = @Sendable (_ status: Status) async -> Void
     public typealias UpdateHandler = @Sendable (
         _ segments: [MaterializedTranscriptSegment],
         _ state: ProcessingState
@@ -230,7 +242,7 @@ public actor NativeSessionProcessor {
         }
 
         if let onStatus, !segments.isEmpty {
-            await onStatus("録音中の発話を文字起こししています")
+            await onStatus(.message("録音中の発話を文字起こししています"))
         }
 
         let progress = try await liveSession.process(
@@ -274,7 +286,7 @@ public actor NativeSessionProcessor {
                 try await enrichment.enqueue(
                     source: source,
                     snapshot: snapshot,
-                    onStatus: { text in await onStatus?(text) },
+                    onStatus: { text in await onStatus?(.message(text)) },
                     onUpdate: { [weak self] _ in
                         await self?.publishLiveRows(
                             sessionID: sessionID, liveSession: liveSession, onUpdate: onUpdate
@@ -287,7 +299,7 @@ public actor NativeSessionProcessor {
         } catch {
             await enrichment.stop()
             let message = "ライブの発話文判定に失敗しました: \(error.localizedDescription)"
-            await onStatus?(message)
+            await onStatus?(.message(message))
             await onUpdate?(snapshot.progress.materializedSegments, .partialFailure(message))
         }
     }
@@ -347,21 +359,21 @@ public actor NativeSessionProcessor {
                         onUpdate: onUpdate
                     )
                 } catch {
-                    await onStatus("録音の最後の発話をライブ文字起こしできませんでした: \(error.localizedDescription)")
+                    await onStatus(.message("録音の最後の発話をライブ文字起こしできませんでした: \(error.localizedDescription)"))
                 }
             }
             do {
                 provisional = try await liveSession.finish().materializedSegments
                 await onUpdate(provisional, .running)
             } catch {
-                await onStatus("ライブ文字起こしを終了できませんでした: \(error.localizedDescription)")
+                await onStatus(.message("ライブ文字起こしを終了できませんでした: \(error.localizedDescription)"))
             }
             // ASR has drained: the last segment no longer waits for a successor.
             if let enrichment = liveContentPrioritySessions[sessionID] {
                 do {
                     try await enrichment.finishInput(snapshot: await liveSession.snapshot())
                 } catch {
-                    await onStatus("ライブの発話文判定を終了できませんでした: \(error.localizedDescription)")
+                    await onStatus(.message("ライブの発話文判定を終了できませんでした: \(error.localizedDescription)"))
                 }
             }
             liveASRSessions[sessionID] = nil
@@ -434,19 +446,19 @@ public actor NativeSessionProcessor {
             let rebuildSnapshot = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
             guard !boundarySegments.isEmpty || !clauses.isEmpty || rebuildSnapshot else { return }
             guard case .localTagger(let factory, let usageCounter) = contentPriority else {
-                await onStatus(UserFacingStatus.decisionDeferred.text)
+                await onStatus(.activity(.decisionDeferred))
                 return
             }
             let decisions: DecisionCoordinator
             do {
                 decisions = try factory()
             } catch {
-                await onStatus("\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)")
+                await onStatus(.message("\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)"))
                 return
             }
             let publishedSegments = try materializer.materialize(events: events, activeRuns: activeRuns)
             retainedSegments = publishedSegments
-            await onStatus("保留中の判定を再試行しています（境界 \(boundarySegments.count)区間・優先度 \(clauses.count)節）")
+            await onStatus(.message("保留中の判定を再試行しています（境界 \(boundarySegments.count)区間・優先度 \(clauses.count)節）"))
             await onUpdate(publishedSegments, .running)
             let suffix = UUID().uuidString.lowercased()
             let scope = DecisionEnrichmentScope.retry(boundarySegments: Set(boundarySegments), clauses: Set(clauses))
@@ -483,16 +495,16 @@ public actor NativeSessionProcessor {
 
             await onUpdate(result.materializedSegments, .complete)
             if result.pendingTargets.isEmpty {
-                await onStatus("保留中の判定を更新しました")
+                await onStatus(.message("保留中の判定を更新しました"))
             } else {
-                await onStatus(UserFacingStatus.decisionDeferred.text)
+                await onStatus(.activity(.decisionDeferred))
             }
         } catch {
             let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
             if let retainedSegments {
                 await onUpdate(retainedSegments, .partialFailure(message))
             }
-            await onStatus(message)
+            await onStatus(.message(message))
         }
     }
 
@@ -612,7 +624,7 @@ public actor NativeSessionProcessor {
     ) async -> SessionProcessingResult {
         let message = "確定処理を開始できませんでした: \(error.localizedDescription)"
         await onPhase(.complete)
-        await onStatus(message)
+        await onStatus(.message(message))
         await onUpdate(provisional, .partialFailure(message))
         return .failed(
             message: message,
@@ -639,7 +651,7 @@ public actor NativeSessionProcessor {
             } catch is CancellationError {
                 result = await pausePublishedFinalization(
                     metrics: result.metrics,
-                    status: "確定処理が中断されたため、一時停止しました",
+                    status: .message("確定処理が中断されたため、一時停止しました"),
                     sessionLayout: layout,
                     publishedSegments: nil,
                     onPhase: onPhase,
@@ -648,7 +660,7 @@ public actor NativeSessionProcessor {
                 )
             } catch {
                 let message = "文字起こしは保存しましたが、録音を FLAC にできませんでした: \(error.localizedDescription)"
-                await onStatus(message)
+                await onStatus(.message(message))
                 result = .failed(message: message, metrics: result.metrics, retained: .finalized)
             }
         }
@@ -677,7 +689,7 @@ public actor NativeSessionProcessor {
                 message = "\(runMessage)。\(cleanup)"
                 result = .paused(metrics: result.metrics, retained: retained, message: message)
             }
-            await onStatus(message)
+            await onStatus(.message(message))
         }
         return result
     }
@@ -703,7 +715,9 @@ public actor NativeSessionProcessor {
         let outcome: FinalTranscriptPipelineOutcome
         let audio: any TimelineAudioReading
         do {
-            audio = try await audioHandling.open(source, layout: sessionLayout, onStatus: onStatus)
+            audio = try await audioHandling.open(source, layout: sessionLayout, onStatus: { text in
+                await onStatus(.message(text))
+            })
             outcome = try await FinalTranscriptPipeline(
                 sessionID: sessionID,
                 sessionURL: sessionLayout.sessionURL,
@@ -723,7 +737,7 @@ public actor NativeSessionProcessor {
             return await pauseFinalization(
                 attemptID: attemptID,
                 metrics: cancellation.metrics,
-                status: "確定処理が中断されたため、一時停止しました",
+                status: .message("確定処理が中断されたため、一時停止しました"),
                 metadataStore: metadataStore,
                 sessionLayout: sessionLayout,
                 previous: previous,
@@ -736,7 +750,7 @@ public actor NativeSessionProcessor {
             return await pauseFinalization(
                 attemptID: attemptID,
                 metrics: nil,
-                status: "確定処理が中断されたため、一時停止しました",
+                status: .message("確定処理が中断されたため、一時停止しました"),
                 metadataStore: metadataStore,
                 sessionLayout: sessionLayout,
                 previous: previous,
@@ -765,7 +779,7 @@ public actor NativeSessionProcessor {
             return await pauseFinalization(
                 attemptID: attemptID,
                 metrics: metrics,
-                status: UserFacingStatus.finalizationPausedForHeat.text,
+                status: .activity(.finalizationPausedForHeat),
                 metadataStore: metadataStore,
                 sessionLayout: sessionLayout,
                 previous: previous,
@@ -820,7 +834,7 @@ public actor NativeSessionProcessor {
             } catch is CancellationError {
                 return await pausePublishedFinalization(
                     metrics: final.metrics,
-                    status: "確定処理が中断されたため、一時停止しました",
+                    status: .message("確定処理が中断されたため、一時停止しました"),
                     sessionLayout: sessionLayout,
                     publishedSegments: final.materializedSegments,
                     onPhase: onPhase,
@@ -831,7 +845,7 @@ public actor NativeSessionProcessor {
                 let message = "境界と優先度の判定を完了できませんでした: \(error.localizedDescription)"
                 await onUpdate(final.materializedSegments, .partialFailure(message))
                 await onPhase(.complete)
-                await onStatus(message)
+                await onStatus(.message(message))
                 return .failed(message: message, metrics: final.metrics, retained: .finalized)
             }
             return .completed(metrics: final.metrics, noSpeech: final.completedCount == 0)
@@ -852,14 +866,14 @@ public actor NativeSessionProcessor {
         onUpdate: UpdateHandler
     ) async throws {
         try Task.checkCancellation()
-        let localStatus = "文字起こしと話者分離が完了しました（\(final.completedCount)区間）"
-        func complete(_ segments: [MaterializedTranscriptSegment], status: String) async {
+        let localStatus = Status.message("文字起こしと話者分離が完了しました（\(final.completedCount)区間）")
+        func complete(_ segments: [MaterializedTranscriptSegment], status: Status) async {
             await onUpdate(segments, .complete)
             await onPhase(.complete)
             await onStatus(status)
         }
         guard final.completedCount > 0, !localPending.isEmpty else {
-            await complete(final.materializedSegments, status: final.completedCount == 0 ? "発話区間は検出されませんでした" : localStatus)
+            await complete(final.materializedSegments, status: final.completedCount == 0 ? .message("発話区間は検出されませんでした") : localStatus)
             return
         }
         guard case .localTagger(let factory, let usageCounter) = contentPriority else {
@@ -872,14 +886,14 @@ public actor NativeSessionProcessor {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            await complete(final.materializedSegments, status: "\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)")
+            await complete(final.materializedSegments, status: .message("\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)"))
             return
         }
         let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
             from: liveEventLog.get(), modelRevision: decisions.identity.modelRevision
         )
 
-        await onStatus(UserFacingStatus.classifyingContent.text)
+        await onStatus(.activity(.classifyingContent))
         let suffix = UUID().uuidString.lowercased()
         let coordinator = DecisionEnrichmentCoordinator(
             sessionID: sessionID,
@@ -907,13 +921,13 @@ public actor NativeSessionProcessor {
         await coordinator.recordPublished(result, replacing: localPending)
         await complete(
             result.materializedSegments,
-            status: result.pendingTargets.isEmpty ? localStatus : UserFacingStatus.decisionDeferred.text
+            status: result.pendingTargets.isEmpty ? localStatus : .activity(.decisionDeferred)
         )
     }
 
     private func pausePublishedFinalization(
         metrics: ASRBatchMetrics?,
-        status: String,
+        status: Status,
         sessionLayout: SessionLayout,
         publishedSegments: [MaterializedTranscriptSegment]?,
         onPhase: PhaseHandler,
@@ -935,29 +949,29 @@ public actor NativeSessionProcessor {
                     provisional: []
                 )
                 if let readFailure = retained.readFailure {
-                    let message = "\(status)。確定済みの文字起こしを読み込めませんでした: \(readFailure)"
+                    let message = "\(status.text)。確定済みの文字起こしを読み込めませんでした: \(readFailure)"
                     await onPhase(.complete)
-                    await onStatus(message)
+                    await onStatus(.message(message))
                     return .failed(message: message, metrics: metrics, retained: .finalized)
                 }
                 segments = retained.segments
             } catch {
-                let message = "\(status)。確定済みの文字起こしを確認できませんでした: \(error.localizedDescription)"
+                let message = "\(status.text)。確定済みの文字起こしを確認できませんでした: \(error.localizedDescription)"
                 await onPhase(.complete)
-                await onStatus(message)
+                await onStatus(.message(message))
                 return .failed(message: message, metrics: metrics, retained: .finalized)
             }
         }
         await onPhase(.complete)
         await onStatus(status)
         await onUpdate(segments, .backlogged)
-        return .paused(metrics: metrics, retained: .finalized, message: status)
+        return .paused(metrics: metrics, retained: .finalized, message: status.text)
     }
 
     private func pauseFinalization(
         attemptID: String,
         metrics: ASRBatchMetrics?,
-        status: String,
+        status: Status,
         metadataStore: ProcessingMetadataStore,
         sessionLayout: SessionLayout,
         previous: ProcessingMetadata?,
@@ -969,14 +983,14 @@ public actor NativeSessionProcessor {
         do {
             try metadataStore.pauseFinalization(attemptID: attemptID)
         } catch {
-            let message = "\(status)。一時停止を保存できませんでした: \(error.localizedDescription)"
+            let message = "\(status.text)。一時停止を保存できませんでした: \(error.localizedDescription)"
             let retained = await retainedDisplay(
                 sessionLayout: sessionLayout,
                 previous: previous,
                 provisional: provisional
             )
             await onPhase(.complete)
-            await onStatus(message)
+            await onStatus(.message(message))
             await onUpdate(retained.segments, .partialFailure(message))
             return .failed(message: message, metrics: metrics, retained: retained.kind)
         }
@@ -988,11 +1002,11 @@ public actor NativeSessionProcessor {
         )
         await onPhase(.complete)
         if let readFailure = retained.readFailure {
-            await onStatus(readFailure)
+            await onStatus(.message(readFailure))
         }
         await onStatus(status)
         await onUpdate(retained.segments, .backlogged)
-        return .paused(metrics: metrics, retained: retained.kind, message: status)
+        return .paused(metrics: metrics, retained: retained.kind, message: status.text)
     }
 
     private func failFinalization(
@@ -1022,7 +1036,7 @@ public actor NativeSessionProcessor {
             message += "（\(readFailure)）"
         }
         await onPhase(.complete)
-        await onStatus("確定処理に失敗しました: \(message)")
+        await onStatus(.message("確定処理に失敗しました: \(message)"))
         await onUpdate(retained.segments, .partialFailure(message))
         return .failed(message: message, metrics: metrics, retained: retained.kind)
     }

@@ -207,7 +207,7 @@ private func processFinal(
         shouldPause: { false },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
-        onStatus: { await statuses.append($0) },
+        onStatus: { await statuses.append($0.text) },
         onUpdate: { segments, state in await states.append((segments.map(\.text), state)) }
     )
 }

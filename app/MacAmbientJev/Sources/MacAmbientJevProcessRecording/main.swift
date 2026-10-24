@@ -297,7 +297,7 @@ struct ProcessRecordingCommand {
     ) -> SessionFileProcessingService.Callbacks {
         SessionFileProcessingService.Callbacks(
             onEvent: { event in await eventRenderer.render(event) },
-            onStatus: { message in print(message) },
+            onStatus: { status in print(status.text) },
             onUpdate: { _, _ in },
             shouldPause: shouldPause,
             onPhase: onPhase

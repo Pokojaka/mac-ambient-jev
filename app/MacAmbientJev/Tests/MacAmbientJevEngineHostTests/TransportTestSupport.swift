@@ -231,7 +231,13 @@ func stateEvent(revision: UInt64) throws -> EngineEvent {
 func sampleState(revision: UInt64) throws -> EngineState {
     try EngineState(
         revision: EngineID(revision), screen: .idle, setup: .ready, recovery: .completed,
-        recording: nil, queue: [], failures: []
+        recording: nil, queue: [], failures: [],
+        presentation: try EnginePresentationState(
+            recordingStatusText: "待機中", recordingTone: .neutral, preparationPhase: .ready,
+            preparationStatusText: nil, recoveryStatusText: nil, processingStatusText: nil,
+            liveFailureNotices: [], silenceWarningActive: false, silenceWarningText: nil,
+            audioGapCount: 0, audioGapText: nil, processingIndicator: .idle
+        )
     )
 }
 

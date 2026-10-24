@@ -124,9 +124,9 @@ struct EngineProtocolEventPayloadTests {
         let failureCleanupExtra = #"{"code":"device_failure","message":"日本語の失敗","stage":"capture","request_id":null,"session_id":null,"severity":"error","recovery_action":"retry","details":[],"cleanup_errors":[{"domain":"native","code":"raw","message":"保全","path":null,"device_id":null,"extra":1}]}"#
         #expect(decodingFails(EngineFailure.self, from: failureCleanupExtra))
 
-        let stateQueueExtra = #"{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[{"session_id":"s","stage":"asr","extra":true}],"failures":[]}"#
+        let stateQueueExtra = #"{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[{"session_id":"s","stage":"asr","extra":true}],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}"#
         #expect(decodingFails(EngineState.self, from: stateQueueExtra))
-        let stateDeviceExtra = #"{"revision":"1","screen":"live","setup":"ready","recovery":"completed","recording":{"session_id":"s","source":"microphone","device":{"kind":"default","unexpected":true},"phase":"recording"},"queue":[],"failures":[]}"#
+        let stateDeviceExtra = #"{"revision":"1","screen":"live","setup":"ready","recovery":"completed","recording":{"session_id":"s","source":"microphone","device":{"kind":"default","unexpected":true},"phase":"recording"},"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}"#
         #expect(decodingFails(EngineState.self, from: stateDeviceExtra))
         let pageRowExtra = #"{"session_id":"s","revision":"1","rows":[{"row_id":"r","start_ms":0,"end_ms":1,"text":"hello","headings":["Speaker 1"],"clause_state":null,"extra":0}],"next_cursor":null,"previous_cursor":null}"#
         #expect(decodingFails(EngineTranscriptPage.self, from: pageRowExtra))
@@ -147,7 +147,7 @@ struct EngineProtocolEventPayloadTests {
         #expect(decodingFails(EngineErrorDetail.self, from: nullMessage))
         let failureMissingNullable = #"{"code":"busy","message":"busy","stage":"capture","session_id":null,"severity":"warning","recovery_action":"retry","details":[],"cleanup_errors":[]}"#
         #expect(decodingFails(EngineFailure.self, from: failureMissingNullable))
-        let stateMissingRecording = #"{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","queue":[],"failures":[]}"#
+        let stateMissingRecording = #"{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}"#
         #expect(decodingFails(EngineState.self, from: stateMissingRecording))
         let rowMissingClauseState = #"{"row_id":"r","start_ms":0,"end_ms":0,"text":"x","headings":[]}"#
         #expect(decodingFails(EngineTranscriptRow.self, from: rowMissingClauseState))
@@ -213,10 +213,10 @@ struct EngineProtocolEventPayloadTests {
 
     @Test func boundedCollectionsAcceptLimitsAndRejectOverflowAndDuplicates() throws {
         let operation = try EngineQueuedOperation(sessionID: "s", stage: .asr)
-        let state16 = try EngineState(revision: engineID(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 16), failures: [])
+        let state16 = try EngineState(revision: engineID(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 16), failures: [], presentation: try engineTestPresentation())
         #expect(state16.queue.count == 16)
         #expect(throws: (any Error).self) {
-            try EngineState(revision: engineID(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 17), failures: [])
+            try EngineState(revision: engineID(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 17), failures: [], presentation: try engineTestPresentation())
         }
         #expect(throws: (any Error).self) { try EngineQueuedOperation(sessionID: "", stage: .asr) }
 
@@ -559,7 +559,24 @@ private func sampleState(
     queue: [EngineQueuedOperation] = [],
     failures: [EngineFailure] = []
 ) throws -> EngineState {
-    try EngineState(revision: engineID(1), screen: .live, setup: .ready, recovery: .running, recording: recording, queue: queue, failures: failures)
+    try EngineState(revision: engineID(1), screen: .live, setup: .ready, recovery: .running, recording: recording, queue: queue, failures: failures, presentation: try engineTestPresentation())
+}
+
+func engineTestPresentation() throws -> EnginePresentationState {
+    try EnginePresentationState(
+        recordingStatusText: "待機中",
+        recordingTone: .neutral,
+        preparationPhase: .ready,
+        preparationStatusText: nil,
+        recoveryStatusText: nil,
+        processingStatusText: nil,
+        liveFailureNotices: [],
+        silenceWarningActive: false,
+        silenceWarningText: nil,
+        audioGapCount: 0,
+        audioGapText: nil,
+        processingIndicator: .idle
+    )
 }
 
 private func sampleRow() throws -> EngineTranscriptRow {

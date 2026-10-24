@@ -29,7 +29,7 @@ struct EngineProtocolEventTests {
         let modelInspection = EngineModelsInspection(clauseTagger: .validated(try sampleModelIdentity()))
         let results: [(EngineCommandName, EngineResult, Set<String>)] = [
             (.hello, .hello(ready), ["capabilities", "state"]),
-            (.stateGet, .stateGet(state), ["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]),
+            (.stateGet, .stateGet(state), ["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]),
             (.diagnosticsGet, .diagnosticsGet(diagnostics), ["scope", "decision_usage", "automatic_input_volume", "thermal_monitoring"]),
             (.devicesList, .devicesList(try EngineDevicesResult(source: .microphone, devices: [], defaultDeviceID: nil)), ["source", "devices", "default_device_id"]),
             (.recordingStart, .recordingStart(session), ["session_id"]),
@@ -134,7 +134,7 @@ struct EngineProtocolEventTests {
         let failure = try sampleFailure(requestID: nil)
         let events: [(EngineEvent, EngineEventName, Set<String>)] = [
             (.ready(EngineReadyPayload(capabilities: try sampleCapabilities(), state: state)), .ready, ["capabilities", "state"]),
-            (.state(state), .state, ["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]),
+            (.state(state), .state, ["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]),
             (.accepted(EngineAcceptedPayload(command: .recordingStop)), .accepted, ["command"]),
             (.completed(.modelsPrepare), .completed, ["command", "result"]),
             (.progress(try EngineProgressPayload(stage: .asr, completedUnits: 2, totalUnits: nil, sessionID: "session-1")), .progress, ["stage", "completed_units", "total_units", "session_id"]),
@@ -203,13 +203,13 @@ struct EngineProtocolEventTests {
         #expect(try EngineOutput(version: 1, sequence: id, requestID: nil, event: .error(try sampleFailure(requestID: nil))).requestID == nil)
         #expect(throws: (any Error).self) { try EngineOutput(version: 2, sequence: id, requestID: nil, event: .state(try sampleState())) }
 
-        #expect(decodingEngineError(#"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#) == .unsupportedVersion(2))
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":true,"sequence":"1","request_id":null,"event":"state","payload":{}}"#))
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#))
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":false,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#))
+        #expect(decodingEngineError(#"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#) == .unsupportedVersion(2))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":true,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":false,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"state","payload":null}"#))
 
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":"1","event":"ready","payload":{"capabilities":{"sources":["microphone"],"asr_sizes":["0.6b"],"execution_providers":["cpu"],"maximum_threads":1,"automatic_input_volume":"none","thermal_monitoring":"none"},"state":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}}"#))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":"1","event":"ready","payload":{"capabilities":{"sources":["microphone"],"asr_sizes":["0.6b"],"execution_providers":["cpu"],"maximum_threads":1,"automatic_input_volume":"none","thermal_monitoring":"none"},"state":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"accepted","payload":{"command":"hello"}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"completed","payload":{"command":"models.prepare","result":{}}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":"1","event":"error","payload":{"code":"busy","message":"busy","stage":"capture","request_id":"2","session_id":null,"severity":"error","recovery_action":"retry","details":[],"cleanup_errors":[]}}"#))
@@ -373,7 +373,8 @@ private func sampleState() throws -> EngineState {
         recovery: .completed,
         recording: nil,
         queue: [],
-        failures: []
+        failures: [],
+        presentation: try engineTestPresentation()
     )
 }
 

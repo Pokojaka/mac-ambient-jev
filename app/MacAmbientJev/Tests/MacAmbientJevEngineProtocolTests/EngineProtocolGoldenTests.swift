@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 65)
+        #expect(records.count == 70)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -37,6 +37,82 @@ struct EngineProtocolGoldenTests {
         #expect(completedCommands == Set(EngineCommandName.allCases.map(\.rawValue)))
         #expect(eventNames == Set(EngineEventName.allCases.map(\.rawValue)))
         #expect(rowKinds == Set(EngineRowsKind.allCases.map(\.rawValue)))
+    }
+
+    @Test func fixtureCoversPresentationSemanticsAcrossStateEnvelopes() throws {
+        let expectedPresentationKeys: Set<String> = [
+            "recording_status_text", "recording_tone", "preparation_phase", "preparation_status_text",
+            "recovery_status_text", "processing_status_text", "live_failure_notices", "silence_warning_active",
+            "silence_warning_text", "audio_gap_count", "audio_gap_text", "processing_indicator",
+        ]
+        var recordingTones = Set<String>()
+        var preparationPhases = Set<String>()
+        var envelopeKinds = Set<String>()
+        var sawOrdinaryPartialFailureProcessingText = false
+
+        func collectPresentation(
+            _ state: EngineState,
+            from stateObject: [String: Any],
+            envelope: String
+        ) throws {
+            let presentation = state.presentation
+            let presentationObject = try #require(stateObject["presentation"] as? [String: Any])
+            #expect(Set(presentationObject.keys) == expectedPresentationKeys, "presentation keys in \(envelope)")
+            recordingTones.insert(presentation.recordingTone.rawValue)
+            preparationPhases.insert(presentation.preparationPhase.rawValue)
+            envelopeKinds.insert(envelope)
+
+            let preparationRequiresStatusText = presentation.preparationPhase == .preparing || presentation.preparationPhase == .failed
+            #expect(
+                (presentation.preparationStatusText != nil) == preparationRequiresStatusText,
+                "preparation status text presence in \(envelope)"
+            )
+
+            if presentation.processingIndicator == .partialFailure {
+                let processingText = try #require(presentation.processingStatusText)
+                #expect(processingText == "録音中の発話を文字起こししています")
+                #expect(!presentation.liveFailureNotices.contains(processingText))
+                sawOrdinaryPartialFailureProcessingText = true
+            }
+        }
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            let payload = try #require(metadata["payload"] as? [String: Any])
+            switch output.event {
+            case let .state(state):
+                try collectPresentation(state, from: payload, envelope: "state")
+            case let .ready(ready):
+                let stateObject = try #require(payload["state"] as? [String: Any])
+                #expect(ready.state.presentation.recordingTone == .neutral)
+                #expect(ready.state.presentation.preparationPhase == .idle)
+                #expect(ready.state.presentation.preparationStatusText == nil)
+                try collectPresentation(ready.state, from: stateObject, envelope: "ready")
+            case let .completed(result):
+                let resultObject = try #require(payload["result"] as? [String: Any])
+                switch result {
+                case let .hello(ready):
+                    let stateObject = try #require(resultObject["state"] as? [String: Any])
+                    #expect(ready.state.presentation.recordingTone == .neutral)
+                    #expect(ready.state.presentation.preparationPhase == .idle)
+                    #expect(ready.state.presentation.preparationStatusText == nil)
+                    try collectPresentation(ready.state, from: stateObject, envelope: "completed.hello")
+                case let .stateGet(state):
+                    try collectPresentation(state, from: resultObject, envelope: "completed.stateGet")
+                default:
+                    break
+                }
+            case .rows, .error, .progress, .accepted:
+                break
+            }
+        }
+
+        #expect(recordingTones == Set(EngineRecordingTone.allCases.map(\.rawValue)))
+        #expect(preparationPhases == Set(EnginePreparationPhase.allCases.map(\.rawValue)))
+        #expect(envelopeKinds == ["state", "ready", "completed.hello", "completed.stateGet"])
+        #expect(sawOrdinaryPartialFailureProcessingText)
     }
 
     @Test func fixturePreservesRepresentativeTypedSemantics() throws {
@@ -411,6 +487,18 @@ struct EngineProtocolGoldenTests {
                     #expect(state.recording?.sessionID == "session-live")
                     #expect(!state.queue.isEmpty)
                     #expect(!state.failures.isEmpty)
+                    #expect(state.presentation.recordingStatusText == "システム音声を録音中")
+                    #expect(state.presentation.recordingTone == .recording)
+                    #expect(state.presentation.preparationPhase == .ready)
+                    #expect(state.presentation.preparationStatusText == nil)
+                    #expect(state.presentation.recoveryStatusText == "未完了の文字起こしを復旧しています（2件）")
+                    #expect(state.presentation.processingStatusText == "文字起こし処理が待機中です")
+                    #expect(state.presentation.liveFailureNotices.isEmpty)
+                    #expect(state.presentation.silenceWarningActive)
+                    #expect(state.presentation.silenceWarningText == "システム音声が30秒以上無音です")
+                    #expect(state.presentation.audioGapCount == 2)
+                    #expect(state.presentation.audioGapText == "音声の欠落: 2 回")
+                    #expect(state.presentation.processingIndicator == .backlogged)
                     let failure = try #require(state.failures.first)
                     let detail = try #require(failure.details.first)
                     #expect(detail.path?.contains("/sessions/session-live/audio.wav") == true)
@@ -420,6 +508,18 @@ struct EngineProtocolGoldenTests {
                 case let .ready(payload):
                     #expect(payload.state.setup == .settingsRequired)
                     #expect(payload.state.recovery == .pending)
+                    #expect(payload.state.presentation.recordingStatusText == "待機中")
+                    #expect(payload.state.presentation.recordingTone == .neutral)
+                    #expect(payload.state.presentation.preparationPhase == .idle)
+                    #expect(payload.state.presentation.preparationStatusText == nil)
+                    #expect(payload.state.presentation.recoveryStatusText == nil)
+                    #expect(payload.state.presentation.processingStatusText == nil)
+                    #expect(payload.state.presentation.liveFailureNotices.isEmpty)
+                    #expect(!payload.state.presentation.silenceWarningActive)
+                    #expect(payload.state.presentation.silenceWarningText == nil)
+                    #expect(payload.state.presentation.audioGapCount == 0)
+                    #expect(payload.state.presentation.audioGapText == nil)
+                    #expect(payload.state.presentation.processingIndicator == .idle)
                 case let .progress(payload):
                     if payload.totalUnits == 4 { sawKnownProgressTotal = true }
                     if payload.totalUnits == nil { sawUnknownProgressTotal = true }
@@ -742,7 +842,7 @@ struct EngineProtocolGoldenTests {
         let unknownResultEnum = #"{"version":1,"sequence":"1","request_id":"1","event":"completed","payload":{"command":"session.list","result":{"sessions":[{"folder_id":"f","session_id":"s","status":"future","error":null}],"next_cursor":null}}}"#
         let camelCaseAlias = #"{"version":1,"requestId":"1","command":"hello","payload":{}}"#
         let wrongRequestVersion = #"{"version":2,"request_id":"1","command":"hello","payload":{}}"#
-        let wrongOutputVersion = #"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#
+        let wrongOutputVersion = #"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"idle","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#
 
         #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(Data(unknownCommand.utf8)) }
         #expect(throws: (any Error).self) { try EngineCodec.decodeOutput(Data(unknownEvent.utf8)) }
@@ -895,6 +995,11 @@ private func isNullableField(
         "folder_path", "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata",
     ])
     let isTranscriptRowDetailsPage = object["clause_state_text"] != nil && object["speakers"] != nil
+    let isPresentationState = has([
+        "recording_status_text", "recording_tone", "preparation_phase", "preparation_status_text",
+        "recovery_status_text", "processing_status_text", "live_failure_notices", "silence_warning_active",
+        "silence_warning_text", "audio_gap_count", "audio_gap_text", "processing_indicator",
+    ])
 
     if key == "request_id" {
         if objectPath.isEmpty { return root["event"] != nil }
@@ -917,7 +1022,9 @@ private func isNullableField(
     if key == "error", isSessionSummary { return true }
     if key == "export_path", isSessionSummary { return true }
     if key == "path" || key == "device_id", has(["domain", "code", "message", "path", "device_id"]) { return true }
-    if key == "recording", has(["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]) { return true }
+    if ["preparation_status_text", "recovery_status_text", "processing_status_text", "silence_warning_text", "audio_gap_text"].contains(key),
+       isPresentationState { return true }
+    if key == "recording", has(["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]) { return true }
     if key == "default_device_id", has(["source", "devices", "default_device_id"]) { return true }
     if key == "previous_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }

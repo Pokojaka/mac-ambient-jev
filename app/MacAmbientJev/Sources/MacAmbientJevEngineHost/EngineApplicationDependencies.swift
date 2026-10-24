@@ -35,15 +35,18 @@ public struct EngineCaptureCallbacks: Sendable {
     /// Capture failed after it started. The engine stops the recording and finalizes the saved audio.
     public let onFailure: @MainActor @Sendable (String) -> Void
     public let onWarning: @MainActor @Sendable (String) -> Void
+    public let onDropouts: @MainActor @Sendable (UInt64) -> Void
     public let onSilenceChanged: @MainActor @Sendable (Bool) -> Void
 
     public init(
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
         onWarning: @escaping @MainActor @Sendable (String) -> Void,
+        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
         onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
     ) {
         self.onFailure = onFailure
         self.onWarning = onWarning
+        self.onDropouts = onDropouts
         self.onSilenceChanged = onSilenceChanged
     }
 }
