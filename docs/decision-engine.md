@@ -37,22 +37,21 @@ ASR gap の後に空の ASR 結果が保存された場合も、そこでテキ�
 
 ## モデルの同梱と更新
 
-モデルは ClauseTagger.mlpackage と tokenizer.json の組で、容量が GitHub のファイル上限を超えるため、このリポジトリ（Pokojaka/mac-ambient-jev）の GitHub release asset に置きます。[build_app.sh](../scripts/build_app.sh) は release tag、asset 名、asset の SHA-256 を定数として固定しています。
+現在のモデルは Hugging Face の [Pokojaka/modernbert-ja-30m-utterance-tagger](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger) repository の source commit `5c0213592cf8d59fc0b665183ab7536ddde05d1f` に pin します。model ID は Pokojaka/modernbert-ja-30m-utterance-tagger、state revision は `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9` です。PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) が唯一の pin 情報源で、両形式の各ファイルについて Hugging Face 上の相対 `path`、ローカル `name`、`byteCount`、`sha256` を記録します。各ファイルの取得 URL は `https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/resolve/<commit>/<path>` です。
 
-- archive は最上位に `clause-tagger` ディレクトリを一つだけ持ち、その直下に ClauseTagger.mlpackage と tokenizer.json を置きます。
-- ビルドはリポジトリの .build/clause-tagger に archive を保存し、ない場合だけ GitHub CLI で固定 tag の asset を取得します。`gh` がない場合や取得に失敗した場合はエラーで止まります。
-- 取得した asset は .build/clause-tagger 内の一時ディレクトリで SHA-256 を検証してから保存先へ rename します。中断や不一致の取得は保存先に残りません。
-- ビルドのたびに保存済み archive の SHA-256 を検証し、不一致ならエラーで止まります。検証していない archive は使いません。
-- 新しい一時ディレクトリに展開し、`clause-tagger` ディレクトリを app bundle の Contents/Resources に入れてから署名します。
+取得形式は必須引数で選びます。`python3 scripts/fetch_clause_tagger.py --format coreml` または `python3 scripts/fetch_clause_tagger.py --format onnx` を実行します。Core ML は `.build/clause-tagger/<commit>/clause-tagger`、ONNX は `.build/clause-tagger-onnx/<commit>/clause-tagger-onnx` に公開します。fetcher は manifest にある全ファイルを同じ cache directory 内の sibling `.fetch-*` staging directory へ取得し、各ファイルの byte 数と SHA-256、および staging の正確な tree（通常ファイル・ディレクトリのみで、symlink や余分なファイル・directory がないこと）を検証してから atomic rename で公開します。既存 cache はネットワークを使わず同じ検証を行い、有効ならそのまま使います。不正な既存 cache はエラーになり、上書きしません。処理失敗時は fetcher 自身の staging directory を削除します。取得に retry、fallback、認証はありません。
 
-アプリは app bundle の Resources 直下の `clause-tagger` ディレクトリだけを読みます（`LocalClauseTagger.bundledModelDirectory()`）。モデルのダウンロード、別の保存先、パスの設定はありません。bundle にモデルがない場合は初期化エラーです。テストは `LocalClauseTagger(modelDirectory:)` に自分のディレクトリを渡します。
+Core ML の manifest entry は tokenizer.json、ClauseTagger.mlpackage/Manifest.json、ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel、ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin、ClauseTagger.mlpackage/executorch_debug_handle_mapping.json、LICENSE.md です。
+
+[build_app.sh](../scripts/build_app.sh) は Core ML 形式を取得し、ClauseTagger.mlpackage、tokenizer.json、LICENSE.md を app bundle の Resources/clause-tagger に同梱して署名します。runtime は bundle 内の `clause-tagger` だけを読み、実行時にモデルを取得しません。テストは `LocalClauseTagger(modelDirectory:)` に自分の directory を渡します。
+
+アプリのコードは MIT license です。同梱する学習済みモデルは、名大会話コーパスで学習した CC BY-NC-ND 4.0 のモデルで、license は [Hugging Face model repository](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger) にあります。
 
 モデルを更新する手順:
 
-1. 新しいモデルを書き出し、`clause-tagger` ディレクトリに ClauseTagger.mlpackage と tokenizer.json を置いて tar.gz にまとめる。asset 名と tag は model revision の先頭8桁を使う（例: tag `clause-tagger-90501ea3`）。
-2. その tag で GitHub release を作り、archive を asset として登録する。
-3. build_app.sh の tag、asset 名、SHA-256（`shasum -a 256` の値）の3定数を書き換える。
-4. 実モデル parity テストの fixture を新しいモデルで作り直す（[検証と計測](testing.md)）。
+1. 新しい model revision の Core ML と ONNX ファイルを作り、Hugging Face repository の新しい commit に各ファイルと model LICENSE.md を公開します。
+2. 公開した commit の全ファイルについて remote path、local name、byte 数、SHA-256 を検証し、manifest の source commit、model identity/revision、tokenizer SHA-256、両形式の file pins を更新します。
+3. 実モデル parity fixture を更新し、identity と hash を確認してから検証を実行します（[検証と計測](testing.md)）。
 
 ## ポータブル ONNX の書き出し
 
@@ -67,13 +66,11 @@ Windows・Linux 向けの ONNX モデルは [export_clause_tagger_onnx.py](../sc
 - ORT 1.31.0 CPU の出力を、独立に作った mask の eager PyTorch と比較し、長さ 2〜192 のすべてで tokenizer 由来 ID と seed 固定の乱数 ID の両方、各 head の最大絶対誤差が `1e-3` 以下であること。fixture 13件の literal `input_ids` も保存済み確率と `1e-3` 以下で一致すること。
 - mask を長さ 2・64・65・66・128・192 で Transformers の sliding mask と照合し、mask あり・なしの出力差が長い入力で `1e-3` を超えること（mask が効いている証拠）。
 
-出力ディレクトリは ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt の4ファイルです。export.json は hash、パッケージ version、opset、入出力契約、seed、head ごとの最大誤差、通過した検査を記録し、個人の絶対パスを含みません。LICENSE.txt は modernbert-ja-30m（revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`）の MIT license 全文の前に、base model と license URL を1行で記します。
+出力ディレクトリは ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt の4ファイルです。export.json は hash、パッケージ version、opset、入出力契約、seed、head ごとの最大誤差、通過した検査を記録し、個人の絶対パスを含みません。LICENSE.txt は modernbert-ja-30m（revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`）の base model MIT license 全文と、その base model・license URL を記します。学習済みモデルの LICENSE.md は exporter の出力ではなく、Hugging Face repository から別に取得します。
 
 ## ポータブル ONNX の配布
 
-書き出した4ファイルは tar.gz にまとめ、このリポジトリの GitHub release asset として固定します。tag は `clause-tagger-onnx-90501ea3-v1`、asset 名は clause-tagger-onnx-90501ea3-v1.tar.gz で、`90501ea3` は model revision の先頭8桁、`v1` は書き出しの版です。公開済みの asset は置き換えず、再書き出しでは版を上げます。Mac 向けの Core ML release（`clause-tagger-90501ea3`）は別で、変更しません。archive は最上位に `clause-tagger-onnx` ディレクトリを一つだけ持ち、直下に ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt を置きます。
-
-pin は PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) が唯一の情報源です。archive の byte 数と SHA-256、4ファイルの名前・byte 数・SHA-256、model id と revision、tokenizer SHA-256、opset と入出力契約を持ちます。[fetch_clause_tagger.py](../scripts/fetch_clause_tagger.py) が同じ manifest から archive を取得して検証・厳密展開し、`.build/clause-tagger-onnx/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx` に原子的に公開します。Swift の `ClauseTaggerAssets` は caller が渡した directory の4ファイルを manifest と照合し、ONNX モデルの URL、tokenizer の URL、`ClauseTaggerModelIdentity` を返します。アプリや CLI にモデルの探索や自動取得はなく、directory は呼出し側が渡します。取得と検証の詳細は [windows.md](windows.md#発話文タガー-onnx-モデルの取得) にあります。
+ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt、LICENSE.md の5ファイルです。最初の4ファイルは onnx/ 以下に置き、LICENSE.md は repository root から取得します。LICENSE.txt は base model の MIT license、LICENSE.md は学習済みモデルの CC BY-NC-ND 4.0 license です。取得先は `.build/clause-tagger-onnx/<commit>/clause-tagger-onnx` です。Swift の `ClauseTaggerAssets` は manifest の byte 数と SHA-256 を用いてこの directory の5ファイルを全て検証してから推論用 asset を返します。モデルの探索や自動取得は runtime にありません。
 
 ## モデルの検証と推論
 
@@ -81,7 +78,7 @@ pin は PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sour
 
 共通 Core は tokenizer config を schema-directed JSONDecoder で復号し、値ごとの型を調べるために例外を投げて捕捉することなく、有効な tokenizer を復号します。不明・欠落キーや型違いは JSON path 付きで失敗し、文字列の UTF-8／Unicode 表記を保持します。WindowsTokenizerMemoryTests は生成した語彙数 102,400 の完全な config を分離した test child process で実行します。warmup parse 1 回の後の成功 parse 3 回で保持される追加 private memory は 64 MiB 以下とする回帰 assertion です。これは本番の上限ではなく、test を skip／縮小しません。
 
-`.mlpackage` の creator-defined metadata は次の6 key を全て必要とし、値・型を検証します。`model_id` は sbintuitions/modernbert-ja-30m-multitagger、`model_revision` は sorted state-key bytes と tensor bytes から計算した SHA-256 hash の64桁小文字 hex、`training_status` は `trained`、`tokenizer_sha256` は tokenizer.json の生 bytes の SHA-256、`unit_policy` は `btsj-utterance-sentence`、`encoding_revision` は `1` です。モデル ID は外部モデル識別子であり、ローカルのファイルパスではありません。`training_status` が `trained` 以外の package は判定に使用できません。metadata 欠損・不正、tokenizer hash 不一致、型・shape・語彙検証失敗は初期化エラーとなり、境界・優先度の表示は通常の保留状態のままとし、架空確率を記録しません。
+`.mlpackage` の creator-defined metadata は次の6 key を全て必要とし、値・型を検証します。`model_id` は Pokojaka/modernbert-ja-30m-utterance-tagger、`model_revision` は sorted state-key bytes と tensor bytes から計算した SHA-256 hash の64桁小文字 hex、`training_status` は `trained`、`tokenizer_sha256` は tokenizer.json の生 bytes の SHA-256、`unit_policy` は `btsj-utterance-sentence`、`encoding_revision` は `1` です。モデル ID は外部モデル識別子であり、ローカルのファイルパスではありません。`training_status` が `trained` 以外の package は判定に使用できません。metadata 欠損・不正、tokenizer hash 不一致、型・shape・語彙検証失敗は初期化エラーとなり、境界・優先度の表示は通常の保留状態のままとし、架空確率を記録しません。
 
 アプリの `AppState` は Core の [`DecisionProviderFactory`](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionProviderFactory.swift) に同期の `@Sendable () throws -> LoadedDecisionProvider` `loadProvider` closure を渡します。この closure が `LocalClauseTagger` とその identity を `LoadedDecisionProvider` として返します。factory の同期機構は同時要求を一つの load に集約し、load closure を lock の外で一度だけ実行します。成功・失敗のどちらも factory のプロセススコープの寿命中 cache し、throw された CancellationError も再試行せず同じ失敗として返します。`makeCoordinator()` と `localModelIdentity()` は同じ cache を使い、後者は判定 request・利用計数を発生させません。モデルと tokenizer の検証・初期化に失敗しても再ロードや fallback はありません。compile で作る一時 `.mlmodelc` ディレクトリはロード直後に削除します。
 
@@ -89,7 +86,7 @@ pin は PortableRuntime の [clause_tagger_model.json](../app/MacAmbientJev/Sour
 
 Linux / Windows では PortableRuntime の `ONNXClauseTagger` actor（`DecisionProvider`）が同じ判定を担います。`init(modelDirectory:intraOpThreads:)` は throwing で、次の順に一度だけロードします。
 
-1. `ClauseTaggerAssets` が directory の4ファイルを bundled manifest の byte 数と SHA-256 に照合します。
+1. `ClauseTaggerAssets` が directory の5ファイルを bundled manifest の byte 数と SHA-256 に照合します。
 2. 検証済みの tokenizer.json から Core の `ClauseTaggerTokenizer` を、manifest の tokenizer SHA-256 を期待値にして作ります。
 3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
 
@@ -171,7 +168,7 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 
 ## ライブから確定への再利用
 
-確定処理の開始時点でイベントログを読み、その時点で保存済みのライブ優先度 run の classified 判定だけを固定します。その後にライブの判定キューを取り消します。固定より後に保存された結果や未保存の結果は使いません。未完了のライブ run でも保存済みの判定は使えます。再利用するのは、開始 provenance の `model_revision` が確定処理で判定に使う tagger と同じライブ run だけです。revision が違うライブ run の判定は引き継がず、確定処理で判定し直します。
+確定処理の開始時点でイベントログを読み、その時点で保存済みのライブ優先度 run の classified 判定だけを固定します。その後にライブの判定キューを取り消します。固定より後に保存された結果や未保存の結果は使いません。未完了のライブ run でも保存済みの判定は使えます。再利用するのは、開始 provenance の state-hash `model_revision` が確定処理で判定に使う tagger と一致するライブ run だけです。`model_id` は比較しません。revision が異なるライブ run の判定は引き継がず、確定処理で判定し直します。
 
 確定 run とライブ run それぞれの保存 F・B 除去範囲から作った発話文本文が **UTF-8 byte 列で完全一致**する場合だけ、再判定せず優先度を引き継ぎます。各 run 自身の境界 assessment を使って投影し、parts の同一性を本文一致の代用にしません。trim、空白・句読点・Unicode の正規化、類似一致はしません。F・B 除去範囲の位置だけが違って投影本文が同じなら引き継ぎます。同じ本文の判定が複数あればイベント順で最新の classified を使い、後の保留はそれを無効にしません。発話文の parts と ID は確定 ASR と確定の境界判定のもので、ライブの境界判定は確定区間へ移しません。境界判定が成立しなかった確定区間にライブ結果を持ち込みません。
 

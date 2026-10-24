@@ -13,10 +13,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-MODEL_ID = "sbintuitions/modernbert-ja-30m-multitagger"
+MODEL_ID = "Pokojaka/modernbert-ja-30m-utterance-tagger"
 MODEL_REVISION = "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9"
 TOKENIZER_SHA256 = "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
-FIXTURE_SHA256 = "2a359e7f416da5a431c35fe89d6abf8ed413c457c330763b64a59296d273294a"
+FIXTURE_SHA256 = "41650293a866faba413cabaf568807243dc4684f4fca1f9660a0d26ec0860726"
 CONVERTER_SOURCE_SHA256 = "8d2ede7897806df8e03b1aa7ad5adc0b14dacbcab1a1b508245e7522af9c4f3a"
 CONVERTER_LOGICAL_SOURCE = "clf/convert.py"
 MAX_LEN = 192

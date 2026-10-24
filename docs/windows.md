@@ -875,29 +875,36 @@ swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
 
 ## 発話文タガー ONNX モデルの取得
 
-ポータブル ONNX の発話文タガー（Core ML 版と同じ重みと tokenizer の組）は、このリポジトリ（Pokojaka/mac-ambient-jev）の GitHub release に固定した archive です。取得元は tag `clause-tagger-onnx-90501ea3-v1`、asset clause-tagger-onnx-90501ea3-v1.tar.gz（110,829,019 byte、SHA-256 `95985c53bacb0feea79b1f627864026cd22767f44eaf330eb0e5a0b4887ac30d`）です。公開済みの bytes は置き換えず、再書き出しは suffix の `-v<N>` を上げます。pin は Swift と fetcher が共有する唯一の manifest [`clause_tagger_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) にあります。manifest は release の repository・tag・asset・byte 数・SHA-256、model の id・revision・tokenizer SHA-256、ONNX の opset と入出力契約、archive 内4ファイルの名前・byte 数・SHA-256 を持ちます。archive の hash は archive の外にある manifest だけが持ちます。
+ポータブル ONNX 発話文タガーは Hugging Face の [Pokojaka/modernbert-ja-30m-utterance-tagger](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f) の commit `5c0213592cf8d59fc0b665183ab7536ddde05d1f` から取得します。model ID は Pokojaka/modernbert-ja-30m-utterance-tagger、model revision は `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9` です。source commit と model revision は別の識別子で、後者は変更ありません。Swift と fetcher が共有する唯一の pin 情報源は [`clause_tagger_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) です。この manifest が source repository・commit、model identity・tokenizer contract、ONNX の入出力 contract、および Core ML / ONNX 両形式の各ファイルについて remote path・local name・byte count・SHA-256 を記録します。各ファイルの取得 URL は `https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/resolve/<commit>/<path>` です。
 
-| ファイル | byte 数 | SHA-256 |
-| --- | --- | --- |
-| ClauseTagger.onnx | 146,889,561 | `8f9e7d3e4f72f2b7d18db1c59bac6b9506d135f976512ae8afbff1386687b699` |
-| tokenizer.json | 6,724,873 | `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` |
-| export.json | 253,705 | `2d8d8e8585f9d34476d4e1377c8bcf90f47004c1aa4a7efe05f7d05acd292627` |
-| LICENSE.txt | 1,292 | `2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a` |
+tokenizer contract は SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062`、`encodingRevision=1`、`unitPolicy=btsj-utterance-sentence`、`trainingStatus=trained` です。ONNX は opset 18、sequence length `2...192`、入力 `input_ids` int64 `[1,seq]`、出力 `boundary_probs` float32 `[1,seq,2]`、`span_probs` float32 `[1,seq,4]`、`priority_probs` float32 `[1,2]` の契約です。
 
-[`fetch_clause_tagger.py`](../scripts/fetch_clause_tagger.py) は Python 3.12 以上の標準ライブラリのみを使う引数なし fetcher で、[`pinned_download.py`](../scripts/pinned_download.py) を使います。固定の GitHub release URL だけから取得し、retry や代替 URL は使いません。archive の byte 数と SHA-256 を検証してから、保存先の兄弟 staging directory（`.extract-*`）に厳密に展開します。archive 内のパスは最上位の clause-tagger-onnx ディレクトリ直下の4ファイル名だけを受け入れ、絶対 path、backslash、`..` と `.` の要素、symlink・hardlink・特殊ファイル、重複、manifest にないファイル、pin より大きい・小さいファイル、欠けたファイルを拒否します。展開後に各ファイルの byte 数と SHA-256 を再検証し、`os.replace` で原子的に公開して archive を削除します。保存先は `.build/clause-tagger-onnx/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx` で、これは固定の cache 位置であり、実行時のモデル探索ではありません。公開済み directory が既にあれば4ファイルの種類・byte 数・SHA-256 と余分なファイルの不在を検証し、有効ならネットワークを使わずそのまま返します。無効なら削除を促すエラーにし、再ダウンロードで上書きしません。壊れた archive が残っている場合も同様にエラーです。強制終了で残った `.extract-*` は次の実行が削除します。成功時の stdout は検証済み directory の絶対 path 1行だけです。
+| remote path | local name | byteCount | SHA-256 |
+| --- | --- | ---: | --- |
+| onnx/ClauseTagger.onnx | ClauseTagger.onnx | 146,889,562 | `1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782` |
+| onnx/tokenizer.json | tokenizer.json | 6,724,873 | `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` |
+| onnx/export.json | export.json | 253,707 | `c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a` |
+| onnx/LICENSE.txt | LICENSE.txt | 1,292 | `2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a` |
+| LICENSE.md | LICENSE.md | 2,185 | `08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77` |
+
+LICENSE.txt は base model の MIT license、LICENSE.md は名大会話コーパスで学習したモデルの CC BY-NC-ND 4.0 license です。アプリのコードは MIT license であり、モデルの license とは別です。license を含む pinned files は [Hugging Face repository](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f) にあります。
+
+[`fetch_clause_tagger.py`](../scripts/fetch_clause_tagger.py) は Python 3.12 以上の標準ライブラリと [`pinned_download.py`](../scripts/pinned_download.py) を使います。ONNX 形式の各実行で、manifest に固定された Hugging Face URL から5ファイルを取得し、byte count と SHA-256 を検証します。認証 token、retry、fallback は使いません。保存先は `.build/clause-tagger-onnx/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx` です。各ファイルを保存先の sibling `.fetch-*` staging directory に取得し、5つの通常ファイルだけからなる正確な tree と pin を検証してから `os.replace` で原子的に公開します。既存 cache は network access なしで全ファイルと tree を再検証し、有効ならそのまま返します。不正な cache は error となり、修復・上書き・再取得はしません。捕捉した失敗時は fetcher 自身の staging directory だけを削除し、他の staging directory は削除しません。成功時の stdout は検証済み directory の絶対 path 1行だけです。
 
 ```bash
-CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py)"
+CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py --format onnx)"
 ```
 
 ```powershell
-$clauseTaggerLines = @(python scripts/fetch_clause_tagger.py)
-if ($LASTEXITCODE -ne 0) { throw 'Clause tagger fetch failed' }
+$clauseTaggerLines = @(python scripts/fetch_clause_tagger.py --format onnx)
+if ($LASTEXITCODE -ne 0) { throw 'Clause tagger fetch failed: python scripts/fetch_clause_tagger.py --format onnx' }
 if ($clauseTaggerLines.Count -ne 1) { throw 'Clause tagger fetch must return exactly one output line' }
 $clauseTagger = [string]$clauseTaggerLines[0]
 ```
 
-Swift 側は PortableRuntime の `ClauseTaggerAssets(modelDirectory:)` が、caller の渡した絶対 path の既存 directory で4ファイルの通常ファイル型・byte 数・SHA-256（Core の streaming `FileSHA256`）を、他の処理より先に検証します。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名、期待値と実際の値、`python3 scripts/fetch_clause_tagger.py` を含むエラーで失敗し、修復や代替 path はありません。成功すると ONNX モデルの URL、tokenizer の URL、manifest 由来の `ClauseTaggerModelIdentity`（model id、model revision、tokenizer SHA-256）を公開します。実モデルを使うテストは、fetcher が出力した directory を指す必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` を要求します。既定値はなく、未設定・相対 path・存在しない directory は skip ではなく失敗です。
+`--format coreml` は `.build/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger` に Core ML 形式を取得します。Mac の [`build_app.sh`](../scripts/build_app.sh) はこの形式を取得し、アプリ bundle に同梱します。
+
+Swift 側の PortableRuntime `ClauseTaggerAssets(modelDirectory:)` は、caller が指定した絶対 path の既存 directory で5ファイルすべて（LICENSE.md を含む）の通常ファイル型・byte count・SHA-256 を、他の処理より先に検証します。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名、期待値と実際の値、`python3 scripts/fetch_clause_tagger.py --format onnx` を含む error で失敗し、修復や代替 path はありません。成功すると ONNX model URL、tokenizer URL、manifest 由来の `ClauseTaggerModelIdentity`（model ID、model revision、tokenizer SHA-256）を公開します。実モデルを使う test は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` で明示された directory を使います。runtime の環境変数による path 注入に変更はなく、既定値はありません。未設定・相対 path・存在しない directory は skip せず失敗します。
 
 自己 test は次のとおりです。
 
@@ -905,11 +912,11 @@ Swift 側は PortableRuntime の `ClauseTaggerAssets(modelDirectory:)` が、cal
 python3 -B scripts/test_fetch_clause_tagger.py
 ```
 
-fetcher の test は manifest の pin、Swift と同じ manifest ファイルを読むこと（複製がない）、不正な manifest、正常な公開と archive の削除、有効な既存 cache の再利用（ネットワークなし）、破損・不足・余分・symlink の既存 cache の拒否、破損 archive の拒否、残った staging の削除、悪意ある archive（traversal・絶対 path・backslash・link・重複・想定外・サイズ違い・同サイズで内容違い）の拒否を検査します。ネットワークには接続せず、archive は test が作る小さな合成 tar.gz です。Swift の [ClauseTaggerAssetsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ClauseTaggerAssetsTests.swift) は PortableRuntime の test target（Linux / Windows）で、manifest の pin と、小さな stand-in の一時 directory による欠落・サイズ違い・hash 違い・directory・相対 path の拒否を、実モデルなしで検査します。
+fetcher の test は単一 manifest、両形式の pin と URL、不正な manifest、完全な tree の公開、有効な既存 cache の再利用（network access なし）、破損・不足・余分・symlink の既存 cache の拒否、取得・hash・byte count 不一致時の retry なしと staging cleanup を検査します。test は network に接続せず、小さな合成データを使います。Swift の [ClauseTaggerAssetsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ClauseTaggerAssetsTests.swift) は PortableRuntime の test target（Linux / Windows）で、manifest の pin と、小さな stand-in の一時 directory による欠落・サイズ違い・hash 違い・directory・相対 path の拒否を、実モデルなしで検査します。
 
 ## ビルドと検証
 
-Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に、`fetch_clause_tagger.py` の出力（検証済み directory）を `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に設定します。
+Linux / Windows では Core のみの作業を含むすべての `swift build` の前に、リポジトリルートで ONNX Runtime fetch が必要です（Linux: `python3 scripts/fetch_onnxruntime.py`、Windows: `python scripts/fetch_onnxruntime.py`）。Python 3.12 以上を使います。Silero model fetch は build には不要で、`swift test` に必要です。テスト前に `fetch_silero_vad.py` の出力を `MAC_AMBIENT_JEV_SILERO_MODEL` に、`fetch_qwen3_asr_tokenizer.py` の出力を `MAC_AMBIENT_JEV_QWEN3_TOKENIZER` に、`fetch_clause_tagger.py --format onnx` の出力（検証済み directory）を `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に設定します。
 
 Swift 6.2 の Windows toolchain、対応する Visual Studio の C++ Build Tools と Windows SDK、Python 3.12 以上を用意し、リポジトリルートから実行します。全 check、ONNX Runtime SDK 取得、全適用 target の build、DLL 配置、全 test を行うコマンドは次のとおりです。
 
@@ -937,7 +944,7 @@ $qwen3TokenizerPathLines = @(python scripts/fetch_qwen3_asr_tokenizer.py)
 if ($LASTEXITCODE -ne 0) { throw 'Qwen3-ASR tokenizer fetch failed' }
 if ($qwen3TokenizerPathLines.Count -ne 1) { throw 'Qwen3-ASR tokenizer fetch must return exactly one output line' }
 $env:MAC_AMBIENT_JEV_QWEN3_TOKENIZER = [string]$qwen3TokenizerPathLines[0]
-$clauseTaggerPathLines = @(python scripts/fetch_clause_tagger.py)
+$clauseTaggerPathLines = @(python scripts/fetch_clause_tagger.py --format onnx)
 if ($LASTEXITCODE -ne 0) { throw 'Clause tagger fetch failed' }
 if ($clauseTaggerPathLines.Count -ne 1) { throw 'Clause tagger fetch must return exactly one output line' }
 $env:MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY = [string]$clauseTaggerPathLines[0]
@@ -1052,7 +1059,7 @@ PCM chunk 一覧は大文字に変換した名前でも一意である必要が�
 | Silero VAD | `silero/<commit>/silero_vad_16k_op15.onnx` |
 | Qwen3-ASR | `qwen3-asr-<0.6b\|1.7b>-int4-<commit>/`（`fetch_qwen3_asr_model.py <size> <models root>` が作るディレクトリ） |
 | Community-1 | `community1/<同梱マニフェスト bytes の SHA-256>/` |
-| 発話文タガー | `clause-tagger/<release tag>/clause-tagger-onnx/`（decisions 有効時だけ） |
+| 発話文タガー | clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx/（decisions 有効時だけ） |
 
 `PortableProcessingConfiguration.installed(layout:qwen3Size:threads:logicalCPUCount:withDecisions:)` は設定から型付きの configuration を作ります。threads の検証は `resolve` と同じ関数を使い、パスの存在は確認しません。
 

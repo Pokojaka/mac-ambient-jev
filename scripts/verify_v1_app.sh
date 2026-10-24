@@ -20,7 +20,7 @@ if [[ ! -r "$APP_MLX_METALLIB" ]]; then
   exit 1
 fi
 
-for artifact in ClauseTagger.mlpackage tokenizer.json; do
+for artifact in ClauseTagger.mlpackage tokenizer.json LICENSE.md; do
   if [[ ! -e "$APP_CONTENTS/Resources/clause-tagger/$artifact" ]]; then
     echo "Built app is missing the clause tagger model file: $artifact" >&2
     exit 1

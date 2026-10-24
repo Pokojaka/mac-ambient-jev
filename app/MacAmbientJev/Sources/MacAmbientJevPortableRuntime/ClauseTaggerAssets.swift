@@ -11,7 +11,7 @@ enum ClauseTaggerAssetsError: Error, CustomStringConvertible {
     case hashMismatch(name: String, expected: String, actual: String)
     case unreadable(path: String, reason: String)
 
-    static let fetchCommand = "python3 scripts/fetch_clause_tagger.py"
+    static let fetchCommand = "python3 scripts/fetch_clause_tagger.py --format onnx"
 
     var description: String {
         switch self {
@@ -35,16 +35,12 @@ enum ClauseTaggerAssetsError: Error, CustomStringConvertible {
     }
 }
 
-/// The pinned ONNX clause tagger release, decoded from the single `clause_tagger_model.json` resource
+/// The pinned ONNX clause tagger manifest, decoded from the `clause_tagger_model.json` resource
 /// that `scripts/fetch_clause_tagger.py` also reads.
 struct ClauseTaggerManifest: Decodable, Equatable {
-    struct Release: Decodable, Equatable {
+    struct Source: Decodable, Equatable {
         let repository: String
-        let tag: String
-        let asset: String
-        let byteCount: Int
-        let sha256: String
-        let directory: String
+        let commit: String
     }
 
     struct Model: Decodable, Equatable {
@@ -89,17 +85,19 @@ struct ClauseTaggerManifest: Decodable, Equatable {
         case tokenizer
         case export
         case license
+        case modelLicense
     }
 
     struct Member: Decodable, Equatable {
         let role: Role
         let name: String
+        let path: String
         let byteCount: Int
         let sha256: String
     }
 
     let schemaVersion: Int
-    let release: Release
+    let source: Source
     let model: Model
     let onnx: ONNX
     let members: [Member]
@@ -142,16 +140,18 @@ struct ClauseTaggerManifest: Decodable, Equatable {
         guard schemaVersion == 1 else {
             throw ClauseTaggerAssetsError.invalidManifest("unsupported schemaVersion \(schemaVersion)")
         }
-        guard !release.repository.isEmpty, !release.tag.isEmpty,
-              Self.isPlainName(release.asset), Self.isPlainName(release.directory) else {
-            throw ClauseTaggerAssetsError.invalidManifest("release needs a repository, a tag, an asset name and a directory name")
+        guard Self.isSafeRepository(source.repository) else {
+            throw ClauseTaggerAssetsError.invalidManifest("source.repository must be a safe owner/repository")
         }
-        guard release.byteCount > 0, Self.isLowercaseHex(release.sha256, length: 64) else {
-            throw ClauseTaggerAssetsError.invalidManifest("release needs a positive byteCount and a 64-digit lowercase hex sha256")
+        guard Self.isLowercaseHex(source.commit, length: 40) else {
+            throw ClauseTaggerAssetsError.invalidManifest("source.commit must be 40 lowercase hex digits")
         }
-        guard !model.id.isEmpty, Self.isLowercaseHex(model.revision, length: 64),
+        guard model.id == source.repository else {
+            throw ClauseTaggerAssetsError.invalidManifest("model.id must equal source.repository")
+        }
+        guard Self.isLowercaseHex(model.revision, length: 64),
               Self.isLowercaseHex(model.tokenizerSHA256, length: 64) else {
-            throw ClauseTaggerAssetsError.invalidManifest("model needs an id, a 64-digit revision and a 64-digit tokenizerSHA256")
+            throw ClauseTaggerAssetsError.invalidManifest("model needs a 64-digit revision and a 64-digit tokenizerSHA256")
         }
         guard !model.encodingRevision.isEmpty, !model.unitPolicy.isEmpty, !model.trainingStatus.isEmpty else {
             throw ClauseTaggerAssetsError.invalidManifest("model encodingRevision, unitPolicy and trainingStatus must not be empty")
@@ -170,9 +170,21 @@ struct ClauseTaggerManifest: Decodable, Equatable {
         guard Set(members.map(\.name)).count == members.count else {
             throw ClauseTaggerAssetsError.invalidManifest("member names must be unique")
         }
+        guard Set(members.map(\.path)).count == members.count else {
+            throw ClauseTaggerAssetsError.invalidManifest("member paths must be unique")
+        }
         for member in members {
             guard Self.isPlainName(member.name) else {
-                throw ClauseTaggerAssetsError.invalidManifest("member name must be a plain file name: \(member.name)")
+                throw ClauseTaggerAssetsError.invalidManifest("member name must be a plain ASCII file name: \(member.name)")
+            }
+            if member.role == .modelLicense {
+                guard member.name == "LICENSE.md", member.path == "LICENSE.md" else {
+                    throw ClauseTaggerAssetsError.invalidManifest("modelLicense name and path must be LICENSE.md")
+                }
+            } else {
+                guard member.path == "onnx/\(member.name)" else {
+                    throw ClauseTaggerAssetsError.invalidManifest("member \(member.name) path must be onnx/\(member.name)")
+                }
             }
             guard member.byteCount > 0 else {
                 throw ClauseTaggerAssetsError.invalidManifest("member \(member.name) byteCount must be positive")
@@ -186,8 +198,27 @@ struct ClauseTaggerManifest: Decodable, Equatable {
         }
     }
 
+    private static func isSafeRepository(_ repository: String) -> Bool {
+        let components = repository.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2 else { return false }
+        return components.allSatisfy { component in
+            let bytes = component.utf8
+            guard let first = bytes.first, isASCIIAlphanumeric(first) else { return false }
+            return bytes.allSatisfy {
+                isASCIIAlphanumeric($0) || $0 == 0x2e || $0 == 0x5f || $0 == 0x2d
+            }
+        }
+    }
+
     private static func isPlainName(_ name: String) -> Bool {
-        !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\\")
+        guard !name.isEmpty, name != ".", name != ".." else { return false }
+        return name.utf8.allSatisfy {
+            isASCIIAlphanumeric($0) || $0 == 0x2e || $0 == 0x5f || $0 == 0x2d
+        }
+    }
+
+    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a)
     }
 
     private static func isLowercaseHex(_ text: String, length: Int) -> Bool {

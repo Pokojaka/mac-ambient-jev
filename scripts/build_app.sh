@@ -18,50 +18,23 @@ if [[ ! -r "$ICON_SOURCE" ]]; then
   exit 1
 fi
 
-CLAUSE_TAGGER_TAG="clause-tagger-90501ea3"
-CLAUSE_TAGGER_REPO="Pokojaka/mac-ambient-jev"
-CLAUSE_TAGGER_ASSET="clause-tagger-90501ea3.tar.gz"
-CLAUSE_TAGGER_SHA256="362a7bbe456ff65f211eb99ca15cee409dd0b550761010080bcca9401ccc3588"
-CLAUSE_TAGGER_CACHE="$ROOT/.build/clause-tagger"
-CLAUSE_TAGGER_ARCHIVE="$CLAUSE_TAGGER_CACHE/$CLAUSE_TAGGER_ASSET"
-
-verify_clause_tagger_archive() {
-  local actual
-  actual="$(shasum -a 256 "$1" | cut -d ' ' -f 1)"
-  if [[ "$actual" != "$CLAUSE_TAGGER_SHA256" ]]; then
-    echo "Clause tagger archive checksum mismatch: $1" >&2
-    echo "expected $CLAUSE_TAGGER_SHA256, got $actual." >&2
-    return 1
-  fi
-}
-
-if [[ -f "$CLAUSE_TAGGER_ARCHIVE" ]]; then
-  if ! verify_clause_tagger_archive "$CLAUSE_TAGGER_ARCHIVE"; then
-    echo "Delete the cached archive and build again." >&2
-    exit 1
-  fi
-else
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "GitHub CLI (gh) is required to download the clause tagger model $CLAUSE_TAGGER_ASSET. Install gh and run gh auth login." >&2
-    exit 1
-  fi
-  mkdir -p "$CLAUSE_TAGGER_CACHE"
-  # Downloading next to the cache lets the verified archive be renamed into place atomically.
-  CLAUSE_TAGGER_DOWNLOAD="$(mktemp -d "$CLAUSE_TAGGER_CACHE/download.XXXXXX")"
-  trap 'rm -rf "$CLAUSE_TAGGER_DOWNLOAD"' EXIT
-  gh release download "$CLAUSE_TAGGER_TAG" --repo "$CLAUSE_TAGGER_REPO" \
-    --pattern "$CLAUSE_TAGGER_ASSET" --dir "$CLAUSE_TAGGER_DOWNLOAD"
-  verify_clause_tagger_archive "$CLAUSE_TAGGER_DOWNLOAD/$CLAUSE_TAGGER_ASSET"
-  mv "$CLAUSE_TAGGER_DOWNLOAD/$CLAUSE_TAGGER_ASSET" "$CLAUSE_TAGGER_ARCHIVE"
-  rmdir "$CLAUSE_TAGGER_DOWNLOAD"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Python 3.12 or newer (python3) is required to fetch the clause tagger." >&2
+  exit 1
+fi
+if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 12))'; then
+  echo "Python 3.12 or newer is required to fetch the clause tagger." >&2
+  exit 1
 fi
 
-CLAUSE_TAGGER_EXTRACT="$(mktemp -d)"
-trap 'rm -rf "$CLAUSE_TAGGER_EXTRACT"' EXIT
-tar -xzf "$CLAUSE_TAGGER_ARCHIVE" -C "$CLAUSE_TAGGER_EXTRACT"
-for artifact in ClauseTagger.mlpackage tokenizer.json; do
-  if [[ ! -e "$CLAUSE_TAGGER_EXTRACT/clause-tagger/$artifact" ]]; then
-    echo "Clause tagger archive does not contain clause-tagger/$artifact" >&2
+CLAUSE_TAGGER_DIRECTORY="$(python3 -B "$ROOT/scripts/fetch_clause_tagger.py" --format coreml)"
+if [[ "$CLAUSE_TAGGER_DIRECTORY" != /* || ! -d "$CLAUSE_TAGGER_DIRECTORY" ]]; then
+  echo "Clause tagger fetcher did not return an absolute existing directory: $CLAUSE_TAGGER_DIRECTORY" >&2
+  exit 1
+fi
+for artifact in ClauseTagger.mlpackage tokenizer.json LICENSE.md; do
+  if [[ ! -e "$CLAUSE_TAGGER_DIRECTORY/$artifact" ]]; then
+    echo "Clause tagger directory is missing required artifact $artifact: $CLAUSE_TAGGER_DIRECTORY" >&2
     exit 1
   fi
 done
@@ -104,7 +77,7 @@ for bundle in "${RESOURCE_BUNDLES[@]}"; do
   cp -R "$bundle" "$RESOURCES/"
 done
 
-cp -R "$CLAUSE_TAGGER_EXTRACT/clause-tagger" "$RESOURCES/clause-tagger"
+cp -R "$CLAUSE_TAGGER_DIRECTORY" "$RESOURCES/clause-tagger"
 
 bash "$ROOT/scripts/app_info_plist.sh" > "$CONTENTS/Info.plist"
 

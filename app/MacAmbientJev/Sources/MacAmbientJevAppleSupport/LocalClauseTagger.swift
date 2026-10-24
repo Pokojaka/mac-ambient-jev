@@ -20,7 +20,7 @@ public actor LocalClauseTagger: DecisionProvider {
         identity = loadedModel.identity
     }
 
-    /// The model inside the app bundle, where `scripts/build_app.sh` places the pinned release asset.
+    /// The model inside the app bundle, where `scripts/build_app.sh` places the pinned Hugging Face Core ML files and model license.
     public static func bundledModelDirectory() throws -> URL {
         guard let resources = Bundle.main.resourceURL else {
             throw ClauseTaggerModelError.unavailable("アプリの Resources フォルダーを特定できません。")

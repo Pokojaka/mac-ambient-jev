@@ -443,7 +443,7 @@ func stoppedLiveQueueDropsALateResponseAndKeepsSavedResults(holdingPriority: Boo
 
 @Test(.timeLimit(.minutes(10)))
 func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async throws {
-    let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
+    let modelID = "Pokojaka/modernbert-ja-30m-utterance-tagger"
     let revision = String(repeating: "a", count: 64)
     let counter = DecisionUsageCounter()
     let provider = FixedResponseProvider()
@@ -511,7 +511,7 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
 
 @Test(.timeLimit(.minutes(10)))
 func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
-    let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
+    let modelID = "Pokojaka/modernbert-ja-30m-utterance-tagger"
     let revision = String(repeating: "a", count: 64)
     let counter = DecisionUsageCounter()
     let provider = FixedResponseProvider()

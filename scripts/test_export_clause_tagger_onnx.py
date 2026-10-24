@@ -360,6 +360,30 @@ class InputIdValidationTests(unittest.TestCase):
 
 
 class FixtureValidationTests(unittest.TestCase):
+    def test_pinned_model_identity_and_state_revision(self) -> None:
+        self.assertEqual(exporter.MODEL_ID, "Pokojaka/modernbert-ja-30m-utterance-tagger")
+        self.assertEqual(
+            exporter.IDENTITY["model_id"],
+            "Pokojaka/modernbert-ja-30m-utterance-tagger",
+        )
+        self.assertEqual(
+            exporter.MODEL_REVISION,
+            "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
+        )
+
+    def test_repository_fixture_digest_and_document_are_pinned_and_valid(self) -> None:
+        fixture_path = (
+            Path(exporter.__file__).resolve().parent.parent
+            / "app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerFixtures.json"
+        )
+        self.assertEqual(
+            exporter.FIXTURE_SHA256,
+            "41650293a866faba413cabaf568807243dc4684f4fca1f9660a0d26ec0860726",
+        )
+        self.assertEqual(exporter.sha256_file(fixture_path), exporter.FIXTURE_SHA256)
+        document = json.loads(fixture_path.read_text(encoding="utf-8"))
+        exporter.validate_fixture_document(document)
+
     def test_thirteen_case_document_with_all_identity_and_heads_is_accepted(self) -> None:
         document = fixture_document()
         self.assertEqual(len(exporter.IDENTITY), 6)

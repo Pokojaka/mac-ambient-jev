@@ -25,7 +25,7 @@ Linux と Windows で `MacAmbientJevProcessRecording` を ONNX engine で動か�
 | --- | --- |
 | 音声 | `qwen3_asr_voicevox_long.wav`（18.464 秒、VOICEVOX:ずんだもん）。参照文と SHA-256 は [windows.md](../windows.md) の表 |
 | ASR | Qwen3-ASR 0.6B int4（ONNX）、intra-op 2 threads |
-| VAD / 話者分離 / 発話文判定 | Silero VAD ONNX、Community-1 ONNX、clause tagger ONNX（`clause-tagger-onnx-90501ea3-v1`） |
+| VAD / 話者分離 / 発話文判定 | Silero VAD ONNX、Community-1 ONNX、clause tagger ONNX（state revision `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9`） |
 | CLI | `--keep-session --with-decisions --threads 2` で import、モデルの環境変数を外して inspect、同じ session を resume |
 | ONNX Runtime | 1.31.0 CPU EP |
 

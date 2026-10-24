@@ -23,6 +23,11 @@ jobs:
           python-version: "3.13"
       - name: Install artifact validation dependency
         run: python3 -m pip install regex
+      - name: Test ClauseTagger artifact scripts
+        run: |
+          python3 -B scripts/test_fetch_clause_tagger.py
+          python3 -B scripts/test_export_clause_tagger_onnx.py
+          python3 -B scripts/test_build_app.py
       - name: Swift version
         run: swift --version
       - name: Cache SwiftPM sources
@@ -41,6 +46,9 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
       - name: Swift version
         run: swift --version
       - name: Install the Metal toolchain
@@ -74,6 +82,4 @@ jobs:
             app/MacAmbientJev/.build/workspace-state.json
           key: swiftpm-sources-${{ runner.os }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}
       - name: Verify V1 app
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: bash scripts/verify_v1_app.sh

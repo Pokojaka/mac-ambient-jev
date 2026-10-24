@@ -191,7 +191,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          model="$(python3 scripts/fetch_clause_tagger.py)"
+          model="$(python3 scripts/fetch_clause_tagger.py --format onnx)"
           printf 'MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY=%s\n' "$model" >> "$GITHUB_ENV"
       - name: Check FLAC
         run: |

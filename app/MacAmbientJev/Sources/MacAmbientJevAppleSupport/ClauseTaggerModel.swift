@@ -172,7 +172,7 @@ public final class ClauseTaggerModel {
               let tokenizerSHA256 = creatorMetadata["tokenizer_sha256"] as? String,
               let unitPolicy = creatorMetadata["unit_policy"] as? String,
               let encodingRevision = creatorMetadata["encoding_revision"] as? String,
-              modelID == "sbintuitions/modernbert-ja-30m-multitagger",
+              modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger",
               trainingStatus == "trained",
               Self.isLowercaseHex(tokenizerSHA256, length: 64),
               unitPolicy == "btsj-utterance-sentence",

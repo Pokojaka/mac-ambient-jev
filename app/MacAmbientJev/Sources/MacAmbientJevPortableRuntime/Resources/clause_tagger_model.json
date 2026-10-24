@@ -1,15 +1,11 @@
 {
   "schemaVersion": 1,
-  "release": {
-    "repository": "Pokojaka/mac-ambient-jev",
-    "tag": "clause-tagger-onnx-90501ea3-v1",
-    "asset": "clause-tagger-onnx-90501ea3-v1.tar.gz",
-    "byteCount": 110829019,
-    "sha256": "95985c53bacb0feea79b1f627864026cd22767f44eaf330eb0e5a0b4887ac30d",
-    "directory": "clause-tagger-onnx"
+  "source": {
+    "repository": "Pokojaka/modernbert-ja-30m-utterance-tagger",
+    "commit": "5c0213592cf8d59fc0b665183ab7536ddde05d1f"
   },
   "model": {
-    "id": "sbintuitions/modernbert-ja-30m-multitagger",
+    "id": "Pokojaka/modernbert-ja-30m-utterance-tagger",
     "revision": "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
     "tokenizerSHA256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
     "encodingRevision": "1",
@@ -33,26 +29,81 @@
     {
       "role": "model",
       "name": "ClauseTagger.onnx",
-      "byteCount": 146889561,
-      "sha256": "8f9e7d3e4f72f2b7d18db1c59bac6b9506d135f976512ae8afbff1386687b699"
+      "path": "onnx/ClauseTagger.onnx",
+      "byteCount": 146889562,
+      "sha256": "1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782"
     },
     {
       "role": "tokenizer",
       "name": "tokenizer.json",
+      "path": "onnx/tokenizer.json",
       "byteCount": 6724873,
       "sha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
     },
     {
       "role": "export",
       "name": "export.json",
-      "byteCount": 253705,
-      "sha256": "2d8d8e8585f9d34476d4e1377c8bcf90f47004c1aa4a7efe05f7d05acd292627"
+      "path": "onnx/export.json",
+      "byteCount": 253707,
+      "sha256": "c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a"
     },
     {
       "role": "license",
       "name": "LICENSE.txt",
+      "path": "onnx/LICENSE.txt",
       "byteCount": 1292,
       "sha256": "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a"
+    },
+    {
+      "role": "modelLicense",
+      "name": "LICENSE.md",
+      "path": "LICENSE.md",
+      "byteCount": 2185,
+      "sha256": "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77"
+    }
+  ],
+  "coremlMembers": [
+    {
+      "role": "tokenizer",
+      "name": "tokenizer.json",
+      "path": "coreml/tokenizer.json",
+      "byteCount": 6724873,
+      "sha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
+    },
+    {
+      "role": "packageManifest",
+      "name": "ClauseTagger.mlpackage/Manifest.json",
+      "path": "coreml/ClauseTagger.mlpackage/Manifest.json",
+      "byteCount": 617,
+      "sha256": "52c8e4a83a0b4b1f533cc1606e198fbaba9b235898c7dde6eda2c301c79b3182"
+    },
+    {
+      "role": "model",
+      "name": "ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "path": "coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "byteCount": 134272,
+      "sha256": "200affa73898c875c5aac52401fadf601779af28a50662edac9c47b084edbb45"
+    },
+    {
+      "role": "weights",
+      "name": "ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "path": "coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "byteCount": 146847424,
+      "sha256": "e21ddf63a223e859be6b1051e326362c12fabd4cdc8c8f4cb0c18a7e657d220d"
+    },
+    {
+      "role": "debugMapping",
+      "name": "ClauseTagger.mlpackage/executorch_debug_handle_mapping.json",
+      "path": "coreml/ClauseTagger.mlpackage/executorch_debug_handle_mapping.json",
+      "byteCount": 147654,
+      "sha256": "6e741f4ba9d007e49b98aa31f8db7164763660f04df3e6d92b015913f0451f44"
+    },
+    {
+      "role": "modelLicense",
+      "name": "LICENSE.md",
+      "path": "LICENSE.md",
+      "byteCount": 2185,
+      "sha256": "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77"
     }
   ]
 }

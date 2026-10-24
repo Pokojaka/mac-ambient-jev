@@ -4,20 +4,16 @@ import Testing
 @testable import MacAmbientJevPortableRuntime
 
 struct ClauseTaggerAssetsTests {
-    @Test func bundledManifestPinsTheReleaseAndTheFourMembers() throws {
+    @Test func bundledManifestPinsTheSourceAndFiveMembers() throws {
         let manifest = try ClauseTaggerManifest.bundled()
 
         #expect(manifest.schemaVersion == 1)
-        #expect(manifest.release == .init(
-            repository: "Pokojaka/mac-ambient-jev",
-            tag: "clause-tagger-onnx-90501ea3-v1",
-            asset: "clause-tagger-onnx-90501ea3-v1.tar.gz",
-            byteCount: 110_829_019,
-            sha256: "95985c53bacb0feea79b1f627864026cd22767f44eaf330eb0e5a0b4887ac30d",
-            directory: "clause-tagger-onnx"
+        #expect(manifest.source == .init(
+            repository: "Pokojaka/modernbert-ja-30m-utterance-tagger",
+            commit: "5c0213592cf8d59fc0b665183ab7536ddde05d1f"
         ))
         #expect(manifest.model == .init(
-            id: "sbintuitions/modernbert-ja-30m-multitagger",
+            id: "Pokojaka/modernbert-ja-30m-utterance-tagger",
             revision: "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
             tokenizerSHA256: "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
             encodingRevision: "1",
@@ -37,20 +33,25 @@ struct ClauseTaggerAssetsTests {
         ])
         #expect(manifest.members == [
             .init(
-                role: .model, name: "ClauseTagger.onnx", byteCount: 146_889_561,
-                sha256: "8f9e7d3e4f72f2b7d18db1c59bac6b9506d135f976512ae8afbff1386687b699"
+                role: .model, name: "ClauseTagger.onnx", path: "onnx/ClauseTagger.onnx",
+                byteCount: 146_889_562,
+                sha256: "1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782"
             ),
             .init(
-                role: .tokenizer, name: "tokenizer.json", byteCount: 6_724_873,
+                role: .tokenizer, name: "tokenizer.json", path: "onnx/tokenizer.json", byteCount: 6_724_873,
                 sha256: "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
             ),
             .init(
-                role: .export, name: "export.json", byteCount: 253_705,
-                sha256: "2d8d8e8585f9d34476d4e1377c8bcf90f47004c1aa4a7efe05f7d05acd292627"
+                role: .export, name: "export.json", path: "onnx/export.json", byteCount: 253_707,
+                sha256: "c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a"
             ),
             .init(
-                role: .license, name: "LICENSE.txt", byteCount: 1_292,
+                role: .license, name: "LICENSE.txt", path: "onnx/LICENSE.txt", byteCount: 1_292,
                 sha256: "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a"
+            ),
+            .init(
+                role: .modelLicense, name: "LICENSE.md", path: "LICENSE.md", byteCount: 2_185,
+                sha256: "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77"
             )
         ])
     }
@@ -58,7 +59,7 @@ struct ClauseTaggerAssetsTests {
     @Test func pinnedIdentityCarriesTheModelRevisionAndTokenizerHash() throws {
         let identity = try ClauseTaggerAssets.pinnedIdentity()
 
-        #expect(identity.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
+        #expect(identity.modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger")
         #expect(identity.revision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
         #expect(identity.tokenizerSHA256 == "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062")
     }
@@ -93,7 +94,37 @@ struct ClauseTaggerAssetsTests {
             return
         }
         #expect(name == "export.json")
-        #expect(error.description.contains("python3 scripts/fetch_clause_tagger.py"))
+        #expect(error.description.contains("python3 scripts/fetch_clause_tagger.py --format onnx"))
+    }
+
+    @Test func missingModelLicenseIsRejected() throws {
+        let directory = try makeModelDirectory()
+        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
+        try FileManager.default.removeItem(at: directory.root.appendingPathComponent("LICENSE.md"))
+
+        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
+        guard case let .missingFile(name, _) = error else {
+            Issue.record("expected missingFile, got \(error)")
+            return
+        }
+        #expect(name == "LICENSE.md")
+    }
+
+    @Test func corruptModelLicenseIsRejected() throws {
+        let directory = try makeModelDirectory()
+        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
+        let original = try #require(directory.payloads["LICENSE.md"])
+        let tampered = Data(original.map { $0 ^ 0xFF })
+        try tampered.write(to: directory.root.appendingPathComponent("LICENSE.md"))
+
+        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
+        guard case let .hashMismatch(name, expected, actual) = error else {
+            Issue.record("expected hashMismatch, got \(error)")
+            return
+        }
+        #expect(name == "LICENSE.md")
+        #expect(expected == FileSHA256.hexDigest(of: original))
+        #expect(actual == FileSHA256.hexDigest(of: tampered))
     }
 
     @Test func wrongSizeMemberReportsExpectedAndActualSizes() throws {
@@ -110,7 +141,7 @@ struct ClauseTaggerAssetsTests {
         #expect(name == "tokenizer.json")
         #expect(expected == directory.payloads["tokenizer.json"]?.count)
         #expect(actual == "longer tokenizer stand-in".utf8.count)
-        #expect(error.description.contains("python3 scripts/fetch_clause_tagger.py"))
+        #expect(error.description.contains("python3 scripts/fetch_clause_tagger.py --format onnx"))
     }
 
     @Test func sameSizeDifferentContentReportsBothHashes() throws {
@@ -166,40 +197,54 @@ struct ClauseTaggerAssetsTests {
     @Test func invalidManifestsAreRejected() throws {
         let valid = try ClauseTaggerManifest.bundled()
         func with(
-            release: ClauseTaggerManifest.Release? = nil,
+            source: ClauseTaggerManifest.Source? = nil,
             model: ClauseTaggerManifest.Model? = nil,
             members: [ClauseTaggerManifest.Member]? = nil,
             schemaVersion: Int = 1
         ) -> ClauseTaggerManifest {
             .init(
-                schemaVersion: schemaVersion, release: release ?? valid.release, model: model ?? valid.model,
+                schemaVersion: schemaVersion, source: source ?? valid.source, model: model ?? valid.model,
                 onnx: valid.onnx, members: members ?? valid.members
             )
         }
-        func member(_ index: Int, name: String? = nil, byteCount: Int? = nil, sha256: String? = nil) -> [ClauseTaggerManifest.Member] {
+        func member(
+            _ index: Int, name: String? = nil, path: String? = nil,
+            byteCount: Int? = nil, sha256: String? = nil
+        ) -> [ClauseTaggerManifest.Member] {
             var copy = valid.members
             let old = copy[index]
             copy[index] = .init(
-                role: old.role, name: name ?? old.name, byteCount: byteCount ?? old.byteCount, sha256: sha256 ?? old.sha256
+                role: old.role, name: name ?? old.name, path: path ?? old.path,
+                byteCount: byteCount ?? old.byteCount, sha256: sha256 ?? old.sha256
             )
             return copy
         }
         let invalid: [(String, ClauseTaggerManifest)] = [
             ("schema version", with(schemaVersion: 2)),
             ("missing role", with(members: Array(valid.members.dropLast()))),
+            ("missing model license", with(members: valid.members.filter { $0.role != .modelLicense })),
             ("duplicate role", with(members: valid.members + [valid.members[0]])),
+            ("duplicate member name", with(members: member(1, name: valid.members[0].name))),
+            ("duplicate member path", with(members: member(1, path: valid.members[0].path))),
             ("path in name", with(members: member(0, name: "../x"))),
+            ("non-ASCII name", with(members: member(0, name: "モデル.onnx"))),
             ("backslash in name", with(members: member(0, name: "a\\b"))),
+            ("invalid member path", with(members: member(0, path: "onnx/../ClauseTagger.onnx"))),
             ("uppercase sha", with(members: member(0, sha256: valid.members[0].sha256.uppercased()))),
             ("zero size", with(members: member(0, byteCount: 0))),
             ("tokenizer hash differs from model", with(members: member(1, sha256: String(repeating: "a", count: 64)))),
+            ("invalid source commit", with(source: .init(
+                repository: valid.source.repository, commit: String(repeating: "g", count: 40)
+            ))),
+            ("invalid source repository", with(source: .init(repository: "unsafe/repo/extra", commit: valid.source.commit))),
+            ("model id differs from source", with(model: .init(
+                id: "another/repository", revision: valid.model.revision,
+                tokenizerSHA256: valid.model.tokenizerSHA256, encodingRevision: "1",
+                unitPolicy: valid.model.unitPolicy, trainingStatus: "trained"
+            ))),
             ("short revision", with(model: .init(
                 id: valid.model.id, revision: "abc", tokenizerSHA256: valid.model.tokenizerSHA256,
                 encodingRevision: "1", unitPolicy: valid.model.unitPolicy, trainingStatus: "trained"
-            ))),
-            ("zero release size", with(release: .init(
-                repository: valid.release.repository, tag: valid.release.tag, asset: valid.release.asset,
-                byteCount: 0, sha256: valid.release.sha256, directory: valid.release.directory
             )))
         ]
         for (name, manifest) in invalid {
@@ -245,7 +290,8 @@ struct ClauseTaggerAssetsTests {
             try payload.write(to: root.appendingPathComponent(member.name))
             payloads[member.name] = payload
             members.append(.init(
-                role: member.role, name: member.name, byteCount: payload.count, sha256: FileSHA256.hexDigest(of: payload)
+                role: member.role, name: member.name, path: member.path,
+                byteCount: payload.count, sha256: FileSHA256.hexDigest(of: payload)
             ))
         }
         guard let tokenizerHash = members.first(where: { $0.role == .tokenizer })?.sha256 else {
@@ -259,7 +305,7 @@ struct ClauseTaggerAssetsTests {
         return ModelDirectory(
             root: root,
             manifest: .init(
-                schemaVersion: bundled.schemaVersion, release: bundled.release, model: model,
+                schemaVersion: bundled.schemaVersion, source: bundled.source, model: model,
                 onnx: bundled.onnx, members: members
             ),
             payloads: payloads
