@@ -15,9 +15,11 @@ struct EngineProtocolDocumentationTests {
 
         #expect(documentedCorpus == fixture)
         let coverage = try decodeCorpus(documentedCorpus)
-        #expect(coverage.recordCount == 46)
-        #expect(coverage.requestCommands.count == 16)
-        #expect(coverage.completedCommands.count == 16)
+        #expect(coverage.recordCount == 70)
+        #expect(coverage.requestCommands.count == 20)
+        #expect(coverage.completedCommands.count == 20)
+        #expect(coverage.requestCommands.contains(EngineCommandName.transcriptRowDetails.rawValue))
+        #expect(coverage.completedCommands.contains(EngineCommandName.transcriptRowDetails.rawValue))
         #expect(coverage.eventNames.count == 7)
         #expect(coverage.rowKinds.count == 3)
         #expect(coverage.requestCommands == Set(EngineCommandName.allCases.map(\.rawValue)))
@@ -49,11 +51,16 @@ struct EngineProtocolDocumentationTests {
             EngineSetupStatus.allCases.map(\.rawValue),
             EngineRecoveryStatus.allCases.map(\.rawValue),
             EngineRecordingPhase.allCases.map(\.rawValue),
+            EngineRecordingTone.allCases.map(\.rawValue),
+            EnginePreparationPhase.allCases.map(\.rawValue),
             EngineUnavailableCapability.allCases.map(\.rawValue),
+            EngineDiagnosticsScope.allCases.map(\.rawValue),
+            ["available", "unavailable", "validated", "invalid"],
             EngineSessionStatus.allCases.map(\.rawValue),
             EngineSpeakerLabel.allCases.map(\.rawValue),
             EngineClauseState.allCases.map(\.rawValue),
             EngineRowsKind.allCases.map(\.rawValue),
+            EngineProcessingIndicator.allCases.map(\.rawValue),
         ].flatMap { $0 }
         for rawValue in documentedRawValues {
             #expect(section.contains("`\(rawValue)`"), "Missing documented raw value `\(rawValue)`")

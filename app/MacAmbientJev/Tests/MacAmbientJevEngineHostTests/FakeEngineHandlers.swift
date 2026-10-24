@@ -76,6 +76,26 @@ final class FakeEngineHandlers:
         return try sampleState(revision: 1)
     }
 
+    func diagnostics(context: EngineRequestContext) async throws -> EngineDiagnosticsResult {
+        try await enter("diagnostics.get")
+        return EngineDiagnosticsResult(
+            scope: .engineProcess,
+            decisionUsage: .unavailable(try EngineFailure(
+                code: .internalError,
+                message: "テスト用の診断情報を利用できません",
+                stage: .decisions,
+                requestID: nil,
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .retry,
+                details: [],
+                cleanupErrors: []
+            )),
+            automaticInputVolume: .none,
+            thermalMonitoring: .none
+        )
+    }
+
     func devices(_ payload: EngineDevicesListPayload, context: EngineRequestContext) async throws -> EngineDevicesResult {
         try await enter("devices.list")
         return try EngineDevicesResult(source: payload.source, devices: [], defaultDeviceID: nil)
@@ -106,9 +126,29 @@ final class FakeEngineHandlers:
         return payload
     }
 
+    func inspect(_ payload: EngineSessionInspectPayload, context: EngineRequestContext) async throws -> EngineSessionSummary {
+        try await enter("session.inspect")
+        return try EngineSessionSummary(
+            folderID: payload.folderID,
+            sessionID: "session-1",
+            status: .finalized,
+            error: nil,
+            displayName: "保存済み録音",
+            statusText: "文字起こしあり",
+            folderPath: "/sessions/\(payload.folderID)",
+            exportPath: nil,
+            canReprocess: true,
+            canRetryDecisions: false,
+            canExport: true,
+            metadata: .readable(
+                createdAt: 1700000000, source: .microphone, audio: .available, hasTranscript: true
+            )
+        )
+    }
+
     func list(_ payload: EngineSessionListPayload, context: EngineRequestContext) async throws -> EngineSessionListResult {
         try await enter("session.list")
-        return try EngineSessionListResult(sessions: [], nextCursor: nil)
+        return try EngineSessionListResult(sessions: [], nextCursor: nil, previousCursor: nil)
     }
 
     func export(_ payload: EngineExportPayload, context: EngineRequestContext) async throws -> EngineExportResult {
@@ -118,12 +158,29 @@ final class FakeEngineHandlers:
 
     func read(_ payload: EngineTranscriptReadPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
         try await enter("transcript.read")
-        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil)
+        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil, previousCursor: nil)
     }
 
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
         try await enter("transcript.watch")
-        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil)
+        return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil, previousCursor: nil)
+    }
+
+    func rowDetails(
+        _ payload: EngineTranscriptRowDetailsPayload,
+        context: EngineRequestContext
+    ) async throws -> EngineTranscriptRowDetailsPage {
+        try await enter("transcript.row_details")
+        return try EngineTranscriptRowDetailsPage(
+            sessionID: payload.sessionID,
+            revision: payload.revision,
+            rowID: payload.rowID,
+            clauseState: .classified,
+            clauseStateText: "発話文: 判定済み",
+            speakers: [],
+            nextCursor: nil,
+            previousCursor: nil
+        )
     }
 
     func get(context: EngineRequestContext) async throws -> EngineSettingsResult {
@@ -144,6 +201,21 @@ final class FakeEngineHandlers:
                 requestID: context.requestID
             )
         }
+    }
+
+    func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection {
+        try await enter("models.inspect")
+        return EngineModelsInspection(clauseTagger: .invalid(try EngineFailure(
+            code: .modelMissing,
+            message: "テスト用の発話文モデルがありません",
+            stage: .validatingModels,
+            requestID: nil,
+            sessionID: nil,
+            severity: .error,
+            recoveryAction: .prepareModels,
+            details: [],
+            cleanupErrors: []
+        )))
     }
 
     func shutdown(reason: EngineShutdownReason) async throws {

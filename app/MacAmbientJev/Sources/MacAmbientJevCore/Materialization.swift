@@ -142,6 +142,15 @@ public enum TranscriptClauseState: String, Codable, Sendable, Equatable {
     /// Every boundary is known, but a clause has no priority yet.
     case priorityPending = "priority_pending"
     case classified
+
+    public var rowDetailsDescription: String {
+        switch self {
+        case .awaitingNextSegment: "発話文: 続き待ち"
+        case .boundaryPending: "発話文: 境界判定を保留中"
+        case .priorityPending: "発話文: 優先度判定を待っています"
+        case .classified: "発話文: 判定済み"
+        }
+    }
 }
 
 /// The part of one clause inside one row.

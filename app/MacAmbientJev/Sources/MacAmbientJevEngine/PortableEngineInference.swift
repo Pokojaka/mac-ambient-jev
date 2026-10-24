@@ -10,6 +10,28 @@ import MacAmbientJevPortableRuntime
 struct PortableEngineInference: EngineInferenceProviding {
     let layout: PortableInstalledModelLayout
     let logicalCPUCount: Int
+    let clauseTaggerInspection: PortableClauseTaggerInspection
+    let usageCounter = DecisionUsageCounter()
+
+    init(layout: PortableInstalledModelLayout, logicalCPUCount: Int) {
+        self.init(
+            layout: layout,
+            logicalCPUCount: logicalCPUCount,
+            clauseTaggerInspection: PortableClauseTaggerInspection(
+                modelDirectory: { try layout.clauseTaggerDirectory() }
+            )
+        )
+    }
+
+    init(
+        layout: PortableInstalledModelLayout,
+        logicalCPUCount: Int,
+        clauseTaggerInspection: PortableClauseTaggerInspection
+    ) {
+        self.layout = layout
+        self.logicalCPUCount = logicalCPUCount
+        self.clauseTaggerInspection = clauseTaggerInspection
+    }
 
     func configuration(for settings: EngineSettings) throws -> PortableProcessingConfiguration {
         guard let size = Qwen3ASRModelSize(rawValue: settings.asrSize.rawValue) else {
@@ -39,15 +61,40 @@ struct PortableEngineInference: EngineInferenceProviding {
                 onProgress(EngineModelProgress(stage: stage, completed: progress.completed, total: progress.total))
             }
         } catch let error as PortableModelPreparationError {
-            let code: EngineErrorCode
-            switch error {
-            case .missing: code = .modelMissing
-            case .invalid: code = .modelCorrupt
-            case .loadFailed: code = .modelFailure
-            }
+            throw Self.modelError(error)
+        }
+    }
+
+    static func modelError(_ error: PortableModelPreparationError) -> EngineAdapterError {
+        let code: EngineErrorCode
+        switch error {
+        case .missing: code = .modelMissing
+        case .invalid: code = .modelCorrupt
+        case .loadFailed: code = .modelFailure
+        }
+        return EngineAdapterError(
+            code: code, message: error.localizedDescription, recoveryAction: .prepareModels,
+            details: [EngineAdapterError.detail(domain: "models", code: error.model.rawValue, message: error.localizedDescription)]
+        )
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        await usageCounter.snapshot()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        do {
+            return try await clauseTaggerInspection.inspect()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as PortableModelPreparationError {
+            throw Self.modelError(error)
+        } catch {
             throw EngineAdapterError(
-                code: code, message: error.localizedDescription, recoveryAction: .prepareModels,
-                details: [EngineAdapterError.detail(domain: "models", code: error.model.rawValue, message: error.localizedDescription)]
+                code: .modelFailure,
+                message: "発話文モデルを確認できません: \(error.localizedDescription)",
+                recoveryAction: .prepareModels,
+                details: [EngineAdapterError.detail(for: error)]
             )
         }
     }
@@ -56,7 +103,7 @@ struct PortableEngineInference: EngineInferenceProviding {
         let configuration = try configuration(for: settings)
         let bundle: PortableSessionEngineBundle
         do {
-            bundle = try PortableSessionEngineBundle(configuration: configuration)
+            bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter)
         } catch {
             throw EngineAdapterError(
                 code: .modelFailure, message: "モデルを構成できません: \(error.localizedDescription)", recoveryAction: .prepareModels,

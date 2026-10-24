@@ -69,6 +69,7 @@ public final class WindowsCaptureSource {
     private let qpc100ns: @Sendable () throws -> UInt64
     private let onWarning: @MainActor @Sendable (String) -> Void
     private let onFailure: @MainActor @Sendable (String) -> Void
+    private let onDropouts: @MainActor @Sendable (UInt64) -> Void
     private let onSilenceChanged: @MainActor @Sendable (Bool) -> Void
 
     private var state: State = .new
@@ -99,6 +100,7 @@ public final class WindowsCaptureSource {
         qpc100ns: @escaping @Sendable () throws -> UInt64,
         onWarning: @escaping @MainActor @Sendable (String) -> Void,
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
+        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
         onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
     ) {
         self.source = source
@@ -112,6 +114,7 @@ public final class WindowsCaptureSource {
         self.qpc100ns = qpc100ns
         self.onWarning = onWarning
         self.onFailure = onFailure
+        self.onDropouts = onDropouts
         self.onSilenceChanged = onSilenceChanged
     }
 
@@ -177,7 +180,7 @@ public final class WindowsCaptureSource {
                     self?.scheduleTerminalFailure(message)
                 },
                 onWarning: { [onWarning] message in onWarning(message) },
-                onDropouts: { _ in },
+                onDropouts: onDropouts,
                 onSilenceChanged: { [onSilenceChanged] silent in onSilenceChanged(silent) }
             )
             healthMonitor = monitor

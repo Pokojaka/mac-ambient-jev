@@ -18,7 +18,8 @@ struct FileCaptureAcceptanceTests {
         let provider = try FileCaptureProvider(fixtureURL: fixtureURL, sampleRate: 16_000, channels: 2)
         let paths = captureAcceptancePaths(root: root)
         let callbacks = EngineCaptureCallbacks(
-            onFailure: { _ in }, onWarning: { _ in }, onSilenceChanged: { _ in }
+            onFailure: { _ in }, onWarning: { _ in }, onDropouts: { _ in },
+            onSilenceChanged: { _ in }
         )
         let device = EngineDevice.id(FileCaptureProvider.testDeviceID)
 
@@ -72,7 +73,8 @@ struct FileCaptureAcceptanceTests {
         let paths = captureAcceptancePaths(root: root)
         let session = try createCaptureAcceptanceSession(paths: paths)
         let callbacks = EngineCaptureCallbacks(
-            onFailure: { _ in }, onWarning: { _ in }, onSilenceChanged: { _ in }
+            onFailure: { _ in }, onWarning: { _ in }, onDropouts: { _ in },
+            onSilenceChanged: { _ in }
         )
         let capture = try await provider.startCapture(
             sessionID: session.id, sessionURL: session.url, source: .microphone,

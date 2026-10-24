@@ -159,15 +159,6 @@ struct LiveTranscriptView: View {
 
     static let awaitingNextSegmentTitle = "発話文の続き待ち"
 
-    static func clauseStateDescription(_ state: TranscriptClauseState) -> String {
-        switch state {
-        case .awaitingNextSegment: "発話文: 続き待ち"
-        case .boundaryPending: "発話文: 境界判定を保留中"
-        case .priorityPending: "発話文: 優先度判定を待っています"
-        case .classified: "発話文: 判定済み"
-        }
-    }
-
     private func detailPopover(for rowID: String) -> Binding<Bool> {
         Binding(
             get: { detailRowID == rowID },
@@ -179,7 +170,7 @@ struct LiveTranscriptView: View {
 
     private func transcriptDetails(_ row: LiveTranscriptRow) -> some View {
         VStack(alignment: .leading, spacing: AppSpacing.xs) {
-            Text(Self.clauseStateDescription(row.clauseState))
+            Text(row.clauseState.rowDetailsDescription)
 
             if !row.speakers.isEmpty {
                 Text("話者区間")

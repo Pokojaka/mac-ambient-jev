@@ -57,9 +57,9 @@ func waitingAndPendingRowsDescribeTheirDecisionStateWithoutHidingText() throws {
         displaySpeakerLabels: []
     )
     #expect(LiveTranscriptView.awaitingNextSegmentTitle == "発話文の続き待ち")
-    #expect(LiveTranscriptView.clauseStateDescription(.awaitingNextSegment) == "発話文: 続き待ち")
-    #expect(LiveTranscriptView.clauseStateDescription(.boundaryPending) == "発話文: 境界判定を保留中")
-    #expect(LiveTranscriptView.clauseStateDescription(.priorityPending) == "発話文: 優先度判定を待っています")
-    #expect(LiveTranscriptView.clauseStateDescription(.classified) == "発話文: 判定済み")
+    #expect(TranscriptClauseState.awaitingNextSegment.rowDetailsDescription == "発話文: 続き待ち")
+    #expect(TranscriptClauseState.boundaryPending.rowDetailsDescription == "発話文: 境界判定を保留中")
+    #expect(TranscriptClauseState.priorityPending.rowDetailsDescription == "発話文: 優先度判定を待っています")
+    #expect(TranscriptClauseState.classified.rowDetailsDescription == "発話文: 判定済み")
     #expect(row.text == "続く")
 }

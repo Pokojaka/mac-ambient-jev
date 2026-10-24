@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 import Testing
 @testable import MacAmbientJevPortableRuntime
 
@@ -143,6 +144,8 @@ struct PortableProcessingConfigurationTests {
         let fixture = try Fixture.make()
         defer { fixture.cleanUp() }
         let configuration = try fixture.resolve()
-        #expect(throws: (any Error).self) { try PortableSessionEngineBundle(configuration: configuration) }
+        #expect(throws: (any Error).self) {
+            try PortableSessionEngineBundle(configuration: configuration, usageCounter: DecisionUsageCounter())
+        }
     }
 }

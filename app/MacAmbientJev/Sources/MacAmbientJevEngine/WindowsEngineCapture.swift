@@ -63,6 +63,7 @@ final class WindowsEngineCapture: EngineCaptureProviding {
             qpc100ns: { try WindowsCaptureQPCClock.now100ns() },
             onWarning: callbacks.onWarning,
             onFailure: callbacks.onFailure,
+            onDropouts: callbacks.onDropouts,
             onSilenceChanged: callbacks.onSilenceChanged
         )
         try await capture.start()

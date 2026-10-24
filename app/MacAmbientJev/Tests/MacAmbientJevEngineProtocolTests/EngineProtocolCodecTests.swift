@@ -18,7 +18,7 @@ struct EngineProtocolCodecTests {
         let stateLine = try EngineCodec.encodeOutput(stateOutput)
         #expect(stateLine.last == 0x0A)
         #expect(try EngineCodec.decodeOutput(Data(stateLine.dropLast())) == stateOutput)
-        #expect(String(decoding: stateLine, as: UTF8.self).contains(#""event":"state","payload":{"failures":[],"queue":[],"recording":null,"recovery":"completed","revision":"1","screen":"idle","setup":"ready"}"#))
+        #expect(String(decoding: stateLine, as: UTF8.self).contains(#""event":"state","payload":{"failures":[],"presentation":{"audio_gap_count":0,"audio_gap_text":null,"live_failure_notices":[],"preparation_phase":"ready","preparation_status_text":null,"processing_indicator":"idle","processing_status_text":null,"recording_status_text":"待機中","recording_tone":"neutral","recovery_status_text":null,"silence_warning_active":false,"silence_warning_text":null},"queue":[],"recording":null,"recovery":"completed","revision":"1","screen":"idle","setup":"ready"}"#))
 
         let capabilities = try EngineCapabilities(
             sources: [.microphone], asrSizes: [.small], executionProviders: [.cpu], maximumThreads: 2,
@@ -85,6 +85,12 @@ struct EngineProtocolCodecTests {
             #"{"version":1,"request_id":"1","command":"devices.list","payload":{"source":"future"}}"#,
             #"{"version":1,"request_id":"1","command":"devices.list","payload":{"source":null}}"#,
             #"{"version":1,"request_id":"1","command":"session.list","payload":{"cursor":null}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":null}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":""}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":1}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folderId":"folder-1"}}"#,
+            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"session_id":"folder-1"}}"#,
         ]
         for value in invalidRequests {
             #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(Data(value.utf8)) }
@@ -200,7 +206,7 @@ struct EngineProtocolCodecTests {
 
         let tooLarge = try asciiRow(exactEncodedBytes: EngineCodec.maxRowBytes + 1)
         #expect(protocolError { _ = try EngineCodec.encodeOutput(rowsOutput([tooLarge])) } == .oversizedRow(tooLarge.rowID))
-        let page = try EngineTranscriptPage(sessionID: "s", revision: id(1), rows: [tooLarge], nextCursor: nil)
+        let page = try EngineTranscriptPage(sessionID: "s", revision: id(1), rows: [tooLarge], nextCursor: nil, previousCursor: nil)
         for result in [EngineResult.transcriptRead(page), .transcriptWatch(page)] {
             let output = try EngineOutput(version: 1, sequence: id(1), requestID: id(2), event: .completed(result))
             #expect(protocolError { _ = try EngineCodec.encodeOutput(output) } == .oversizedRow(tooLarge.rowID))
@@ -281,7 +287,7 @@ private func makeRequest(_ requestID: UInt64, _ command: EngineCommand) throws -
 }
 
 private func sampleState() throws -> EngineState {
-    try EngineState(revision: id(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: [], failures: [])
+    try EngineState(revision: id(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: [], failures: [], presentation: try engineTestPresentation())
 }
 
 private func rowsOutput(_ rows: [EngineTranscriptRow]) throws -> EngineOutput {

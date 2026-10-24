@@ -116,6 +116,7 @@ public protocol EngineStateHandling {
     /// Implementations may begin unsolicited app state, error, and rows events only after this hook.
     func helloDidComplete()
     func state() async throws -> EngineState
+    func diagnostics(context: EngineRequestContext) async throws -> EngineDiagnosticsResult
 }
 
 @MainActor
@@ -130,6 +131,7 @@ public protocol EngineSessionHandling {
     func importSession(_ payload: EngineImportPayload, context: EngineRequestContext) async throws -> EngineSessionPayload
     func reprocess(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload
     func retryDecisions(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload
+    func inspect(_ payload: EngineSessionInspectPayload, context: EngineRequestContext) async throws -> EngineSessionSummary
     func list(_ payload: EngineSessionListPayload, context: EngineRequestContext) async throws -> EngineSessionListResult
     func export(_ payload: EngineExportPayload, context: EngineRequestContext) async throws -> EngineExportResult
 }
@@ -137,6 +139,7 @@ public protocol EngineSessionHandling {
 @MainActor
 public protocol EngineTranscriptHandling {
     func read(_ payload: EngineTranscriptReadPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage
+    func rowDetails(_ payload: EngineTranscriptRowDetailsPayload, context: EngineRequestContext) async throws -> EngineTranscriptRowDetailsPage
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage
 }
 
@@ -149,6 +152,7 @@ public protocol EngineSettingsHandling {
 @MainActor
 public protocol EngineModelsHandling {
     func prepare(context: EngineRequestContext) async throws
+    func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection
 }
 
 @MainActor

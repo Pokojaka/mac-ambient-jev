@@ -487,6 +487,7 @@ private struct GatedOfflineFinalTranscriptVAD: FinalTranscriptVADSegmenter {
 private final class GatedFinalizationInferenceProvider: EngineInferenceProviding, @unchecked Sendable {
     private let gate: OfflineFinalizationGate
     private let calls = CallCounter()
+    private let inspectionProvider = FakeInferenceProvider()
 
     init(gate: OfflineFinalizationGate) {
         self.gate = gate
@@ -496,6 +497,14 @@ private final class GatedFinalizationInferenceProvider: EngineInferenceProviding
         calls.increment("prepare")
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        try await inspectionProvider.decisionUsage()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        try await inspectionProvider.inspectClauseTagger()
     }
 
     func makeInference(settings: EngineSettings) throws -> EngineInference {

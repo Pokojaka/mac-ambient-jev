@@ -210,6 +210,8 @@ public final class EngineController {
             return .hello(try await handlers.state.hello())
         case .stateGet:
             return .stateGet(try await handlers.state.state())
+        case .diagnosticsGet:
+            return .diagnosticsGet(try await handlers.state.diagnostics(context: context))
         case let .devicesList(payload):
             return .devicesList(try await handlers.recording.devices(payload, context: context))
         case let .recordingStart(payload):
@@ -224,8 +226,12 @@ public final class EngineController {
             return .sessionRetryDecisions(try await handlers.sessions.retryDecisions(payload, context: context))
         case let .sessionList(payload):
             return .sessionList(try await handlers.sessions.list(payload, context: context))
+        case let .sessionInspect(payload):
+            return .sessionInspect(try await handlers.sessions.inspect(payload, context: context))
         case let .transcriptRead(payload):
             return .transcriptRead(try await handlers.transcript.read(payload, context: context))
+        case let .transcriptRowDetails(payload):
+            return .transcriptRowDetails(try await handlers.transcript.rowDetails(payload, context: context))
         case let .transcriptWatch(payload):
             return .transcriptWatch(try await handlers.transcript.watch(payload, context: context))
         case let .sessionExport(payload):
@@ -237,6 +243,8 @@ public final class EngineController {
         case .modelsPrepare:
             try await handlers.models.prepare(context: context)
             return .modelsPrepare
+        case .modelsInspect:
+            return .modelsInspect(try await handlers.models.inspect(context: context))
         case .shutdown:
             preconditionFailure("shutdown is handled inline by the dispatcher")
         }

@@ -348,7 +348,7 @@ public struct SessionFileProcessingService: Sendable {
         let processor = makeProcessor(paths: paths, resources: resources)
         let collector = ProcessingResultCollector()
         do {
-            await callbacks.onStatus("処理を開始します: \(request.audioURL.path)")
+            await callbacks.onStatus(.message("処理を開始します: \(request.audioURL.path)"))
             let result = await processor.processSession(
                 sessionID: retained.finalize.sessionID,
                 pacingMode: request.pacingMode,

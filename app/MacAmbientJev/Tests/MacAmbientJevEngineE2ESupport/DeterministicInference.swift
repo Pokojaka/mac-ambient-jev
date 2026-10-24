@@ -7,6 +7,8 @@ import MacAmbientJevPipeline
 /// Deterministic inference for recording acceptance tests. Capture and durable processing stay real;
 /// only model inference and live VAD output are deterministic.
 public struct DeterministicInferenceProvider: EngineInferenceProviding {
+    private let usageCounter = DecisionUsageCounter()
+
     public init() {}
 
     public func prepare(
@@ -16,6 +18,19 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         try Self.validate(settings: settings)
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
+    }
+
+    public func decisionUsage() async throws -> DecisionUsageSnapshot {
+        await usageCounter.snapshot()
+    }
+
+    public func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        throw EngineAdapterError(
+            code: .modelMissing,
+            message: "決定論的プロバイダーにはインストール済みの発話文モデルがありません",
+            recoveryAction: .prepareModels,
+            details: []
+        )
     }
 
     public func makeInference(settings: EngineSettings) throws -> EngineInference {

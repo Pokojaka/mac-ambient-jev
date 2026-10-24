@@ -312,6 +312,29 @@ public struct EngineSessionPayload: Codable, Equatable, Sendable {
     }
 }
 
+public struct EngineSessionInspectPayload: Codable, Equatable, Sendable {
+    public let folderID: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case folderID = "folder_id"
+    }
+
+    public init(folderID: String) throws {
+        try engineRequireNonempty(folderID, "folder_id")
+        self.folderID = folderID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(folderID: container.decode(String.self, forKey: .folderID))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(folderID, forKey: .folderID)
+    }
+}
+
 public struct EngineImportPayload: Codable, Equatable, Sendable {
     public let inputPath: String
 
@@ -473,19 +496,23 @@ public struct EngineSettingsReplacePayload: Codable, Equatable, Sendable {
 public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendable {
     case hello
     case stateGet = "state.get"
+    case diagnosticsGet = "diagnostics.get"
     case devicesList = "devices.list"
     case recordingStart = "recording.start"
     case recordingStop = "recording.stop"
     case sessionImport = "session.import"
+    case sessionInspect = "session.inspect"
     case sessionReprocess = "session.reprocess"
     case sessionRetryDecisions = "session.retry_decisions"
     case sessionList = "session.list"
     case transcriptRead = "transcript.read"
+    case transcriptRowDetails = "transcript.row_details"
     case transcriptWatch = "transcript.watch"
     case sessionExport = "session.export"
     case settingsGet = "settings.get"
     case settingsReplace = "settings.replace"
     case modelsPrepare = "models.prepare"
+    case modelsInspect = "models.inspect"
     case shutdown
 
     public init(from decoder: Decoder) throws {
@@ -506,19 +533,23 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
 public enum EngineCommand: Codable, Equatable, Sendable {
     case hello
     case stateGet
+    case diagnosticsGet
     case devicesList(EngineDevicesListPayload)
     case recordingStart(EngineRecordingStartPayload)
     case recordingStop(EngineSessionPayload)
     case sessionImport(EngineImportPayload)
+    case sessionInspect(EngineSessionInspectPayload)
     case sessionReprocess(EngineSessionPayload)
     case sessionRetryDecisions(EngineSessionPayload)
     case sessionList(EngineSessionListPayload)
     case transcriptRead(EngineTranscriptReadPayload)
+    case transcriptRowDetails(EngineTranscriptRowDetailsPayload)
     case transcriptWatch(EngineSessionPayload)
     case sessionExport(EngineExportPayload)
     case settingsGet
     case settingsReplace(EngineSettingsReplacePayload)
     case modelsPrepare
+    case modelsInspect
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -530,19 +561,23 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         switch self {
         case .hello: .hello
         case .stateGet: .stateGet
+        case .diagnosticsGet: .diagnosticsGet
         case .devicesList: .devicesList
         case .recordingStart: .recordingStart
         case .recordingStop: .recordingStop
         case .sessionImport: .sessionImport
+        case .sessionInspect: .sessionInspect
         case .sessionReprocess: .sessionReprocess
         case .sessionRetryDecisions: .sessionRetryDecisions
         case .sessionList: .sessionList
         case .transcriptRead: .transcriptRead
+        case .transcriptRowDetails: .transcriptRowDetails
         case .transcriptWatch: .transcriptWatch
         case .sessionExport: .sessionExport
         case .settingsGet: .settingsGet
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
+        case .modelsInspect: .modelsInspect
         case .shutdown: .shutdown
         }
     }
@@ -567,6 +602,9 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .stateGet:
             _ = try EngineEmptyPayload(from: payload)
             return .stateGet
+        case .diagnosticsGet:
+            _ = try EngineEmptyPayload(from: payload)
+            return .diagnosticsGet
         case .devicesList:
             return .devicesList(try EngineDevicesListPayload(from: payload))
         case .recordingStart:
@@ -575,6 +613,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             return .recordingStop(try EngineSessionPayload(from: payload))
         case .sessionImport:
             return .sessionImport(try EngineImportPayload(from: payload))
+        case .sessionInspect:
+            return .sessionInspect(try EngineSessionInspectPayload(from: payload))
         case .sessionReprocess:
             return .sessionReprocess(try EngineSessionPayload(from: payload))
         case .sessionRetryDecisions:
@@ -583,6 +623,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             return .sessionList(try EngineSessionListPayload(from: payload))
         case .transcriptRead:
             return .transcriptRead(try EngineTranscriptReadPayload(from: payload))
+        case .transcriptRowDetails:
+            return .transcriptRowDetails(try EngineTranscriptRowDetailsPayload(from: payload))
         case .transcriptWatch:
             return .transcriptWatch(try EngineSessionPayload(from: payload))
         case .sessionExport:
@@ -595,6 +637,9 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .modelsPrepare:
             _ = try EngineEmptyPayload(from: payload)
             return .modelsPrepare
+        case .modelsInspect:
+            _ = try EngineEmptyPayload(from: payload)
+            return .modelsInspect
         case .shutdown:
             _ = try EngineEmptyPayload(from: payload)
             return .shutdown
@@ -603,7 +648,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
 
     func encodePayload(to encoder: Encoder) throws {
         switch self {
-        case .hello, .stateGet, .settingsGet, .modelsPrepare, .shutdown:
+        case .hello, .stateGet, .diagnosticsGet, .settingsGet, .modelsPrepare, .modelsInspect, .shutdown:
             try EngineEmptyPayload().encode(to: encoder)
         case let .devicesList(payload):
             try payload.encode(to: encoder)
@@ -613,9 +658,13 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .sessionImport(payload):
             try payload.encode(to: encoder)
+        case let .sessionInspect(payload):
+            try payload.encode(to: encoder)
         case let .sessionList(payload):
             try payload.encode(to: encoder)
         case let .transcriptRead(payload):
+            try payload.encode(to: encoder)
+        case let .transcriptRowDetails(payload):
             try payload.encode(to: encoder)
         case let .sessionExport(payload):
             try payload.encode(to: encoder)
