@@ -212,17 +212,10 @@ public struct PortableModelPreparationService: Sendable {
         ]
 
         if let tagger = configuration.clauseTaggerModelDirectory {
-            let members = try ClauseTaggerManifest.bundled().members
-                .map { PortableAssetFile(name: $0.name, byteCount: Int64($0.byteCount), sha256: $0.sha256) }
             steps.append(Step(
                 model: .clauseTagger,
                 validate: {
-                    try PortableAssetVerifier.verify(
-                        model: .clauseTagger,
-                        files: members,
-                        directory: tagger,
-                        installCommand: "python3 scripts/fetch_clause_tagger.py を実行し、出力されたディレクトリの内容を \(tagger.path) に置く"
-                    )
+                    _ = try PortableClauseTaggerInspection.validateAssets(modelDirectory: tagger)
                 },
                 load: {
                     try await Self.load(.clauseTagger, path: tagger.path) {

@@ -123,4 +123,9 @@ public protocol EngineInferenceProviding: Sendable {
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws
     /// The engines of the profile. Models load on first use; a failure there fails the operation.
     func makeInference(settings: EngineSettings) throws -> EngineInference
+    /// Returns current-process accounting shared by the process's `DecisionCoordinator`.
+    func decisionUsage() async throws -> DecisionUsageSnapshot
+    /// Returns the installed, validated clause-tagger identity after metadata validation and loading.
+    /// This performs no inference or accounting and is independent of settings and preparation.
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity
 }

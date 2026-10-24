@@ -44,6 +44,7 @@ public struct EngineExportResult: Codable, Equatable, Sendable {
 public enum EngineResult: Codable, Equatable, Sendable {
     case hello(EngineReadyPayload)
     case stateGet(EngineState)
+    case diagnosticsGet(EngineDiagnosticsResult)
     case devicesList(EngineDevicesResult)
     case recordingStart(EngineSessionPayload)
     /// Completion means capture stopped durably and finalization was queued, not that the transcript is final.
@@ -63,6 +64,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case settingsGet(EngineSettingsResult)
     case settingsReplace(EngineSettingsResult)
     case modelsPrepare
+    case modelsInspect(EngineModelsInspection)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -74,6 +76,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
         switch self {
         case .hello: .hello
         case .stateGet: .stateGet
+        case .diagnosticsGet: .diagnosticsGet
         case .devicesList: .devicesList
         case .recordingStart: .recordingStart
         case .recordingStop: .recordingStop
@@ -88,6 +91,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .settingsGet: .settingsGet
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
+        case .modelsInspect: .modelsInspect
         case .shutdown: .shutdown
         }
     }
@@ -110,6 +114,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .hello(try EngineReadyPayload(from: result))
         case .stateGet:
             return .stateGet(try EngineState(from: result))
+        case .diagnosticsGet:
+            return .diagnosticsGet(try EngineDiagnosticsResult(from: result))
         case .devicesList:
             return .devicesList(try EngineDevicesResult(from: result))
         case .recordingStart:
@@ -139,6 +145,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .modelsPrepare:
             _ = try EngineEmptyPayload(from: result)
             return .modelsPrepare
+        case .modelsInspect:
+            return .modelsInspect(try EngineModelsInspection(from: result))
         case .shutdown:
             _ = try EngineEmptyPayload(from: result)
             return .shutdown
@@ -151,6 +159,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .stateGet(state):
             try state.encode(to: encoder)
+        case let .diagnosticsGet(result):
+            try result.encode(to: encoder)
         case let .devicesList(result):
             try result.encode(to: encoder)
         case let .recordingStart(payload), let .recordingStop(payload), let .sessionImport(payload),
@@ -168,6 +178,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try result.encode(to: encoder)
         case .modelsPrepare, .shutdown:
             try EngineEmptyPayload().encode(to: encoder)
+        case let .modelsInspect(inspection):
+            try inspection.encode(to: encoder)
         }
     }
 }

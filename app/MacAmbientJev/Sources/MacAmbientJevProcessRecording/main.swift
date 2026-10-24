@@ -244,7 +244,8 @@ struct ProcessRecordingCommand {
                 logicalCPUCount: logicalCPUCount,
                 withDecisions: withDecisions
             )
-            let bundle = try PortableSessionEngineBundle(configuration: configuration)
+            let usageCounter = DecisionUsageCounter()
+            let bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter)
             return SessionFileProcessingResources(
                 engines: bundle.engines,
                 contentPriority: bundle.contentPriority,

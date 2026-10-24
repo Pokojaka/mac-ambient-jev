@@ -496,6 +496,7 @@ public struct EngineSettingsReplacePayload: Codable, Equatable, Sendable {
 public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendable {
     case hello
     case stateGet = "state.get"
+    case diagnosticsGet = "diagnostics.get"
     case devicesList = "devices.list"
     case recordingStart = "recording.start"
     case recordingStop = "recording.stop"
@@ -510,6 +511,7 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case settingsGet = "settings.get"
     case settingsReplace = "settings.replace"
     case modelsPrepare = "models.prepare"
+    case modelsInspect = "models.inspect"
     case shutdown
 
     public init(from decoder: Decoder) throws {
@@ -530,6 +532,7 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
 public enum EngineCommand: Codable, Equatable, Sendable {
     case hello
     case stateGet
+    case diagnosticsGet
     case devicesList(EngineDevicesListPayload)
     case recordingStart(EngineRecordingStartPayload)
     case recordingStop(EngineSessionPayload)
@@ -544,6 +547,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case settingsGet
     case settingsReplace(EngineSettingsReplacePayload)
     case modelsPrepare
+    case modelsInspect
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -555,6 +559,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         switch self {
         case .hello: .hello
         case .stateGet: .stateGet
+        case .diagnosticsGet: .diagnosticsGet
         case .devicesList: .devicesList
         case .recordingStart: .recordingStart
         case .recordingStop: .recordingStop
@@ -569,6 +574,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .settingsGet: .settingsGet
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
+        case .modelsInspect: .modelsInspect
         case .shutdown: .shutdown
         }
     }
@@ -593,6 +599,9 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .stateGet:
             _ = try EngineEmptyPayload(from: payload)
             return .stateGet
+        case .diagnosticsGet:
+            _ = try EngineEmptyPayload(from: payload)
+            return .diagnosticsGet
         case .devicesList:
             return .devicesList(try EngineDevicesListPayload(from: payload))
         case .recordingStart:
@@ -623,6 +632,9 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .modelsPrepare:
             _ = try EngineEmptyPayload(from: payload)
             return .modelsPrepare
+        case .modelsInspect:
+            _ = try EngineEmptyPayload(from: payload)
+            return .modelsInspect
         case .shutdown:
             _ = try EngineEmptyPayload(from: payload)
             return .shutdown
@@ -631,7 +643,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
 
     func encodePayload(to encoder: Encoder) throws {
         switch self {
-        case .hello, .stateGet, .settingsGet, .modelsPrepare, .shutdown:
+        case .hello, .stateGet, .diagnosticsGet, .settingsGet, .modelsPrepare, .modelsInspect, .shutdown:
             try EngineEmptyPayload().encode(to: encoder)
         case let .devicesList(payload):
             try payload.encode(to: encoder)

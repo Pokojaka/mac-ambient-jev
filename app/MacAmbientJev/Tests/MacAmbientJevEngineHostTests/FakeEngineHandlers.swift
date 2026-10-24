@@ -76,6 +76,26 @@ final class FakeEngineHandlers:
         return try sampleState(revision: 1)
     }
 
+    func diagnostics(context: EngineRequestContext) async throws -> EngineDiagnosticsResult {
+        try await enter("diagnostics.get")
+        return EngineDiagnosticsResult(
+            scope: .engineProcess,
+            decisionUsage: .unavailable(try EngineFailure(
+                code: .internalError,
+                message: "テスト用の診断情報を利用できません",
+                stage: .decisions,
+                requestID: nil,
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .retry,
+                details: [],
+                cleanupErrors: []
+            )),
+            automaticInputVolume: .none,
+            thermalMonitoring: .none
+        )
+    }
+
     func devices(_ payload: EngineDevicesListPayload, context: EngineRequestContext) async throws -> EngineDevicesResult {
         try await enter("devices.list")
         return try EngineDevicesResult(source: payload.source, devices: [], defaultDeviceID: nil)
@@ -164,6 +184,21 @@ final class FakeEngineHandlers:
                 requestID: context.requestID
             )
         }
+    }
+
+    func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection {
+        try await enter("models.inspect")
+        return EngineModelsInspection(clauseTagger: .invalid(try EngineFailure(
+            code: .modelMissing,
+            message: "テスト用の発話文モデルがありません",
+            stage: .validatingModels,
+            requestID: nil,
+            sessionID: nil,
+            severity: .error,
+            recoveryAction: .prepareModels,
+            details: [],
+            cleanupErrors: []
+        )))
     }
 
     func shutdown(reason: EngineShutdownReason) async throws {

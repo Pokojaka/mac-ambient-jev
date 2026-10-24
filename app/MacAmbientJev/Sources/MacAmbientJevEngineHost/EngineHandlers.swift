@@ -116,6 +116,7 @@ public protocol EngineStateHandling {
     /// Implementations may begin unsolicited app state, error, and rows events only after this hook.
     func helloDidComplete()
     func state() async throws -> EngineState
+    func diagnostics(context: EngineRequestContext) async throws -> EngineDiagnosticsResult
 }
 
 @MainActor
@@ -150,6 +151,7 @@ public protocol EngineSettingsHandling {
 @MainActor
 public protocol EngineModelsHandling {
     func prepare(context: EngineRequestContext) async throws
+    func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection
 }
 
 @MainActor

@@ -9,6 +9,7 @@ struct EngineProtocolCommandTests {
         let commands: [(EngineCommandName, EngineCommand, Set<String>)] = [
             (.hello, .hello, []),
             (.stateGet, .stateGet, []),
+            (.diagnosticsGet, .diagnosticsGet, []),
             (.devicesList, .devicesList(EngineDevicesListPayload(source: .microphone)), ["source"]),
             (.recordingStart, .recordingStart(try EngineRecordingStartPayload(source: .systemAudio, device: .id("endpoint-1"))), ["source", "device"]),
             (.recordingStop, .recordingStop(session), ["session_id"]),
@@ -23,10 +24,11 @@ struct EngineProtocolCommandTests {
             (.settingsGet, .settingsGet, []),
             (.settingsReplace, .settingsReplace(EngineSettingsReplacePayload(expectedRevision: nil, settings: settings)), ["expected_revision", "settings"]),
             (.modelsPrepare, .modelsPrepare, []),
+            (.modelsInspect, .modelsInspect, []),
             (.shutdown, .shutdown, [])
         ]
-        #expect(commands.count == 17)
-        #expect(EngineCommandName.allCases.count == 17)
+        #expect(commands.count == 19)
+        #expect(EngineCommandName.allCases.count == 19)
 
         for (name, command, payloadKeys) in commands {
             let request = try makeRequest(command)
@@ -70,10 +72,10 @@ struct EngineProtocolCommandTests {
         #expect(EngineASRSize.allCases.map(\.rawValue) == ["0.6b", "1.7b"])
         #expect(EngineExecutionProvider.allCases.map(\.rawValue) == ["cpu"])
         #expect(EngineCommandName.allCases.map(\.rawValue) == [
-            "hello", "state.get", "devices.list", "recording.start", "recording.stop",
+            "hello", "state.get", "diagnostics.get", "devices.list", "recording.start", "recording.stop",
             "session.import", "session.inspect", "session.reprocess", "session.retry_decisions", "session.list",
             "transcript.read", "transcript.watch", "session.export", "settings.get",
-            "settings.replace", "models.prepare", "shutdown"
+            "settings.replace", "models.prepare", "models.inspect", "shutdown"
         ])
 
         for source in EngineSource.allCases {
@@ -135,13 +137,29 @@ struct EngineProtocolCommandTests {
     }
 
     @Test func emptyCommandsRequireExactlyAnEmptyPayloadObject() throws {
-        for command in ["hello", "state.get", "settings.get", "models.prepare", "shutdown"] {
+        for command in ["hello", "state.get", "diagnostics.get", "settings.get", "models.prepare", "models.inspect", "shutdown"] {
             let empty = "{\"version\":1,\"request_id\":\"1\",\"command\":\"\(command)\",\"payload\":{}}"
             #expect(decodingSucceeds(EngineRequest.self, from: Data(empty.utf8)))
             let extra = "{\"version\":1,\"request_id\":\"1\",\"command\":\"\(command)\",\"payload\":{\"unexpected\":1}}"
             #expect(decodingFails(EngineRequest.self, from: Data(extra.utf8)))
             let null = "{\"version\":1,\"request_id\":\"1\",\"command\":\"\(command)\",\"payload\":null}"
             #expect(decodingFails(EngineRequest.self, from: Data(null.utf8)))
+        }
+    }
+
+    @Test func newEmptyCommandsRejectMissingAndNonObjectPayloads() throws {
+        for command in ["diagnostics.get", "models.inspect"] {
+            var request: [String: Any] = ["version": 1, "request_id": "1", "command": command]
+            #expect(decodingFails(EngineRequest.self, object: request))
+
+            request["payload"] = NSNull()
+            #expect(decodingFails(EngineRequest.self, object: request))
+
+            request["payload"] = [Any]()
+            #expect(decodingFails(EngineRequest.self, object: request))
+
+            request["payload"] = ["unexpected": true]
+            #expect(decodingFails(EngineRequest.self, object: request))
         }
     }
 

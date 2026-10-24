@@ -14,7 +14,7 @@ public struct PortableSessionEngineBundle: Sendable {
     public let decisionProviderFactory: DecisionProviderFactory?
     public let contentPriority: ContentPriorityAccess
 
-    public init(configuration: PortableProcessingConfiguration) throws {
+    public init(configuration: PortableProcessingConfiguration, usageCounter: DecisionUsageCounter) throws {
         try SileroVADModel.validate(at: configuration.sileroModelURL)
         let vadEnvironment = try ONNXEnvironment(loggingID: "MacAmbientJev-PortableProcessing")
         let engines = SessionProcessingEngines(
@@ -38,7 +38,6 @@ public struct PortableSessionEngineBundle: Sendable {
         self.engines = engines
         self.vadEnvironment = vadEnvironment
         if let taggerDirectory = configuration.clauseTaggerModelDirectory {
-            let usageCounter = DecisionUsageCounter()
             let threads = configuration.threads
             let factory = DecisionProviderFactory(
                 usageCounter: usageCounter,

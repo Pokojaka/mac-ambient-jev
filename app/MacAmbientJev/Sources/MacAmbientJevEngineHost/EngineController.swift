@@ -210,6 +210,8 @@ public final class EngineController {
             return .hello(try await handlers.state.hello())
         case .stateGet:
             return .stateGet(try await handlers.state.state())
+        case .diagnosticsGet:
+            return .diagnosticsGet(try await handlers.state.diagnostics(context: context))
         case let .devicesList(payload):
             return .devicesList(try await handlers.recording.devices(payload, context: context))
         case let .recordingStart(payload):
@@ -239,6 +241,8 @@ public final class EngineController {
         case .modelsPrepare:
             try await handlers.models.prepare(context: context)
             return .modelsPrepare
+        case .modelsInspect:
+            return .modelsInspect(try await handlers.models.inspect(context: context))
         case .shutdown:
             preconditionFailure("shutdown is handled inline by the dispatcher")
         }

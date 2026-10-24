@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 49)
+        #expect(records.count == 56)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -69,6 +69,13 @@ struct EngineProtocolGoldenTests {
         var sawKnownProgressTotal = false
         var sawUnknownProgressTotal = false
         var sawNonNullRevisionAndCursor = false
+        var sawDiagnosticsRequest = false
+        var sawModelsInspectRequest = false
+        var sawInspectionCancellation = false
+        var sawAvailableDiagnostics = false
+        var sawUnavailableDiagnostics = false
+        var sawValidatedModelInspection = false
+        var sawInvalidModelInspection = false
         var rowLabels = Set<String>()
 
         for record in records {
@@ -255,6 +262,76 @@ struct EngineProtocolGoldenTests {
                     case let .transcriptWatch(page):
                         #expect(page.previousCursor == nil)
                         sawPreviousCursorNull = true
+                    case let .diagnosticsGet(diagnostics):
+                        #expect(diagnostics.scope == .engineProcess)
+                        #expect(diagnostics.automaticInputVolume == .none)
+                        #expect(diagnostics.thermalMonitoring == .none)
+                        switch diagnostics.decisionUsage {
+                        case let .available(snapshot):
+                            #expect(output.requestID?.value == 19)
+                            #expect(output.sequence.value == 35)
+                            #expect(snapshot.sendCount == 4)
+                            #expect(snapshot.inputTokens == 28)
+                            #expect(snapshot.successCount == 2)
+                            #expect(snapshot.failureCount == 2)
+                            #expect(snapshot.pendingBoundarySegmentCount == 2)
+                            #expect(snapshot.pendingPriorityClauseCount == 3)
+                            #expect(snapshot.boundaryRequests.sendCount == 2)
+                            #expect(snapshot.boundaryRequests.inputTokens == 11)
+                            #expect(snapshot.boundaryRequests.successCount == 1)
+                            #expect(snapshot.boundaryRequests.failureCount == 1)
+                            #expect(snapshot.priorityRequests.sendCount == 2)
+                            #expect(snapshot.priorityRequests.inputTokens == 17)
+                            #expect(snapshot.priorityRequests.successCount == 1)
+                            #expect(snapshot.priorityRequests.failureCount == 1)
+                            sawAvailableDiagnostics = true
+                        case let .unavailable(failure):
+                            #expect(output.requestID?.value == 19)
+                            #expect(output.sequence.value == 36)
+                            #expect(failure.code == .internalError)
+                            #expect(failure.message == "判断情報を収集できませんでした")
+                            #expect(failure.stage == .decisions)
+                            #expect(failure.requestID == nil && failure.sessionID == nil)
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .retry)
+                            let detail = try #require(failure.details.first)
+                            #expect(detail.domain == "native")
+                            #expect(detail.code == "DECISION_BACKEND_UNAVAILABLE")
+                            #expect(detail.message == "ネイティブ判断バックエンドに接続できません")
+                            sawUnavailableDiagnostics = true
+                        }
+                    case let .modelsInspect(inspection):
+                        switch inspection.clauseTagger {
+                        case let .validated(identity):
+                            #expect(output.requestID?.value == 20)
+                            #expect(output.sequence.value == 37)
+                            #expect(identity.backend == "onnx-clause-tagger")
+                            #expect(identity.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
+                            #expect(identity.revision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
+                            #expect(identity.tokenizerSHA256 == "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062")
+                            sawValidatedModelInspection = true
+                        case let .invalid(failure):
+                            let modelDirectory = "C:/Users/Aki/AppData/Local/mac-ambient-jev/models/clause-tagger/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx"
+                            let modelPath = "\(modelDirectory)/ClauseTagger.onnx"
+                            let modelFailureMessage = "モデル(clause_tagger)が不正です: \(modelPath) (サイズが一致しません (期待: 146889561, 実際: 1))。次の手順で配置し直してください: python3 scripts/fetch_clause_tagger.py を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
+                            #expect(output.requestID?.value == 20)
+                            #expect(output.sequence.value == 38)
+                            #expect(failure.code == .modelCorrupt)
+                            #expect(failure.message == modelFailureMessage)
+                            #expect(failure.stage == .validatingModels)
+                            #expect(failure.requestID == nil && failure.sessionID == nil)
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .prepareModels)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            #expect(failure.details.count == 1)
+                            let detail = try #require(failure.details.first)
+                            #expect(detail.domain == "models")
+                            #expect(detail.code == "clause_tagger")
+                            #expect(detail.path == nil)
+                            #expect(detail.deviceID == nil)
+                            #expect(detail.message == modelFailureMessage)
+                            sawInvalidModelInspection = true
+                        }
                     default:
                         break
                     }
@@ -283,6 +360,17 @@ struct EngineProtocolGoldenTests {
                             #expect(failure.cleanupErrors.count == 1)
                             #expect(failure.cleanupErrors[0].message == "録音ハンドルの解放にも失敗しました")
                             sawNativeErrorDetails = true
+                        } else if requestID.value == 20 {
+                            #expect(output.sequence.value == 39)
+                            #expect(failure.code == .cancelled)
+                            #expect(failure.message == "モデルの確認が中止されました")
+                            #expect(failure.stage == .validatingModels)
+                            #expect(failure.sessionID == nil)
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .none)
+                            #expect(failure.details.isEmpty)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawInspectionCancellation = true
                         } else {
                             #expect(Bool(false), "Unexpected correlated error request ID \(requestID.rawValue)")
                         }
@@ -333,6 +421,12 @@ struct EngineProtocolGoldenTests {
                     #expect(payload.revision?.value == 184)
                     #expect(payload.cursor == "rows-cursor-1")
                     sawNonNullRevisionAndCursor = true
+                case .diagnosticsGet:
+                    #expect(request.requestID.value == 19)
+                    sawDiagnosticsRequest = true
+                case .modelsInspect:
+                    #expect(request.requestID.value == 20)
+                    sawModelsInspectRequest = true
                 case .hello, .stateGet, .devicesList, .recordingStop, .sessionImport, .sessionReprocess,
                      .sessionRetryDecisions, .sessionList, .transcriptWatch, .sessionExport, .settingsGet,
                      .modelsPrepare, .shutdown:
@@ -369,6 +463,13 @@ struct EngineProtocolGoldenTests {
         #expect(sawKnownProgressTotal)
         #expect(sawUnknownProgressTotal)
         #expect(sawNonNullRevisionAndCursor)
+        #expect(sawDiagnosticsRequest)
+        #expect(sawModelsInspectRequest)
+        #expect(sawAvailableDiagnostics)
+        #expect(sawUnavailableDiagnostics)
+        #expect(sawValidatedModelInspection)
+        #expect(sawInvalidModelInspection)
+        #expect(sawInspectionCancellation)
         #expect(rowLabels == Set(EngineSpeakerLabel.allCases.map(\.rawValue)))
     }
 

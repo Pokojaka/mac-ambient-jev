@@ -459,6 +459,54 @@ extension EngineApplicationCore: EngineStateHandling {
     func state() async throws -> EngineState {
         currentState()
     }
+
+    func diagnostics(context: EngineRequestContext) async throws -> EngineDiagnosticsResult {
+        let decisionUsage: EngineDecisionUsage
+        do {
+            let snapshot = try await inferenceProvider.decisionUsage()
+            let boundaryRequests = try EngineDecisionRequestUsage(
+                sendCount: snapshot.boundaryRequests.sendCount,
+                inputTokens: snapshot.boundaryRequests.inputTokens,
+                successCount: snapshot.boundaryRequests.successCount,
+                failureCount: snapshot.boundaryRequests.failureCount
+            )
+            let priorityRequests = try EngineDecisionRequestUsage(
+                sendCount: snapshot.priorityRequests.sendCount,
+                inputTokens: snapshot.priorityRequests.inputTokens,
+                successCount: snapshot.priorityRequests.successCount,
+                failureCount: snapshot.priorityRequests.failureCount
+            )
+            let mappedSnapshot = try EngineDecisionUsageSnapshot(
+                sendCount: snapshot.sendCount,
+                inputTokens: snapshot.inputTokens,
+                successCount: snapshot.successCount,
+                failureCount: snapshot.failureCount,
+                pendingBoundarySegmentCount: snapshot.pendingBoundarySegmentCount,
+                pendingPriorityClauseCount: snapshot.pendingPriorityClauseCount,
+                boundaryRequests: boundaryRequests,
+                priorityRequests: priorityRequests
+            )
+            decisionUsage = .available(mappedSnapshot)
+        } catch {
+            let failure = EngineFailures.failure(
+                code: .internalError,
+                message: "発話文判定の利用状況を取得できません: \(error.localizedDescription)",
+                stage: .decisions,
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .retry,
+                details: [EngineFailures.detail(for: error)],
+                cleanupErrors: []
+            )
+            decisionUsage = .unavailable(failure)
+        }
+        return EngineDiagnosticsResult(
+            scope: .engineProcess,
+            decisionUsage: decisionUsage,
+            automaticInputVolume: .none,
+            thermalMonitoring: .none
+        )
+    }
 }
 
 // MARK: EngineSettingsHandling
@@ -561,6 +609,29 @@ extension EngineApplicationCore: EngineModelsHandling {
         stateDidChange()
         // Finalizations queued while models were missing, such as launch recovery, can run now.
         processingCoordinator.startDrainIfIdle()
+    }
+
+    func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection {
+        do {
+            let identity = try await inferenceProvider.inspectClauseTagger()
+            let mappedIdentity = try EngineClauseTaggerIdentity(
+                backend: identity.backend,
+                modelID: identity.modelID,
+                revision: identity.revision,
+                tokenizerSHA256: identity.tokenizerSHA256
+            )
+            return EngineModelsInspection(clauseTagger: .validated(mappedIdentity))
+        } catch is CancellationError {
+            throw EngineFailures.commandError(.cancelled, "モデルの確認が中止されました", stage: .validatingModels)
+        } catch {
+            let commandError = EngineFailures.commandError(
+                from: error,
+                fallback: .modelFailure,
+                stage: .validatingModels,
+                recoveryAction: .prepareModels
+            )
+            return EngineModelsInspection(clauseTagger: .invalid(commandError.failure(requestID: nil)))
+        }
     }
 }
 
