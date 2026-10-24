@@ -221,7 +221,7 @@ public struct PortableModelPreparationService: Sendable {
                         model: .clauseTagger,
                         files: members,
                         directory: tagger,
-                        installCommand: "python3 scripts/fetch_clause_tagger.py を実行し、出力されたディレクトリの内容を \(tagger.path) に置く"
+                        installCommand: "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(tagger.path) に置く"
                     )
                 },
                 load: {

@@ -63,7 +63,7 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     let sessionID = UUID()
     let events = try await writeTranscript(["最初。後続", "独立"], root: root, sessionID: sessionID)
     let initialMetadata = try publishLocal(root: root, events: events)
-    let modelID = "sbintuitions/modernbert-ja-30m-multitagger"
+    let modelID = "Pokojaka/modernbert-ja-30m-utterance-tagger"
     let revision = String(repeating: "a", count: 64)
     let counter = DecisionUsageCounter()
     let provider = FixedResponseDecisionProvider()
