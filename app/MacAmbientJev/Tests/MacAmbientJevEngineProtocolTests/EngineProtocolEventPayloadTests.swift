@@ -76,7 +76,7 @@ struct EngineProtocolEventPayloadTests {
         ])
         #expect(EngineErrorCode.allCases.map(\.rawValue) == [
             "invalid_request", "unsupported_version", "invalid_request_id", "hello_required", "busy",
-            "settings_required", "invalid_settings", "stale_revision", "invalid_cursor", "session_not_found",
+            "settings_required", "invalid_settings", "stale_revision", "invalid_cursor", "session_not_found", "row_not_found",
             "device_not_found", "device_failure", "capture_failure", "disk_space", "power_failure", "filesystem",
             "model_missing", "model_corrupt", "model_failure", "processing_failure", "export_failure",
             "row_too_large", "cancelled", "internal_error"

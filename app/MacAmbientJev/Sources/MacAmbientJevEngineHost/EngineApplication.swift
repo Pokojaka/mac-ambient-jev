@@ -112,6 +112,7 @@ final class EngineApplicationCore {
     var readTranscript: EngineTranscriptCache?
     var transcriptReadSnapshot: EngineTranscriptCache?
     var transcriptReadNavigation: EnginePageNavigation?
+    var transcriptRowDetailsSnapshot: EngineTranscriptRowDetailsSnapshot?
     var nextTranscriptRevision: UInt64 = 0
 
     // State publication
@@ -430,6 +431,7 @@ struct EngineTranscriptCache {
     let sessionID: UUID
     var revision: UInt64
     var rows: [EngineTranscriptRow]
+    var materializedSegments: [MaterializedTranscriptSegment]
     var isLiveState: Bool
     var projection: EngineTranscriptProjection.Incremental?
     var reportedTranscriptFailures: [EngineTranscriptRowFailure] = []

@@ -58,6 +58,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case sessionRetryDecisions(EngineSessionPayload)
     case sessionList(EngineSessionListResult)
     case transcriptRead(EngineTranscriptPage)
+    case transcriptRowDetails(EngineTranscriptRowDetailsPage)
     case transcriptWatch(EngineTranscriptPage)
     /// Completion means the bundle has been published.
     case sessionExport(EngineExportResult)
@@ -86,6 +87,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .sessionRetryDecisions: .sessionRetryDecisions
         case .sessionList: .sessionList
         case .transcriptRead: .transcriptRead
+        case .transcriptRowDetails: .transcriptRowDetails
         case .transcriptWatch: .transcriptWatch
         case .sessionExport: .sessionExport
         case .settingsGet: .settingsGet
@@ -134,6 +136,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .sessionList(try EngineSessionListResult(from: result))
         case .transcriptRead:
             return .transcriptRead(try EngineTranscriptPage(from: result))
+        case .transcriptRowDetails:
+            return .transcriptRowDetails(try EngineTranscriptRowDetailsPage(from: result))
         case .transcriptWatch:
             return .transcriptWatch(try EngineTranscriptPage(from: result))
         case .sessionExport:
@@ -171,6 +175,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case let .sessionList(result):
             try result.encode(to: encoder)
         case let .transcriptRead(page), let .transcriptWatch(page):
+            try page.encode(to: encoder)
+        case let .transcriptRowDetails(page):
             try page.encode(to: encoder)
         case let .sessionExport(result):
             try result.encode(to: encoder)

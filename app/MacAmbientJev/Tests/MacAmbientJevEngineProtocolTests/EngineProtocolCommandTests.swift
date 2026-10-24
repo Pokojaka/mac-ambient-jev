@@ -19,6 +19,13 @@ struct EngineProtocolCommandTests {
             (.sessionRetryDecisions, .sessionRetryDecisions(session), ["session_id"]),
             (.sessionList, .sessionList(try EngineSessionListPayload(cursor: nil, limit: 100)), ["cursor", "limit"]),
             (.transcriptRead, .transcriptRead(try EngineTranscriptReadPayload(sessionID: "session-1", revision: nil, cursor: nil, limit: 200)), ["session_id", "revision", "cursor", "limit"]),
+            (.transcriptRowDetails, .transcriptRowDetails(try EngineTranscriptRowDetailsPayload(
+                sessionID: "session-1",
+                revision: try EngineID(decimal: "3"),
+                rowID: "row-1",
+                cursor: nil,
+                limit: 20
+            )), ["session_id", "revision", "row_id", "cursor", "limit"]),
             (.transcriptWatch, .transcriptWatch(session), ["session_id"]),
             (.sessionExport, .sessionExport(try EngineExportPayload(sessionID: "session-1", destinationPath: "/export")), ["session_id", "destination_path"]),
             (.settingsGet, .settingsGet, []),
@@ -27,8 +34,8 @@ struct EngineProtocolCommandTests {
             (.modelsInspect, .modelsInspect, []),
             (.shutdown, .shutdown, [])
         ]
-        #expect(commands.count == 19)
-        #expect(EngineCommandName.allCases.count == 19)
+        #expect(commands.count == 20)
+        #expect(EngineCommandName.allCases.count == 20)
 
         for (name, command, payloadKeys) in commands {
             let request = try makeRequest(command)
@@ -74,7 +81,7 @@ struct EngineProtocolCommandTests {
         #expect(EngineCommandName.allCases.map(\.rawValue) == [
             "hello", "state.get", "diagnostics.get", "devices.list", "recording.start", "recording.stop",
             "session.import", "session.inspect", "session.reprocess", "session.retry_decisions", "session.list",
-            "transcript.read", "transcript.watch", "session.export", "settings.get",
+            "transcript.read", "transcript.row_details", "transcript.watch", "session.export", "settings.get",
             "settings.replace", "models.prepare", "models.inspect", "shutdown"
         ])
 

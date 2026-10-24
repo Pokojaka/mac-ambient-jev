@@ -506,6 +506,7 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case sessionRetryDecisions = "session.retry_decisions"
     case sessionList = "session.list"
     case transcriptRead = "transcript.read"
+    case transcriptRowDetails = "transcript.row_details"
     case transcriptWatch = "transcript.watch"
     case sessionExport = "session.export"
     case settingsGet = "settings.get"
@@ -542,6 +543,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case sessionRetryDecisions(EngineSessionPayload)
     case sessionList(EngineSessionListPayload)
     case transcriptRead(EngineTranscriptReadPayload)
+    case transcriptRowDetails(EngineTranscriptRowDetailsPayload)
     case transcriptWatch(EngineSessionPayload)
     case sessionExport(EngineExportPayload)
     case settingsGet
@@ -569,6 +571,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .sessionRetryDecisions: .sessionRetryDecisions
         case .sessionList: .sessionList
         case .transcriptRead: .transcriptRead
+        case .transcriptRowDetails: .transcriptRowDetails
         case .transcriptWatch: .transcriptWatch
         case .sessionExport: .sessionExport
         case .settingsGet: .settingsGet
@@ -620,6 +623,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             return .sessionList(try EngineSessionListPayload(from: payload))
         case .transcriptRead:
             return .transcriptRead(try EngineTranscriptReadPayload(from: payload))
+        case .transcriptRowDetails:
+            return .transcriptRowDetails(try EngineTranscriptRowDetailsPayload(from: payload))
         case .transcriptWatch:
             return .transcriptWatch(try EngineSessionPayload(from: payload))
         case .sessionExport:
@@ -658,6 +663,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case let .sessionList(payload):
             try payload.encode(to: encoder)
         case let .transcriptRead(payload):
+            try payload.encode(to: encoder)
+        case let .transcriptRowDetails(payload):
             try payload.encode(to: encoder)
         case let .sessionExport(payload):
             try payload.encode(to: encoder)

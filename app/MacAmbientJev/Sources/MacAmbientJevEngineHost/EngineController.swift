@@ -230,6 +230,8 @@ public final class EngineController {
             return .sessionInspect(try await handlers.sessions.inspect(payload, context: context))
         case let .transcriptRead(payload):
             return .transcriptRead(try await handlers.transcript.read(payload, context: context))
+        case let .transcriptRowDetails(payload):
+            return .transcriptRowDetails(try await handlers.transcript.rowDetails(payload, context: context))
         case let .transcriptWatch(payload):
             return .transcriptWatch(try await handlers.transcript.watch(payload, context: context))
         case let .sessionExport(payload):

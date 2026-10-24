@@ -139,6 +139,7 @@ public protocol EngineSessionHandling {
 @MainActor
 public protocol EngineTranscriptHandling {
     func read(_ payload: EngineTranscriptReadPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage
+    func rowDetails(_ payload: EngineTranscriptRowDetailsPayload, context: EngineRequestContext) async throws -> EngineTranscriptRowDetailsPage
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage
 }
 

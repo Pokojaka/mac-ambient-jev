@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 56)
+        #expect(records.count == 65)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -72,6 +72,8 @@ struct EngineProtocolGoldenTests {
         var sawDiagnosticsRequest = false
         var sawModelsInspectRequest = false
         var sawInspectionCancellation = false
+        var sawRowNotFoundError = false
+        var sawStaleRevisionError = false
         var sawAvailableDiagnostics = false
         var sawUnavailableDiagnostics = false
         var sawValidatedModelInspection = false
@@ -332,7 +334,8 @@ struct EngineProtocolGoldenTests {
                             #expect(detail.message == modelFailureMessage)
                             sawInvalidModelInspection = true
                         }
-                    default:
+                    case .hello, .stateGet, .recordingStart, .recordingStop, .sessionImport, .sessionReprocess,
+                         .sessionRetryDecisions, .transcriptRowDetails, .sessionExport, .modelsPrepare, .shutdown:
                         break
                     }
                 case let .rows(payload):
@@ -371,6 +374,30 @@ struct EngineProtocolGoldenTests {
                             #expect(failure.details.isEmpty)
                             #expect(failure.cleanupErrors.isEmpty)
                             sawInspectionCancellation = true
+                        } else if requestID.value == 108 {
+                            #expect(output.sequence.value == 106)
+                            #expect(failure.code == .rowNotFound)
+                            #expect(failure.message == "指定された文字起こし行が見つかりません")
+                            #expect(failure.stage == .finalization)
+                            #expect(failure.requestID == requestID)
+                            #expect(failure.sessionID == "session-detail-missing")
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .inspectSession)
+                            #expect(failure.details.isEmpty)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawRowNotFoundError = true
+                        } else if requestID.value == 109 {
+                            #expect(output.sequence.value == 107)
+                            #expect(failure.code == .staleRevision)
+                            #expect(failure.message == "文字起こしの revision が古くなっています。最初から読み直してください")
+                            #expect(failure.stage == .finalization)
+                            #expect(failure.requestID == requestID)
+                            #expect(failure.sessionID == "session-detail-stale")
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .retry)
+                            #expect(failure.details.isEmpty)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawStaleRevisionError = true
                         } else {
                             #expect(Bool(false), "Unexpected correlated error request ID \(requestID.rawValue)")
                         }
@@ -428,8 +455,8 @@ struct EngineProtocolGoldenTests {
                     #expect(request.requestID.value == 20)
                     sawModelsInspectRequest = true
                 case .hello, .stateGet, .devicesList, .recordingStop, .sessionImport, .sessionReprocess,
-                     .sessionRetryDecisions, .sessionList, .transcriptWatch, .sessionExport, .settingsGet,
-                     .modelsPrepare, .shutdown:
+                     .sessionRetryDecisions, .sessionList, .transcriptWatch, .transcriptRowDetails,
+                     .sessionExport, .settingsGet, .modelsPrepare, .shutdown:
                     break
                 }
             }
@@ -470,7 +497,172 @@ struct EngineProtocolGoldenTests {
         #expect(sawValidatedModelInspection)
         #expect(sawInvalidModelInspection)
         #expect(sawInspectionCancellation)
+        #expect(sawRowNotFoundError)
+        #expect(sawStaleRevisionError)
         #expect(rowLabels == Set(EngineSpeakerLabel.allCases.map(\.rawValue)))
+    }
+
+    @Test func rowDetailsCorpusCoversTypedFieldsStatesSpeakersAndPageArms() throws {
+        let revision = try EngineID(999)
+        let encodedPayload = try EngineTranscriptRowDetailsPayload(
+            sessionID: "schema-session", revision: revision, rowID: "schema-row", cursor: nil, limit: 1
+        )
+        let encodedSpan = try EngineTranscriptSpeakerSpan(
+            speakerID: "schema-speaker", displayLabel: "Schema Speaker", startMS: 0, endMS: 1
+        )
+        let encodedPage = try EngineTranscriptRowDetailsPage(
+            sessionID: "schema-session", revision: revision, rowID: "schema-row",
+            clauseState: .classified, clauseStateText: "発話文: 判定済み", speakers: [encodedSpan],
+            nextCursor: nil, previousCursor: nil
+        )
+        let payloadKeys = try encodedObjectKeys(encodedPayload)
+        let spanKeys = try encodedObjectKeys(encodedSpan)
+        let pageKeys = try encodedObjectKeys(encodedPage)
+        let encodedClauseStates = try encodedStringValues(EngineClauseState.allCases)
+
+        var fixturePayloadKeys = Set<String>()
+        var fixtureSpanKeys = Set<String>()
+        var fixturePageKeys = Set<String>()
+        var payloadCursorArms = Set<String>()
+        var clauseStates = Set<String>()
+        var speakerDisplayLabels = Set<String>()
+        var pagePositionArms = Set<String>()
+        var sawEmptySpeakers = false
+        var sawNonemptySpeakers = false
+        var sawRepeatedOverlappingSpeaker = false
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            if metadata.keys.contains("event") {
+                let output = try EngineCodec.decodeOutput(record)
+                guard case let .completed(.transcriptRowDetails(page)) = output.event else { continue }
+                let eventPayload = try #require(metadata["payload"] as? [String: Any])
+                let result = try #require(eventPayload["result"] as? [String: Any])
+                fixturePageKeys.formUnion(result.keys)
+                let encodedSpeakers = try #require(result["speakers"] as? [[String: Any]])
+                for speaker in encodedSpeakers {
+                    fixtureSpanKeys.formUnion(speaker.keys)
+                }
+
+                clauseStates.insert(page.clauseState.rawValue)
+                speakerDisplayLabels.formUnion(page.speakers.map(\.displayLabel))
+                let spanSignatures = page.speakers.map {
+                    "\($0.speakerID)|\($0.displayLabel)|\($0.startMS)|\($0.endMS)"
+                }
+                if page.speakers.isEmpty { sawEmptySpeakers = true }
+                if !page.speakers.isEmpty { sawNonemptySpeakers = true }
+
+                switch page.rowID {
+                case "row-detail-201":
+                    #expect(page.sessionID == "session-detail-a")
+                    #expect(page.revision.value == 201)
+                    #expect(page.clauseState == .awaitingNextSegment)
+                    #expect(page.clauseStateText == "発話文: 続き待ち")
+                    #expect(page.previousCursor == nil)
+                    #expect(page.nextCursor == "11111111-1111-4111-8111-111111111111")
+                    #expect(spanSignatures == [
+                        "speaker-internal-101|Speaker 1|0|850",
+                        "speaker-internal-101|Speaker 1|700|1500",
+                    ])
+                    #expect(page.speakers[0].speakerID == page.speakers[1].speakerID)
+                    #expect(page.speakers[0].startMS < page.speakers[1].startMS)
+                    #expect(page.speakers[1].startMS < page.speakers[0].endMS)
+                    #expect(page.speakers[0].endMS < page.speakers[1].endMS)
+                    sawRepeatedOverlappingSpeaker = true
+                    pagePositionArms.insert("first")
+                case "row-detail-202":
+                    #expect(page.sessionID == "session-detail-b")
+                    #expect(page.revision.value == 202)
+                    #expect(page.clauseState == .boundaryPending)
+                    #expect(page.clauseStateText == "発話文: 境界判定を保留中")
+                    #expect(page.previousCursor == "33333333-3333-4333-8333-333333333333")
+                    #expect(page.nextCursor == "22222222-2222-4222-8222-222222222222")
+                    #expect(spanSignatures == [
+                        "speaker-internal-202|Speaker 2|400|1200",
+                        "speaker-internal-203|Speaker 3|1100|2100",
+                    ])
+                    pagePositionArms.insert("middle")
+                case "row-detail-203":
+                    #expect(page.sessionID == "session-detail-c")
+                    #expect(page.revision.value == 203)
+                    #expect(page.clauseState == .priorityPending)
+                    #expect(page.clauseStateText == "発話文: 優先度判定を待っています")
+                    #expect(page.previousCursor == "55555555-5555-4555-8555-555555555555")
+                    #expect(page.nextCursor == "44444444-4444-4444-8444-444444444444")
+                    #expect(spanSignatures == [
+                        "speaker-internal-204|Speaker 4|2000|3000",
+                        "speaker-internal-205|Speaker 5|3100|4150",
+                        "speaker-internal-206|Speaker 6|4200|5200",
+                    ])
+                    pagePositionArms.insert("middle")
+                case "row-detail-204":
+                    #expect(page.sessionID == "session-detail-d")
+                    #expect(page.revision.value == 204)
+                    #expect(page.clauseState == .classified)
+                    #expect(page.clauseStateText == "発話文: 判定済み")
+                    #expect(page.previousCursor == "66666666-6666-4666-8666-666666666666")
+                    #expect(page.nextCursor == nil)
+                    #expect(spanSignatures == [
+                        "speaker-internal-207|Speaker 7|5100|6200",
+                        "speaker-internal-other|OTHER|6300|7000",
+                        "speaker-internal-unknown|UNKNOWN|7100|7900",
+                        "speaker-raw-208|speaker-raw-208|8000|8500",
+                    ])
+                    pagePositionArms.insert("last")
+                case "row-detail-205":
+                    #expect(page.sessionID == "session-detail-empty")
+                    #expect(page.revision.value == 205)
+                    #expect(page.clauseState == .classified)
+                    #expect(page.clauseStateText == "発話文: 判定済み")
+                    #expect(page.speakers.isEmpty)
+                    #expect(page.nextCursor == nil)
+                    #expect(page.previousCursor == nil)
+                    pagePositionArms.insert("single")
+                default:
+                    #expect(Bool(false), "Unexpected row-details fixture row ID \(page.rowID)")
+                }
+            } else {
+                let request = try EngineCodec.decodeRequest(record)
+                guard case let .transcriptRowDetails(payload) = request.command else { continue }
+                let payloadObject = try #require(metadata["payload"] as? [String: Any])
+                fixturePayloadKeys.formUnion(payloadObject.keys)
+                if let cursor = payload.cursor {
+                    payloadCursorArms.insert("value")
+                    #expect(cursor == "11111111-1111-4111-8111-111111111111")
+                } else {
+                    payloadCursorArms.insert("null")
+                }
+
+                switch request.requestID.value {
+                case 101:
+                    #expect(payload.sessionID == "session-detail-a")
+                    #expect(payload.revision.value == 201)
+                    #expect(payload.rowID == "row-detail-201")
+                    #expect(payload.cursor == nil)
+                    #expect(payload.limit == 2)
+                case 102:
+                    #expect(payload.sessionID == "session-detail-b")
+                    #expect(payload.revision.value == 202)
+                    #expect(payload.rowID == "row-detail-202")
+                    #expect(payload.cursor == "11111111-1111-4111-8111-111111111111")
+                    #expect(payload.limit == 2)
+                default:
+                    #expect(Bool(false), "Unexpected row-details fixture request ID \(request.requestID.rawValue)")
+                }
+            }
+        }
+
+        #expect(fixturePayloadKeys.isSuperset(of: payloadKeys))
+        #expect(fixtureSpanKeys.isSuperset(of: spanKeys))
+        #expect(fixturePageKeys.isSuperset(of: pageKeys))
+        #expect(payloadCursorArms == ["null", "value"])
+        #expect(clauseStates == encodedClauseStates)
+        let standardSpeakerLabels = Set(EngineSpeakerLabel.allCases.map(\.rawValue))
+        #expect(speakerDisplayLabels == standardSpeakerLabels.union(["speaker-raw-208"]))
+        #expect(sawEmptySpeakers)
+        #expect(sawNonemptySpeakers)
+        #expect(sawRepeatedOverlappingSpeaker)
+        #expect(pagePositionArms == ["first", "middle", "last", "single"])
     }
 
     @Test func recursivelyRejectsUnknownMissingNullAndWrongCategoryFields() throws {
@@ -569,6 +761,7 @@ struct EngineProtocolGoldenTests {
 
 private enum GoldenFixtureError: Error {
     case missingFinalLineFeed
+    case expectedJSONObject
 }
 
 private enum GoldenPathComponent {
@@ -701,6 +894,7 @@ private func isNullableField(
         "folder_id", "session_id", "status", "error", "display_name", "status_text",
         "folder_path", "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata",
     ])
+    let isTranscriptRowDetailsPage = object["clause_state_text"] != nil && object["speakers"] != nil
 
     if key == "request_id" {
         if objectPath.isEmpty { return root["event"] != nil }
@@ -711,6 +905,7 @@ private func isNullableField(
     if key == "cursor" {
         if root["command"] as? String == "session.list", has(["cursor", "limit"]) { return true }
         if root["command"] as? String == "transcript.read", has(["session_id", "revision", "cursor", "limit"]) { return true }
+        if root["command"] as? String == "transcript.row_details" { return true }
     }
     if key == "revision", root["command"] as? String == "transcript.read",
        has(["session_id", "revision", "cursor", "limit"]) { return true }
@@ -727,11 +922,13 @@ private func isNullableField(
     if key == "previous_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
+        if isTranscriptRowDetailsPage { return true }
     }
     if key == "next_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "kind", "rows", "removed_row_ids", "next_cursor"]) { return true }
+        if isTranscriptRowDetailsPage { return true }
     }
     if key == "clause_state", has(["row_id", "start_ms", "end_ms", "text", "headings", "clause_state"]) { return true }
     if key == "total_units", has(["stage", "completed_units", "total_units", "session_id"]) { return true }
@@ -745,4 +942,22 @@ private func pathName(_ path: [GoldenPathComponent]) -> String {
         case let .index(index): "[\(index)]"
         }
     }.joined()
+}
+
+private func encodedObjectKeys<Value: Encodable>(_ value: Value) throws -> Set<String> {
+    let data = try JSONEncoder().encode(value)
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw GoldenFixtureError.expectedJSONObject
+    }
+    return Set(object.keys)
+}
+
+private func encodedStringValues<Value: Encodable>(_ values: [Value]) throws -> Set<String> {
+    var result = Set<String>()
+    for value in values {
+        let data = try JSONEncoder().encode(value)
+        let rawValue = try JSONDecoder().decode(String.self, from: data)
+        result.insert(rawValue)
+    }
+    return result
 }

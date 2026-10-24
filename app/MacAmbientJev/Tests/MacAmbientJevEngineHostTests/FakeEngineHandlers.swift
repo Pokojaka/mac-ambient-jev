@@ -166,6 +166,23 @@ final class FakeEngineHandlers:
         return try EngineTranscriptPage(sessionID: payload.sessionID, revision: EngineID(1), rows: [], nextCursor: nil, previousCursor: nil)
     }
 
+    func rowDetails(
+        _ payload: EngineTranscriptRowDetailsPayload,
+        context: EngineRequestContext
+    ) async throws -> EngineTranscriptRowDetailsPage {
+        try await enter("transcript.row_details")
+        return try EngineTranscriptRowDetailsPage(
+            sessionID: payload.sessionID,
+            revision: payload.revision,
+            rowID: payload.rowID,
+            clauseState: .classified,
+            clauseStateText: "発話文: 判定済み",
+            speakers: [],
+            nextCursor: nil,
+            previousCursor: nil
+        )
+    }
+
     func get(context: EngineRequestContext) async throws -> EngineSettingsResult {
         try await enter("settings.get")
         return EngineSettingsResult(revision: try EngineID(1), settings: try sampleSettings())

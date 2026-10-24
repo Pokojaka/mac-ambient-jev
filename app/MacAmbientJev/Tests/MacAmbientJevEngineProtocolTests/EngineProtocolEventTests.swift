@@ -10,6 +10,20 @@ struct EngineProtocolEventTests {
         let settingsResult = EngineSettingsResult(revision: try engineID(2), settings: try sampleSettings())
         let row = try sampleRow()
         let page = try EngineTranscriptPage(sessionID: "session-1", revision: engineID(3), rows: [row], nextCursor: nil, previousCursor: nil)
+        let rowDetailsPage = try EngineTranscriptRowDetailsPage(
+            sessionID: "session-1",
+            revision: engineID(3),
+            rowID: "row-1",
+            clauseState: .boundaryPending,
+            clauseStateText: "発話文: 境界判定を保留中",
+            speakers: [
+                try EngineTranscriptSpeakerSpan(speakerID: "speaker-internal-42", displayLabel: "Speaker 1", startMS: 12, endMS: 20),
+                try EngineTranscriptSpeakerSpan(speakerID: "speaker-internal-43", displayLabel: "Speaker 2", startMS: 20, endMS: 34)
+            ],
+            nextCursor: nil,
+            previousCursor: nil
+        )
+        #expect(rowDetailsPage.clauseStateText == "発話文: 境界判定を保留中")
         let inspectedSummary = try sampleSessionSummary()
         let diagnostics = try sampleAvailableDiagnosticsResult()
         let modelInspection = EngineModelsInspection(clauseTagger: .validated(try sampleModelIdentity()))
@@ -29,6 +43,9 @@ struct EngineProtocolEventTests {
             (.sessionRetryDecisions, .sessionRetryDecisions(session), ["session_id"]),
             (.sessionList, .sessionList(try EngineSessionListResult(sessions: [], nextCursor: nil, previousCursor: nil)), ["sessions", "next_cursor", "previous_cursor"]),
             (.transcriptRead, .transcriptRead(page), ["session_id", "revision", "rows", "next_cursor", "previous_cursor"]),
+            (.transcriptRowDetails, .transcriptRowDetails(rowDetailsPage), [
+                "session_id", "revision", "row_id", "clause_state", "clause_state_text", "speakers", "next_cursor", "previous_cursor"
+            ]),
             (.transcriptWatch, .transcriptWatch(page), ["session_id", "revision", "rows", "next_cursor", "previous_cursor"]),
             (.sessionExport, .sessionExport(try EngineExportResult(sessionID: "session-1", destinationPath: "/published/bundle")), ["session_id", "destination_path"]),
             (.settingsGet, .settingsGet(settingsResult), ["revision", "settings"]),
@@ -38,7 +55,7 @@ struct EngineProtocolEventTests {
             (.shutdown, .shutdown, [])
         ]
 
-        #expect(results.count == 19)
+        #expect(results.count == 20)
         #expect(EngineCommandName.allCases == results.map(\.0))
 
         for (command, result, resultKeys) in results {

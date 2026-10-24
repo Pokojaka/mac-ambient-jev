@@ -20,12 +20,44 @@ extension EngineApplicationCore {
         }
     }
 
+    private func visibleRowDetailsChanged(
+        in cache: EngineTranscriptCache, comparedTo segments: [MaterializedTranscriptSegment]
+    ) -> Bool {
+        let rowIDs = Set(cache.rows.lazy.map(\.rowID))
+        var oldSegments = cache.materializedSegments.lazy.filter { rowIDs.contains($0.segmentID) }.makeIterator()
+        var newSegments = segments.lazy.filter { rowIDs.contains($0.segmentID) }.makeIterator()
+
+        while true {
+            switch (oldSegments.next(), newSegments.next()) {
+            case (nil, nil):
+                return false
+            case let (old?, new?):
+                guard old.segmentID == new.segmentID,
+                      old.clauseState == new.clauseState,
+                      old.speakers.count == new.speakers.count else {
+                    return true
+                }
+                for index in old.speakers.indices {
+                    let oldSpeaker = old.speakers[index]
+                    let newSpeaker = new.speakers[index]
+                    guard oldSpeaker.id == newSpeaker.id,
+                          oldSpeaker.startMilliseconds == newSpeaker.startMilliseconds,
+                          oldSpeaker.endMilliseconds == newSpeaker.endMilliseconds,
+                          (oldSpeaker.displayLabel ?? oldSpeaker.id) == (newSpeaker.displayLabel ?? newSpeaker.id) else {
+                        return true
+                    }
+                }
+            default:
+                return true
+            }
+        }
+    }
+
     /// Updates any cached view of this session. Only the watched session is streamed.
     func transcriptDidUpdate(sessionID: UUID, segments: [MaterializedTranscriptSegment]) {
         let watchedCache = sessionID == watchedSessionID && transcript?.sessionID == sessionID ? transcript : nil
         let cachedRead = readTranscript?.sessionID == sessionID ? readTranscript : nil
         guard watchedCache != nil || cachedRead != nil else { return }
-
         var watchedProjection = watchedCache?.projection
         if let watchedCache, watchedProjection == nil {
             watchedProjection = EngineTranscriptProjection.Incremental(rows: watchedCache.rows)
@@ -181,26 +213,45 @@ extension EngineApplicationCore {
             readProjection?.commit()
         }
 
-        let watchedChanged = watchedChanges?.isEmpty == false
-        let readChanged = readUpdate?.changes.isEmpty == false
-        var updatedWatched: EngineTranscriptCache?
-        if watchedChanged, var cache = transcript, cache.sessionID == sessionID, let update = watchedUpdate {
-            cache.rows = update.rows
-            cache.revision = newRevision()
-            cache.isLiveState = true
-            transcript = cache
-            updatedWatched = cache
+        let watchedRowsChanged = watchedChanges?.isEmpty == false
+        let readRowsChanged = readUpdate?.changes.isEmpty == false
+        let watchedDetailsChanged: Bool
+        if !watchedRowsChanged, let cache = transcript, cache.sessionID == sessionID, watchedUpdate != nil {
+            watchedDetailsChanged = visibleRowDetailsChanged(in: cache, comparedTo: segments)
+        } else {
+            watchedDetailsChanged = false
         }
-        if readChanged, var cache = readTranscript, cache.sessionID == sessionID, let update = readUpdate {
+        let readDetailsChanged: Bool
+        if !readRowsChanged, let cache = readTranscript, cache.sessionID == sessionID, readUpdate != nil {
+            readDetailsChanged = visibleRowDetailsChanged(in: cache, comparedTo: segments)
+        } else {
+            readDetailsChanged = false
+        }
+
+        var updatedWatched: EngineTranscriptCache?
+        if var cache = transcript, cache.sessionID == sessionID, let update = watchedUpdate {
             cache.rows = update.rows
-            cache.revision = newRevision()
+            cache.materializedSegments = segments
             cache.isLiveState = true
+            if watchedRowsChanged || watchedDetailsChanged {
+                cache.revision = newRevision()
+                updatedWatched = cache
+            }
+            transcript = cache
+        }
+        if var cache = readTranscript, cache.sessionID == sessionID, let update = readUpdate {
+            cache.rows = update.rows
+            cache.materializedSegments = segments
+            cache.isLiveState = true
+            if readRowsChanged || readDetailsChanged {
+                cache.revision = newRevision()
+            }
             readTranscript = cache
         }
-        guard let cache = updatedWatched, let changes = watchedChanges else { return }
+        guard let cache = updatedWatched else { return }
         do {
             let payload: EngineRowsPayload
-            if changesFit {
+            if let changes = watchedChanges, !changes.isEmpty, changesFit {
                 payload = try EngineRowsPayload(
                     sessionID: EngineFailures.wireID(sessionID), revision: wireRevision(cache.revision), kind: .changes,
                     rows: changes.upserts, removedRowIDs: changes.removedRowIDs, nextCursor: nil
@@ -217,6 +268,9 @@ extension EngineApplicationCore {
     /// Replaces matching caches with the saved transcript after a successful finalization.
     /// Publication always invalidates existing cursors, even when projected rows are identical.
     func transcriptDidPublish(sessionID: UUID) {
+        if transcriptRowDetailsSnapshot?.sessionID == sessionID {
+            transcriptRowDetailsSnapshot = nil
+        }
         if transcriptReadSnapshot?.sessionID == sessionID {
             transcriptReadSnapshot = nil
             transcriptReadNavigation = nil
@@ -226,6 +280,7 @@ extension EngineApplicationCore {
         guard watchedCache != nil || cachedRead != nil else { return }
 
         let rows: [EngineTranscriptRow]
+        let materializedSegments: [MaterializedTranscriptSegment]
         do {
             let session = try readableSession(sessionID)
             guard let audioSource = session.audioSource else {
@@ -242,6 +297,7 @@ extension EngineApplicationCore {
                 )
             case let .segments(segments):
                 rows = try EngineTranscriptProjection.rows(for: segments)
+                materializedSegments = segments
             }
         } catch {
             reportTranscriptError(error, sessionID: sessionID)
@@ -251,6 +307,7 @@ extension EngineApplicationCore {
         var updatedWatched: EngineTranscriptCache?
         if var cache = watchedCache {
             cache.rows = rows
+            cache.materializedSegments = materializedSegments
             cache.revision = newRevision()
             cache.isLiveState = false
             cache.projection = nil
@@ -260,6 +317,7 @@ extension EngineApplicationCore {
         }
         if var cache = cachedRead {
             cache.rows = rows
+            cache.materializedSegments = materializedSegments
             cache.revision = newRevision()
             cache.isLiveState = false
             cache.projection = nil
@@ -376,7 +434,8 @@ extension EngineApplicationCore {
 
         if isLiveOrPending {
             return EngineTranscriptCache(
-                sessionID: sessionID, revision: newRevision(), rows: [], isLiveState: true, projection: nil
+                sessionID: sessionID, revision: newRevision(), rows: [], materializedSegments: [],
+                isLiveState: true, projection: nil
             )
         }
         guard let audioSource = session.audioSource else {
@@ -386,10 +445,15 @@ extension EngineApplicationCore {
             )
         }
         let rows: [EngineTranscriptRow]
+        let materializedSegments: [MaterializedTranscriptSegment]
         do {
             switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL, audioSource: audioSource) {
-            case .unavailable: rows = []
-            case let .segments(segments): rows = try EngineTranscriptProjection.rows(for: segments)
+            case .unavailable:
+                rows = []
+                materializedSegments = []
+            case let .segments(segments):
+                rows = try EngineTranscriptProjection.rows(for: segments)
+                materializedSegments = segments
             }
         } catch {
             throw EngineFailures.commandError(
@@ -398,7 +462,8 @@ extension EngineApplicationCore {
             )
         }
         return EngineTranscriptCache(
-            sessionID: sessionID, revision: newRevision(), rows: rows, isLiveState: false, projection: nil
+            sessionID: sessionID, revision: newRevision(), rows: rows, materializedSegments: materializedSegments,
+            isLiveState: false, projection: nil
         )
     }
 }
@@ -460,6 +525,68 @@ extension EngineApplicationCore: EngineTranscriptHandling {
         transcriptReadSnapshot = cache
         transcriptReadNavigation = navigation
         return response
+    }
+
+    func rowDetails(
+        _ payload: EngineTranscriptRowDetailsPayload,
+        context: EngineRequestContext
+    ) async throws -> EngineTranscriptRowDetailsPage {
+        let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
+        _ = try readableSession(sessionID)
+
+        let revision = payload.revision.value
+        if let snapshot = transcriptRowDetailsSnapshot,
+           snapshot.sessionID == sessionID,
+           snapshot.revision == revision,
+           snapshot.rowID == payload.rowID {
+            return try snapshot.page(cursor: payload.cursor, limit: payload.limit)
+        }
+
+        let cache: EngineTranscriptCache
+        if let snapshot = transcriptReadSnapshot,
+           snapshot.sessionID == sessionID,
+           snapshot.revision == revision {
+            cache = snapshot
+        } else if let watched = transcript,
+                  watched.sessionID == sessionID,
+                  watched.revision == revision {
+            cache = watched
+        } else if let read = readTranscript,
+                  read.sessionID == sessionID,
+                  read.revision == revision {
+            cache = read
+        } else {
+            throw EngineFailures.commandError(
+                .staleRevision, "文字起こしの revision が古くなっています。最初から読み直してください",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+            )
+        }
+
+        guard cache.rows.contains(where: { $0.rowID == payload.rowID }) else {
+            throw EngineFailures.commandError(
+                .rowNotFound, "指定された文字起こし行が見つかりません",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .inspectSession
+            )
+        }
+        guard let segment = cache.materializedSegments.first(where: { $0.segmentID == payload.rowID }) else {
+            throw EngineFailures.commandError(
+                .internalError, "文字起こし行の詳細に対応する materialized segment がありません",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .restart
+            )
+        }
+        guard payload.cursor == nil else {
+            throw EngineFailures.commandError(
+                .invalidCursor, "cursor に対応する文字起こし行の詳細 snapshot がありません",
+                stage: .finalization, sessionID: sessionID
+            )
+        }
+
+        let snapshot = try EngineTranscriptRowDetailsSnapshot(
+            sessionID: sessionID, revision: revision, segment: segment, limit: payload.limit
+        )
+        let page = try snapshot.page(cursor: nil, limit: payload.limit)
+        transcriptRowDetailsSnapshot = snapshot
+        return page
     }
 
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {

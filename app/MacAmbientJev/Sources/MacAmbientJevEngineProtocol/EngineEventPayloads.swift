@@ -54,6 +54,7 @@ public enum EngineErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case staleRevision = "stale_revision"
     case invalidCursor = "invalid_cursor"
     case sessionNotFound = "session_not_found"
+    case rowNotFound = "row_not_found"
     case deviceNotFound = "device_not_found"
     case deviceFailure = "device_failure"
     case captureFailure = "capture_failure"
