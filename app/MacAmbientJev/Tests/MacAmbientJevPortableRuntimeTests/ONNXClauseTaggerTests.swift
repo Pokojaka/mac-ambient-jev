@@ -22,7 +22,7 @@ private enum ClauseTaggerTestInputs {
     /// The directory `scripts/fetch_clause_tagger.py` printed. There is no default, and a missing or
     /// wrong value fails the test instead of skipping it.
     static func modelDirectory() throws -> URL {
-        let hint = "Run `python3 scripts/fetch_clause_tagger.py` and export the directory it prints as \(modelDirectoryKey)."
+        let hint = "Run `python3 scripts/fetch_clause_tagger.py --format onnx` and export the directory it prints as \(modelDirectoryKey)."
         guard let path = ProcessInfo.processInfo.environment[modelDirectoryKey], !path.isEmpty else {
             throw ClauseTaggerTestInputError.invalid("environment variable \(modelDirectoryKey) is not set. \(hint)")
         }
@@ -156,7 +156,7 @@ struct ONNXClauseTaggerTests {
             Issue.record("expected directoryMissing, got \(error)")
             return
         }
-        #expect("\(error)".contains("python3 scripts/fetch_clause_tagger.py"))
+        #expect("\(error)".contains("python3 scripts/fetch_clause_tagger.py --format onnx"))
     }
 
     @Test func nonPositiveThreadCountIsRejectedBeforeLoading() throws {

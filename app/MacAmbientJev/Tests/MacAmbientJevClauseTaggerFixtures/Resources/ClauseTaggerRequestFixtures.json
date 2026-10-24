@@ -12202,7 +12202,7 @@
   "compute_precision" : "float32",
   "compute_units" : "cpuOnly",
   "encoding_revision" : "1",
-  "model_id" : "sbintuitions/modernbert-ja-30m-multitagger",
+  "model_id" : "Pokojaka/modernbert-ja-30m-utterance-tagger",
   "model_revision" : "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
   "priority_batches" : [
     {

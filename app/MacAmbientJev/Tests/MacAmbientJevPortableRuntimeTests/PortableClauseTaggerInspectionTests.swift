@@ -31,7 +31,7 @@ struct PortableClauseTaggerInspectionTests {
         }
         #expect(model == .clauseTagger)
         #expect(path == missing.path)
-        #expect(installCommand.contains("python3 scripts/fetch_clause_tagger.py"))
+        #expect(installCommand == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
     }
 
     @Test func publicValidationLoadsBundledManifestAndReportsMissingDirectory() throws {
@@ -47,7 +47,7 @@ struct PortableClauseTaggerInspectionTests {
         }
         #expect(model == .clauseTagger)
         #expect(path == missing.path)
-        #expect(command.contains("python3 scripts/fetch_clause_tagger.py"))
+        #expect(command == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
     }
 
     @Test func sameSizeHashMismatchIsPortableInvalidWithSHA256Detail() throws {
@@ -66,7 +66,39 @@ struct PortableClauseTaggerInspectionTests {
         #expect(model == .clauseTagger)
         #expect(path.hasSuffix("ClauseTagger.onnx"))
         #expect(detail.contains("SHA-256"))
-        #expect(command.contains("python3 scripts/fetch_clause_tagger.py"))
+        #expect(command == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(fixture.root.path) に置く")
+    }
+
+    @Test func modelLicenseIsRequiredAndHashValidated() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root.deletingLastPathComponent()) }
+        let original = try #require(fixture.payloads["LICENSE.md"])
+        let licenseURL = fixture.root.appendingPathComponent("LICENSE.md")
+        try Data(original.map { $0 ^ 0xFF }).write(to: licenseURL)
+
+        let hashError = try #require(preparationFailure {
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+        })
+        guard case let .invalid(model, path, detail, command) = hashError else {
+            Issue.record("expected invalid model license hash, got \(hashError)")
+            return
+        }
+        #expect(model == .clauseTagger)
+        #expect(path.hasSuffix("LICENSE.md"))
+        #expect(detail.contains("SHA-256"))
+        #expect(command.contains("--format onnx"))
+
+        try FileManager.default.removeItem(at: licenseURL)
+        let missingError = try #require(preparationFailure {
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+        })
+        guard case let .missing(missingModel, missingPath, missingCommand) = missingError else {
+            Issue.record("expected missing model license, got \(missingError)")
+            return
+        }
+        #expect(missingModel == .clauseTagger)
+        #expect(missingPath.hasSuffix("LICENSE.md"))
+        #expect(missingCommand.contains("--format onnx"))
     }
 
     @Test func wrongSizeAndMissingMemberAreReportedAsPortableErrors() throws {
@@ -102,7 +134,7 @@ struct PortableClauseTaggerInspectionTests {
         defer { try? FileManager.default.removeItem(at: fixture.root.deletingLastPathComponent()) }
         let badManifest = ClauseTaggerManifest(
             schemaVersion: 2,
-            release: fixture.manifest.release,
+            source: fixture.manifest.source,
             model: fixture.manifest.model,
             onnx: fixture.manifest.onnx,
             members: fixture.manifest.members
@@ -295,6 +327,7 @@ struct PortableClauseTaggerInspectionTests {
             members.append(.init(
                 role: member.role,
                 name: member.name,
+                path: member.path,
                 byteCount: payload.count,
                 sha256: FileSHA256.hexDigest(of: payload)
             ))
@@ -310,7 +343,7 @@ struct PortableClauseTaggerInspectionTests {
         )
         let manifest = ClauseTaggerManifest(
             schemaVersion: bundled.schemaVersion,
-            release: bundled.release,
+            source: bundled.source,
             model: model,
             onnx: bundled.onnx,
             members: members
@@ -318,13 +351,9 @@ struct PortableClauseTaggerInspectionTests {
         let manifestURL = parent.appendingPathComponent("clause_tagger_model.json")
         let manifestData = try JSONSerialization.data(withJSONObject: [
             "schemaVersion": manifest.schemaVersion,
-            "release": [
-                "repository": manifest.release.repository,
-                "tag": manifest.release.tag,
-                "asset": manifest.release.asset,
-                "byteCount": manifest.release.byteCount,
-                "sha256": manifest.release.sha256,
-                "directory": manifest.release.directory,
+            "source": [
+                "repository": manifest.source.repository,
+                "commit": manifest.source.commit,
             ],
             "model": [
                 "id": manifest.model.id,
@@ -367,6 +396,7 @@ struct PortableClauseTaggerInspectionTests {
                 [
                     "role": member.role.rawValue,
                     "name": member.name,
+                    "path": member.path,
                     "byteCount": member.byteCount,
                     "sha256": member.sha256,
                 ]

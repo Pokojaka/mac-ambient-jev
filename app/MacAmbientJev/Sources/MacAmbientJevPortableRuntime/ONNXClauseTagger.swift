@@ -10,7 +10,7 @@ public actor ONNXClauseTagger: DecisionProvider {
     private let tokenizer: ClauseTaggerTokenizer
     private let model: ONNXClauseTaggerModel
 
-    /// `modelDirectory` holds the files that `scripts/fetch_clause_tagger.py` prints the directory of.
+    /// `modelDirectory` holds the files fetched by `scripts/fetch_clause_tagger.py --format onnx`.
     public init(modelDirectory: URL, intraOpThreads: Int) throws {
         guard intraOpThreads > 0 else {
             throw ClauseTaggerModelError.unavailable("ONNX Runtime の演算スレッド数は正の整数である必要があります（指定: \(intraOpThreads)）。")

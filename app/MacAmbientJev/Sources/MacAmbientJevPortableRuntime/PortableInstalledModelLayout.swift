@@ -30,13 +30,13 @@ public struct PortableInstalledModelLayout: Sendable, Equatable {
             .appending(path: try Community1Assets.pinnedManifestSHA256(), directoryHint: .isDirectory)
     }
 
-    /// `clause-tagger/<release tag>/<release directory>`
+    /// `clause-tagger/<Hugging Face commit>/clause-tagger-onnx`
     public func clauseTaggerDirectory() throws -> URL {
-        let release = try ClauseTaggerManifest.bundled().release
+        let source = try ClauseTaggerManifest.bundled().source
         return modelsRoot
             .appending(path: "clause-tagger", directoryHint: .isDirectory)
-            .appending(path: release.tag, directoryHint: .isDirectory)
-            .appending(path: release.directory, directoryHint: .isDirectory)
+            .appending(path: source.commit, directoryHint: .isDirectory)
+            .appending(path: "clause-tagger-onnx", directoryHint: .isDirectory)
     }
 }
 

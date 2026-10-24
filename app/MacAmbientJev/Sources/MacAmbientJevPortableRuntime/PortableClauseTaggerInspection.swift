@@ -111,6 +111,6 @@ public actor PortableClauseTaggerInspection {
     }
 
     private nonisolated static func installCommand(for modelDirectory: URL) -> String {
-        "python3 scripts/fetch_clause_tagger.py を実行し、出力されたディレクトリの内容を \(modelDirectory.path) に置く"
+        "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory.path) に置く"
     }
 }

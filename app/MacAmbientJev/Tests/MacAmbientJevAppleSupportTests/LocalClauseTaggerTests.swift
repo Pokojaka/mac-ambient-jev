@@ -27,7 +27,7 @@ struct LocalClauseTaggerTests {
     func fixtureIsTrainedAndHasConsistentProbabilityShapes() throws {
         let document = try Self.loadFixture()
 
-        #expect(document.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
+        #expect(document.modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger")
         #expect(document.modelRevision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
         #expect(document.trainingStatus == "trained")
         #expect(Self.isLowercaseSHA256(document.tokenizerSHA256))

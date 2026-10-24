@@ -147,11 +147,11 @@ bash scripts/verify_v1.sh
 4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル3段階の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
 6. モデル検証を指定した場合は Swift test 一覧に ASRIntegrationTests があることと Runtime test bundle の存在を確認し、その bundle を `xcrun xctest` で実行する。
-7. `scripts/build_app.sh` で発話文判定モデルを release asset から取得して SHA-256 を検証し、app bundle に同梱する。MLX の Metal shader library は Swift Build backend で生成するため、その backend で build し、Apple Silicon 専用の arm64 のみを対象にする。続けてアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの2ファイル、codesign の検証、利用者が選んだファイルへの read/write と app-scope bookmark の2つの entitlement を確認する。
+7. `scripts/build_app.sh` は `python3 -B scripts/fetch_clause_tagger.py --format coreml` で固定された Hugging Face の公開 repository から Core ML model files を取得し、manifest が指定する各ファイルの byte 数と SHA-256 を検証して app bundle に同梱する。同梱物は ClauseTagger.mlpackage、tokenizer.json、LICENSE.md です。MLX の Metal shader library は Swift Build backend で生成するため、その backend で build し、Apple Silicon 専用の arm64 のみを対象にする。続けてアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの package・tokenizer・license、codesign の検証、利用者が選んだファイルへの read/write と app-scope bookmark の2つの entitlement を確認する。
 
-アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` の2 job を並列に実行する。前者は Python 3.13 と `regex` package を用意して `bash scripts/verify_v1_tests.sh` を実行し、後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は GitHub Actions の cache で、SwiftPM の依存ソース（`.build/checkouts/`、`.build/repositories/`、`.build/artifacts/`、`.build/workspace-state.json`）を cache する。key は runner OS と `Package.resolved` の hash で、`restore-keys` は指定しないため、完全一致する cache だけを復元する。build products は 4 GB を超えるため cache しない。
+アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` の2 job を並列に実行する。両 job は Python 3.13 を用意する。前者は `regex` package を install し、`scripts/test_fetch_clause_tagger.py`、`scripts/test_export_clause_tagger_onnx.py`、`scripts/test_build_app.py` を実行してから `bash scripts/verify_v1_tests.sh` を実行する。後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は GitHub Actions の cache で、SwiftPM の依存ソース（`.build/checkouts/`、`.build/repositories/`、`.build/artifacts/`、`.build/workspace-state.json`）を cache する。key は runner OS と `Package.resolved` の hash で、`restore-keys` は指定しないため、完全一致する cache だけを復元する。build products は 4 GB を超えるため cache しない。
 
-cache の有無にかかわらず依存解決と build・test は実行する。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。発話文判定モデルの release asset は `GH_TOKEN`（`github.token`）を使い `gh` から取得する。
+cache の有無にかかわらず依存解決と build・test は実行する。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。アプリ job は Python 3.13 を使い、`scripts/fetch_clause_tagger.py --format coreml` で公開 Hugging Face repository から認証なしでモデルを取得する。取得時には manifest に pin された各ファイルの byte 数と SHA-256 を検証する。
 
 ライブ判定の regression は注入した判定 coordinator factory を使います。
 
@@ -177,18 +177,42 @@ swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionCont
 発話文判定テストでは、通常の `swift test` で実 Core ML モデルを使うテストだけが skip され、model-free tests は通常の suite で実行対象です（他の suite や benchmark の gate は別途適用されます）。fixture 比較器、環境変数の検証、BOM を含む JSON reader の回帰テストも gated な実モデル実行なしで動きます。実モデル parity は macOS 15 以降で CPU only・float32 を使います。リポジトリルートから実行します。
 
 ```bash
-RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|DecisionProviderFactoryTests|ClauseTaggerParityFixtureTests|ClauseTagger'
+CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py --format coreml)"
+RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY="$CLAUSE_TAGGER" swift test --package-path app/MacAmbientJev --filter 'LocalClauseTaggerTests|DecisionProviderFactoryTests|ClauseTaggerParityFixtureTests|ClauseTagger'
 ```
 
-`/absolute/path/to/exported-model` は placeholder です。学習済み ClauseTagger.mlpackage と tokenizer.json が直下にある実在ディレクトリの絶対パスへ置き換えてください。`scripts/build_app.sh` の後は、app bundle の Contents/Resources/clause-tagger の絶対パスを指定すると同梱モデルを検証できます。gated run では `RUN_CLAUSE_TAGGER_TESTS=1` と明示的な `CLAUSE_TAGGER_MODEL_DIRECTORY` が必要です。環境変数の未設定・空値、相対パス、存在しないパス、ディレクトリでないパスはエラーになります。`MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1` を `RUN_CLAUSE_TAGGER_TESTS=1` なしで指定する場合もエラーです。既定パス、モデルの自動取得、fallback はありません。学習済みモデル package は Git に含めず、production tokenizer はアプリ release に同梱します。test-only の hash-pinned tokenizer JSON は Git に含めます。
+上の fetch command は検証済み Core ML model directory の絶対パスを返します。`scripts/build_app.sh` の後は、app bundle の Contents/Resources/clause-tagger の絶対パスを `CLAUSE_TAGGER_MODEL_DIRECTORY` に指定して同梱モデルを検証できます。gated run では `RUN_CLAUSE_TAGGER_TESTS=1` と明示的な `CLAUSE_TAGGER_MODEL_DIRECTORY` が必要です。環境変数の未設定・空値、相対パス、存在しないパス、ディレクトリでないパスはエラーになります。`MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1` を `RUN_CLAUSE_TAGGER_TESTS=1` なしで指定する場合もエラーです。暗黙のパス、モデルの自動取得、fallback はありません。学習済み model package は Git に含めず、pinned tokenizer は app release に同梱します。test-only の hash-pinned tokenizer JSON は Git に含めます。
+
+このモデルは [Hugging Face repository](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger) の commit [`5c0213592cf8d59fc0b665183ab7536ddde05d1f`](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f) に pin されています。model ID は Pokojaka/modernbert-ja-30m-utterance-tagger、state revision は `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9` です。app code は MIT license、名大会話コーパスで学習した model は CC BY-NC-ND 4.0 です。共有 manifest が両形式の各取得ファイルを byte 数と SHA-256 で pin します。
+
+Core ML 形式（`--format coreml`）の pinned files:
+
+| Hugging Face path | bytes | SHA-256 |
+| --- | ---: | --- |
+| coreml/tokenizer.json | 6,724,873 | `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` |
+| coreml/ClauseTagger.mlpackage/Manifest.json | 617 | `52c8e4a83a0b4b1f533cc1606e198fbaba9b235898c7dde6eda2c301c79b3182` |
+| coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel | 134,272 | `200affa73898c875c5aac52401fadf601779af28a50662edac9c47b084edbb45` |
+| coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin | 146,847,424 | `e21ddf63a223e859be6b1051e326362c12fabd4cdc8c8f4cb0c18a7e657d220d` |
+| coreml/ClauseTagger.mlpackage/executorch_debug_handle_mapping.json | 147,654 | `6e741f4ba9d007e49b98aa31f8db7164763660f04df3e6d92b015913f0451f44` |
+| LICENSE.md | 2,185 | `08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77` |
+
+ONNX 形式（`--format onnx`）の pinned files:
+
+| Hugging Face path | bytes | SHA-256 |
+| --- | ---: | --- |
+| onnx/ClauseTagger.onnx | 146,889,562 | `1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782` |
+| onnx/tokenizer.json | 6,724,873 | `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` |
+| onnx/export.json | 253,707 | `c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a` |
+| onnx/LICENSE.txt | 1,292 | `2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a` |
+| LICENSE.md | 2,185 | `08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77` |
 
 fixture は production dependency を持たない all-platform の test-only SwiftPM target `MacAmbientJevClauseTaggerFixtures` に置き、reader と resources を共有します。[reader](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/ClauseTaggerFixtures.swift) は元 fixture を JSONDecoder で読みます。leading U+FEFF を含む値は、現行 runtime の JSONSerialization が decode 時に除くため、scalar を保つ reader/comparator regression も実行します。
 
-[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerFixtures.json) は13件の元入力、厳密な token ID、boundary・span・priority の参照確率を持ち、移動前と byte-identical（SHA-256 `2a359e7f416da5a431c35fe89d6abf8ed413c457c330763b64a59296d273294a`）です。実モデル capture より先に、model ID・revision `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9`・tokenizer SHA と、元13件すべての literal input ID、candidate/junction index、三 head の形と確率を照合します。期待 token ID を Swift の誤った tokenization に合わせて変更してはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
+[ClauseTaggerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerFixtures.json) は13件の元入力、厳密な token ID、boundary・span・priority の参照確率を持ち、SHA-256 は `41650293a866faba413cabaf568807243dc4684f4fca1f9660a0d26ec0860726` です。実モデル capture より先に、model ID Pokojaka/modernbert-ja-30m-utterance-tagger・state revision `90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9`・tokenizer SHA と、元13件すべての literal input ID、candidate/junction index、三 head の形と確率を照合します。期待 token ID を Swift の誤った tokenization に合わせて変更してはいけません。`training_status` が `trained` 以外の package はアプリ判定に使用できません。
 
-[ClauseTaggerTokenizerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizerFixtures.json) は47 cases・106 pieces を持ち、release tokenizer SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` を固定します。元13件に加え、BOM、composed/decomposed Unicode、OOV、emoji modifiers、whitespace、全18 added token、2つの埋め込み synthetic tokenizer config と SHA-256 による8件の exact Float32 tie cases を含みます。fixture の `tokenizer_backend` は capture provenance で、runtime dependency ではありません。現行の `MacAmbientJevCore` の [ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizer.swift) は Foundation-only の scalar trie と Float32 Unigram lattice 実装で、`swift-transformers` を runtime import しません。swift-transformers 1.3.4 release は tokenizer algorithm の provenance です（[1.3.4 release](https://github.com/huggingface/swift-transformers/releases/tag/1.3.4)）。
+[ClauseTaggerTokenizerFixtures.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizerFixtures.json) は47 cases・106 pieces を持ち、pinned tokenizer SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062` を固定します。元13件に加え、BOM、composed/decomposed Unicode、OOV、emoji modifiers、whitespace、全18 added token、2つの埋め込み synthetic tokenizer config と SHA-256 による8件の exact Float32 tie cases を含みます。fixture の `tokenizer_backend` は capture provenance で、runtime dependency ではありません。現行の `MacAmbientJevCore` の [ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizer.swift) は Foundation-only の scalar trie と Float32 Unigram lattice 実装で、`swift-transformers` を runtime import しません。swift-transformers 1.3.4 release は tokenizer algorithm の provenance です（[1.3.4 release](https://github.com/huggingface/swift-transformers/releases/tag/1.3.4)）。
 
-[ClauseTaggerTokenizerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerTokenizerTests.swift) は CoreTests の全 platform で無条件に実行される model-free tests です。5 tests が現在の47 cases・106 pieces・8 ties、77個の不正・未対応 configuration mutation、誤 hash・読取・parse error、byte-distinct Unicode、Float32 加算順序（比較前に Float32 へ加算）、byte fallback witness、および BOM・空白・unknown-run の raw UTF-16 範囲 regression を検証します。この回帰テストはサポート対象の埋め込み synthetic tokenizer prefix（byte ID 固定）を使います。test-only resource [ClauseTaggerTokenizer.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizer.json) は pinned release tokenizer と byte-identical（6,724,873 bytes、SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062`）です。期待 token ID・範囲と request の golden fixtures は変更せずに照合します。既知 scalar を含む lattice で隣接する unknown pieces の再構成失敗が `.unrepresentableText` となることも検証し、通常の OOV は byte fallback で表現します。この Core tokenizer tests にモデル weights、download、環境変数は不要です。この JSON は test resource 専用で、app fallback には使いません。
+[ClauseTaggerTokenizerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerTokenizerTests.swift) は CoreTests の全 platform で無条件に実行される model-free tests です。5 tests が現在の47 cases・106 pieces・8 ties、77個の不正・未対応 configuration mutation、誤 hash・読取・parse error、byte-distinct Unicode、Float32 加算順序（比較前に Float32 へ加算）、byte fallback witness、および BOM・空白・unknown-run の raw UTF-16 範囲 regression を検証します。この回帰テストはサポート対象の埋め込み synthetic tokenizer prefix（byte ID 固定）を使います。test-only resource [ClauseTaggerTokenizer.json](../app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizer.json) は pinned tokenizer と byte-identical（6,724,873 bytes、SHA-256 `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062`）です。期待 token ID・範囲と request の golden fixtures は変更せずに照合します。既知 scalar を含む lattice で隣接する unknown pieces の再構成失敗が `.unrepresentableText` となることも検証し、通常の OOV は byte fallback で表現します。この Core tokenizer tests にモデル weights、download、環境変数は不要です。この JSON は test resource 専用で、app fallback には使いません。
 
 ```bash
 swift test --package-path app/MacAmbientJev --filter ClauseTaggerTokenizer
@@ -215,16 +239,25 @@ MAC_AMBIENT_JEV_WRITE_CLAUSE_TAGGER_PARITY=1 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TA
 RUN_CLAUSE_TAGGER_TESTS=1 CLAUSE_TAGGER_MODEL_DIRECTORY=/absolute/path/to/exported-model swift test --package-path app/MacAmbientJev --filter ClauseTaggerParityFixtureTests
 ```
 
-Linux / Windows の `ONNXClauseTagger`（[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）は実モデルの parity テストを持ち、通常の portable CI で必ず実行します。`RUN_MODEL_TESTS` のような opt-in はありません。必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に `python3 scripts/fetch_clause_tagger.py` が出力する絶対 directory を設定します（`scripts/verify_portable.sh`、`scripts/test-windows.ps1`、`.github/workflows/portable-core.yml` が設定します）。未設定・空・相対 path・存在しない directory はテストの失敗で、skip しません。
+Linux / Windows の `ONNXClauseTagger`（[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）は実モデルの parity テストを持ち、通常の portable CI で必ず実行します。`RUN_MODEL_TESTS` のような opt-in はありません。必須の環境変数 `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に `python3 scripts/fetch_clause_tagger.py --format onnx` が出力する絶対ディレクトリを設定します（`scripts/verify_portable.sh`、`scripts/test-windows.ps1`、`.github/workflows/portable-core.yml` が設定します）。未設定・空・相対パス・存在しないディレクトリはテストの失敗で、skip しません。
 
 - `ClauseTaggerFixtures.json` の13件は literal な `input_ids` をそのまま推論し、`boundary_probs`、`span_probs`、`priority_probs` の head ごとに最大絶対誤差を `1e-3` 以下とします。head ごとの最大値は fixture ごとと全体でログに出ます。
 - `ClauseTaggerRequestFixtures.json` の境界 6 case と優先度 batch は `ONNXClauseTagger` の public API へ実 request を渡し、response を Core ML 由来の保存値と比較します。key、candidate、label、token 数、除去範囲、投影後の文字列は完全一致、確率と confidence は `1e-3` 以下です。`まあ、あの、今日は損失関数の話をします。` は `今日は損失関数の話をします。` になります。
 - model への不正入力（空、1 token、193 token、CLS・SEP 欠落、負・語彙外の ID）、最短2 token と最長192 token の推論、取り消し済み request、非正の thread 数（ロード前に失敗）、相対・存在しない directory のテストと、`DecisionProviderFactory` が一度だけロードして manifest の identity を返すテストも含みます。thread 数と directory のテストは model を使いません。
 
 ```bash
-CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py)"
+CLAUSE_TAGGER="$(python3 scripts/fetch_clause_tagger.py --format onnx)"
 MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY="$CLAUSE_TAGGER" swift test --package-path app/MacAmbientJev --filter 'ONNXClauseTagger|ClauseTaggerAssets'
 ```
+
+fetcher と app bundling の self-test は次のとおりです。
+
+```bash
+python3 -B scripts/test_fetch_clause_tagger.py
+python3 -B scripts/test_build_app.py
+```
+
+[`test_fetch_clause_tagger.py`](../scripts/test_fetch_clause_tagger.py) は標準ライブラリだけを使い、network に接続せず synthetic data で両形式の manifest、各 pinned file の path・byte count・SHA-256（LICENSE.md を含む）、正確な tree、network なしの有効 cache 再利用を検査します。破損・不足・余分・symlink を含む cache の fail-fast、取得・hash・byte count failure 時の no-retry と staging cleanup も確認します。[`test_build_app.py`](../scripts/test_build_app.py) は Python 標準ライブラリの5件の isolated bundling tests で、fake repository と stub command を使い、Core ML fetch contract、成功時の model・tokenizer・LICENSE.md 同梱、fetch failure / 不正結果時に app 公開前で停止することを検査します。
 
 Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力は `boundary_probs` `[1,L,2]`、`span_probs` `[1,L,4]`、`priority_probs` `[1,2]` です。Core ML 変換器は scratch の外部ツールで、このリポジトリに変換 script はありません。export artifact は base model、trained weights、明示した output directory を使って生成し、この入出力契約を満たす必要があります。ポータブル ONNX の書き出しは次節の repository script で行います。変換実験の Python package version は PyTorch `2.14.1`、transformers `5.19`、coremltools `9.0` で、converter は unsupported PyTorch version warning を出します。Core ML Tools [9.0 release notes](https://github.com/apple/coremltools/releases/tag/9.0) には Torch `2.7` のサポートが記載されています。新しい Torch で変換が成功したことを公式サポートの根拠とは扱わず、artifact ごとに実際の installed version と warning を記録してください。
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
 import json
 import os
 import shutil
-import tarfile
+import stat
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -19,17 +21,97 @@ SPEC = importlib.util.spec_from_file_location("fetch_clause_tagger", SCRIPT)
 fetcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fetcher)
 
-REPOSITORY = Path(__file__).resolve().parent.parent
-SWIFT_MANIFEST = (
-    REPOSITORY
-    / "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json"
+REAL_REPOSITORY_ROOT = fetcher.REPOSITORY_ROOT
+MANIFEST_PATH = fetcher.MANIFEST_PATH
+MANIFEST_COPY_PATH = Path(
+    "app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json"
 )
+BASE_MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+PINNED_REPOSITORY = "Pokojaka/modernbert-ja-30m-utterance-tagger"
+PINNED_COMMIT = "5c0213592cf8d59fc0b665183ab7536ddde05d1f"
 
-MEMBER_PINS = {
-    "model": ("ClauseTagger.onnx", 146_889_561, "8f9e7d3e4f72f2b7d18db1c59bac6b9506d135f976512ae8afbff1386687b699"),
-    "tokenizer": ("tokenizer.json", 6_724_873, "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"),
-    "export": ("export.json", 253_705, "2d8d8e8585f9d34476d4e1377c8bcf90f47004c1aa4a7efe05f7d05acd292627"),
-    "license": ("LICENSE.txt", 1_292, "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a"),
+PINNED_MEMBERS = {
+    "onnx": [
+        (
+            "model",
+            "ClauseTagger.onnx",
+            "onnx/ClauseTagger.onnx",
+            146889562,
+            "1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782",
+        ),
+        (
+            "tokenizer",
+            "tokenizer.json",
+            "onnx/tokenizer.json",
+            6724873,
+            "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
+        ),
+        (
+            "export",
+            "export.json",
+            "onnx/export.json",
+            253707,
+            "c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a",
+        ),
+        (
+            "license",
+            "LICENSE.txt",
+            "onnx/LICENSE.txt",
+            1292,
+            "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a",
+        ),
+        (
+            "modelLicense",
+            "LICENSE.md",
+            "LICENSE.md",
+            2185,
+            "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77",
+        ),
+    ],
+    "coreml": [
+        (
+            "tokenizer",
+            "tokenizer.json",
+            "coreml/tokenizer.json",
+            6724873,
+            "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
+        ),
+        (
+            "packageManifest",
+            "ClauseTagger.mlpackage/Manifest.json",
+            "coreml/ClauseTagger.mlpackage/Manifest.json",
+            617,
+            "52c8e4a83a0b4b1f533cc1606e198fbaba9b235898c7dde6eda2c301c79b3182",
+        ),
+        (
+            "model",
+            "ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            134272,
+            "200affa73898c875c5aac52401fadf601779af28a50662edac9c47b084edbb45",
+        ),
+        (
+            "weights",
+            "ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            "coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+            146847424,
+            "e21ddf63a223e859be6b1051e326362c12fabd4cdc8c8f4cb0c18a7e657d220d",
+        ),
+        (
+            "debugMapping",
+            "ClauseTagger.mlpackage/executorch_debug_handle_mapping.json",
+            "coreml/ClauseTagger.mlpackage/executorch_debug_handle_mapping.json",
+            147654,
+            "6e741f4ba9d007e49b98aa31f8db7164763660f04df3e6d92b015913f0451f44",
+        ),
+        (
+            "modelLicense",
+            "LICENSE.md",
+            "LICENSE.md",
+            2185,
+            "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77",
+        ),
+    ],
 }
 
 
@@ -37,363 +119,473 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def clone_manifest() -> dict[str, object]:
+    return copy.deepcopy(BASE_MANIFEST)
+
+
+def member_array(manifest: dict[str, object], format: str) -> list[dict[str, object]]:
+    key = "members" if format == "onnx" else "coremlMembers"
+    return manifest[key]
+
+
 class ManifestTests(unittest.TestCase):
-    def test_script_reads_the_manifest_file_the_swift_target_bundles(self) -> None:
-        self.assertEqual(fetcher.MANIFEST_PATH, SWIFT_MANIFEST)
-        copies = [
-            path
-            for path in REPOSITORY.rglob("clause_tagger_model.json")
-            if ".build" not in path.relative_to(REPOSITORY).parts
+    def test_fetcher_uses_the_single_bundled_manifest(self) -> None:
+        copies = sorted(
+            path.relative_to(REAL_REPOSITORY_ROOT)
+            for path in REAL_REPOSITORY_ROOT.rglob("clause_tagger_model.json")
+            if ".build" not in path.relative_to(REAL_REPOSITORY_ROOT).parts
+        )
+
+        self.assertEqual(fetcher.MANIFEST_PATH, REAL_REPOSITORY_ROOT / MANIFEST_COPY_PATH)
+        self.assertEqual(copies, [MANIFEST_COPY_PATH])
+
+    def test_manifest_pins_both_formats_and_all_remote_urls(self) -> None:
+        self.assertEqual(BASE_MANIFEST["source"]["repository"], PINNED_REPOSITORY)
+        self.assertEqual(BASE_MANIFEST["source"]["commit"], PINNED_COMMIT)
+        self.assertEqual(BASE_MANIFEST["model"]["id"], PINNED_REPOSITORY)
+
+        for format, expected_members in PINNED_MEMBERS.items():
+            with self.subTest(format=format):
+                manifest = fetcher.load_manifest(format)
+                self.assertEqual(manifest.source.repository, PINNED_REPOSITORY)
+                self.assertEqual(manifest.source.commit, PINNED_COMMIT)
+                self.assertEqual(manifest.directory, fetcher.DIRECTORIES[format])
+                actual_members = [
+                    (member.role, member.name, member.path, member.byte_count, member.sha256)
+                    for member in manifest.members
+                ]
+                self.assertEqual(actual_members, expected_members)
+                self.assertEqual(
+                    [member.role for member in manifest.members], list(fetcher.ROLES[format])
+                )
+                self.assertIn(
+                    ("modelLicense", "LICENSE.md", "LICENSE.md", 2185,
+                     "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77"),
+                    actual_members,
+                )
+                self.assertEqual(
+                    [
+                        f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/{PINNED_COMMIT}/{member[2]}"
+                        for member in expected_members
+                    ],
+                    [
+                        f"https://huggingface.co/{manifest.source.repository}/resolve/{manifest.source.commit}/{member.path}"
+                        for member in manifest.members
+                    ],
+                )
+
+    def test_malformed_manifest_fields_are_rejected(self) -> None:
+        def mutate(format: str, change) -> str:
+            manifest = clone_manifest()
+            change(manifest, format)
+            return json.dumps(manifest)
+
+        cases = [
+            ("source repository", "onnx", lambda m, _f: m["source"].update(repository="bad/repo/extra")),
+            ("source commit", "onnx", lambda m, _f: m["source"].update(commit="g" * 40)),
+            ("model id mismatch", "onnx", lambda m, _f: m["model"].update(id="another/repository")),
+            ("missing ONNX role", "onnx", lambda m, f: member_array(m, f).pop()),
+            (
+                "missing CoreML role",
+                "coreml",
+                lambda m, f: member_array(m, f).pop(),
+            ),
+            (
+                "duplicate ONNX role",
+                "onnx",
+                lambda m, f: member_array(m, f).append(dict(member_array(m, f)[0])),
+            ),
+            (
+                "duplicate CoreML role",
+                "coreml",
+                lambda m, f: member_array(m, f).append(dict(member_array(m, f)[0])),
+            ),
+            (
+                "unknown ONNX role",
+                "onnx",
+                lambda m, f: member_array(m, f)[0].update(role="unknown"),
+            ),
+            (
+                "unknown CoreML role",
+                "coreml",
+                lambda m, f: member_array(m, f)[0].update(role="unknown"),
+            ),
+            (
+                "invalid byte count",
+                "onnx",
+                lambda m, f: member_array(m, f)[0].update(byteCount=0),
+            ),
+            (
+                "boolean byte count",
+                "coreml",
+                lambda m, f: member_array(m, f)[0].update(byteCount=True),
+            ),
+            (
+                "invalid hash",
+                "onnx",
+                lambda m, f: member_array(m, f)[0].update(sha256="abc"),
+            ),
+            (
+                "uppercase hash",
+                "coreml",
+                lambda m, f: member_array(m, f)[0].update(sha256="A" * 64),
+            ),
+            ("path and name disagree", "onnx", lambda m, f: member_array(m, f)[0].update(path="onnx/other.onnx")),
+            (
+                "wrong modelLicense name",
+                "onnx",
+                lambda m, f: next(x for x in member_array(m, f) if x["role"] == "modelLicense").update(name="LICENSE.txt"),
+            ),
+            (
+                "nested ONNX name",
+                "onnx",
+                lambda m, f: member_array(m, f)[0].update(
+                    name="nested/ClauseTagger.onnx", path="onnx/nested/ClauseTagger.onnx"
+                ),
+            ),
+            (
+                "tokenizer hash mismatch",
+                "coreml",
+                lambda m, _f: m["model"].update(tokenizerSHA256="f" * 64),
+            ),
+            ("onnx object required", "onnx", lambda m, _f: m.update(onnx=None)),
         ]
-        self.assertEqual(copies, [SWIFT_MANIFEST])
+        for label, format, change in cases:
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                fetcher.parse_manifest(mutate(format, change), format)
 
-    def test_pins(self) -> None:
-        release, members = fetcher.load_manifest()
-
-        self.assertEqual(release.repository, "Pokojaka/mac-ambient-jev")
-        self.assertEqual(release.tag, "clause-tagger-onnx-90501ea3-v1")
-        self.assertEqual(release.asset, "clause-tagger-onnx-90501ea3-v1.tar.gz")
-        self.assertEqual(release.byte_count, 110_829_019)
-        self.assertEqual(
-            release.sha256, "95985c53bacb0feea79b1f627864026cd22767f44eaf330eb0e5a0b4887ac30d"
-        )
-        self.assertEqual(release.directory, "clause-tagger-onnx")
-        self.assertEqual(
-            release.url,
-            "https://github.com/Pokojaka/mac-ambient-jev/releases/download/"
-            "clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx-90501ea3-v1.tar.gz",
-        )
-        self.assertEqual([member.role for member in members], list(fetcher.ROLES))
-        for member in members:
-            name, byte_count, digest = MEMBER_PINS[member.role]
-            self.assertEqual((member.name, member.byte_count, member.sha256), (name, byte_count, digest))
-
-    def test_invalid_manifests_are_rejected(self) -> None:
-        valid = json.loads(SWIFT_MANIFEST.read_text(encoding="utf-8"))
-
-        def mutated(change) -> str:
-            copy = json.loads(json.dumps(valid))
-            change(copy)
-            return json.dumps(copy)
-
-        cases = {
-            "schema version": lambda m: m.update(schemaVersion=2),
-            "missing role": lambda m: m["members"].pop(),
-            "duplicate role": lambda m: m["members"].append(dict(m["members"][0])),
-            "unknown role": lambda m: m["members"][0].update(role="other"),
-            "duplicate name": lambda m: m["members"][1].update(name=m["members"][0]["name"]),
-            "path in name": lambda m: m["members"][0].update(name="../escape.onnx"),
-            "backslash in name": lambda m: m["members"][0].update(name="a\\b"),
-            "short sha": lambda m: m["members"][0].update(sha256="abc"),
-            "uppercase sha": lambda m: m["members"][0].update(sha256=m["members"][0]["sha256"].upper()),
-            "zero size": lambda m: m["members"][0].update(byteCount=0),
-            "release zero size": lambda m: m["release"].update(byteCount=0),
-            "release path in asset": lambda m: m["release"].update(asset="a/b.tar.gz"),
-            "release short sha": lambda m: m["release"].update(sha256="abc"),
-            "tokenizer differs from model": lambda m: m["model"].update(tokenizerSHA256="a" * 64),
+    def test_unsafe_names_and_paths_are_rejected(self) -> None:
+        name_cases = {
+            "traversal": "../escape",
+            "absolute": "/absolute",
+            "backslash": "nested\\file",
+            "NUL": "bad\x00name",
+            "colon": "bad:name",
+            "empty component": "nested//file",
         }
-        for name, change in cases.items():
-            with self.subTest(name), self.assertRaises(ValueError):
-                fetcher.parse_manifest(mutated(change))
+        path_cases = {
+            "traversal": "onnx/../escape",
+            "absolute": "/absolute/file",
+            "backslash": "onnx\\file",
+            "NUL": "onnx/bad\x00file",
+            "colon": "onnx/bad:file",
+            "empty component": "onnx//file",
+        }
+        for label, invalid in name_cases.items():
+            manifest = clone_manifest()
+            manifest["members"][0]["name"] = invalid
+            with self.subTest(field="name", label=label), self.assertRaises(ValueError):
+                fetcher.parse_manifest(json.dumps(manifest), "onnx")
+        for label, invalid in path_cases.items():
+            manifest = clone_manifest()
+            manifest["members"][0]["path"] = invalid
+            with self.subTest(field="path", label=label), self.assertRaises(ValueError):
+                fetcher.parse_manifest(json.dumps(manifest), "onnx")
 
 
 class FetchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.repository = self.make_repository("repository")
-        self.payloads = {
-            role: f"offline {role} fixture".encode() * (role == "model" and 50 or 1)
-            for role in fetcher.ROLES
+        self.repository = self.make_repository("fixture repository 日本語")
+        self.payloads: dict[str, dict[str, bytes]] = {"onnx": {}, "coreml": {}}
+        self.manifests = {
+            format: self.make_manifest(format) for format in ("onnx", "coreml")
         }
-        self.members = [
-            fetcher.Member(role, MEMBER_PINS[role][0], len(self.payloads[role]), sha256(self.payloads[role]))
-            for role in fetcher.ROLES
-        ]
-        self.fetched_urls: list[str] = []
-        self.archive_bytes = self.build_archive()
-        self.manifest = self.make_manifest(self.archive_bytes)
+        self.requested_urls: list[str] = []
+        self.response_errors: dict[str, BaseException] = {}
+        self.response_overrides: dict[str, bytes] = {}
 
     def make_repository(self, name: str) -> Path:
         repository = Path(self.temporary.name) / name
-        (repository / "scripts").mkdir(parents=True)
+        repository.mkdir(parents=True, exist_ok=True)
         return repository.resolve()
 
-    def make_manifest(self, archive: bytes) -> fetcher.Manifest:
-        release = fetcher.Release(
-            "example/repository",
-            "clause-tagger-onnx-fixture-v1",
-            "clause-tagger-onnx-fixture-v1.tar.gz",
-            len(archive),
-            sha256(archive),
-            "clause-tagger-onnx",
+    def make_manifest(self, format: str) -> fetcher.Manifest:
+        raw = clone_manifest()
+        for member_format in ("onnx", "coreml"):
+            for entry in member_array(raw, member_format):
+                payload = f"offline fixture {entry['role']} {entry['name']}".encode("utf-8")
+                self.payloads[member_format][entry["name"]] = payload
+                entry["byteCount"] = len(payload)
+                entry["sha256"] = sha256(payload)
+        tokenizer = next(
+            entry for entry in member_array(raw, format) if entry["role"] == "tokenizer"
         )
-        return fetcher.Manifest(release, self.members)
+        raw["model"]["tokenizerSHA256"] = tokenizer["sha256"]
+        return fetcher.parse_manifest(json.dumps(raw), format)
 
-    def build_archive(self, entries=None, directory_entry: bool = True) -> bytes:
-        """`entries` is a list of (name, payload or TarInfo-customizing callable) pairs."""
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-            if directory_entry:
-                info = tarfile.TarInfo("clause-tagger-onnx")
-                info.type = tarfile.DIRTYPE
-                info.mode = 0o755
-                archive.addfile(info)
-            if entries is None:
-                entries = [(f"clause-tagger-onnx/{m.name}", self.payloads[m.role]) for m in self.members]
-            for name, payload in entries:
-                info = tarfile.TarInfo(name)
-                if callable(payload):
-                    data = payload(info)
-                else:
-                    data = payload
-                    info.size = len(data)
-                archive.addfile(info, io.BytesIO(data) if data is not None else None)
-        return buffer.getvalue()
+    def urlopen(self, url: str, timeout: int = 60):
+        self.requested_urls.append(url)
+        if url in self.response_errors:
+            raise self.response_errors[url]
+        if url in self.response_overrides:
+            return io.BytesIO(self.response_overrides[url])
+        for format, manifest in self.manifests.items():
+            for member in manifest.members:
+                expected_url = (
+                    f"https://huggingface.co/{manifest.source.repository}/resolve/"
+                    f"{manifest.source.commit}/{member.path}"
+                )
+                if url == expected_url:
+                    return io.BytesIO(self.payloads[format][member.name])
+        raise AssertionError(f"Unexpected URL: {url}")
 
-    def urlopen(self, url: str, timeout: int):
-        self.fetched_urls.append(url)
-        return contextlib.closing(io.BytesIO(self.archive_bytes))
-
-    def fetch(self, repository: Path | None = None, manifest=None) -> Path:
-        repository = repository or self.repository
-        with mock.patch.object(
-            fetcher, "__file__", repository / "scripts" / "fetch_clause_tagger.py"
-        ), mock.patch.object(
-            fetcher.pinned_download.urllib.request, "urlopen", side_effect=self.urlopen
+    def fetch(
+        self,
+        format: str,
+        repository: Path | None = None,
+        manifest: fetcher.Manifest | None = None,
+    ) -> Path:
+        repository = self.repository if repository is None else repository
+        manifest = self.manifests[format] if manifest is None else manifest
+        with mock.patch.object(fetcher, "REPOSITORY_ROOT", repository), mock.patch.object(
+            fetcher.pinned_download.urllib.request,
+            "urlopen",
+            side_effect=self.urlopen,
         ):
-            return fetcher.fetch(manifest or self.manifest)
+            return fetcher.fetch(manifest)
 
-    def cache(self, repository: Path | None = None) -> Path:
-        return (repository or self.repository) / ".build" / "clause-tagger-onnx" / self.manifest.release.tag
+    def cache(self, format: str, repository: Path | None = None) -> Path:
+        repository = self.repository if repository is None else repository
+        return repository / fetcher.CACHE_ROOTS[format] / PINNED_COMMIT
 
-    def use_archive(self, archive: bytes) -> fetcher.Manifest:
-        self.archive_bytes = archive
-        return self.make_manifest(archive)
+    def destination(self, format: str, repository: Path | None = None) -> Path:
+        return self.cache(format, repository) / fetcher.DIRECTORIES[format]
 
-    def assert_nothing_published(self) -> None:
-        cache = self.cache()
-        self.assertFalse((cache / "clause-tagger-onnx").exists())
-        self.assertEqual(list(cache.glob(".extract-*")), [])
+    def write_valid_cache(self, format: str, repository: Path) -> Path:
+        destination = self.destination(format, repository)
+        for member in self.manifests[format].members:
+            path = destination.joinpath(*member.name.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(self.payloads[format][member.name])
+        return destination
 
-    def test_publishes_the_four_members_and_removes_the_archive(self) -> None:
-        result = self.fetch()
+    def actual_tree(self, directory: Path) -> tuple[set[str], set[str]]:
+        files: set[str] = set()
+        directories: set[str] = set()
+        for path in directory.rglob("*"):
+            relative = path.relative_to(directory).as_posix()
+            metadata = path.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                directories.add(relative)
+            elif stat.S_ISREG(metadata.st_mode):
+                files.add(relative)
+            else:
+                self.fail(f"Unexpected special entry: {path}")
+        return files, directories
 
-        self.assertTrue(result.is_absolute())
-        self.assertEqual(result, self.cache() / "clause-tagger-onnx")
-        self.assertEqual(self.fetched_urls, [self.manifest.release.url])
-        for member in self.members:
-            self.assertEqual((result / member.name).read_bytes(), self.payloads[member.role])
-        self.assertEqual(sorted(path.name for path in result.iterdir()), sorted(m.name for m in self.members))
-        self.assertEqual([path.name for path in self.cache().iterdir()], ["clause-tagger-onnx"])
+    def expected_tree(self, format: str) -> tuple[set[str], set[str]]:
+        files = {member.name for member in self.manifests[format].members}
+        directories: set[str] = set()
+        for member in self.manifests[format].members:
+            parts = member.name.split("/")
+            directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
+        return files, directories
 
-    def test_archive_without_a_directory_entry_is_accepted(self) -> None:
-        manifest = self.use_archive(self.build_archive(directory_entry=False))
+    def assert_failed_fetch_is_clean(
+        self, format: str, failed_url: str, failed_name: str
+    ) -> None:
+        with self.assertRaises(RuntimeError) as raised:
+            self.fetch(format)
+        message = str(raised.exception)
+        self.assertIn(failed_url, message)
+        self.assertIn(failed_name, message)
+        self.assertEqual(self.requested_urls, [failed_url])
+        self.assertFalse(os.path.lexists(self.destination(format)))
+        self.assertEqual(list(self.cache(format).glob(".fetch-*")), [])
+        self.assertEqual(list(self.cache(format).rglob("*.download")), [])
 
-        result = self.fetch(manifest=manifest)
-
-        for member in self.members:
-            self.assertEqual((result / member.name).read_bytes(), self.payloads[member.role])
-
-    def test_existing_valid_cache_short_circuits_without_network(self) -> None:
-        first = self.fetch()
-        mtime_ns = 1_700_000_000_000_000_000
-        for path in first.iterdir():
-            os.utime(path, ns=(mtime_ns, mtime_ns))
-        self.fetched_urls.clear()
-
-        second = self.fetch()
-
-        self.assertEqual(first, second)
-        self.assertEqual(self.fetched_urls, [])
-        for path in second.iterdir():
-            self.assertEqual(path.stat().st_mtime_ns, mtime_ns)
-
-    def test_corrupt_existing_member_is_rejected_without_download_or_overwrite(self) -> None:
-        directory = self.cache() / "clause-tagger-onnx"
-        directory.mkdir(parents=True)
-        for member in self.members:
-            (directory / member.name).write_bytes(self.payloads[member.role])
-        corrupt = directory / self.members[1].name
-        corrupt.write_bytes(b"x" * len(self.payloads["tokenizer"]))
-
-        with self.assertRaisesRegex(ValueError, "SHA-256"):
-            self.fetch()
-
-        self.assertEqual(corrupt.read_bytes(), b"x" * len(self.payloads["tokenizer"]))
-        self.assertEqual(self.fetched_urls, [])
-
-    def test_existing_cache_with_wrong_size_missing_or_extra_member_is_rejected(self) -> None:
-        directory = self.cache() / "clause-tagger-onnx"
-        directory.mkdir(parents=True)
-        for member in self.members:
-            (directory / member.name).write_bytes(self.payloads[member.role])
-
-        (directory / self.members[0].name).write_bytes(b"short")
-        with self.assertRaisesRegex(ValueError, "ファイルサイズ"):
-            self.fetch()
-        (directory / self.members[0].name).write_bytes(self.payloads["model"])
-
-        (directory / "extra.bin").write_bytes(b"extra")
-        with self.assertRaisesRegex(ValueError, "余分"):
-            self.fetch()
-        (directory / "extra.bin").unlink()
-
-        (directory / self.members[2].name).unlink()
-        with self.assertRaisesRegex(ValueError, "不足"):
-            self.fetch()
-        self.assertEqual(self.fetched_urls, [])
-
-    def test_existing_cache_member_that_is_a_symlink_is_rejected(self) -> None:
-        directory = self.cache() / "clause-tagger-onnx"
-        directory.mkdir(parents=True)
-        for member in self.members:
-            (directory / member.name).write_bytes(self.payloads[member.role])
-        target = Path(self.temporary.name) / "outside.bin"
-        target.write_bytes(self.payloads["license"])
-        (directory / self.members[3].name).unlink()
-        (directory / self.members[3].name).symlink_to(target)
-
-        with self.assertRaisesRegex(ValueError, "通常ファイル"):
-            self.fetch()
-
-    def test_downloaded_archive_hash_mismatch_is_not_published(self) -> None:
-        self.archive_bytes = self.archive_bytes[:-1] + bytes([self.archive_bytes[-1] ^ 1])
-
-        with self.assertRaisesRegex(ValueError, "SHA-256"):
-            self.fetch()
-
-        self.assert_nothing_published()
-        self.assertEqual(list(self.cache().glob("*.download")), [])
-        self.assertFalse((self.cache() / self.manifest.release.asset).exists())
-
-    def test_archive_size_mismatch_with_matching_hash_is_rejected(self) -> None:
-        release = self.manifest.release._replace(byte_count=self.manifest.release.byte_count + 1)
-
-        with self.assertRaisesRegex(ValueError, "アーカイブのサイズ"):
-            self.fetch(manifest=fetcher.Manifest(release, self.members))
-
-        self.assert_nothing_published()
-
-    def test_existing_corrupt_archive_is_rejected_not_redownloaded(self) -> None:
-        self.cache().mkdir(parents=True)
-        stale = self.cache() / self.manifest.release.asset
-        stale.write_bytes(b"corrupt archive")
-
-        with self.assertRaisesRegex(ValueError, "SHA-256"):
-            self.fetch()
-
-        self.assertEqual(stale.read_bytes(), b"corrupt archive")
-        self.assertEqual(self.fetched_urls, [])
-
-    def test_stale_extract_directory_from_a_killed_run_is_removed(self) -> None:
-        stale = self.cache() / ".extract-killed"
-        stale.mkdir(parents=True)
-        (stale / "partial").write_bytes(b"partial")
-
-        result = self.fetch()
-
-        self.assertFalse(stale.exists())
-        self.assertEqual(sorted(path.name for path in result.iterdir()), sorted(m.name for m in self.members))
-
-    def reject_archive(self, archive: bytes, pattern: str) -> None:
-        shutil.rmtree(self.cache(), ignore_errors=True)
-        manifest = self.use_archive(archive)
-        with self.assertRaisesRegex(ValueError, pattern):
-            self.fetch(manifest=manifest)
-        self.assert_nothing_published()
-
-    def member_entries(self) -> list[tuple[str, bytes]]:
-        return [(f"clause-tagger-onnx/{m.name}", self.payloads[m.role]) for m in self.members]
-
-    def test_malicious_archive_paths_are_rejected(self) -> None:
-        first = self.member_entries()[0]
-        cases = {
-            "traversal": f"clause-tagger-onnx/../{self.members[0].name}",
-            "absolute": f"/clause-tagger-onnx/{self.members[0].name}",
-            "backslash": f"clause-tagger-onnx\\{self.members[0].name}",
-            "dot segment": f"clause-tagger-onnx/./{self.members[0].name}",
-            "wrong root": f"other/{self.members[0].name}",
-            "nested": f"clause-tagger-onnx/sub/{self.members[0].name}",
-            "no root": self.members[0].name,
-        }
-        for label, name in cases.items():
-            with self.subTest(label):
-                self.reject_archive(
-                    self.build_archive([(name, first[1]), *self.member_entries()[1:]]),
-                    "アーカイブ内パス",
+    def test_both_formats_publish_exact_verified_trees(self) -> None:
+        for format in ("onnx", "coreml"):
+            with self.subTest(format=format):
+                self.requested_urls.clear()
+                result = self.fetch(format)
+                self.assertEqual(result, self.destination(format))
+                self.assertTrue(result.is_absolute())
+                self.assertEqual(self.actual_tree(result), self.expected_tree(format))
+                for member in self.manifests[format].members:
+                    self.assertEqual(
+                        result.joinpath(*member.name.split("/")).read_bytes(),
+                        self.payloads[format][member.name],
+                    )
+                expected_urls = [
+                    f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/{PINNED_COMMIT}/{member.path}"
+                    for member in self.manifests[format].members
+                ]
+                self.assertEqual(self.requested_urls, expected_urls)
+                self.assertEqual(
+                    sorted(path.name for path in self.cache(format).iterdir()),
+                    [fetcher.DIRECTORIES[format]],
                 )
 
-    def test_links_and_special_entries_are_rejected(self) -> None:
-        for label, kind in (
-            ("symlink", tarfile.SYMTYPE),
-            ("hardlink", tarfile.LNKTYPE),
-            ("fifo", tarfile.FIFOTYPE),
-            ("chardev", tarfile.CHRTYPE),
-        ):
-            def link(info: tarfile.TarInfo, kind=kind) -> None:
-                info.type = kind
-                info.linkname = "/etc/passwd"
-                return None
+    def test_valid_cache_is_reused_without_network_for_both_formats(self) -> None:
+        for format in ("onnx", "coreml"):
+            with self.subTest(format=format):
+                first = self.fetch(format)
+                self.requested_urls.clear()
+                second = self.fetch(format)
+                self.assertEqual(second, first)
+                self.assertEqual(self.requested_urls, [])
 
-            with self.subTest(label):
-                entries = [*self.member_entries()[:-1], (f"clause-tagger-onnx/{self.members[3].name}", link)]
-                self.reject_archive(self.build_archive(entries), "通常ファイル以外")
+    def test_wrong_size_and_same_size_wrong_hash_cache_files_fail(self) -> None:
+        for format in ("onnx", "coreml"):
+            with self.subTest(format=format):
+                self.requested_urls.clear()
+                destination = self.fetch(format)
+                member = self.manifests[format].members[0]
+                path = destination.joinpath(*member.name.split("/"))
+                correct = self.payloads[format][member.name]
 
-    def test_duplicate_unexpected_and_missing_members_are_rejected(self) -> None:
-        entries = self.member_entries()
-        self.reject_archive(self.build_archive([*entries, entries[0]]), "重複")
-        self.reject_archive(
-            self.build_archive([*entries, ("clause-tagger-onnx/NOTICE.txt", b"notice")]), "想定外"
-        )
-        self.reject_archive(self.build_archive(entries[:-1]), "必要なファイルがありません")
-        self.reject_archive(
-            self.build_archive([("clause-tagger-onnx/extra/", lambda info: setattr(info, "type", tarfile.DIRTYPE))]),
-            "想定外",
-        )
+                path.write_bytes(correct[:-1])
+                with self.assertRaisesRegex(ValueError, "ファイルサイズ"):
+                    self.fetch(format)
 
-    def test_oversize_and_undersize_members_are_rejected(self) -> None:
-        entries = self.member_entries()
-        self.reject_archive(
-            self.build_archive([(entries[0][0], self.payloads["model"] + b"x"), *entries[1:]]),
-            "サイズ",
-        )
-        self.reject_archive(
-            self.build_archive([(entries[0][0], self.payloads["model"][:-1]), *entries[1:]]),
-            "サイズ",
-        )
+                wrong_same_size = bytes([correct[0] ^ 1]) + correct[1:]
+                path.write_bytes(wrong_same_size)
+                with self.assertRaisesRegex(ValueError, "SHA-256"):
+                    self.fetch(format)
+                self.assertEqual(self.requested_urls, [
+                    f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/{PINNED_COMMIT}/{item.path}"
+                    for item in self.manifests[format].members
+                ])
 
-    def test_same_size_wrong_content_member_is_rejected(self) -> None:
-        entries = self.member_entries()
-        wrong = bytes(byte ^ 0xFF for byte in self.payloads["export"])
+    def test_missing_and_extra_files_and_directories_fail_cache_verification(self) -> None:
+        mutations = {
+            "missing-file": lambda format, destination: destination.joinpath(
+                *self.manifests[format].members[0].name.split("/")
+            ).unlink(),
+            "extra-file": lambda _format, destination: (destination / "extra.bin").write_bytes(b"extra"),
+            "extra-directory": lambda _format, destination: (destination / "extra-directory").mkdir(),
+        }
+        if "ClauseTagger.mlpackage" in {
+            member.name.split("/")[0] for member in self.manifests["coreml"].members
+        }:
+            mutations["missing-directory"] = lambda _format, destination: shutil.rmtree(
+                destination / "ClauseTagger.mlpackage"
+            )
 
-        self.reject_archive(self.build_archive([*entries[:2], (entries[2][0], wrong), entries[3]]), "SHA-256")
+        for format in ("onnx", "coreml"):
+            applicable = [
+                (label, mutation)
+                for label, mutation in mutations.items()
+                if label != "missing-directory" or format == "coreml"
+            ]
+            for label, mutation in applicable:
+                with self.subTest(format=format, mutation=label):
+                    repository = self.make_repository(f"cache-{format}-{label}")
+                    destination = self.write_valid_cache(format, repository)
+                    mutation(format, destination)
+                    self.requested_urls.clear()
+                    with self.assertRaisesRegex(ValueError, "構成|不足|余分"):
+                        self.fetch(format, repository)
+                    self.assertEqual(self.requested_urls, [])
 
-    def test_repository_path_with_spaces_and_non_ascii(self) -> None:
-        repository = self.make_repository("リポジトリ with spaces ü")
+    def create_symlink(self, link: Path, target: Path, target_is_directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"Symlinks are unavailable: {error}")
 
-        result = self.fetch(repository)
+    def test_symlinked_cache_file_and_directory_fail(self) -> None:
+        for format in ("onnx", "coreml"):
+            for kind in ("file", "directory"):
+                with self.subTest(format=format, kind=kind):
+                    repository = self.make_repository(f"symlink-{format}-{kind}")
+                    destination = self.write_valid_cache(format, repository)
+                    outside = Path(self.temporary.name) / f"outside-{format}-{kind}"
+                    if kind == "file":
+                        outside.write_bytes(b"outside target")
+                        member = self.manifests[format].members[0]
+                        target_path = destination.joinpath(*member.name.split("/"))
+                        target_path.unlink()
+                        self.create_symlink(target_path, outside)
+                    else:
+                        outside.mkdir()
+                        self.create_symlink(destination / "linked-directory", outside, True)
+                    self.requested_urls.clear()
+                    with self.assertRaisesRegex(ValueError, "通常ファイルまたは通常ディレクトリ"):
+                        self.fetch(format, repository)
+                    self.assertEqual(self.requested_urls, [])
 
-        self.assertEqual(result, self.cache(repository) / "clause-tagger-onnx")
-        for member in self.members:
-            self.assertEqual((result / member.name).read_bytes(), self.payloads[member.role])
-        self.assertEqual(self.fetch(repository), result)
+    def test_symlinked_cache_root_escape_fails(self) -> None:
+        for format in ("onnx", "coreml"):
+            with self.subTest(format=format):
+                repository = self.make_repository(f"cache-escape-{format}")
+                cache_root = repository / fetcher.CACHE_ROOTS[format]
+                cache_root.parent.mkdir(parents=True, exist_ok=True)
+                outside = Path(self.temporary.name) / f"outside-cache-{format}"
+                outside.mkdir()
+                self.create_symlink(cache_root, outside, True)
+                with self.assertRaisesRegex(RuntimeError, "通常のディレクトリ"):
+                    self.fetch(format, repository)
+                self.assertEqual(list(outside.iterdir()), [])
 
-    def test_symlinked_cache_directory_escape_is_rejected(self) -> None:
-        outside = Path(self.temporary.name) / "outside"
-        outside.mkdir()
-        build = self.repository / ".build"
-        build.mkdir()
-        (build / "clause-tagger-onnx").symlink_to(outside, target_is_directory=True)
+    def test_http_and_network_failures_do_not_publish_or_retry(self) -> None:
+        errors = {
+            "HTTP": lambda url: urllib.error.HTTPError(
+                url, 503, "offline server", {}, io.BytesIO(b"unavailable")
+            ),
+            "network": lambda _url: urllib.error.URLError("network unavailable"),
+        }
+        for format in ("onnx", "coreml"):
+            member = self.manifests[format].members[0]
+            url = (
+                f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/"
+                f"{PINNED_COMMIT}/{member.path}"
+            )
+            for label, make_error in errors.items():
+                with self.subTest(format=format, error=label):
+                    self.requested_urls.clear()
+                    self.response_errors = {url: make_error(url)}
+                    self.assert_failed_fetch_is_clean(format, url, member.name)
+                    self.response_errors.clear()
 
-        with self.assertRaisesRegex(RuntimeError, "リポジトリ外|通常のディレクトリ"):
-            self.fetch()
+    def test_hash_mismatch_does_not_publish_or_retry(self) -> None:
+        for format in ("onnx", "coreml"):
+            member = self.manifests[format].members[0]
+            url = (
+                f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/"
+                f"{PINNED_COMMIT}/{member.path}"
+            )
+            correct = self.payloads[format][member.name]
+            wrong = bytes([correct[0] ^ 1]) + correct[1:]
+            with self.subTest(format=format):
+                self.requested_urls.clear()
+                self.response_overrides = {url: wrong}
+                self.assert_failed_fetch_is_clean(format, url, member.name)
+                self.response_overrides.clear()
 
-        self.assertEqual(list(outside.iterdir()), [])
+    def test_size_mismatch_with_matching_download_hash_does_not_publish_or_retry(self) -> None:
+        for format in ("onnx", "coreml"):
+            base = self.manifests[format]
+            first = base.members[0]
+            wrong_size_member = first._replace(byte_count=first.byte_count + 1)
+            altered_manifest = base._replace(members=[wrong_size_member, *base.members[1:]])
+            url = (
+                f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/"
+                f"{PINNED_COMMIT}/{first.path}"
+            )
+            with self.subTest(format=format):
+                self.requested_urls.clear()
+                with self.assertRaises(RuntimeError) as raised:
+                    self.fetch(format, manifest=altered_manifest)
+                self.assertIn(url, str(raised.exception))
+                self.assertIn(first.name, str(raised.exception))
+                self.assertEqual(self.requested_urls, [url])
+                self.assertFalse(os.path.lexists(self.destination(format)))
+                self.assertEqual(list(self.cache(format).glob(".fetch-*")), [])
+                self.assertEqual(list(self.cache(format).rglob("*.download")), [])
 
-    def test_cli_rejects_unsupported_python_and_arguments(self) -> None:
+    def test_repository_path_with_non_ascii_and_spaces(self) -> None:
+        repository = self.make_repository("repository with spaces and 日本語")
+        result = self.fetch("coreml", repository)
+        self.assertEqual(result, self.destination("coreml", repository))
+        self.assertEqual(self.actual_tree(result), self.expected_tree("coreml"))
+
+    def test_cli_requires_supported_python_and_format_arguments(self) -> None:
         with mock.patch.object(fetcher.sys, "version_info", (3, 11, 0)), mock.patch.object(
-            fetcher.sys, "argv", ["fetch_clause_tagger.py"]
+            fetcher.sys, "argv", ["fetch_clause_tagger.py", "--format", "onnx"]
         ), mock.patch.object(fetcher, "fetch") as fetch:
             stdout, stderr = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -403,22 +595,33 @@ class FetchTests(unittest.TestCase):
             self.assertIn("Python 3.12 以上", stderr.getvalue())
             fetch.assert_not_called()
 
+        invalid_arguments = [
+            [],
+            ["--format", "unknown"],
+            ["--format", "onnx", "--extra"],
+        ]
         with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(
-            fetcher.sys, "argv", ["fetch_clause_tagger.py", "--extra"]
-        ), mock.patch.object(fetcher, "fetch") as fetch:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = fetcher.main()
-            self.assertEqual(code, 2)
-            self.assertEqual(stdout.getvalue(), "")
-            self.assertIn("引数を受け付けません", stderr.getvalue())
-            fetch.assert_not_called()
+            fetcher, "fetch"
+        ) as fetch:
+            for arguments in invalid_arguments:
+                with self.subTest(arguments=arguments):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with mock.patch.object(
+                        fetcher.sys, "argv", ["fetch_clause_tagger.py", *arguments]
+                    ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(SystemExit) as raised:
+                            fetcher.main()
+                    self.assertNotEqual(raised.exception.code, 0)
+                    self.assertEqual(stdout.getvalue(), "")
+                    fetch.assert_not_called()
 
-    def test_cli_prints_only_the_absolute_directory_on_success(self) -> None:
-        expected = self.cache() / "clause-tagger-onnx"
+    def test_cli_success_prints_only_destination_path(self) -> None:
+        expected = self.destination("onnx")
         with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(
-            fetcher.sys, "argv", ["fetch_clause_tagger.py"]
-        ), mock.patch.object(fetcher, "fetch", return_value=expected):
+            fetcher.sys, "argv", ["fetch_clause_tagger.py", "--format", "onnx"]
+        ), mock.patch.object(fetcher, "load_manifest", return_value=self.manifests["onnx"]), mock.patch.object(
+            fetcher, "fetch", return_value=expected
+        ):
             stdout, stderr = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = fetcher.main()
@@ -427,10 +630,12 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), f"{expected}\n")
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_cli_reports_failure_on_stderr_with_exit_code_1(self) -> None:
+    def test_cli_failure_reports_stderr_and_no_stdout(self) -> None:
         with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(
-            fetcher.sys, "argv", ["fetch_clause_tagger.py"]
-        ), mock.patch.object(fetcher, "fetch", side_effect=OSError("network unavailable")):
+            fetcher.sys, "argv", ["fetch_clause_tagger.py", "--format", "coreml"]
+        ), mock.patch.object(fetcher, "load_manifest", return_value=self.manifests["coreml"]), mock.patch.object(
+            fetcher, "fetch", side_effect=RuntimeError("network unavailable")
+        ):
             stdout, stderr = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = fetcher.main()

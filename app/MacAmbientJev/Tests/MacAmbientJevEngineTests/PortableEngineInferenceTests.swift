@@ -194,12 +194,12 @@ private actor InspectionStartGate {
         }
         corpusFailure = failure
 
-        let modelDirectory = "C:/Users/Aki/AppData/Local/mac-ambient-jev/models/clause-tagger/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx"
+        let modelDirectory = "C:/Users/Aki/AppData/Local/mac-ambient-jev/models/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx"
         let preparationError = PortableModelPreparationError.invalid(
             model: .clauseTagger,
             path: "\(modelDirectory)/ClauseTagger.onnx",
-            detail: "サイズが一致しません (期待: 146889561, 実際: 1)",
-            installCommand: "python3 scripts/fetch_clause_tagger.py を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
+            detail: "サイズが一致しません (期待: 146889562, 実際: 1)",
+            installCommand: "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
         )
         let mappedError = PortableEngineInference.modelError(preparationError)
 
@@ -343,7 +343,8 @@ private actor InspectionStartGate {
             ("model", "ClauseTagger.onnx", Data("not an ONNX model".utf8)),
             ("tokenizer", "tokenizer.json", Data("not a tokenizer".utf8)),
             ("export", "export.json", Data("{}".utf8)),
-            ("license", "LICENSE.txt", Data("fixture license".utf8))
+            ("license", "LICENSE.txt", Data("fixture license".utf8)),
+            ("modelLicense", "LICENSE.md", Data("fixture model license".utf8))
         ]
         for file in files {
             try file.data.write(to: modelDirectory.appending(path: file.name))
@@ -351,16 +352,12 @@ private actor InspectionStartGate {
         let tokenizer = try #require(files.first { $0.role == "tokenizer" })
         let manifestObject: [String: Any] = [
             "schemaVersion": 1,
-            "release": [
-                "repository": "test",
-                "tag": "test",
-                "asset": "fixture.tar.gz",
-                "byteCount": 1,
-                "sha256": String(repeating: "a", count: 64),
-                "directory": "tagger"
+            "source": [
+                "repository": "fixture/tagger",
+                "commit": String(repeating: "a", count: 40)
             ],
             "model": [
-                "id": "fixture",
+                "id": "fixture/tagger",
                 "revision": String(repeating: "b", count: 64),
                 "tokenizerSHA256": FileSHA256.hexDigest(of: tokenizer.data),
                 "encodingRevision": "1",
@@ -378,6 +375,7 @@ private actor InspectionStartGate {
                 [
                     "role": file.role,
                     "name": file.name,
+                    "path": file.role == "modelLicense" ? "LICENSE.md" : "onnx/\(file.name)",
                     "byteCount": file.data.count,
                     "sha256": FileSHA256.hexDigest(of: file.data)
                 ]

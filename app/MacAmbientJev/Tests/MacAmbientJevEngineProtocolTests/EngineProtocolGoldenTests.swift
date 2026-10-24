@@ -384,14 +384,14 @@ struct EngineProtocolGoldenTests {
                             #expect(output.requestID?.value == 20)
                             #expect(output.sequence.value == 37)
                             #expect(identity.backend == "onnx-clause-tagger")
-                            #expect(identity.modelID == "sbintuitions/modernbert-ja-30m-multitagger")
+                            #expect(identity.modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger")
                             #expect(identity.revision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
                             #expect(identity.tokenizerSHA256 == "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062")
                             sawValidatedModelInspection = true
                         case let .invalid(failure):
-                            let modelDirectory = "C:/Users/Aki/AppData/Local/mac-ambient-jev/models/clause-tagger/clause-tagger-onnx-90501ea3-v1/clause-tagger-onnx"
+                            let modelDirectory = "C:/Users/Aki/AppData/Local/mac-ambient-jev/models/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx"
                             let modelPath = "\(modelDirectory)/ClauseTagger.onnx"
-                            let modelFailureMessage = "モデル(clause_tagger)が不正です: \(modelPath) (サイズが一致しません (期待: 146889561, 実際: 1))。次の手順で配置し直してください: python3 scripts/fetch_clause_tagger.py を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
+                            let modelFailureMessage = "モデル(clause_tagger)が不正です: \(modelPath) (サイズが一致しません (期待: 146889562, 実際: 1))。次の手順で配置し直してください: python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
                             #expect(output.requestID?.value == 20)
                             #expect(output.sequence.value == 38)
                             #expect(failure.code == .modelCorrupt)

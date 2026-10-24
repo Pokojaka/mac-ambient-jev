@@ -1,5 +1,5 @@
 {
-  "model_id": "sbintuitions/modernbert-ja-30m-multitagger",
+  "model_id": "Pokojaka/modernbert-ja-30m-utterance-tagger",
   "model_revision": "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
   "training_status": "trained",
   "tokenizer_sha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",

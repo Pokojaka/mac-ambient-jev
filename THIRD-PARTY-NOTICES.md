@@ -154,6 +154,10 @@ SOFTWARE.
 
 The adapted files are by Pedro Cuenca. Copyright © 2024 Hugging Face. All rights reserved. Licensed under the Apache License, Version 2.0 (<https://www.apache.org/licenses/LICENSE-2.0>); upstream license: <https://github.com/huggingface/swift-transformers/blob/1.3.4/LICENSE>.
 
+## Trained ClauseTagger model
+
+The bundled trained ClauseTagger was trained on 名大会話コーパス and is licensed under [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/). Its source is [Pokojaka/modernbert-ja-30m-utterance-tagger](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f), pinned to commit `5c0213592cf8d59fc0b665183ab7536ddde05d1f`; see the upstream [`LICENSE.md`](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/resolve/5c0213592cf8d59fc0b665183ab7536ddde05d1f/LICENSE.md). The `LICENSE.md` file is shipped alongside both the Core ML and ONNX models. This license applies to the trained model, not the app source code, which is MIT-licensed under the root [LICENSE](LICENSE). The model is a fine-tune of [SB Intuitions' modernbert-ja-30m](https://huggingface.co/sbintuitions/modernbert-ja-30m) (MIT); the MIT notice for the base model and the bundled `tokenizer.json` is included in the shipped `LICENSE.md` and in `onnx/LICENSE.txt`.
+
 ## ClauseTagger tokenizer fixture
 
 `app/MacAmbientJev/Tests/MacAmbientJevClauseTaggerFixtures/Resources/ClauseTaggerTokenizer.json` contains tokenizer data associated with [SB Intuitions' modernbert-ja-30m model](https://huggingface.co/sbintuitions/modernbert-ja-30m). It is test-only tokenizer data, not model weights. The file is a byte-for-byte copy of the supplied `release-bc2` tokenizer; SHA-256: `0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062`. It was not downloaded from the license revision linked below. The MIT license text is from the upstream [LICENSE at revision `6a0406481a741f0f74f23c03a8b958acfd276b7c`](https://huggingface.co/sbintuitions/modernbert-ja-30m/resolve/6a0406481a741f0f74f23c03a8b958acfd276b7c/LICENSE).

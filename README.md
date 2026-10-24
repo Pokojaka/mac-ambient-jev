@@ -8,7 +8,9 @@ macOS で講義や会話を録音し、音声ファイルも読み込める文�
 
 ## 発話文判定モデル
 
-発話文判定モデル（ClauseTagger.mlpackage と tokenizer.json）はこのリポジトリの GitHub release asset に置き、`scripts/build_app.sh` が固定した tag と SHA-256 で取得・検証して app bundle の Contents/Resources/clause-tagger に入れます。アプリは bundle 内のモデルだけを読みます。モデルや tokenizer が欠ける、または不正な場合はエラーとして判定を保留します。Qwen3-ASR などの音声処理モデルは別のモデルで、初回利用時に取得してローカルにロードします。
+発話文判定モデル（ClauseTagger.mlpackage と tokenizer.json）は、公開 Hugging Face リポジトリ [Pokojaka/modernbert-ja-30m-utterance-tagger](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f) の commit `5c0213592cf8d59fc0b665183ab7536ddde05d1f` から取得します。Core ML と ONNX の全ファイルの byte count と SHA-256 は、単一の共有 [resource manifest](app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) に固定されています。`scripts/build_app.sh` は `python3 scripts/fetch_clause_tagger.py --format coreml` を実行し、ClauseTagger.mlpackage、tokenizer.json、LICENSE.md を app bundle の Contents/Resources/clause-tagger に同梱します。
+
+取得物は `.build/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger` にキャッシュし、毎回のビルドで全ファイルの構成・byte count・SHA-256 を検証します。取得失敗や不一致はビルドを停止し、再試行やフォールバックはしません。公開リポジトリからのダウンロードに認証トークンは不要です。アプリは bundle 内のモデルだけを読みます。Qwen3-ASR などの音声処理モデルは別のモデルで、初回利用時に取得してローカルにロードします。
 
 仕様とモデルの更新手順は [発話文判定](docs/decision-engine.md)、実モデル parity テストは [検証と計測](docs/testing.md) を参照してください。
 
@@ -31,7 +33,7 @@ macOS で講義や会話を録音し、音声ファイルも読み込める文�
 
 macOS 15 以降、Apple Silicon、Swift 6 系が必要。依存パッケージと初回のモデル取得にはインターネット接続が必要。
 
-`scripts/build_app.sh` は発話文判定モデルを GitHub release（リポジトリ Pokojaka/mac-ambient-jev）から取得するため、初回ビルドの前に GitHub CLI `gh` を入れ、`gh auth login` しておく。取得した archive は SHA-256 を検証してからリポジトリの .build/clause-tagger に保存し、以降のビルドでは再取得せず毎回 SHA-256 を検証する。`gh` がない、取得に失敗した、または SHA-256 が一致しない場合はエラーで止まる。
+発話文判定モデルの取得には Python 3.12 以上が必要です。`scripts/build_app.sh` は `python3 scripts/fetch_clause_tagger.py --format coreml` を呼び出します。公開 Hugging Face リポジトリからのダウンロードに認証トークンは不要です。
 
 app bundle は「MacAmbientJev Local Signing」という名前の自己署名証明書で署名する。署名が毎回同じなので、マイクとシステム音声の許可が再ビルド後も引き継がれる。証明書がないと `scripts/build_app.sh` はエラーで止まる。証明書は最初に一度だけ作る。
 
@@ -54,6 +56,10 @@ bash scripts/run_app.sh
 アプリアイコンの元画像は `app/MacAmbientJev/Assets/AppIcon.png`（1024 × 1024 px）。`scripts/build_app.sh` が標準解像度と Retina 用の各サイズから AppIcon.icns を生成し、app bundle に組み込む。元画像が欠けている場合はビルドを停止する。
 
 保存先フォルダーと自動書き出しは設定画面で指定する。
+
+## ライセンス
+
+アプリのコードはルートの [LICENSE](LICENSE) に記載の MIT License です。同梱する学習済み ClauseTagger は別ライセンスの CC BY-NC-ND 4.0 で、名大会話コーパスで学習されています。モデルとライセンスの詳細は [Hugging Face の固定 revision](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f) と [同梱 LICENSE.md](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/resolve/5c0213592cf8d59fc0b665183ab7536ddde05d1f/LICENSE.md) を参照してください。MIT License はアプリのコードに適用され、学習済みモデルには適用されません。リポジトリに含まれる第三者のコードとデータのライセンスは [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください。
 
 ## 検証
 

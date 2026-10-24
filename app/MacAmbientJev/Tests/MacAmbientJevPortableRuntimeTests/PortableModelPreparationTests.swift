@@ -175,8 +175,9 @@ struct PortableModelPreparationTests {
         let diarization = try layout.diarizationDirectory()
         #expect(diarization.deletingLastPathComponent().path == "/models/community1")
         #expect(diarization.lastPathComponent.count == 64)
-        let release = try ClauseTaggerManifest.bundled().release
-        #expect(try layout.clauseTaggerDirectory().path == "/models/clause-tagger/\(release.tag)/\(release.directory)")
+        let source = try ClauseTaggerManifest.bundled().source
+        #expect(source.commit == "5c0213592cf8d59fc0b665183ab7536ddde05d1f")
+        #expect(try layout.clauseTaggerDirectory().path == "/models/clause-tagger/\(source.commit)/clause-tagger-onnx")
     }
 
     @Test func installedConfigurationSharesThreadValidationAndDecisionSelection() throws {
@@ -206,6 +207,36 @@ struct PortableModelPreparationTests {
             try PortableProcessingConfiguration.installed(
                 layout: layout, qwen3Size: .small, threads: 3, logicalCPUCount: 2, withDecisions: false
             )
+        }
+    }
+
+    @Test func missingClauseTaggerPreparationStepReportsItsInstallCommand() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tagger = root.appending(path: "clause-tagger", directoryHint: .isDirectory)
+        let configuration = PortableProcessingConfiguration(
+            sileroModelURL: root.appending(path: "silero/model.onnx"),
+            qwen3ModelDirectory: root.appending(path: "qwen3", directoryHint: .isDirectory),
+            qwen3Size: .small,
+            diarizationModelDirectory: root.appending(path: "diarization", directoryHint: .isDirectory),
+            clauseTaggerModelDirectory: tagger,
+            threads: 1
+        )
+        let steps = try PortableModelPreparationService.steps(for: configuration)
+        let step = try #require(steps.first { $0.model == .clauseTagger })
+
+        do {
+            try step.validate()
+            Issue.record("validated a missing clause tagger")
+        } catch let error as PortableModelPreparationError {
+            guard case let .missing(model, path, command) = error else {
+                Issue.record("not missing: \(error)")
+                return
+            }
+            #expect(model == .clauseTagger)
+            #expect(path == tagger.path)
+            #expect(command.contains("--format onnx"))
+            #expect(command.contains(tagger.path))
         }
     }
 

@@ -35,7 +35,7 @@ if ($qwen3TokenizerPathLines.Count -ne 1) { throw "Qwen3-ASR tokenizer fetch ret
 $env:MAC_AMBIENT_JEV_QWEN3_TOKENIZER = [string]$qwen3TokenizerPathLines[0]
 
 Write-Host '==> fetch clause tagger model'
-$clauseTaggerPathLines = @(& python scripts/fetch_clause_tagger.py)
+$clauseTaggerPathLines = @(& python scripts/fetch_clause_tagger.py --format onnx)
 $clauseTaggerExitCode = $LASTEXITCODE
 if ($clauseTaggerExitCode -ne 0) { throw "Clause tagger model fetch failed with exit code $clauseTaggerExitCode" }
 if ($clauseTaggerPathLines.Count -ne 1) { throw "Clause tagger model fetch returned $($clauseTaggerPathLines.Count) paths; expected exactly one" }
