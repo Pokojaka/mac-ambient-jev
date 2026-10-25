@@ -1,0 +1,30 @@
+name: PR cache cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete caches for the closed PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CACHE_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -euo pipefail
+          cache_ids="$(gh api --method GET "repos/${GH_REPO}/actions/caches" \
+            -f ref="$CACHE_REF" \
+            -f per_page=100 \
+            --paginate \
+            --jq '.actions_caches[].id')"
+          for cache_id in $cache_ids; do
+            gh cache delete "$cache_id" --repo "$GH_REPO"
+          done

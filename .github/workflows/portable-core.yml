@@ -229,7 +229,8 @@ jobs:
         working-directory: tools/linux-audio
         run: python3 -m pytest -q tests/test_process_recording_acceptance.py
       - name: Restore model directories
-        uses: actions/cache@v4
+        id: model-directories
+        uses: actions/cache/restore@v4
         with:
           path: |
             .build/qwen3-asr-models
@@ -240,6 +241,17 @@ jobs:
           key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_community1_diarization.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
       - name: Fetch models (hashes are verified on cache hits), run numerical suites and acceptance driver
         run: bash scripts/verify_portable.sh --full-model
+      - name: Save model directories
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.model-directories.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .build/qwen3-asr-models
+            .build/qwen3-asr-tokenizer
+            .build/silero-vad
+            .build/community1-diarization
+            .build/clause-tagger-onnx
+          key: ${{ steps.model-directories.outputs.cache-primary-key }}
       - name: Upload Linux model E2E test events
         if: always()
         uses: actions/upload-artifact@v4
@@ -257,6 +269,7 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v5
+      # Its internal cache switch controls restore and save together with no save-only condition, so it can still save on PRs.
       - uses: compnerd/gha-setup-swift@775d3f4111c5be58a0f62f2efdd353bb8fac15c7
         with:
           swift-version: swift-6.2-release
@@ -281,7 +294,8 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Swift toolchain fingerprint failed' }
       - name: Restore model directories
-        uses: actions/cache@v4
+        id: model-directories
+        uses: actions/cache/restore@v4
         with:
           path: |
             .build/qwen3-asr-models
@@ -292,7 +306,8 @@ jobs:
           key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_community1_diarization.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
       # Full-build artifacts rely on GitHub's stable workspace layout; never restore across OS/arch/toolchain.
       - name: Cache SwiftPM build
-        uses: actions/cache@v4
+        id: swiftpm-build
+        uses: actions/cache/restore@v4
         with:
           path: app/MacAmbientJev/.build
           key: swiftpm-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
@@ -335,6 +350,23 @@ jobs:
           python -c "import os,pathlib,sys,tempfile; expected=pathlib.Path(os.environ['RUNNER_TEMP']); actual=pathlib.Path(tempfile.gettempdir()); print(f'tempfile.gettempdir()={actual}'); sys.exit(0 if actual.resolve() == expected.resolve() else 1)"
           if ($LASTEXITCODE -ne 0) { throw 'Python tempfile.gettempdir() does not resolve to RUNNER_TEMP' }
           ./scripts/test-windows.ps1
+      - name: Save model directories
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.model-directories.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .build/qwen3-asr-models
+            .build/qwen3-asr-tokenizer
+            .build/silero-vad
+            .build/community1-diarization
+            .build/clause-tagger-onnx
+          key: ${{ steps.model-directories.outputs.cache-primary-key }}
+      - name: Save SwiftPM build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: app/MacAmbientJev/.build
+          key: ${{ steps.swiftpm-build.outputs.cache-primary-key }}
       - name: Upload Windows test events
         if: always()
         uses: actions/upload-artifact@v4

@@ -46,7 +46,8 @@ jobs:
               output.write(f"version={digest}\n")
           PY
       - name: Cache SwiftPM sources
-        uses: actions/cache@v4
+        id: swiftpm-sources
+        uses: actions/cache/restore@v4
         with:
           path: |
             app/MacAmbientJev/.build/checkouts
@@ -56,6 +57,16 @@ jobs:
           key: swiftpm-sources-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
       - name: Verify V1 tests
         run: bash scripts/verify_v1_tests.sh
+      - name: Save SwiftPM sources
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/MacAmbientJev/.build/checkouts
+            app/MacAmbientJev/.build/repositories
+            app/MacAmbientJev/.build/artifacts
+            app/MacAmbientJev/.build/workspace-state.json
+          key: ${{ steps.swiftpm-sources.outputs.cache-primary-key }}
       - name: Report SwiftPM build size
         if: always()
         run: if [ -d app/MacAmbientJev/.build ]; then du -sk app/MacAmbientJev/.build; fi
@@ -113,7 +124,8 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
       - name: Cache SwiftPM sources
-        uses: actions/cache@v4
+        id: swiftpm-sources
+        uses: actions/cache/restore@v4
         with:
           path: |
             app/MacAmbientJev/.build/checkouts
@@ -123,6 +135,16 @@ jobs:
           key: swiftpm-sources-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
       - name: Verify V1 app
         run: bash scripts/verify_v1_app.sh
+      - name: Save SwiftPM sources
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/MacAmbientJev/.build/checkouts
+            app/MacAmbientJev/.build/repositories
+            app/MacAmbientJev/.build/artifacts
+            app/MacAmbientJev/.build/workspace-state.json
+          key: ${{ steps.swiftpm-sources.outputs.cache-primary-key }}
       - name: Report SwiftPM build size
         if: always()
         run: if [ -d app/MacAmbientJev/.build ]; then du -sk app/MacAmbientJev/.build; fi

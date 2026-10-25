@@ -86,7 +86,7 @@ successful VM run の追加 envelope は `fullFLACValidationStopsAtTheStoredEnd`
 
 ## 現行 runner と suite budget
 
-sole budget constant は [`SUITE_BUDGET_SECONDS`](../../scripts/report_test_events.py#L14) です。runner は [`process.wait()`](../../scripts/run_swift_tests.py#L99-L118) に timeout を渡さず、Swift test process 終了後に reporter を呼びます。`--filter` がない run のみ envelope budget を強制し、明示的 filter subset は予算対象外です。元の test process が正の非 0 exit code を返せば reporter の結果より優先されます（[`runner` result handling](../../scripts/run_swift_tests.py#L119-L168)、[filtered 判定](../../scripts/report_test_events.py#L388-L435)）。10 分の Swift Testing `timeLimit` は指定された個別 test の hang/cancellation guard で、suite 性能予算ではありません。job-level timeout も別の外側の制限です。現行 Mac jobs に明示 `timeout-minutes` はありません（[workflow の job definitions](../../.github/workflows/ci.yml#L15-L20)、[既存 testing 文書](../testing.md#L129)）。過去の VM watchdog の 420.015 秒を現行 runner の動作と混同しません。
+sole budget constant は [`SUITE_BUDGET_SECONDS`](../../scripts/report_test_events.py#L14) です。runner は [`process.wait()`](../../scripts/run_swift_tests.py#L99-L118) に timeout を渡さず、Swift test process 終了後に reporter を呼びます。`--filter` がない run のみ envelope budget を強制し、明示的 filter subset は予算対象外です。元の test process が正の非 0 exit code を返せば reporter の結果より優先されます（[`runner` result handling](../../scripts/run_swift_tests.py#L119-L168)、[filtered 判定](../../scripts/report_test_events.py#L388-L435)）。10 分の Swift Testing `timeLimit` は指定された個別 test の hang/cancellation guard で、suite 性能予算ではありません。job-level timeout も別の外側の制限です。現行の両 Mac job は `timeout-minutes: 40` です（[CI workflow](../../.github/workflows/ci.yml)、[testing 文書](../testing.md)）。過去の VM watchdog の 420.015 秒を現行 runner の動作と混同しません。
 
 ## async tests から到達する同期処理のソース監査
 
@@ -123,11 +123,15 @@ macOS 専用の `Community1DiarizerCoreMLParityTests.portableKernelMatchesFluidA
 
 ## cache と一時領域の計測
 
-[CI workflow](../../.github/workflows/ci.yml#L47-L55) の Mac test / app 両 job (app は [同 workflow](../../.github/workflows/ci.yml#L117-L121)) は同じ namespace / key を使い、cache path は `.build/checkouts`、`.build/repositories`、`.build/artifacts`、`.build/workspace-state.json` の source-only 4 項目です。key は runner OS / architecture、Swift と Xcode の fingerprint、`Package.resolved`、`Package.swift` hash を含み、restore prefix はありません。Windows の current cache path は full `app/MacAmbientJev/.build` です ([portable-core workflow](../../.github/workflows/portable-core.yml#L293-L300))。Mac full `.build` の測定値 4,430,700,544 bytes は source-cache の対象ではありません。
+[CI workflow](../../.github/workflows/ci.yml) の Mac test / app 両 job は同じ `swiftpm-sources` key で `.build/checkouts`、`.build/repositories`、`.build/artifacts`、`.build/workspace-state.json` の source-only 4 path を restore します。key は runner OS / architecture、Swift と Xcode の fingerprint、`Package.resolved`、`Package.swift` hash を含み、restore prefix はありません。[portable-core workflow](../../.github/workflows/portable-core.yml) の Linux E2E / Windows job は5 model directory、Windows はさらに `app/MacAmbientJev/.build` 全体を restore します。5つの明示的 v4 save step は既存の検証・build・test command 完了後、`main` への push で cache miss の場合だけ保存します。restore は既存の job / event eligibility と入力のまま PR / dispatch を含めて実行し、cache hit でも build / test を省略せず、model fetcher は cache hit の hash も検証します。main-only 保存は PR ごとの複製を避け、main entry を quota 内に保つためです。PR-ref entry はその PR のみ読め、main entry は PR からも利用できます（[actions/cache v4 scope / restore / save](https://raw.githubusercontent.com/actions/cache/v4/README.md)、[actions/cache v4 release notes (4.3.0)](https://raw.githubusercontent.com/actions/cache/v4/RELEASES.md)）。
 
-先行 Mac 測定は `.build` source components 406,280 + 742,872 + 120,072 KiB = 1,299,685,376 allocated bytes でした。controller が後に読み取り測定した現在の Mac source-cache components は次の通りです。
+Windows toolchain installer は例外です。pinned [gha-setup-swift action](https://raw.githubusercontent.com/compnerd/gha-setup-swift/775d3f4111c5be58a0f62f2efdd353bb8fac15c7/action.yml) は内部で v6 restore / save step を使い、公開 input は restore/save をまとめて制御する `cache` boolean のみです。restore を保ったまま save だけを main 限定にできないため `cache: true` のままとし、PR/toolchain miss では PR ref に保存される場合があります。したがって main-only は5つの明示的 save の規則であり、全 cache に例外なく適用されません。
 
-| 現在の Mac cache path | allocated size |
+[PR cache cleanup workflow](../../.github/workflows/pr-cache-cleanup.yml) は PR close 時に `refs/pull/<number>/merge` を filter して cache を全ページ取得し、各 ID を削除します。空一覧は成功、API / 削除エラーは失敗です。fork PR の `pull_request` token は read-only の場合があり、削除に失敗し得ます。`pull_request_target` は追加していません。workflow を追加しただけでは既存 PR cache は消えず、close event 後に削除処理が走ります（[GitHub cache management](https://raw.githubusercontent.com/github/docs/main/content/actions/how-tos/manage-workflow-runs/manage-caches.md)、[`gh cache delete`](https://cli.github.com/manual/gh_cache_delete)）。
+
+先行 Mac のローカル測定は `.build` source components 406,280 + 742,872 + 120,072 KiB = 1,299,685,376 allocated bytes でした。後のローカル読み取り測定は次の通りです。
+
+| Mac source path（ローカル） | allocated size |
 | --- | ---: |
 | checkouts | 406,280 KiB |
 | repositories | 741,728 KiB |
@@ -135,16 +139,19 @@ macOS 専用の `Community1DiarizerCoreMLParityTests.portableKernelMatchesFluidA
 | workspace-state.json | 24 KiB |
 | 合計 | 1,298,538,496 bytes |
 
-以前の partial VM build は 735,147,687 logical bytes で、full cache size ではありません。Windows `.build` は 998,506,496 allocated bytes。Windows normal-mode models は 166,590,599 logical bytes（tokenizer 11,429,377、Silero 1,289,603、tagger 153,871,619）。current Linux model archive は 1,324,600,146 compressed bytes、Windows SDK archive は 892,298,964 compressed bytes です。
+以前の partial VM build は 735,147,687 logical bytes で、full cache size ではありません。Windows `.build` は 998,506,496 allocated bytes。Windows normal-mode models は 166,590,599 logical bytes（tokenizer 11,429,377、Silero 1,289,603、tagger 153,871,619）。Mac full `.build` のローカル測定値 4,430,700,544 bytes は source-cache 対象ではありません。これらのローカル allocated / logical size は hosted archive size と区別します。
 
-以前確認された GitHub cache API snapshot は 9 entries / 9,789,535,319 bytes のままです。内訳は Linux model 4 件（current archive 1,324,600,146 bytes）、Mac source 2 件 907,148,677 / 907,096,297 bytes、Swift SDK 3 件 892,298,964 / 892,298,965 / 892,298,966 bytes です。これは最新 API query ではありません。cache 削除はありません。
+lead が `gh api repos/Pokojaka/mac-ambient-jev/actions/caches` で取得した hosted cache snapshot は9 entries / 9,789,535,319 bytes（10 GB quota の9.79 decimal GB、約97.9%、残り210,464,681 bytes）です。main の現行3 entry は Linux model archive 1,324,600,146 compressed bytes、Mac source archive 約0.91 GB（907,148,677 bytes）、Windows Swift toolchain archive 892,298,964 compressed bytes、計3,124,047,787 bytes です。残る6,665,487,532 bytes は PR ref copies（PR 69、64、58、54、36）と stale-key の main entry です。この内訳は lead の API snapshot の観測であり、この記録更新時の再 query ではありません。
 
-| 見積もり | 合計 | 10,000,000,000-byte quota まで |
-| --- | ---: | ---: |
-| Mac source cache 1 世代を共有する見積もり | 4,680,534,701 bytes | 5,319,465,299 bytes |
-| Mac source cache が branch scope で 2 copy となる保守見積もり | 5,979,073,197 bytes | 4,020,926,803 bytes |
+| main-only・1世代の定常見積もり要素 | 値 | サイズの種別 |
+| --- | ---: | --- |
+| 現行 main set（Linux models + Mac sources + Windows toolchain） | 3,124,047,787 bytes | 圧縮 archive の観測値 |
+| Windows normal-mode models | 166,590,599 bytes | logical local size |
+| Windows SwiftPM `.build` | 998,506,496 bytes | allocated local size |
+| 合計 | 4,289,144,882 bytes（約4.29 decimal GB） | 混合見積もり |
+| 10,000,000,000-byte quota まで | 5,710,855,118 bytes | 算術上の headroom |
 
-この見積もりは allocated directory、logical model、compressed archive を混在させており、GitHub archive 実サイズでも保証された上限でもありません。full model の追加、branch / PR scope、異なる key 世代、重複 cache は増加要因です。同じ namespace / key が共有可能でも、複数世代や scope の重複を上記 headroom が保証するものではありません。Mac full `.build` の測定値は含まず、cache 削除もしていません。fresh hosted / VM run はなく、Mac の測定後空き容量は約 19 GiB でした。
+これは同じ混合単位の推定であり、hosted archive size の実測でも保証上限でもありません。1世代の main set のみとし、stale-key generations / PR copies を含まず、Mac full `.build` も除外します。open PR の toolchain installer cache 例外、複数世代、Windows full-model の増加は実 quota 使用量を上げ得ます。PR close cleanup は既存 entry を workflow 追加だけで消しません。GitHub quota は10 GB、未アクセス7日で retention が切れ、上限時は least-recently-used cache が eviction されます（[GitHub cache management](https://raw.githubusercontent.com/github/docs/main/content/actions/how-tos/manage-workflow-runs/manage-caches.md)）。この snapshot について cache 削除はしていません。
 
 先行 hard-coded temp-path audit では production Swift の temporary root は見つかりませんでした。[`AppPathsTests.swift`](../../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/AppPathsTests.swift#L7-L8) は path-only fixture、[`TranscribeFileTests.swift`](../../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift#L771) の `/tmp` は inert payload URL、[`test_engine_acceptance.py`](../../scripts/test_engine_acceptance.py#L90) / [line 147](../../scripts/test_engine_acceptance.py#L147) は path-codec fixture です。実際の write は Foundation `FileManager.temporaryDirectory` または Python `tempfile` を使います。Windows CI の `TEMP` / `TMP` / `TMPDIR` が `RUNNER_TEMP` の場合の効果は hosted CI で未測定です。
 
