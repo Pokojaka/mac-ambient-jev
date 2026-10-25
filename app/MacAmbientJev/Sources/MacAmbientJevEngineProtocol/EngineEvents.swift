@@ -230,10 +230,6 @@ public enum EngineEventName: String, Codable, CaseIterable, Equatable, Sendable 
         self = value
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum EngineEvent: Codable, Equatable, Sendable {

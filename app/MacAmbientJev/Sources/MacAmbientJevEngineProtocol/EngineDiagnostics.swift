@@ -158,6 +158,29 @@ public enum EngineDecisionUsage: Codable, Equatable, Sendable {
     case available(EngineDecisionUsageSnapshot)
     case unavailable(EngineFailure)
 
+    internal enum Kind: String, Codable, CaseIterable, Sendable {
+        case available
+        case unavailable
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown decision usage kind: \(rawValue)")
+            }
+            self = value
+        }
+    }
+
+    internal var kind: Kind {
+        switch self {
+        case .available:
+            .available
+        case .unavailable:
+            .unavailable
+        }
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case snapshot
@@ -167,33 +190,30 @@ public enum EngineDecisionUsage: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
-        let kind = try container.decode(String.self, forKey: .kind)
+        let kind = try container.decode(Kind.self, forKey: .kind)
         switch kind {
-        case "available":
+        case .available:
             try engineDiagnosticsRequire(
                 Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "snapshot"],
                 "available decision usage must contain only kind and snapshot"
             )
             self = .available(try container.decode(EngineDecisionUsageSnapshot.self, forKey: .snapshot))
-        case "unavailable":
+        case .unavailable:
             try engineDiagnosticsRequire(
                 Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "error"],
                 "unavailable decision usage must contain only kind and error"
             )
             self = .unavailable(try container.decode(EngineFailure.self, forKey: .error))
-        default:
-            throw EngineProtocolError.invalidJSON("unknown decision usage kind: \(kind)")
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
         switch self {
         case let .available(snapshot):
-            try container.encode("available", forKey: .kind)
             try container.encode(snapshot, forKey: .snapshot)
         case let .unavailable(error):
-            try container.encode("unavailable", forKey: .kind)
             try container.encode(error, forKey: .error)
         }
     }

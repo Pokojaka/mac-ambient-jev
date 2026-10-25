@@ -619,9 +619,32 @@ public enum EngineSessionSource: Codable, Equatable, Sendable {
     case systemAudio
     case imported(originalFilename: String)
 
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case microphone
+        case systemAudio = "system_audio"
+        case imported
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown session source kind: \(rawValue)")
+            }
+            self = value
+        }
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case originalFilename = "original_filename"
+    }
+
+    var kind: Kind {
+        switch self {
+        case .microphone: .microphone
+        case .systemAudio: .systemAudio
+        case .imported: .imported
+        }
     }
 
     fileprivate func validate() throws {
@@ -633,34 +656,30 @@ public enum EngineSessionSource: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
-        let kind = try dynamic.decode(String.self, forKey: EngineCodingKey(stringValue: "kind")!)
+        let kind = try container.decode(Kind.self, forKey: .kind)
         switch kind {
-        case "microphone":
+        case .microphone:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "microphone source has invalid fields")
             self = .microphone
-        case "system_audio":
+        case .systemAudio:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "system_audio source has invalid fields")
             self = .systemAudio
-        case "imported":
+        case .imported:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "original_filename"], "imported source has invalid fields")
             let originalFilename = try container.decode(String.self, forKey: .originalFilename)
             try enginePayloadRequireNonempty(originalFilename, "original_filename")
             self = .imported(originalFilename: originalFilename)
-        default:
-            throw EngineProtocolError.invalidJSON("unknown session source kind: \(kind)")
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         try validate()
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
         switch self {
-        case .microphone:
-            try container.encode("microphone", forKey: .kind)
-        case .systemAudio:
-            try container.encode("system_audio", forKey: .kind)
+        case .microphone, .systemAudio:
+            break
         case let .imported(originalFilename):
-            try container.encode("imported", forKey: .kind)
             try container.encode(originalFilename, forKey: .originalFilename)
         }
     }
@@ -671,9 +690,32 @@ public enum EngineSessionAudio: Codable, Equatable, Sendable {
     case missing
     case unreadable(reason: String)
 
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case available
+        case missing
+        case unreadable
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown session audio kind: \(rawValue)")
+            }
+            self = value
+        }
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case reason
+    }
+
+    var kind: Kind {
+        switch self {
+        case .available: .available
+        case .missing: .missing
+        case .unreadable: .unreadable
+        }
     }
 
     fileprivate func validate() throws {
@@ -685,34 +727,30 @@ public enum EngineSessionAudio: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
-        let kind = try dynamic.decode(String.self, forKey: EngineCodingKey(stringValue: "kind")!)
+        let kind = try container.decode(Kind.self, forKey: .kind)
         switch kind {
-        case "available":
+        case .available:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "available audio has invalid fields")
             self = .available
-        case "missing":
+        case .missing:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "missing audio has invalid fields")
             self = .missing
-        case "unreadable":
+        case .unreadable:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "reason"], "unreadable audio has invalid fields")
             let reason = try container.decode(String.self, forKey: .reason)
             try enginePayloadRequireNonempty(reason, "audio.reason")
             self = .unreadable(reason: reason)
-        default:
-            throw EngineProtocolError.invalidJSON("unknown session audio kind: \(kind)")
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         try validate()
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
         switch self {
-        case .available:
-            try container.encode("available", forKey: .kind)
-        case .missing:
-            try container.encode("missing", forKey: .kind)
+        case .available, .missing:
+            break
         case let .unreadable(reason):
-            try container.encode("unreadable", forKey: .kind)
             try container.encode(reason, forKey: .reason)
         }
     }
@@ -722,6 +760,20 @@ public enum EngineSessionMetadata: Codable, Equatable, Sendable {
     case unreadable(reason: String)
     case readable(createdAt: Double, source: EngineSessionSource, audio: EngineSessionAudio, hasTranscript: Bool)
 
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case unreadable
+        case readable
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown session metadata kind: \(rawValue)")
+            }
+            self = value
+        }
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case reason
@@ -729,6 +781,13 @@ public enum EngineSessionMetadata: Codable, Equatable, Sendable {
         case source
         case audio
         case hasTranscript = "has_transcript"
+    }
+
+    var kind: Kind {
+        switch self {
+        case .unreadable: .unreadable
+        case .readable: .readable
+        }
     }
 
     fileprivate func validate() throws {
@@ -745,14 +804,14 @@ public enum EngineSessionMetadata: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
-        let kind = try dynamic.decode(String.self, forKey: EngineCodingKey(stringValue: "kind")!)
+        let kind = try container.decode(Kind.self, forKey: .kind)
         switch kind {
-        case "unreadable":
+        case .unreadable:
             try enginePayloadRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "reason"], "unreadable metadata has invalid fields")
             let reason = try container.decode(String.self, forKey: .reason)
             try enginePayloadRequireNonempty(reason, "metadata.reason")
             self = .unreadable(reason: reason)
-        case "readable":
+        case .readable:
             try enginePayloadRequire(
                 Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "created_at", "source", "audio", "has_transcript"],
                 "readable metadata has invalid fields"
@@ -763,20 +822,17 @@ public enum EngineSessionMetadata: Codable, Equatable, Sendable {
             let audio = try container.decode(EngineSessionAudio.self, forKey: .audio)
             let hasTranscript = try container.decode(Bool.self, forKey: .hasTranscript)
             self = .readable(createdAt: createdAt, source: source, audio: audio, hasTranscript: hasTranscript)
-        default:
-            throw EngineProtocolError.invalidJSON("unknown session metadata kind: \(kind)")
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         try validate()
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
         switch self {
         case let .unreadable(reason):
-            try container.encode("unreadable", forKey: .kind)
             try container.encode(reason, forKey: .reason)
         case let .readable(createdAt, source, audio, hasTranscript):
-            try container.encode("readable", forKey: .kind)
             try container.encode(createdAt, forKey: .createdAt)
             try container.encode(source, forKey: .source)
             try container.encode(audio, forKey: .audio)

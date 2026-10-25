@@ -29,10 +29,6 @@ public enum EngineSource: String, Codable, CaseIterable, Equatable, Sendable {
         self = value
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum EngineASRSize: String, Codable, CaseIterable, Equatable, Sendable {
@@ -48,10 +44,6 @@ public enum EngineASRSize: String, Codable, CaseIterable, Equatable, Sendable {
         self = value
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum EngineExecutionProvider: String, Codable, CaseIterable, Equatable, Sendable {
@@ -66,45 +58,60 @@ public enum EngineExecutionProvider: String, Codable, CaseIterable, Equatable, S
         self = value
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum EngineDevice: Codable, Equatable, Sendable {
     case `default`
     case id(String)
 
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case `default`
+        case id
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown device kind")
+            }
+            self = value
+        }
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case id
     }
 
+    var kind: Kind {
+        switch self {
+        case .default: .default
+        case .id: .id
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
-        let kind = try container.decode(String.self, forKey: .kind)
+        let kind = try container.decode(Kind.self, forKey: .kind)
         switch kind {
-        case "default":
+        case .default:
             try engineRequire(!container.contains(.id), "default device must not include id")
             self = .default
-        case "id":
+        case .id:
             let value = try container.decode(String.self, forKey: .id)
             try engineRequireNonempty(value, "device.id")
             self = .id(value)
-        default:
-            throw EngineProtocolError.invalidJSON("unknown device kind")
         }
     }
 
     public func encode(to encoder: Encoder) throws {
+        try engineValidateDevice(self)
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
         switch self {
         case .default:
-            try container.encode("default", forKey: .kind)
+            break
         case let .id(value):
-            try engineRequireNonempty(value, "device.id")
-            try container.encode("id", forKey: .kind)
             try container.encode(value, forKey: .id)
         }
     }
@@ -524,10 +531,6 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
         self = value
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum EngineCommand: Codable, Equatable, Sendable {

@@ -6,6 +6,9 @@ enum NativeSessionProcessorError: LocalizedError {
     case transcriptNotPublished
     case storedAudioMissing
     case duplicateDecisionRetryTarget
+    case noDecisionRetryTargets
+    case contentPriorityUnavailable
+    case decisionCoordinatorInitializationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +20,12 @@ enum NativeSessionProcessorError: LocalizedError {
             "保存済みの音声がありません"
         case .duplicateDecisionRetryTarget:
             "判定の再試行対象が重複しています"
+        case .noDecisionRetryTargets:
+            "判定の再試行対象がありません"
+        case .contentPriorityUnavailable:
+            "判定エンジンが利用できません"
+        case .decisionCoordinatorInitializationFailed(let reason):
+            "判定エンジンを初期化できませんでした: \(reason)"
         }
     }
 }
@@ -126,6 +135,7 @@ public actor NativeSessionProcessor {
     }
 
     public typealias DecisionCoordinatorFactory = @Sendable () throws -> DecisionCoordinator
+    public typealias DecisionEventWriterFactory = @Sendable (URL) throws -> any DecisionEventWriting
     public typealias StatusHandler = @Sendable (_ status: Status) async -> Void
     public typealias UpdateHandler = @Sendable (
         _ segments: [MaterializedTranscriptSegment],
@@ -141,6 +151,7 @@ public actor NativeSessionProcessor {
     private let audioHandling: any SessionProcessingAudioHandling
     private let contentPriority: ContentPriorityAccess
     private let sleep: @Sendable (Duration) async throws -> Void
+    private let makeDecisionEventWriter: DecisionEventWriterFactory
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
     private(set) var liveContentPrioritySessions: [UUID: LiveContentPrioritySession] = [:]
     /// Pending live keys survive a failed/paused takeover until a published replacement clears them.
@@ -151,7 +162,8 @@ public actor NativeSessionProcessor {
         engines: SessionProcessingEngines,
         audioHandling: any SessionProcessingAudioHandling,
         contentPriority: ContentPriorityAccess,
-        sleep: @escaping @Sendable (Duration) async throws -> Void
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        makeDecisionEventWriter: @escaping DecisionEventWriterFactory = { try SessionWriter(sessionURL: $0) }
     ) {
         self.sessionsRoot = paths.sessionsRoot
         self.asr = engines.asr
@@ -160,6 +172,7 @@ public actor NativeSessionProcessor {
         self.audioHandling = audioHandling
         self.contentPriority = contentPriority
         self.sleep = sleep
+        self.makeDecisionEventWriter = makeDecisionEventWriter
     }
 
     public func prepareASR(
@@ -426,9 +439,10 @@ public actor NativeSessionProcessor {
         clauses: [ClauseReference],
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
-    ) async {
-        var retainedSegments: [MaterializedTranscriptSegment]?
+    ) async -> SessionProcessingResult {
+        var retainedTranscript: RetainedTranscript?
         do {
+            try Task.checkCancellation()
             guard Set(boundarySegments).count == boundarySegments.count,
                   Set(clauses).count == clauses.count else {
                 throw NativeSessionProcessorError.duplicateDecisionRetryTarget
@@ -439,25 +453,35 @@ public actor NativeSessionProcessor {
             guard let metadata = try metadataStore.load(), let activeRuns = metadata.activeRuns else {
                 throw NativeSessionProcessorError.transcriptNotPublished
             }
+            retainedTranscript = .finalized
             let lines = try loadTranscriptLines(sessionLayout: sessionLayout)
             _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
             let events = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
             let materializer = TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
             let rebuildSnapshot = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
-            guard !boundarySegments.isEmpty || !clauses.isEmpty || rebuildSnapshot else { return }
+            let publishedSegments = try materializer.materialize(events: events, activeRuns: activeRuns)
+            guard !boundarySegments.isEmpty || !clauses.isEmpty || rebuildSnapshot else {
+                throw NativeSessionProcessorError.noDecisionRetryTargets
+            }
             guard case .localTagger(let factory, let usageCounter) = contentPriority else {
                 await onStatus(.activity(.decisionDeferred))
-                return
+                throw NativeSessionProcessorError.contentPriorityUnavailable
             }
             let decisions: DecisionCoordinator
             do {
                 decisions = try factory()
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                await onStatus(.message("\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: \(error.localizedDescription)"))
-                return
+                try Task.checkCancellation()
+                let initializationError = NativeSessionProcessorError.decisionCoordinatorInitializationFailed(
+                    error.localizedDescription
+                )
+                await onStatus(.message(
+                    "\(UserFacingStatus.decisionDeferred.text)。\(initializationError.localizedDescription)"
+                ))
+                throw initializationError
             }
-            let publishedSegments = try materializer.materialize(events: events, activeRuns: activeRuns)
-            retainedSegments = publishedSegments
             await onStatus(.message("保留中の判定を再試行しています（境界 \(boundarySegments.count)区間・優先度 \(clauses.count)節）"))
             await onUpdate(publishedSegments, .running)
             let suffix = UUID().uuidString.lowercased()
@@ -472,7 +496,7 @@ public actor NativeSessionProcessor {
                 sessionID: sessionID,
                 boundaryRunID: boundaryRunID,
                 priorityRunID: "priority_retry_\(suffix)",
-                writer: try SessionWriter(sessionURL: sessionLayout.sessionURL),
+                writer: try makeDecisionEventWriter(sessionLayout.sessionURL),
                 decisions: decisions,
                 usageCounter: usageCounter,
                 materializer: materializer
@@ -484,6 +508,7 @@ public actor NativeSessionProcessor {
                 reusableDecisions: [:],
                 onEvent: nil
             )
+            try Task.checkCancellation()
             try metadataStore.publishDecisionSnapshot(
                 basedOn: activeRuns,
                 clauseBoundaryRunID: result.boundaryRunID,
@@ -499,12 +524,39 @@ public actor NativeSessionProcessor {
             } else {
                 await onStatus(.activity(.decisionDeferred))
             }
+            return .completed(metrics: nil, noSpeech: false)
         } catch {
-            let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
-            if let retainedSegments {
-                await onUpdate(retainedSegments, .partialFailure(message))
+            let isDefinitiveRetryFailure: Bool
+            if let decisionError = error as? DecisionEnrichmentError {
+                switch decisionError {
+                case .retryFailedDurably(_), .retryCompletionPersistenceFailed(original: _, persistence: _):
+                    isDefinitiveRetryFailure = true
+                default:
+                    isDefinitiveRetryFailure = false
+                }
+            } else {
+                isDefinitiveRetryFailure = false
             }
-            await onStatus(.message(message))
+            if !isDefinitiveRetryFailure && (error is CancellationError || Task.isCancelled) {
+                let message = "処理は中断されました。次回の起動時に再開できます"
+                await onStatus(.message(message))
+                return SessionProcessingResult(
+                    disposition: .paused,
+                    metrics: nil,
+                    message: message,
+                    noSpeech: false,
+                    retainedTranscript: retainedTranscript
+                )
+            }
+
+            let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
+            if let processorError = error as? NativeSessionProcessorError,
+               case .decisionCoordinatorInitializationFailed = processorError {
+                // Keep the deferred-engine status already reported above.
+            } else {
+                await onStatus(.message(message))
+            }
+            return .failed(message: message, metrics: nil, retained: retainedTranscript)
         }
     }
 

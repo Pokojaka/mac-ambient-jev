@@ -10,7 +10,16 @@ public protocol SessionEventAppending: Sendable {
     ) async throws -> EventEnvelope<Payload>
 }
 
-public actor SessionWriter: SessionEventAppending {
+public protocol DecisionEventWriting: SessionEventAppending {
+    var eventsURL: URL { get }
+
+    @discardableResult
+    func appendFailedRetryCompletion(
+        _ draft: EventDraft<ProcessingRunCompletedPayload>
+    ) async throws -> EventEnvelope<ProcessingRunCompletedPayload>
+}
+
+public actor SessionWriter: DecisionEventWriting {
     public let sessionURL: URL
     public let eventsURL: URL
     private var knownLogSize: UInt64
@@ -87,14 +96,29 @@ public actor SessionWriter: SessionEventAppending {
     public func append<Payload: Codable & Sendable>(
         _ draft: EventDraft<Payload>
     ) throws -> EventEnvelope<Payload> {
-        try Task.checkCancellation()
+        try append(draft, checkingCancellation: true)
+    }
+
+    @discardableResult
+    public func appendFailedRetryCompletion(
+        _ draft: EventDraft<ProcessingRunCompletedPayload>
+    ) async throws -> EventEnvelope<ProcessingRunCompletedPayload> {
+        precondition(!draft.payload.succeeded)
+        return try append(draft, checkingCancellation: false)
+    }
+
+    private func append<Payload: Codable & Sendable>(
+        _ draft: EventDraft<Payload>,
+        checkingCancellation: Bool
+    ) throws -> EventEnvelope<Payload> {
+        if checkingCancellation { try Task.checkCancellation() }
         let handle = try Self.lockedHandle(eventsURL)
         defer { try? handle.close() }
         if try handle.seekToEnd() != knownLogSize {
             (knownLogSize, lastEventSequence) = try Self.recover(handle)
             try handle.seekToEnd()
         }
-        try Task.checkCancellation()
+        if checkingCancellation { try Task.checkCancellation() }
 
         let envelope = EventEnvelope(
             eventSeq: lastEventSequence + 1,

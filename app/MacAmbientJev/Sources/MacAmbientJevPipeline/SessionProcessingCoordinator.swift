@@ -29,7 +29,7 @@ public protocol SessionProcessingExecuting: Sendable {
         clauses: [ClauseReference],
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async
+    ) async -> SessionProcessingResult
 
     func cancelLiveTranscription(sessionID: UUID) async
 }
@@ -344,26 +344,25 @@ public final class SessionProcessingCoordinator {
                         retainedTranscript: nil
                     )
                 } else {
-                    await processor.retryContentPrioritySession(
+                    let result = await processor.retryContentPrioritySession(
                         sessionID: sessionID,
                         boundarySegments: boundarySegments,
                         clauses: clauses,
                         onStatus: statusHandler,
                         onUpdate: updateHandler
                     )
-                    effects.refreshSavedSessions()
-                    if Task.isCancelled || effects.pausesProcessing {
-                        holdForHeat(request)
-                        finalization = SessionProcessingResult(
-                            disposition: .paused,
-                            metrics: nil,
-                            message: nil,
-                            noSpeech: false,
-                            retainedTranscript: nil
-                        )
-                    } else {
+                    switch result.disposition {
+                    case .failed:
+                        // Durable terminal retry outcomes win over a late pause or cancellation.
+                        finalization = result
+                    case .completed:
+                        // A successful retry has no finalization, so it cannot trigger auto-export.
                         finalization = nil
+                    case .paused:
+                        holdForHeat(request)
+                        finalization = result
                     }
+                    effects.refreshSavedSessions()
                 }
             }
 

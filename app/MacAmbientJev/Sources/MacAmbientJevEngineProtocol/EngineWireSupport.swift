@@ -425,7 +425,7 @@ public struct EngineID: Codable, Hashable, Sendable, Comparable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
+        try container.encode(String(value))
     }
 
     public static func < (lhs: EngineID, rhs: EngineID) -> Bool {

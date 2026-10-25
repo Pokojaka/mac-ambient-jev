@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import MacAmbientJevEngineProtocol
+@testable import MacAmbientJevEngineProtocol
 
 struct EngineProtocolDocumentationTests {
     @Test func documentationCorpusMatchesFixtureAndStrictlyDecodes() throws {
@@ -15,7 +15,7 @@ struct EngineProtocolDocumentationTests {
 
         #expect(documentedCorpus == fixture)
         let coverage = try decodeCorpus(documentedCorpus)
-        #expect(coverage.recordCount == 72)
+        #expect(coverage.recordCount == 102)
         #expect(coverage.requestCommands.count == 20)
         #expect(coverage.completedCommands.count == 20)
         #expect(coverage.requestCommands.contains(EngineCommandName.transcriptRowDetails.rawValue))
@@ -37,7 +37,7 @@ struct EngineProtocolDocumentationTests {
         }
 
         let documentedRawValues = [
-            ["default", "id"],
+            EngineDevice.Kind.allCases.map(\.rawValue),
             EngineSource.allCases.map(\.rawValue),
             EngineASRSize.allCases.map(\.rawValue),
             EngineExecutionProvider.allCases.map(\.rawValue),
@@ -55,7 +55,11 @@ struct EngineProtocolDocumentationTests {
             EnginePreparationPhase.allCases.map(\.rawValue),
             EngineUnavailableCapability.allCases.map(\.rawValue),
             EngineDiagnosticsScope.allCases.map(\.rawValue),
-            ["available", "unavailable", "validated", "invalid"],
+            EngineDecisionUsage.Kind.allCases.map(\.rawValue),
+            EngineClauseTaggerInspection.Kind.allCases.map(\.rawValue),
+            EngineSessionSource.Kind.allCases.map(\.rawValue),
+            EngineSessionAudio.Kind.allCases.map(\.rawValue),
+            EngineSessionMetadata.Kind.allCases.map(\.rawValue),
             EngineSessionStatus.allCases.map(\.rawValue),
             EngineSpeakerLabel.allCases.map(\.rawValue),
             EngineClauseState.allCases.map(\.rawValue),

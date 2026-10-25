@@ -112,6 +112,30 @@ private actor PresentationDecisionProvider: DecisionProvider {
         try await core.list(EngineSessionListPayload(cursor: cursor, limit: limit), context: context)
     }
 
+    private func listedSession(_ harness: ApplicationHarness, sessionID: String) async throws -> EngineSessionSummary {
+        guard case let .sessionList(page) = try await harness.call(
+            "session.list", payload: "{\"cursor\":null,\"limit\":100}"
+        ) else {
+            throw TestTimeout(description: "session.list did not return a page")
+        }
+        return try #require(page.sessions.first { $0.sessionID == sessionID })
+    }
+
+    private func expectRecordingWithoutPublishedAudio(_ summary: EngineSessionSummary) {
+        #expect(summary.status == .recording)
+        #expect(summary.statusText == "保存済み音声がありません")
+        #expect(!summary.canReprocess)
+        #expect(!summary.canRetryDecisions)
+        #expect(!summary.canExport)
+        guard case let .readable(_, source, audio, hasTranscript) = summary.metadata else {
+            Issue.record("live recording metadata should be readable")
+            return
+        }
+        #expect(source == .microphone)
+        #expect(audio == .missing)
+        #expect(!hasTranscript)
+    }
+
     private func inspect(
         _ core: EngineApplicationCore,
         context: EngineRequestContext,
@@ -248,6 +272,78 @@ private actor PresentationDecisionProvider: DecisionProvider {
         harness.app.core.savedSessionOperations.resetExportDestination()
         let incompleteProbe = try await inspect(harness, folderID: listed.folderID)
         #expect(incompleteProbe.exportPath == nil)
+        #expect(try await harness.shutdown() == .shutdownRequested)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func recordingListPublishesAudioAfterTheFirstDurableChunk() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let harness = try await prepared(root, decisions: false)
+        var activeSessionID: String?
+
+        do {
+            guard case let .recordingStart(started) = try await harness.call(
+                "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
+            ) else {
+                throw TestTimeout(description: "recording.start did not return a session")
+            }
+            activeSessionID = started.sessionID
+            let capture = try #require(harness.capture.session)
+
+            let initialCheckpoint = try await capture.committedCheckpoint()
+            #expect(initialCheckpoint.committedFrames == 0)
+            let beforeCaptureAudio = try await listedSession(harness, sessionID: started.sessionID)
+            expectRecordingWithoutPublishedAudio(beforeCaptureAudio)
+
+            // A 0.25-second partial chunk remains in memory and is not a source audio file.
+            try await capture.appendSpeech(seconds: 0.25)
+            let partialCheckpoint = try await capture.committedCheckpoint()
+            #expect(partialCheckpoint.committedFrames == 0)
+            let duringPartialChunk = try await listedSession(harness, sessionID: started.sessionID)
+            expectRecordingWithoutPublishedAudio(duringPartialChunk)
+
+            // 0.75 more seconds crosses the writer's 0.5-second chunk boundary.
+            try await capture.appendSpeech(seconds: 0.75)
+            let committedCheckpoint = try await capture.committedCheckpoint()
+            #expect(committedCheckpoint.committedFrames > 0)
+            #expect(!capture.isStopped)
+
+            let duringCommittedCapture = try await listedSession(harness, sessionID: started.sessionID)
+            #expect(duringCommittedCapture.status == .recording)
+            #expect(duringCommittedCapture.statusText == "未処理")
+            #expect(!duringCommittedCapture.canReprocess)
+            #expect(!duringCommittedCapture.canRetryDecisions)
+            #expect(!duringCommittedCapture.canExport)
+            guard case let .readable(_, source, audio, hasTranscript) = duringCommittedCapture.metadata else {
+                Issue.record("live recording metadata should be readable")
+                throw TestTimeout(description: "live recording metadata was unreadable")
+            }
+            #expect(source == .microphone)
+            #expect(audio == .available)
+            #expect(!hasTranscript)
+
+            try await harness.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
+            #expect(capture.isStopped)
+
+            let afterStop = try await listedSession(harness, sessionID: started.sessionID)
+            #expect(afterStop.status != .recording)
+            guard case let .readable(_, _, audio, _) = afterStop.metadata else {
+                Issue.record("saved recording metadata should be readable")
+                throw TestTimeout(description: "saved recording metadata was unreadable")
+            }
+            #expect(audio == .available)
+        } catch {
+            if let activeSessionID, let capture = harness.capture.session, !capture.isStopped {
+                _ = try? await harness.call(
+                    "recording.stop", payload: "{\"session_id\":\"\(activeSessionID)\"}"
+                )
+            }
+            if let capture = harness.capture.session, !capture.isStopped {
+                _ = try? await capture.stop()
+            }
+            _ = try? await harness.shutdown()
+            throw error
+        }
         #expect(try await harness.shutdown() == .shutdownRequested)
     }
 

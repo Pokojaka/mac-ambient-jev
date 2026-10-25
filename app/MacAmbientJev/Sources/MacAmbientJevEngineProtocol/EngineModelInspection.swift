@@ -68,6 +68,29 @@ public enum EngineClauseTaggerInspection: Codable, Equatable, Sendable {
     case validated(EngineClauseTaggerIdentity)
     case invalid(EngineFailure)
 
+    internal enum Kind: String, Codable, CaseIterable, Sendable {
+        case validated
+        case invalid
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown clause tagger inspection kind")
+            }
+            self = value
+        }
+    }
+
+    internal var kind: Kind {
+        switch self {
+        case .validated:
+            .validated
+        case .invalid:
+            .invalid
+        }
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case identity
@@ -76,26 +99,23 @@ public enum EngineClauseTaggerInspection: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
-        switch try container.decode(String.self, forKey: .kind) {
-        case "validated":
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .validated:
             try engineModelInspectionRequire(!container.contains(.error), "validated clause tagger inspection must not contain error")
             self = .validated(try container.decode(EngineClauseTaggerIdentity.self, forKey: .identity))
-        case "invalid":
+        case .invalid:
             try engineModelInspectionRequire(!container.contains(.identity), "invalid clause tagger inspection must not contain identity")
             self = .invalid(try container.decode(EngineFailure.self, forKey: .error))
-        default:
-            throw EngineProtocolError.invalidJSON("unknown clause tagger inspection kind")
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
         switch self {
         case let .validated(identity):
-            try container.encode("validated", forKey: .kind)
             try container.encode(identity, forKey: .identity)
         case let .invalid(error):
-            try container.encode("invalid", forKey: .kind)
             try container.encode(error, forKey: .error)
         }
     }

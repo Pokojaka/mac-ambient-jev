@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 72)
+        #expect(records.count == 102)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -40,11 +40,6 @@ struct EngineProtocolGoldenTests {
     }
 
     @Test func fixtureCoversPresentationSemanticsAcrossStateEnvelopes() throws {
-        let expectedPresentationKeys: Set<String> = [
-            "recording_status_text", "recording_tone", "preparation_phase", "preparation_status_text",
-            "recovery_status_text", "processing_status_text", "live_failure_notices", "silence_warning_active",
-            "silence_warning_text", "audio_gap_count", "audio_gap_text", "processing_indicator",
-        ]
         var recordingTones = Set<String>()
         var preparationPhases = Set<String>()
         var envelopeKinds = Set<String>()
@@ -57,7 +52,7 @@ struct EngineProtocolGoldenTests {
         ) throws {
             let presentation = state.presentation
             let presentationObject = try #require(stateObject["presentation"] as? [String: Any])
-            #expect(Set(presentationObject.keys) == expectedPresentationKeys, "presentation keys in \(envelope)")
+            #expect(Set(presentationObject.keys) == (try encodedObjectKeys(presentation)), "presentation keys in \(envelope)")
             recordingTones.insert(presentation.recordingTone.rawValue)
             preparationPhases.insert(presentation.preparationPhase.rawValue)
             envelopeKinds.insert(envelope)
@@ -69,10 +64,15 @@ struct EngineProtocolGoldenTests {
             )
 
             if presentation.processingIndicator == .partialFailure {
-                let processingText = try #require(presentation.processingStatusText)
-                #expect(processingText == "録音中の発話を文字起こししています")
-                #expect(!presentation.liveFailureNotices.contains(processingText))
-                sawOrdinaryPartialFailureProcessingText = true
+                if let processingText = presentation.processingStatusText {
+                    #expect(processingText == "録音中の発話を文字起こししています")
+                    #expect(!presentation.liveFailureNotices.contains(processingText))
+                    sawOrdinaryPartialFailureProcessingText = true
+                } else {
+                    #expect(state.recovery == .failed)
+                    #expect(presentation.recoveryStatusText == "未完了セッションを復旧できませんでした: セッション一覧を読み取れません")
+                    #expect(presentation.recordingStatusText == "待機中")
+                }
             }
         }
 
@@ -237,6 +237,7 @@ struct EngineProtocolGoldenTests {
                 case let .completed(result):
                     switch result {
                     case let .devicesList(devices):
+                        guard output.sequence.value == 9 else { break }
                         #expect(devices.source == .systemAudio)
                         #expect(devices.devices.contains { $0.id == "wasapi-loopback-42" && $0.isDefault })
                         #expect(devices.defaultDeviceID == "wasapi-loopback-42")
@@ -246,6 +247,7 @@ struct EngineProtocolGoldenTests {
                         #expect(value.settings.exportDestinationPath == "D:/Ambient Exports")
                         sawConfiguredSettingsResult = true
                     case let .sessionList(value):
+                        guard output.sequence.value == 16 else { break }
                         #expect(value.sessions.count == 5)
                         let unreadable = try #require(value.sessions.first { $0.status == .unreadable })
                         #expect(unreadable.folderID == "stable-folder-id-corrupt-metadata-17")
@@ -494,6 +496,7 @@ struct EngineProtocolGoldenTests {
                         if row.clauseState != nil { sawKnownClauseState = true }
                     }
                 case let .error(failure):
+                    guard [6, 27, 28, 39, 106, 107, 116].contains(output.sequence.value) else { break }
                     if let requestID = output.requestID {
                         #expect(failure.requestID == requestID)
                         sawCorrelatedError = true
@@ -649,6 +652,7 @@ struct EngineProtocolGoldenTests {
                 if request.requestID.value == UInt64.max { sawUInt64Maximum = true }
                 switch request.command {
                 case let .settingsReplace(payload):
+                    guard request.requestID.value == 15 else { break }
                     #expect(payload.expectedRevision == nil)
                     #expect(payload.settings.automaticExport)
                     #expect(payload.settings.exportDestinationPath == nil)
@@ -663,6 +667,7 @@ struct EngineProtocolGoldenTests {
                     #expect(payload.folderID == "stable-folder-id-corrupt-metadata-17")
                     sawSessionInspectRequest = true
                 case let .transcriptRead(payload):
+                    guard request.requestID.value == 11 else { break }
                     #expect(payload.revision?.value == 184)
                     #expect(payload.cursor == "rows-cursor-1")
                     sawNonNullRevisionAndCursor = true
@@ -720,6 +725,591 @@ struct EngineProtocolGoldenTests {
         #expect(sawRowNotFoundError)
         #expect(sawStaleRevisionError)
         #expect(rowLabels == Set(EngineSpeakerLabel.allCases.map(\.rawValue)))
+    }
+
+    @Test func finalFixtureRequestsAndCompletionsHaveExactTypedSemantics() throws {
+        let expectedRequestIDs: Set<UInt64> = [301, 302, 303]
+        let expectedSequences: Set<UInt64> = [300, 301, 302, 303]
+        var seenRequestIDs = Set<UInt64>()
+        var seenSequences = Set<UInt64>()
+
+        let expectedSettings = try EngineSettings(
+            schemaVersion: 1,
+            source: .systemAudio,
+            device: .id("wasapi-loopback-42"),
+            asrSize: .large,
+            executionProvider: .cpu,
+            threads: 3,
+            lowHeat: true,
+            decisionsEnabled: true,
+            automaticExport: true,
+            exportDestinationPath: "D:/Ambient Exports"
+        )
+        let expectedSessions = try [
+            EngineSessionSummary(
+                folderID: "2025-03-08_19-22-31_録音_00000002",
+                sessionID: "00000002-0000-4000-8000-000000000002",
+                status: .recording,
+                error: nil,
+                displayName: "2025年3月8日 19:22",
+                statusText: "未処理",
+                folderPath: "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/2025-03-08_19-22-31_録音_00000002",
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .readable(
+                    createdAt: 1741429351.0,
+                    source: .microphone,
+                    audio: .available,
+                    hasTranscript: false
+                )
+            ),
+            EngineSessionSummary(
+                folderID: "2025-03-08_19-22-31_meeting_00000003",
+                sessionID: "00000003-0000-4000-8000-000000000003",
+                status: .queued,
+                error: nil,
+                displayName: "2025年3月8日 19:22",
+                statusText: "未処理",
+                folderPath: "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/2025-03-08_19-22-31_meeting_00000003",
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .readable(
+                    createdAt: 1741429351.0,
+                    source: .imported(originalFilename: "meeting.wav"),
+                    audio: .available,
+                    hasTranscript: false
+                )
+            ),
+            EngineSessionSummary(
+                folderID: "2025-03-08_19-22-31_録音_00000004",
+                sessionID: "00000004-0000-4000-8000-000000000004",
+                status: .processing,
+                error: nil,
+                displayName: "2025年3月8日 19:22",
+                statusText: "処理中",
+                folderPath: "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/2025-03-08_19-22-31_録音_00000004",
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .readable(
+                    createdAt: 1741429351.0,
+                    source: .systemAudio,
+                    audio: .available,
+                    hasTranscript: false
+                )
+            ),
+        ]
+        let expectedSessionList = try EngineSessionListResult(
+            sessions: expectedSessions,
+            nextCursor: nil,
+            previousCursor: "11111111-1111-4111-8111-111111111301"
+        )
+        let expectedStartingState = try EngineState(
+            revision: EngineID(300),
+            screen: .live,
+            setup: .ready,
+            recovery: .completed,
+            recording: try EngineRecordingState(
+                sessionID: "00000005-0000-4000-8000-000000000005",
+                source: .microphone,
+                device: .default,
+                phase: .starting
+            ),
+            queue: [],
+            failures: [],
+            presentation: try EnginePresentationState(
+                recordingStatusText: "録音を開始しています",
+                recordingTone: .neutral,
+                preparationPhase: .ready,
+                preparationStatusText: nil,
+                recoveryStatusText: nil,
+                processingStatusText: nil,
+                liveFailureNotices: [],
+                silenceWarningActive: false,
+                silenceWarningText: nil,
+                audioGapCount: 0,
+                audioGapText: nil,
+                processingIndicator: .idle
+            )
+        )
+        let expectedStoppingState = try EngineState(
+            revision: EngineID(301),
+            screen: .finalizing,
+            setup: .ready,
+            recovery: .completed,
+            recording: try EngineRecordingState(
+                sessionID: "00000006-0000-4000-8000-000000000006",
+                source: .microphone,
+                device: .default,
+                phase: .stopping
+            ),
+            queue: [],
+            failures: [],
+            presentation: try EnginePresentationState(
+                recordingStatusText: "録音を保存しています",
+                recordingTone: .neutral,
+                preparationPhase: .ready,
+                preparationStatusText: nil,
+                recoveryStatusText: nil,
+                processingStatusText: nil,
+                liveFailureNotices: [],
+                silenceWarningActive: false,
+                silenceWarningText: nil,
+                audioGapCount: 0,
+                audioGapText: nil,
+                processingIndicator: .idle
+            )
+        )
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            if metadata.keys.contains("event") {
+                let output = try EngineCodec.decodeOutput(record)
+                guard expectedSequences.contains(output.sequence.value) else { continue }
+                #expect(seenSequences.insert(output.sequence.value).inserted)
+
+                switch output.sequence.value {
+                case 300:
+                    #expect(output.requestID?.value == 400)
+                    guard case let .completed(.devicesList(result)) = output.event else {
+                        #expect(Bool(false), "Sequence 300 must complete devices.list")
+                        continue
+                    }
+                    #expect(result == (try EngineDevicesResult(source: .microphone, devices: [], defaultDeviceID: nil)))
+                case 301:
+                    #expect(output.requestID?.value == 401)
+                    guard case let .completed(.sessionList(result)) = output.event else {
+                        #expect(Bool(false), "Sequence 301 must complete session.list")
+                        continue
+                    }
+                    #expect(result == expectedSessionList)
+                case 302:
+                    #expect(output.requestID?.value == 402)
+                    guard case let .completed(.stateGet(state)) = output.event else {
+                        #expect(Bool(false), "Sequence 302 must complete state.get")
+                        continue
+                    }
+                    #expect(state == expectedStartingState)
+                case 303:
+                    #expect(output.requestID?.value == 403)
+                    guard case let .completed(.stateGet(state)) = output.event else {
+                        #expect(Bool(false), "Sequence 303 must complete state.get")
+                        continue
+                    }
+                    #expect(state == expectedStoppingState)
+                default:
+                    #expect(Bool(false), "Unexpected final-fixture output sequence \(output.sequence.value)")
+                }
+            } else {
+                let request = try EngineCodec.decodeRequest(record)
+                guard expectedRequestIDs.contains(request.requestID.value) else { continue }
+                #expect(seenRequestIDs.insert(request.requestID.value).inserted)
+
+                switch request.requestID.value {
+                case 301:
+                    guard case let .sessionList(payload) = request.command else {
+                        #expect(Bool(false), "Request 301 must be session.list")
+                        continue
+                    }
+                    #expect(payload == (try EngineSessionListPayload(
+                        cursor: "11111111-1111-4111-8111-111111111302",
+                        limit: 20
+                    )))
+                case 302:
+                    guard case let .transcriptRead(payload) = request.command else {
+                        #expect(Bool(false), "Request 302 must be transcript.read")
+                        continue
+                    }
+                    #expect(payload == (try EngineTranscriptReadPayload(
+                        sessionID: "00000001-0000-4000-8000-000000000001",
+                        revision: nil,
+                        cursor: nil,
+                        limit: 75
+                    )))
+                case 303:
+                    guard case let .settingsReplace(payload) = request.command else {
+                        #expect(Bool(false), "Request 303 must be settings.replace")
+                        continue
+                    }
+                    #expect(payload.expectedRevision == (try EngineID(9)))
+                    #expect(payload.settings == expectedSettings)
+                default:
+                    #expect(Bool(false), "Unexpected final-fixture request ID \(request.requestID.value)")
+                }
+            }
+        }
+
+        #expect(seenRequestIDs == expectedRequestIDs)
+        #expect(seenSequences == expectedSequences)
+    }
+
+    @Test func finalFixtureRecoveryScanFailureIsNotRecordingStopState() throws {
+        let sequence: UInt64 = 335
+        let recoveryMessage = "未完了セッションを復旧できませんでした: セッション一覧を読み取れません"
+        let expectedFailure = try EngineFailure(
+            code: .filesystem,
+            message: recoveryMessage,
+            stage: .recovery,
+            requestID: nil,
+            sessionID: nil,
+            severity: .error,
+            recoveryAction: .restart,
+            details: [],
+            cleanupErrors: []
+        )
+        let expectedState = try EngineState(
+            revision: EngineID(302),
+            screen: .idle,
+            setup: .ready,
+            recovery: .failed,
+            recording: nil,
+            queue: [],
+            failures: [expectedFailure],
+            presentation: try EnginePresentationState(
+                recordingStatusText: "待機中",
+                recordingTone: .neutral,
+                preparationPhase: .ready,
+                preparationStatusText: nil,
+                recoveryStatusText: recoveryMessage,
+                processingStatusText: nil,
+                liveFailureNotices: [],
+                silenceWarningActive: false,
+                silenceWarningText: nil,
+                audioGapCount: 0,
+                audioGapText: nil,
+                processingIndicator: .partialFailure
+            )
+        )
+        var seenSequences = Set<UInt64>()
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            guard output.sequence.value == sequence else { continue }
+            #expect(seenSequences.insert(output.sequence.value).inserted)
+            #expect(output.requestID?.value == 404)
+            guard case let .completed(.stateGet(state)) = output.event else {
+                #expect(Bool(false), "Sequence 335 must complete state.get")
+                continue
+            }
+            #expect(state.recovery == .failed)
+            #expect(state.presentation.recoveryStatusText == recoveryMessage)
+            #expect(state.presentation.processingStatusText == nil)
+            #expect(state == expectedState)
+        }
+
+        #expect(seenSequences == [sequence])
+    }
+
+    @Test func finalFixtureErrorsPreserveEveryTypedFailureField() throws {
+        let expectedErrors: [(sequence: UInt64, requestID: UInt64?, failure: EngineFailure)] = [
+            (310, 410, try EngineFailure(
+                code: .invalidRequest,
+                message: "hello は最初のリクエストでのみ送れます",
+                stage: .protocolValidation,
+                requestID: try EngineID(410),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (311, 411, try EngineFailure(
+                code: .unsupportedVersion,
+                message: "サポートされていない version です。version 1 のみ対応しています",
+                stage: .protocolValidation,
+                requestID: try EngineID(411),
+                sessionID: nil,
+                severity: .fatal,
+                recoveryAction: .restart,
+                details: [try EngineErrorDetail(
+                    domain: "engine",
+                    code: "unsupported_version",
+                    message: "unsupportedVersion(2)",
+                    path: nil,
+                    deviceID: nil
+                )],
+                cleanupErrors: []
+            )),
+            (312, 412, try EngineFailure(
+                code: .invalidRequestID,
+                message: "request_id は直前の値より大きい必要があります",
+                stage: .protocolValidation,
+                requestID: try EngineID(412),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (313, 413, try EngineFailure(
+                code: .helloRequired,
+                message: "最初のリクエストは hello である必要があります",
+                stage: .protocolValidation,
+                requestID: try EngineID(413),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (314, 414, try EngineFailure(
+                code: .busy,
+                message: "録音または取り込みを実行中です",
+                stage: .capture,
+                requestID: try EngineID(414),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .retry,
+                details: [],
+                cleanupErrors: []
+            )),
+            (315, 415, try EngineFailure(
+                code: .settingsRequired,
+                message: "設定が必要です。設定ファイルがありません: C:/Users/Aki/AppData/Local/mac-ambient-jev/settings.json",
+                stage: .settings,
+                requestID: try EngineID(415),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .replaceSettings,
+                details: [],
+                cleanupErrors: []
+            )),
+            (316, 416, try EngineFailure(
+                code: .invalidSettings,
+                message: "設定が不正です: invalidJSON(\"threads exceed logical CPU limit\")",
+                stage: .settings,
+                requestID: try EngineID(416),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .replaceSettings,
+                details: [],
+                cleanupErrors: []
+            )),
+            (317, 417, try EngineFailure(
+                code: .invalidCursor,
+                message: "cursor には revision が必要です",
+                stage: .finalization,
+                requestID: try EngineID(417),
+                sessionID: "00000001-0000-4000-8000-000000000001",
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (318, 418, try EngineFailure(
+                code: .sessionNotFound,
+                message: "保存済み録音が見つからないか、読み取れません",
+                stage: .recovery,
+                requestID: try EngineID(418),
+                sessionID: "00000001-0000-4000-8000-000000000001",
+                severity: .error,
+                recoveryAction: .inspectSession,
+                details: [],
+                cleanupErrors: []
+            )),
+            // Contract-only: the current Windows wire producer does not emit device_not_found.
+            (319, 419, try EngineFailure(
+                code: .deviceNotFound,
+                message: "指定された録音デバイスが見つかりません",
+                stage: .devices,
+                requestID: try EngineID(419),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .selectDevice,
+                details: [],
+                cleanupErrors: []
+            )),
+            (320, 420, try EngineFailure(
+                code: .captureFailure,
+                message: "録音を保存できませんでした",
+                stage: .capture,
+                requestID: try EngineID(420),
+                sessionID: "00000007-0000-4000-8000-000000000007",
+                severity: .error,
+                recoveryAction: .reprocess,
+                details: [],
+                cleanupErrors: []
+            )),
+            (321, 421, try EngineFailure(
+                code: .diskSpace,
+                message: "90分の録音に必要な空き容量がありません（必要: 601 MB）",
+                stage: .capture,
+                requestID: try EngineID(421),
+                sessionID: "00000007-0000-4000-8000-000000000007",
+                severity: .error,
+                recoveryAction: .freeDiskSpace,
+                details: [try EngineErrorDetail(
+                    domain: "swift",
+                    code: "AudioCaptureEngineError",
+                    message: "90分の録音に必要な空き容量がありません（必要: 601 MB）",
+                    path: nil,
+                    deviceID: nil
+                )],
+                cleanupErrors: []
+            )),
+            // Contract-only: the current Windows wire producer does not emit power_failure.
+            (322, 422, try EngineFailure(
+                code: .powerFailure,
+                message: "終了処理中に電源状態を確認できませんでした",
+                stage: .shutdown,
+                requestID: try EngineID(422),
+                sessionID: nil,
+                severity: .fatal,
+                recoveryAction: .restart,
+                details: [],
+                cleanupErrors: []
+            )),
+            (323, 423, try EngineFailure(
+                code: .modelMissing,
+                message: "モデルが準備されていません。models.prepare を実行してください",
+                stage: .capture,
+                requestID: try EngineID(423),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .prepareModels,
+                details: [],
+                cleanupErrors: []
+            )),
+            (324, 424, try EngineFailure(
+                code: .modelFailure,
+                message: "モデル(vad)を読み込めません: C:/Models/silero_vad.onnx (ONNX Runtime の初期化に失敗しました)",
+                stage: .loadingModels,
+                requestID: try EngineID(424),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .prepareModels,
+                details: [try EngineErrorDetail(
+                    domain: "models",
+                    code: "vad",
+                    message: "モデル(vad)を読み込めません: C:/Models/silero_vad.onnx (ONNX Runtime の初期化に失敗しました)",
+                    path: nil,
+                    deviceID: nil
+                )],
+                cleanupErrors: []
+            )),
+            (325, 425, try EngineFailure(
+                code: .rowTooLarge,
+                message: "文字起こし行の詳細が大きすぎて返せません",
+                stage: .finalization,
+                requestID: try EngineID(425),
+                sessionID: "00000001-0000-4000-8000-000000000001",
+                severity: .error,
+                recoveryAction: .inspectSession,
+                details: [],
+                cleanupErrors: []
+            )),
+            (326, 426, try EngineFailure(
+                code: .processingFailure,
+                message: "発話文の判定を再試行できませんでした: テスト判定エンジンに失敗しました",
+                stage: .decisions,
+                requestID: try EngineID(426),
+                sessionID: "00000008-0000-4000-8000-000000000008",
+                severity: .error,
+                recoveryAction: .retryDecisions,
+                details: [],
+                cleanupErrors: []
+            )),
+            (330, nil, try EngineFailure(
+                code: .captureFailure,
+                message: "録音の保存に失敗しました",
+                stage: .capture,
+                requestID: nil,
+                sessionID: "00000009-0000-4000-8000-000000000009",
+                severity: .fatal,
+                recoveryAction: .reprocess,
+                details: [],
+                cleanupErrors: []
+            )),
+            (331, nil, try EngineFailure(
+                code: .filesystem,
+                message: "保存済み録音の音声を整理できませんでした: 音声ファイルを読み取れません",
+                stage: .maintenance,
+                requestID: nil,
+                sessionID: "0000000a-0000-4000-8000-00000000000a",
+                severity: .error,
+                recoveryAction: .inspectSession,
+                details: [],
+                cleanupErrors: []
+            )),
+            // Contract-only: startup failure has no current Windows wire producer.
+            (334, nil, try EngineFailure(
+                code: .internalError,
+                message: "起動時の初期化に失敗しました",
+                stage: .startup,
+                requestID: nil,
+                sessionID: nil,
+                severity: .fatal,
+                recoveryAction: .restart,
+                details: [],
+                cleanupErrors: []
+            )),
+        ]
+        let expectedSequences = Set(expectedErrors.map(\.sequence))
+        var seenSequences = Set<UInt64>()
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            guard expectedSequences.contains(output.sequence.value) else { continue }
+            #expect(seenSequences.insert(output.sequence.value).inserted)
+            guard let expected = expectedErrors.first(where: { $0.sequence == output.sequence.value }) else {
+                #expect(Bool(false), "Missing explicit expected error for sequence \(output.sequence.value)")
+                continue
+            }
+            let expectedRequestID = try expected.requestID.map { try EngineID($0) }
+            #expect(output.requestID == expectedRequestID)
+            guard case let .error(failure) = output.event else {
+                #expect(Bool(false), "Sequence \(output.sequence.value) must be an error")
+                continue
+            }
+            #expect(failure == expected.failure)
+            #expect(failure.requestID == expectedRequestID)
+        }
+
+        #expect(seenSequences == expectedSequences)
+    }
+
+    @Test func finalFixtureVADAndDiarizationProgressHaveExactTypedPayloads() throws {
+        let expectedProgress: [(sequence: UInt64, stage: EngineStage)] = [
+            (332, .vad),
+            (333, .diarization),
+        ]
+        let expectedSequences = Set(expectedProgress.map(\.sequence))
+        let sessionID = "00000004-0000-4000-8000-000000000004"
+        var seenSequences = Set<UInt64>()
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            guard expectedSequences.contains(output.sequence.value) else { continue }
+            #expect(seenSequences.insert(output.sequence.value).inserted)
+            guard let expected = expectedProgress.first(where: { $0.sequence == output.sequence.value }) else {
+                #expect(Bool(false), "Missing expected progress sequence \(output.sequence.value)")
+                continue
+            }
+            #expect(output.requestID == nil)
+            guard case let .progress(payload) = output.event else {
+                #expect(Bool(false), "Sequence \(output.sequence.value) must be progress")
+                continue
+            }
+            #expect(payload == (try EngineProgressPayload(
+                stage: expected.stage,
+                completedUnits: 0,
+                totalUnits: nil,
+                sessionID: sessionID
+            )))
+        }
+
+        #expect(seenSequences == expectedSequences)
     }
 
     @Test func rowDetailsCorpusCoversTypedFieldsStatesSpeakersAndPageArms() throws {

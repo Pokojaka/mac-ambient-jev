@@ -96,6 +96,9 @@ public enum DecisionEnrichmentError: LocalizedError, Sendable, Equatable {
     case boundaryRunMismatch
     case invalidPriorityRun
     case invalidSourceTimeline
+    case retryRequestFailed(String)
+    case retryFailedDurably(String)
+    case retryCompletionPersistenceFailed(original: String, persistence: String)
 
     public var errorDescription: String? {
         switch self {
@@ -115,6 +118,12 @@ public enum DecisionEnrichmentError: LocalizedError, Sendable, Equatable {
             "優先度判定には境界判定と異なる新しい run が必要です"
         case .invalidSourceTimeline:
             "音声認識の原文区間、範囲、または順序が不正です"
+        case .retryRequestFailed(let message):
+            message
+        case .retryFailedDurably(let message):
+            message
+        case .retryCompletionPersistenceFailed(let original, let persistence):
+            "再試行の終了記録を保存できませんでした（元のエラー: \(original)、保存エラー: \(persistence)）"
         }
     }
 }
@@ -164,19 +173,28 @@ public actor DecisionEnrichmentCoordinator {
     private let sessionID: UUID
     private let boundaryRunID: String
     private let priorityRunID: String
-    private let writer: SessionWriter
+    private let writer: any DecisionEventWriting
     private let decisions: DecisionCoordinator
     private let usageCounter: DecisionUsageCounter
     private let materializer: TranscriptMaterializer
 
+    private struct RetryRunProgress {
+        let runID: String
+        let stage: ProcessingStage
+        var completedCount = 0
+        var failedCount = 0
+        var completionAttempted = false
+    }
+
     private var events: [TranscriptEvent] = []
     private var onEvent: ((TranscriptEvent) async -> Void)?
+    private var retryRuns: [RetryRunProgress] = []
 
     public init(
         sessionID: UUID,
         boundaryRunID: String,
         priorityRunID: String,
-        writer: SessionWriter,
+        writer: any DecisionEventWriting,
         decisions: DecisionCoordinator,
         usageCounter: DecisionUsageCounter,
         materializer: TranscriptMaterializer
@@ -207,6 +225,7 @@ public actor DecisionEnrichmentCoordinator {
         try Task.checkCancellation()
         self.onEvent = onEvent
         events = existingEvents
+        retryRuns.removeAll(keepingCapacity: true)
         guard !priorityRunID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               priorityRunID != boundaryRunID,
               priorityRunID != activeRuns.contentPriority else {
@@ -262,32 +281,49 @@ public actor DecisionEnrichmentCoordinator {
             guard boundaryRunID == activeRuns.clauseBoundary else { throw DecisionEnrichmentError.boundaryRunMismatch }
         }
 
-        let clauses: [ClauseUnit]
-        let pendingBoundary: [SegmentTextReference]
-        if rebuildsBoundaries {
-            (clauses, pendingBoundary) = try await buildBoundaryRun(
-                timeline: timeline, published: published, carriedSegments: boundaryTargets, mode: mode
-            )
-        } else {
-            clauses = published.clauses
-            pendingBoundary = published.pendingSources
-        }
+        do {
+            let clauses: [ClauseUnit]
+            let pendingBoundary: [SegmentTextReference]
+            if rebuildsBoundaries {
+                (clauses, pendingBoundary) = try await buildBoundaryRun(
+                    timeline: timeline, published: published, carriedSegments: boundaryTargets, mode: mode
+                )
+            } else {
+                clauses = published.clauses
+                pendingBoundary = published.pendingSources
+            }
 
-        let assignments = try await buildPriorityRun(
-            clauses: clauses, timeline: timeline, published: published,
-            rebuildsBoundaries: rebuildsBoundaries, scope: scope, clauseTargets: clauseTargets,
-            reusableDecisions: reusableDecisions, mode: mode
-        )
-        let pendingClauses = clauses.map(\.reference).filter { assignments[$0]?.needsRetry == true }
-        let selected = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
-        return DecisionEnrichmentBatchResult(
-            events: events,
-            materializedSegments: try materializer.materialize(events: events, activeRuns: selected),
-            pendingBoundarySegments: pendingBoundary,
-            pendingPriorityClauses: pendingClauses,
-            boundaryRunID: boundaryRunID,
-            priorityRunID: priorityRunID
-        )
+            let assignments = try await buildPriorityRun(
+                clauses: clauses, timeline: timeline, published: published,
+                rebuildsBoundaries: rebuildsBoundaries, scope: scope, clauseTargets: clauseTargets,
+                reusableDecisions: reusableDecisions, mode: mode
+            )
+            let pendingClauses = clauses.map(\.reference).filter { assignments[$0]?.needsRetry == true }
+            let selected = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
+            let materialized = try materializer.materialize(events: events, activeRuns: selected)
+            if case .retry = scope {
+                try await appendSuccessfulRetryCompletions()
+                try Task.checkCancellation()
+            }
+            return DecisionEnrichmentBatchResult(
+                events: events,
+                materializedSegments: materialized,
+                pendingBoundarySegments: pendingBoundary,
+                pendingPriorityClauses: pendingClauses,
+                boundaryRunID: boundaryRunID,
+                priorityRunID: priorityRunID
+            )
+        } catch {
+            guard case .retry = scope else { throw error }
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            let failureWasRecorded = try await appendFailedRetryCompletions(originalError: error)
+            if failureWasRecorded {
+                throw DecisionEnrichmentError.retryFailedDurably(error.localizedDescription)
+            }
+            throw error
+        }
     }
 
     // MARK: - Boundary run
@@ -306,6 +342,7 @@ public actor DecisionEnrichmentCoordinator {
             ),
             kind: nil
         )
+        if mode == "retry" { registerRetryRun(runID: boundaryRunID, stage: .clauseBoundary) }
         var assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
         var clauses: [ClauseUnit] = []
         var pending: [SegmentTextReference] = []
@@ -318,20 +355,30 @@ public actor DecisionEnrichmentCoordinator {
                 _ = try assembly.beginAfterASRGap()
             }
             let state: ClauseBoundaryState
+            let newlyRequested: Bool
             if let targets = boundaryTargets, !targets.contains(entry.source) {
+                newlyRequested = false
                 state = try published.carriedState(of: entry.source)
             } else {
+                newlyRequested = true
                 state = try await requestBoundary(index: index, timeline: timeline)
+            }
+            if mode == "retry", newlyRequested,
+               case .pending(reason: .requestFailed, message: let message) = state {
+                updateRetryProgress(runID: boundaryRunID, completed: 0, failed: 1)
+                throw DecisionEnrichmentError.retryRequestFailed(message)
             }
             switch state {
             case .assessed(let assessment):
                 try await append(ClauseEventType.boundaryAssessed, runID: boundaryRunID, payload: assessment,
                                  kind: .clauseBoundaryAssessed(assessment))
+                if mode == "retry" { updateRetryProgress(runID: boundaryRunID, completed: 1, failed: 0) }
             case .pending(let reason, let message):
                 let payload = ClauseBoundaryPendingPayload(source: entry.source, reason: reason, message: message)
                 try await append(ClauseEventType.boundaryPending, runID: boundaryRunID, payload: payload,
                                  kind: .clauseBoundaryPending(payload))
                 pending.append(entry.source)
+                if mode == "retry" { updateRetryProgress(runID: boundaryRunID, completed: 0, failed: 1) }
             }
             let delta = try assembly.consume(ClauseAssemblyInput(source: entry.source, text: entry.text, state: state))
             clauses += try await appendClosed(delta.closed)
@@ -340,14 +387,16 @@ public actor DecisionEnrichmentCoordinator {
             }
         }
         clauses += try await appendClosed(try assembly.finish().closed)
-        try await append(
-            "processing.run.completed", runID: boundaryRunID,
-            payload: ProcessingRunCompletedPayload(
-                stage: .clauseBoundary, succeeded: true,
-                completedCount: timeline.sources.count - pending.count, failedCount: pending.count
-            ),
-            kind: nil
-        )
+        if mode != "retry" {
+            try await append(
+                "processing.run.completed", runID: boundaryRunID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: .clauseBoundary, succeeded: true,
+                    completedCount: timeline.sources.count - pending.count, failedCount: pending.count
+                ),
+                kind: nil
+            )
+        }
         return (clauses, pending)
     }
 
@@ -394,6 +443,7 @@ public actor DecisionEnrichmentCoordinator {
             ),
             kind: nil
         )
+        if mode == "retry" { registerRetryRun(runID: priorityRunID, stage: .contentPriority) }
         var composer = ClauseTextComposer()
         for event in self.events {
             guard event.processingRunID == boundaryRunID,
@@ -467,34 +517,115 @@ public actor DecisionEnrichmentCoordinator {
 
         var payloads: [ContentPriorityAssignedPayload] = []
         if !carried.isEmpty {
-            payloads.append(try ContentPriorityAssignedPayload(assignments: carried, request: nil))
-            try await record(payloads[payloads.count - 1])
+            let payload = try ContentPriorityAssignedPayload(assignments: carried, request: nil)
+            payloads.append(payload)
+            try await record(payload)
+            if mode == "retry" { recordRetryPriorityOutcomes(runID: priorityRunID, assignments: payload.assignments) }
         }
         var batches = try ClausePriorityBatches(targets: targets)
         while batches.hasRemaining {
             let payload = try await batches.next { .available(self.decisions) }
+            if case .retry = scope {
+                if let failure = payload.assignments.first(where: {
+                    if case .retryPending(reason: .requestFailed, message: _) = $0.decision { return true }
+                    return false
+                }), case .retryPending(reason: .requestFailed, message: let message) = failure.decision {
+                    updateRetryProgress(runID: priorityRunID, completed: 0, failed: payload.assignments.count)
+                    throw DecisionEnrichmentError.retryRequestFailed(message)
+                }
+            }
             payloads.append(payload)
             try await record(payload)
+            if mode == "retry" { recordRetryPriorityOutcomes(runID: priorityRunID, assignments: payload.assignments) }
         }
         var assignments: [ClauseReference: ClausePriorityAssignment] = [:]
         for payload in payloads {
             for assignment in payload.assignments { assignments[assignment.reference] = assignment }
         }
         let pendingCount = assignments.values.filter(\.needsRetry).count
-        try await append(
-            "processing.run.completed", runID: priorityRunID,
-            payload: ProcessingRunCompletedPayload(
-                stage: .contentPriority, succeeded: true,
-                completedCount: assignments.count - pendingCount, failedCount: pendingCount
-            ),
-            kind: nil
-        )
+        if mode != "retry" {
+            try await append(
+                "processing.run.completed", runID: priorityRunID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: .contentPriority, succeeded: true,
+                    completedCount: assignments.count - pendingCount, failedCount: pendingCount
+                ),
+                kind: nil
+            )
+        }
         return assignments
     }
 
     private func record(_ payload: ContentPriorityAssignedPayload) async throws {
         try await append(ClauseEventType.priorityAssigned, runID: priorityRunID, payload: payload,
                          kind: .contentPriorityAssigned(payload))
+    }
+
+    private func registerRetryRun(runID: String, stage: ProcessingStage) {
+        precondition(!retryRuns.contains(where: { $0.runID == runID }))
+        retryRuns.append(RetryRunProgress(runID: runID, stage: stage))
+    }
+
+    private func updateRetryProgress(runID: String, completed: Int, failed: Int) {
+        guard let index = retryRuns.firstIndex(where: { $0.runID == runID }),
+              !retryRuns[index].completionAttempted else {
+            preconditionFailure("Retry progress was updated for an untracked or completed run")
+        }
+        retryRuns[index].completedCount += completed
+        retryRuns[index].failedCount += failed
+    }
+
+    private func recordRetryPriorityOutcomes(runID: String, assignments: [ClausePriorityAssignment]) {
+        let failed = assignments.filter(\.needsRetry).count
+        updateRetryProgress(runID: runID, completed: assignments.count - failed, failed: failed)
+    }
+
+    private func appendSuccessfulRetryCompletions() async throws {
+        for index in retryRuns.indices {
+            guard !retryRuns[index].completionAttempted else { continue }
+            try Task.checkCancellation()
+            let run = retryRuns[index]
+            retryRuns[index].completionAttempted = true
+            try await append(
+                "processing.run.completed", runID: run.runID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: run.stage, succeeded: true,
+                    completedCount: run.completedCount, failedCount: run.failedCount
+                ),
+                kind: nil
+            )
+        }
+    }
+
+    private func appendFailedRetryCompletions(originalError: Error) async throws -> Bool {
+        var persistenceErrors: [String] = []
+        var appendedAny = false
+        for index in retryRuns.indices {
+            guard !retryRuns[index].completionAttempted else { continue }
+            let run = retryRuns[index]
+            retryRuns[index].completionAttempted = true
+            do {
+                _ = try await writer.appendFailedRetryCompletion(EventDraft(
+                    eventType: "processing.run.completed",
+                    sessionID: sessionID,
+                    processingRunID: run.runID,
+                    payload: ProcessingRunCompletedPayload(
+                        stage: run.stage, succeeded: false,
+                        completedCount: run.completedCount, failedCount: run.failedCount
+                    )
+                ))
+                appendedAny = true
+            } catch {
+                persistenceErrors.append(error.localizedDescription)
+            }
+        }
+        if !persistenceErrors.isEmpty {
+            throw DecisionEnrichmentError.retryCompletionPersistenceFailed(
+                original: originalError.localizedDescription,
+                persistence: persistenceErrors.joined(separator: "; ")
+            )
+        }
+        return appendedAny
     }
 
     // MARK: - Retry validation

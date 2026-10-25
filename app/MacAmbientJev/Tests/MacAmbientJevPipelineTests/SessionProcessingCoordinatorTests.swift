@@ -82,6 +82,7 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
     private let liveFailure: String?
     private let eventLog: CoordinatorTestEventLog
     var onLiveASRDrainWait: (() -> Void)?
+    var onRefreshSavedSessions: (() -> Void)?
 
     private(set) var queueSnapshots: [CoordinatorQueueSnapshot] = []
     private(set) var eventOrder: [String] = []
@@ -138,6 +139,7 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
 
     func refreshSavedSessions() {
         refreshSavedSessionsCount += 1
+        onRefreshSavedSessions?()
     }
 
     func autoExportIfEnabled(sessionID: UUID) async {
@@ -179,6 +181,7 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
     private var recordedShouldPauseValues: [Bool] = []
     private let eventLog: CoordinatorTestEventLog
     var retryWaitsForCancellation = false
+    private var beforeRetryResult: (@MainActor @Sendable () async -> Void)?
     private(set) var retryCancellationObserved = false
 
     init(scriptedResults: [SessionProcessingResult], eventLog: CoordinatorTestEventLog) {
@@ -223,7 +226,7 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         clauses: [ClauseReference],
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async {
+    ) async -> SessionProcessingResult {
         record("retryContentPriority:\(sessionID.uuidString)")
         if retryWaitsForCancellation {
             // Only cancellation ends the wait; the test's `.timeLimit` guards against a hang.
@@ -236,10 +239,16 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
             }
         }
         retryCancellationObserved = Task.isCancelled
+        await beforeRetryResult?()
+        return nextResult()
     }
 
     func makeRetryWaitForCancellation() {
         retryWaitsForCancellation = true
+    }
+
+    func setBeforeRetryResult(_ callback: (@MainActor @Sendable () async -> Void)?) {
+        beforeRetryResult = callback
     }
 
     func cancelLiveTranscription(sessionID: UUID) async {
@@ -280,6 +289,21 @@ private func makeCoordinatorTestFailedResult() -> SessionProcessingResult {
     .failed(message: "確定処理に失敗しました", metrics: nil, retained: nil)
 }
 
+private enum RetryTerminalOutcome: CaseIterable, CustomTestStringConvertible {
+    case failed
+    case completed
+
+    var testDescription: String { String(describing: self) }
+}
+
+private enum RetryLatePause: CaseIterable, CustomTestStringConvertible {
+    case cancellation
+    case processingPause
+    case both
+
+    var testDescription: String { String(describing: self) }
+}
+
 private func makeRecoveryCandidate(
     sessionID: UUID,
     action: RecoverableProcessingAction
@@ -303,7 +327,11 @@ func criticalHoldResumesInFIFOOrder() async {
     let eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
     let processor = ScriptedSessionProcessingExecutor(
-        scriptedResults: [makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()],
+        scriptedResults: [
+            makeCoordinatorTestCompletedResult(),
+            makeCoordinatorTestCompletedResult(),
+            makeCoordinatorTestCompletedResult()
+        ],
         eventLog: eventLog
     )
     let coordinator = SessionProcessingCoordinator(
@@ -550,7 +578,10 @@ func pauseDuringLiveDrainSkipsFinishAndHoldsStoredFinalization() async {
 func cancelledRetryIsHeldAndFollowingRequestIsNotDequeued() async {
     let eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
-    let processor = ScriptedSessionProcessingExecutor(scriptedResults: [], eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestPauseResult()],
+        eventLog: eventLog
+    )
     await processor.makeRetryWaitForCancellation()
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
@@ -603,6 +634,166 @@ func pausedRetryIsHeldWithoutCallingExecutor() async {
     #expect(effects.processingQueue.thermallyHeld.map(\.sessionID) == [sessionID])
     #expect(effects.processingQueue.currentSessionID == nil)
     #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):paused"))
+}
+
+@MainActor
+@Test
+func retryFailureIsForwardedUnchangedWithoutExport() async throws {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let failureMessage = "発話文の判定を再試行できませんでした: テスト判定エラー"
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [
+            .failed(message: failureMessage, metrics: nil, retained: .finalized)
+        ],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+    )
+    var finishedResult: SessionProcessingResult?
+    effects.onEvent = { event in
+        if case .finished(_, let result) = event {
+            finishedResult = result
+        }
+    }
+    let sessionID = UUID()
+
+    coordinator.enqueue(.retryContentPriority(sessionID: sessionID, boundarySegments: [], clauses: []))
+    await coordinator.waitUntilIdle()
+
+    let result = try #require(finishedResult)
+    #expect(result.disposition == .failed)
+    #expect(result.message == failureMessage)
+    #expect(result.metrics == nil)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(!result.noSpeech)
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+    #expect(effects.exportCount == 0)
+    #expect(effects.exportedSessionIDs.isEmpty)
+}
+
+@MainActor
+@Test
+func postRetryPauseDoesNotHoldOrReplaceFailure() async throws {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let failureMessage = "発話文の判定を再試行できませんでした: テスト判定エラー"
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [
+            .failed(message: failureMessage, metrics: nil, retained: .finalized)
+        ],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+    )
+    effects.onRefreshSavedSessions = { effects.pausesProcessing = true }
+    var finishedResult: SessionProcessingResult?
+    effects.onEvent = { event in
+        if case .finished(_, let result) = event {
+            finishedResult = result
+        }
+    }
+    let sessionID = UUID()
+
+    coordinator.enqueue(.retryContentPriority(sessionID: sessionID, boundarySegments: [], clauses: []))
+    await coordinator.waitUntilIdle()
+
+    let result = try #require(finishedResult)
+    #expect(effects.pausesProcessing)
+    #expect(result.disposition == .failed)
+    #expect(result.message == failureMessage)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.pending.isEmpty)
+    #expect(effects.exportCount == 0)
+    #expect(effects.exportedSessionIDs.isEmpty)
+}
+
+@MainActor
+@Test(arguments: RetryTerminalOutcome.allCases, RetryLatePause.allCases)
+private func terminalRetryOutcomeWinsOverLatePause(
+    _ outcome: RetryTerminalOutcome,
+    _ latePause: RetryLatePause
+) async throws {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let failureMessage = "発話文の判定を再試行できませんでした: テスト判定エラー"
+    let scriptedResult: SessionProcessingResult
+    switch outcome {
+    case .failed:
+        scriptedResult = .failed(message: failureMessage, metrics: nil, retained: .finalized)
+    case .completed:
+        scriptedResult = makeCoordinatorTestCompletedResult()
+    }
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [scriptedResult],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+    )
+    let sessionID = UUID()
+    var finishedEventObserved = false
+    var finishedResult: SessionProcessingResult?
+    effects.onEvent = { event in
+        if case .finished(_, let result) = event {
+            finishedEventObserved = true
+            finishedResult = result
+        }
+    }
+    await processor.setBeforeRetryResult {
+        eventLog.append("beforeRetryResult")
+        switch latePause {
+        case .cancellation:
+            coordinator.requestPause()
+        case .processingPause:
+            effects.pausesProcessing = true
+        case .both:
+            effects.pausesProcessing = true
+            coordinator.requestPause()
+        }
+    }
+
+    coordinator.enqueue(.retryContentPriority(sessionID: sessionID, boundarySegments: [], clauses: []))
+    await coordinator.waitUntilIdle()
+
+    #expect(eventLog.events.contains("beforeRetryResult"))
+    #expect(finishedEventObserved)
+    switch outcome {
+    case .failed:
+        let result = try #require(finishedResult)
+        #expect(result.disposition == scriptedResult.disposition)
+        #expect(result.message == failureMessage)
+    case .completed:
+        #expect(scriptedResult.disposition == .completed)
+        #expect(finishedResult == nil)
+    }
+    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.pending.isEmpty)
+    #expect(effects.processingQueue.currentSessionID == nil)
+    #expect(effects.exportCount == 0)
+    #expect(effects.exportedSessionIDs.isEmpty)
+
+    effects.pausesProcessing = false
+    if effects.processingQueue.thermallyHeld.isEmpty && effects.processingQueue.pending.isEmpty {
+        coordinator.resumeThermallyHeldProcessing()
+    }
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["retryContentPriority:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.pending.isEmpty)
+    #expect(effects.exportCount == 0)
+    #expect(effects.exportedSessionIDs.isEmpty)
 }
 
 @MainActor

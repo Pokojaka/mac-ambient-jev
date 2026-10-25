@@ -121,15 +121,16 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         clauses: [ClauseReference],
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async {
+    ) async -> SessionProcessingResult {
         let processor: NativeSessionProcessor
         do {
             processor = try current().processor
         } catch {
-            await onStatus(.message(error.localizedDescription))
-            return
+            let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
+            await onStatus(.message(message))
+            return .failed(message: message, metrics: nil, retained: nil)
         }
-        await processor.retryContentPrioritySession(
+        return await processor.retryContentPrioritySession(
             sessionID: sessionID,
             boundarySegments: boundarySegments,
             clauses: clauses,

@@ -148,11 +148,12 @@ private actor RecoveryTestExecutor: SessionProcessingExecuting {
         clauses: [ClauseReference],
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async {
+    ) async -> SessionProcessingResult {
         guard retryIDs.contains(sessionID) else {
             preconditionFailure("unexpected decision retry for \(sessionID)")
         }
         recordedCalls.append("retry:\(sessionID.uuidString)")
+        return .completed(metrics: nil, noSpeech: false)
     }
 
     func cancelLiveTranscription(sessionID: UUID) async {
