@@ -77,7 +77,7 @@ struct EngineProtocolEventPayloadTests {
         #expect(EngineErrorCode.allCases.map(\.rawValue) == [
             "invalid_request", "unsupported_version", "invalid_request_id", "hello_required", "busy",
             "settings_required", "invalid_settings", "stale_revision", "invalid_cursor", "session_not_found", "row_not_found",
-            "device_not_found", "device_failure", "capture_failure", "disk_space", "power_failure", "filesystem",
+            "device_not_found", "device_failure", "device_lost", "capture_failure", "disk_space", "power_failure", "filesystem",
             "model_missing", "model_corrupt", "model_failure", "processing_failure", "export_failure",
             "row_too_large", "cancelled", "internal_error"
         ])
@@ -90,7 +90,7 @@ struct EngineProtocolEventPayloadTests {
         #expect(EngineScreen.allCases.map(\.rawValue) == ["idle", "live", "finalizing", "finalized"])
         #expect(EngineSetupStatus.allCases.map(\.rawValue) == ["settings_required", "models_required", "ready"])
         #expect(EngineRecoveryStatus.allCases.map(\.rawValue) == ["pending", "running", "completed", "failed"])
-        #expect(EngineRecordingPhase.allCases.map(\.rawValue) == ["starting", "recording", "stopping"])
+        #expect(EngineRecordingPhase.allCases.map(\.rawValue) == ["starting", "recording", "waiting_for_device", "stopping"])
         #expect(EngineUnavailableCapability.allCases.map(\.rawValue) == ["none"])
         #expect(EngineSessionStatus.allCases.map(\.rawValue) == ["unreadable", "recording", "queued", "processing", "finalized", "failed"])
         #expect(EngineSpeakerLabel.allCases.map(\.rawValue) == [

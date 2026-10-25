@@ -57,6 +57,7 @@ public enum EngineErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case rowNotFound = "row_not_found"
     case deviceNotFound = "device_not_found"
     case deviceFailure = "device_failure"
+    case deviceLost = "device_lost"
     case captureFailure = "capture_failure"
     case diskSpace = "disk_space"
     case powerFailure = "power_failure"
@@ -113,6 +114,7 @@ public enum EngineRecoveryStatus: String, Codable, CaseIterable, Equatable, Send
 public enum EngineRecordingPhase: String, Codable, CaseIterable, Equatable, Sendable {
     case starting
     case recording
+    case waitingForDevice = "waiting_for_device"
     case stopping
 }
 

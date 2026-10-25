@@ -12,9 +12,20 @@ final class WindowsEngineCapture: EngineCaptureProviding {
     static let chunkDurationSeconds = 5.0
 
     private let factory: any WindowsCaptureSourceFactory
+    private let clock: any CaptureClock
+    private let qpc100ns: @Sendable () throws -> UInt64
+    private let automaticPolling: Bool
 
-    init(factory: any WindowsCaptureSourceFactory) {
+    init(
+        factory: any WindowsCaptureSourceFactory,
+        clock: any CaptureClock,
+        qpc100ns: @escaping @Sendable () throws -> UInt64,
+        automaticPolling: Bool
+    ) {
         self.factory = factory
+        self.clock = clock
+        self.qpc100ns = qpc100ns
+        self.automaticPolling = automaticPolling
     }
 
     func devices(source: EngineSource) throws -> EngineDevicesResult {
@@ -59,12 +70,15 @@ final class WindowsEngineCapture: EngineCaptureProviding {
             factory: factory,
             diskSpace: WindowsCaptureDiskSpaceProvider(),
             power: WindowsRecordingPowerProvider(),
-            clock: SystemCaptureClock(),
-            qpc100ns: { try WindowsCaptureQPCClock.now100ns() },
+            clock: clock,
+            qpc100ns: qpc100ns,
+            automaticPolling: automaticPolling,
             onWarning: callbacks.onWarning,
             onFailure: callbacks.onFailure,
             onDropouts: callbacks.onDropouts,
-            onSilenceChanged: callbacks.onSilenceChanged
+            onSilenceChanged: callbacks.onSilenceChanged,
+            onDeviceWaitingChanged: callbacks.onDeviceWaitingChanged,
+            onDeviceLost: callbacks.onDeviceLost
         )
         try await capture.start()
         return WindowsEngineCaptureSession(capture: capture)
@@ -80,7 +94,7 @@ final class WindowsEngineCapture: EngineCaptureProviding {
 
 @MainActor
 final class WindowsEngineCaptureSession: EngineCaptureSession {
-    private let capture: WindowsCaptureSource
+    let capture: WindowsCaptureSource
 
     init(capture: WindowsCaptureSource) {
         self.capture = capture

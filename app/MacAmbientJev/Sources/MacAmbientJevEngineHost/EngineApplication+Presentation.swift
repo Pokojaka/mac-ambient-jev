@@ -12,6 +12,7 @@ struct EnginePresentation {
     var processingStatusText: String? = nil
     var liveFailureNotices: [String] = []
     var isSilent = false
+    var isWaitingForDevice = false
     var audioGapCount: UInt64 = 0
     var processingState: ProcessingState = .idle
     var preparationID: UUID? = nil
@@ -21,7 +22,7 @@ extension EngineApplicationCore {
     func presentationState() throws -> EnginePresentationState {
         let isRecording = recording.phase == .recording
         let silenceWarningText: String?
-        if isRecording {
+        if isRecording && !presentation.isWaitingForDevice {
             guard let activeRecording else {
                 preconditionFailure("an active recording has a source for presentation")
             }

@@ -36,6 +36,7 @@ extension EngineApplicationCore: EngineRecordingHandling {
 
         // Claim the recording before the first suspension so a second start sees a busy engine.
         presentation.isSilent = false
+        presentation.isWaitingForDevice = false
         presentation.audioGapCount = 0
         presentation.liveFailureNotices.removeAll()
         presentation.processingState = .idle
@@ -120,6 +121,32 @@ extension EngineApplicationCore: EngineRecordingHandling {
         }
     }
 
+    func captureDeviceLost(sessionID: UUID, lastReopenError: String?) {
+        guard recording.beginStopping(sessionID: sessionID) else { return }
+        presentation.isWaitingForDevice = false
+        presentation.isSilent = false
+        setRecordingStatus("録音を保存しています", tone: .neutral)
+        stateDidChange()
+        stopTask = Task { @MainActor [self] in
+            await liveCoordinator.finishRecording(
+                sessionID: sessionID, failureMessage: nil, processing: processingCoordinator, effects: self
+            )
+            if case .saved? = finishOutcomes[sessionID], !isShuttingDown {
+                let message = "録音デバイスが30秒以内に復帰しなかったため録音を停止しました。録音は保存されています"
+                report(EngineFailures.failure(
+                    code: .deviceLost, message: message, stage: .capture, sessionID: sessionID,
+                    severity: .warning, recoveryAction: .selectDevice,
+                    details: lastReopenError.map {
+                        [EngineFailures.detail(domain: "capture", code: "reopen", message: $0)]
+                    } ?? []
+                ))
+                setRecordingStatus(message, tone: .warning)
+                stateDidChange()
+            }
+            stopTask = nil
+        }
+    }
+
     var captureSourceForStart: CaptureSource? {
         guard let attempt = startAttempt else { return nil }
         return attempt.source == .microphone ? .microphone : .systemAudio
@@ -165,9 +192,33 @@ extension EngineApplicationCore: RecordingStartEffects {
                 self.stateDidChange()
             },
             onSilenceChanged: { [weak self] silent in
-                guard let self, self.recording.sessionID == sessionID else { return }
-                self.presentation.isSilent = silent
+                guard let self,
+                      self.recording.sessionID == sessionID,
+                      self.recording.phase == .recording else { return }
+                self.presentation.isSilent = self.presentation.isWaitingForDevice ? false : silent
                 self.stateDidChange()
+            },
+            onDeviceWaitingChanged: { [weak self] isWaiting in
+                guard let self,
+                      self.recording.sessionID == sessionID,
+                      self.recording.phase == .recording else { return }
+                self.presentation.isWaitingForDevice = isWaiting
+                self.presentation.isSilent = false
+                if isWaiting {
+                    self.setRecordingStatus("録音デバイスの復帰を待っています", tone: .warning)
+                } else {
+                    guard let activeRecording = self.activeRecording else {
+                        preconditionFailure("a device wait update has an active recording source")
+                    }
+                    self.setRecordingStatus(
+                        activeRecording.source == .microphone ? "マイクを録音中" : "システム音声を録音中",
+                        tone: .recording
+                    )
+                }
+                self.stateDidChange()
+            },
+            onDeviceLost: { [weak self] lastReopenError in
+                self?.captureDeviceLost(sessionID: sessionID, lastReopenError: lastReopenError)
             }
         )
         do {
@@ -340,6 +391,7 @@ extension EngineApplicationCore: RecordingFinishEffects {
         recording.finish()
         activeRecording = nil
         presentation.isSilent = false
+        presentation.isWaitingForDevice = false
         if let sessionID { finishOutcomes[sessionID] = outcome }
         switch outcome {
         case let .failed(message):

@@ -139,6 +139,12 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
         )
         if result != 0 {
             // C owns and frees partial-open resources before returning a failure.
+            if mja_capture_is_reopen_unavailable(result) != 0,
+               openCleanupErrors.stop == 0,
+               openCleanupErrors.environment == 0,
+               openCleanupErrors.context == 0 {
+                throw WindowsCaptureDeviceUnavailable(code: result)
+            }
             throw WindowsCaptureAdapterError.combined(openFailures)
         }
         if !openFailures.isEmpty {
@@ -151,7 +157,7 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             let failures = uniqueFailureMessages(
                 openFailures + nativeFailureMessages(
                     operation: "mja_capture_stop_join",
-                    code: stopResult,
+                    code: mja_capture_is_device_lost_error(stopResult) != 0 ? 0 : stopResult,
                     diagnostics: captureCleanupMessages(
                         stopCleanupErrors,
                         operation: "mja_capture_stop_join"
@@ -166,6 +172,32 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             )
         }
 
+        let nativeEndpointID = mja_capture_endpoint_id(openedCapture)
+        guard let nativeEndpointID,
+              let endpointID = String(validatingCString: nativeEndpointID),
+              !endpointID.isEmpty else {
+            let endpointError = WindowsCaptureAdapterError.invalidConfiguration(
+                "mja_capture_open returned an empty or invalid UTF-8 endpoint ID"
+            )
+            var cleanupErrors = mja_capture_cleanup_errors(stop: 0, environment: 0, context: 0)
+            let stopResult = mja_capture_stop_join(openedCapture, &cleanupErrors)
+            mja_capture_destroy(openedCapture)
+            let cleanupFailures = nativeFailureMessages(
+                operation: "mja_capture_stop_join",
+                code: mja_capture_is_device_lost_error(stopResult) != 0 ? 0 : stopResult,
+                diagnostics: captureCleanupMessages(
+                    cleanupErrors,
+                    operation: "mja_capture_stop_join"
+                )
+            )
+            guard cleanupFailures.isEmpty else {
+                throw WindowsCaptureAdapterError.combined(
+                    uniqueFailureMessages([endpointError.localizedDescription] + cleanupFailures)
+                )
+            }
+            throw endpointError
+        }
+
         guard sampleRate > 0, (1...254).contains(channels) else {
             let formatError = WindowsCaptureAdapterError.invalidConfiguration(
                 "mja_capture_open returned an invalid sample rate or channel count"
@@ -175,7 +207,7 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             mja_capture_destroy(openedCapture)
             let cleanupFailures = nativeFailureMessages(
                 operation: "mja_capture_stop_join",
-                code: stopResult,
+                code: mja_capture_is_device_lost_error(stopResult) != 0 ? 0 : stopResult,
                 diagnostics: captureCleanupMessages(
                     cleanupErrors,
                     operation: "mja_capture_stop_join"
@@ -192,6 +224,7 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
         return WindowsWASAPICaptureDevice(
             capture: openedCapture,
             callbackHolder: callbackHolder,
+            endpointID: endpointID,
             sampleRate: Double(sampleRate),
             channels: Int(channels)
         )
@@ -324,17 +357,20 @@ private final class WindowsWASAPICaptureDevice: WindowsCaptureDevice {
     private var capture: OpaquePointer?
     private nonisolated(unsafe) var hasNativeCapture = true
     private let callbackHolder: WindowsCaptureCallbackHolder
+    public let endpointID: String
     public let sampleRate: Double
     public let channels: Int
 
     init(
         capture: OpaquePointer,
         callbackHolder: WindowsCaptureCallbackHolder,
+        endpointID: String,
         sampleRate: Double,
         channels: Int
     ) {
         self.capture = capture
         self.callbackHolder = callbackHolder
+        self.endpointID = endpointID
         self.sampleRate = sampleRate
         self.channels = channels
     }
@@ -353,6 +389,9 @@ private final class WindowsWASAPICaptureDevice: WindowsCaptureDevice {
         callbackHolder.ingress = ingress
         let result = mja_capture_start(capture)
         guard result == 0 else {
+            if mja_capture_is_reopen_unavailable(result) != 0 {
+                throw WindowsCaptureDeviceUnavailable(code: result)
+            }
             throw WindowsCaptureAdapterError.native(
                 operation: "mja_capture_start",
                 code: result
@@ -366,7 +405,7 @@ private final class WindowsWASAPICaptureDevice: WindowsCaptureDevice {
         let result = mja_capture_stop_join(capture, &cleanupErrors)
         let failures = nativeFailureMessages(
             operation: "mja_capture_stop_join",
-            code: result,
+            code: mja_capture_is_device_lost_error(result) != 0 ? 0 : result,
             diagnostics: captureCleanupMessages(
                 cleanupErrors,
                 operation: "mja_capture_stop_join"

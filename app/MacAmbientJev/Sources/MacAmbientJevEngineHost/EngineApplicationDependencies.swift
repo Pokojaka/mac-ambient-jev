@@ -32,22 +32,28 @@ public struct EngineAdapterError: Error, LocalizedError, Sendable, Equatable {
 // MARK: Capture
 
 public struct EngineCaptureCallbacks: Sendable {
-    /// Capture failed after it started. The engine stops the recording and finalizes the saved audio.
+    /// Capture failure is fatal: the engine pauses processing, reports the failure, stops capture, and signals its controller.
     public let onFailure: @MainActor @Sendable (String) -> Void
     public let onWarning: @MainActor @Sendable (String) -> Void
     public let onDropouts: @MainActor @Sendable (UInt64) -> Void
     public let onSilenceChanged: @MainActor @Sendable (Bool) -> Void
+    public let onDeviceWaitingChanged: @MainActor @Sendable (Bool) -> Void
+    public let onDeviceLost: @MainActor @Sendable (String?) -> Void
 
     public init(
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
         onWarning: @escaping @MainActor @Sendable (String) -> Void,
         onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
-        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
+        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void,
+        onDeviceWaitingChanged: @escaping @MainActor @Sendable (Bool) -> Void,
+        onDeviceLost: @escaping @MainActor @Sendable (String?) -> Void
     ) {
         self.onFailure = onFailure
         self.onWarning = onWarning
         self.onDropouts = onDropouts
         self.onSilenceChanged = onSilenceChanged
+        self.onDeviceWaitingChanged = onDeviceWaitingChanged
+        self.onDeviceLost = onDeviceLost
     }
 }
 

@@ -279,7 +279,7 @@ final class EngineApplicationCore {
         let phase: EngineRecordingPhase
         switch recording.phase {
         case .starting: phase = .starting
-        case .recording: phase = .recording
+        case .recording: phase = presentation.isWaitingForDevice ? .waitingForDevice : .recording
         case .stopping: phase = .stopping
         case .idle, .requestingPermission, .importing: return nil
         }

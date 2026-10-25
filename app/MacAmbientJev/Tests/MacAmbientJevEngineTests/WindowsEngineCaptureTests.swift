@@ -3,6 +3,7 @@ import Testing
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
+import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
 import MacAmbientJevWindowsSupport
 @testable import MacAmbientJevEngine
@@ -35,13 +36,20 @@ import MacAmbientJevWindowsSupport
         )
         let device = WindowsEngineCaptureTestDevice()
         let factory = WindowsEngineCaptureTestFactory(device: device)
-        let engine = WindowsEngineCapture(factory: factory)
+        let engine = WindowsEngineCapture(
+            factory: factory,
+            clock: WindowsEngineCaptureTestClock(),
+            qpc100ns: { 10_000_000 },
+            automaticPolling: false
+        )
         let callbackProbe = WindowsEngineCaptureDropoutProbe()
         let callbacks = EngineCaptureCallbacks(
             onFailure: { _ in },
             onWarning: { _ in },
             onDropouts: { callbackProbe.record($0) },
-            onSilenceChanged: { _ in }
+            onSilenceChanged: { _ in },
+            onDeviceWaitingChanged: { _ in },
+            onDeviceLost: { _ in }
         )
         let capture = try await engine.startCapture(
             sessionID: sessionID,
@@ -53,6 +61,8 @@ import MacAmbientJevWindowsSupport
 
         do {
             device.sendKnownMissingPacket()
+            let session = try #require(capture as? WindowsEngineCaptureSession)
+            await session.capture.poll()
             try await callbackProbe.changes.wait("Windows capture dropout callback") {
                 callbackProbe.counts.contains { $0 > 0 }
             }
@@ -196,12 +206,17 @@ private final class WindowsEngineCaptureDropoutProbe {
     }
 }
 
+private struct WindowsEngineCaptureTestClock: CaptureClock {
+    func now() -> TimeInterval { 100 }
+}
+
 @MainActor
 private final class WindowsEngineCaptureTestDevice: WindowsCaptureDevice {
     private static let packetFrameCount = 512
     private static let knownMissingPacketFlag: UInt32 = 8
     private static let qpcUnitsPerSecond: UInt64 = 10_000_000
 
+    let endpointID = "engine-test-endpoint"
     let sampleRate = 16_000.0
     let channels = 1
     private var ingress: WindowsCaptureIngress?
@@ -212,7 +227,7 @@ private final class WindowsEngineCaptureTestDevice: WindowsCaptureDevice {
         guard self.ingress == nil, !isFenced else {
             throw WindowsCaptureAdapterError.invalidConfiguration("test capture device started more than once")
         }
-        let qpc = try WindowsCaptureQPCClock.now100ns()
+        let qpc: UInt64 = 10_000_000
         firstPacketQPC100ns = qpc
         self.ingress = ingress
         let samples = [Float](repeating: 0.25, count: Self.packetFrameCount)
@@ -271,5 +286,7 @@ private final class WindowsEngineCaptureTestFactory: WindowsCaptureSourceFactory
         device
     }
 
-    func devices(source _: CaptureSource) throws -> [WindowsCaptureEndpoint] { [] }
+    func devices(source _: CaptureSource) throws -> [WindowsCaptureEndpoint] {
+        [WindowsCaptureEndpoint(id: device.endpointID, name: "Engine test endpoint", isDefault: true)]
+    }
 }

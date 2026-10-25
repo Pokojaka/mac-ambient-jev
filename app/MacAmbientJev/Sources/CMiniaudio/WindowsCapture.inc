@@ -254,6 +254,20 @@ static int32_t mja_capture_first_error(mja_capture *capture)
     return ma_atomic_int32_get(&capture->first_error);
 }
 
+int32_t mja_capture_is_device_lost_error(int32_t error)
+{
+    return error == (int32_t)MA_AUDCLNT_E_DEVICE_INVALIDATED ||
+           error == (int32_t)ERROR_DEVICE_NOT_CONNECTED ||
+           error == (int32_t)HRESULT_FROM_WIN32(ERROR_NOT_FOUND) ||
+           error == MJA_CAPTURE_DEFAULT_CHANGED;
+}
+
+int32_t mja_capture_is_reopen_unavailable(int32_t error)
+{
+    /* Classifies native open/start results; only the waiting state retries them. */
+    return error != MA_SUCCESS;
+}
+
 static int32_t mja_capture_fail(
     mja_capture *capture,
     int32_t error,
@@ -690,24 +704,44 @@ static void mja_capture_dispose_partial(
     mja_capture *capture,
     mja_capture_cleanup_errors *cleanup_errors)
 {
+    int32_t primary_error;
+    int32_t stop_error = 0;
+    int32_t monitor_error = 0;
+
     if (capture == NULL) {
         return;
     }
     ma_atomic_bool32_set(&capture->expected_stop, MA_TRUE);
+    primary_error = mja_capture_first_error(capture);
     if (capture->device_initialized) {
         ma_result stop_result = ma_device_stop(&capture->device);
-        if (stop_result != MA_SUCCESS) {
-            cleanup_errors->stop = (int32_t)stop_result;
-        }
         ma_device_uninit(&capture->device);
         capture->device_initialized = 0;
+        if (primary_error == 0) {
+            primary_error = mja_capture_first_error(capture);
+        }
+        if (stop_result != MA_SUCCESS) {
+            stop_error = (int32_t)stop_result;
+        }
     }
     if (capture->environment != NULL) {
-        int32_t environment_result = mja_capture_environment_destroy(capture->environment);
+        int32_t environment_result = mja_capture_environment_destroy(capture->environment, &monitor_error);
         if (environment_result != 0) {
             cleanup_errors->environment = environment_result;
+        } else if (monitor_error != 0 && !mja_capture_is_device_lost_error(monitor_error)) {
+            cleanup_errors->environment = monitor_error;
         }
         capture->environment = NULL;
+        if (monitor_error != 0 &&
+            (primary_error == 0 ||
+             (mja_capture_is_device_lost_error(primary_error) &&
+              !mja_capture_is_device_lost_error(monitor_error)))) {
+            primary_error = monitor_error;
+        }
+    }
+    if (stop_error != 0 &&
+        !(stop_error == MA_UNAVAILABLE && mja_capture_is_device_lost_error(primary_error))) {
+        cleanup_errors->stop = stop_error;
     }
     if (capture->context_initialized) {
         ma_result context_result = ma_context_uninit(&capture->context);
@@ -722,6 +756,54 @@ static void mja_capture_dispose_partial(
     }
     free(capture->scratch);
     free(capture);
+}
+
+static ma_device_config mja_capture_device_config(
+    int32_t loopback,
+    const ma_device_id *endpoint,
+    mja_capture *capture)
+{
+    ma_device_config config = ma_device_config_init(loopback ? ma_device_type_loopback : ma_device_type_capture);
+
+    config.sampleRate = 0;
+    config.capture.pDeviceID = endpoint;
+    config.capture.format = ma_format_unknown;
+    config.capture.channels = 0;
+    config.capture.shareMode = ma_share_mode_shared;
+    config.playback.shareMode = ma_share_mode_shared;
+    config.noFixedSizedCallback = MA_TRUE;
+    config.dataCallback = mja_capture_data_callback;
+    config.notificationCallback = mja_capture_notification_callback;
+    config.pUserData = capture;
+    config.periodSizeInFrames = 0;
+    config.periodSizeInMilliseconds = MJA_CAPTURE_PERIOD_MILLISECONDS;
+    config.periods = MJA_CAPTURE_PERIODS;
+    config.performanceProfile = ma_performance_profile_conservative;
+    config.wasapi.usage = ma_wasapi_usage_pro_audio;
+    config.wasapi.noAutoConvertSRC = MA_TRUE;
+    config.wasapi.noAutoStreamRouting = MA_TRUE;
+    config.wasapi.noHardwareOffloading = MA_TRUE;
+
+    return config;
+}
+
+int32_t mja_capture_inspect_config(int32_t loopback, mja_capture_config_values *values)
+{
+    ma_device_config config;
+
+    if ((loopback != 0 && loopback != 1) || values == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    config = mja_capture_device_config(loopback, NULL, NULL);
+    values->period_milliseconds = config.periodSizeInMilliseconds;
+    values->periods = config.periods;
+    values->conservative = config.performanceProfile == ma_performance_profile_conservative ? 1 : 0;
+    values->pro_audio = config.wasapi.usage == ma_wasapi_usage_pro_audio ? 1 : 0;
+    values->no_auto_stream_routing = config.wasapi.noAutoStreamRouting == MA_TRUE ? 1 : 0;
+    values->period_frames = config.periodSizeInFrames;
+    values->loopback = loopback;
+    return MA_SUCCESS;
 }
 
 int32_t mja_capture_open(
@@ -799,21 +881,7 @@ int32_t mja_capture_open(
         return result;
     }
 
-    config = ma_device_config_init(loopback ? ma_device_type_loopback : ma_device_type_capture);
-    config.sampleRate = 0;
-    config.capture.pDeviceID = &resolved_id;
-    config.capture.format = ma_format_unknown;
-    config.capture.channels = 0;
-    config.capture.shareMode = ma_share_mode_shared;
-    config.playback.shareMode = ma_share_mode_shared;
-    config.noFixedSizedCallback = MA_TRUE;
-    config.dataCallback = mja_capture_data_callback;
-    config.notificationCallback = mja_capture_notification_callback;
-    config.pUserData = capture;
-    config.wasapi.noAutoConvertSRC = MA_TRUE;
-    config.wasapi.noAutoStreamRouting = MA_TRUE;
-    config.wasapi.noHardwareOffloading = MA_TRUE;
-
+    config = mja_capture_device_config(loopback, &resolved_id, capture);
     result = ma_device_init(&capture->context, &config, &capture->device);
     if (result != MA_SUCCESS) {
         mja_capture_dispose_partial(capture, cleanup_errors);
@@ -899,6 +967,9 @@ int32_t mja_capture_stop_join(
     mja_capture_cleanup_errors *cleanup_errors)
 {
     int32_t primary_error;
+    int32_t stop_error = 0;
+    int32_t monitor_error = 0;
+    int32_t environment_result = 0;
 
     if (cleanup_errors == NULL) {
         return MA_INVALID_ARGS;
@@ -918,28 +989,42 @@ int32_t mja_capture_stop_join(
 
     if (capture->device_initialized) {
         ma_result stop_result = ma_device_stop(&capture->device);
-        if (stop_result != MA_SUCCESS) {
-            capture->cleanup_errors.stop = (int32_t)stop_result;
-        }
         ma_device_uninit(&capture->device);
         capture->device_initialized = 0;
         if (primary_error == 0) {
             primary_error = mja_capture_first_error(capture);
         }
-        if (primary_error == 0 && stop_result != MA_SUCCESS) {
-            primary_error = (int32_t)stop_result;
+        if (stop_result != MA_SUCCESS) {
+            stop_error = (int32_t)stop_result;
         }
     }
 
     if (capture->environment != NULL) {
-        int32_t environment_result = mja_capture_environment_destroy(capture->environment);
+        environment_result = mja_capture_environment_destroy(capture->environment, &monitor_error);
         capture->environment = NULL;
         if (environment_result != 0) {
             capture->cleanup_errors.environment = environment_result;
+        } else if (monitor_error != 0 && !mja_capture_is_device_lost_error(monitor_error)) {
+            capture->cleanup_errors.environment = monitor_error;
+        }
+        if (monitor_error != 0 &&
+            (primary_error == 0 ||
+             (mja_capture_is_device_lost_error(primary_error) &&
+              !mja_capture_is_device_lost_error(monitor_error)))) {
+            primary_error = monitor_error;
+        }
+    }
+
+    if (stop_error != 0) {
+        if (!(stop_error == MA_UNAVAILABLE && mja_capture_is_device_lost_error(primary_error))) {
+            capture->cleanup_errors.stop = stop_error;
             if (primary_error == 0) {
-                primary_error = environment_result;
+                primary_error = stop_error;
             }
         }
+    }
+    if (environment_result != 0 && primary_error == 0) {
+        primary_error = environment_result;
     }
 
     if (capture->context_initialized) {
@@ -961,6 +1046,14 @@ int32_t mja_capture_stop_join(
     capture->joined = 1;
     *cleanup_errors = capture->cleanup_errors;
     return capture->stop_result;
+}
+
+const char *mja_capture_endpoint_id(const mja_capture *capture)
+{
+    if (capture == NULL || capture->endpoint_id[0] == '\0') {
+        return NULL;
+    }
+    return capture->endpoint_id;
 }
 
 void mja_capture_destroy(mja_capture *capture)

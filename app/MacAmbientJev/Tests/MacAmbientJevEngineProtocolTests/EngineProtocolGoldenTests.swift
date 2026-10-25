@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 70)
+        #expect(records.count == 72)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -115,6 +115,74 @@ struct EngineProtocolGoldenTests {
         #expect(sawOrdinaryPartialFailureProcessingText)
     }
 
+    @Test func fixtureExposesReconnectStateAndDeviceLostAsTypedValues() throws {
+        var sawWaitingForDeviceState = false
+        var sawDeviceLostReason = false
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            switch output.event {
+            case let .state(state) where output.sequence.value == 115:
+                #expect(output.requestID == nil)
+                #expect(state.revision.value == 115)
+                #expect(state.screen == .live)
+                #expect(state.setup == .ready)
+                #expect(state.recovery == .completed)
+                #expect(state.queue.isEmpty)
+                #expect(state.failures.isEmpty)
+
+                let recording = try #require(state.recording)
+                #expect(recording.sessionID == "session-reconnect")
+                #expect(recording.source == .microphone)
+                #expect(recording.device == .id("wasapi-mic-reconnect"))
+                #expect(recording.phase == .waitingForDevice)
+                #expect(recording.phase.rawValue == "waiting_for_device")
+
+                #expect(state.presentation.recordingStatusText == "録音デバイスの復帰を待っています")
+                #expect(state.presentation.recordingTone == .warning)
+                #expect(state.presentation.preparationPhase == .ready)
+                #expect(state.presentation.preparationStatusText == nil)
+                #expect(state.presentation.recoveryStatusText == nil)
+                #expect(state.presentation.processingStatusText == nil)
+                #expect(state.presentation.liveFailureNotices.isEmpty)
+                #expect(!state.presentation.silenceWarningActive)
+                #expect(state.presentation.silenceWarningText == nil)
+                #expect(state.presentation.audioGapCount == 1)
+                #expect(state.presentation.audioGapText == "音声の欠落: 1 回")
+                #expect(state.presentation.processingIndicator == .idle)
+                sawWaitingForDeviceState = true
+
+            case let .error(failure) where output.sequence.value == 116:
+                #expect(output.requestID == nil)
+                #expect(failure.code == .deviceLost)
+                #expect(failure.code.rawValue == "device_lost")
+                #expect(failure.message == "録音デバイスが30秒以内に復帰しなかったため録音を停止しました。録音は保存されています")
+                #expect(failure.stage == .capture)
+                #expect(failure.requestID == nil)
+                #expect(failure.sessionID == "session-reconnect")
+                #expect(failure.severity == .warning)
+                #expect(failure.recoveryAction == .selectDevice)
+                #expect(failure.details.count == 1)
+                let detail = try #require(failure.details.first)
+                #expect(detail.domain == "capture")
+                #expect(detail.code == "reopen")
+                #expect(detail.message == "mja_capture failed with code -401")
+                #expect(detail.deviceID == nil)
+                #expect(detail.path == nil)
+                #expect(failure.cleanupErrors.isEmpty)
+                sawDeviceLostReason = true
+
+            default:
+                break
+            }
+        }
+
+        #expect(sawWaitingForDeviceState)
+        #expect(sawDeviceLostReason)
+    }
+
     @Test func fixturePreservesRepresentativeTypedSemantics() throws {
         let records = try goldenRecords()
         var sawUnconfiguredAutoExportReplacement = false
@@ -122,6 +190,7 @@ struct EngineProtocolGoldenTests {
         var sawSystemAudioIDSelector = false
         var sawUInt64Maximum = false
         var sawLiveBusyState = false
+        var sawReconnectWaitingState = false
         var sawConfiguredSettingsResult = false
         var sawEndpointDefault = false
         var sawUnreadableAndReadableSessions = false
@@ -141,6 +210,7 @@ struct EngineProtocolGoldenTests {
         var sawKnownClauseState = false
         var sawCorrelatedError = false
         var sawUnsolicitedError = false
+        var sawDeviceLostUnsolicitedError = false
         var sawNativeErrorDetails = false
         var sawKnownProgressTotal = false
         var sawUnknownProgressTotal = false
@@ -479,32 +549,80 @@ struct EngineProtocolGoldenTests {
                         }
                     } else {
                         #expect(failure.requestID == nil)
-                        #expect(failure.message.contains("バックグラウンド処理"))
-                        sawUnsolicitedError = true
+                        if failure.code == .deviceLost {
+                            #expect(output.sequence.value == 116)
+                            #expect(output.requestID == nil)
+                            #expect(failure.code == .deviceLost)
+                            #expect(failure.message == "録音デバイスが30秒以内に復帰しなかったため録音を停止しました。録音は保存されています")
+                            #expect(failure.stage == .capture)
+                            #expect(failure.sessionID == "session-reconnect")
+                            #expect(failure.severity == .warning)
+                            #expect(failure.recoveryAction == .selectDevice)
+                            #expect(failure.details.count == 1)
+                            let detail = try #require(failure.details.first)
+                            #expect(detail.domain == "capture")
+                            #expect(detail.code == "reopen")
+                            #expect(detail.message == "mja_capture failed with code -401")
+                            #expect(detail.deviceID == nil)
+                            #expect(detail.path == nil)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawDeviceLostUnsolicitedError = true
+                        } else {
+                            #expect(failure.message.contains("バックグラウンド処理"))
+                            sawUnsolicitedError = true
+                        }
                     }
                 case let .state(state):
-                    #expect(state.screen == .live)
-                    #expect(state.recording?.sessionID == "session-live")
-                    #expect(!state.queue.isEmpty)
-                    #expect(!state.failures.isEmpty)
-                    #expect(state.presentation.recordingStatusText == "システム音声を録音中")
-                    #expect(state.presentation.recordingTone == .recording)
-                    #expect(state.presentation.preparationPhase == .ready)
-                    #expect(state.presentation.preparationStatusText == nil)
-                    #expect(state.presentation.recoveryStatusText == "未完了の文字起こしを復旧しています（2件）")
-                    #expect(state.presentation.processingStatusText == "文字起こし処理が待機中です")
-                    #expect(state.presentation.liveFailureNotices.isEmpty)
-                    #expect(state.presentation.silenceWarningActive)
-                    #expect(state.presentation.silenceWarningText == "システム音声が30秒以上無音です")
-                    #expect(state.presentation.audioGapCount == 2)
-                    #expect(state.presentation.audioGapText == "音声の欠落: 2 回")
-                    #expect(state.presentation.processingIndicator == .backlogged)
-                    let failure = try #require(state.failures.first)
-                    let detail = try #require(failure.details.first)
-                    #expect(detail.path?.contains("/sessions/session-live/audio.wav") == true)
-                    #expect(detail.deviceID == "wasapi-mic-17")
-                    #expect(!failure.cleanupErrors.isEmpty)
-                    sawLiveBusyState = true
+                    if state.recording?.phase == .waitingForDevice {
+                        #expect(output.sequence.value == 115)
+                        #expect(output.requestID == nil)
+                        #expect(state.revision.value == 115)
+                        #expect(state.screen == .live)
+                        #expect(state.setup == .ready)
+                        #expect(state.recovery == .completed)
+                        #expect(state.recording?.sessionID == "session-reconnect")
+                        #expect(state.recording?.source == .microphone)
+                        #expect(state.recording?.device == .id("wasapi-mic-reconnect"))
+                        #expect(state.recording?.phase == .waitingForDevice)
+                        #expect(state.queue.isEmpty)
+                        #expect(state.failures.isEmpty)
+                        #expect(state.presentation.recordingStatusText == "録音デバイスの復帰を待っています")
+                        #expect(state.presentation.recordingTone == .warning)
+                        #expect(state.presentation.preparationPhase == .ready)
+                        #expect(state.presentation.preparationStatusText == nil)
+                        #expect(state.presentation.recoveryStatusText == nil)
+                        #expect(state.presentation.processingStatusText == nil)
+                        #expect(state.presentation.liveFailureNotices.isEmpty)
+                        #expect(!state.presentation.silenceWarningActive)
+                        #expect(state.presentation.silenceWarningText == nil)
+                        #expect(state.presentation.audioGapCount == 1)
+                        #expect(state.presentation.audioGapText == "音声の欠落: 1 回")
+                        #expect(state.presentation.processingIndicator == .idle)
+                        sawReconnectWaitingState = true
+                    } else {
+                        #expect(state.screen == .live)
+                        #expect(state.recording?.sessionID == "session-live")
+                        #expect(!state.queue.isEmpty)
+                        #expect(!state.failures.isEmpty)
+                        #expect(state.presentation.recordingStatusText == "システム音声を録音中")
+                        #expect(state.presentation.recordingTone == .recording)
+                        #expect(state.presentation.preparationPhase == .ready)
+                        #expect(state.presentation.preparationStatusText == nil)
+                        #expect(state.presentation.recoveryStatusText == "未完了の文字起こしを復旧しています（2件）")
+                        #expect(state.presentation.processingStatusText == "文字起こし処理が待機中です")
+                        #expect(state.presentation.liveFailureNotices.isEmpty)
+                        #expect(state.presentation.silenceWarningActive)
+                        #expect(state.presentation.silenceWarningText == "システム音声が30秒以上無音です")
+                        #expect(state.presentation.audioGapCount == 2)
+                        #expect(state.presentation.audioGapText == "音声の欠落: 2 回")
+                        #expect(state.presentation.processingIndicator == .backlogged)
+                        let failure = try #require(state.failures.first)
+                        let detail = try #require(failure.details.first)
+                        #expect(detail.path?.contains("/sessions/session-live/audio.wav") == true)
+                        #expect(detail.deviceID == "wasapi-mic-17")
+                        #expect(!failure.cleanupErrors.isEmpty)
+                        sawLiveBusyState = true
+                    }
                 case let .ready(payload):
                     #expect(payload.state.setup == .settingsRequired)
                     #expect(payload.state.recovery == .pending)
@@ -567,6 +685,7 @@ struct EngineProtocolGoldenTests {
         #expect(sawSystemAudioIDSelector)
         #expect(sawUInt64Maximum)
         #expect(sawLiveBusyState)
+        #expect(sawReconnectWaitingState)
         #expect(sawConfiguredSettingsResult)
         #expect(sawEndpointDefault)
         #expect(sawUnreadableAndReadableSessions)
@@ -586,6 +705,7 @@ struct EngineProtocolGoldenTests {
         #expect(sawKnownClauseState)
         #expect(sawCorrelatedError)
         #expect(sawUnsolicitedError)
+        #expect(sawDeviceLostUnsolicitedError)
         #expect(sawNativeErrorDetails)
         #expect(sawKnownProgressTotal)
         #expect(sawUnknownProgressTotal)

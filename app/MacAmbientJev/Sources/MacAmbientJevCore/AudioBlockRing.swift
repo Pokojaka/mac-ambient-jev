@@ -165,6 +165,15 @@ public final class AudioBlockRing: @unchecked Sendable {
 
     /// Records an invalid callback's known frame extent even if there is no sample data.
     public func noteMissing(startFrame: Int64, frameCount: Int) {
+        noteGap(startFrame: startFrame, frameCount: frameCount, reason: .invalidBuffer)
+    }
+
+    /// Records a known timestamp gap even if there is no sample data.
+    public func noteTimestampGap(startFrame: Int64, frameCount: Int) {
+        noteGap(startFrame: startFrame, frameCount: frameCount, reason: .missingCallback)
+    }
+
+    private func noteGap(startFrame: Int64, frameCount: Int, reason: AudioGapReason) {
         guard frameCount >= 0,
               !startFrame.addingReportingOverflow(Int64(frameCount)).overflow else {
             recordOverflow()
@@ -182,7 +191,7 @@ public final class AudioBlockRing: @unchecked Sendable {
         producerEndFrame = max(producerEndFrame, end)
         guard first < end else { return }
         _ = recordedDropoutCount.add(1, ordering: .relaxed)
-        let gap = AudioGap(startFrame: first, frameCount: end - first, reason: .invalidBuffer)
+        let gap = AudioGap(startFrame: first, frameCount: end - first, reason: reason)
         guard let slot = reserveProducerSlot() else {
             remember(gap)
             return

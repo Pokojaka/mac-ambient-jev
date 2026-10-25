@@ -15,7 +15,7 @@ struct EngineProtocolDocumentationTests {
 
         #expect(documentedCorpus == fixture)
         let coverage = try decodeCorpus(documentedCorpus)
-        #expect(coverage.recordCount == 70)
+        #expect(coverage.recordCount == 72)
         #expect(coverage.requestCommands.count == 20)
         #expect(coverage.completedCommands.count == 20)
         #expect(coverage.requestCommands.contains(EngineCommandName.transcriptRowDetails.rawValue))

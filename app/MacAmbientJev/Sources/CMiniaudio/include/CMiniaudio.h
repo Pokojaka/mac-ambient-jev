@@ -36,6 +36,25 @@ void mja_decoder_destroy(mja_decoder *decoder);
 typedef struct mja_capture mja_capture;
 typedef struct mja_power_owner mja_power_owner;
 
+enum {
+    MJA_CAPTURE_PERIOD_MILLISECONDS = 100,
+    MJA_CAPTURE_PERIODS = 3
+};
+
+enum {
+    MJA_CAPTURE_DEFAULT_CHANGED = -11003
+};
+
+typedef struct mja_capture_config_values {
+    uint32_t period_milliseconds;
+    uint32_t periods;
+    int32_t conservative;
+    int32_t pro_audio;
+    int32_t no_auto_stream_routing;
+    uint32_t period_frames;
+    int32_t loopback;
+} mja_capture_config_values;
+
 typedef struct mja_capture_cleanup_errors {
     int32_t stop;
     int32_t environment;
@@ -106,6 +125,8 @@ int32_t mja_capture_convert_packet(
 /* loopback is 0 for capture endpoints and 1 for render endpoints. The callback's
  * id and name are borrowed until it returns; is_default is 0 or 1. */
 int32_t mja_capture_enumerate(int32_t loopback, mja_capture_device_fn callback, void *user);
+/* Reads production capture settings without creating an audio device. */
+int32_t mja_capture_inspect_config(int32_t loopback, mja_capture_config_values *values);
 
 /*
  * loopback and select_default must each be 0 or 1. Selection is valid only as
@@ -131,7 +152,14 @@ int32_t mja_capture_enumerate(int32_t loopback, mja_capture_device_fn callback, 
 int32_t mja_capture_open(int32_t loopback, const char *endpoint_id, int32_t select_default, mja_capture_packet_fn packet_callback, mja_capture_health_fn health_callback, void *user, mja_capture **out, uint32_t *rate, uint32_t *channels, mja_capture_cleanup_errors *cleanup_errors);
 int32_t mja_capture_start(mja_capture *capture);
 int32_t mja_capture_stop_join(mja_capture *capture, mja_capture_cleanup_errors *cleanup_errors);
+/* Returns the resolved endpoint ID borrowed until destroy, or NULL for NULL/empty capture. */
+const char *mja_capture_endpoint_id(const mja_capture *capture);
 void mja_capture_destroy(mja_capture *capture);
+/* Recognizes only raw device-invalidated HRESULT, endpoint-disconnected/not-found Win32 errors,
+ * and MJA_CAPTURE_DEFAULT_CHANGED; interruption notifications are not device-loss errors. */
+int32_t mja_capture_is_device_lost_error(int32_t error);
+/* True for MA_NO_DEVICE, MA_UNAVAILABLE, or an error recognized as device loss. */
+int32_t mja_capture_is_reopen_unavailable(int32_t error);
 
 /* endpoint_id must be nonempty. If capacity is insufficient, return nonzero
  * and set *count to the required count without returning a truncated list.

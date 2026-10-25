@@ -172,6 +172,18 @@ public final class TimestampedMonoSink: @unchecked Sendable {
         ring.noteMissing(startFrame: startFrame, frameCount: frameCount)
     }
 
+    /// Records a known startup timeline extent before the producer starts; it is not audio evidence.
+    public func timestampGap(frameCount: Int) {
+        precondition(frameCount >= 0)
+        precondition(endFrame == 0)
+        if frameCount > 0 {
+            ring.noteTimestampGap(startFrame: 0, frameCount: frameCount)
+            advance(startFrame: 0, count: frameCount)
+        }
+        meter?.discardPartial()
+        silentSinceMillis.store(0, ordering: .releasing)
+    }
+
     private func advance(startFrame: Int64, count: Int) {
         let (end, overflow) = startFrame.addingReportingOverflow(Int64(count))
         if !overflow {

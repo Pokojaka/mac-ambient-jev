@@ -180,6 +180,7 @@ final class ScriptedCaptureProbe: @unchecked Sendable {
 /// Exactly one main-actor producer: start(), step(), and stopJoin() serialize all ingress calls.
 @MainActor
 final class ScriptedFileCaptureDevice: WindowsCaptureDevice {
+    let endpointID = "scripted-endpoint"
     let sampleRate: Double
     let channels: Int
     private let events: [ScriptedFileCaptureEvent]
@@ -347,7 +348,9 @@ final class ScriptedFileCaptureFactory: WindowsCaptureSourceFactory {
         return device
     }
 
-    func devices(source: CaptureSource) throws -> [WindowsCaptureEndpoint] { [] }
+    func devices(source: CaptureSource) throws -> [WindowsCaptureEndpoint] {
+        [WindowsCaptureEndpoint(id: "scripted-endpoint", name: "Scripted endpoint", isDefault: true)]
+    }
 }
 
 /// Writes interleaved Float32 samples as little-endian fixture bytes, outside production code.
@@ -361,7 +364,7 @@ func writeScriptedFloatFixture(_ samples: [Float], to url: URL) throws {
         bytes.append(UInt8(truncatingIfNeeded: bits >> 16))
         bytes.append(UInt8(truncatingIfNeeded: bits >> 24))
     }
-    try bytes.write(to: url, options: .atomic)
+    try bytes.write(to: url, options: [])
 }
 
 private func readFixtureFragment(from url: URL, frameCount: Int, offset: Int, channels: Int) throws -> [Float] {
@@ -479,10 +482,13 @@ func makeWindowsCaptureTestSource(
         power: power,
         clock: clock,
         qpc100ns: { 10_000_000 },
+        automaticPolling: true,
         onWarning: { _ in },
         onFailure: { _ in },
         onDropouts: { probe.recordDropouts($0) },
-        onSilenceChanged: { _ in }
+        onSilenceChanged: { _ in },
+        onDeviceWaitingChanged: { _ in },
+        onDeviceLost: { _ in }
     )
     return (source, factory, clock, realWriter)
 }
