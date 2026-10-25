@@ -316,9 +316,12 @@ private let settingsPayload = """
 
         let second = try EngineChild(arguments: ["--local-app-data", root.path])
         defer { second.terminate() }
-        #expect(try await second.exitCode() != 0)
-        #expect(second.stdoutText.isEmpty)
-        #expect(second.stderrText.contains("別のエンジンが同じアプリケーションフォルダーを使用中です"))
+        let exitCode = try await second.exitCode()
+        let formattedExitCode = String(format: "0x%08X", UInt32(bitPattern: exitCode))
+        let diagnostic = "exit code: \(formattedExitCode), stdout: \(String(reflecting: second.stdoutText)), stderr: \(String(reflecting: second.stderrText))"
+        #expect(exitCode != 0, "\(diagnostic)")
+        #expect(second.stdoutText.isEmpty, "\(diagnostic)")
+        #expect(second.stderrText.contains("別のエンジンが同じアプリケーションフォルダーを使用中です"), "\(diagnostic)")
 
         guard case .completed(.hello) = try await first.call("hello") else {
             Issue.record("the first engine stopped answering")
@@ -340,7 +343,8 @@ private let settingsPayload = """
 
     @Test func startupFailureIsLoggedBeforeTheRootLockIsReleased() async {
         let result = await #expect(processExitsWith: .exitCode(2), observing: [\.standardErrorContent]) {
-            _ = EngineLog.snapshot()
+            // Terminal failure diagnostics must still reach stderr when the best-effort queue is closed.
+            EngineLog.close(timeout: 0)
             let localAppData = FileManager.default.temporaryDirectory.appending(
                 path: "engine-process-exit-\(UUID().uuidString)",
                 directoryHint: .isDirectory
@@ -364,11 +368,24 @@ private let settingsPayload = """
         #expect(stderr.contains("with_locked_root_startup_diagnostic_marker"))
     }
 
+    @Test func startupArgumentDiagnosticDoesNotDependOnTheBestEffortQueue() async throws {
+        let result = await #expect(processExitsWith: .exitCode(2), observing: [\.standardErrorContent]) {
+            EngineLog.close(timeout: 0)
+            ucrt.exit(await EngineProcess.run(arguments: ["--bogus"]))
+        }
+        let observed = try #require(result)
+        let stderr = String(decoding: observed.standardErrorContent, as: UTF8.self)
+        #expect(stderr.contains("--bogus"))
+    }
+
     @Test func unknownArgumentsFailBeforeAnyOutput() async throws {
         let child = try EngineChild(arguments: ["--bogus"])
         defer { child.terminate() }
-        #expect(try await child.exitCode() != 0)
-        #expect(child.stdoutText.isEmpty)
-        #expect(child.stderrText.contains("--bogus"))
+        let exitCode = try await child.exitCode()
+        let formattedExitCode = String(format: "0x%08X", UInt32(bitPattern: exitCode))
+        let diagnostic = "exit code: \(formattedExitCode), stdout: \(String(reflecting: child.stdoutText)), stderr: \(String(reflecting: child.stderrText))"
+        #expect(exitCode != 0, "\(diagnostic)")
+        #expect(child.stdoutText.isEmpty, "\(diagnostic)")
+        #expect(child.stderrText.contains("--bogus"), "\(diagnostic)")
     }
 }

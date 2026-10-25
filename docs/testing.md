@@ -80,6 +80,8 @@ Linux / Windows の PortableRuntime tests が使う pinned asset path は runner
 
 fake-capture process acceptance は stdin / stdout に test-only の [`HarnessPipeIO.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineHarness/HarnessPipeIO.swift) を使い、実 `EngineTransport` / `EngineController` / `EngineApplication` を実行しますが、出荷する [`WindowsPipeIO.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/WindowsPipeIO.swift) と [`EngineProcess.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) の `EngineProcess.run()` 起動 wiring（標準ハンドルの設定・redirect、本番起動時の組み立て）は、full-model を含めどの OS で acceptance を実行しても対象外です。Windows VM での acceptance もこの範囲を変えず、本番 executable を別途 build しても補われません。fixture signal の検証条件は [偽キャプチャ engine テストハーネス](windows.md#偽キャプチャ-engine-テストハーネス) を参照してください。
 
+本番 `EngineProcess` 起動経路は Windows の [`EngineProcessTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/EngineProcessTests.swift) が別途検証します。lock conflict と unknown argument の process tests は非 0 exit、空 stdout、必須 stderr diagnostic を確認し、failure message に raw DWORD hex exit code と stdout / stderr の両方を含めます。deterministic exit tests は unknown argument と locked-root operation error の前に best-effort `EngineLog` queue を閉じても必要な stderr diagnostic が出ることを確認し、locked-root case では報告後に root lock を再取得できることも検証します。
+
 ### Windows native capture-safety injected C test
 
 Windows runner はすべての実行で（`-FullModel` を含む）native C test を Swift tests と別に compile / run します。compiler は解決した `swift.exe` と同じ toolchain directory の `clang.exe`、出力先は `swift build --show-bin-path` で解決した debug `binDir` です。実際の compile command は次の形です。
