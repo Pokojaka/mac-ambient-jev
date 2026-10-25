@@ -13,7 +13,7 @@ private struct ProcessTestError: Error, CustomStringConvertible {
 }
 
 /// The built engine executable as a child process, speaking NDJSON on its standard streams. `changes` signals after
-/// every stdout or stderr chunk and when the process exits.
+/// every stdout or stderr chunk, when either stream ends and when the process exits.
 private final class EngineChild: @unchecked Sendable {
     private let changes = ChangeSignal()
     private let process = Process()
@@ -23,6 +23,7 @@ private final class EngineChild: @unchecked Sendable {
     private let lock = NSLock()
     private var stdoutData = Data()
     private var stderrData = Data()
+    private var endedStreamCount = 0
     private var nextRequestID: UInt64 = 1
     private var processHandle: HANDLE?
 
@@ -49,8 +50,21 @@ private final class EngineChild: @unchecked Sendable {
             CloseHandle(exitHandle)
             changes.signal()
         }
-        Self.drain(stdout.fileHandleForReading) { [self] in append(&stdoutData, $0) }
-        Self.drain(stderr.fileHandleForReading) { [self] in append(&stderrData, $0) }
+        Self.drain(stdout.fileHandleForReading, onChunk: { [self] in append(&stdoutData, $0) }, onEnd: { [self] in endStream() })
+        Self.drain(stderr.fileHandleForReading, onChunk: { [self] in append(&stderrData, $0) }, onEnd: { [self] in endStream() })
+    }
+
+    private func endStream() {
+        lock.lock()
+        endedStreamCount += 1
+        lock.unlock()
+        changes.signal()
+    }
+
+    private var bothStreamsEnded: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return endedStreamCount == 2
     }
 
     private func append(_ storage: inout Data, _ chunk: Data) {
@@ -60,10 +74,15 @@ private final class EngineChild: @unchecked Sendable {
         changes.signal()
     }
 
-    private static func drain(_ handle: FileHandle, _ onChunk: @escaping @Sendable (Data) -> Void) {
+    private static func drain(
+        _ handle: FileHandle,
+        onChunk: @escaping @Sendable (Data) -> Void,
+        onEnd: @escaping @Sendable () -> Void
+    ) {
         let source = FileHandleByteSource(handle: handle)
         Thread.detachNewThread {
             while let chunk = try? source.read(maxByteCount: 4096), !chunk.isEmpty { onChunk(chunk) }
+            onEnd()
         }
     }
 
@@ -145,12 +164,12 @@ private final class EngineChild: @unchecked Sendable {
         }
     }
 
-    /// The exit code once the process has ended.
+    /// The exit code once the process has ended and both of its output streams have been read to the end.
     func exitCode() async throws -> Int32 {
         var status: Int32?
-        try await wait("the engine to exit") {
+        try await wait("the engine to exit and its output to end") {
             status = exitStatusIfExited()
-            return status != nil
+            return status != nil && bothStreamsEnded
         }
         return status!
     }
