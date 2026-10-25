@@ -320,7 +320,7 @@ func writeScriptedFloatFixture(_ samples: [Float], to url: URL) throws {
         bytes.append(UInt8(truncatingIfNeeded: bits >> 16))
         bytes.append(UInt8(truncatingIfNeeded: bits >> 24))
     }
-    try bytes.write(to: url, options: .atomic)
+    try bytes.write(to: url)
 }
 
 private func readFixtureFragment(from url: URL, frameCount: Int, offset: Int, channels: Int) throws -> [Float] {

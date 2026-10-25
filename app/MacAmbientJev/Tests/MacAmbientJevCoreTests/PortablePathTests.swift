@@ -66,7 +66,7 @@ func audioCheckpointRejectsWindowsPathEscapes(filename: String) {
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let reference = root.appending(path: "reference.txt")
-    try "参照文".write(to: reference, atomically: true, encoding: .utf8)
+    try "参照文".write(to: reference, atomically: false, encoding: .utf8)
     let nativePath = reference.withUnsafeFileSystemRepresentation { String(cString: $0!) }
     let manifest = ASRSessionManifest(id: "absolute", audio: "unused.wav", reference: .file(nativePath))
     #expect(try manifest.referenceText(manifestURL: root.appending(path: "nested/manifest.json")) == "参照文")

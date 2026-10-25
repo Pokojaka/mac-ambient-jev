@@ -41,12 +41,13 @@ products.append(.library(
 
 var dependencies: [Package.Dependency] = []
 
-var coreDependencies: [Target.Dependency] = []
+var coreDependencies: [Target.Dependency] = ["CSHA256"]
 #if os(Windows)
 coreDependencies.append("CWindowsSession")
 #endif
 
 var targets: [Target] = [
+    .target(name: "CSHA256", cSettings: [.unsafeFlags(["-O2"])]),
     .target(name: "MacAmbientJevCore", dependencies: coreDependencies),
     .target(name: "MacAmbientJevPipeline", dependencies: ["MacAmbientJevCore"]),
     .target(name: "MacAmbientJevEngineProtocol"),
