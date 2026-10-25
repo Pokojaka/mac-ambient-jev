@@ -27,7 +27,7 @@ struct EngineProtocolDeviceReconnectTests {
         let reopenDetail = try EngineErrorDetail(
             domain: "capture",
             code: "reopen",
-            message: "mja_capture failed with code -401",
+            message: "Native operation mja_capture_open failed with code -401",
             path: nil,
             deviceID: nil
         )

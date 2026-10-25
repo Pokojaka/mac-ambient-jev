@@ -158,8 +158,6 @@ void mja_capture_destroy(mja_capture *capture);
 /* Recognizes only raw device-invalidated HRESULT, endpoint-disconnected/not-found Win32 errors,
  * and MJA_CAPTURE_DEFAULT_CHANGED; interruption notifications are not device-loss errors. */
 int32_t mja_capture_is_device_lost_error(int32_t error);
-/* True for MA_NO_DEVICE, MA_UNAVAILABLE, or an error recognized as device loss. */
-int32_t mja_capture_is_reopen_unavailable(int32_t error);
 
 /* endpoint_id must be nonempty. If capacity is insufficient, return nonzero
  * and set *count to the required count without returning a truncated list.

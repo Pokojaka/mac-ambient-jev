@@ -139,11 +139,13 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
         )
         if result != 0 {
             // C owns and frees partial-open resources before returning a failure.
-            if mja_capture_is_reopen_unavailable(result) != 0,
-               openCleanupErrors.stop == 0,
+            if openCleanupErrors.stop == 0,
                openCleanupErrors.environment == 0,
                openCleanupErrors.context == 0 {
-                throw WindowsCaptureDeviceUnavailable(code: result)
+                throw WindowsCaptureAdapterError.native(
+                    operation: "mja_capture_open",
+                    code: result
+                )
             }
             throw WindowsCaptureAdapterError.combined(openFailures)
         }
@@ -389,9 +391,6 @@ private final class WindowsWASAPICaptureDevice: WindowsCaptureDevice {
         callbackHolder.ingress = ingress
         let result = mja_capture_start(capture)
         guard result == 0 else {
-            if mja_capture_is_reopen_unavailable(result) != 0 {
-                throw WindowsCaptureDeviceUnavailable(code: result)
-            }
             throw WindowsCaptureAdapterError.native(
                 operation: "mja_capture_start",
                 code: result

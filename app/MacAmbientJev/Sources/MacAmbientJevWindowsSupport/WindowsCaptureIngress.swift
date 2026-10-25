@@ -557,6 +557,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             fail(.timestamp)
             return nil
         }
+        let idleLoopback = loopback && lastHealthTime != nil && !activeOutput
         guard let anchorDevicePosition, let anchorFrame,
               let previousDevicePosition,
               let previousDeviceEnd,
@@ -565,15 +566,14 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
                 return nil
             }
-            return PacketStartMapping(frame: hostFrame, fillsIdleGap: false)
+            return PacketStartMapping(
+                frame: hostFrame, fillsIdleGap: idleLoopback && sink.lastEndFrame > 0
+            )
         }
         guard packet.qpc100ns >= previousQPC100ns else {
             fail(.timestamp)
             return nil
         }
-
-        let idleLoopback = loopback && lastHealthTime != nil && !activeOutput
-        let fillsIdleGap = idleLoopback && reconnectStartFrame == nil
         if packet.devicePosition < previousDeviceEnd {
             guard packet.flags & Self.discontinuityFlag != 0,
                   packet.qpc100ns > previousQPC100ns,
@@ -584,7 +584,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
                 return nil
             }
-            return PacketStartMapping(frame: hostFrame, fillsIdleGap: fillsIdleGap)
+            return PacketStartMapping(frame: hostFrame, fillsIdleGap: idleLoopback)
         }
 
         let deviceDelta = packet.devicePosition - previousDevicePosition
@@ -606,7 +606,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                 guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
                     return nil
                 }
-                return PacketStartMapping(frame: hostFrame, fillsIdleGap: fillsIdleGap)
+                return PacketStartMapping(frame: hostFrame, fillsIdleGap: idleLoopback)
             }
             fail(.timestamp)
             return nil

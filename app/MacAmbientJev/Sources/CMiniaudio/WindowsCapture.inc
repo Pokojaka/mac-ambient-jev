@@ -262,12 +262,6 @@ int32_t mja_capture_is_device_lost_error(int32_t error)
            error == MJA_CAPTURE_DEFAULT_CHANGED;
 }
 
-int32_t mja_capture_is_reopen_unavailable(int32_t error)
-{
-    /* Classifies native open/start results; only the waiting state retries them. */
-    return error != MA_SUCCESS;
-}
-
 static int32_t mja_capture_fail(
     mja_capture *capture,
     int32_t error,

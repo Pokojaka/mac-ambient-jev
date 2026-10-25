@@ -20,18 +20,6 @@ public struct WindowsCaptureEndpoint: Sendable, Equatable {
     }
 }
 
-public struct WindowsCaptureDeviceUnavailable: Error, LocalizedError, Sendable {
-    public let code: Int32
-
-    public init(code: Int32) {
-        self.code = code
-    }
-
-    public var errorDescription: String? {
-        WindowsCaptureAdapterError.native(operation: "mja_capture", code: code).localizedDescription
-    }
-}
-
 /// `stopJoin()` must fence every native callback before returning, including when it throws.
 @MainActor
 public protocol WindowsCaptureDevice: AnyObject {
@@ -763,8 +751,19 @@ public final class WindowsCaptureSource {
         }
         nextRetryAt = nextRetry
 
-        let endpoints = try factory.devices(source: source)
-        try Self.validateEndpoints(endpoints)
+        let endpoints: [WindowsCaptureEndpoint]
+        do {
+            endpoints = try factory.devices(source: source)
+            try Self.validateEndpoints(endpoints)
+        } catch {
+            lastReopenError = Self.message(for: error)
+            if try reconnectQPCDeadlineHasPassed() {
+                await expireDeviceWait(deadlineQPC100ns: deadlineQPC100ns)
+            } else {
+                try scheduleReconnectRetry(after: clock.now())
+            }
+            return
+        }
         let reconnectEndpoints = endpoints.map {
             CaptureReconnectEndpoint(id: $0.id, isDefault: $0.isDefault)
         }
@@ -877,7 +876,8 @@ public final class WindowsCaptureSource {
         let openedDevice: any WindowsCaptureDevice
         do {
             openedDevice = try factory.open(source: source, device: requested)
-        } catch let error as WindowsCaptureDeviceUnavailable {
+        } catch WindowsCaptureAdapterError.native(let operation, let code) {
+            let error = WindowsCaptureAdapterError.native(operation: operation, code: code)
             lastReopenError = error.localizedDescription
             if try reconnectQPCDeadlineHasPassed() {
                 guard let deadlineQPC100ns else {
@@ -966,7 +966,8 @@ public final class WindowsCaptureSource {
 
         do {
             try openedDevice.start(ingress: candidateIngress)
-        } catch let error as WindowsCaptureDeviceUnavailable {
+        } catch WindowsCaptureAdapterError.native(let operation, let code) {
+            let error = WindowsCaptureAdapterError.native(operation: operation, code: code)
             let stopErrors = await discardUnassignedDevice(openedDevice)
             guard stopErrors.isEmpty else {
                 throw WindowsCaptureAdapterError.combined([error.localizedDescription] + stopErrors)
@@ -985,7 +986,10 @@ public final class WindowsCaptureSource {
             if timelyReadiness {
                 let audioErrors = await finishUnassignedCandidateIfNeeded(candidate)
                 throw WindowsCaptureAdapterError.combined(
-                    ["Windows capture start reported device loss after delivering audio"] + audioErrors
+                    [
+                        "Windows capture start reported device loss after delivering audio",
+                        error.localizedDescription
+                    ] + audioErrors
                 )
             }
             if try reconnectQPCDeadlineHasPassed() {
@@ -1190,6 +1194,9 @@ public final class WindowsCaptureSource {
 
     private func finishUnassignedCandidateIfNeeded(_ candidate: Segment) async -> [String] {
         guard candidate.ingress?.isReady == true else { return [] }
+        waitingGapFinalized = true
+        waitingEndQPC100ns = nil
+        latestDrain = candidate.drain
         candidate.ring.finish(tailFrame: candidate.sink.lastEndFrame)
         let (dropouts, overflow) = cumulativeDropouts.addingReportingOverflow(candidate.ring.dropoutCount)
         cumulativeDropouts = overflow ? UInt64.max : dropouts
@@ -1226,7 +1233,7 @@ public final class WindowsCaptureSource {
     private func beginCleanup() -> Task<WindowsCaptureStopResult, Never> {
         if let cleanupTask { return cleanupTask }
         if case .waitingForDevice = state {
-            if waitingEndQPC100ns == nil {
+            if !waitingGapFinalized, waitingEndQPC100ns == nil {
                 do {
                     let now = try qpc100ns()
                     guard let deadlineQPC100ns else {

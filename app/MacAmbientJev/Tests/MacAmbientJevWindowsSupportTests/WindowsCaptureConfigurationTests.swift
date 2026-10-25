@@ -1,4 +1,5 @@
 #if os(Windows)
+import Foundation
 import Testing
 import CMiniaudio
 import MacAmbientJevCore
@@ -76,8 +77,34 @@ struct WindowsCaptureConfigurationTests {
         }
     }
 
-    @Test("native open and start failures are reopen-unavailable without broadening device loss")
-    func classifiesDeviceLossAndReopenUnavailableErrors() {
+    @Test("an unresolved endpoint reports the native open operation and code")
+    func startTimeOpenFailureNamesNativeOperationAndCode() async throws {
+        let endpointID = "WindowsCaptureConfigurationTests-missing-\(UUID().uuidString)"
+        let factory = WindowsWASAPICaptureFactory()
+
+        let device: any WindowsCaptureDevice
+        do {
+            device = try factory.open(
+                source: .microphone,
+                device: .endpointID(endpointID)
+            )
+        } catch {
+            let description = error.localizedDescription
+            #expect(description.contains("mja_capture_open"))
+            #expect(description.contains("-204"))
+            return
+        }
+
+        do {
+            try device.stopJoin()
+        } catch {
+            #expect(Bool(false), "Unexpected cleanup failure after opening a missing endpoint: \(error)")
+        }
+        #expect(Bool(false), "The factory unexpectedly opened a unique nonexistent endpoint")
+    }
+
+    @Test("device-loss classification uses a strict native error whitelist")
+    func classifiesOnlyActualDeviceLossErrors() {
         let deviceLossErrors: [Int32] = [
             Int32(bitPattern: 0x88890004),
             1167,
@@ -86,11 +113,9 @@ struct WindowsCaptureConfigurationTests {
         ]
         for error in deviceLossErrors {
             #expect(mja_capture_is_device_lost_error(error) != 0)
-            #expect(mja_capture_is_reopen_unavailable(error) != 0)
         }
 
-        // Vendored miniaudio 0.11.23: MA_FAILED_TO_OPEN_BACKEND_DEVICE = -401,
-        // MA_NO_DEVICE = -204, and MA_UNAVAILABLE = -22.
+        // Non-device-loss native errors stay outside the strict device-loss whitelist.
         let nonLossNativeFailures: [Int32] = [
             -401,
             -204,
@@ -100,11 +125,9 @@ struct WindowsCaptureConfigurationTests {
         ]
         for error in nonLossNativeFailures {
             #expect(mja_capture_is_device_lost_error(error) == 0)
-            #expect(mja_capture_is_reopen_unavailable(error) != 0)
         }
 
         #expect(mja_capture_is_device_lost_error(0) == 0)
-        #expect(mja_capture_is_reopen_unavailable(0) == 0)
     }
 
     @Test("capture endpoint ID query accepts a nil capture")

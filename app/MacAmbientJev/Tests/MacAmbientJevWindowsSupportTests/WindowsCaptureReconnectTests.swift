@@ -64,6 +64,167 @@ struct WindowsCaptureReconnectTests {
         #expect(result.errors.isEmpty)
     }
 
+    @Test(arguments: [ReconnectEnumerationFault.native, .malformed])
+    fileprivate func enumerationFailureRetriesAndResumesSameSession(_ fault: ReconnectEnumerationFault) async throws {
+        let harness = try makeReconnectHarness(
+            source: .microphone,
+            selection: .endpointID("mic-A"),
+            endpoints: [endpoint("mic-A", isDefault: true)],
+            formats: [:],
+            sampleValues: [:]
+        )
+        defer { removeReconnectTestDirectory(harness.root) }
+
+        try await harness.source.start()
+        let originalDevice = try #require(harness.factory.openedDevices.first)
+        harness.clock.set(seconds: 100.032)
+        originalDevice.emitHealthError(Int32(bitPattern: 0x88890004))
+        harness.factory.endpoints = []
+        await harness.source.poll()
+        #expect(harness.factory.devicesCallCount == 1)
+
+        installEnumerationFault(fault, on: harness.factory)
+        harness.clock.set(seconds: 101.032)
+        await harness.source.poll()
+        #expect(harness.probe.waitingFlags == [true])
+        #expect(harness.probe.failures.isEmpty)
+        #expect(harness.probe.deviceLostCount == 0)
+        #expect(harness.factory.openSelections == [.endpointID("mic-A")])
+        #expect(harness.factory.devicesCallCount == 2)
+
+        harness.clock.set(seconds: 101.281)
+        await harness.source.poll()
+        #expect(harness.factory.devicesCallCount == 2)
+        #expect(harness.factory.openedDevices.count == 1)
+        #expect(harness.probe.waitingFlags == [true])
+
+        harness.factory.devicesError = nil
+        harness.factory.endpoints = [endpoint("mic-A", isDefault: true)]
+        harness.factory.nextSampleValue = -0.5
+        harness.clock.set(seconds: 101.282)
+        await harness.source.poll()
+        let resumedDevice = try #require(harness.factory.openedDevices.last)
+        #expect(resumedDevice !== originalDevice)
+        #expect(harness.factory.devicesCallCount == 3)
+        #expect(harness.probe.waitingFlags == [true, false])
+        #expect(harness.probe.failures.isEmpty)
+        #expect(harness.probe.deviceLostCount == 0)
+
+        let result = await harness.source.stop()
+        let checkpoint = try #require(result.checkpoint)
+        #expect(checkpoint.gapEvents == [
+            AudioGapEvent(startFrame: 512, frameCount: 20_000, reason: .missingCallback)
+        ])
+        #expect(checkpoint.gapEvents.count == 1)
+        #expect(checkpoint.committedFrames == 21_024)
+        #expect(harness.probe.dropoutCounts.last == 1)
+        #expect(harness.probe.dropoutCounts.allSatisfy { $0 <= 1 })
+        #expect(originalDevice.isFenced)
+        #expect(originalDevice.stopJoinCount == 1)
+        #expect(resumedDevice.isFenced)
+        #expect(resumedDevice.stopJoinCount == 1)
+        #expect(harness.probe.powerAcquireCount == 1)
+        #expect(harness.probe.powerReleaseCount == 1)
+        #expect(!result.healthyPrefixOnly)
+        #expect(result.errors.isEmpty)
+    }
+
+    @Test(arguments: [ReconnectEnumerationFault.native, .malformed])
+    fileprivate func repeatedEnumerationFailureExpiresAtOriginalDeadline(_ fault: ReconnectEnumerationFault) async throws {
+        let harness = try makeReconnectHarness(
+            source: .microphone,
+            selection: .endpointID("mic-A"),
+            endpoints: [endpoint("mic-A", isDefault: true)],
+            formats: [:],
+            sampleValues: [:]
+        )
+        defer { removeReconnectTestDirectory(harness.root) }
+
+        try await harness.source.start()
+        let originalDevice = try #require(harness.factory.openedDevices.first)
+        harness.clock.set(seconds: 100.032)
+        originalDevice.emitHealthError(Int32(bitPattern: 0x88890004))
+        harness.factory.endpoints = []
+        await harness.source.poll()
+        installEnumerationFault(fault, on: harness.factory)
+
+        for second in [101.032, 101.282, 120.032, 129.999] {
+            harness.clock.set(seconds: second)
+            await harness.source.poll()
+            #expect(harness.probe.waitingFlags == [true])
+            #expect(harness.probe.failures.isEmpty)
+            #expect(harness.probe.deviceLostCount == 0)
+        }
+        let callsBeforeExpiry = harness.factory.devicesCallCount
+        #expect(callsBeforeExpiry == 5)
+
+        harness.clock.set(seconds: 130.032)
+        await harness.source.poll()
+        #expect(harness.factory.devicesCallCount == callsBeforeExpiry)
+        let expectedDiagnostic = fault.diagnostic
+        #expect(harness.probe.deviceLostCount == 1)
+        #expect(harness.probe.deviceLostDetails == [expectedDiagnostic])
+        #expect(harness.probe.failures.isEmpty)
+        #expect(harness.probe.waitingFlags == [true, false])
+        #expect(harness.probe.callbackEvents == ["waiting:true", "deviceLost", "waiting:false"])
+
+        let result = await harness.source.stop()
+        let checkpoint = try #require(result.checkpoint)
+        #expect(checkpoint.gapEvents == [
+            AudioGapEvent(startFrame: 512, frameCount: 480_000, reason: .missingCallback)
+        ])
+        #expect(checkpoint.gapEvents.count == 1)
+        #expect(checkpoint.committedFrames == 480_512)
+        #expect(harness.probe.dropoutCounts.last == 1)
+        #expect(originalDevice.isFenced)
+        #expect(originalDevice.stopJoinCount == 1)
+        #expect(harness.probe.powerAcquireCount == 1)
+        #expect(harness.probe.powerReleaseCount == 1)
+        #expect(!result.healthyPrefixOnly)
+        #expect(result.errors.isEmpty)
+
+        await harness.source.poll()
+        #expect(harness.factory.devicesCallCount == callsBeforeExpiry)
+        #expect(harness.probe.deviceLostCount == 1)
+        #expect(harness.probe.powerReleaseCount == 1)
+    }
+
+    @Test func startupDefaultMicrophoneEnumerationFailureRemainsThrown() async throws {
+        let harness = try makeReconnectHarness(
+            source: .microphone,
+            selection: .systemDefault,
+            endpoints: [endpoint("mic-A", isDefault: true)],
+            formats: [:],
+            sampleValues: [:]
+        )
+        defer { removeReconnectTestDirectory(harness.root) }
+        let expectedDiagnostic = WindowsCaptureAdapterError.native(
+            operation: "mja_capture_enumerate",
+            code: -22
+        ).localizedDescription
+        harness.factory.devicesError = WindowsCaptureAdapterError.native(
+            operation: "mja_capture_enumerate",
+            code: -22
+        )
+
+        var startError: (any Error)?
+        do {
+            try await harness.source.start()
+        } catch {
+            startError = error
+        }
+
+        #expect(startError?.localizedDescription.contains(expectedDiagnostic) == true)
+        #expect(harness.factory.devicesCallCount == 1)
+        #expect(harness.factory.openSelections.isEmpty)
+        #expect(harness.factory.openedDevices.isEmpty)
+        #expect(harness.probe.waitingFlags.isEmpty)
+        #expect(harness.probe.failures.isEmpty)
+        #expect(harness.probe.deviceLostCount == 0)
+        #expect(harness.probe.powerAcquireCount == 1)
+        #expect(harness.probe.powerReleaseCount == 1)
+    }
+
     @Test func missingDeviceExpiresAtOriginalDeadlineAndRecoversDurableCheckpoint() async throws {
         let harness = try makeReconnectHarness(
             source: .microphone,
@@ -415,7 +576,7 @@ struct WindowsCaptureReconnectTests {
         harness.clock.set(seconds: 110.282)
         harness.factory.nextOpenFailure = .unavailable(-22)
         await harness.source.poll()
-        let lastError = WindowsCaptureDeviceUnavailable(code: -22).localizedDescription
+        let lastError = WindowsCaptureAdapterError.native(operation: "mja_capture_open", code: -22).localizedDescription
         #expect(harness.probe.failures.isEmpty)
         #expect(harness.probe.deviceLostCount == 0)
         #expect(harness.probe.waitingFlags == [true])
@@ -462,14 +623,18 @@ struct WindowsCaptureReconnectTests {
         )
         defer { removeReconnectTestDirectory(harness.root) }
         harness.factory.nextOpenFailure = .unavailable(-401)
+        let expectedError = WindowsCaptureAdapterError.native(
+            operation: "mja_capture_open",
+            code: -401
+        ).localizedDescription
 
         do {
             try await harness.source.start()
-            Issue.record("Initial typed device-unavailable open failure was swallowed")
+            Issue.record("Initial native open failure was swallowed")
         } catch {
-            #expect(error.localizedDescription.contains(
-                WindowsCaptureDeviceUnavailable(code: -401).localizedDescription
-            ))
+            #expect(error.localizedDescription.contains(expectedError))
+            #expect(error.localizedDescription.contains("mja_capture_open"))
+            #expect(error.localizedDescription.contains("-401"))
         }
         #expect(harness.probe.failures.isEmpty)
         #expect(harness.probe.deviceLostCount == 0)
@@ -802,7 +967,7 @@ struct WindowsCaptureReconnectTests {
         await harness.source.poll()
         let result = await harness.source.stop()
         let checkpoint = try #require(result.checkpoint)
-        let lastError = WindowsCaptureDeviceUnavailable(code: -22).localizedDescription
+        let lastError = WindowsCaptureAdapterError.native(operation: "mja_capture_open", code: -22).localizedDescription
 
         #expect(harness.probe.deviceLostCount == 1)
         #expect(harness.probe.deviceLostDetails == [lastError])
@@ -883,7 +1048,7 @@ struct WindowsCaptureReconnectTests {
         let result = await harness.source.stop()
         let checkpoint = try #require(result.checkpoint)
         let audio = try readCommittedAudio(checkpoint, root: harness.root)
-        let lastError = WindowsCaptureDeviceUnavailable(code: -401).localizedDescription
+        let lastError = WindowsCaptureAdapterError.native(operation: "mja_capture_start", code: -401).localizedDescription
 
         #expect(lateCandidate.startCount == 1)
         #expect(abs(try #require(lateCandidate.firstBufferTime) - 129.999) < 0.000001)
@@ -928,6 +1093,12 @@ struct WindowsCaptureReconnectTests {
         await harness.source.poll()
         let candidate = try #require(harness.factory.openedDevices.last)
         let result = await harness.source.stop()
+        let checkpoint = try #require(result.checkpoint)
+        let recovered = try #require(try AudioCheckpoint.loadRecovered(
+            from: harness.root.appending(path: "audio", directoryHint: .isDirectory),
+            relativeTo: harness.root
+        ))
+        let audio = try readCommittedAudio(checkpoint, root: harness.root)
 
         #expect(try #require(candidate.firstBufferQPC100ns) < 1_300_320_000)
         #expect(candidate.isFenced)
@@ -936,8 +1107,21 @@ struct WindowsCaptureReconnectTests {
         #expect(harness.probe.failures[0].contains(
             "Windows capture start reported device loss after delivering audio"
         ))
+        #expect(harness.probe.failures[0].contains("mja_capture_start"))
+        #expect(harness.probe.failures[0].contains("-401"))
         #expect(harness.probe.deviceLostCount == 0)
         #expect(harness.probe.callbackEvents == ["waiting:true", "waiting:false"])
+        #expect(checkpoint.gapEvents == [
+            AudioGapEvent(startFrame: 512, frameCount: 16_000, reason: .missingCallback)
+        ])
+        #expect(checkpoint.gapEvents.count == 1)
+        #expect(checkpoint.committedFrames == 17_024)
+        #expect(recovered == checkpoint)
+        #expect(audio.count == 17_024)
+        #expect(audio.prefix(512).allSatisfy { abs($0 - 0.25) < 0.0001 })
+        #expect(audio[512..<16_512].allSatisfy { abs($0) < 0.0001 })
+        #expect(audio.suffix(512).allSatisfy { abs($0 + 0.5) < 0.0001 })
+        #expect(harness.probe.dropoutCounts.last == 1)
         #expect(result.errors.contains {
             $0.contains("Windows capture start reported device loss after delivering audio")
         })
@@ -1199,6 +1383,15 @@ struct WindowsCaptureReconnectTests {
         #expect(harness.probe.deviceLostCount == 0)
         #expect(harness.probe.callbackEvents == ["waiting:true", "waiting:false"])
 
+        harness.clock.set(seconds: expectedReadinessTime + 0.25)
+        candidate.emitPacket(
+            devicePosition: 0,
+            qpc100ns: harness.clock.qpc100ns,
+            flags: 0,
+            sampleValue: -0.5
+        )
+        await harness.source.poll()
+
         let result = await harness.source.stop()
         let checkpoint = try #require(result.checkpoint)
         let recovered = try #require(try AudioCheckpoint.loadRecovered(
@@ -1208,7 +1401,9 @@ struct WindowsCaptureReconnectTests {
         let audio = try readCommittedAudio(checkpoint, root: harness.root)
         let waitFrames = Int64(waitSeconds * 16_000)
         let expectedGapFrames = waitFrames + (initiallyActive ? 4_000 : 0)
-        let expectedFrames = 512 + expectedGapFrames + 4_000
+        let expectedFramesBeforePacket = 512 + expectedGapFrames + 4_000
+        let resumedPacketStart = Int(expectedFramesBeforePacket + 8_000)
+        let expectedFrames = expectedFramesBeforePacket + 8_000 + 512
 
         #expect(recovered == checkpoint)
         #expect(checkpoint.gapEvents == [
@@ -1218,7 +1413,8 @@ struct WindowsCaptureReconnectTests {
         #expect(checkpoint.committedFrames == expectedFrames)
         #expect(audio.count == Int(expectedFrames))
         #expect(audio.prefix(512).allSatisfy { abs($0 - 0.25) < 0.0001 })
-        #expect(audio.dropFirst(512).allSatisfy { abs($0) < 0.0001 })
+        #expect(audio[512..<resumedPacketStart].allSatisfy { abs($0) < 0.0001 })
+        #expect(audio.suffix(512).allSatisfy { abs($0 + 0.5) < 0.0001 })
         #expect(harness.probe.dropoutCounts.last == 1)
         #expect(harness.probe.dropoutCounts.allSatisfy { $0 <= 1 })
         #expect(originalDevice.isFenced)
@@ -1517,6 +1713,40 @@ private struct ReconnectDeviceFormat {
     let channels: Int
 }
 
+private enum ReconnectEnumerationFault: Sendable {
+    case native
+    case malformed
+
+    var diagnostic: String {
+        switch self {
+        case .native:
+            WindowsCaptureAdapterError.native(
+                operation: "mja_capture_enumerate",
+                code: -22
+            ).localizedDescription
+        case .malformed:
+            WindowsCaptureAdapterError.invalidConfiguration(
+                "Capture enumeration returned duplicate endpoints or multiple defaults"
+            ).localizedDescription
+        }
+    }
+}
+
+@MainActor
+private func installEnumerationFault(_ fault: ReconnectEnumerationFault, on factory: ReconnectFakeFactory) {
+    switch fault {
+    case .native:
+        factory.devicesError = WindowsCaptureAdapterError.native(
+            operation: "mja_capture_enumerate",
+            code: -22
+        )
+    case .malformed:
+        factory.endpoints = [
+            endpoint("mic-A", isDefault: true), endpoint("mic-A", isDefault: false)
+        ]
+    }
+}
+
 private enum ReconnectOpenFailure {
     case unavailable(Int32)
     case generic
@@ -1676,7 +1906,7 @@ private final class ReconnectFakeDevice: WindowsCaptureDevice {
             if emitPacketBeforeStartFailure && startsWithPacket {
                 emitPacket(devicePosition: 0, qpc100ns: clock.qpc100ns, flags: 0)
             }
-            throw WindowsCaptureDeviceUnavailable(code: startFailureCode)
+            throw WindowsCaptureAdapterError.native(operation: "mja_capture_start", code: startFailureCode)
         }
         if startsWithPacket {
             emitPacket(devicePosition: 0, qpc100ns: clock.qpc100ns, flags: 0)
@@ -1746,6 +1976,8 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
     private let probe: ReconnectProbe
     private(set) var openSelections: [WindowsCaptureDeviceSelection] = []
     private(set) var openedDevices: [ReconnectFakeDevice] = []
+    private(set) var devicesCallCount = 0
+    var devicesError: (any Error)?
     var nextOpenFailure: ReconnectOpenFailure?
     var nextStartFailureCode: Int32?
     var nextSampleValue: Float?
@@ -1793,7 +2025,7 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
             }
             switch failure {
             case .unavailable(let code):
-                throw WindowsCaptureDeviceUnavailable(code: code)
+                throw WindowsCaptureAdapterError.native(operation: "mja_capture_open", code: code)
             case .generic:
                 throw ReconnectFixtureError.genericOpen
             }
@@ -1807,7 +2039,7 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
             selectedEndpoint = endpoints.first(where: { $0.id == id })
         }
         guard let selectedEndpoint else {
-            throw WindowsCaptureDeviceUnavailable(code: -204)
+            throw WindowsCaptureAdapterError.native(operation: "mja_capture_open", code: -204)
         }
         guard let format = formats[selectedEndpoint.id],
               let configuredSampleValue = sampleValues[selectedEndpoint.id] else {
@@ -1854,10 +2086,12 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
     }
 
     func devices(source: CaptureSource) throws -> [WindowsCaptureEndpoint] {
+        devicesCallCount += 1
         if let qpcAdvanceOnNextDevices {
             self.qpcAdvanceOnNextDevices = nil
             clock.advanceElapsedQPC(seconds: qpcAdvanceOnNextDevices)
         }
+        if let devicesError { throw devicesError }
         return endpoints
     }
 }

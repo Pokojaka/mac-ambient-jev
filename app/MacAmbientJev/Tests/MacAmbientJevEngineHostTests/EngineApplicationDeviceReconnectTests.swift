@@ -121,7 +121,7 @@ struct EngineApplicationDeviceReconnectTests {
         #expect(try await harness.shutdown() == .shutdownRequested)
     }
 
-    @Test(arguments: [String?.none, String?.some("mja_capture failed with code -401")])
+    @Test(arguments: [String?.none, String?.some("Native operation mja_capture_open failed with code -401")])
     func lostDeviceSavesDurableAudioReportsWarningAndKeepsEngineAvailable(lastReopenError: String?) async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

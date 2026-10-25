@@ -93,6 +93,20 @@ private func drain(_ ring: AudioBlockRing) -> [AudioBlock] {
     return result
 }
 
+private func makeDurableIngressDrain(
+    ring: AudioBlockRing
+) throws -> (directory: URL, drain: AudioCaptureDrain) {
+    let directory = FileManager.default.temporaryDirectory
+        .appending(path: "WindowsCaptureIngress-\(UUID().uuidString)", directoryHint: .isDirectory)
+    let writer = try DurableAudioWriter(
+        directory: directory, chunkDurationSeconds: 1, sessionURL: directory
+    )
+    let captureDrain = AudioCaptureDrain(
+        ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: 16_000)
+    )
+    return (directory, captureDrain)
+}
+
 struct WindowsCaptureIngressTests {
     @Test func testMultichannelMeansAt44100And48000Hz() throws {
         for (rate, channelCount) in [(44_100.0, 3), (48_000.0, 4)] {
@@ -345,6 +359,68 @@ struct WindowsCaptureIngressTests {
         #expect(harness.sink.lastEndFrame == 82_002)
         #expect(harness.ingress.firstBufferQPC100ns == 1_051_250_000)
         #expect(harness.ingress.isReady)
+    }
+
+    @Test func testFirstPacketAfterFreshIdleHealthFillsDeliveryGraceWithoutGap() async throws {
+        let harness = try makeIngress(
+            sampleRate: 16_000, channels: 1, loopback: true, epoch: 10_000_000,
+            ringCapacity: 64
+        )
+        let durable = try makeDurableIngressDrain(ring: harness.ring)
+        defer { try? FileManager.default.removeItem(at: durable.directory) }
+
+        harness.ingress.health(watermarkQPC100ns: 15_000_000, outputState: 0, error: 0)
+        receive(
+            harness.ingress, samples: [0.25, -0.5], frameCount: 2,
+            sampleRate: 16_000, qpc100ns: 15_000_000
+        )
+
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 8_002)
+        #expect(harness.ring.dropoutCount == 0)
+        let checkpoint = try await durable.drain.finish()
+        #expect(checkpoint.committedFrames == 8_002)
+        #expect(checkpoint.gapEvents.isEmpty)
+        #expect(harness.ring.dropoutCount == 0)
+        let samples = try ProcessingTimelineReader(
+            directory: durable.directory, checkpoint: checkpoint, sessionURL: durable.directory
+        ).readSamples(frameRange: 0..<8_002)
+        #expect(samples.count == 8_002)
+        #expect(samples[..<8_000].allSatisfy { $0 == 0 })
+        #expect(Array(samples[8_000...]) == [0.25, -0.5])
+    }
+
+    @Test func testFirstPacketAfterPreparedReconnectHealthFillsDeliveryGrace() async throws {
+        let harness = try makeIngress(
+            sampleRate: 16_000, channels: 1, loopback: true, epoch: 10_000_000,
+            ringCapacity: 64
+        )
+        let durable = try makeDurableIngressDrain(ring: harness.ring)
+        defer { try? FileManager.default.removeItem(at: durable.directory) }
+        try harness.ingress.prepareReconnect(startQPC100ns: 60_000_000)
+
+        harness.ingress.health(watermarkQPC100ns: 65_000_000, outputState: 0, error: 0)
+        #expect(harness.sink.lastEndFrame == 84_000)
+        receive(
+            harness.ingress, samples: [0.25, -0.5], frameCount: 2,
+            sampleRate: 16_000, qpc100ns: 65_000_000
+        )
+
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 88_002)
+        #expect(harness.ring.dropoutCount == 1)
+        let checkpoint = try await durable.drain.finish()
+        #expect(checkpoint.committedFrames == 88_002)
+        #expect(checkpoint.gapEvents == [
+            AudioGapEvent(startFrame: 0, frameCount: 80_000, reason: .missingCallback)
+        ])
+        #expect(harness.ring.dropoutCount == 1)
+        let samples = try ProcessingTimelineReader(
+            directory: durable.directory, checkpoint: checkpoint, sessionURL: durable.directory
+        ).readSamples(frameRange: 0..<88_002)
+        #expect(samples.count == 88_002)
+        #expect(samples[..<88_000].allSatisfy { $0 == 0 })
+        #expect(Array(samples[88_000...]) == [0.25, -0.5])
     }
 
     @Test func testUnknownOutputStateIsTerminal() throws {
