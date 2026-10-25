@@ -200,8 +200,8 @@ def check(root: pathlib.Path) -> list[Problem]:
             basename = "/" not in candidate
             if not link and basename and candidate in RUNTIME_BASENAMES:
                 return
-            # Fetcher and build outputs under .build/ never exist in a fresh checkout.
-            if not link and candidate.startswith(".build/"):
+            # Fetcher and build outputs in any .build directory never exist in a fresh checkout.
+            if not link and ".build" in candidate.split("/"):
                 return
             if (document.parent / candidate).exists() or (root / candidate).exists():
                 return

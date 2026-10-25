@@ -149,7 +149,10 @@ bash scripts/build_app.sh --product MacAmbientJev
         self.assertEqual(self.messages(), ["README.md:6: missing path: docs/session.json"])
 
     def test_generated_build_paths_are_not_required_in_inline_code(self):
-        self.put("README.md", "`.build/onnxruntime/1.31.0/`\n[model](.build/model.onnx)\n")
+        self.put(
+            "README.md",
+            "`.build/onnxruntime/1.31.0/` `app/Package/.build`\n[model](.build/model.onnx)\n",
+        )
         self.assertEqual(self.messages(), ["README.md:2: missing path: .build/model.onnx"])
 
     def test_scope_includes_agents_and_nested_docs_but_excludes_records(self):
