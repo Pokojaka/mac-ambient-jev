@@ -12,6 +12,7 @@ private final class RunLog: @unchecked Sendable {
     private var loads = 0
     private var loadExecutorMatches: [Bool] = []
     private var runs = 0
+    private var runExecutorMatches: [Bool] = []
     private var inFlight = 0
     private var peak = 0
     private var requests: [(sampleCount: Int64, firstSamples: [Float])] = []
@@ -24,9 +25,10 @@ private final class RunLog: @unchecked Sendable {
         changes.signal()
     }
 
-    func begin(sampleCount: Int64, firstSamples: [Float]) {
+    func begin(sampleCount: Int64, firstSamples: [Float], onBlockingIOExecutor: Bool) {
         lock.lock()
         runs += 1
+        runExecutorMatches.append(onBlockingIOExecutor)
         inFlight += 1
         peak = max(peak, inFlight)
         requests.append((sampleCount, firstSamples))
@@ -41,10 +43,26 @@ private final class RunLog: @unchecked Sendable {
         changes.signal()
     }
 
-    var snapshot: (loads: Int, loadExecutorMatches: [Bool], runs: Int, peak: Int, inFlight: Int, requests: [(sampleCount: Int64, firstSamples: [Float])]) {
+    var snapshot: (
+        loads: Int,
+        loadExecutorMatches: [Bool],
+        runs: Int,
+        runExecutorMatches: [Bool],
+        peak: Int,
+        inFlight: Int,
+        requests: [(sampleCount: Int64, firstSamples: [Float])]
+    ) {
         lock.lock()
         defer { lock.unlock() }
-        return (loads, loadExecutorMatches, runs, peak, inFlight, requests)
+        return (
+            loads,
+            loadExecutorMatches,
+            runs,
+            runExecutorMatches,
+            peak,
+            inFlight,
+            requests
+        )
     }
 }
 
@@ -109,7 +127,14 @@ private func fakeEngine(
             log.recordLoad(onBlockingIOExecutor: isBlockingIOExecutor)
             return Community1DiarizationKernel { sampleCount, readFrames in
                 let head = try readFrames(0..<min(sampleCount, 4))
-                log.begin(sampleCount: sampleCount, firstSamples: head)
+                let isBlockingIOExecutor = withUnsafeCurrentTask {
+                    $0?.unownedTaskExecutor == BlockingIOExecutor.shared.asUnownedTaskExecutor()
+                }
+                log.begin(
+                    sampleCount: sampleCount,
+                    firstSamples: head,
+                    onBlockingIOExecutor: isBlockingIOExecutor
+                )
                 defer { log.end() }
                 runGate?.wait()
                 if runDelay > 0 { Thread.sleep(forTimeInterval: runDelay) }
@@ -248,6 +273,7 @@ struct ONNXCommunity1DiarizationEngineTests {
         #expect(results.count == 5)
         #expect(results.allSatisfy { $0 == results[0] })
         #expect(log.snapshot.runs == 5)
+        #expect(log.snapshot.runExecutorMatches == Array(repeating: true, count: 5))
         #expect(log.snapshot.peak == 1)
     }
 
@@ -274,6 +300,7 @@ struct ONNXCommunity1DiarizationEngineTests {
             if let unloading { await unloading.value }
 
             #expect(log.snapshot.inFlight == 0)
+            #expect(log.snapshot.runExecutorMatches == [true])
             #expect(spans.count == 1)
             #expect(await engine.isPrepared == false)
         } catch {

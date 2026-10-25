@@ -27,10 +27,10 @@ final class Community1DiarizationKernel {
 
 /// The Linux and Windows diarization engine: the portable Community-1 kernel over ONNX Runtime.
 ///
-/// The actor owns the sessions. `prepare` runs its synchronous loading body on dedicated threads
-/// while retaining actor isolation. `diarize` and `unload` contain no suspension point after actor
-/// entry, so those calls run one at a time; `unload` therefore waits for a running `diarize`.
-/// Every `diarize` call builds its own evidence, so a second call never sees the first call's speakers.
+/// The actor owns the sessions. The synchronous bodies of `prepare` and `diarize` run on dedicated
+/// threads while retaining actor isolation. Neither body suspends internally, so kernel runs remain
+/// serialized and `unload` waits for a running kernel. Every `diarize` call builds its own evidence,
+/// so a second call never sees the first call's speakers.
 public actor ONNXCommunity1DiarizationEngine: DiarizationEngine {
     private nonisolated let provenanceValue: RunProvenance
     private let modelDirectory: URL
@@ -89,6 +89,20 @@ public actor ONNXCommunity1DiarizationEngine: DiarizationEngine {
         canonicalSampleRate: Double,
         sessionURL: URL
     ) async throws -> [SpeakerSpan] {
+        try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+            try diarizeSynchronously(
+                fileURL: fileURL,
+                canonicalSampleRate: canonicalSampleRate,
+                sessionURL: sessionURL
+            )
+        }
+    }
+
+    private func diarizeSynchronously(
+        fileURL: URL,
+        canonicalSampleRate: Double,
+        sessionURL: URL
+    ) throws -> [SpeakerSpan] {
         guard canonicalSampleRate == CanonicalAudio.sampleRate else {
             throw CanonicalAudioError.noncanonicalFormat
         }

@@ -12,13 +12,29 @@ elif [[ $# -ne 0 ]]; then
   exit 2
 fi
 
+new_test_event_path() {
+  printf '%s/.build/test-events/linux-%s.jsonl\n' \
+    "$ROOT" \
+    "$(python3 -c 'import uuid; print(uuid.uuid4())')"
+}
+
+python3 -B "$ROOT/scripts/test_test_time_limits.py"
+python3 -B "$ROOT/scripts/check_test_time_limits.py"
+python3 -B "$ROOT/scripts/test_report_test_events.py"
+python3 -B "$ROOT/scripts/test_run_swift_tests.py"
+
 # Runs one gated numerical suite with RUN_MODEL_TESTS=1, prints the executed and skipped
 # test names, and fails when the suite executed no test.
 run_model_suite() {
-  local name="$1" filter="$2" log executed
+  local name="$1" filter="$2" log executed event_path
   log="$(mktemp)"
+  event_path="$(new_test_event_path)"
   printf '==> model suite: %s (filter: %s)\n' "$name" "$filter"
-  env RUN_MODEL_TESTS=1 swift test --package-path "$PACKAGE" --filter "$filter" 2>&1 | tee "$log"
+  printf 'Swift test event stream: %s\n' "$event_path"
+  env RUN_MODEL_TESTS=1 python3 -B "$ROOT/scripts/run_swift_tests.py" \
+    --package-path "$PACKAGE" \
+    --filter "$filter" \
+    --event-stream-output-path "$event_path" 2>&1 | tee "$log"
   executed="$(grep -E 'Test .* passed after' "$log" | grep -v 'Test run' || true)"
   if [ -z "$executed" ]; then
     echo "error: model suite $name executed no test" >&2
@@ -91,6 +107,10 @@ python3 -B scripts/check_portable_core.py
 
 swift package --package-path "$PACKAGE" dump-package >/dev/null
 swift build --package-path "$PACKAGE"
-swift test --package-path "$PACKAGE"
+EVENT_PATH="$(new_test_event_path)"
+printf 'Swift test event stream: %s\n' "$EVENT_PATH"
+python3 -B "$ROOT/scripts/run_swift_tests.py" \
+  --package-path "$PACKAGE" \
+  --event-stream-output-path "$EVENT_PATH"
 
 echo "Portable EngineProtocol, EngineHost, PortableRuntime, Core, Pipeline, and ONNX build/test verification passed"

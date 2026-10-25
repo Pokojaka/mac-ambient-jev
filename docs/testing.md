@@ -40,16 +40,17 @@ Windows の few-core run では、必須 asset setup を保つため同じ Power
 | OS / 手順 | 現行 build / test 範囲 |
 | --- | --- |
 | macOS | `MacAmbientJevEngineProtocol` / `MacAmbientJevEngineHost` の portable tests と deterministic harness acceptance を実行できます。portable inference acceptance はありません。通常の macOS 検証は後述の AGENTS 指定コマンドを変更せず実行します。 |
-| Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) の既定実行は fetch / check の後、manifest dump と unfiltered build / test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と本番 `MacAmbientJevEngine` product は Linux target ではありません。Linux CI fast job は同じ fetch/check 後に直接 package build / test を実行し、Python process acceptance は実行しません。実モデルを使う `linux-model-e2e` は後述の `--full-model` 手順です。 |
-| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は unfiltered package build で test-only `MacAmbientJevEngineHarness` を含む products を build し、本番 `MacAmbientJevEngine` product も明示 build します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意し、native injected C tests の後に unfiltered `swift test` を1回実行します。その後、engine acceptance driver と FLAC validator の self-tests、deterministic fake-capture engine process acceptance を順に実行します。実モデルの追加 acceptance は `-FullModel` でだけ実行します。 |
+| Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) の既定実行は fetch / check の後、manifest dump と unfiltered build を実行し、`run_swift_tests.py` で test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と本番 `MacAmbientJevEngine` product は Linux target ではありません。Linux CI fast job も fetch/check 後に package build と runner 経由の test を行い、Python process acceptance は実行しません。実モデルを使う `linux-model-e2e` は後述の full-model acceptance 手順です。 |
+| Windows | [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は unfiltered package build で test-only `MacAmbientJevEngineHarness` を含む products を build し、本番 `MacAmbientJevEngine` product も明示 build します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意し、native injected C tests の後に、unique event path を渡して `run_swift_tests.py` から unfiltered Swift tests を1回実行します。その後、engine acceptance driver と FLAC validator の self-tests、deterministic fake-capture engine process acceptance を順に実行します。実モデルの追加 acceptance は `-FullModel` でだけ実行します。 |
 
-Windows runner の unfiltered Swift test command は次のとおりです。
+Windows の unfiltered Swift test は wrapper を通して実行します。各 run に新しい event path を作ります。
 
 ```powershell
-swift test --package-path app/MacAmbientJev
+$eventPath = Join-Path (Get-Location) ".build/test-events/windows-$([guid]::NewGuid().ToString()).jsonl"
+python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-stream-output-path $eventPath
 ```
 
-1 回の `swift test` で EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows の test set 全体を実行します。runner は既存の `swift build --show-bin-path` lookup で `$binDir` を解決し、unfiltered package build が生成した `MacAmbientJevEngineHarness.exe` を指定します。native injected C tests の後にこの Swift test を実行し、その後 driver と FLAC validator の Python self-tests、deterministic fake-capture process acceptance を実行します。Python driver は build を行いません。
+runner は `swift build --build-tests` の後に `swift test --skip-build` を1回実行し、終了後に event を報告します。runner は test process に対する suite budget timer を持ちません。EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows test set 全体が対象です。Windows runner は先に `swift build --show-bin-path` で `$binDir` を解決し、unfiltered package build が生成した `MacAmbientJevEngineHarness.exe` を acceptance driver に渡します。native injected C tests の後に wrapper 経由の Swift tests を実行し、その後 driver と FLAC validator の Python self-tests、deterministic fake-capture process acceptance を実行します。Python acceptance driver は build を行いません。
 
 [`test_engine_acceptance.py`](../scripts/test_engine_acceptance.py) と [`test_engine_acceptance_flac.py`](../scripts/test_engine_acceptance_flac.py) は no-build self-tests です。build 済み test-only harness がある場合、[`engine_acceptance.py`](../scripts/engine_acceptance.py) は subcommand を明示して実行します。Windows runner は `$binDir` から `.exe` の完全 path を渡します。
 
@@ -64,12 +65,16 @@ python3 -B scripts/test_engine_acceptance_flac.py
 
 <pre><code>python3 -B scripts/engine_acceptance.py deterministic &#45;&#45;executable /absolute/path/to/MacAmbientJevEngineHarness</code></pre>
 
-Linux CI fast job の package command は次のとおりです（先行する fetch / check step の後に実行します）。
+Linux CI fast job の package command は次のとおりです（先行する fetch / check step の後に実行します）。`swift test` は直接呼ばず、runner に未使用の event output path を渡します。
 
 ```bash
 swift build --package-path app/MacAmbientJev
-swift test --package-path app/MacAmbientJev
+python3 -B scripts/run_swift_tests.py \
+  --package-path app/MacAmbientJev \
+  --event-stream-output-path "$GITHUB_WORKSPACE/.build/test-events/linux.jsonl"
 ```
+
+Linux fast job は fresh checkout の `.build/test-events/linux.jsonl` を使います。`verify_portable.sh` の各 test invocation は UUID を含む別名を同じ `.build/test-events/` directory に作ります。CI artifact upload は job failure 時も実行されます。
 
 Linux / Windows の PortableRuntime tests が使う pinned asset path は runner が fetch して既存の必須環境変数に設定します。WindowsSupport の fake capture tests と native injected C tests は実 audio hardware を使わず、実機 WASAPI の動作を保証しません。通常の deterministic fake-capture acceptance は test-only の pipe I/O 実装と deterministic inference を使います。`-FullModel` は実モデルを使った host acceptance を含みますが、WASAPI / audio hardware は使いません。full-model mode の詳細と transport の適用範囲は [偽キャプチャ engine テストハーネス](windows.md#偽キャプチャ-engine-テストハーネス) を参照してください。
 
@@ -107,7 +112,7 @@ Linux で portable 検証をローカル実行する場合は、次のコマン�
 docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2-noble bash -lc 'apt-get update && apt-get install -y python3 flac && bash scripts/verify_portable.sh'
 ```
 
-[`verify_portable.sh`](../scripts/verify_portable.sh) は pinned assets を fetch し、portable checker の self-test と import check を行い、SwiftPM manifest を dump してから unfiltered `swift build` / `swift test` を実行します。test は Core / Pipeline / EngineProtocol / EngineHost / PortableRuntime / ONNX 等を含みますが、Linux には WindowsSupport と `MacAmbientJevEngine` product はありません。Linux CI fast job は同じ検証内容の一部を fetch/check step 後の直接の `swift build` / `swift test` で実行し、この shell script 自体は呼びません。`linux-model-e2e` は既存の separate job です。
+[`verify_portable.sh`](../scripts/verify_portable.sh) は pinned assets を fetch し、portable checker の self-test と import check を行い、SwiftPM manifest を dump してから unfiltered `swift build` と `run_swift_tests.py` を実行します。test は Core / Pipeline / EngineProtocol / EngineHost / PortableRuntime / ONNX 等を含みますが、Linux には WindowsSupport と `MacAmbientJevEngine` product はありません。Linux CI fast job は同じ検証内容の一部を fetch/check step 後に直接 package build と wrapper 経由の test で実行し、この shell script 自体は呼びません。`linux-model-e2e` は既存の separate job です。
 
 [`check_portable_core.py`](../scripts/check_portable_core.py) の default roots には Core / Pipeline に加えて EngineProtocol / EngineHost、Diarization / DiarizationMeasurement、ONNX、PortableRuntime が含まれます。portable root から Windows-only `MacAmbientJevEngine` の import を拒否し、WindowsSupport 自体は portable scan roots に含めず、`MacAmbientJevWindowsSupport` import には `#if os(Windows)` を要求します。portable-core workflow の path filter は engine source / test / executable target、native injected test、runner と docs の変更を対象にします。macOS CI には path filter がありません。
 
@@ -121,11 +126,53 @@ docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2-noble bash -lc 'apt
 swift test --package-path app/MacAmbientJev --filter MacAmbientJevPipelineTests
 ```
 
-テストに付ける `timeLimit` は hang guard としてのみ使い、値はすべて10分です。Swift Testing は全テストを並列に開始するため、各テストの経過時間には suite 全体の待ち時間が含まれ、負荷の高い CI ランナーでは2分を超えます。上限は suite 全体の実行時間より長くし、意味上の条件や実行時間予算には使いません。
+Swift Testing の `timeLimit` は、指定された個々のテストの hang / cancellation guard です。全テストに `timeLimit` があるわけではありません。許可値は [`check_test_time_limits.py`](../scripts/check_test_time_limits.py) の `HANG_GUARD_MINUTES` が管理します。checker は `app/MacAmbientJev/Tests` 以下の Swift ファイルを再帰的に走査し、`#if` の分岐に関係なく呼び出しを検査して、違反を `path:line` で報告します。self-test は走査規則と `path:line` diagnostics を検証します。検査は Mac の `verify_v1_tests.sh`（およびそれを呼ぶ `verify_v1.sh`）、Windows runner、portable 検証 script と Linux / Windows CI で実行します。Swift Testing の test 経過時間は cooperative scheduling の待ち時間を含む wall clock で、CPU time ではありません。hang guard は性能予算ではなく、引き上げても性能は改善しません。Swift test process は runner 内で独自の時間制限なしに終了を待ちます。CI の job timeout は別の外側の制限であり、[`ci.yml`](../.github/workflows/ci.yml) の Mac jobs に明示的な `timeout-minutes` はありません。
 
-EngineHost / Engine では、同期に使う仕組みを該当 helper ごとに分けています。FakeEngineHandlers は handler call・held call・hello completion の lifecycle 通知に [ChangeSignal.swift](../app/MacAmbientJev/Tests/MacAmbientJevTestSupport/ChangeSignal.swift) を使い、scripted sink と pipe reader の各 chunk も状態変更を signal します。Windows native stdout capture の [WindowsDiagnosticCaptureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsDiagnosticCaptureTests.swift) は、native stdout producer-completion latch、capture-close / writer-close latch、egress reader completion、および captured-chunk signals を使います。これらの latch / signal wait は ChangeSignal.wait を通じて test cancellation-aware で、条件を再確認してから復帰します。[EngineApplicationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTests.swift) の OfflineFinalizationGate.waitUntilEntered も cancellation-aware gate です。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は onBackgroundEventStateChange lifecycle notification callback と ChangeSignal で状態遷移を待ち、MainActor の Task.yield polling を使いません。これらの wait では suite `timeLimit` が hang guard です。この記述は全 EngineHost / Engine tests が event-driven であるという意味ではありません。EngineTransportOutputTests は reliable sender が queue 満杯で suspend したことを明示的な signal で待ち、注入した logical clock で deadline を検証します。progress のケースでは clock を100msずつ進めて deadline の再設定を確認し、no-progress のケースは400ms で期限切れにします。coalescing / backpressure cases は writer 開始前に queue を埋め、テストの進み具合を write deadline に混ぜません。WindowsPipeByteSinkTests は成功・失敗・test cancellation の各経路で sink を close し、writer と reader を join します。pipe reader 自身が read handle を所有し、終了時に閉じます。[`ONNXCommunity1DiarizationEngineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift) は10分 `timeLimit` を hang guard にし、ChangeSignal で worker の開始・終了を待ちます。concurrent prepare test は1回だけの load と、同期 loader が `BlockingIOExecutor.shared` 上で実行された executor identity を検証します。これらの executor test は同期 blocking work の配置を確認し、await する test body 全体をその executor に載せるものではありません。
+### Swift テストの時間予算とイベント報告
 
-Windows の [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は unfiltered な `swift test --package-path app/MacAmbientJev` を1回実行し、Windows で適用される Pipeline を含む全 test target を一度ずつ検証します。これらは portable な調整・状態ロジックの検証です。WindowsSupport の capture unit tests と native injected C test は別に実行しますが、実 audio hardware を使う検証ではありません。
+[`run_swift_tests.py`](../scripts/run_swift_tests.py) は `--package-path` と `--event-stream-output-path` を必須とし、`--skip-build` と `--filter` を任意で受け取ります。
+
+通常は `swift build --build-tests` を実行し、成功後に `swift test --skip-build` と event stream 出力を実行します。`--skip-build` を指定した runner invocation では build を省略します。build が失敗した場合は test を起動しません。
+
+```text
+swift test --package-path ABS --skip-build --event-stream-output-path ABS --event-stream-version 0
+```
+
+runner は Swift test process の終了を待ち、suite budget を理由に process を終了しません。有効な event stream であれば、test 完了後に event reporter が invocation envelope と function test の上位20件を出力し、unfiltered run の envelope が budget を超えた場合は非 0 で終了します。event stream の検証失敗も非 0 です。元の test process が正の非 0 exit code を返した場合は、reporter が失敗してもその test exit code が優先されます。KeyboardInterrupt と `SIGTERM` は test process tree の cleanup / reap を行い、event stream の報告も試みます。
+
+`--filter` を明示した invocation は subset run として扱われ、suite budget は適用しません。event timings の出力と event stream の検証は続き、欠落・malformed・incomplete な stream や未完了の test event は失敗です。
+
+[`verify_portable.sh`](../scripts/verify_portable.sh) の `run_model_suite` と [`test-windows.ps1`](../scripts/test-windows.ps1) の `Invoke-ModelSuite` は、名前を指定した model suite を filtered invocation として実行します。
+それぞれ runner に `--filter` を渡します。
+
+[`report_test_events.py`](../scripts/report_test_events.py) は Swift Testing event stream ABI version 0 の `instant.absolute` を使います。invocation envelope は有効な逐次 SwiftPM product run segment の最初の `runStarted` から最後の `runEnded` までで、product 間の gap も含みます。完了した function test の上位20件を、開始・終了 offset と elapsed time で示します。これらの時間も scheduling wait を含む wall clock で、CPU time ではありません。ABI v0 には使える parameterized case identity がないため、parameterized function は case ごとでなく aggregate envelope として報告します。event stream の欠落・malformed・incomplete、または未完了の test event は非 0 の結果です。不完全な stream では観測済み lower bound を示し、観測できない時間は補いません。
+
+全 suite の完了 envelope に対する回帰検出は hang protection と別の判定です。予算値は reporter の [`SUITE_BUDGET_SECONDS`](../scripts/report_test_events.py) が管理します。headroom の評価には hosted CI での測定が必要です。関連する観測結果は [CI test-time measurement record](records/2026-10-25-ci-test-time.md) を参照してください。
+
+現在の blocking-I/O 回帰検証では、[RecordingAudioCompactorTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift) の `fullFLACValidationStopsAtTheStoredEnd` と `aRecordingRoundTripsExactlyCommittedFrames` が既存の test cases と assertions を保ち、録音後の同期 FLAC 処理を bounded `withTaskExecutorPreference` scope で実行します。決定的 executor-identity assertion は処理の配置を検証します。[ONNXCommunity1DiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXCommunity1DiarizationEngine.swift) の `prepare` / `diarize` は `BlockingIOExecutor.shared` を優先し、actor-isolated synchronous work body 内で `await` しません。[対応 tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift) は executor identity、peak kernel concurrency 1、実行中の `diarize` を `unload` が待つことを検証します。これらの placement checks は全 storage I/O が cooperative pool から除かれたことを主張しません。
+
+ローカルでは invocation ごとに新しい event filename を使い、repository root の `.build/test-events/` に出力します。runner は終了後に reporter を実行します。standalone reporter は通常 run では `EVENT_PATH`、subset stream では `EVENT_PATH --filtered` を指定します。reporter は stream から filtering を推測しません。
+
+```bash
+EVENT_PATH="$PWD/.build/test-events/local-$(python3 -c 'import uuid; print(uuid.uuid4())').jsonl"
+python3 -B scripts/run_swift_tests.py \
+  --package-path app/MacAmbientJev \
+  --event-stream-output-path "$EVENT_PATH"
+python3 -B scripts/report_test_events.py "$EVENT_PATH"
+
+FILTERED_EVENT_PATH="$PWD/.build/test-events/filtered-$(python3 -c 'import uuid; print(uuid.uuid4())').jsonl"
+python3 -B scripts/run_swift_tests.py \
+  --package-path app/MacAmbientJev \
+  --event-stream-output-path "$FILTERED_EVENT_PATH" \
+  --filter 'MacAmbientJevPipelineTests'
+python3 -B scripts/report_test_events.py "$FILTERED_EVENT_PATH" --filtered
+```
+
+CI の Mac・Linux・Windows test jobs は `.build/test-events/` の JSONL artifacts を `always()` upload step で、test failure 時も含めて保存します。runner は出力先が既に存在すると失敗するため、同じ path を stale event stream に再利用しません。
+
+EngineHost / Engine では、同期に使う仕組みを該当 helper ごとに分けています。FakeEngineHandlers は handler call・held call・hello completion の lifecycle 通知に [ChangeSignal.swift](../app/MacAmbientJev/Tests/MacAmbientJevTestSupport/ChangeSignal.swift) を使い、scripted sink と pipe reader の各 chunk も状態変更を signal します。Windows native stdout capture の [WindowsDiagnosticCaptureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsDiagnosticCaptureTests.swift) は、native stdout producer-completion latch、capture-close / writer-close latch、egress reader completion、および captured-chunk signals を使います。これらの latch / signal wait は ChangeSignal.wait を通じて test cancellation-aware で、条件を再確認してから復帰します。[EngineApplicationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTests.swift) の OfflineFinalizationGate.waitUntilEntered も cancellation-aware gate です。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は onBackgroundEventStateChange lifecycle notification callback と ChangeSignal で状態遷移を待ち、MainActor の Task.yield polling を使いません。これらの wait では suite `timeLimit` が hang guard です。この記述は全 EngineHost / Engine tests が event-driven であるという意味ではありません。EngineTransportOutputTests は reliable sender が queue 満杯で suspend したことを明示的な signal で待ち、注入した logical clock で deadline を検証します。progress のケースでは clock を100msずつ進めて deadline の再設定を確認し、no-progress のケースは400ms で期限切れにします。coalescing / backpressure cases は writer 開始前に queue を埋め、テストの進み具合を write deadline に混ぜません。WindowsPipeByteSinkTests は成功・失敗・test cancellation の各経路で sink を close し、writer と reader を join します。pipe reader 自身が read handle を所有し、終了時に閉じます。[`ONNXCommunity1DiarizationEngineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift) は `timeLimit` を hang guard にし、ChangeSignal で worker の開始・終了を待ちます。concurrent prepare test は1回だけの load と、同期 loader が `BlockingIOExecutor.shared` 上で実行された executor identity を検証します。これらの executor test は同期 blocking work の配置を確認し、await する test body 全体をその executor に載せるものではありません。
+
+Windows の [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) は `run_swift_tests.py` で unfiltered Swift test を1回実行し、Windows で適用される Pipeline を含む全 test target を一度ずつ検証します。これらは portable な調整・状態ロジックの検証です。WindowsSupport の capture unit tests と native injected C test は別に実行しますが、実 audio hardware を使う検証ではありません。
 
 [CaptureSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/CaptureSafetyTests.swift) は startup/stall/silence、disk threshold と error rules、oversized mono buffer を検証します。[TimestampedMonoSinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/TimestampedMonoSinkTests.swift) は raw-meter の 100ms windows、channels 間の clipping、gaps/reset、metering 前後で audio が変わらないことを検証します。AudioCaptureEngine/CoreMedia/IOKit との実 integration は macOS 専用 AppTests（[AudioCaptureEngineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/AudioCaptureEngineTests.swift)、[CaptureSafetyTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/CaptureSafetyTests.swift)）で扱います。
 
@@ -143,15 +190,43 @@ bash scripts/verify_v1.sh
 
 1. `scripts/test_doc_references.py` でドキュメント参照 checker の自己テストを、`scripts/check_doc_references.py` で参照検査を実行する。`scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。`scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
 2. SwiftPM の依存を解決し、`swift build --build-tests` で package とテストをまとめて build する。
-3. `env -u RUN_MODEL_TESTS swift test --skip-build` で、事前に build したテストを再利用して通常の Swift test を実行する。
+3. 事前に build したテストを再利用し、UUID の event path を `.build/test-events/` に作ってから `env -u RUN_MODEL_TESTS python3 -B scripts/run_swift_tests.py --package-path "$PACKAGE" --skip-build --event-stream-output-path "$EVENT_PATH"` を実行する。runner は test process の完了後に event を報告します。
 4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル3段階の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
 6. モデル検証を指定した場合は Swift test 一覧に ASRIntegrationTests があることと Runtime test bundle の存在を確認し、その bundle を `xcrun xctest` で実行する。
 7. `scripts/build_app.sh` は `python3 -B scripts/fetch_clause_tagger.py --format coreml` で固定された Hugging Face の公開 repository から Core ML model files を取得し、manifest が指定する各ファイルの byte 数と SHA-256 を検証して app bundle に同梱する。同梱物は ClauseTagger.mlpackage、tokenizer.json、LICENSE.md です。MLX の Metal shader library は Swift Build backend で生成するため、その backend で build し、Apple Silicon 専用の arm64 のみを対象にする。続けてアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの package・tokenizer・license、codesign の検証、利用者が選んだファイルへの read/write と app-scope bookmark の2つの entitlement を確認する。
 
-アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` の2 job を並列に実行する。両 job は Python 3.13 を用意する。前者は `regex` package を install し、`scripts/test_fetch_clause_tagger.py`、`scripts/test_export_clause_tagger_onnx.py`、`scripts/test_build_app.py` を実行してから `bash scripts/verify_v1_tests.sh` を実行する。後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は GitHub Actions の cache で、SwiftPM の依存ソース（`.build/checkouts/`、`.build/repositories/`、`.build/artifacts/`、`.build/workspace-state.json`）を cache する。key は runner OS と `Package.resolved` の hash で、`restore-keys` は指定しないため、完全一致する cache だけを復元する。build products は 4 GB を超えるため cache しない。
+アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` を並列に実行する。両 job は Python 3.13 を用意する。前者は `regex` package を install し、`scripts/test_fetch_clause_tagger.py`、`scripts/test_export_clause_tagger_onnx.py`、`scripts/test_build_app.py` を実行してから `bash scripts/verify_v1_tests.sh` を実行する。後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は `app/MacAmbientJev` package の `.build/checkouts`、`.build/repositories`、`.build/artifacts`、`.build/workspace-state.json` を同じ `swiftpm-sources` key で cache する。key inputs は runner OS / architecture、Swift と Xcode の version output の SHA-256 fingerprint、`Package.resolved` と `Package.swift` の hash で、restore prefix はありません。cache paths に build products は含まれないため、debug test bundle、debug product、release product は cache しません。両 job は同じ cache namespace を使いますが、cache は key・version・branch で scope され、特定の PR run が cache entry を保存・再利用できるとは限りません（[actions/cache@v4 cache scope](https://raw.githubusercontent.com/actions/cache/v4/README.md#cache-scopes)）。test job は debug test bundle と debug `MacAmbientJev` product を build し、app job は `swiftbuild` backend の arm64 release `MacAmbientJev` product を build します。
 
-cache の有無にかかわらず依存解決と build・test は実行する。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。アプリ job は Python 3.13 を使い、`scripts/fetch_clause_tagger.py --format coreml` で公開 Hugging Face repository から認証なしでモデルを取得する。取得時には manifest に pin された各ファイルの byte 数と SHA-256 を検証する。
+cache hit は dependency resolution、build、test、app build を省略しない。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。アプリ job は Python 3.13 を使い、`scripts/fetch_clause_tagger.py --format coreml` で公開 Hugging Face repository から認証なしでモデルを取得する。取得時には manifest に pin された各ファイルの byte 数と SHA-256 を検証する。
+
+### Windows CI の temp directory と cache
+
+Windows runner は `RUNNER_TEMP` が空でない絶対 path であり、既存 directory であることを検証してから、`TEMP`、`TMP`、`TMPDIR` のすべてにその完全な値を設定します。設定後に開始する Python / Swift の子 process はこの環境を継承し、新しい Python process ごとに `tempfile` の temp-directory 判定を行います。Foundation 6.2 の Windows *FileManager.temporaryDirectory* は *String.temporaryDirectoryPath* に進み、Windows では *GetTempPathW* を呼びます。corelibs Foundation の *NSTemporaryDirectory()* も *FileManager.default.temporaryDirectory* を返します（[Foundation corelibs implementation](https://raw.githubusercontent.com/swiftlang/swift-corelibs-foundation/swift-6.2-RELEASE/Sources/Foundation/NSPathUtilities.swift)、[swift-foundation implementation](https://raw.githubusercontent.com/swiftlang/swift-foundation/swift-6.2-RELEASE/Sources/FoundationEssentials/String/String+Path.swift)）。Windows は *GetTempPathW* で `TMP` を `TEMP` より優先し（[Microsoft documentation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppathw)）、Python 3.12 `tempfile` は `TMPDIR`、`TEMP`、`TMP` の順に検索します（[Python documentation](https://docs.python.org/3.12/library/tempfile.html)）。
+
+`windows-2022` では `RUNNER_TEMP` は通常 D: 上、user temp は通常 C: 上ですが、drive letter は固定せず workflow が検証した `RUNNER_TEMP` だけを使います。temp file I/O が D: に移ることで fsync / flush に利点がある可能性は仮説であり、GitHub Actions 上で測定するまでは性能改善と断定しません。SwiftPM の `app/MacAmbientJev/.build` は workspace drive に残し、モデル directory の `.build` 配下の配置も変更しません。Windows CI は workspace 上の SwiftPM package / executable builds と test run をそのまま実行します。
+
+Windows と Linux `linux-model-e2e` は同じ5つの model directory（`.build/qwen3-asr-models`、`.build/qwen3-asr-tokenizer`、`.build/silero-vad`、`.build/community1-diarization`、`.build/clause-tagger-onnx`）と同じ cache key inputs を使います。key の `hashFiles` inputs は次のとおりです。
+
+- `app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json`
+- `app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json`
+- `app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json`
+- `scripts/fetch_qwen3_asr_model.py`
+- `scripts/fetch_qwen3_asr_tokenizer.py`
+- `scripts/fetch_silero_vad.py`
+- `scripts/fetch_community1_diarization.py`
+- `scripts/fetch_clause_tagger.py`
+- `scripts/pinned_download.py`
+
+各 fetcher は cache hit のファイルも SHA-256 で検証し、破損は error として失敗し、別の取得経路へ切り替えません。
+
+Windows CI は SwiftPM package の `.build` 全体を cache します。key は runner OS / architecture、Swift toolchain version fingerprint、`Package.resolved` と `Package.swift` の hash を含み、restore prefix は同じ OS / architecture / toolchain に限定されます。この full build cache は Windows job のみで使い、Mac CI は前述の SwiftPM dependency state だけを cache します。cache hit の有無にかかわらず SwiftPM build と tests は実行します。
+
+この repository の GitHub Actions cache quota は10 GB、retention は7日で、branch / workflow / job をまたいで共有されます。上限を超えると least-recently-used cache が eviction されます（[GitHub cache policy](https://github.blog/changelog/2025-11-20-github-actions-cache-size-can-now-exceed-10-gb-per-repository/)）。複数世代の keys や PR cache も quota を消費するため cache hit は保証されず、quota を無制限として扱いません。
+
+### Swift の一時 path
+
+Production Swift code に hard-coded な temporary root はなく、temporary I/O は *FileManager.temporaryDirectory* を使います。Tests には parser / codec / AppPaths の URL fixtures として `/tmp` literals があります。[TranscribeFileTests.makePayload](../app/MacAmbientJev/Tests/MacAmbientJevTranscribeFileTests/TranscribeFileTests.swift) の `/tmp` root も payload 構築用の inert URL だけで、disk I/O は行いません。
 
 ライブ判定の regression は注入した判定 coordinator factory を使います。
 
@@ -289,7 +364,7 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 [LiveClauseIncrementalTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveClauseIncrementalTests.swift) は通常の全履歴 materializer と増分更新の行・projection・保存 JSON を照合し、長い跨ぎ節、空区間、ASR gap、不正 batch の rollback、取得済み snapshot の不変性を検証します。[LiveClauseIncrementalBenchmark.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveClauseIncrementalBenchmark.swift) は一時音声と注入 ASR で実 `LiveASRSession.applyClauseEvents` を動かし、40・400・2500 区間で境界・節閉鎖・優先度を反映する時間を、テスト専用の全履歴再構築 actor と比較します。各規模で warmup 1 回と標本 20 回を使い、結果の同一性は計測区間外で照合します。通常 test では計測を無効とし、時間閾値を correctness の合否にしません。[測定記録](records/2026-10-09-clause-incremental.md) を参照してください。
 
-[PriorityBatchPersistenceTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift) と [LiveContentPriorityGatingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveContentPriorityGatingTests.swift) は注入 provider と一時イベントログで、81 節の確定・優先度再試行・ライブを検証します。失敗した batch をそれぞれ 40/40/1 件の保留として保存すること、境界判定の失敗がその区間だけを保留にして優先度判定を続けること、coordinator 取得中・判定待ち中の取り消しを扱います。LiveContentPriorityGatingTests の fixture は request・row・status の条件を continuation 通知で待ち、worker の終了後に `SessionWriter.readDurableLog(eventsURL:)` でwriter と同じ排他ロック下の durable snapshot を一度だけ読み、各 assertion と reader の再読込で同じ bytes を使います（取消しの基準 snapshot は fake provider の gate で worker を保持した状態で読みます）。全テストの `timeLimit` は hang guard のみで、意味上の条件や実行時間予算ではありません。各テストは worker の終了後に一時 root を削除します。[NativeSessionProcessorLiveTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/NativeSessionProcessorLiveTests.swift) の finalization takeover fixture は provider gate、transcript update 通知、保持した live worker の終了を待って late response を確認するため、経過時間に依存しません。意味上の coordinator tests も明示 gate を持つ fake effects と注入 sleep で同期し、性能予算を置きません。実行全体の上限は既存の portable CI job timeout（Linux 20 分、Windows 30 分）です。実モデルは使いません。
+[PriorityBatchPersistenceTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift) と [LiveContentPriorityGatingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveContentPriorityGatingTests.swift) は注入 provider と一時イベントログで、81 節の確定・優先度再試行・ライブを検証します。失敗した batch をそれぞれ 40/40/1 件の保留として保存すること、境界判定の失敗がその区間だけを保留にして優先度判定を続けること、coordinator 取得中・判定待ち中の取り消しを扱います。LiveContentPriorityGatingTests の fixture は request・row・status の条件を continuation 通知で待ち、worker の終了後に `SessionWriter.readDurableLog(eventsURL:)` でwriter と同じ排他ロック下の durable snapshot を一度だけ読み、各 assertion と reader の再読込で同じ bytes を使います（取消しの基準 snapshot は fake provider の gate で worker を保持した状態で読みます）。ここで `timeLimit` を付けた tests の上限は hang guard のみで、意味上の条件や実行時間予算ではありません。各テストは worker の終了後に一時 root を削除します。[NativeSessionProcessorLiveTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/NativeSessionProcessorLiveTests.swift) の finalization takeover fixture は provider gate、transcript update 通知、保持した live worker の終了を待って late response を確認するため、経過時間に依存しません。意味上の coordinator tests も明示 gate を持つ fake effects と注入 sleep で同期し、性能予算を置きません。suite budget は test process 完了後の回帰判定であり、hang protection ではありません。個々の test の `timeLimit` と GitHub Actions の job-level timeout が hang / job 停止を扱い、job timeout は build や asset fetch も含む job 全体に適用されます。Linux fast、Windows、Linux model E2E job には workflow で job-level timeout が指定されています。`.github/workflows/ci.yml` の Mac jobs に明示的な `timeout-minutes` はありません。実モデルは使いません。
 
 `appRecordingShowsLiveRowsWhileDecisionsWait` は実 `AppState.startRecording`、checkpoint の VAD polling、区間登録、ライブ ASR drain、判定 queue、画面用 projection を通します。capture・VAD・ASR・判定 provider は合成入力に置き換え、応答を止めている間も通常行が表示され、保存済み判定だけが反映されることを確認します。`appRecordingShowsDecisionFactoryFailureReason` は分類器生成時の合成エラーを使い、理由が状態表示に残り、通常行を表示して録音と ASR を継続することを確認します。実モデル、マイク、GUI は使いません。
 
@@ -380,7 +455,7 @@ Mac の最初の5つの model-free golden generator は通常の debug `MacAmbie
 
 #### AHC の合成 benchmark
 
-[Community1AHCBenchmark.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1AHCBenchmark.swift) は `MAC_AMBIENT_JEV_RUN_AHC_BENCHMARK=1` の場合だけ有効です。有効化には Release build と、default のない `MAC_AMBIENT_JEV_AHC_BENCHMARK_N`（正の整数で160の倍数）が必須です。条件付き test は Swift Testing の[有効化と無効化](https://docs.swift.org/latest/documentation/testing/enablinganddisabling/)を使い、10分 `timeLimit` は hang guard とします。入力は D=256、8つの合成 center に uniform jitter 0.025 を加え、各 speaker を20 rowsずつ巡回させます。SplitMix64 seed は `0xA8C0160002560008` です。Swift の単調時計で input generation と AHC clustering を別々に計り、結果が想定した8 partition の全 labels と一致することを検証します。これは portable Swift AHC の合成 benchmark であり、FluidAudio の実コードや実音声・full engine の benchmark ではありません。
+[Community1AHCBenchmark.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1AHCBenchmark.swift) は `MAC_AMBIENT_JEV_RUN_AHC_BENCHMARK=1` の場合だけ有効です。有効化には Release build と、default のない `MAC_AMBIENT_JEV_AHC_BENCHMARK_N`（正の整数で160の倍数）が必須です。条件付き test は Swift Testing の[有効化と無効化](https://docs.swift.org/latest/documentation/testing/enablinganddisabling/)を使い、`timeLimit` は hang guard とします。入力は D=256、8つの合成 center に uniform jitter 0.025 を加え、各 speaker を20 rowsずつ巡回させます。SplitMix64 seed は `0xA8C0160002560008` です。Swift の単調時計で input generation と AHC clustering を別々に計り、結果が想定した8 partition の全 labels と一致することを検証します。これは portable Swift AHC の合成 benchmark であり、FluidAudio の実コードや実音声・full engine の benchmark ではありません。
 
 外側の `/usr/bin/time -l` で得る process peak RSS は、生成した input、AHC の scratch / result、test harness、load 済み libraries を含み、allocator-only の値ではありません。測定は Release build の後、生成済み test bundle を filter して単独実行します。完全な build・helper command と測定記録は [P3.3 AHC 合成 benchmark 計測記録](records/p33-ahc-benchmark.md) を参照してください。この現状説明では実測値を報告しません。
 
