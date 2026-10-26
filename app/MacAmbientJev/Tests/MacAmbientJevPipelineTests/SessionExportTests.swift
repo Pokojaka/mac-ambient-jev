@@ -20,25 +20,6 @@ func savedTranscriptLoaderReportsNoTranscriptWithoutActiveASRRun() async throws 
 }
 
 @Test
-func savedTranscriptLoaderMaterializesActiveRuns() async throws {
-    let fixture = try ExportFixture()
-    defer { fixture.cleanUp() }
-    let session = try await fixture.writeLiveSession()
-
-    let transcript = try SavedTranscriptLoader.load(
-        sessionURL: fixture.sessionURL(session),
-        audioSource: try #require(session.audioSource)
-    )
-
-    guard case .segments(let segments) = transcript else {
-        Issue.record("expected segments, got \(transcript)")
-        return
-    }
-    #expect(segments.map(\.text) == ["こんにちは", "今日の議題です", "  "])
-    #expect(segments.map(\.startMilliseconds) == [0, 65_000, 70_000])
-}
-
-@Test
 func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }

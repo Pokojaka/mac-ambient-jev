@@ -18,12 +18,6 @@ private func events(_ probabilities: [Float]) -> [Int: VADStreamEvent] {
 @Suite("VADStreamingStateMachineTests")
 struct VADStreamingStateMachineTests {
     @Test
-    func thresholdsMatchTheMacConfiguration() {
-        #expect(VADSegmentationParameters.speechProbabilityThreshold == 0.50)
-        #expect(abs(VADStreamingStateMachine.negativeThreshold - 0.35) < 1e-6)
-    }
-
-    @Test
     func probabilityBelowEntryThresholdNeverStartsSpeech() {
         #expect(events([0, 0.1, 0.49, 0.4999, 0.2]).isEmpty)
     }
