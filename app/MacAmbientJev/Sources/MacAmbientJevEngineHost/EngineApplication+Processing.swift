@@ -6,6 +6,22 @@ import MacAmbientJevPipeline
 // MARK: SessionProcessingEffects
 
 extension EngineApplicationCore: SessionProcessingEffects {
+    nonisolated static func processorPresentationText(_ status: NativeSessionProcessor.Status) -> String {
+        switch status {
+        case let .message(text):
+            return text
+        case let .activity(activity):
+            switch activity {
+            case .finalizationPausedForHeat, .liveTranscriptionThermalSuspended:
+                preconditionFailure("Windows engine cannot present a thermal processor status")
+            case .idle, .checkingMicrophone, .startingRecording, .importingAudio, .convertingTimeline,
+                 .detectingSpeech, .preparingASR, .loadingASR, .asrBacklogged, .preparingDiarization,
+                 .diarizing, .classifyingContent, .decisionDeferred:
+                return activity.text
+            }
+        }
+    }
+
     /// Queued work waits for settings and prepared models, and stops for good once shutdown begins.
     var pausesProcessing: Bool {
         isShuttingDown || setupStatus != .ready
@@ -19,7 +35,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
     }
 
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
-        { [weak self] text in
+        { [weak self] status in
+            let text = Self.processorPresentationText(status)
             await MainActor.run { self?.processingStatusDidChange(text, sessionID: sessionID) }
         }
     }
@@ -29,6 +46,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
             await MainActor.run {
                 guard let self else { return }
                 self.transcriptDidUpdate(sessionID: sessionID, segments: segments)
+                self.presentation.processingState = state
+                self.stateDidChange()
                 self.reportProgress(sessionID: sessionID, stage: .asr, completedUnits: segments.count)
                 if case let .partialFailure(message) = state {
                     self.report(EngineFailures.failure(
@@ -80,19 +99,35 @@ extension EngineApplicationCore: SessionProcessingEffects {
 
     func processingDidChange(_ event: SessionProcessingEvent) {
         switch event {
-        case .backlogged, .next, .willFinishDrain:
-            break
+        case .backlogged:
+            presentation.processingState = .backlogged
+            presentation.processingStatusText = "文字起こし処理が待機中です"
         case let .held(request):
+            presentation.processingState = .idle
+            presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .began(request):
+            presentation.processingState = .running
             if request.finalizesTranscript, request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .liveFailed(message):
+            let notice = "ライブ文字起こしは停止しました。録音全体を確定処理します: \(message)"
+            addLiveFailureNotice(notice)
             report(EngineFailures.failure(
-                code: .processingFailure, message: "ライブ文字起こしは停止しました。録音全体を確定処理します: \(message)",
+                code: .processingFailure, message: notice,
                 stage: .asr, sessionID: nil, severity: .warning, recoveryAction: .none
             ))
         case let .finished(request, result):
             finished(request, result: result)
+        case .next:
+            presentation.processingState = .backlogged
+            presentation.processingStatusText = "次の文字起こし処理を開始します"
+        case .willFinishDrain:
+            if presentation.processingState == .running || presentation.processingState == .backlogged,
+               processingQueue.thermallyHeld.isEmpty,
+               processingQueue.pending.isEmpty,
+               !pausesProcessing {
+                presentation.processingState = .complete
+            }
         case .drained:
             releaseIdleResourcesIfIdle()
         }
@@ -112,8 +147,18 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 if sessionID == watchedSessionID { watchedSessionIsFinal = true }
             }
         case .failed?:
+            guard let result else {
+                preconditionFailure("Failed processing result is missing")
+            }
+            guard let message = result.message, !message.isEmpty else {
+                preconditionFailure("Failed processing result message is missing or empty")
+            }
+            presentation.processingState = .partialFailure(message)
+            if presentation.processingStatusText?.contains(message) != true {
+                presentation.processingStatusText = message
+            }
             report(EngineFailures.failure(
-                code: .processingFailure, message: result?.message ?? "処理に失敗しました",
+                code: .processingFailure, message: message,
                 stage: request.finalizesTranscript ? .finalization : .decisions, sessionID: sessionID,
                 severity: .error, recoveryAction: request.finalizesTranscript ? .reprocess : .retryDecisions
             ))
@@ -124,6 +169,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
     }
 
     private func processingStatusDidChange(_ text: String, sessionID: UUID) {
+        presentation.processingStatusText = text
+        stateDidChange()
         let stage: EngineStage
         switch text {
         case UserFacingStatus.convertingTimeline.text: stage = .importing
@@ -155,16 +202,21 @@ extension EngineApplicationCore: SessionProcessingEffects {
 // MARK: Idle release
 
 extension EngineApplicationCore {
-    /// Nothing uses the models: no recording, live transcription, queued, held or running processing.
+    /// Nothing uses the models: no recording, live transcription, queued, held, running processing or model preparation.
     var isIdleForRelease: Bool {
-        recording.phase == .idle && isProcessingIdle
+        recording.phase == .idle && isProcessingIdle && !isPreparingModels
     }
 
     /// Unloads the ASR and diarization models once the engine is idle; they load again on next use.
     func releaseIdleResourcesIfIdle() {
         guard isIdleForRelease, idleReleaseTask == nil, !isShuttingDown else { return }
         idleReleaseTask = Task { [self] in
-            if isIdleForRelease { await gateway.releaseIdleResources() }
+            if isIdleForRelease {
+                presentation.preparationPhase = .idle
+                presentation.preparationStatusText = nil
+                stateDidChange()
+                await gateway.releaseIdleResources()
+            }
             idleReleaseTask = nil
         }
     }
@@ -174,14 +226,59 @@ extension EngineApplicationCore {
 
 extension EngineApplicationCore {
     var recoveryStatusSnapshot: SessionRecoveryStatusSnapshot {
-        SessionRecoveryStatusSnapshot(processing: nil, transcript: "")
+        SessionRecoveryStatusSnapshot(processing: presentation.recoveryStatusText, transcript: "")
     }
 
     func recoveryDidChange(_ event: SessionRecoveryEvent) {
         switch event {
-        case .maintenanceStarted, .maintenanceFinished, .recovering, .retryEmpty:
-            break
-        case let .reportedFailures(scanFailures, maintenanceFailures, _):
+        case let .maintenanceStarted(count):
+            presentation.recoveryStatusText = "保存済み録音の音声を整理しています（\(count)件）"
+        case let .maintenanceFinished(count, previous):
+            let text = "保存済み録音の音声を整理しています（\(count)件）"
+            if presentation.recoveryStatusText == text {
+                presentation.recoveryStatusText = previous.processing
+            }
+        case let .recovering(count):
+            presentation.recoveryStatusText = "未完了の文字起こしを復旧しています（\(count)件）"
+        case let .reportedFailures(scanFailures, maintenanceFailures, hasRecoveries):
+            var sentences: [String] = []
+            if !scanFailures.isEmpty {
+                sentences.append(
+                    "復旧できないセッションが\(scanFailures.count)件あります。詳細は「保存済み録音」で確認できます"
+                )
+            }
+
+            let failedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
+                guard case .failed = issue else { return nil }
+                return issue.message
+            }.sorted()
+            if !failedMaintenance.isEmpty {
+                let details = failedMaintenance.joined(separator: " / ")
+                sentences.append(
+                    "保存済み録音の音声を整理できなかったセッションが\(failedMaintenance.count)件あります: \(details)"
+                )
+            }
+
+            let interruptedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
+                guard case .interruptedByShutdown = issue else { return nil }
+                return issue.message
+            }.sorted()
+            if !interruptedMaintenance.isEmpty {
+                let details = interruptedMaintenance.joined(separator: " / ")
+                sentences.append(
+                    "終了処理のため保存済み録音の音声整理が中断されたセッションが\(interruptedMaintenance.count)件あります。次回起動時に再実行します: \(details)"
+                )
+            }
+
+            let message = sentences.joined(separator: "。")
+            guard !message.isEmpty else {
+                preconditionFailure("Reported recovery failures must include at least one issue")
+            }
+            if !hasRecoveries && (!scanFailures.isEmpty || !failedMaintenance.isEmpty) {
+                presentation.processingState = .partialFailure(message)
+            }
+            presentation.recoveryStatusText = message
+
             for failure in scanFailures {
                 report(EngineFailures.failure(
                     code: .filesystem, message: "復旧できないセッションがあります: \(failure.message)", stage: .recovery,
@@ -210,16 +307,18 @@ extension EngineApplicationCore {
             }
         case let .failed(reason):
             scanFailed = true
+            presentation.processingState = .partialFailure(reason)
+            presentation.recoveryStatusText = "未完了セッションを復旧できませんでした: \(reason)"
             report(EngineFailures.failure(
                 code: .filesystem, message: "未完了セッションを復旧できませんでした: \(reason)", stage: .recovery,
                 sessionID: nil, severity: .error, recoveryAction: .restart
             ))
-        case let .retryFailed(reason):
-            report(EngineFailures.failure(
-                code: .filesystem, message: "保留中の判定を確認できませんでした: \(reason)", stage: .decisions,
-                sessionID: nil, severity: .error, recoveryAction: .retry
-            ))
+        case .retryEmpty:
+            preconditionFailure("Windows engine does not retry deferred decisions through recovery events")
+        case .retryFailed:
+            preconditionFailure("Windows engine does not retry deferred decisions through recovery events")
         }
+        stateDidChange()
     }
 
     func runStartupRecovery() async {
@@ -248,6 +347,10 @@ extension EngineApplicationCore {
             recoveryStatus = .completed
         } else {
             recoveryStatus = setupStatus == .ready ? .running : .pending
+        }
+        if recoveryStatus == .completed,
+           presentation.recoveryStatusText?.hasPrefix("未完了の文字起こしを復旧しています（") == true {
+            presentation.recoveryStatusText = nil
         }
     }
 }

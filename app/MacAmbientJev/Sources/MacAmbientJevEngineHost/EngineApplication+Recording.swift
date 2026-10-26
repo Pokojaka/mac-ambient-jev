@@ -35,6 +35,12 @@ extension EngineApplicationCore: EngineRecordingHandling {
         }
 
         // Claim the recording before the first suspension so a second start sees a busy engine.
+        presentation.isSilent = false
+        presentation.isWaitingForDevice = false
+        presentation.audioGapCount = 0
+        presentation.liveFailureNotices.removeAll()
+        presentation.processingState = .idle
+        presentation.processingStatusText = nil
         recording.requestPermission()
         finishOutcomes.removeAll()
         let sessionID = UUID()
@@ -65,6 +71,7 @@ extension EngineApplicationCore: EngineRecordingHandling {
             guard recording.beginStopping(sessionID: sessionID) else {
                 preconditionFailure("a recording lifecycle in .recording begins stopping")
             }
+            setRecordingStatus("録音を保存しています", tone: .neutral)
             stateDidChange()
             await runStop(sessionID: sessionID, failureMessage: nil)
         case .stopping:
@@ -98,8 +105,9 @@ extension EngineApplicationCore: EngineRecordingHandling {
 
     func captureDidFail(sessionID: UUID, message: String) {
         guard recording.beginStopping(sessionID: sessionID) else { return }
+        setRecordingStatus(message, tone: .error)
         isShuttingDown = true
-        pauseGate.pause()
+        processingCoordinator.requestPause()
         report(EngineFailures.failure(
             code: .captureFailure, message: message, stage: .capture, sessionID: sessionID,
             severity: .fatal, recoveryAction: .reprocess
@@ -113,6 +121,32 @@ extension EngineApplicationCore: EngineRecordingHandling {
         }
     }
 
+    func captureDeviceLost(sessionID: UUID, lastReopenError: String?) {
+        guard recording.beginStopping(sessionID: sessionID) else { return }
+        presentation.isWaitingForDevice = false
+        presentation.isSilent = false
+        setRecordingStatus("録音を保存しています", tone: .neutral)
+        stateDidChange()
+        stopTask = Task { @MainActor [self] in
+            await liveCoordinator.finishRecording(
+                sessionID: sessionID, failureMessage: nil, processing: processingCoordinator, effects: self
+            )
+            if case .saved? = finishOutcomes[sessionID], !isShuttingDown {
+                let message = "録音デバイスが30秒以内に復帰しなかったため録音を停止しました。録音は保存されています"
+                report(EngineFailures.failure(
+                    code: .deviceLost, message: message, stage: .capture, sessionID: sessionID,
+                    severity: .warning, recoveryAction: .selectDevice,
+                    details: lastReopenError.map {
+                        [EngineFailures.detail(domain: "capture", code: "reopen", message: $0)]
+                    } ?? []
+                ))
+                setRecordingStatus(message, tone: .warning)
+                stateDidChange()
+            }
+            stopTask = nil
+        }
+    }
+
     var captureSourceForStart: CaptureSource? {
         guard let attempt = startAttempt else { return nil }
         return attempt.source == .microphone ? .microphone : .systemAudio
@@ -123,6 +157,7 @@ extension EngineApplicationCore: EngineRecordingHandling {
 
 extension EngineApplicationCore: RecordingStartEffects {
     func recordingStartDidBegin(sessionID: UUID) {
+        setRecordingStatus(UserFacingStatus.startingRecording.text, tone: .neutral)
         stateDidChange()
     }
 
@@ -151,12 +186,39 @@ extension EngineApplicationCore: RecordingStartEffects {
                     severity: .warning, recoveryAction: .none
                 ))
             },
+            onDropouts: { [weak self] count in
+                guard let self, self.recording.sessionID == sessionID else { return }
+                self.presentation.audioGapCount = count
+                self.stateDidChange()
+            },
             onSilenceChanged: { [weak self] silent in
-                guard let self, silent, self.recording.sessionID == sessionID else { return }
-                self.report(EngineFailures.failure(
-                    code: .captureFailure, message: "音声が30秒以上無音です", stage: .capture, sessionID: sessionID,
-                    severity: .warning, recoveryAction: .none
-                ))
+                guard let self,
+                      self.recording.sessionID == sessionID,
+                      self.recording.phase == .recording else { return }
+                self.presentation.isSilent = self.presentation.isWaitingForDevice ? false : silent
+                self.stateDidChange()
+            },
+            onDeviceWaitingChanged: { [weak self] isWaiting in
+                guard let self,
+                      self.recording.sessionID == sessionID,
+                      self.recording.phase == .recording else { return }
+                self.presentation.isWaitingForDevice = isWaiting
+                self.presentation.isSilent = false
+                if isWaiting {
+                    self.setRecordingStatus("録音デバイスの復帰を待っています", tone: .warning)
+                } else {
+                    guard let activeRecording = self.activeRecording else {
+                        preconditionFailure("a device wait update has an active recording source")
+                    }
+                    self.setRecordingStatus(
+                        activeRecording.source == .microphone ? "マイクを録音中" : "システム音声を録音中",
+                        tone: .recording
+                    )
+                }
+                self.stateDidChange()
+            },
+            onDeviceLost: { [weak self] lastReopenError in
+                self?.captureDeviceLost(sessionID: sessionID, lastReopenError: lastReopenError)
             }
         )
         do {
@@ -181,6 +243,13 @@ extension EngineApplicationCore: RecordingStartEffects {
     }
 
     func recordingDidStart(sessionID: UUID) {
+        guard let activeRecording else {
+            preconditionFailure("a started recording has an active source")
+        }
+        setRecordingStatus(
+            activeRecording.source == .microphone ? "マイクを録音中" : "システム音声を録音中",
+            tone: .recording
+        )
         stateDidChange()
     }
 
@@ -200,6 +269,7 @@ extension EngineApplicationCore: RecordingStartEffects {
 
     func liveSessionStartDidFail(sessionID: UUID, error: any Error) {
         liveTranscription.vadFailureText = error.localizedDescription
+        addLiveFailureNotice("録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)")
         report(EngineFailures.failure(
             code: .processingFailure,
             message: "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)",
@@ -210,6 +280,7 @@ extension EngineApplicationCore: RecordingStartEffects {
 
     func recordingStartWillCleanUp() {
         captureSession = nil
+        presentation.isSilent = false
     }
 
     func recordingStartDidFail(_ failure: RecordingStartFailure) {
@@ -240,6 +311,17 @@ extension EngineApplicationCore: RecordingStartEffects {
             }
             startAttempt?.error = EngineFailures.commandError(code, message, stage: .capture, recoveryAction: .retry)
         }
+        guard let error = startAttempt?.error else {
+            preconditionFailure("a failed recording start has an error")
+        }
+        let tone: EngineRecordingTone
+        switch failure {
+        case .cancelled:
+            tone = .neutral
+        case .failed:
+            tone = .error
+        }
+        setRecordingStatus(error.message, tone: tone)
         stateDidChange()
     }
 
@@ -299,19 +381,25 @@ extension EngineApplicationCore: RecordingFinishEffects {
         return try await captureSession.stop()
     }
 
-    func captureStopped(dropoutCount: UInt64) {}
+    func captureStopped(dropoutCount: UInt64) {
+        presentation.audioGapCount = dropoutCount
+        stateDidChange()
+    }
 
     func recordingDidFinish(_ outcome: RecordingFinishOutcome) {
         let sessionID = recording.sessionID
         recording.finish()
         activeRecording = nil
+        presentation.isSilent = false
+        presentation.isWaitingForDevice = false
         if let sessionID { finishOutcomes[sessionID] = outcome }
         switch outcome {
         case let .failed(message):
             let failureMessage = message ?? "録音の保存に失敗しました"
+            setRecordingStatus(failureMessage, tone: .error)
             let shouldSignalController = !isShuttingDown
             isShuttingDown = true
-            pauseGate.pause()
+            processingCoordinator.requestPause()
             report(EngineFailures.failure(
                 code: .captureFailure, message: failureMessage, stage: .capture, sessionID: sessionID,
                 severity: .fatal, recoveryAction: .reprocess
@@ -320,7 +408,29 @@ extension EngineApplicationCore: RecordingFinishEffects {
                 // Yielding a capture-failed event never waits on the stop task that is finishing this callback.
                 events.captureFailed(failureMessage)
             }
-        case let .saved(result, failureMessage, vadFailureText, _):
+        case let .saved(result, failureMessage, vadFailureText, vadSegmentCount):
+            if let failureMessage {
+                setRecordingStatus(failureMessage, tone: .error)
+            } else if let release = result.systemAudioReleaseFailure {
+                setRecordingStatus("録音は保存しましたが、\(release)", tone: .warning)
+            } else if result.didOverflow {
+                setRecordingStatus(
+                    "録音は保存しましたが、一部の音声が欠落した可能性があります。", tone: .warning
+                )
+            } else if let vadFailureText {
+                setRecordingStatus(
+                    "録音を保存しました。発話検出を後で再実行します: \(vadFailureText)", tone: .warning
+                )
+            } else {
+                let checkpoint = result.checkpoint
+                precondition(checkpoint.sampleRate.isFinite && checkpoint.sampleRate > 0)
+                let durationSeconds = Double(checkpoint.committedFrames) / checkpoint.sampleRate
+                let segmentSuffix = vadSegmentCount > 0 ? "・発話 \(vadSegmentCount)区間" : ""
+                setRecordingStatus(
+                    "録音を保存しました（\(Self.formatRecordingDuration(durationSeconds))\(segmentSuffix)）",
+                    tone: .neutral
+                )
+            }
             if let release = result.systemAudioReleaseFailure {
                 report(EngineFailures.failure(
                     code: .captureFailure, message: "録音は保存しましたが、\(release)", stage: .capture, sessionID: sessionID,
@@ -339,7 +449,6 @@ extension EngineApplicationCore: RecordingFinishEffects {
                     stage: .vad, sessionID: sessionID, severity: .warning, recoveryAction: .reprocess
                 ))
             }
-            _ = failureMessage
         }
         stateDidChange()
     }
@@ -360,33 +469,68 @@ extension EngineApplicationCore: LiveTranscriptionEffects {
     }
 
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
-        { _ in }
+        { [weak self] status in
+            let text = Self.processorPresentationText(status)
+            await MainActor.run {
+                guard let self,
+                      self.recording.sessionID == sessionID,
+                      self.recording.phase == .recording else { return }
+                let isDecisionDeferred = text.hasPrefix(UserFacingStatus.decisionDeferred.text)
+                let isSaveFailure = text.hasPrefix("発話文の判定を保存できませんでした")
+                let isLiveDecisionFailure = text.hasPrefix("ライブの発話文判定に失敗しました")
+                if isDecisionDeferred || isSaveFailure || isLiveDecisionFailure {
+                    self.liveTranscription.contentPriorityStatus[sessionID] = text
+                    self.addLiveFailureNotice(text)
+                }
+                self.presentation.processingStatusText =
+                    self.liveTranscription.contentPriorityStatus[sessionID] ?? text
+                self.stateDidChange()
+            }
+        }
     }
 
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
-        { [weak self] segments, _ in
+        { [weak self] segments, state in
             await MainActor.run {
                 guard let self,
                       self.recordingSessionID == sessionID
                         || (self.processingQueue.currentSessionID == sessionID
                             && self.liveCoordinator.isDraining(sessionID: sessionID)) else { return }
                 self.transcriptDidUpdate(sessionID: sessionID, segments: segments)
+                self.presentation.processingState = state
+                self.stateDidChange()
             }
         }
     }
 
     func liveDidChange(_ event: LiveTranscriptionEvent) {
         switch event {
-        case .started, .vadProgress, .vadSegmentsEnqueued, .thermal:
+        case .started, .vadProgress, .thermal:
             break
+        case let .vadSegmentsEnqueued(sessionID, segmentCount):
+            guard recording.sessionID == sessionID else { return }
+            if presentation.processingState != .backlogged,
+               liveTranscription.contentPriorityStatus[sessionID] == nil {
+                presentation.processingStatusText =
+                    "録音中に発話を検出しています（\(segmentCount)区間）"
+                stateDidChange()
+            }
         case let .startFailed(sessionID, message):
-            reportLiveWarning(sessionID, "録音は継続しています。ライブ文字起こしを開始できませんでした: \(message)", stage: .asr)
+            let text = "録音は継続しています。ライブ文字起こしを開始できませんでした: \(message)"
+            reportLiveWarning(sessionID, text, stage: .asr)
+            if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         case let .registrationFailed(sessionID, message):
-            reportLiveWarning(sessionID, "録音は継続しています。発話区間を保存できませんでした: \(message)", stage: .vad)
+            let text = "録音は継続しています。発話区間を保存できませんでした: \(message)"
+            reportLiveWarning(sessionID, text, stage: .vad)
+            if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         case let .recognitionFailed(sessionID, message):
-            reportLiveWarning(sessionID, "録音は継続しています。ライブ文字起こしを停止しました: \(message)", stage: .asr)
+            let text = "録音は継続しています。ライブ文字起こしを停止しました: \(message)"
+            reportLiveWarning(sessionID, text, stage: .asr)
+            if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         case let .vadFailed(sessionID, message):
-            reportLiveWarning(sessionID, "録音は継続しています。発話検出を停止しました: \(message)", stage: .vad)
+            let text = "録音は継続しています。発話検出を停止しました: \(message)"
+            reportLiveWarning(sessionID, text, stage: .vad)
+            if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         }
     }
 

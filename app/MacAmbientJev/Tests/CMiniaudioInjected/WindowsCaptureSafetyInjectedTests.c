@@ -359,6 +359,74 @@ static int mja_test_session_enumerator_error_is_not_retried(void)
     return result && mja_test_manager_release_calls == 1;
 }
 
+static int mja_test_environment_destroy_reports_device_loss(void)
+{
+    mja_capture_environment *environment =
+        (mja_capture_environment *)calloc(1, sizeof(*environment));
+    int32_t monitor_error = 0;
+    int32_t result;
+
+    if (environment == NULL) return 0;
+    mja_environment_state_init(&environment->state);
+    mja_environment_state_publish(&environment->state, 0, 0, -1, 1167);
+    result = mja_capture_environment_destroy(environment, &monitor_error);
+    return result == 0 && monitor_error == 1167;
+}
+
+static int mja_test_environment_destroy_reports_operational_error_separately(void)
+{
+    mja_capture_environment *environment =
+        (mja_capture_environment *)calloc(1, sizeof(*environment));
+    int32_t monitor_error = 0;
+    int32_t result;
+
+    if (environment == NULL) return 0;
+    mja_environment_state_init(&environment->state);
+    mja_environment_state_publish(&environment->state, 0, 0, -1, (int32_t)ERROR_ACCESS_DENIED);
+    result = mja_capture_environment_destroy(environment, &monitor_error);
+    return result == 0 && monitor_error == (int32_t)ERROR_ACCESS_DENIED;
+}
+
+static int mja_test_environment_destroy_preserves_teardown_error(void)
+{
+    mja_capture_environment *environment =
+        (mja_capture_environment *)calloc(1, sizeof(*environment));
+    int32_t monitor_error = 0;
+    int32_t result;
+
+    if (environment == NULL) return 0;
+    mja_environment_state_init(&environment->state);
+    mja_environment_state_publish(&environment->state, 0, 0, -1, 1167);
+    environment->ready_event = (HANDLE)(uintptr_t)1;
+    mja_test_interception_enabled = 1;
+    mja_test_close_calls = 0;
+
+    result = mja_capture_environment_destroy(environment, &monitor_error);
+
+    mja_test_interception_enabled = 0;
+    mja_test_set_event_failure = 0;
+    return result == (int32_t)ERROR_INVALID_HANDLE && monitor_error == 1167 &&
+        mja_test_close_calls == 1;
+}
+
+static int mja_test_environment_destroy_rejects_invalid_arguments(void)
+{
+    mja_capture_environment *environment;
+    int32_t monitor_error = 123;
+    int32_t result;
+
+    result = mja_capture_environment_destroy(NULL, &monitor_error);
+    if (result != (int32_t)ERROR_INVALID_PARAMETER || monitor_error != 0) return 0;
+    if (mja_capture_environment_destroy(NULL, NULL) != (int32_t)ERROR_INVALID_PARAMETER) return 0;
+
+    environment = (mja_capture_environment *)calloc(1, sizeof(*environment));
+    if (environment == NULL) return 0;
+    mja_environment_state_init(&environment->state);
+    result = mja_capture_environment_destroy(environment, NULL);
+    free(environment);
+    return result == (int32_t)ERROR_INVALID_PARAMETER;
+}
+
 static int mja_test_run(const char *name, int (*test)(void))
 {
     int passed = test();
@@ -374,5 +442,9 @@ int main(void)
     passed &= mja_test_run("active probe reuse and invalidation", mja_test_active_reuse_and_invalidation);
     passed &= mja_test_run("GetState failure invalidation", mja_test_get_state_failure_invalidation);
     passed &= mja_test_run("session enumerator error propagation", mja_test_session_enumerator_error_is_not_retried);
+    passed &= mja_test_run("environment destroy reports device loss", mja_test_environment_destroy_reports_device_loss);
+    passed &= mja_test_run("environment destroy reports operational error", mja_test_environment_destroy_reports_operational_error_separately);
+    passed &= mja_test_run("environment destroy preserves teardown error", mja_test_environment_destroy_preserves_teardown_error);
+    passed &= mja_test_run("environment destroy rejects invalid arguments", mja_test_environment_destroy_rejects_invalid_arguments);
     return passed ? 0 : 1;
 }

@@ -8,6 +8,12 @@ private enum ServiceTestFailure: Error {
     case missingDecisionResources
 }
 
+private struct ServiceDecisionProviderFailure: LocalizedError {
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
 private final class ServiceTestCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
@@ -107,7 +113,8 @@ private struct FakeServiceVAD: FinalTranscriptVADSegmenter {
 }
 
 private actor FakeServiceDecisionProvider: DecisionProvider {
-    private let failRequests: Bool
+    private var failRequests: Bool
+    private var retryFailureMessage: String?
     private var boundaryRequestCount = 0
     private var priorityRequestCount = 0
 
@@ -115,9 +122,15 @@ private actor FakeServiceDecisionProvider: DecisionProvider {
         self.failRequests = failRequests
     }
 
+    func configureRetryFailure(_ message: String) {
+        failRequests = false
+        retryFailureMessage = message
+    }
+
     func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
         boundaryRequestCount += 1
         if failRequests { throw ServiceTestFailure.expected }
+        if let retryFailureMessage { throw ServiceDecisionProviderFailure(message: retryFailureMessage) }
         return ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.95) }),
             continuationProbability: request.next == nil ? nil : 0.05,
@@ -129,6 +142,7 @@ private actor FakeServiceDecisionProvider: DecisionProvider {
     func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
         priorityRequestCount += 1
         if failRequests { throw ServiceTestFailure.expected }
+        if let retryFailureMessage { throw ServiceDecisionProviderFailure(message: retryFailureMessage) }
         let decision = try ContentPriorityDecision(
             priority: .primary,
             confidence: 0.95,
@@ -226,6 +240,27 @@ private actor ServiceEventRecorder {
     func createdSessions() -> [CreatedServiceSession] { created }
     func exportCount() -> Int { exports.count }
     func cleanupFailureCount() -> Int { cleanupFailures.count }
+}
+
+private actor ServiceCallbackRecorder {
+    private var recordedStatuses: [String] = []
+    private var recordedUpdateStates: [ProcessingState] = []
+
+    func recordStatus(_ status: String) {
+        recordedStatuses.append(status)
+    }
+
+    func recordUpdateState(_ state: ProcessingState) {
+        recordedUpdateStates.append(state)
+    }
+
+    func statuses() -> [String] { recordedStatuses }
+
+    func partialFailureUpdateCount() -> Int {
+        recordedUpdateStates.reduce(into: 0) { count, state in
+            if case .partialFailure = state { count += 1 }
+        }
+    }
 }
 
 private struct ServiceTestHarness {
@@ -635,6 +670,66 @@ struct SessionFileProcessingServiceTests {
         #expect(await recorder.exportCount() == 0)
         #expect(decisions.providerLoadCount.snapshot() == 1)
         #expect(await decisions.provider.requestCounts().boundary == 1)
+    }
+
+    @Test
+    func failedDecisionRetryKeepsPublishedSnapshotAndDoesNotExport() async throws {
+        let environment = try ServiceEnvironment()
+        defer { environment.remove() }
+        let audioURL = try environment.makeInput()
+        let outputURL = environment.root.appending(path: "retry-must-not-export.json")
+        let decisions = ServiceDecisionHarness(failRequests: true)
+        let harness = ServiceTestHarness(environment: environment, decisions: decisions)
+        let recorder = ServiceEventRecorder()
+
+        await #expect(throws: SessionFileProcessingError.self) {
+            _ = try await importedSession(
+                using: harness,
+                audioURL: audioURL,
+                outputURL: outputURL,
+                withDecisions: true,
+                recorder: recorder
+            )
+        }
+
+        let created = try #require(await recorder.createdSessions().first)
+        let metadataStore = ProcessingMetadataStore(sessionURL: created.url)
+        let published = try #require(try metadataStore.load())
+        let publishedRows = try materializedRows(sessionURL: created.url)
+        #expect(published.finalizationAttempt?.state == .complete)
+        #expect(!published.pendingDecisionTargets.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+        #expect(await recorder.exportCount() == 0)
+
+        let providerFailure = "テスト判定エンジンに失敗しました"
+        let expectedMessage = "発話文の判定を再試行できませんでした: \(providerFailure)"
+        await decisions.provider.configureRetryFailure(providerFailure)
+        let retryCallbacks = ServiceCallbackRecorder()
+        let result = try await harness.service.resume(
+            SessionFileProcessingService.ResumeRequest(
+                sessionID: created.id,
+                outputURL: outputURL,
+                pacingMode: .normal,
+                withDecisions: true
+            ),
+            callbacks: SessionFileProcessingService.Callbacks(
+                onEvent: { await recorder.record($0) },
+                onStatus: { await retryCallbacks.recordStatus($0.text) },
+                onUpdate: { _, state in await retryCallbacks.recordUpdateState(state) },
+                shouldPause: { false },
+                onPhase: { _ in }
+            )
+        )
+
+        #expect(result.disposition == .failed)
+        #expect(result.message == expectedMessage)
+        #expect(await retryCallbacks.statuses().filter { $0 == expectedMessage }.count == 1)
+        let partialFailureUpdateCount = await retryCallbacks.partialFailureUpdateCount()
+        #expect(partialFailureUpdateCount == 0)
+        #expect(try metadataStore.load() == published)
+        #expect(try materializedRows(sessionURL: created.url) == publishedRows)
+        #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+        #expect(await recorder.exportCount() == 0)
     }
 
     @Test(arguments: [false, true])

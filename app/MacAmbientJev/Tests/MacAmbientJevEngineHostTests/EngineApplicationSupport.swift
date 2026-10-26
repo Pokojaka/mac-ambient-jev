@@ -110,6 +110,7 @@ struct FakeTimelineBuilder: ImportedAudioTimelineBuilding {
 
 final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable {
     let calls = CallCounter()
+    let usageCounter = DecisionUsageCounter()
     private let failure = LockedBox<EngineAdapterError?>(nil)
 
     func failPrepare(with error: EngineAdapterError?) {
@@ -121,6 +122,19 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         if let failure = failure.get() { throw failure }
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        await usageCounter.snapshot()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        throw EngineAdapterError(
+            code: .modelMissing,
+            message: "テスト用の発話文モデルはインストールされていません",
+            recoveryAction: .prepareModels,
+            details: []
+        )
     }
 
     func makeInference(settings: EngineSettings) throws -> EngineInference {

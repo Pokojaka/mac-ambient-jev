@@ -32,19 +32,28 @@ public struct EngineAdapterError: Error, LocalizedError, Sendable, Equatable {
 // MARK: Capture
 
 public struct EngineCaptureCallbacks: Sendable {
-    /// Capture failed after it started. The engine stops the recording and finalizes the saved audio.
+    /// Capture failure is fatal: the engine pauses processing, reports the failure, stops capture, and signals its controller.
     public let onFailure: @MainActor @Sendable (String) -> Void
     public let onWarning: @MainActor @Sendable (String) -> Void
+    public let onDropouts: @MainActor @Sendable (UInt64) -> Void
     public let onSilenceChanged: @MainActor @Sendable (Bool) -> Void
+    public let onDeviceWaitingChanged: @MainActor @Sendable (Bool) -> Void
+    public let onDeviceLost: @MainActor @Sendable (String?) -> Void
 
     public init(
         onFailure: @escaping @MainActor @Sendable (String) -> Void,
         onWarning: @escaping @MainActor @Sendable (String) -> Void,
-        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void
+        onDropouts: @escaping @MainActor @Sendable (UInt64) -> Void,
+        onSilenceChanged: @escaping @MainActor @Sendable (Bool) -> Void,
+        onDeviceWaitingChanged: @escaping @MainActor @Sendable (Bool) -> Void,
+        onDeviceLost: @escaping @MainActor @Sendable (String?) -> Void
     ) {
         self.onFailure = onFailure
         self.onWarning = onWarning
+        self.onDropouts = onDropouts
         self.onSilenceChanged = onSilenceChanged
+        self.onDeviceWaitingChanged = onDeviceWaitingChanged
+        self.onDeviceLost = onDeviceLost
     }
 }
 
@@ -123,4 +132,9 @@ public protocol EngineInferenceProviding: Sendable {
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws
     /// The engines of the profile. Models load on first use; a failure there fails the operation.
     func makeInference(settings: EngineSettings) throws -> EngineInference
+    /// Returns current-process accounting shared by the process's `DecisionCoordinator`.
+    func decisionUsage() async throws -> DecisionUsageSnapshot
+    /// Returns the installed, validated clause-tagger identity after metadata validation and loading.
+    /// This performs no inference or accounting and is independent of settings and preparation.
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity
 }

@@ -33,7 +33,7 @@ import MacAmbientJevEngineProtocol
             let nextOffset = offset + pageRows.count
             let page = try EngineTranscriptPage(
                 sessionID: "projection-test", revision: try EngineID(1), rows: pageRows,
-                nextCursor: nextOffset < rows.count ? String(nextOffset) : nil
+                nextCursor: nextOffset < rows.count ? String(nextOffset) : nil, previousCursor: nil
             )
             let output = try EngineOutput(
                 version: 1, sequence: try EngineID(UInt64(pageCount + 1)), requestID: try EngineID(1),

@@ -158,7 +158,7 @@ struct FinalTranscriptPipeline: Sendable {
             try Task.checkCancellation()
         }
 
-        await onStatus(UserFacingStatus.detectingSpeech.text)
+        await onStatus(.activity(.detectingSpeech))
         try await startRun(.segmentation, segmentationRunID, vadSegmenter.provenance)
         let vadSegments = try await vadSegmenter.segment(reader: audio, runID: segmentationRunID)
         try validateVADSegments(vadSegments, runID: segmentationRunID)
@@ -176,7 +176,7 @@ struct FinalTranscriptPipeline: Sendable {
                 sessionURL: layout.sessionURL
             )
 
-            await onStatus(UserFacingStatus.preparingDiarization.text)
+            await onStatus(.activity(.preparingDiarization))
             try await startRun(.diarization, diarizationRunID, diarization.provenance)
             let diarizationCoordinator = DiarizationCoordinator(
                 sessionID: sessionID,
@@ -185,7 +185,7 @@ struct FinalTranscriptPipeline: Sendable {
                 engine: diarization,
                 materializer: materializer
             )
-            await onStatus(UserFacingStatus.diarizing.text)
+            await onStatus(.activity(.diarizing))
             let diarizationResult = try await diarizationCoordinator.process(
                 fileURL: diarizationInputURL,
                 canonicalSampleRate: info.sampleRate,
@@ -201,7 +201,7 @@ struct FinalTranscriptPipeline: Sendable {
         }
 
         if !vadSegments.isEmpty {
-            await onStatus(UserFacingStatus.preparingASR.text)
+            await onStatus(.activity(.preparingASR))
         }
         try await startRun(.asr, asrRunID, asr.provenance)
         var pendingSince: [String: Date] = [:]

@@ -348,7 +348,7 @@ public struct SessionFileProcessingService: Sendable {
         let processor = makeProcessor(paths: paths, resources: resources)
         let collector = ProcessingResultCollector()
         do {
-            await callbacks.onStatus("処理を開始します: \(request.audioURL.path)")
+            await callbacks.onStatus(.message("処理を開始します: \(request.audioURL.path)"))
             let result = await processor.processSession(
                 sessionID: retained.finalize.sessionID,
                 pacingMode: request.pacingMode,
@@ -442,13 +442,17 @@ public struct SessionFileProcessingService: Sendable {
         let processor = makeProcessor(paths: paths, resources: resources)
         let collector = ProcessingResultCollector()
         do {
-            await processor.retryContentPrioritySession(
+            let result = await processor.retryContentPrioritySession(
                 sessionID: request.sessionID,
                 boundarySegments: boundarySegments,
                 clauses: clauses,
                 onStatus: callbacks.onStatus,
                 onUpdate: updateHandler(callbacks: callbacks, collector: collector)
             )
+            guard result.disposition == .completed else {
+                await processor.releaseIdleResources()
+                return result
+            }
             let state = await collector.snapshot().state
             guard state == .complete else {
                 throw SessionFileProcessingError.processingFailed(

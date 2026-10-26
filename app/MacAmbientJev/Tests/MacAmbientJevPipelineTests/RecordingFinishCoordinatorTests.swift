@@ -189,7 +189,7 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
     func retryContentPrioritySession(
         sessionID: UUID, boundarySegments: [SegmentTextReference], clauses: [ClauseReference],
         onStatus: @escaping NativeSessionProcessor.StatusHandler, onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async {
+    ) async -> SessionProcessingResult {
         _ = (sessionID, boundarySegments, clauses, onStatus, onUpdate)
         preconditionFailure("Unexpected content-priority retry")
     }

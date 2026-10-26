@@ -379,6 +379,6 @@ jobs:
         run: |
           $build = 'app/MacAmbientJev/.build'
           if (Test-Path -LiteralPath $build -PathType Container) {
-            python -c "import pathlib,sys; root=pathlib.Path(sys.argv[1]); print(sum(path.stat().st_size for path in root.rglob('*') if path.is_file()))" $build
+            python scripts/report_build_size.py $build
             if ($LASTEXITCODE -ne 0) { throw 'Unable to measure SwiftPM build size' }
           }

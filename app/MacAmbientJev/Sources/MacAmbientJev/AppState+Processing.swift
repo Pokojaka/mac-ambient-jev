@@ -213,7 +213,8 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
     }
 
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
-        { [weak self] text in
+        { [weak self] status in
+            let text = status.text
             await MainActor.run {
                 guard let self else { return }
                 self.processingStatusText = text

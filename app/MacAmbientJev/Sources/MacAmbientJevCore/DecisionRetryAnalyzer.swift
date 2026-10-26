@@ -27,20 +27,46 @@ public struct DecisionRetryAnalyzer: Sendable {
             ($0.header.eventType == "processing.run.started" || $0.header.eventType == "processing.run.completed")
                 && $0.header.processingRunID.map(active.contains) == true
         }.map(\.header.eventSeq).max() ?? 0
-        var found = false
+        struct CandidateRun {
+            let eventSeq: UInt64
+            let stage: ProcessingStage
+        }
+        var candidates: [String: CandidateRun] = [:]
         for line in decoded where line.header.eventSeq > watermark && line.header.eventType == "processing.run.started" {
             guard let object = try JSONSerialization.jsonObject(with: line.data) as? [String: Any],
                   let raw = object["payload"] as? [String: Any],
-                  let stage = raw["stage"] as? String,
-                  stage == ProcessingStage.clauseBoundary.rawValue || stage == ProcessingStage.contentPriority.rawValue,
+                  let rawStage = raw["stage"] as? String,
+                  rawStage == ProcessingStage.clauseBoundary.rawValue || rawStage == ProcessingStage.contentPriority.rawValue,
                   let provenance = raw["provenance"] as? [String: Any],
                   let configuration = provenance["configuration"] as? [String: Any],
                   let mode = configuration["mode"] as? String, mode == "final" || mode == "retry" else { continue }
-            _ = try line.body(PayloadBody<ProcessingRunStartedPayload>.self)
+            let started = try line.body(PayloadBody<ProcessingRunStartedPayload>.self).payload
             let runID = try line.requiredRunID()
-            if !active.contains(runID) { found = true }
+            guard !active.contains(runID) else { continue }
+            if candidates[runID] == nil {
+                candidates[runID] = CandidateRun(eventSeq: line.header.eventSeq, stage: started.stage)
+            }
         }
-        return found
+
+        var completedRuns: Set<String> = []
+        var failedRuns: Set<String> = []
+        for line in decoded where line.header.eventType == "processing.run.completed" {
+            guard let runID = line.header.processingRunID, let candidate = candidates[runID],
+                  line.header.eventSeq > candidate.eventSeq else { continue }
+            let completed = try line.body(PayloadBody<ProcessingRunCompletedPayload>.self).payload
+            _ = try line.requiredRunID()
+            guard completed.stage == candidate.stage,
+                  completed.completedCount >= 0, completed.failedCount >= 0 else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(
+                    runID: runID, reason: "run の完了記録が開始記録と一致しません"
+                )
+            }
+            guard completedRuns.insert(runID).inserted else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: runID, reason: "run の完了記録が重複しています")
+            }
+            if !completed.succeeded { failedRuns.insert(runID) }
+        }
+        return candidates.keys.contains { !failedRuns.contains($0) }
     }
 
     public func retryTargets(lines: [Data], metadata: ProcessingMetadata) throws -> DecisionRetryTargets {

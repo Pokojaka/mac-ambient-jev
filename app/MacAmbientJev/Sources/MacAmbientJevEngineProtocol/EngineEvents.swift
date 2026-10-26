@@ -44,24 +44,28 @@ public struct EngineExportResult: Codable, Equatable, Sendable {
 public enum EngineResult: Codable, Equatable, Sendable {
     case hello(EngineReadyPayload)
     case stateGet(EngineState)
+    case diagnosticsGet(EngineDiagnosticsResult)
     case devicesList(EngineDevicesResult)
     case recordingStart(EngineSessionPayload)
     /// Completion means capture stopped durably and finalization was queued, not that the transcript is final.
     case recordingStop(EngineSessionPayload)
     /// Completion means the retained import was queued for finalization, not that the transcript is final.
     case sessionImport(EngineSessionPayload)
+    case sessionInspect(EngineSessionSummary)
     /// Completion is terminal: the requested reprocessing work has finished.
     case sessionReprocess(EngineSessionPayload)
     /// Completion is terminal: the requested decision retry has finished.
     case sessionRetryDecisions(EngineSessionPayload)
     case sessionList(EngineSessionListResult)
     case transcriptRead(EngineTranscriptPage)
+    case transcriptRowDetails(EngineTranscriptRowDetailsPage)
     case transcriptWatch(EngineTranscriptPage)
     /// Completion means the bundle has been published.
     case sessionExport(EngineExportResult)
     case settingsGet(EngineSettingsResult)
     case settingsReplace(EngineSettingsResult)
     case modelsPrepare
+    case modelsInspect(EngineModelsInspection)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -73,19 +77,23 @@ public enum EngineResult: Codable, Equatable, Sendable {
         switch self {
         case .hello: .hello
         case .stateGet: .stateGet
+        case .diagnosticsGet: .diagnosticsGet
         case .devicesList: .devicesList
         case .recordingStart: .recordingStart
         case .recordingStop: .recordingStop
         case .sessionImport: .sessionImport
+        case .sessionInspect: .sessionInspect
         case .sessionReprocess: .sessionReprocess
         case .sessionRetryDecisions: .sessionRetryDecisions
         case .sessionList: .sessionList
         case .transcriptRead: .transcriptRead
+        case .transcriptRowDetails: .transcriptRowDetails
         case .transcriptWatch: .transcriptWatch
         case .sessionExport: .sessionExport
         case .settingsGet: .settingsGet
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
+        case .modelsInspect: .modelsInspect
         case .shutdown: .shutdown
         }
     }
@@ -108,6 +116,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .hello(try EngineReadyPayload(from: result))
         case .stateGet:
             return .stateGet(try EngineState(from: result))
+        case .diagnosticsGet:
+            return .diagnosticsGet(try EngineDiagnosticsResult(from: result))
         case .devicesList:
             return .devicesList(try EngineDevicesResult(from: result))
         case .recordingStart:
@@ -116,6 +126,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .recordingStop(try EngineSessionPayload(from: result))
         case .sessionImport:
             return .sessionImport(try EngineSessionPayload(from: result))
+        case .sessionInspect:
+            return .sessionInspect(try EngineSessionSummary(from: result))
         case .sessionReprocess:
             return .sessionReprocess(try EngineSessionPayload(from: result))
         case .sessionRetryDecisions:
@@ -124,6 +136,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .sessionList(try EngineSessionListResult(from: result))
         case .transcriptRead:
             return .transcriptRead(try EngineTranscriptPage(from: result))
+        case .transcriptRowDetails:
+            return .transcriptRowDetails(try EngineTranscriptRowDetailsPage(from: result))
         case .transcriptWatch:
             return .transcriptWatch(try EngineTranscriptPage(from: result))
         case .sessionExport:
@@ -135,6 +149,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .modelsPrepare:
             _ = try EngineEmptyPayload(from: result)
             return .modelsPrepare
+        case .modelsInspect:
+            return .modelsInspect(try EngineModelsInspection(from: result))
         case .shutdown:
             _ = try EngineEmptyPayload(from: result)
             return .shutdown
@@ -147,14 +163,20 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .stateGet(state):
             try state.encode(to: encoder)
+        case let .diagnosticsGet(result):
+            try result.encode(to: encoder)
         case let .devicesList(result):
             try result.encode(to: encoder)
         case let .recordingStart(payload), let .recordingStop(payload), let .sessionImport(payload),
              let .sessionReprocess(payload), let .sessionRetryDecisions(payload):
             try payload.encode(to: encoder)
+        case let .sessionInspect(summary):
+            try summary.encode(to: encoder)
         case let .sessionList(result):
             try result.encode(to: encoder)
         case let .transcriptRead(page), let .transcriptWatch(page):
+            try page.encode(to: encoder)
+        case let .transcriptRowDetails(page):
             try page.encode(to: encoder)
         case let .sessionExport(result):
             try result.encode(to: encoder)
@@ -162,6 +184,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try result.encode(to: encoder)
         case .modelsPrepare, .shutdown:
             try EngineEmptyPayload().encode(to: encoder)
+        case let .modelsInspect(inspection):
+            try inspection.encode(to: encoder)
         }
     }
 }
@@ -206,10 +230,6 @@ public enum EngineEventName: String, Codable, CaseIterable, Equatable, Sendable 
         self = value
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
 }
 
 public enum EngineEvent: Codable, Equatable, Sendable {

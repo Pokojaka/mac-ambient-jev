@@ -45,21 +45,38 @@ private enum GatedMutationFailure: Error {
 }
 
 private actor StartupCancellationProbe {
-    private var pauseWasCritical: Bool?
+    private var thermalWasCritical: Bool?
     private var waiter: CheckedContinuation<Bool, Never>?
+    private var cancellationContinuation: CheckedContinuation<Void, Never>?
 
-    func waitForCancellation(pauseGate: EngineProcessingPauseGate) async {
-        while !Task.isCancelled { await Task.yield() }
-        let wasCritical = pauseGate.isCritical
-        pauseWasCritical = wasCritical
+    func waitForCancellation(thermalMonitor: WindowsNoThermalMonitoring) async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    self.cancellationContinuation = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.observeCancellation() }
+        }
+
+        let wasCritical = thermalMonitor.isCritical
+        thermalWasCritical = wasCritical
         let waiter = waiter
         self.waiter = nil
         waiter?.resume(returning: wasCritical)
-        await Task.yield()
+    }
+
+    private func observeCancellation() {
+        let continuation = cancellationContinuation
+        cancellationContinuation = nil
+        continuation?.resume()
     }
 
     func waitUntilObserved() async -> Bool {
-        if let pauseWasCritical { return pauseWasCritical }
+        if let thermalWasCritical { return thermalWasCritical }
         return await withCheckedContinuation { waiter = $0 }
     }
 }
@@ -137,27 +154,73 @@ private struct GatedASREngine: ASREngine {
     func unload() async {}
 }
 
+private struct GatedTestDecisionProvider: DecisionProvider {
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
+            continuationProbability: request.next == nil ? nil : 0.1,
+            fillerRanges: [],
+            inputTokens: 23
+        )
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        let primary = try ContentPriorityDecision(
+            priority: .primary, confidence: 1,
+            probabilities: ["PRIMARY": 1, "LOW_PRIORITY": 0]
+        )
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, primary) }),
+            inputTokens: 23
+        )
+    }
+}
+
 private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchecked Sendable {
     let gate: PreparationGate
     let calls: CallCounter
+    let usageCounter = DecisionUsageCounter()
+    private let decisionProvider: (any DecisionProvider)?
+    private let inspectionProvider = FakeInferenceProvider()
 
-    init(gate: PreparationGate, calls: CallCounter) {
+    init(gate: PreparationGate, calls: CallCounter, decisionProvider: (any DecisionProvider)?) {
         self.gate = gate
         self.calls = calls
+        self.decisionProvider = decisionProvider
     }
 
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 1, total: 1))
     }
 
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        await usageCounter.snapshot()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        try await inspectionProvider.inspectClauseTagger()
+    }
+
     func makeInference(settings: EngineSettings) throws -> EngineInference {
-        EngineInference(
+        let contentPriority: ContentPriorityAccess
+        if let decisionProvider {
+            let identity = try DecisionModelIdentity(
+                backend: "host-test", model: "gated-test-tagger", modelRevision: String(repeating: "a", count: 64)
+            )
+            let usageCounter = self.usageCounter
+            contentPriority = .localTagger({
+                DecisionCoordinator(provider: decisionProvider, identity: identity, usageCounter: usageCounter)
+            }, usageCounter: usageCounter)
+        } else {
+            contentPriority = .disabled
+        }
+        return EngineInference(
             engines: SessionProcessingEngines(
                 asr: GatedASREngine(gate: gate, calls: calls),
                 diarization: FakeDiarizer(calls: calls),
                 finalTranscriptVAD: FakeFinalVAD()
             ),
-            contentPriority: .disabled,
+            contentPriority: contentPriority,
             timelineBuilder: FakeTimelineBuilder(),
             makeLiveVADSession: { _, _, _, runID in MultipleSegmentLiveVAD(segmentationRunID: runID) }
         )
@@ -175,6 +238,14 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         await gate.suspend()
         try await base.prepare(settings: settings, onProgress: onProgress)
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        try await base.decisionUsage()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        try await base.inspectClauseTagger()
     }
 
     func makeInference(settings: EngineSettings) throws -> EngineInference {
@@ -233,7 +304,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30)
             ),
             capture: capture,
-            inference: GatedASRInferenceProvider(gate: gate, calls: calls),
+            inference: GatedASRInferenceProvider(gate: gate, calls: calls, decisionProvider: nil),
             events: events
         )
         let context = EngineRequestContext(requestID: try EngineID(1), events: events)
@@ -255,6 +326,35 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: fixture.context
         )
         return settings
+    }
+
+    @Test func gatedASRInferenceReportsDecisionUsageFromItsProducedInference() async throws {
+        let inferenceProvider = GatedASRInferenceProvider(
+            gate: PreparationGate(), calls: CallCounter(), decisionProvider: GatedTestDecisionProvider()
+        )
+        let inference = try inferenceProvider.makeInference(settings: engineTestSettings())
+        guard case let .localTagger(makeCoordinator, usageCounter) = inference.contentPriority else {
+            Issue.record("decision-enabled inference should provide a local tagger")
+            return
+        }
+        #expect(usageCounter === inferenceProvider.usageCounter)
+
+        let coordinator = try makeCoordinator()
+        let outcome = await coordinator.classifyPriorities([
+            PriorityTextTarget(key: "u0001", text: "決定的なテスト文章です")
+        ])
+        if case .answered = outcome {
+        } else {
+            Issue.record("the deterministic decision provider should answer the priority request")
+        }
+
+        let usage = try await inferenceProvider.decisionUsage()
+        #expect(usage.sendCount == 1)
+        #expect(usage.successCount == 1)
+        #expect(usage.inputTokens == 23)
+        #expect(usage.priorityRequests.sendCount == 1)
+        #expect(usage.priorityRequests.successCount == 1)
+        #expect(usage.priorityRequests.inputTokens == 23)
     }
 
     @Test func profileReplacementIsBusyDuringInitialModelPreparation() async throws {
@@ -368,13 +468,13 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         reacquiredLock.release()
     }
 
-    @Test func shutdownCancelsStartupAfterPausingAndLeavesRootLockToOwner() async throws {
+    @Test func shutdownCancelsStartupWithoutThermalPauseAndLeavesRootLockToOwner() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let rootLock = try ApplicationRootLock.acquire(paths: fixture.app.core.paths)
         let probe = StartupCancellationProbe()
         fixture.app.core.startupTask = Task {
-            await probe.waitForCancellation(pauseGate: fixture.app.core.pauseGate)
+            await probe.waitForCancellation(thermalMonitor: fixture.app.core.thermalMonitor)
         }
 
         var shutdownReturned = false
@@ -387,11 +487,11 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             }
         }
 
-        let pauseWasCriticalOnCancellation = await probe.waitUntilObserved()
-        #expect(pauseWasCriticalOnCancellation)
+        let thermalWasCriticalOnCancellation = await probe.waitUntilObserved()
+        #expect(!thermalWasCriticalOnCancellation)
         await shutdownTask.value
         #expect(shutdownReturned)
-        #expect(fixture.app.core.pauseGate.isCritical)
+        #expect(!fixture.app.core.thermalMonitor.isCritical)
         do {
             let concurrentLock = try ApplicationRootLock.acquire(paths: fixture.app.core.paths)
             concurrentLock.release()

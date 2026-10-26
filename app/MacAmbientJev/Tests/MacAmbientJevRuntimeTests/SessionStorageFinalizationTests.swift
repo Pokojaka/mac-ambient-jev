@@ -171,7 +171,7 @@ private struct Fixture {
             shouldPause: { shouldPause },
             onPhase: { _ in },
             metadataPolicy: .reject,
-            onStatus: { await recorder.record(status: $0) },
+            onStatus: { await recorder.record(status: $0.text) },
             onUpdate: { segments, _ in await recorder.record(segments) }
         )
         return (result, recorder)

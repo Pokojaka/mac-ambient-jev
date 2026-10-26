@@ -355,6 +355,17 @@ targets.append(.testTarget(
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
 targets.append(.testTarget(
+    name: "MacAmbientJevEngineHarnessTests",
+    dependencies: [
+        "MacAmbientJevEngineHarness",
+        "MacAmbientJevCore",
+        "MacAmbientJevEngineHost",
+        "MacAmbientJevEngineProtocol",
+        "MacAmbientJevPortableRuntime"
+    ],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+targets.append(.testTarget(
     name: "MacAmbientJevTranscribeFileTests",
     dependencies: [
         "MacAmbientJevTranscribeFile",

@@ -106,6 +106,70 @@ struct WindowsCaptureSourceTests {
         #expect(result.errors.isEmpty)
     }
 
+    @Test func dropoutCallbacksForwardIncreasingCountsBeforeStop() async throws {
+        let root = try makeWindowsCaptureTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = root.appending(path: "dropout-callbacks.f32le")
+        try writeScriptedFloatFixture([Float](repeating: 0.25, count: 512), to: fixture)
+        let rate = 48_000.0
+        let events: [ScriptedFileCaptureEvent] = [
+            .packet(
+                file: fixture, frameCount: 512, devicePosition: 0,
+                qpc100ns: 10_000_000, flags: 0, originalOffset: 0,
+                originalFrames: 512, delivery: .step
+            ),
+            .packet(
+                file: fixture, frameCount: 512, devicePosition: 640,
+                qpc100ns: scriptedQPC(frame: 640, sampleRate: rate), flags: 0,
+                originalOffset: 0, originalFrames: 512, delivery: .step
+            ),
+            .packet(
+                file: fixture, frameCount: 512, devicePosition: 1_280,
+                qpc100ns: scriptedQPC(frame: 1_280, sampleRate: rate), flags: 0,
+                originalOffset: 0, originalFrames: 512, delivery: .step
+            )
+        ]
+        let probe = ScriptedCaptureProbe()
+        let harness = try makeWindowsCaptureTestSource(
+            root: root,
+            source: .microphone,
+            sampleRate: rate,
+            channels: 1,
+            events: events,
+            probe: probe
+        )
+
+        try await harness.source.start()
+        let device = try #require(harness.factory.openedDevice)
+        try await device.step()
+        let firstDropoutObserved = await probe.waitForDropoutCount(
+            atLeast: 1, timeoutNanoseconds: 2_000_000_000
+        )
+        #expect(firstDropoutObserved)
+        #expect(probe.dropoutCounts.contains(1))
+
+        try await device.step()
+        let secondDropoutObserved = await probe.waitForDropoutCount(
+            atLeast: 2, timeoutNanoseconds: 2_000_000_000
+        )
+        let dropoutsDuringCapture = probe.dropoutCounts
+        #expect(secondDropoutObserved)
+        #expect(harness.source.lastStopResult == nil)
+        #expect(dropoutsDuringCapture.contains(where: { $0 > 0 }))
+        #expect(zip(dropoutsDuringCapture, dropoutsDuringCapture.dropFirst()).contains { $0.0 < $0.1 })
+        #expect(dropoutsDuringCapture.last == 2)
+
+        let result = await harness.source.stop()
+        let checkpoint = try #require(result.checkpoint)
+        let expectedFrames = try CanonicalAudio.boundary(1_792, sampleRate: rate)
+
+        #expect(checkpoint.committedFrames == expectedFrames)
+        #expect(checkpoint.gapEvents.count == 2)
+        #expect(checkpoint.gapEvents.allSatisfy { $0.reason == .missingCallback })
+        #expect(dropoutsDuringCapture.last == UInt64(checkpoint.gapEvents.count))
+        #expect(result.errors.isEmpty)
+    }
+
     @Test func idleLoopbackAndSilentPacketsPersistSilenceWithoutDropouts() async throws {
         let root = try makeWindowsCaptureTestDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

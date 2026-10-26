@@ -2,6 +2,11 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
+private struct ScannerRetryFailure: LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 private let recoveryCheckpoint = AudioCheckpoint(
     committedFrames: 100,
     sampleRate: CanonicalAudio.sampleRate,
@@ -228,6 +233,120 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
     #expect(candidate?.action == .recoverDecisionRun(boundarySegments: [], clauses: result.pendingPriorityClauses))
+}
+
+@Test(arguments: [(true, false, true), (false, true, false), (true, false, false)])
+func failedRetryInferenceRemainsAManualRetryCandidate(
+    _ initialBoundaryFails: Bool,
+    _ initialPriorityFails: Bool,
+    _ retryBoundaryFails: Bool
+) async throws {
+    let root = temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let url = try writeRecording(id: id, root: root)
+    let events = try await writeTranscript(["本文。"], root: url, sessionID: id)
+    _ = try publishLocal(root: url, events: events)
+    let initialProvider = ScriptedDecisionProvider(
+        boundary: { request in
+            if initialBoundaryFails { throw DecisionResponseError.missingAnswer }
+            return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
+        },
+        priority: { targets in
+            if initialPriorityFails { throw DecisionResponseError.missingAnswer }
+            return try lowForBackchannel(targets)
+        }
+    )
+    let initial = try await buildAndPublish(root: url, sessionID: id, provider: initialProvider, scope: .all)
+    #expect(initial.pendingBoundarySegments.count == (initialBoundaryFails ? 1 : 0))
+    #expect(initial.pendingPriorityClauses.count == (initialPriorityFails ? 1 : 0))
+    let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
+
+    let failureMessage = "scanner retry failed deterministically"
+    let retryBoundaryRunID = "scanner_boundary_retry_\(UUID().uuidString.lowercased())"
+    let retryPriorityRunID = "scanner_priority_retry_\(UUID().uuidString.lowercased())"
+    let retryProvider = ScriptedDecisionProvider(
+        boundary: { request in
+            if retryBoundaryFails { throw ScannerRetryFailure(message: failureMessage) }
+            return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
+        },
+        priority: { _ in throw ScannerRetryFailure(message: failureMessage) }
+    )
+    await #expect(throws: DecisionEnrichmentError.retryFailedDurably(failureMessage)) {
+        try await buildAndPublish(
+            root: url, sessionID: id, provider: retryProvider,
+            scope: .retry(
+                boundarySegments: Set(initial.pendingBoundarySegments),
+                clauses: Set(initial.pendingPriorityClauses)
+            ),
+            boundaryRunID: initial.pendingBoundarySegments.isEmpty ? initial.boundaryRunID : retryBoundaryRunID,
+            priorityRunID: retryPriorityRunID
+        )
+    }
+
+    #expect(try #require(try ProcessingMetadataStore(sessionURL: url).load()) == publishedMetadata)
+    let activeRuns = try #require(publishedMetadata.activeRuns)
+    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
+    #expect(candidate.action == .retryContentPriority(
+        boundarySegments: initial.pendingBoundarySegments,
+        clauses: initial.pendingPriorityClauses
+    ))
+}
+
+@Test
+func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpublishedRun() async throws {
+    let root = temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let url = try writeRecording(id: id, root: root)
+    _ = try publishLocal(root: url, events: try await writeTranscript(["本文。"], root: url, sessionID: id))
+    _ = try await buildAndPublish(
+        root: url, sessionID: id,
+        provider: ScriptedDecisionProvider(
+            boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+            priority: lowForBackchannel
+        ),
+        scope: .all
+    )
+    let activeRuns = try #require(try ProcessingMetadataStore(sessionURL: url).load()?.activeRuns)
+    let writer = try SessionWriter(sessionURL: url)
+    let analyzer = DecisionRetryAnalyzer()
+    let failedRunID = "failed_unpublished_retry"
+    try await writer.append(EventDraft(
+        eventType: "processing.run.started", sessionID: id, processingRunID: failedRunID,
+        payload: ProcessingRunStartedPayload(
+            stage: .contentPriority,
+            provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity)
+        )
+    ))
+    #expect(try analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    try await writer.append(EventDraft(
+        eventType: "processing.run.completed", sessionID: id, processingRunID: failedRunID,
+        payload: ProcessingRunCompletedPayload(
+            stage: .contentPriority, succeeded: false, completedCount: 0, failedCount: 1
+        )
+    ))
+    #expect(try !analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
+
+    let successfulRunID = "successful_unpublished_retry"
+    try await writer.append(EventDraft(
+        eventType: "processing.run.started", sessionID: id, processingRunID: successfulRunID,
+        payload: ProcessingRunStartedPayload(
+            stage: .contentPriority,
+            provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity)
+        )
+    ))
+    try await writer.append(EventDraft(
+        eventType: "processing.run.completed", sessionID: id, processingRunID: successfulRunID,
+        payload: ProcessingRunCompletedPayload(
+            stage: .contentPriority, succeeded: true, completedCount: 1, failedCount: 0
+        )
+    ))
+    #expect(try analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
+        == .recoverDecisionRun(boundarySegments: [], clauses: []))
 }
 
 @Test

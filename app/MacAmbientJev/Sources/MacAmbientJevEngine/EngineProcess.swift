@@ -2,6 +2,7 @@ import Foundation
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevPortableRuntime
+import MacAmbientJevPipeline
 import MacAmbientJevWindowsSupport
 
 enum EngineLaunchError: Error, LocalizedError {
@@ -112,7 +113,12 @@ enum EngineProcess {
                     sleep: { try await Task.sleep(for: $0) },
                     shutdownPauseTimeout: shutdownPauseTimeout
                 ),
-                capture: WindowsEngineCapture(factory: WindowsWASAPICaptureFactory()),
+                capture: WindowsEngineCapture(
+                    factory: WindowsWASAPICaptureFactory(),
+                    clock: SystemCaptureClock(),
+                    qpc100ns: { try WindowsCaptureQPCClock.now100ns() },
+                    automaticPolling: true
+                ),
                 inference: PortableEngineInference(
                     layout: PortableInstalledModelLayout(modelsRoot: paths.modelsRoot), logicalCPUCount: logicalCPUCount
                 ),

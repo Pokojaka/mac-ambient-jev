@@ -835,7 +835,8 @@ import MacAmbientJevTestSupport
         let otherSessionID = try await recordAndFinalize(in: h)
         let context = try requestContext(for: h)
         let core = h.app.core
-        _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        let watchedPage = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        #expect(watchedPage.previousCursor == nil)
         let sessionUUID = try #require(UUID(uuidString: sessionID))
 
         let originalSegments = try (0..<205).map { index in
@@ -852,9 +853,9 @@ import MacAmbientJevTestSupport
             context: context
         )
         #expect(firstPage.rows == Array(originalRows.prefix(100)))
-        #expect(firstPage.nextCursor == "100")
+        #expect(firstPage.previousCursor == nil)
         let originalRevision = firstPage.revision
-        let originalCursor = try #require(firstPage.nextCursor)
+        let firstNextCursor = try #require(firstPage.nextCursor)
 
         var updatedSegments = originalSegments
         updatedSegments[2] = try materializedApplicationSegment(
@@ -872,23 +873,26 @@ import MacAmbientJevTestSupport
 
         let secondOriginalPage = try await core.read(
             EngineTranscriptReadPayload(
-                sessionID: sessionID, revision: originalRevision, cursor: originalCursor, limit: 100
+                sessionID: sessionID, revision: originalRevision, cursor: firstNextCursor, limit: 100
             ),
             context: context
         )
         #expect(secondOriginalPage.revision == originalRevision)
         #expect(secondOriginalPage.rows == Array(originalRows[100..<200]))
-        #expect(secondOriginalPage.nextCursor == "200")
+        let secondNextCursor = try #require(secondOriginalPage.nextCursor)
+        #expect(secondNextCursor != firstNextCursor)
+        #expect(secondOriginalPage.previousCursor != nil)
         let finalOriginalPage = try await core.read(
             EngineTranscriptReadPayload(
                 sessionID: sessionID, revision: originalRevision,
-                cursor: "200", limit: 100
+                cursor: secondNextCursor, limit: 100
             ),
             context: context
         )
         #expect(finalOriginalPage.revision == originalRevision)
         #expect(finalOriginalPage.rows == Array(originalRows[200..<205]))
         #expect(finalOriginalPage.nextCursor == nil)
+        #expect(finalOriginalPage.previousCursor != nil)
 
         let refreshedPage = try await core.read(
             EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 100),
@@ -897,12 +901,12 @@ import MacAmbientJevTestSupport
         #expect(refreshedPage.revision.value == updatedCache.revision)
         #expect(refreshedPage.revision != originalRevision)
         #expect(refreshedPage.rows == Array(updatedRows.prefix(100)))
-        #expect(refreshedPage.nextCursor == "100")
+        let refreshedNextCursor = try #require(refreshedPage.nextCursor)
 
         do {
             _ = try await core.read(
                 EngineTranscriptReadPayload(
-                    sessionID: sessionID, revision: originalRevision, cursor: originalCursor, limit: 100
+                    sessionID: sessionID, revision: originalRevision, cursor: firstNextCursor, limit: 100
                 ),
                 context: context
             )
@@ -913,19 +917,385 @@ import MacAmbientJevTestSupport
             Issue.record("expected stale_revision, got \(error)")
         }
 
-        _ = try await core.watch(EngineSessionPayload(sessionID: otherSessionID), context: context)
+        let otherWatchedPage = try await core.watch(
+            EngineSessionPayload(sessionID: otherSessionID), context: context
+        )
+        #expect(otherWatchedPage.previousCursor == nil)
         let afterWatchChange = try await core.read(
             EngineTranscriptReadPayload(
                 sessionID: sessionID, revision: refreshedPage.revision,
-                cursor: "100", limit: 100
+                cursor: refreshedNextCursor, limit: 100
             ),
             context: context
         )
         #expect(afterWatchChange.revision == refreshedPage.revision)
         #expect(afterWatchChange.rows == Array(updatedRows[100..<200]))
-        #expect(afterWatchChange.nextCursor == "200")
+        #expect(afterWatchChange.previousCursor != nil)
+        let refreshedFinalCursor = try #require(afterWatchChange.nextCursor)
+        let refreshedFinalPage = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: refreshedPage.revision,
+                cursor: refreshedFinalCursor, limit: 100
+            ),
+            context: context
+        )
+        #expect(refreshedFinalPage.rows == Array(updatedRows[200..<205]))
+        #expect(refreshedFinalPage.nextCursor == nil)
 
         #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func previousCursorsRetraceByteLimitedPagesAndInvalidateWithSnapshots() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let otherSessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let watchedPage = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: context
+        )
+        #expect(watchedPage.previousCursor == nil)
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+
+        let textByteCounts = [220_000, 180_000, 240_000, 100_000, 220_000, 200_000,
+                              230_000, 140_000, 210_000, 180_000, 120_000]
+        let originalSegments = try textByteCounts.enumerated().map { index, byteCount in
+            let character = String(UnicodeScalar(65 + index)!)
+            return try materializedApplicationSegment(
+                id: "byte-page-row-\(index)", text: String(repeating: character, count: byteCount)
+            )
+        }
+        let originalRows = try EngineTranscriptProjection.rows(for: originalSegments)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: originalSegments)
+        #expect(core.transcript?.rows == originalRows)
+
+        let firstPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 200),
+            context: context
+        )
+        let originalRevision = firstPage.revision
+        #expect(firstPage.previousCursor == nil)
+        var originalPages = [firstPage]
+        var nextCursor = firstPage.nextCursor
+        var distinctNextCursors: Set<String> = []
+        if let nextCursor { #expect(distinctNextCursors.insert(nextCursor).inserted) }
+
+        // Change the live cache after page one; the read navigation must retain its immutable rows.
+        var updatedSegments = originalSegments
+        updatedSegments[2] = try materializedApplicationSegment(
+            id: "byte-page-row-2", text: String(repeating: "Z", count: 215_000)
+        )
+        updatedSegments.remove(at: 5)
+        updatedSegments.append(try materializedApplicationSegment(
+            id: "byte-page-row-appended", text: String(repeating: "Q", count: 140_000)
+        ))
+        let updatedRows = try EngineTranscriptProjection.rows(for: updatedSegments)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: updatedSegments)
+        let updatedCache = try #require(core.transcript)
+        #expect(updatedCache.revision > originalRevision.value)
+        #expect(updatedCache.rows == updatedRows)
+
+        for _ in 0..<20 {
+            guard let cursor = nextCursor else { break }
+            let page = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: originalRevision, cursor: cursor, limit: 200
+                ),
+                context: context
+            )
+            originalPages.append(page)
+            #expect(page.revision == originalRevision)
+            #expect(page.previousCursor != nil)
+            if let returnedCursor = page.nextCursor {
+                #expect(distinctNextCursors.insert(returnedCursor).inserted)
+            }
+            nextCursor = page.nextCursor
+        }
+        #expect(nextCursor == nil)
+        #expect(originalPages.count >= 3)
+        #expect(originalPages.first?.previousCursor == nil)
+        #expect(originalPages.last?.nextCursor == nil)
+        #expect(distinctNextCursors.count == originalPages.count - 1)
+        #expect(originalPages.flatMap(\.rows) == originalRows)
+        for page in originalPages {
+            try expectPageFitsWire(page)
+        }
+
+        // Replay every returned cursor and compare the complete pages, including opaque tokens.
+        let retainedFirstPageCursor = try #require(originalPages[1].previousCursor)
+        for index in 0..<originalPages.count {
+            let requestCursor: String
+            if index == 0 {
+                requestCursor = retainedFirstPageCursor
+            } else {
+                requestCursor = try #require(originalPages[index - 1].nextCursor)
+            }
+            let repeatedPage = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: originalRevision, cursor: requestCursor, limit: 200
+                ),
+                context: context
+            )
+            #expect(repeatedPage == originalPages[index])
+        }
+
+        // Follow previous_cursor from the tail to the first page, comparing rows and both tokens.
+        var previousCursor: String? = try #require(originalPages.last?.previousCursor)
+        for index in stride(from: originalPages.count - 2, through: 0, by: -1) {
+            let cursor = try #require(previousCursor)
+            let page = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: originalRevision, cursor: cursor, limit: 200
+                ),
+                context: context
+            )
+            let cachedPage = originalPages[index]
+            #expect(page.rows == cachedPage.rows)
+            #expect(page.revision == cachedPage.revision)
+            #expect(page.previousCursor == cachedPage.previousCursor)
+            #expect(page.nextCursor == cachedPage.nextCursor)
+            previousCursor = page.previousCursor
+        }
+        #expect(previousCursor == nil)
+
+        // Walking forward again from the first page must reproduce every cached page.
+        var forwardCursor: String? = try #require(originalPages.first?.nextCursor)
+        for index in 1..<originalPages.count {
+            let cursor = try #require(forwardCursor)
+            let page = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: originalRevision, cursor: cursor, limit: 200
+                ),
+                context: context
+            )
+            #expect(page == originalPages[index])
+            forwardCursor = page.nextCursor
+        }
+        #expect(forwardCursor == nil)
+
+        let firstNextCursor = try #require(originalPages.first?.nextCursor)
+        let lastPreviousCursor = try #require(originalPages.last?.previousCursor)
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision, cursor: "100", limit: 200,
+            context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision, cursor: "unknown-cursor-token", limit: 200,
+            context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision, cursor: firstNextCursor, limit: 199,
+            context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: nil, cursor: firstNextCursor, limit: 200,
+            context: context, code: .invalidCursor
+        )
+        do {
+            _ = try await core.list(
+                EngineSessionListPayload(cursor: firstNextCursor, limit: 100), context: context
+            )
+            Issue.record("a transcript cursor must not be accepted by session.list")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .invalidCursor)
+        } catch {
+            Issue.record("expected invalid_cursor from session.list, got \(error)")
+        }
+        #expect(core.transcriptReadSnapshot?.rows == originalRows)
+
+        let retainedRevisionRestart = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: originalRevision, cursor: nil, limit: 2
+            ),
+            context: context
+        )
+        #expect(retainedRevisionRestart.revision == originalRevision)
+        #expect(retainedRevisionRestart.rows == Array(originalRows.prefix(2)))
+        #expect(retainedRevisionRestart.previousCursor == nil)
+        let retainedRevisionNextCursor = try #require(retainedRevisionRestart.nextCursor)
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision,
+            cursor: firstNextCursor, limit: 200, context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision,
+            cursor: lastPreviousCursor, limit: 200, context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision,
+            cursor: retainedRevisionNextCursor, limit: 1, context: context, code: .invalidCursor
+        )
+
+        let retainedRevisionSecondPage = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: originalRevision,
+                cursor: retainedRevisionNextCursor, limit: 2
+            ),
+            context: context
+        )
+        #expect(retainedRevisionSecondPage.revision == originalRevision)
+        #expect(retainedRevisionSecondPage.rows == Array(originalRows[2..<4]))
+        let justUsedRetainedRevisionCursor = retainedRevisionNextCursor
+        let sameRevisionRestart = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: originalRevision, cursor: nil, limit: 2
+            ),
+            context: context
+        )
+        #expect(sameRevisionRestart.revision == originalRevision)
+        #expect(sameRevisionRestart.rows == Array(originalRows.prefix(2)))
+        #expect(sameRevisionRestart.previousCursor == nil)
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: originalRevision,
+            cursor: justUsedRetainedRevisionCursor, limit: 2, context: context, code: .invalidCursor
+        )
+
+        // A fresh first-page read for this same cache revision creates a new cursor namespace.
+        let currentWatchedCache = try #require(core.transcript)
+        let freshFirstPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 200),
+            context: context
+        )
+        #expect(freshFirstPage.revision.value == currentWatchedCache.revision)
+        #expect(freshFirstPage.revision != originalRevision)
+        let freshNextCursor = try #require(freshFirstPage.nextCursor)
+        #expect(freshNextCursor != firstNextCursor)
+        #expect(freshNextCursor != lastPreviousCursor)
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: freshFirstPage.revision,
+            cursor: firstNextCursor, limit: 200, context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: freshFirstPage.revision,
+            cursor: lastPreviousCursor, limit: 200, context: context, code: .invalidCursor
+        )
+
+        // Watching another session has no previous cursor and leaves read navigation intact.
+        let otherWatchedPage = try await core.watch(
+            EngineSessionPayload(sessionID: otherSessionID), context: context
+        )
+        #expect(otherWatchedPage.previousCursor == nil)
+        let freshSecondPage = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: freshFirstPage.revision,
+                cursor: freshNextCursor, limit: 200
+            ),
+            context: context
+        )
+        #expect(freshSecondPage.revision == freshFirstPage.revision)
+        #expect(freshSecondPage.rows == Array(updatedRows.dropFirst(freshFirstPage.rows.count).prefix(freshSecondPage.rows.count)))
+
+        let otherSessionPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: otherSessionID, revision: nil, cursor: nil, limit: 200),
+            context: context
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: otherSessionID, revision: otherSessionPage.revision,
+            cursor: freshNextCursor, limit: 200, context: context, code: .invalidCursor
+        )
+
+        // Re-establish the large snapshot to verify publication invalidates both cursor directions.
+        let restoredWatch = try await core.watch(
+            EngineSessionPayload(sessionID: sessionID), context: context
+        )
+        #expect(restoredWatch.previousCursor == nil)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: originalSegments)
+        #expect(core.transcript?.rows == originalRows)
+        let publicationFirstPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 200),
+            context: context
+        )
+        var publicationPages = [publicationFirstPage]
+        var publicationNextCursor = publicationFirstPage.nextCursor
+        for _ in 0..<20 {
+            guard let cursor = publicationNextCursor else { break }
+            let page = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: publicationFirstPage.revision,
+                    cursor: cursor, limit: 200
+                ),
+                context: context
+            )
+            publicationPages.append(page)
+            publicationNextCursor = page.nextCursor
+        }
+        #expect(publicationNextCursor == nil)
+        #expect(publicationPages.count >= 3)
+        for page in publicationPages {
+            try expectPageFitsWire(page)
+        }
+        let publicationRevision = publicationFirstPage.revision
+        let publicationNextToken = try #require(publicationFirstPage.nextCursor)
+        let publicationPreviousToken = try #require(publicationPages.last?.previousCursor)
+        #expect(publicationNextToken != publicationPreviousToken)
+
+        core.transcriptDidPublish(sessionID: sessionUUID)
+        let publishedCache = try #require(core.transcript)
+        #expect(publishedCache.revision > publicationRevision.value)
+        #expect(core.transcriptReadSnapshot == nil)
+        let publishedRevision = try EngineID(publishedCache.revision)
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: publicationRevision,
+            cursor: publicationNextToken, limit: 200, context: context, code: .staleRevision
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: publicationRevision,
+            cursor: publicationPreviousToken, limit: 200, context: context, code: .staleRevision
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: publishedRevision,
+            cursor: publicationNextToken, limit: 200, context: context, code: .invalidCursor
+        )
+        try await expectTranscriptReadFailure(
+            core, sessionID: sessionID, revision: publishedRevision,
+            cursor: publicationPreviousToken, limit: 200, context: context, code: .invalidCursor
+        )
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    private func expectTranscriptReadFailure(
+        _ core: EngineApplicationCore,
+        sessionID: String,
+        revision: EngineID?,
+        cursor: String?,
+        limit: Int,
+        context: EngineRequestContext,
+        code: EngineErrorCode
+    ) async throws {
+        let payload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: revision, cursor: cursor, limit: limit
+        )
+        do {
+            _ = try await core.read(payload, context: context)
+            Issue.record("expected \(code.rawValue) for transcript read")
+        } catch let error as EngineCommandError {
+            #expect(error.code == code)
+        } catch {
+            Issue.record("expected \(code.rawValue), got \(error)")
+        }
+    }
+
+    private func expectPageFitsWire(_ page: EngineTranscriptPage) throws {
+        #expect(page.rows.count <= 200)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let encodedRows = try encoder.encode(page.rows)
+        #expect(encodedRows.count >= 2)
+        #expect(encodedRows.count - 2 <= 700_000)
+        for row in page.rows {
+            let encodedRow = try encoder.encode(row)
+            #expect(encodedRow.count <= EngineCodec.maxRowBytes)
+        }
+        let maximumID = try EngineID(UInt64.max)
+        let output = try EngineOutput(
+            version: 1, sequence: maximumID, requestID: maximumID,
+            event: .completed(.transcriptRead(page))
+        )
+        let encodedOutput = try EngineCodec.encodeOutput(output)
+        #expect(encodedOutput.count - 1 <= EngineJSONValidator.maxLineBytes)
     }
 
     private func drainTranscriptFailures(in h: ApplicationHarness) async {

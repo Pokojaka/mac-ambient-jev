@@ -244,7 +244,8 @@ struct ProcessRecordingCommand {
                 logicalCPUCount: logicalCPUCount,
                 withDecisions: withDecisions
             )
-            let bundle = try PortableSessionEngineBundle(configuration: configuration)
+            let usageCounter = DecisionUsageCounter()
+            let bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter)
             return SessionFileProcessingResources(
                 engines: bundle.engines,
                 contentPriority: bundle.contentPriority,
@@ -296,7 +297,7 @@ struct ProcessRecordingCommand {
     ) -> SessionFileProcessingService.Callbacks {
         SessionFileProcessingService.Callbacks(
             onEvent: { event in await eventRenderer.render(event) },
-            onStatus: { message in print(message) },
+            onStatus: { status in print(status.text) },
             onUpdate: { _, _ in },
             shouldPause: shouldPause,
             onPhase: onPhase

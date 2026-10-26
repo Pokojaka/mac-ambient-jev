@@ -214,18 +214,36 @@ private struct HarnessOptions {
 }
 
 #if os(Linux) || os(Windows)
-private struct HarnessPortableInferenceProvider: EngineInferenceProviding {
+struct HarnessPortableInferenceProvider: EngineInferenceProviding {
     let configuration: PortableProcessingConfiguration
     let threads: Int
+    let clauseTaggerInspection: PortableClauseTaggerInspection
+    let usageCounter = DecisionUsageCounter()
 
     init(environment: [String: String], threads: Int, logicalCPUCount: Int) throws {
-        self.configuration = try PortableProcessingConfiguration.resolve(
+        let configuration = try PortableProcessingConfiguration.resolve(
             environment: environment,
             threads: threads,
             logicalCPUCount: logicalCPUCount,
             withDecisions: true
         )
+        guard let clauseTaggerModelDirectory = configuration.clauseTaggerModelDirectory else {
+            throw EngineAdapterError(
+                code: .invalidSettings,
+                message: "Portable inference configuration requires a clause tagger model directory",
+                recoveryAction: .replaceSettings,
+                details: []
+            )
+        }
+        self.configuration = configuration
         self.threads = threads
+        self.clauseTaggerInspection = PortableClauseTaggerInspection(modelDirectory: clauseTaggerModelDirectory)
+    }
+
+    init(configuration: PortableProcessingConfiguration, clauseTaggerModelDirectory: URL, threads: Int) {
+        self.configuration = configuration
+        self.threads = threads
+        self.clauseTaggerInspection = PortableClauseTaggerInspection(modelDirectory: clauseTaggerModelDirectory)
     }
 
     func prepare(
@@ -238,18 +256,37 @@ private struct HarnessPortableInferenceProvider: EngineInferenceProviding {
                 let stage: EngineModelProgress.Stage = progress.stage == .validating ? .validating : .loading
                 onProgress(EngineModelProgress(stage: stage, completed: progress.completed, total: progress.total))
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as PortableModelPreparationError {
-            let code: EngineErrorCode
-            switch error {
-            case .missing: code = .modelMissing
-            case .invalid: code = .modelCorrupt
-            case .loadFailed: code = .modelFailure
-            }
+            throw Self.modelError(error)
+        } catch {
             throw EngineAdapterError(
-                code: code,
-                message: error.localizedDescription,
+                code: .modelFailure,
+                message: "モデルを準備できません: \(error.localizedDescription)",
                 recoveryAction: .prepareModels,
-                details: [EngineAdapterError.detail(domain: "models", code: error.model.rawValue, message: error.localizedDescription)]
+                details: [EngineAdapterError.detail(for: error)]
+            )
+        }
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        await usageCounter.snapshot()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        do {
+            return try await clauseTaggerInspection.inspect()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as PortableModelPreparationError {
+            throw Self.modelError(error)
+        } catch {
+            throw EngineAdapterError(
+                code: .modelFailure,
+                message: "発話文モデルを確認できません: \(error.localizedDescription)",
+                recoveryAction: .prepareModels,
+                details: [EngineAdapterError.detail(for: error)]
             )
         }
     }
@@ -258,7 +295,7 @@ private struct HarnessPortableInferenceProvider: EngineInferenceProviding {
         try validate(settings: settings)
         let bundle: PortableSessionEngineBundle
         do {
-            bundle = try PortableSessionEngineBundle(configuration: configuration)
+            bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter)
         } catch {
             throw EngineAdapterError(
                 code: .modelFailure,
@@ -283,6 +320,21 @@ private struct HarnessPortableInferenceProvider: EngineInferenceProviding {
                     segmentationRunID: runID
                 )
             }
+        )
+    }
+
+    private static func modelError(_ error: PortableModelPreparationError) -> EngineAdapterError {
+        let code: EngineErrorCode
+        switch error {
+        case .missing: code = .modelMissing
+        case .invalid: code = .modelCorrupt
+        case .loadFailed: code = .modelFailure
+        }
+        return EngineAdapterError(
+            code: code,
+            message: error.localizedDescription,
+            recoveryAction: .prepareModels,
+            details: [EngineAdapterError.detail(domain: "models", code: error.model.rawValue, message: error.localizedDescription)]
         )
     }
 

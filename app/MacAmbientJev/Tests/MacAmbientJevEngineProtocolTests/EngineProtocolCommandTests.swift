@@ -9,23 +9,33 @@ struct EngineProtocolCommandTests {
         let commands: [(EngineCommandName, EngineCommand, Set<String>)] = [
             (.hello, .hello, []),
             (.stateGet, .stateGet, []),
+            (.diagnosticsGet, .diagnosticsGet, []),
             (.devicesList, .devicesList(EngineDevicesListPayload(source: .microphone)), ["source"]),
             (.recordingStart, .recordingStart(try EngineRecordingStartPayload(source: .systemAudio, device: .id("endpoint-1"))), ["source", "device"]),
             (.recordingStop, .recordingStop(session), ["session_id"]),
             (.sessionImport, .sessionImport(try EngineImportPayload(inputPath: "/audio.wav")), ["input_path"]),
+            (.sessionInspect, .sessionInspect(try EngineSessionInspectPayload(folderID: "session-folder-1")), ["folder_id"]),
             (.sessionReprocess, .sessionReprocess(session), ["session_id"]),
             (.sessionRetryDecisions, .sessionRetryDecisions(session), ["session_id"]),
             (.sessionList, .sessionList(try EngineSessionListPayload(cursor: nil, limit: 100)), ["cursor", "limit"]),
             (.transcriptRead, .transcriptRead(try EngineTranscriptReadPayload(sessionID: "session-1", revision: nil, cursor: nil, limit: 200)), ["session_id", "revision", "cursor", "limit"]),
+            (.transcriptRowDetails, .transcriptRowDetails(try EngineTranscriptRowDetailsPayload(
+                sessionID: "session-1",
+                revision: try EngineID(decimal: "3"),
+                rowID: "row-1",
+                cursor: nil,
+                limit: 20
+            )), ["session_id", "revision", "row_id", "cursor", "limit"]),
             (.transcriptWatch, .transcriptWatch(session), ["session_id"]),
             (.sessionExport, .sessionExport(try EngineExportPayload(sessionID: "session-1", destinationPath: "/export")), ["session_id", "destination_path"]),
             (.settingsGet, .settingsGet, []),
             (.settingsReplace, .settingsReplace(EngineSettingsReplacePayload(expectedRevision: nil, settings: settings)), ["expected_revision", "settings"]),
             (.modelsPrepare, .modelsPrepare, []),
+            (.modelsInspect, .modelsInspect, []),
             (.shutdown, .shutdown, [])
         ]
-        #expect(commands.count == 16)
-        #expect(EngineCommandName.allCases.count == 16)
+        #expect(commands.count == 20)
+        #expect(EngineCommandName.allCases.count == 20)
 
         for (name, command, payloadKeys) in commands {
             let request = try makeRequest(command)
@@ -69,10 +79,10 @@ struct EngineProtocolCommandTests {
         #expect(EngineASRSize.allCases.map(\.rawValue) == ["0.6b", "1.7b"])
         #expect(EngineExecutionProvider.allCases.map(\.rawValue) == ["cpu"])
         #expect(EngineCommandName.allCases.map(\.rawValue) == [
-            "hello", "state.get", "devices.list", "recording.start", "recording.stop",
-            "session.import", "session.reprocess", "session.retry_decisions", "session.list",
-            "transcript.read", "transcript.watch", "session.export", "settings.get",
-            "settings.replace", "models.prepare", "shutdown"
+            "hello", "state.get", "diagnostics.get", "devices.list", "recording.start", "recording.stop",
+            "session.import", "session.inspect", "session.reprocess", "session.retry_decisions", "session.list",
+            "transcript.read", "transcript.row_details", "transcript.watch", "session.export", "settings.get",
+            "settings.replace", "models.prepare", "models.inspect", "shutdown"
         ])
 
         for source in EngineSource.allCases {
@@ -134,13 +144,29 @@ struct EngineProtocolCommandTests {
     }
 
     @Test func emptyCommandsRequireExactlyAnEmptyPayloadObject() throws {
-        for command in ["hello", "state.get", "settings.get", "models.prepare", "shutdown"] {
+        for command in ["hello", "state.get", "diagnostics.get", "settings.get", "models.prepare", "models.inspect", "shutdown"] {
             let empty = "{\"version\":1,\"request_id\":\"1\",\"command\":\"\(command)\",\"payload\":{}}"
             #expect(decodingSucceeds(EngineRequest.self, from: Data(empty.utf8)))
             let extra = "{\"version\":1,\"request_id\":\"1\",\"command\":\"\(command)\",\"payload\":{\"unexpected\":1}}"
             #expect(decodingFails(EngineRequest.self, from: Data(extra.utf8)))
             let null = "{\"version\":1,\"request_id\":\"1\",\"command\":\"\(command)\",\"payload\":null}"
             #expect(decodingFails(EngineRequest.self, from: Data(null.utf8)))
+        }
+    }
+
+    @Test func newEmptyCommandsRejectMissingAndNonObjectPayloads() throws {
+        for command in ["diagnostics.get", "models.inspect"] {
+            var request: [String: Any] = ["version": 1, "request_id": "1", "command": command]
+            #expect(decodingFails(EngineRequest.self, object: request))
+
+            request["payload"] = NSNull()
+            #expect(decodingFails(EngineRequest.self, object: request))
+
+            request["payload"] = [Any]()
+            #expect(decodingFails(EngineRequest.self, object: request))
+
+            request["payload"] = ["unexpected": true]
+            #expect(decodingFails(EngineRequest.self, object: request))
         }
     }
 

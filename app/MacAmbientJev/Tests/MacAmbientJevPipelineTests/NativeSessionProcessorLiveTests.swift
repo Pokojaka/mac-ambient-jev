@@ -247,6 +247,28 @@ private actor UpdateCounter {
     }
 }
 
+private actor ProcessingStateRecorder {
+    private(set) var states: [ProcessingState] = []
+
+    func record(_ state: ProcessingState) {
+        states.append(state)
+    }
+
+    func snapshot() -> [ProcessingState] { states }
+}
+
+private actor ProcessingStatusRecorder {
+    private(set) var statuses: [NativeSessionProcessor.Status] = []
+
+    func record(_ status: NativeSessionProcessor.Status) {
+        statuses.append(status)
+    }
+
+    func reset() {
+        statuses = []
+    }
+}
+
 @Test
 func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     let root = FileManager.default.temporaryDirectory
@@ -527,6 +549,10 @@ func nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDura
 
 private struct TaggerLoadFailure: Error {}
 
+private struct NativeDecisionRetryInitializationFailure: LocalizedError, Sendable {
+    var errorDescription: String? { "テスト初期化エラー" }
+}
+
 @Test(.timeLimit(.minutes(10)))
 func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async throws {
     let counter = DecisionUsageCounter()
@@ -590,7 +616,7 @@ func failedAtomicDecisionPublicationLeavesTheDurableLocalDisplayAndPendingKeys()
 
     // A failed optional publication left no boundary run; explicit retry still targets the
     // published local source, with a fresh worker rather than that unpublished response.
-    await fixture.processor.retryContentPrioritySession(
+    _ = await fixture.processor.retryContentPrioritySession(
         sessionID: fixture.sessionID, boundarySegments: metadata.pendingClauseBoundarySegments, clauses: [],
         onStatus: { _ in }, onUpdate: { rows, _ in await updates.record(rows) }
     )
@@ -600,6 +626,224 @@ func failedAtomicDecisionPublicationLeavesTheDurableLocalDisplayAndPendingKeys()
     #expect(try fixture.rows().first?.clauseSlices.map(\.priority) == [.lowPriority])
     #expect(await fixture.asr.callCount == 1)
     #expect(await counter.snapshot().pendingBoundarySegmentCount == 0)
+}
+
+private enum PublishedRetryLatePause: CaseIterable {
+    case cancellation
+    case processingPause
+    case both
+}
+
+private final class PublishedRetryThermalObservation: ThermalStateObservation {}
+
+private struct PublishedRetryNoThermalMonitor: ThermalMonitoring {
+    var isCritical: Bool { false }
+    var liveASRDecision: LiveASRThermalDecision { .processNow }
+
+    @MainActor
+    func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any ThermalStateObservation {
+        PublishedRetryThermalObservation()
+    }
+}
+
+private struct PublishedRetryFinishedEvent {
+    let sessionID: UUID
+    let disposition: BatchDisposition?
+    let message: String?
+}
+
+@MainActor
+private final class PublishedRetryEffects: SessionProcessingEffects {
+    var processingQueue = SessionProcessingQueue()
+    var pausesProcessing = false
+    var onComplete: (@MainActor () -> Void)?
+
+    private(set) var statusTexts: [String] = []
+    private(set) var updateStates: [ProcessingState] = []
+    private(set) var updatedSegments: [MaterializedTranscriptSegment] = []
+    private(set) var finishedEvents: [PublishedRetryFinishedEvent] = []
+    private(set) var heldCount = 0
+    private(set) var exportCount = 0
+
+    func prepareASRModel() {}
+
+    func awaitIdleRelease() async {}
+
+    func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
+        { status in await self.record(status) }
+    }
+
+    func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
+        { segments, state in await self.record(segments: segments, state: state) }
+    }
+
+    func waitForLiveASRDrain(sessionID: UUID) async {
+        preconditionFailure("published retry test does not finish live transcription")
+    }
+
+    func liveASRFailure(sessionID: UUID) -> String? {
+        preconditionFailure("published retry test does not inspect live ASR failures")
+    }
+
+    func cleanupLiveASRState(sessionID: UUID) {
+        preconditionFailure("published retry test does not clean up live ASR state")
+    }
+
+    func refreshSavedSessions() {}
+
+    func autoExportIfEnabled(sessionID: UUID) async {
+        exportCount += 1
+    }
+
+    func processingDidChange(_ event: SessionProcessingEvent) {
+        switch event {
+        case .held:
+            heldCount += 1
+        case .finished(let request, let result):
+            finishedEvents.append(PublishedRetryFinishedEvent(
+                sessionID: request.sessionID,
+                disposition: result?.disposition,
+                message: result?.message
+            ))
+        case .backlogged, .began, .liveFailed, .next, .willFinishDrain, .drained:
+            break
+        }
+    }
+
+    private func record(_ status: NativeSessionProcessor.Status) {
+        statusTexts.append(status.text)
+    }
+
+    private func record(segments: [MaterializedTranscriptSegment], state: ProcessingState) {
+        updatedSegments = segments
+        updateStates.append(state)
+        if state == .complete {
+            onComplete?()
+        }
+    }
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)), arguments: PublishedRetryLatePause.allCases)
+private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: PublishedRetryLatePause) async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(
+        texts: ["再試行後に公開する本文。"], factory: { decisions }, counter: counter
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let initialResult = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    #expect(initialResult.disposition == .completed)
+
+    let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
+    let initialMetadata = try #require(try store.load())
+    let initialRuns = try #require(initialMetadata.activeRuns)
+    let initialContentPriorityRun = try #require(initialRuns.contentPriority)
+    let pendingClauses = initialMetadata.pendingContentPriorityClauses
+    #expect(pendingClauses.count == 1)
+    let pendingClause = try #require(pendingClauses.first)
+
+    let effects = PublishedRetryEffects()
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects,
+        processor: fixture.processor,
+        thermalMonitor: PublishedRetryNoThermalMonitor()
+    )
+    var completionMetadata: ProcessingMetadata?
+    var completionMetadataLoadError: String?
+    var completionCallbackCount = 0
+    effects.onComplete = {
+        completionCallbackCount += 1
+        do {
+            if let loaded = try store.load() {
+                completionMetadata = loaded
+            } else {
+                completionMetadataLoadError = "processing metadata was absent at complete callback"
+            }
+        } catch {
+            completionMetadataLoadError = error.localizedDescription
+        }
+
+        switch latePause {
+        case .cancellation:
+            coordinator.requestPause()
+        case .processingPause:
+            effects.pausesProcessing = true
+        case .both:
+            coordinator.requestPause()
+            effects.pausesProcessing = true
+        }
+    }
+
+    coordinator.enqueue(.retryContentPriority(
+        sessionID: fixture.sessionID,
+        boundarySegments: [],
+        clauses: [pendingClause]
+    ))
+    await coordinator.waitUntilIdle()
+
+    #expect(completionCallbackCount == 1)
+    #expect(completionMetadataLoadError == nil)
+    let metadataAtCompletion = try #require(completionMetadata)
+    let runsAtCompletion = try #require(metadataAtCompletion.activeRuns)
+    #expect(runsAtCompletion.contentPriority != initialContentPriorityRun)
+    #expect(metadataAtCompletion.pendingContentPriorityClauses.isEmpty)
+    #expect(metadataAtCompletion.pendingDecisionTargets.isEmpty)
+    #expect(effects.updateStates.contains(.complete))
+    #expect(effects.updatedSegments.map(\.text) == ["再試行後に公開する本文。"])
+
+    #expect(effects.finishedEvents.count == 1)
+    let finishedAtCompletion = try #require(effects.finishedEvents.first)
+    #expect(finishedAtCompletion.sessionID == fixture.sessionID)
+    // A successful retry is reported as .finished(request, nil), not as a completed result.
+    #expect(finishedAtCompletion.disposition == nil)
+    #expect(effects.heldCount == 0)
+    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.pending.isEmpty)
+    #expect(effects.processingQueue.currentSessionID == nil)
+    #expect(effects.exportCount == 0)
+    #expect(!effects.statusTexts.contains("処理は中断されました。次回の起動時に再開できます"))
+
+    let metadataURL = fixture.sessionURL.appending(path: "processing_metadata.json")
+    let eventsURL = SessionLayout(sessionURL: fixture.sessionURL).eventsURL
+    let metadataBytesAfterCompletion = try Data(contentsOf: metadataURL)
+    let eventBytesAfterCompletion = try Data(contentsOf: eventsURL)
+    let providerRequestsAfterCompletion = await provider.requests
+    #expect(providerRequestsAfterCompletion.count == 2)
+    #expect(providerRequestsAfterCompletion == [
+        ["再試行後に公開する本文。"],
+        ["再試行後に公開する本文。"]
+    ])
+    let completionRecovery = try SessionRecoveryScanner(sessionsRoot: fixture.paths.sessionsRoot)
+        .inspect(sessionID: fixture.sessionID).recovery
+    #expect(SessionRecoveryPlan(completionRecovery?.action).launchRecoveryRequest(sessionID: fixture.sessionID) == nil)
+
+    // If a regression leaves a stale held retry here, resuming it is finite and must not
+    // re-send a provider request or overwrite the already published snapshot.
+    effects.pausesProcessing = false
+    coordinator.resumeThermallyHeldProcessing()
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.heldCount == 0)
+    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.pending.isEmpty)
+    #expect(effects.processingQueue.currentSessionID == nil)
+    #expect(effects.finishedEvents.count == 1)
+    #expect(effects.finishedEvents.first?.disposition == nil)
+    #expect(effects.exportCount == 0)
+    #expect(!effects.statusTexts.contains("処理は中断されました。次回の起動時に再開できます"))
+    let retryFailureMessages = effects.finishedEvents.compactMap(\.message).filter { $0.contains("再試行") }
+    #expect(retryFailureMessages.isEmpty)
+    #expect(await provider.requests == providerRequestsAfterCompletion)
+    #expect(try Data(contentsOf: metadataURL) == metadataBytesAfterCompletion)
+    #expect(try Data(contentsOf: eventsURL) == eventBytesAfterCompletion)
 }
 
 @Test
@@ -626,7 +870,7 @@ func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUn
         try FileManager.default.createDirectory(at: metadataURL, withIntermediateDirectories: false)
     }
     let updates = LiveUpdateRecorder()
-    await fixture.processor.retryContentPrioritySession(
+    _ = await fixture.processor.retryContentPrioritySession(
         sessionID: fixture.sessionID, boundarySegments: [], clauses: pending,
         onStatus: { _ in }, onUpdate: { rows, _ in await updates.record(rows) }
     )
@@ -647,7 +891,7 @@ func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUn
     #expect(unpublishedPayload.assignments.map(\.priority) == [.primary])
     #expect(await counter.snapshot().pendingPriorityClauseCount == 1)
 
-    await fixture.processor.retryContentPrioritySession(
+    _ = await fixture.processor.retryContentPrioritySession(
         sessionID: fixture.sessionID, boundarySegments: [], clauses: pending,
         onStatus: { _ in }, onUpdate: { rows, _ in await updates.record(rows) }
     )
@@ -718,7 +962,7 @@ func nativeRetryRejectsMetadataMismatchOrIncompleteLogBeforeSending(incompleteTa
         ))
     }
     let corruptedLog = try Data(contentsOf: eventsURL)
-    await fixture.processor.retryContentPrioritySession(
+    _ = await fixture.processor.retryContentPrioritySession(
         sessionID: fixture.sessionID, boundarySegments: [], clauses: metadata.pendingContentPriorityClauses,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )
@@ -796,7 +1040,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
             sourceDecision: .assessed
         )
     ))
-    await fixture.processor.retryContentPrioritySession(
+    _ = await fixture.processor.retryContentPrioritySession(
         sessionID: fixture.sessionID, boundarySegments: [], clauses: [],
         onStatus: { _ in }, onUpdate: { _, _ in }
     )
@@ -822,4 +1066,143 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     #expect(usage.priorityRequests.sendCount == 1)
     #expect(usage == usageBeforeRetry)
     #expect(await fixture.asr.callCount == 1)
+}
+
+@Test
+func nativeRetryWithoutTargetsOrUnpublishedRunFailsAndRetainsPublishedSnapshot() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["再試行対象のない本文。"], factory: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let finalized = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    #expect(finalized.disposition == .completed)
+    let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
+    let before = try #require(try store.load())
+    #expect(before.pendingDecisionTargets.isEmpty)
+    let lines = try SessionRecovery.recoverJSONL(
+        Data(contentsOf: SessionLayout(sessionURL: fixture.sessionURL).eventsURL)
+    ).lines
+    let activeRuns = try #require(before.activeRuns)
+    let hasUnpublishedRun = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns)
+    #expect(!hasUnpublishedRun)
+    let publishedRows = try fixture.rows()
+
+    let updates = LiveUpdateRecorder()
+    let updateStates = ProcessingStateRecorder()
+    let result = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: [], onStatus: { _ in },
+        onUpdate: { rows, state in
+            await updates.record(rows)
+            await updateStates.record(state)
+        }
+    )
+
+    let expectedMessage = "発話文の判定を再試行できませんでした: 判定の再試行対象がありません"
+    #expect(result.disposition == .failed)
+    #expect(result.message == expectedMessage)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(try store.load() == before)
+    #expect(try fixture.rows() == publishedRows)
+    #expect(await updates.snapshot().isEmpty)
+    let retryUpdateStates = await updateStates.snapshot()
+    #expect(retryUpdateStates.isEmpty)
+    #expect(!retryUpdateStates.contains(.complete))
+}
+
+@Test
+func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["判定保留中の本文。"], factory: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
+    let before = try #require(try store.load())
+    let pending = before.pendingContentPriorityClauses
+    #expect(pending.count == 1)
+    let publishedRows = try fixture.rows()
+    let disabledProcessor = NativeSessionProcessor(
+        paths: fixture.paths,
+        engines: SessionProcessingEngines(
+            asr: fixture.asr, diarization: LiveProcessorFinalDiarizer(), finalTranscriptVAD: LiveProcessorFinalVAD()
+        ),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
+    )
+    let updates = LiveUpdateRecorder()
+    let updateStates = ProcessingStateRecorder()
+
+    let result = await disabledProcessor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: pending, onStatus: { _ in },
+        onUpdate: { rows, state in
+            await updates.record(rows)
+            await updateStates.record(state)
+        }
+    )
+
+    let expectedMessage = "発話文の判定を再試行できませんでした: 判定エンジンが利用できません"
+    #expect(result.disposition == .failed)
+    #expect(result.message == expectedMessage)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(try store.load() == before)
+    #expect(try fixture.rows() == publishedRows)
+    #expect(await updates.snapshot().isEmpty)
+    let retryUpdateStates = await updateStates.snapshot()
+    #expect(retryUpdateStates.isEmpty)
+    #expect(!retryUpdateStates.contains(.complete))
+}
+
+@Test
+func nativeRetryCoordinatorInitializationFailurePreservesDeferredEngineStatusAndSnapshot() async throws {
+    let counter = DecisionUsageCounter()
+    let fixture = try await NativeDecisionFixture(
+        texts: ["判定エンジン初期化待ちの本文."], factory: { throw NativeDecisionRetryInitializationFailure() },
+        counter: counter
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let statuses = ProcessingStatusRecorder()
+
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { await statuses.record($0) }, onUpdate: { _, _ in }
+    )
+    let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
+    let before = try #require(try store.load())
+    #expect(!before.pendingClauseBoundarySegments.isEmpty)
+    let publishedRows = try fixture.rows()
+    await statuses.reset()
+    let updates = LiveUpdateRecorder()
+    let updateStates = ProcessingStateRecorder()
+
+    let result = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: before.pendingClauseBoundarySegments, clauses: [],
+        onStatus: { await statuses.record($0) },
+        onUpdate: { rows, state in
+            await updates.record(rows)
+            await updateStates.record(state)
+        }
+    )
+
+    let engineFailure = "判定エンジンを初期化できませんでした: テスト初期化エラー"
+    let expectedMessage = "発話文の判定を再試行できませんでした: \(engineFailure)"
+    let expectedDeferredStatus = "\(UserFacingStatus.decisionDeferred.text)。\(engineFailure)"
+    #expect(result.disposition == .failed)
+    #expect(result.message == expectedMessage)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(await statuses.statuses == [.message(expectedDeferredStatus)])
+    #expect(try store.load() == before)
+    #expect(try fixture.rows() == publishedRows)
+    #expect(await updates.snapshot().isEmpty)
+    let retryUpdateStates = await updateStates.snapshot()
+    #expect(retryUpdateStates.isEmpty)
+    #expect(!retryUpdateStates.contains(.complete))
 }

@@ -1041,10 +1041,11 @@ done:
     return 0;
 }
 
-static int32_t mja_environment_dispose(mja_capture_environment *environment, int32_t primary_error)
+static int32_t mja_environment_dispose(mja_capture_environment *environment, int32_t primary_error, int32_t *monitor_error)
 {
     int32_t error = primary_error;
     DWORD wait_result;
+    if (monitor_error != NULL) *monitor_error = 0;
     if (environment->thread != NULL) {
         InterlockedExchange(&environment->stop_requested, 1);
         if (environment->stop_event != NULL && !SetEvent(environment->stop_event) && error == 0) {
@@ -1058,7 +1059,11 @@ static int32_t mja_environment_dispose(mja_capture_environment *environment, int
     {
         int32_t latched_error;
         mja_capture_environment_snapshot(environment, NULL, NULL, NULL, &latched_error);
-        if (error == 0 && latched_error != 0) error = latched_error;
+        if (monitor_error != NULL) {
+            *monitor_error = latched_error;
+        } else if (error == 0 && latched_error != 0) {
+            error = latched_error;
+        }
     }
     {
         int32_t close_error = mja_close_handle(&environment->stop_event);
@@ -1088,15 +1093,15 @@ int32_t mja_capture_environment_create(const char *endpoint_id, int32_t loopback
     if (environment == NULL) return (int32_t)ERROR_NOT_ENOUGH_MEMORY;
     mja_environment_state_init(&environment->state);
     error = mja_utf8_to_wide(endpoint_id, &environment->endpoint_id);
-    if (error != 0) return mja_environment_dispose(environment, error);
+    if (error != 0) return mja_environment_dispose(environment, error, NULL);
     environment->loopback = loopback;
     environment->watch_default = watch_default;
     environment->ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (environment->ready_event == NULL) return mja_environment_dispose(environment, mja_last_error_or(ERROR_GEN_FAILURE));
+    if (environment->ready_event == NULL) return mja_environment_dispose(environment, mja_last_error_or(ERROR_GEN_FAILURE), NULL);
     environment->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (environment->stop_event == NULL) return mja_environment_dispose(environment, mja_last_error_or(ERROR_GEN_FAILURE));
+    if (environment->stop_event == NULL) return mja_environment_dispose(environment, mja_last_error_or(ERROR_GEN_FAILURE), NULL);
     environment->thread = CreateThread(NULL, 0, mja_environment_thread, environment, 0, NULL);
-    if (environment->thread == NULL) return mja_environment_dispose(environment, mja_last_error_or(ERROR_GEN_FAILURE));
+    if (environment->thread == NULL) return mja_environment_dispose(environment, mja_last_error_or(ERROR_GEN_FAILURE), NULL);
     {
         HANDLE startup_handles[2] = {environment->ready_event, environment->thread};
         wait_result = WaitForMultipleObjects(2, startup_handles, FALSE, INFINITE);
@@ -1119,15 +1124,17 @@ int32_t mja_capture_environment_create(const char *endpoint_id, int32_t loopback
             error = first_error != 0 ? first_error : (int32_t)ERROR_INVALID_DATA;
         }
     }
-    if (error != 0) return mja_environment_dispose(environment, error);
+    if (error != 0) return mja_environment_dispose(environment, error, NULL);
     *out = environment;
     return 0;
 }
 
-int32_t mja_capture_environment_destroy(mja_capture_environment *environment)
+int32_t mja_capture_environment_destroy(mja_capture_environment *environment, int32_t *monitor_error)
 {
+    if (monitor_error == NULL) return (int32_t)ERROR_INVALID_PARAMETER;
+    *monitor_error = 0;
     if (environment == NULL) return (int32_t)ERROR_INVALID_PARAMETER;
-    return mja_environment_dispose(environment, 0);
+    return mja_environment_dispose(environment, 0, monitor_error);
 }
 
 #endif

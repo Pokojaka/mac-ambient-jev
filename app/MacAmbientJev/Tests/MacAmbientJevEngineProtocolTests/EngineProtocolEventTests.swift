@@ -9,27 +9,53 @@ struct EngineProtocolEventTests {
         let session = try EngineSessionPayload(sessionID: "session-1")
         let settingsResult = EngineSettingsResult(revision: try engineID(2), settings: try sampleSettings())
         let row = try sampleRow()
-        let page = try EngineTranscriptPage(sessionID: "session-1", revision: engineID(3), rows: [row], nextCursor: nil)
+        let page = try EngineTranscriptPage(sessionID: "session-1", revision: engineID(3), rows: [row], nextCursor: nil, previousCursor: nil)
+        let rowDetailsPage = try EngineTranscriptRowDetailsPage(
+            sessionID: "session-1",
+            revision: engineID(3),
+            rowID: "row-1",
+            clauseState: .boundaryPending,
+            clauseStateText: "発話文: 境界判定を保留中",
+            speakers: [
+                try EngineTranscriptSpeakerSpan(speakerID: "speaker-internal-42", displayLabel: "Speaker 1", startMS: 12, endMS: 20),
+                try EngineTranscriptSpeakerSpan(speakerID: "speaker-internal-43", displayLabel: "Speaker 2", startMS: 20, endMS: 34)
+            ],
+            nextCursor: nil,
+            previousCursor: nil
+        )
+        #expect(rowDetailsPage.clauseStateText == "発話文: 境界判定を保留中")
+        let inspectedSummary = try sampleSessionSummary()
+        let diagnostics = try sampleAvailableDiagnosticsResult()
+        let modelInspection = EngineModelsInspection(clauseTagger: .validated(try sampleModelIdentity()))
         let results: [(EngineCommandName, EngineResult, Set<String>)] = [
             (.hello, .hello(ready), ["capabilities", "state"]),
-            (.stateGet, .stateGet(state), ["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]),
+            (.stateGet, .stateGet(state), ["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]),
+            (.diagnosticsGet, .diagnosticsGet(diagnostics), ["scope", "decision_usage", "automatic_input_volume", "thermal_monitoring"]),
             (.devicesList, .devicesList(try EngineDevicesResult(source: .microphone, devices: [], defaultDeviceID: nil)), ["source", "devices", "default_device_id"]),
             (.recordingStart, .recordingStart(session), ["session_id"]),
             (.recordingStop, .recordingStop(session), ["session_id"]),
             (.sessionImport, .sessionImport(session), ["session_id"]),
+            (.sessionInspect, .sessionInspect(inspectedSummary), [
+                "folder_id", "session_id", "status", "error", "display_name", "status_text", "folder_path",
+                "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata"
+            ]),
             (.sessionReprocess, .sessionReprocess(session), ["session_id"]),
             (.sessionRetryDecisions, .sessionRetryDecisions(session), ["session_id"]),
-            (.sessionList, .sessionList(try EngineSessionListResult(sessions: [], nextCursor: nil)), ["sessions", "next_cursor"]),
-            (.transcriptRead, .transcriptRead(page), ["session_id", "revision", "rows", "next_cursor"]),
-            (.transcriptWatch, .transcriptWatch(page), ["session_id", "revision", "rows", "next_cursor"]),
+            (.sessionList, .sessionList(try EngineSessionListResult(sessions: [], nextCursor: nil, previousCursor: nil)), ["sessions", "next_cursor", "previous_cursor"]),
+            (.transcriptRead, .transcriptRead(page), ["session_id", "revision", "rows", "next_cursor", "previous_cursor"]),
+            (.transcriptRowDetails, .transcriptRowDetails(rowDetailsPage), [
+                "session_id", "revision", "row_id", "clause_state", "clause_state_text", "speakers", "next_cursor", "previous_cursor"
+            ]),
+            (.transcriptWatch, .transcriptWatch(page), ["session_id", "revision", "rows", "next_cursor", "previous_cursor"]),
             (.sessionExport, .sessionExport(try EngineExportResult(sessionID: "session-1", destinationPath: "/published/bundle")), ["session_id", "destination_path"]),
             (.settingsGet, .settingsGet(settingsResult), ["revision", "settings"]),
             (.settingsReplace, .settingsReplace(settingsResult), ["revision", "settings"]),
             (.modelsPrepare, .modelsPrepare, []),
+            (.modelsInspect, .modelsInspect(modelInspection), ["clause_tagger"]),
             (.shutdown, .shutdown, [])
         ]
 
-        #expect(results.count == 16)
+        #expect(results.count == 20)
         #expect(EngineCommandName.allCases == results.map(\.0))
 
         for (command, result, resultKeys) in results {
@@ -46,6 +72,60 @@ struct EngineProtocolEventTests {
         }
 
         #expect(EngineResult.sessionImport(session).command == .sessionImport)
+        #expect(EngineResult.sessionInspect(inspectedSummary).command == .sessionInspect)
+    }
+
+    @Test func sessionInspectRoundTripsThroughFullCodecRequestAndOutput() throws {
+        let requestID = try engineID(21)
+        let request = try EngineRequest(
+            version: 1,
+            requestID: requestID,
+            command: .sessionInspect(try EngineSessionInspectPayload(folderID: "folder-inspected"))
+        )
+        let requestLine = try EngineCodec.encodeRequest(request)
+        #expect(try EngineCodec.decodeRequest(Data(requestLine.dropLast())) == request)
+
+        let output = try EngineOutput(
+            version: 1,
+            sequence: engineID(22),
+            requestID: requestID,
+            event: .completed(.sessionInspect(try sampleSessionSummary()))
+        )
+        let outputLine = try EngineCodec.encodeOutput(output)
+        #expect(try EngineCodec.decodeOutput(Data(outputLine.dropLast())) == output)
+    }
+
+    @Test func diagnosticsAndModelsCommandsRoundTripThroughFullCodec() throws {
+        let requests = [
+            try EngineRequest(version: 1, requestID: engineID(31), command: .diagnosticsGet),
+            try EngineRequest(version: 1, requestID: engineID(32), command: .modelsInspect)
+        ]
+        for request in requests {
+            let line = try EngineCodec.encodeRequest(request)
+            #expect(line.last == 0x0A)
+            #expect(try EngineCodec.decodeRequest(Data(line.dropLast())) == request)
+        }
+
+        let results: [(EngineCommandName, EngineResult)] = [
+            (.diagnosticsGet, .diagnosticsGet(try sampleAvailableDiagnosticsResult())),
+            (.diagnosticsGet, .diagnosticsGet(try sampleUnavailableDiagnosticsResult())),
+            (.modelsInspect, .modelsInspect(EngineModelsInspection(clauseTagger: .validated(try sampleModelIdentity())))),
+            (.modelsInspect, .modelsInspect(try sampleInvalidModelsInspection()))
+        ]
+        for (index, entry) in results.enumerated() {
+            let (command, result) = entry
+            let requestID = try engineID(UInt64(40 + index))
+            let output = try EngineOutput(
+                version: 1,
+                sequence: engineID(UInt64(50 + index)),
+                requestID: requestID,
+                event: .completed(result)
+            )
+            let line = try EngineCodec.encodeOutput(output)
+            #expect(line.last == 0x0A)
+            #expect(try EngineCodec.decodeOutput(Data(line.dropLast())) == output)
+            #expect(result.command == command)
+        }
     }
 
     @Test func allEventCasesRoundTripWithExactDiscriminatorAndPayload() throws {
@@ -54,7 +134,7 @@ struct EngineProtocolEventTests {
         let failure = try sampleFailure(requestID: nil)
         let events: [(EngineEvent, EngineEventName, Set<String>)] = [
             (.ready(EngineReadyPayload(capabilities: try sampleCapabilities(), state: state)), .ready, ["capabilities", "state"]),
-            (.state(state), .state, ["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]),
+            (.state(state), .state, ["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]),
             (.accepted(EngineAcceptedPayload(command: .recordingStop)), .accepted, ["command"]),
             (.completed(.modelsPrepare), .completed, ["command", "result"]),
             (.progress(try EngineProgressPayload(stage: .asr, completedUnits: 2, totalUnits: nil, sessionID: "session-1")), .progress, ["stage", "completed_units", "total_units", "session_id"]),
@@ -123,13 +203,13 @@ struct EngineProtocolEventTests {
         #expect(try EngineOutput(version: 1, sequence: id, requestID: nil, event: .error(try sampleFailure(requestID: nil))).requestID == nil)
         #expect(throws: (any Error).self) { try EngineOutput(version: 2, sequence: id, requestID: nil, event: .state(try sampleState())) }
 
-        #expect(decodingEngineError(#"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#) == .unsupportedVersion(2))
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":true,"sequence":"1","request_id":null,"event":"state","payload":{}}"#))
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#))
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":false,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#))
+        #expect(decodingEngineError(#"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#) == .unsupportedVersion(2))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":true,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":false,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"state","payload":null}"#))
 
-        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":"1","event":"ready","payload":{"capabilities":{"sources":["microphone"],"asr_sizes":["0.6b"],"execution_providers":["cpu"],"maximum_threads":1,"automatic_input_volume":"none","thermal_monitoring":"none"},"state":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}}"#))
+        #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":"1","event":"ready","payload":{"capabilities":{"sources":["microphone"],"asr_sizes":["0.6b"],"execution_providers":["cpu"],"maximum_threads":1,"automatic_input_volume":"none","thermal_monitoring":"none"},"state":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"accepted","payload":{"command":"hello"}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"completed","payload":{"command":"models.prepare","result":{}}}"#))
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":"1","event":"error","payload":{"code":"busy","message":"busy","stage":"capture","request_id":"2","session_id":null,"severity":"error","recovery_action":"retry","details":[],"cleanup_errors":[]}}"#))
@@ -148,6 +228,77 @@ struct EngineProtocolEventTests {
         #expect(decodingFails(EngineOutput.self, from: #"{"version":1,"sequence":"1","request_id":null,"event":"rows","payload":{"session_id":"s","revision":"1","kind":"snapshot","rows":[{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","headings":[],"clause_state":null,"extra":true}],"removed_row_ids":[],"next_cursor":null}}"#))
     }
 
+    @Test func newCommandOutputsRejectMismatchedCommandsAndInvalidNestedPayloads() throws {
+        let diagnosticsOutput = try EngineOutput(
+            version: 1,
+            sequence: engineID(60),
+            requestID: engineID(61),
+            event: .completed(.diagnosticsGet(try sampleAvailableDiagnosticsResult()))
+        )
+        let modelsOutput = try EngineOutput(
+            version: 1,
+            sequence: engineID(62),
+            requestID: engineID(63),
+            event: .completed(.modelsInspect(EngineModelsInspection(clauseTagger: .validated(try sampleModelIdentity()))))
+        )
+
+        var diagnosticsObject = try jsonObject(encoder().encode(diagnosticsOutput))
+        var diagnosticsEnvelope = try #require(diagnosticsObject["payload"] as? [String: Any])
+        diagnosticsEnvelope["command"] = EngineCommandName.modelsInspect.rawValue
+        diagnosticsObject["payload"] = diagnosticsEnvelope
+        #expect(decodingFails(EngineOutput.self, from: try objectData(diagnosticsObject)))
+
+        var modelsObject = try jsonObject(encoder().encode(modelsOutput))
+        var modelsEnvelope = try #require(modelsObject["payload"] as? [String: Any])
+        modelsEnvelope["command"] = EngineCommandName.diagnosticsGet.rawValue
+        modelsObject["payload"] = modelsEnvelope
+        #expect(decodingFails(EngineOutput.self, from: try objectData(modelsObject)))
+
+        diagnosticsObject = try jsonObject(encoder().encode(diagnosticsOutput))
+        diagnosticsEnvelope = try #require(diagnosticsObject["payload"] as? [String: Any])
+        var diagnosticsResult = try #require(diagnosticsEnvelope["result"] as? [String: Any])
+        var decisionUsage = try #require(diagnosticsResult["decision_usage"] as? [String: Any])
+        decisionUsage["kind"] = "unsupported"
+        diagnosticsResult["decision_usage"] = decisionUsage
+        diagnosticsEnvelope["result"] = diagnosticsResult
+        diagnosticsObject["payload"] = diagnosticsEnvelope
+        #expect(decodingFails(EngineOutput.self, from: try objectData(diagnosticsObject)))
+
+        modelsObject = try jsonObject(encoder().encode(modelsOutput))
+        modelsEnvelope = try #require(modelsObject["payload"] as? [String: Any])
+        var modelsResult = try #require(modelsEnvelope["result"] as? [String: Any])
+        var clauseTagger = try #require(modelsResult["clause_tagger"] as? [String: Any])
+        clauseTagger["kind"] = "unsupported"
+        modelsResult["clause_tagger"] = clauseTagger
+        modelsEnvelope["result"] = modelsResult
+        modelsObject["payload"] = modelsEnvelope
+        #expect(decodingFails(EngineOutput.self, from: try objectData(modelsObject)))
+
+        diagnosticsObject = try jsonObject(encoder().encode(diagnosticsOutput))
+        diagnosticsEnvelope = try #require(diagnosticsObject["payload"] as? [String: Any])
+        diagnosticsResult = try #require(diagnosticsEnvelope["result"] as? [String: Any])
+        decisionUsage = try #require(diagnosticsResult["decision_usage"] as? [String: Any])
+        var snapshot = try #require(decisionUsage["snapshot"] as? [String: Any])
+        snapshot["unexpected"] = true
+        decisionUsage["snapshot"] = snapshot
+        diagnosticsResult["decision_usage"] = decisionUsage
+        diagnosticsEnvelope["result"] = diagnosticsResult
+        diagnosticsObject["payload"] = diagnosticsEnvelope
+        #expect(decodingFails(EngineOutput.self, from: try objectData(diagnosticsObject)))
+
+        modelsObject = try jsonObject(encoder().encode(modelsOutput))
+        modelsEnvelope = try #require(modelsObject["payload"] as? [String: Any])
+        modelsResult = try #require(modelsEnvelope["result"] as? [String: Any])
+        clauseTagger = try #require(modelsResult["clause_tagger"] as? [String: Any])
+        var identity = try #require(clauseTagger["identity"] as? [String: Any])
+        identity["unexpected"] = true
+        clauseTagger["identity"] = identity
+        modelsResult["clause_tagger"] = clauseTagger
+        modelsEnvelope["result"] = modelsResult
+        modelsObject["payload"] = modelsEnvelope
+        #expect(decodingFails(EngineOutput.self, from: try objectData(modelsObject)))
+    }
+
     @Test func exportResultRequiresNonemptyStringsAndExactKeys() throws {
         let export = try EngineExportResult(sessionID: "session-1", destinationPath: "/published/bundle")
         let object = try jsonObject(encoder().encode(export))
@@ -158,6 +309,49 @@ struct EngineProtocolEventTests {
         #expect(decodingFails(EngineExportResult.self, from: #"{"session_id":"","destination_path":"/published"}"#))
         #expect(decodingFails(EngineExportResult.self, from: #"{"session_id":"session-1","destination_path":null}"#))
     }
+}
+
+private func sampleAvailableDiagnosticsResult() throws -> EngineDiagnosticsResult {
+    let boundaryRequests = try EngineDecisionRequestUsage(sendCount: 2, inputTokens: 11, successCount: 1, failureCount: 1)
+    let priorityRequests = try EngineDecisionRequestUsage(sendCount: 2, inputTokens: 17, successCount: 1, failureCount: 1)
+    let snapshot = try EngineDecisionUsageSnapshot(
+        sendCount: 4,
+        inputTokens: 28,
+        successCount: 2,
+        failureCount: 2,
+        pendingBoundarySegmentCount: 2,
+        pendingPriorityClauseCount: 3,
+        boundaryRequests: boundaryRequests,
+        priorityRequests: priorityRequests
+    )
+    return EngineDiagnosticsResult(
+        scope: .engineProcess,
+        decisionUsage: .available(snapshot),
+        automaticInputVolume: .none,
+        thermalMonitoring: .none
+    )
+}
+
+private func sampleUnavailableDiagnosticsResult() throws -> EngineDiagnosticsResult {
+    EngineDiagnosticsResult(
+        scope: .engineProcess,
+        decisionUsage: .unavailable(try sampleFailure(requestID: nil)),
+        automaticInputVolume: .none,
+        thermalMonitoring: .none
+    )
+}
+
+private func sampleModelIdentity() throws -> EngineClauseTaggerIdentity {
+    try EngineClauseTaggerIdentity(
+        backend: "coreml",
+        modelID: "clause-tagger-v1",
+        revision: String(repeating: "a", count: 64),
+        tokenizerSHA256: String(repeating: "b", count: 64)
+    )
+}
+
+private func sampleInvalidModelsInspection() throws -> EngineModelsInspection {
+    EngineModelsInspection(clauseTagger: .invalid(try sampleFailure(requestID: nil)))
 }
 
 private func sampleCapabilities() throws -> EngineCapabilities {
@@ -179,7 +373,8 @@ private func sampleState() throws -> EngineState {
         recovery: .completed,
         recording: nil,
         queue: [],
-        failures: []
+        failures: [],
+        presentation: try engineTestPresentation()
     )
 }
 
@@ -199,6 +394,28 @@ private func sampleFailure(requestID: EngineID?) throws -> EngineFailure {
 
 private func sampleRow() throws -> EngineTranscriptRow {
     try EngineTranscriptRow(rowID: "row-1", startMS: 12, endMS: 34, text: "日本語の文字起こし", headings: [.speaker1], clauseState: nil)
+}
+
+private func sampleSessionSummary() throws -> EngineSessionSummary {
+    try EngineSessionSummary(
+        folderID: "folder-inspected",
+        sessionID: "session-inspected",
+        status: .finalized,
+        error: nil,
+        displayName: "Inspected recording",
+        statusText: "Finalized",
+        folderPath: "/sessions/folder-inspected",
+        exportPath: nil,
+        canReprocess: true,
+        canRetryDecisions: true,
+        canExport: true,
+        metadata: .readable(
+            createdAt: 1_700_000_000,
+            source: .imported(originalFilename: "meeting.wav"),
+            audio: .available,
+            hasTranscript: true
+        )
+    )
 }
 
 private func sampleSettings() throws -> EngineSettings {
@@ -228,6 +445,10 @@ private func encoder() -> JSONEncoder {
 
 private func jsonObject(_ data: Data) throws -> [String: Any] {
     try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func objectData(_ object: [String: Any]) throws -> Data {
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 }
 
 private func decodingFails<Value: Decodable>(_ type: Value.Type, from string: String) -> Bool {

@@ -28,6 +28,7 @@ public actor AudioCaptureDrain {
     private var pendingOutputOffset = 0
     private var pendingGapEndFrame: Int64?
     private var eosFlushed = false
+    private var segmentFinished = false
     private var finishedCheckpoint: AudioCheckpoint?
 
     // An actor does not stay exclusive while awaiting another actor. Keep all
@@ -51,6 +52,10 @@ public actor AudioCaptureDrain {
     public func drainAvailable() async throws -> Int {
         await acquire()
         defer { release() }
+        if finishedCheckpoint != nil { return 0 }
+        guard !segmentFinished else {
+            throw CanonicalAudioError.alreadyFinished
+        }
         return try await drainLocked()
     }
 
@@ -58,6 +63,10 @@ public actor AudioCaptureDrain {
     public func committedSnapshot() async throws -> AudioCheckpoint {
         await acquire()
         defer { release() }
+        if let finishedCheckpoint { return finishedCheckpoint }
+        guard !segmentFinished else {
+            throw CanonicalAudioError.alreadyFinished
+        }
         _ = try await drainLocked()
         return await writer.committedSnapshot()
     }
@@ -70,10 +79,34 @@ public actor AudioCaptureDrain {
         return await writer.committedSnapshot()
     }
 
+    /// Ends this ring/converter segment without finalizing the durable writer or session.
+    /// The caller must fence the producer and call `ring.finish(tailFrame:)` before this method;
+    /// after it succeeds, this drain accepts no further ring blocks.
+    public func finishSegment() async throws -> AudioCheckpoint {
+        await acquire()
+        defer { release() }
+        guard !segmentFinished, finishedCheckpoint == nil else {
+            throw CanonicalAudioError.alreadyFinished
+        }
+        try await flushSegmentLocked()
+        let checkpoint = try await writer.checkpoint()
+        segmentFinished = true
+        return checkpoint
+    }
+
     public func finish() async throws -> AudioCheckpoint {
         await acquire()
         defer { release() }
         if let finishedCheckpoint { return finishedCheckpoint }
+        if !segmentFinished {
+            try await flushSegmentLocked()
+        }
+        let checkpoint = try await writer.finish()
+        finishedCheckpoint = checkpoint
+        return checkpoint
+    }
+
+    private func flushSegmentLocked() async throws {
         _ = try await drainLocked()
         if let loss = ring.trailingGap {
             try await fill(to: loss.startFrame, reason: .missingCallback)
@@ -88,9 +121,6 @@ public actor AudioCaptureDrain {
             eosFlushed = true
         }
         try await appendPendingOutput()
-        let checkpoint = try await writer.finish()
-        finishedCheckpoint = checkpoint
-        return checkpoint
     }
 
     /// Includes timestamp discontinuities and invalid/overflow ranges filled with silence.

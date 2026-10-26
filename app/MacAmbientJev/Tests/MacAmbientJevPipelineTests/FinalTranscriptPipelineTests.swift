@@ -304,7 +304,7 @@ private func processFinal(
         shouldPause: { false },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
-        onStatus: { await statuses.append($0) },
+        onStatus: { await statuses.append($0.text) },
         onUpdate: { segments, state in await states.append((segments.map(\.text), state)) }
     )
 }
@@ -906,7 +906,7 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
         pacingMode: .normal,
         shouldPause: { false },
         onPhase: { _ in },
-        onStatus: { await statuses.append($0) },
+        onStatus: { await statuses.append($0.text) },
         onUpdate: { _, _ in }
     )
 
@@ -1066,6 +1066,7 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let log = FinalizationCallLog()
     let counter = DecisionUsageCounter()
+    let decisionFactoryCalls = SynchronousCallRecorder()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -1085,7 +1086,15 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .localTagger({
-            DecisionCoordinator(provider: FailingDecisionProvider(), identity: testDecisionIdentity, usageCounter: counter)
+            let factoryCall = decisionFactoryCalls.count()
+            decisionFactoryCalls.recordCall()
+            let provider: any DecisionProvider
+            if factoryCall == 0 {
+                provider = FailingDecisionProvider()
+            } else {
+                provider = FrozenReuseProvider(fillerRangesByText: [:])
+            }
+            return DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
         }, usageCounter: counter),
         sleep: { _ in }
     )
@@ -1104,14 +1113,19 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
     #expect(pending.map(\.segmentID) == ["seg_000001", "seg_000002"])
 
     let retryStatuses = FinalizationStatusRecorder()
-    await processor.retryContentPrioritySession(
+    let retryResult = await processor.retryContentPrioritySession(
         sessionID: sessionID,
         boundarySegments: pending,
         clauses: [],
-        onStatus: { await retryStatuses.append($0) },
+        onStatus: { await retryStatuses.append($0.text) },
         onUpdate: { _, _ in }
     )
-    #expect(await retryStatuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
+    #expect(retryResult.disposition == .completed)
+    #expect(retryResult.message == nil)
+    #expect(await retryStatuses.snapshot().last == "保留中の判定を更新しました")
+    let recoveredMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(recoveredMetadata.pendingClauseBoundarySegments.isEmpty)
+    #expect(recoveredMetadata.pendingContentPriorityClauses.isEmpty)
 }
 
 @Test

@@ -70,6 +70,16 @@ final class ScriptedCaptureClock: CaptureClock, @unchecked Sendable {
 
 /// Shared observability for factory, power, disk, fake-device, and writer assertions.
 final class ScriptedCaptureProbe: @unchecked Sendable {
+    private struct DropoutWaiter {
+        let minimumCount: UInt64
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private struct DropoutState: @unchecked Sendable {
+        var counts: [UInt64] = []
+        var waiters: [UUID: DropoutWaiter] = [:]
+    }
+
     let openCalls = Atomic<Int>(0)
     let startCalls = Atomic<Int>(0)
     let stopJoinCalls = Atomic<Int>(0)
@@ -79,6 +89,7 @@ final class ScriptedCaptureProbe: @unchecked Sendable {
     let powerReleaseCalls = Atomic<Int>(0)
     let diskQueries = Atomic<Int>(0)
     let writerAppendFailures = Atomic<Int>(0)
+    private let dropoutState = Mutex(DropoutState())
     private let orderCounter = Atomic<Int64>(0)
     private let writerFinishOrderValue = Atomic<Int64>(0)
     private let powerReleaseOrderValue = Atomic<Int64>(0)
@@ -106,6 +117,36 @@ final class ScriptedCaptureProbe: @unchecked Sendable {
 
     var writerFinishOrder: Int64 { writerFinishOrderValue.load(ordering: .acquiring) }
     var powerReleaseOrder: Int64 { powerReleaseOrderValue.load(ordering: .acquiring) }
+    var dropoutCounts: [UInt64] { dropoutState.withLock { $0.counts } }
+
+    func recordDropouts(_ count: UInt64) {
+        let ready = dropoutState.withLock { state -> [CheckedContinuation<Bool, Never>] in
+            state.counts.append(count)
+            let readyIDs = state.waiters.filter { $0.value.minimumCount <= count }.map { $0.key }
+            return readyIDs.compactMap { state.waiters.removeValue(forKey: $0)?.continuation }
+        }
+        for continuation in ready { continuation.resume(returning: true) }
+    }
+
+    func waitForDropoutCount(atLeast minimumCount: UInt64, timeoutNanoseconds: UInt64) async -> Bool {
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            let alreadyObserved = dropoutState.withLock { state -> Bool in
+                if state.counts.contains(where: { $0 >= minimumCount }) { return true }
+                state.waiters[id] = DropoutWaiter(minimumCount: minimumCount, continuation: continuation)
+                return false
+            }
+            if alreadyObserved {
+                continuation.resume(returning: true)
+            } else {
+                Task { [self] in
+                    try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    let waiter = dropoutState.withLock { $0.waiters.removeValue(forKey: id) }
+                    waiter?.continuation.resume(returning: false)
+                }
+            }
+        }
+    }
 
     func availableBytes() throws -> UInt64 {
         _ = diskQueries.add(1, ordering: .relaxed)
@@ -139,6 +180,7 @@ final class ScriptedCaptureProbe: @unchecked Sendable {
 /// Exactly one main-actor producer: start(), step(), and stopJoin() serialize all ingress calls.
 @MainActor
 final class ScriptedFileCaptureDevice: WindowsCaptureDevice {
+    let endpointID = "scripted-endpoint"
     let sampleRate: Double
     let channels: Int
     private let events: [ScriptedFileCaptureEvent]
@@ -306,7 +348,9 @@ final class ScriptedFileCaptureFactory: WindowsCaptureSourceFactory {
         return device
     }
 
-    func devices(source: CaptureSource) throws -> [WindowsCaptureEndpoint] { [] }
+    func devices(source: CaptureSource) throws -> [WindowsCaptureEndpoint] {
+        [WindowsCaptureEndpoint(id: "scripted-endpoint", name: "Scripted endpoint", isDefault: true)]
+    }
 }
 
 /// Writes interleaved Float32 samples as little-endian fixture bytes, outside production code.
@@ -438,9 +482,13 @@ func makeWindowsCaptureTestSource(
         power: power,
         clock: clock,
         qpc100ns: { 10_000_000 },
+        automaticPolling: true,
         onWarning: { _ in },
         onFailure: { _ in },
-        onSilenceChanged: { _ in }
+        onDropouts: { probe.recordDropouts($0) },
+        onSilenceChanged: { _ in },
+        onDeviceWaitingChanged: { _ in },
+        onDeviceLost: { _ in }
     )
     return (source, factory, clock, realWriter)
 }

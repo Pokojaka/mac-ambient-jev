@@ -81,6 +81,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private let nativeError = Atomic<Int32>(0)
     private let heartbeatMillis = Atomic<Int64>(0)
     private let heartbeatSeen = Atomic(false)
+    private let firstBufferQPCBits = Atomic<UInt64>(UInt64.max)
+    private let firstBufferTimeBits = Atomic<UInt64>(UInt64.max)
 
     // All fields below are owned by the serialized receive/health producer.
     private let startedAt: TimeInterval
@@ -98,6 +100,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private var currentPacketStartFrame: Int64 = 0
     private var expectedPacketOffset = 0
     private var packetInProgress = false
+    private var producerActivity = false
+    private var reconnectStartFrame: Int64?
     private var activeOutput = false
     private var activeIntervalHadPacket = false
     private var activeWithoutPacketsSince: TimeInterval?
@@ -165,6 +169,54 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         sink.lastBufferMillis.load(ordering: .acquiring) != 0
     }
 
+    public var firstBufferQPC100ns: UInt64? {
+        let qpc = firstBufferQPCBits.load(ordering: .acquiring)
+        guard qpc != UInt64.max else { return nil }
+        return qpc
+    }
+
+    public var firstBufferTime: TimeInterval? {
+        let bits = firstBufferTimeBits.load(ordering: .acquiring)
+        guard bits != UInt64.max else { return nil }
+        return Double(bitPattern: bits)
+    }
+
+    /// Configures the initial timeline position for a reopened loopback ingress.
+    /// Call only on the control lane, before the capture producer starts.
+    public func prepareReconnect(startQPC100ns: UInt64) throws {
+        guard loopback else {
+            throw WindowsCaptureAdapterError.invalidConfiguration(
+                "Reconnect timeline preparation requires loopback capture"
+            )
+        }
+        guard reconnectStartFrame == nil else {
+            throw WindowsCaptureAdapterError.invalidConfiguration(
+                "Reconnect timeline has already been prepared"
+            )
+        }
+        guard !producerActivity, !packetInProgress,
+              previousDevicePosition == nil,
+              sink.lastEndFrame == 0,
+              sink.lastBufferMillis.load(ordering: .acquiring) == 0,
+              sink.invalidBufferCount.load(ordering: .acquiring) == 0,
+              failure == nil else {
+            throw WindowsCaptureAdapterError.invalidConfiguration(
+                "Reconnect timeline must be prepared before ingress activity"
+            )
+        }
+        guard startQPC100ns >= epochQPC100ns else {
+            throw WindowsCaptureAdapterError.timestamp(
+                "Reconnect start QPC precedes the capture epoch"
+            )
+        }
+        guard let frame = frameForQPC(startQPC100ns), Int(exactly: frame) != nil else {
+            throw WindowsCaptureAdapterError.timestamp(
+                "Reconnect start QPC does not map to a representable frame"
+            )
+        }
+        reconnectStartFrame = frame
+    }
+
     /// Latches only the first failure. Safe for a consumer to call while the producer runs.
     public func fail(_ failure: WindowsCaptureIngressFailure) {
         guard failure != .none else { return }
@@ -178,6 +230,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     /// Consumes one native fragment synchronously. No callback-path error strings or arrays
     /// are created; all failures are represented by the fixed failure code.
     public func receive(_ packet: WindowsCapturePacket) {
+        producerActivity = true
         guard failure == nil else { return }
         guard packet.flags <= 15 else {
             fail(.invalidPacket)
@@ -269,6 +322,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return
         }
 
+        reconnectStartFrame = nil
         if isNewPacket {
             currentPacketPosition = packet.devicePosition
             currentPacketQPC = packet.qpc100ns
@@ -318,10 +372,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                 packetSinceHealth = true
             }
         }
+        recordReadiness(qpc100ns: packet.qpc100ns)
     }
 
     /// Drains output health on the producer thread after native packet delivery.
     public func health(watermarkQPC100ns: UInt64, outputState: Int32, error: Int32) {
+        producerActivity = true
         guard failure == nil else { return }
         guard error == 0 else {
             nativeError.store(error, ordering: .releasing)
@@ -376,6 +432,30 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         }
 
         if activeOutput {
+            if let reconnectStartFrame {
+                guard let activeWithoutPacketsSince else {
+                    fail(.timestamp)
+                    return
+                }
+                let activeWithoutPacketsDuration = now - activeWithoutPacketsSince
+                guard activeWithoutPacketsDuration >= 0 else {
+                    fail(.suspended)
+                    return
+                }
+                guard activeWithoutPacketsDuration < CaptureHealth.stallInterval else {
+                    fail(.activeOutputStall)
+                    return
+                }
+                guard let settledFrame = settledFrame(forWatermark: watermarkQPC100ns) else {
+                    fail(.timestamp)
+                    return
+                }
+                self.reconnectStartFrame = max(reconnectStartFrame, settledFrame)
+                activeOutput = false
+                activeIntervalHadPacket = false
+                self.activeWithoutPacketsSince = nil
+                return
+            }
             guard let settledFrame = settledFrame(forWatermark: watermarkQPC100ns) else {
                 fail(.timestamp)
                 return
@@ -405,6 +485,16 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         guard let settledFrame = settledFrame(forWatermark: watermarkQPC100ns) else {
             return
         }
+        if let reconnectStartFrame {
+            guard settledFrame > reconnectStartFrame else { return }
+            guard sink.lastEndFrame == 0,
+                  let gapFrameCount = Int(exactly: reconnectStartFrame) else {
+                fail(.timestamp)
+                return
+            }
+            sink.timestampGap(frameCount: gapFrameCount)
+            self.reconnectStartFrame = nil
+        }
         let endFrame = sink.lastEndFrame
         guard settledFrame > endFrame else { return }
         let uncoveredFrames = settledFrame - endFrame
@@ -417,6 +507,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         guard halfSecondFrames > 0 else { return }
         let count = Int(min(uncoveredFrames, Int64(halfSecondFrames)))
         sink.silence(startFrame: endFrame, frameCount: count)
+        recordReadiness(qpc100ns: watermarkQPC100ns)
     }
 
     /// The health-fill boundary at the watermark, excluding the 250 ms delivery grace.
@@ -437,6 +528,10 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             fail(.suspended)
             return failure
         }
+        if !isReady, now - startedAt >= CaptureHealth.firstBufferDeadline {
+            fail(.workerStall)
+            return failure
+        }
         if heartbeatSeen.load(ordering: .acquiring) {
             let last = heartbeatMillis.load(ordering: .acquiring)
             let lastSeconds = Double(last) / 1_000
@@ -445,9 +540,6 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                 fail(.workerStall)
                 return failure
             }
-        } else if now - startedAt >= CaptureHealth.firstBufferDeadline {
-            fail(.workerStall)
-            return failure
         }
         if !loopback,
            CaptureHealth.hasStalled(
@@ -465,6 +557,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             fail(.timestamp)
             return nil
         }
+        let idleLoopback = loopback && lastHealthTime != nil && !activeOutput
         guard let anchorDevicePosition, let anchorFrame,
               let previousDevicePosition,
               let previousDeviceEnd,
@@ -473,14 +566,14 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             guard resetAnchor(devicePosition: packet.devicePosition, frame: hostFrame) != nil else {
                 return nil
             }
-            return PacketStartMapping(frame: hostFrame, fillsIdleGap: false)
+            return PacketStartMapping(
+                frame: hostFrame, fillsIdleGap: idleLoopback && sink.lastEndFrame > 0
+            )
         }
         guard packet.qpc100ns >= previousQPC100ns else {
             fail(.timestamp)
             return nil
         }
-
-        let idleLoopback = loopback && lastHealthTime != nil && !activeOutput
         if packet.devicePosition < previousDeviceEnd {
             guard packet.flags & Self.discontinuityFlag != 0,
                   packet.qpc100ns > previousQPC100ns,
@@ -582,6 +675,23 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         let rounded = rawFrames.rounded()
         guard rounded >= 0, rounded < Double(Int64.max) else { return nil }
         return Int64(rounded)
+    }
+
+    private func recordReadiness(qpc100ns: UInt64) {
+        guard sink.lastBufferMillis.load(ordering: .acquiring) != 0,
+              failure == nil else { return }
+        let now = clock.now()
+        guard now.isFinite, now >= 0 else { return }
+        _ = firstBufferQPCBits.compareExchange(
+            expected: UInt64.max,
+            desired: qpc100ns,
+            ordering: .acquiringAndReleasing
+        )
+        _ = firstBufferTimeBits.compareExchange(
+            expected: UInt64.max,
+            desired: now.bitPattern,
+            ordering: .acquiringAndReleasing
+        )
     }
 
     private static func milliseconds(_ time: TimeInterval) -> Int64? {

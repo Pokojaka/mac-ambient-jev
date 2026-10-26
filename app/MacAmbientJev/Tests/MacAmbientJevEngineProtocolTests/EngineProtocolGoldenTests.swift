@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolGoldenTests {
     @Test func canonicalFixtureRoundTripsAndCoversEveryCommandAndEvent() throws {
         let records = try goldenRecords()
-        #expect(records.count == 46)
+        #expect(records.count == 102)
         #expect(records.allSatisfy { !$0.isEmpty })
         print("Golden fixture records: \(records.count)")
 
@@ -39,6 +39,150 @@ struct EngineProtocolGoldenTests {
         #expect(rowKinds == Set(EngineRowsKind.allCases.map(\.rawValue)))
     }
 
+    @Test func fixtureCoversPresentationSemanticsAcrossStateEnvelopes() throws {
+        var recordingTones = Set<String>()
+        var preparationPhases = Set<String>()
+        var envelopeKinds = Set<String>()
+        var sawOrdinaryPartialFailureProcessingText = false
+
+        func collectPresentation(
+            _ state: EngineState,
+            from stateObject: [String: Any],
+            envelope: String
+        ) throws {
+            let presentation = state.presentation
+            let presentationObject = try #require(stateObject["presentation"] as? [String: Any])
+            #expect(Set(presentationObject.keys) == (try encodedObjectKeys(presentation)), "presentation keys in \(envelope)")
+            recordingTones.insert(presentation.recordingTone.rawValue)
+            preparationPhases.insert(presentation.preparationPhase.rawValue)
+            envelopeKinds.insert(envelope)
+
+            let preparationRequiresStatusText = presentation.preparationPhase == .preparing || presentation.preparationPhase == .failed
+            #expect(
+                (presentation.preparationStatusText != nil) == preparationRequiresStatusText,
+                "preparation status text presence in \(envelope)"
+            )
+
+            if presentation.processingIndicator == .partialFailure {
+                if let processingText = presentation.processingStatusText {
+                    #expect(processingText == "録音中の発話を文字起こししています")
+                    #expect(!presentation.liveFailureNotices.contains(processingText))
+                    sawOrdinaryPartialFailureProcessingText = true
+                } else {
+                    #expect(state.recovery == .failed)
+                    #expect(presentation.recoveryStatusText == "未完了セッションを復旧できませんでした: セッション一覧を読み取れません")
+                    #expect(presentation.recordingStatusText == "待機中")
+                }
+            }
+        }
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            let payload = try #require(metadata["payload"] as? [String: Any])
+            switch output.event {
+            case let .state(state):
+                try collectPresentation(state, from: payload, envelope: "state")
+            case let .ready(ready):
+                let stateObject = try #require(payload["state"] as? [String: Any])
+                #expect(ready.state.presentation.recordingTone == .neutral)
+                #expect(ready.state.presentation.preparationPhase == .idle)
+                #expect(ready.state.presentation.preparationStatusText == nil)
+                try collectPresentation(ready.state, from: stateObject, envelope: "ready")
+            case let .completed(result):
+                let resultObject = try #require(payload["result"] as? [String: Any])
+                switch result {
+                case let .hello(ready):
+                    let stateObject = try #require(resultObject["state"] as? [String: Any])
+                    #expect(ready.state.presentation.recordingTone == .neutral)
+                    #expect(ready.state.presentation.preparationPhase == .idle)
+                    #expect(ready.state.presentation.preparationStatusText == nil)
+                    try collectPresentation(ready.state, from: stateObject, envelope: "completed.hello")
+                case let .stateGet(state):
+                    try collectPresentation(state, from: resultObject, envelope: "completed.stateGet")
+                default:
+                    break
+                }
+            case .rows, .error, .progress, .accepted:
+                break
+            }
+        }
+
+        #expect(recordingTones == Set(EngineRecordingTone.allCases.map(\.rawValue)))
+        #expect(preparationPhases == Set(EnginePreparationPhase.allCases.map(\.rawValue)))
+        #expect(envelopeKinds == ["state", "ready", "completed.hello", "completed.stateGet"])
+        #expect(sawOrdinaryPartialFailureProcessingText)
+    }
+
+    @Test func fixtureExposesReconnectStateAndDeviceLostAsTypedValues() throws {
+        var sawWaitingForDeviceState = false
+        var sawDeviceLostReason = false
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            switch output.event {
+            case let .state(state) where output.sequence.value == 115:
+                #expect(output.requestID == nil)
+                #expect(state.revision.value == 115)
+                #expect(state.screen == .live)
+                #expect(state.setup == .ready)
+                #expect(state.recovery == .completed)
+                #expect(state.queue.isEmpty)
+                #expect(state.failures.isEmpty)
+
+                let recording = try #require(state.recording)
+                #expect(recording.sessionID == "session-reconnect")
+                #expect(recording.source == .microphone)
+                #expect(recording.device == .id("wasapi-mic-reconnect"))
+                #expect(recording.phase == .waitingForDevice)
+                #expect(recording.phase.rawValue == "waiting_for_device")
+
+                #expect(state.presentation.recordingStatusText == "録音デバイスの復帰を待っています")
+                #expect(state.presentation.recordingTone == .warning)
+                #expect(state.presentation.preparationPhase == .ready)
+                #expect(state.presentation.preparationStatusText == nil)
+                #expect(state.presentation.recoveryStatusText == nil)
+                #expect(state.presentation.processingStatusText == nil)
+                #expect(state.presentation.liveFailureNotices.isEmpty)
+                #expect(!state.presentation.silenceWarningActive)
+                #expect(state.presentation.silenceWarningText == nil)
+                #expect(state.presentation.audioGapCount == 1)
+                #expect(state.presentation.audioGapText == "音声の欠落: 1 回")
+                #expect(state.presentation.processingIndicator == .idle)
+                sawWaitingForDeviceState = true
+
+            case let .error(failure) where output.sequence.value == 116:
+                #expect(output.requestID == nil)
+                #expect(failure.code == .deviceLost)
+                #expect(failure.code.rawValue == "device_lost")
+                #expect(failure.message == "録音デバイスが30秒以内に復帰しなかったため録音を停止しました。録音は保存されています")
+                #expect(failure.stage == .capture)
+                #expect(failure.requestID == nil)
+                #expect(failure.sessionID == "session-reconnect")
+                #expect(failure.severity == .warning)
+                #expect(failure.recoveryAction == .selectDevice)
+                #expect(failure.details.count == 1)
+                let detail = try #require(failure.details.first)
+                #expect(detail.domain == "capture")
+                #expect(detail.code == "reopen")
+                #expect(detail.message == "Native operation mja_capture_open failed with code -401")
+                #expect(detail.deviceID == nil)
+                #expect(detail.path == nil)
+                #expect(failure.cleanupErrors.isEmpty)
+                sawDeviceLostReason = true
+
+            default:
+                break
+            }
+        }
+
+        #expect(sawWaitingForDeviceState)
+        #expect(sawDeviceLostReason)
+    }
+
     @Test func fixturePreservesRepresentativeTypedSemantics() throws {
         let records = try goldenRecords()
         var sawUnconfiguredAutoExportReplacement = false
@@ -46,18 +190,40 @@ struct EngineProtocolGoldenTests {
         var sawSystemAudioIDSelector = false
         var sawUInt64Maximum = false
         var sawLiveBusyState = false
+        var sawReconnectWaitingState = false
         var sawConfiguredSettingsResult = false
         var sawEndpointDefault = false
         var sawUnreadableAndReadableSessions = false
+        var sawSessionInspectRequest = false
+        var sawUnreadableSessionInspect = false
+        var sawReadableSessionInspect = false
+        var sawMicrophoneSessionSource = false
+        var sawSystemAudioSessionSource = false
+        var sawImportedSessionSource = false
+        var sawAvailableSessionAudio = false
+        var sawMissingSessionAudio = false
+        var sawUnreadableSessionAudio = false
+        var sawPreviousCursorNull = false
+        var sawPreviousCursorNonNull = false
         var sawEscapedJapaneseEmojiRow = false
         var sawNullClauseState = false
         var sawKnownClauseState = false
         var sawCorrelatedError = false
         var sawUnsolicitedError = false
+        var sawDeviceLostUnsolicitedError = false
         var sawNativeErrorDetails = false
         var sawKnownProgressTotal = false
         var sawUnknownProgressTotal = false
         var sawNonNullRevisionAndCursor = false
+        var sawDiagnosticsRequest = false
+        var sawModelsInspectRequest = false
+        var sawInspectionCancellation = false
+        var sawRowNotFoundError = false
+        var sawStaleRevisionError = false
+        var sawAvailableDiagnostics = false
+        var sawUnavailableDiagnostics = false
+        var sawValidatedModelInspection = false
+        var sawInvalidModelInspection = false
         var rowLabels = Set<String>()
 
         for record in records {
@@ -71,6 +237,7 @@ struct EngineProtocolGoldenTests {
                 case let .completed(result):
                     switch result {
                     case let .devicesList(devices):
+                        guard output.sequence.value == 9 else { break }
                         #expect(devices.source == .systemAudio)
                         #expect(devices.devices.contains { $0.id == "wasapi-loopback-42" && $0.isDefault })
                         #expect(devices.defaultDeviceID == "wasapi-loopback-42")
@@ -80,20 +247,243 @@ struct EngineProtocolGoldenTests {
                         #expect(value.settings.exportDestinationPath == "D:/Ambient Exports")
                         sawConfiguredSettingsResult = true
                     case let .sessionList(value):
+                        guard output.sequence.value == 16 else { break }
+                        #expect(value.sessions.count == 5)
                         let unreadable = try #require(value.sessions.first { $0.status == .unreadable })
                         #expect(unreadable.folderID == "stable-folder-id-corrupt-metadata-17")
                         #expect(unreadable.sessionID == nil)
-                        #expect(unreadable.error != nil)
+                        #expect(unreadable.statusText == "読み込みエラー: セッション情報を読み取れません")
+                        #expect(unreadable.displayName == "日時を読み取れません")
+                        #expect(unreadable.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17")
+                        #expect(unreadable.exportPath == nil)
+                        #expect(!unreadable.canReprocess && !unreadable.canRetryDecisions && !unreadable.canExport)
+                        let unreadableError = try #require(unreadable.error)
+                        #expect(unreadableError.code == .filesystem)
+                        #expect(unreadableError.stage == .recovery)
+                        #expect(unreadableError.severity == .warning)
+                        #expect(unreadableError.recoveryAction == .inspectSession)
+                        #expect(unreadableError.message == "セッション情報を読み取れません")
+                        #expect(unreadableError.requestID == nil)
+                        #expect(unreadableError.sessionID == nil)
+                        let unreadableDetail = try #require(unreadableError.details.first)
+                        #expect(unreadableDetail.path == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17/session.json")
+                        #expect(unreadable.metadata == .unreadable(reason: "セッション情報を読み取れません"))
+
+                        // Check every enriched summary field.
                         let readable = try #require(value.sessions.first { $0.status == .finalized })
                         #expect(readable.sessionID == "session-finalized-2025-03-08T10-22-31Z")
+                        #expect(readable.folderID == "session-folder-2025-03-08-live")
+                        #expect(readable.displayName == "2025年3月8日 19:22")
+                        #expect(readable.statusText == "文字起こしあり")
+                        #expect(readable.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-2025-03-08-live")
+                        #expect(readable.error == nil)
+                        #expect(readable.exportPath == nil)
+                        #expect(readable.canReprocess && !readable.canRetryDecisions && readable.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = readable.metadata {
+                            #expect(createdAt == 1741429351)
+                            #expect(source == .microphone)
+                            #expect(audio == .available)
+                            #expect(hasTranscript)
+                            sawMicrophoneSessionSource = true
+                            sawAvailableSessionAudio = true
+                        } else {
+                            #expect(Bool(false), "Finalized session must have readable metadata")
+                        }
+
+                        let systemAudioFailed = try #require(value.sessions.first { $0.folderID == "session-folder-system-audio-missing-2025-03-10T08-00-00Z" })
+                        #expect(systemAudioFailed.status == .failed)
+                        #expect(systemAudioFailed.sessionID == "session-system-audio-missing-2025-03-10T08-00-00Z")
+                        #expect(systemAudioFailed.displayName == "2025年3月10日 17:00")
+                        #expect(systemAudioFailed.statusText == "保存済み音声がありません")
+                        #expect(systemAudioFailed.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-system-audio-missing-2025-03-10T08-00-00Z")
+                        #expect(systemAudioFailed.error == nil && systemAudioFailed.exportPath == nil)
+                        #expect(!systemAudioFailed.canReprocess && !systemAudioFailed.canRetryDecisions && !systemAudioFailed.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = systemAudioFailed.metadata {
+                            #expect(createdAt == 1741593600)
+                            #expect(source == .systemAudio)
+                            #expect(audio == .missing)
+                            #expect(!hasTranscript)
+                            sawSystemAudioSessionSource = true
+                            sawMissingSessionAudio = true
+                        } else {
+                            #expect(Bool(false), "System-audio session must have readable metadata")
+                        }
+
+                        let importedAudioFailed = try #require(value.sessions.first { $0.folderID == "session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z" })
+                        #expect(importedAudioFailed.status == .failed)
+                        #expect(importedAudioFailed.sessionID == "session-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                        #expect(importedAudioFailed.displayName == "2025年3月11日 9:30")
+                        #expect(importedAudioFailed.statusText == "音声を読めません: 音声ファイルを読めません")
+                        #expect(importedAudioFailed.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                        #expect(importedAudioFailed.error == nil && importedAudioFailed.exportPath == nil)
+                        #expect(!importedAudioFailed.canReprocess && !importedAudioFailed.canRetryDecisions && !importedAudioFailed.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = importedAudioFailed.metadata {
+                            #expect(createdAt == 1741653000)
+                            #expect(source == .imported(originalFilename: "meeting.wav"))
+                            #expect(audio == .unreadable(reason: "音声ファイルを読めません"))
+                            #expect(!hasTranscript)
+                            sawImportedSessionSource = true
+                            sawUnreadableSessionAudio = true
+                        } else {
+                            #expect(Bool(false), "Imported session must have readable metadata")
+                        }
+
+                        let exportFailed = try #require(value.sessions.first { $0.folderID == "session-folder-export-probe-failed" })
+                        #expect(exportFailed.status == .finalized)
+                        #expect(exportFailed.sessionID == "session-export-probe-failed")
+                        #expect(exportFailed.folderID == "session-folder-export-probe-failed")
+                        #expect(exportFailed.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-export-probe-failed")
+                        #expect(exportFailed.displayName == "2025年3月8日 19:22")
+                        #expect(exportFailed.statusText == "文字起こしあり")
+                        #expect(exportFailed.exportPath == nil)
+                        #expect(exportFailed.canReprocess && !exportFailed.canRetryDecisions && exportFailed.canExport)
+                        if case let .readable(createdAt, source, audio, hasTranscript) = exportFailed.metadata {
+                            #expect(createdAt == 1741429351)
+                            #expect(source == .microphone)
+                            #expect(audio == .available)
+                            #expect(hasTranscript)
+                        } else {
+                            #expect(Bool(false), "Export-failed session must retain readable metadata")
+                        }
+                        let exportError = try #require(exportFailed.error)
+                        #expect(exportError.code == .exportFailure)
+                        #expect(exportError.stage == .exporting)
+                        #expect(exportError.requestID == nil)
+                        #expect(exportError.sessionID == "session-export-probe-failed")
+                        #expect(exportError.severity == .error)
+                        #expect(exportError.recoveryAction == .retry)
+                        #expect(exportError.message == "書き出し先を確認できません: アクセスが拒否されました")
+                        #expect(exportError.details.isEmpty)
+                        #expect(exportError.cleanupErrors.isEmpty)
+
                         sawUnreadableAndReadableSessions = true
                         #expect(value.nextCursor == "folder-page-cursor-2")
+                        #expect(value.previousCursor == nil)
+                        sawPreviousCursorNull = true
                         sawNonNullRevisionAndCursor = true
+                    case let .sessionInspect(summary):
+                        if summary.status == .unreadable {
+                            #expect(summary.folderID == "stable-folder-id-corrupt-metadata-17")
+                            #expect(summary.sessionID == "session-known-unreadable-17")
+                            #expect(summary.statusText == "読み込みエラー: セッション情報を読み取れません")
+                            #expect(summary.displayName == "日時を読み取れません")
+                            #expect(summary.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17")
+                            #expect(summary.exportPath == nil)
+                            #expect(!summary.canReprocess && !summary.canRetryDecisions && !summary.canExport)
+                            #expect(summary.metadata == .unreadable(reason: "セッション情報を読み取れません"))
+                            let error = try #require(summary.error)
+                            #expect(error.code == .filesystem)
+                            #expect(error.stage == .recovery)
+                            #expect(error.severity == .warning)
+                            #expect(error.recoveryAction == .inspectSession)
+                            #expect(error.message == "セッション情報を読み取れません")
+                            #expect(error.requestID == nil && error.sessionID == "session-known-unreadable-17")
+                            let detail = try #require(error.details.first)
+                            #expect(detail.path == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/stable-folder-id-corrupt-metadata-17/session.json")
+                            sawUnreadableSessionInspect = true
+                        } else {
+                            #expect(summary.status == .finalized)
+                            #expect(summary.folderID == "session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                            #expect(summary.sessionID == "session-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                            #expect(summary.displayName == "2025年3月11日 9:30")
+                            #expect(summary.statusText == "文字起こしあり")
+                            #expect(summary.folderPath == "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/session-folder-imported-audio-unreadable-2025-03-11T00-30-00Z")
+                            #expect(summary.error == nil)
+                            #expect(summary.exportPath == "D:/Published/session-folder-imported")
+                            #expect(summary.canReprocess && !summary.canRetryDecisions && summary.canExport)
+                            if case let .readable(createdAt, source, audio, hasTranscript) = summary.metadata {
+                                #expect(createdAt == 1741653000)
+                                #expect(source == .imported(originalFilename: "meeting.wav"))
+                                #expect(audio == .available)
+                                #expect(hasTranscript)
+                                sawImportedSessionSource = true
+                                sawAvailableSessionAudio = true
+                            } else {
+                                #expect(Bool(false), "Imported inspect result must have readable metadata")
+                            }
+                            sawReadableSessionInspect = true
+                        }
                     case let .transcriptRead(page):
                         #expect(page.revision.value == 184)
                         #expect(page.nextCursor == "rows-cursor-after-2")
+                        #expect(page.previousCursor == "rows-cursor-before-2")
+                        sawPreviousCursorNonNull = true
                         sawNonNullRevisionAndCursor = true
-                    default:
+                    case let .transcriptWatch(page):
+                        #expect(page.previousCursor == nil)
+                        sawPreviousCursorNull = true
+                    case let .diagnosticsGet(diagnostics):
+                        #expect(diagnostics.scope == .engineProcess)
+                        #expect(diagnostics.automaticInputVolume == .none)
+                        #expect(diagnostics.thermalMonitoring == .none)
+                        switch diagnostics.decisionUsage {
+                        case let .available(snapshot):
+                            #expect(output.requestID?.value == 19)
+                            #expect(output.sequence.value == 35)
+                            #expect(snapshot.sendCount == 4)
+                            #expect(snapshot.inputTokens == 28)
+                            #expect(snapshot.successCount == 2)
+                            #expect(snapshot.failureCount == 2)
+                            #expect(snapshot.pendingBoundarySegmentCount == 2)
+                            #expect(snapshot.pendingPriorityClauseCount == 3)
+                            #expect(snapshot.boundaryRequests.sendCount == 2)
+                            #expect(snapshot.boundaryRequests.inputTokens == 11)
+                            #expect(snapshot.boundaryRequests.successCount == 1)
+                            #expect(snapshot.boundaryRequests.failureCount == 1)
+                            #expect(snapshot.priorityRequests.sendCount == 2)
+                            #expect(snapshot.priorityRequests.inputTokens == 17)
+                            #expect(snapshot.priorityRequests.successCount == 1)
+                            #expect(snapshot.priorityRequests.failureCount == 1)
+                            sawAvailableDiagnostics = true
+                        case let .unavailable(failure):
+                            #expect(output.requestID?.value == 19)
+                            #expect(output.sequence.value == 36)
+                            #expect(failure.code == .internalError)
+                            #expect(failure.message == "判断情報を収集できませんでした")
+                            #expect(failure.stage == .decisions)
+                            #expect(failure.requestID == nil && failure.sessionID == nil)
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .retry)
+                            let detail = try #require(failure.details.first)
+                            #expect(detail.domain == "native")
+                            #expect(detail.code == "DECISION_BACKEND_UNAVAILABLE")
+                            #expect(detail.message == "ネイティブ判断バックエンドに接続できません")
+                            sawUnavailableDiagnostics = true
+                        }
+                    case let .modelsInspect(inspection):
+                        switch inspection.clauseTagger {
+                        case let .validated(identity):
+                            #expect(output.requestID?.value == 20)
+                            #expect(output.sequence.value == 37)
+                            #expect(identity.backend == "onnx-clause-tagger")
+                            #expect(identity.modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger")
+                            #expect(identity.revision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
+                            #expect(identity.tokenizerSHA256 == "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062")
+                            sawValidatedModelInspection = true
+                        case let .invalid(failure):
+                            let modelDirectory = "C:/Users/Aki/AppData/Local/mac-ambient-jev/models/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx"
+                            let modelPath = "\(modelDirectory)/ClauseTagger.onnx"
+                            let modelFailureMessage = "モデル(clause_tagger)が不正です: \(modelPath) (サイズが一致しません (期待: 146889562, 実際: 1))。次の手順で配置し直してください: python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
+                            #expect(output.requestID?.value == 20)
+                            #expect(output.sequence.value == 38)
+                            #expect(failure.code == .modelCorrupt)
+                            #expect(failure.message == modelFailureMessage)
+                            #expect(failure.stage == .validatingModels)
+                            #expect(failure.requestID == nil && failure.sessionID == nil)
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .prepareModels)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            #expect(failure.details.count == 1)
+                            let detail = try #require(failure.details.first)
+                            #expect(detail.domain == "models")
+                            #expect(detail.code == "clause_tagger")
+                            #expect(detail.path == nil)
+                            #expect(detail.deviceID == nil)
+                            #expect(detail.message == modelFailureMessage)
+                            sawInvalidModelInspection = true
+                        }
+                    case .hello, .stateGet, .recordingStart, .recordingStop, .sessionImport, .sessionReprocess,
+                         .sessionRetryDecisions, .transcriptRowDetails, .sessionExport, .modelsPrepare, .shutdown:
                         break
                     }
                 case let .rows(payload):
@@ -106,6 +496,7 @@ struct EngineProtocolGoldenTests {
                         if row.clauseState != nil { sawKnownClauseState = true }
                     }
                 case let .error(failure):
+                    guard [6, 27, 28, 39, 106, 107, 116].contains(output.sequence.value) else { break }
                     if let requestID = output.requestID {
                         #expect(failure.requestID == requestID)
                         sawCorrelatedError = true
@@ -121,28 +512,135 @@ struct EngineProtocolGoldenTests {
                             #expect(failure.cleanupErrors.count == 1)
                             #expect(failure.cleanupErrors[0].message == "録音ハンドルの解放にも失敗しました")
                             sawNativeErrorDetails = true
+                        } else if requestID.value == 20 {
+                            #expect(output.sequence.value == 39)
+                            #expect(failure.code == .cancelled)
+                            #expect(failure.message == "モデルの確認が中止されました")
+                            #expect(failure.stage == .validatingModels)
+                            #expect(failure.sessionID == nil)
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .none)
+                            #expect(failure.details.isEmpty)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawInspectionCancellation = true
+                        } else if requestID.value == 108 {
+                            #expect(output.sequence.value == 106)
+                            #expect(failure.code == .rowNotFound)
+                            #expect(failure.message == "指定された文字起こし行が見つかりません")
+                            #expect(failure.stage == .finalization)
+                            #expect(failure.requestID == requestID)
+                            #expect(failure.sessionID == "session-detail-missing")
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .inspectSession)
+                            #expect(failure.details.isEmpty)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawRowNotFoundError = true
+                        } else if requestID.value == 109 {
+                            #expect(output.sequence.value == 107)
+                            #expect(failure.code == .staleRevision)
+                            #expect(failure.message == "文字起こしの revision が古くなっています。最初から読み直してください")
+                            #expect(failure.stage == .finalization)
+                            #expect(failure.requestID == requestID)
+                            #expect(failure.sessionID == "session-detail-stale")
+                            #expect(failure.severity == .error)
+                            #expect(failure.recoveryAction == .retry)
+                            #expect(failure.details.isEmpty)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawStaleRevisionError = true
                         } else {
                             #expect(Bool(false), "Unexpected correlated error request ID \(requestID.rawValue)")
                         }
                     } else {
                         #expect(failure.requestID == nil)
-                        #expect(failure.message.contains("バックグラウンド処理"))
-                        sawUnsolicitedError = true
+                        if failure.code == .deviceLost {
+                            #expect(output.sequence.value == 116)
+                            #expect(output.requestID == nil)
+                            #expect(failure.code == .deviceLost)
+                            #expect(failure.message == "録音デバイスが30秒以内に復帰しなかったため録音を停止しました。録音は保存されています")
+                            #expect(failure.stage == .capture)
+                            #expect(failure.sessionID == "session-reconnect")
+                            #expect(failure.severity == .warning)
+                            #expect(failure.recoveryAction == .selectDevice)
+                            #expect(failure.details.count == 1)
+                            let detail = try #require(failure.details.first)
+                            #expect(detail.domain == "capture")
+                            #expect(detail.code == "reopen")
+                            #expect(detail.message == "Native operation mja_capture_open failed with code -401")
+                            #expect(detail.deviceID == nil)
+                            #expect(detail.path == nil)
+                            #expect(failure.cleanupErrors.isEmpty)
+                            sawDeviceLostUnsolicitedError = true
+                        } else {
+                            #expect(failure.message.contains("バックグラウンド処理"))
+                            sawUnsolicitedError = true
+                        }
                     }
                 case let .state(state):
-                    #expect(state.screen == .live)
-                    #expect(state.recording?.sessionID == "session-live")
-                    #expect(!state.queue.isEmpty)
-                    #expect(!state.failures.isEmpty)
-                    let failure = try #require(state.failures.first)
-                    let detail = try #require(failure.details.first)
-                    #expect(detail.path?.contains("/sessions/session-live/audio.wav") == true)
-                    #expect(detail.deviceID == "wasapi-mic-17")
-                    #expect(!failure.cleanupErrors.isEmpty)
-                    sawLiveBusyState = true
+                    if state.recording?.phase == .waitingForDevice {
+                        #expect(output.sequence.value == 115)
+                        #expect(output.requestID == nil)
+                        #expect(state.revision.value == 115)
+                        #expect(state.screen == .live)
+                        #expect(state.setup == .ready)
+                        #expect(state.recovery == .completed)
+                        #expect(state.recording?.sessionID == "session-reconnect")
+                        #expect(state.recording?.source == .microphone)
+                        #expect(state.recording?.device == .id("wasapi-mic-reconnect"))
+                        #expect(state.recording?.phase == .waitingForDevice)
+                        #expect(state.queue.isEmpty)
+                        #expect(state.failures.isEmpty)
+                        #expect(state.presentation.recordingStatusText == "録音デバイスの復帰を待っています")
+                        #expect(state.presentation.recordingTone == .warning)
+                        #expect(state.presentation.preparationPhase == .ready)
+                        #expect(state.presentation.preparationStatusText == nil)
+                        #expect(state.presentation.recoveryStatusText == nil)
+                        #expect(state.presentation.processingStatusText == nil)
+                        #expect(state.presentation.liveFailureNotices.isEmpty)
+                        #expect(!state.presentation.silenceWarningActive)
+                        #expect(state.presentation.silenceWarningText == nil)
+                        #expect(state.presentation.audioGapCount == 1)
+                        #expect(state.presentation.audioGapText == "音声の欠落: 1 回")
+                        #expect(state.presentation.processingIndicator == .idle)
+                        sawReconnectWaitingState = true
+                    } else {
+                        #expect(state.screen == .live)
+                        #expect(state.recording?.sessionID == "session-live")
+                        #expect(!state.queue.isEmpty)
+                        #expect(!state.failures.isEmpty)
+                        #expect(state.presentation.recordingStatusText == "システム音声を録音中")
+                        #expect(state.presentation.recordingTone == .recording)
+                        #expect(state.presentation.preparationPhase == .ready)
+                        #expect(state.presentation.preparationStatusText == nil)
+                        #expect(state.presentation.recoveryStatusText == "未完了の文字起こしを復旧しています（2件）")
+                        #expect(state.presentation.processingStatusText == "文字起こし処理が待機中です")
+                        #expect(state.presentation.liveFailureNotices.isEmpty)
+                        #expect(state.presentation.silenceWarningActive)
+                        #expect(state.presentation.silenceWarningText == "システム音声が30秒以上無音です")
+                        #expect(state.presentation.audioGapCount == 2)
+                        #expect(state.presentation.audioGapText == "音声の欠落: 2 回")
+                        #expect(state.presentation.processingIndicator == .backlogged)
+                        let failure = try #require(state.failures.first)
+                        let detail = try #require(failure.details.first)
+                        #expect(detail.path?.contains("/sessions/session-live/audio.wav") == true)
+                        #expect(detail.deviceID == "wasapi-mic-17")
+                        #expect(!failure.cleanupErrors.isEmpty)
+                        sawLiveBusyState = true
+                    }
                 case let .ready(payload):
                     #expect(payload.state.setup == .settingsRequired)
                     #expect(payload.state.recovery == .pending)
+                    #expect(payload.state.presentation.recordingStatusText == "待機中")
+                    #expect(payload.state.presentation.recordingTone == .neutral)
+                    #expect(payload.state.presentation.preparationPhase == .idle)
+                    #expect(payload.state.presentation.preparationStatusText == nil)
+                    #expect(payload.state.presentation.recoveryStatusText == nil)
+                    #expect(payload.state.presentation.processingStatusText == nil)
+                    #expect(payload.state.presentation.liveFailureNotices.isEmpty)
+                    #expect(!payload.state.presentation.silenceWarningActive)
+                    #expect(payload.state.presentation.silenceWarningText == nil)
+                    #expect(payload.state.presentation.audioGapCount == 0)
+                    #expect(payload.state.presentation.audioGapText == nil)
+                    #expect(payload.state.presentation.processingIndicator == .idle)
                 case let .progress(payload):
                     if payload.totalUnits == 4 { sawKnownProgressTotal = true }
                     if payload.totalUnits == nil { sawUnknownProgressTotal = true }
@@ -154,6 +652,7 @@ struct EngineProtocolGoldenTests {
                 if request.requestID.value == UInt64.max { sawUInt64Maximum = true }
                 switch request.command {
                 case let .settingsReplace(payload):
+                    guard request.requestID.value == 15 else { break }
                     #expect(payload.expectedRevision == nil)
                     #expect(payload.settings.automaticExport)
                     #expect(payload.settings.exportDestinationPath == nil)
@@ -164,13 +663,23 @@ struct EngineProtocolGoldenTests {
                     case (.systemAudio, .id("wasapi-loopback-42")): sawSystemAudioIDSelector = true
                     default: break
                     }
+                case let .sessionInspect(payload):
+                    #expect(payload.folderID == "stable-folder-id-corrupt-metadata-17")
+                    sawSessionInspectRequest = true
                 case let .transcriptRead(payload):
+                    guard request.requestID.value == 11 else { break }
                     #expect(payload.revision?.value == 184)
                     #expect(payload.cursor == "rows-cursor-1")
                     sawNonNullRevisionAndCursor = true
+                case .diagnosticsGet:
+                    #expect(request.requestID.value == 19)
+                    sawDiagnosticsRequest = true
+                case .modelsInspect:
+                    #expect(request.requestID.value == 20)
+                    sawModelsInspectRequest = true
                 case .hello, .stateGet, .devicesList, .recordingStop, .sessionImport, .sessionReprocess,
-                     .sessionRetryDecisions, .sessionList, .transcriptWatch, .sessionExport, .settingsGet,
-                     .modelsPrepare, .shutdown:
+                     .sessionRetryDecisions, .sessionList, .transcriptWatch, .transcriptRowDetails,
+                     .sessionExport, .settingsGet, .modelsPrepare, .shutdown:
                     break
                 }
             }
@@ -181,19 +690,789 @@ struct EngineProtocolGoldenTests {
         #expect(sawSystemAudioIDSelector)
         #expect(sawUInt64Maximum)
         #expect(sawLiveBusyState)
+        #expect(sawReconnectWaitingState)
         #expect(sawConfiguredSettingsResult)
         #expect(sawEndpointDefault)
         #expect(sawUnreadableAndReadableSessions)
+        #expect(sawSessionInspectRequest)
+        #expect(sawUnreadableSessionInspect)
+        #expect(sawReadableSessionInspect)
+        #expect(sawMicrophoneSessionSource)
+        #expect(sawSystemAudioSessionSource)
+        #expect(sawImportedSessionSource)
+        #expect(sawAvailableSessionAudio)
+        #expect(sawMissingSessionAudio)
+        #expect(sawUnreadableSessionAudio)
+        #expect(sawPreviousCursorNull)
+        #expect(sawPreviousCursorNonNull)
         #expect(sawEscapedJapaneseEmojiRow)
         #expect(sawNullClauseState)
         #expect(sawKnownClauseState)
         #expect(sawCorrelatedError)
         #expect(sawUnsolicitedError)
+        #expect(sawDeviceLostUnsolicitedError)
         #expect(sawNativeErrorDetails)
         #expect(sawKnownProgressTotal)
         #expect(sawUnknownProgressTotal)
         #expect(sawNonNullRevisionAndCursor)
+        #expect(sawDiagnosticsRequest)
+        #expect(sawModelsInspectRequest)
+        #expect(sawAvailableDiagnostics)
+        #expect(sawUnavailableDiagnostics)
+        #expect(sawValidatedModelInspection)
+        #expect(sawInvalidModelInspection)
+        #expect(sawInspectionCancellation)
+        #expect(sawRowNotFoundError)
+        #expect(sawStaleRevisionError)
         #expect(rowLabels == Set(EngineSpeakerLabel.allCases.map(\.rawValue)))
+    }
+
+    @Test func finalFixtureRequestsAndCompletionsHaveExactTypedSemantics() throws {
+        let expectedRequestIDs: Set<UInt64> = [301, 302, 303]
+        let expectedSequences: Set<UInt64> = [300, 301, 302, 303]
+        var seenRequestIDs = Set<UInt64>()
+        var seenSequences = Set<UInt64>()
+
+        let expectedSettings = try EngineSettings(
+            schemaVersion: 1,
+            source: .systemAudio,
+            device: .id("wasapi-loopback-42"),
+            asrSize: .large,
+            executionProvider: .cpu,
+            threads: 3,
+            lowHeat: true,
+            decisionsEnabled: true,
+            automaticExport: true,
+            exportDestinationPath: "D:/Ambient Exports"
+        )
+        let expectedSessions = try [
+            EngineSessionSummary(
+                folderID: "2025-03-08_19-22-31_録音_00000002",
+                sessionID: "00000002-0000-4000-8000-000000000002",
+                status: .recording,
+                error: nil,
+                displayName: "2025年3月8日 19:22",
+                statusText: "未処理",
+                folderPath: "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/2025-03-08_19-22-31_録音_00000002",
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .readable(
+                    createdAt: 1741429351.0,
+                    source: .microphone,
+                    audio: .available,
+                    hasTranscript: false
+                )
+            ),
+            EngineSessionSummary(
+                folderID: "2025-03-08_19-22-31_meeting_00000003",
+                sessionID: "00000003-0000-4000-8000-000000000003",
+                status: .queued,
+                error: nil,
+                displayName: "2025年3月8日 19:22",
+                statusText: "未処理",
+                folderPath: "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/2025-03-08_19-22-31_meeting_00000003",
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .readable(
+                    createdAt: 1741429351.0,
+                    source: .imported(originalFilename: "meeting.wav"),
+                    audio: .available,
+                    hasTranscript: false
+                )
+            ),
+            EngineSessionSummary(
+                folderID: "2025-03-08_19-22-31_録音_00000004",
+                sessionID: "00000004-0000-4000-8000-000000000004",
+                status: .processing,
+                error: nil,
+                displayName: "2025年3月8日 19:22",
+                statusText: "処理中",
+                folderPath: "C:/Users/Aki/AppData/Local/mac-ambient-jev/sessions/2025-03-08_19-22-31_録音_00000004",
+                exportPath: nil,
+                canReprocess: false,
+                canRetryDecisions: false,
+                canExport: false,
+                metadata: .readable(
+                    createdAt: 1741429351.0,
+                    source: .systemAudio,
+                    audio: .available,
+                    hasTranscript: false
+                )
+            ),
+        ]
+        let expectedSessionList = try EngineSessionListResult(
+            sessions: expectedSessions,
+            nextCursor: nil,
+            previousCursor: "11111111-1111-4111-8111-111111111301"
+        )
+        let expectedStartingState = try EngineState(
+            revision: EngineID(300),
+            screen: .live,
+            setup: .ready,
+            recovery: .completed,
+            recording: try EngineRecordingState(
+                sessionID: "00000005-0000-4000-8000-000000000005",
+                source: .microphone,
+                device: .default,
+                phase: .starting
+            ),
+            queue: [],
+            failures: [],
+            presentation: try EnginePresentationState(
+                recordingStatusText: "録音を開始しています",
+                recordingTone: .neutral,
+                preparationPhase: .ready,
+                preparationStatusText: nil,
+                recoveryStatusText: nil,
+                processingStatusText: nil,
+                liveFailureNotices: [],
+                silenceWarningActive: false,
+                silenceWarningText: nil,
+                audioGapCount: 0,
+                audioGapText: nil,
+                processingIndicator: .idle
+            )
+        )
+        let expectedStoppingState = try EngineState(
+            revision: EngineID(301),
+            screen: .finalizing,
+            setup: .ready,
+            recovery: .completed,
+            recording: try EngineRecordingState(
+                sessionID: "00000006-0000-4000-8000-000000000006",
+                source: .microphone,
+                device: .default,
+                phase: .stopping
+            ),
+            queue: [],
+            failures: [],
+            presentation: try EnginePresentationState(
+                recordingStatusText: "録音を保存しています",
+                recordingTone: .neutral,
+                preparationPhase: .ready,
+                preparationStatusText: nil,
+                recoveryStatusText: nil,
+                processingStatusText: nil,
+                liveFailureNotices: [],
+                silenceWarningActive: false,
+                silenceWarningText: nil,
+                audioGapCount: 0,
+                audioGapText: nil,
+                processingIndicator: .idle
+            )
+        )
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            if metadata.keys.contains("event") {
+                let output = try EngineCodec.decodeOutput(record)
+                guard expectedSequences.contains(output.sequence.value) else { continue }
+                #expect(seenSequences.insert(output.sequence.value).inserted)
+
+                switch output.sequence.value {
+                case 300:
+                    #expect(output.requestID?.value == 400)
+                    guard case let .completed(.devicesList(result)) = output.event else {
+                        #expect(Bool(false), "Sequence 300 must complete devices.list")
+                        continue
+                    }
+                    #expect(result == (try EngineDevicesResult(source: .microphone, devices: [], defaultDeviceID: nil)))
+                case 301:
+                    #expect(output.requestID?.value == 401)
+                    guard case let .completed(.sessionList(result)) = output.event else {
+                        #expect(Bool(false), "Sequence 301 must complete session.list")
+                        continue
+                    }
+                    #expect(result == expectedSessionList)
+                case 302:
+                    #expect(output.requestID?.value == 402)
+                    guard case let .completed(.stateGet(state)) = output.event else {
+                        #expect(Bool(false), "Sequence 302 must complete state.get")
+                        continue
+                    }
+                    #expect(state == expectedStartingState)
+                case 303:
+                    #expect(output.requestID?.value == 403)
+                    guard case let .completed(.stateGet(state)) = output.event else {
+                        #expect(Bool(false), "Sequence 303 must complete state.get")
+                        continue
+                    }
+                    #expect(state == expectedStoppingState)
+                default:
+                    #expect(Bool(false), "Unexpected final-fixture output sequence \(output.sequence.value)")
+                }
+            } else {
+                let request = try EngineCodec.decodeRequest(record)
+                guard expectedRequestIDs.contains(request.requestID.value) else { continue }
+                #expect(seenRequestIDs.insert(request.requestID.value).inserted)
+
+                switch request.requestID.value {
+                case 301:
+                    guard case let .sessionList(payload) = request.command else {
+                        #expect(Bool(false), "Request 301 must be session.list")
+                        continue
+                    }
+                    #expect(payload == (try EngineSessionListPayload(
+                        cursor: "11111111-1111-4111-8111-111111111302",
+                        limit: 20
+                    )))
+                case 302:
+                    guard case let .transcriptRead(payload) = request.command else {
+                        #expect(Bool(false), "Request 302 must be transcript.read")
+                        continue
+                    }
+                    #expect(payload == (try EngineTranscriptReadPayload(
+                        sessionID: "00000001-0000-4000-8000-000000000001",
+                        revision: nil,
+                        cursor: nil,
+                        limit: 75
+                    )))
+                case 303:
+                    guard case let .settingsReplace(payload) = request.command else {
+                        #expect(Bool(false), "Request 303 must be settings.replace")
+                        continue
+                    }
+                    #expect(payload.expectedRevision == (try EngineID(9)))
+                    #expect(payload.settings == expectedSettings)
+                default:
+                    #expect(Bool(false), "Unexpected final-fixture request ID \(request.requestID.value)")
+                }
+            }
+        }
+
+        #expect(seenRequestIDs == expectedRequestIDs)
+        #expect(seenSequences == expectedSequences)
+    }
+
+    @Test func finalFixtureRecoveryScanFailureIsNotRecordingStopState() throws {
+        let sequence: UInt64 = 335
+        let recoveryMessage = "未完了セッションを復旧できませんでした: セッション一覧を読み取れません"
+        let expectedFailure = try EngineFailure(
+            code: .filesystem,
+            message: recoveryMessage,
+            stage: .recovery,
+            requestID: nil,
+            sessionID: nil,
+            severity: .error,
+            recoveryAction: .restart,
+            details: [],
+            cleanupErrors: []
+        )
+        let expectedState = try EngineState(
+            revision: EngineID(302),
+            screen: .idle,
+            setup: .ready,
+            recovery: .failed,
+            recording: nil,
+            queue: [],
+            failures: [expectedFailure],
+            presentation: try EnginePresentationState(
+                recordingStatusText: "待機中",
+                recordingTone: .neutral,
+                preparationPhase: .ready,
+                preparationStatusText: nil,
+                recoveryStatusText: recoveryMessage,
+                processingStatusText: nil,
+                liveFailureNotices: [],
+                silenceWarningActive: false,
+                silenceWarningText: nil,
+                audioGapCount: 0,
+                audioGapText: nil,
+                processingIndicator: .partialFailure
+            )
+        )
+        var seenSequences = Set<UInt64>()
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            guard output.sequence.value == sequence else { continue }
+            #expect(seenSequences.insert(output.sequence.value).inserted)
+            #expect(output.requestID?.value == 404)
+            guard case let .completed(.stateGet(state)) = output.event else {
+                #expect(Bool(false), "Sequence 335 must complete state.get")
+                continue
+            }
+            #expect(state.recovery == .failed)
+            #expect(state.presentation.recoveryStatusText == recoveryMessage)
+            #expect(state.presentation.processingStatusText == nil)
+            #expect(state == expectedState)
+        }
+
+        #expect(seenSequences == [sequence])
+    }
+
+    @Test func finalFixtureErrorsPreserveEveryTypedFailureField() throws {
+        let expectedErrors: [(sequence: UInt64, requestID: UInt64?, failure: EngineFailure)] = [
+            (310, 410, try EngineFailure(
+                code: .invalidRequest,
+                message: "hello は最初のリクエストでのみ送れます",
+                stage: .protocolValidation,
+                requestID: try EngineID(410),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (311, 411, try EngineFailure(
+                code: .unsupportedVersion,
+                message: "サポートされていない version です。version 1 のみ対応しています",
+                stage: .protocolValidation,
+                requestID: try EngineID(411),
+                sessionID: nil,
+                severity: .fatal,
+                recoveryAction: .restart,
+                details: [try EngineErrorDetail(
+                    domain: "engine",
+                    code: "unsupported_version",
+                    message: "unsupportedVersion(2)",
+                    path: nil,
+                    deviceID: nil
+                )],
+                cleanupErrors: []
+            )),
+            (312, 412, try EngineFailure(
+                code: .invalidRequestID,
+                message: "request_id は直前の値より大きい必要があります",
+                stage: .protocolValidation,
+                requestID: try EngineID(412),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (313, 413, try EngineFailure(
+                code: .helloRequired,
+                message: "最初のリクエストは hello である必要があります",
+                stage: .protocolValidation,
+                requestID: try EngineID(413),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (314, 414, try EngineFailure(
+                code: .busy,
+                message: "録音または取り込みを実行中です",
+                stage: .capture,
+                requestID: try EngineID(414),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .retry,
+                details: [],
+                cleanupErrors: []
+            )),
+            (315, 415, try EngineFailure(
+                code: .settingsRequired,
+                message: "設定が必要です。設定ファイルがありません: C:/Users/Aki/AppData/Local/mac-ambient-jev/settings.json",
+                stage: .settings,
+                requestID: try EngineID(415),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .replaceSettings,
+                details: [],
+                cleanupErrors: []
+            )),
+            (316, 416, try EngineFailure(
+                code: .invalidSettings,
+                message: "設定が不正です: invalidJSON(\"threads exceed logical CPU limit\")",
+                stage: .settings,
+                requestID: try EngineID(416),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .replaceSettings,
+                details: [],
+                cleanupErrors: []
+            )),
+            (317, 417, try EngineFailure(
+                code: .invalidCursor,
+                message: "cursor には revision が必要です",
+                stage: .finalization,
+                requestID: try EngineID(417),
+                sessionID: "00000001-0000-4000-8000-000000000001",
+                severity: .error,
+                recoveryAction: .none,
+                details: [],
+                cleanupErrors: []
+            )),
+            (318, 418, try EngineFailure(
+                code: .sessionNotFound,
+                message: "保存済み録音が見つからないか、読み取れません",
+                stage: .recovery,
+                requestID: try EngineID(418),
+                sessionID: "00000001-0000-4000-8000-000000000001",
+                severity: .error,
+                recoveryAction: .inspectSession,
+                details: [],
+                cleanupErrors: []
+            )),
+            // Contract-only: the current Windows wire producer does not emit device_not_found.
+            (319, 419, try EngineFailure(
+                code: .deviceNotFound,
+                message: "指定された録音デバイスが見つかりません",
+                stage: .devices,
+                requestID: try EngineID(419),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .selectDevice,
+                details: [],
+                cleanupErrors: []
+            )),
+            (320, 420, try EngineFailure(
+                code: .captureFailure,
+                message: "録音を保存できませんでした",
+                stage: .capture,
+                requestID: try EngineID(420),
+                sessionID: "00000007-0000-4000-8000-000000000007",
+                severity: .error,
+                recoveryAction: .reprocess,
+                details: [],
+                cleanupErrors: []
+            )),
+            (321, 421, try EngineFailure(
+                code: .diskSpace,
+                message: "90分の録音に必要な空き容量がありません（必要: 601 MB）",
+                stage: .capture,
+                requestID: try EngineID(421),
+                sessionID: "00000007-0000-4000-8000-000000000007",
+                severity: .error,
+                recoveryAction: .freeDiskSpace,
+                details: [try EngineErrorDetail(
+                    domain: "swift",
+                    code: "AudioCaptureEngineError",
+                    message: "90分の録音に必要な空き容量がありません（必要: 601 MB）",
+                    path: nil,
+                    deviceID: nil
+                )],
+                cleanupErrors: []
+            )),
+            // Contract-only: the current Windows wire producer does not emit power_failure.
+            (322, 422, try EngineFailure(
+                code: .powerFailure,
+                message: "終了処理中に電源状態を確認できませんでした",
+                stage: .shutdown,
+                requestID: try EngineID(422),
+                sessionID: nil,
+                severity: .fatal,
+                recoveryAction: .restart,
+                details: [],
+                cleanupErrors: []
+            )),
+            (323, 423, try EngineFailure(
+                code: .modelMissing,
+                message: "モデルが準備されていません。models.prepare を実行してください",
+                stage: .capture,
+                requestID: try EngineID(423),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .prepareModels,
+                details: [],
+                cleanupErrors: []
+            )),
+            (324, 424, try EngineFailure(
+                code: .modelFailure,
+                message: "モデル(vad)を読み込めません: C:/Models/silero_vad.onnx (ONNX Runtime の初期化に失敗しました)",
+                stage: .loadingModels,
+                requestID: try EngineID(424),
+                sessionID: nil,
+                severity: .error,
+                recoveryAction: .prepareModels,
+                details: [try EngineErrorDetail(
+                    domain: "models",
+                    code: "vad",
+                    message: "モデル(vad)を読み込めません: C:/Models/silero_vad.onnx (ONNX Runtime の初期化に失敗しました)",
+                    path: nil,
+                    deviceID: nil
+                )],
+                cleanupErrors: []
+            )),
+            (325, 425, try EngineFailure(
+                code: .rowTooLarge,
+                message: "文字起こし行の詳細が大きすぎて返せません",
+                stage: .finalization,
+                requestID: try EngineID(425),
+                sessionID: "00000001-0000-4000-8000-000000000001",
+                severity: .error,
+                recoveryAction: .inspectSession,
+                details: [],
+                cleanupErrors: []
+            )),
+            (326, 426, try EngineFailure(
+                code: .processingFailure,
+                message: "発話文の判定を再試行できませんでした: テスト判定エンジンに失敗しました",
+                stage: .decisions,
+                requestID: try EngineID(426),
+                sessionID: "00000008-0000-4000-8000-000000000008",
+                severity: .error,
+                recoveryAction: .retryDecisions,
+                details: [],
+                cleanupErrors: []
+            )),
+            (330, nil, try EngineFailure(
+                code: .captureFailure,
+                message: "録音の保存に失敗しました",
+                stage: .capture,
+                requestID: nil,
+                sessionID: "00000009-0000-4000-8000-000000000009",
+                severity: .fatal,
+                recoveryAction: .reprocess,
+                details: [],
+                cleanupErrors: []
+            )),
+            (331, nil, try EngineFailure(
+                code: .filesystem,
+                message: "保存済み録音の音声を整理できませんでした: 音声ファイルを読み取れません",
+                stage: .maintenance,
+                requestID: nil,
+                sessionID: "0000000a-0000-4000-8000-00000000000a",
+                severity: .error,
+                recoveryAction: .inspectSession,
+                details: [],
+                cleanupErrors: []
+            )),
+            // Contract-only: startup failure has no current Windows wire producer.
+            (334, nil, try EngineFailure(
+                code: .internalError,
+                message: "起動時の初期化に失敗しました",
+                stage: .startup,
+                requestID: nil,
+                sessionID: nil,
+                severity: .fatal,
+                recoveryAction: .restart,
+                details: [],
+                cleanupErrors: []
+            )),
+        ]
+        let expectedSequences = Set(expectedErrors.map(\.sequence))
+        var seenSequences = Set<UInt64>()
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            guard expectedSequences.contains(output.sequence.value) else { continue }
+            #expect(seenSequences.insert(output.sequence.value).inserted)
+            guard let expected = expectedErrors.first(where: { $0.sequence == output.sequence.value }) else {
+                #expect(Bool(false), "Missing explicit expected error for sequence \(output.sequence.value)")
+                continue
+            }
+            let expectedRequestID = try expected.requestID.map { try EngineID($0) }
+            #expect(output.requestID == expectedRequestID)
+            guard case let .error(failure) = output.event else {
+                #expect(Bool(false), "Sequence \(output.sequence.value) must be an error")
+                continue
+            }
+            #expect(failure == expected.failure)
+            #expect(failure.requestID == expectedRequestID)
+        }
+
+        #expect(seenSequences == expectedSequences)
+    }
+
+    @Test func finalFixtureVADAndDiarizationProgressHaveExactTypedPayloads() throws {
+        let expectedProgress: [(sequence: UInt64, stage: EngineStage)] = [
+            (332, .vad),
+            (333, .diarization),
+        ]
+        let expectedSequences = Set(expectedProgress.map(\.sequence))
+        let sessionID = "00000004-0000-4000-8000-000000000004"
+        var seenSequences = Set<UInt64>()
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            guard metadata.keys.contains("event") else { continue }
+            let output = try EngineCodec.decodeOutput(record)
+            guard expectedSequences.contains(output.sequence.value) else { continue }
+            #expect(seenSequences.insert(output.sequence.value).inserted)
+            guard let expected = expectedProgress.first(where: { $0.sequence == output.sequence.value }) else {
+                #expect(Bool(false), "Missing expected progress sequence \(output.sequence.value)")
+                continue
+            }
+            #expect(output.requestID == nil)
+            guard case let .progress(payload) = output.event else {
+                #expect(Bool(false), "Sequence \(output.sequence.value) must be progress")
+                continue
+            }
+            #expect(payload == (try EngineProgressPayload(
+                stage: expected.stage,
+                completedUnits: 0,
+                totalUnits: nil,
+                sessionID: sessionID
+            )))
+        }
+
+        #expect(seenSequences == expectedSequences)
+    }
+
+    @Test func rowDetailsCorpusCoversTypedFieldsStatesSpeakersAndPageArms() throws {
+        let revision = try EngineID(999)
+        let encodedPayload = try EngineTranscriptRowDetailsPayload(
+            sessionID: "schema-session", revision: revision, rowID: "schema-row", cursor: nil, limit: 1
+        )
+        let encodedSpan = try EngineTranscriptSpeakerSpan(
+            speakerID: "schema-speaker", displayLabel: "Schema Speaker", startMS: 0, endMS: 1
+        )
+        let encodedPage = try EngineTranscriptRowDetailsPage(
+            sessionID: "schema-session", revision: revision, rowID: "schema-row",
+            clauseState: .classified, clauseStateText: "発話文: 判定済み", speakers: [encodedSpan],
+            nextCursor: nil, previousCursor: nil
+        )
+        let payloadKeys = try encodedObjectKeys(encodedPayload)
+        let spanKeys = try encodedObjectKeys(encodedSpan)
+        let pageKeys = try encodedObjectKeys(encodedPage)
+        let encodedClauseStates = try encodedStringValues(EngineClauseState.allCases)
+
+        var fixturePayloadKeys = Set<String>()
+        var fixtureSpanKeys = Set<String>()
+        var fixturePageKeys = Set<String>()
+        var payloadCursorArms = Set<String>()
+        var clauseStates = Set<String>()
+        var speakerDisplayLabels = Set<String>()
+        var pagePositionArms = Set<String>()
+        var sawEmptySpeakers = false
+        var sawNonemptySpeakers = false
+        var sawRepeatedOverlappingSpeaker = false
+
+        for record in try goldenRecords() {
+            let metadata = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            if metadata.keys.contains("event") {
+                let output = try EngineCodec.decodeOutput(record)
+                guard case let .completed(.transcriptRowDetails(page)) = output.event else { continue }
+                let eventPayload = try #require(metadata["payload"] as? [String: Any])
+                let result = try #require(eventPayload["result"] as? [String: Any])
+                fixturePageKeys.formUnion(result.keys)
+                let encodedSpeakers = try #require(result["speakers"] as? [[String: Any]])
+                for speaker in encodedSpeakers {
+                    fixtureSpanKeys.formUnion(speaker.keys)
+                }
+
+                clauseStates.insert(page.clauseState.rawValue)
+                speakerDisplayLabels.formUnion(page.speakers.map(\.displayLabel))
+                let spanSignatures = page.speakers.map {
+                    "\($0.speakerID)|\($0.displayLabel)|\($0.startMS)|\($0.endMS)"
+                }
+                if page.speakers.isEmpty { sawEmptySpeakers = true }
+                if !page.speakers.isEmpty { sawNonemptySpeakers = true }
+
+                switch page.rowID {
+                case "row-detail-201":
+                    #expect(page.sessionID == "session-detail-a")
+                    #expect(page.revision.value == 201)
+                    #expect(page.clauseState == .awaitingNextSegment)
+                    #expect(page.clauseStateText == "発話文: 続き待ち")
+                    #expect(page.previousCursor == nil)
+                    #expect(page.nextCursor == "11111111-1111-4111-8111-111111111111")
+                    #expect(spanSignatures == [
+                        "speaker-internal-101|Speaker 1|0|850",
+                        "speaker-internal-101|Speaker 1|700|1500",
+                    ])
+                    #expect(page.speakers[0].speakerID == page.speakers[1].speakerID)
+                    #expect(page.speakers[0].startMS < page.speakers[1].startMS)
+                    #expect(page.speakers[1].startMS < page.speakers[0].endMS)
+                    #expect(page.speakers[0].endMS < page.speakers[1].endMS)
+                    sawRepeatedOverlappingSpeaker = true
+                    pagePositionArms.insert("first")
+                case "row-detail-202":
+                    #expect(page.sessionID == "session-detail-b")
+                    #expect(page.revision.value == 202)
+                    #expect(page.clauseState == .boundaryPending)
+                    #expect(page.clauseStateText == "発話文: 境界判定を保留中")
+                    #expect(page.previousCursor == "33333333-3333-4333-8333-333333333333")
+                    #expect(page.nextCursor == "22222222-2222-4222-8222-222222222222")
+                    #expect(spanSignatures == [
+                        "speaker-internal-202|Speaker 2|400|1200",
+                        "speaker-internal-203|Speaker 3|1100|2100",
+                    ])
+                    pagePositionArms.insert("middle")
+                case "row-detail-203":
+                    #expect(page.sessionID == "session-detail-c")
+                    #expect(page.revision.value == 203)
+                    #expect(page.clauseState == .priorityPending)
+                    #expect(page.clauseStateText == "発話文: 優先度判定を待っています")
+                    #expect(page.previousCursor == "55555555-5555-4555-8555-555555555555")
+                    #expect(page.nextCursor == "44444444-4444-4444-8444-444444444444")
+                    #expect(spanSignatures == [
+                        "speaker-internal-204|Speaker 4|2000|3000",
+                        "speaker-internal-205|Speaker 5|3100|4150",
+                        "speaker-internal-206|Speaker 6|4200|5200",
+                    ])
+                    pagePositionArms.insert("middle")
+                case "row-detail-204":
+                    #expect(page.sessionID == "session-detail-d")
+                    #expect(page.revision.value == 204)
+                    #expect(page.clauseState == .classified)
+                    #expect(page.clauseStateText == "発話文: 判定済み")
+                    #expect(page.previousCursor == "66666666-6666-4666-8666-666666666666")
+                    #expect(page.nextCursor == nil)
+                    #expect(spanSignatures == [
+                        "speaker-internal-207|Speaker 7|5100|6200",
+                        "speaker-internal-other|OTHER|6300|7000",
+                        "speaker-internal-unknown|UNKNOWN|7100|7900",
+                        "speaker-raw-208|speaker-raw-208|8000|8500",
+                    ])
+                    pagePositionArms.insert("last")
+                case "row-detail-205":
+                    #expect(page.sessionID == "session-detail-empty")
+                    #expect(page.revision.value == 205)
+                    #expect(page.clauseState == .classified)
+                    #expect(page.clauseStateText == "発話文: 判定済み")
+                    #expect(page.speakers.isEmpty)
+                    #expect(page.nextCursor == nil)
+                    #expect(page.previousCursor == nil)
+                    pagePositionArms.insert("single")
+                default:
+                    #expect(Bool(false), "Unexpected row-details fixture row ID \(page.rowID)")
+                }
+            } else {
+                let request = try EngineCodec.decodeRequest(record)
+                guard case let .transcriptRowDetails(payload) = request.command else { continue }
+                let payloadObject = try #require(metadata["payload"] as? [String: Any])
+                fixturePayloadKeys.formUnion(payloadObject.keys)
+                if let cursor = payload.cursor {
+                    payloadCursorArms.insert("value")
+                    #expect(cursor == "11111111-1111-4111-8111-111111111111")
+                } else {
+                    payloadCursorArms.insert("null")
+                }
+
+                switch request.requestID.value {
+                case 101:
+                    #expect(payload.sessionID == "session-detail-a")
+                    #expect(payload.revision.value == 201)
+                    #expect(payload.rowID == "row-detail-201")
+                    #expect(payload.cursor == nil)
+                    #expect(payload.limit == 2)
+                case 102:
+                    #expect(payload.sessionID == "session-detail-b")
+                    #expect(payload.revision.value == 202)
+                    #expect(payload.rowID == "row-detail-202")
+                    #expect(payload.cursor == "11111111-1111-4111-8111-111111111111")
+                    #expect(payload.limit == 2)
+                default:
+                    #expect(Bool(false), "Unexpected row-details fixture request ID \(request.requestID.rawValue)")
+                }
+            }
+        }
+
+        #expect(fixturePayloadKeys.isSuperset(of: payloadKeys))
+        #expect(fixtureSpanKeys.isSuperset(of: spanKeys))
+        #expect(fixturePageKeys.isSuperset(of: pageKeys))
+        #expect(payloadCursorArms == ["null", "value"])
+        #expect(clauseStates == encodedClauseStates)
+        let standardSpeakerLabels = Set(EngineSpeakerLabel.allCases.map(\.rawValue))
+        #expect(speakerDisplayLabels == standardSpeakerLabels.union(["speaker-raw-208"]))
+        #expect(sawEmptySpeakers)
+        #expect(sawNonemptySpeakers)
+        #expect(sawRepeatedOverlappingSpeaker)
+        #expect(pagePositionArms == ["first", "middle", "last", "single"])
     }
 
     @Test func recursivelyRejectsUnknownMissingNullAndWrongCategoryFields() throws {
@@ -273,7 +1552,7 @@ struct EngineProtocolGoldenTests {
         let unknownResultEnum = #"{"version":1,"sequence":"1","request_id":"1","event":"completed","payload":{"command":"session.list","result":{"sessions":[{"folder_id":"f","session_id":"s","status":"future","error":null}],"next_cursor":null}}}"#
         let camelCaseAlias = #"{"version":1,"requestId":"1","command":"hello","payload":{}}"#
         let wrongRequestVersion = #"{"version":2,"request_id":"1","command":"hello","payload":{}}"#
-        let wrongOutputVersion = #"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[]}}"#
+        let wrongOutputVersion = #"{"version":2,"sequence":"1","request_id":null,"event":"state","payload":{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"待機中","recording_tone":"neutral","preparation_phase":"idle","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}}"#
 
         #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(Data(unknownCommand.utf8)) }
         #expect(throws: (any Error).self) { try EngineCodec.decodeOutput(Data(unknownEvent.utf8)) }
@@ -292,6 +1571,7 @@ struct EngineProtocolGoldenTests {
 
 private enum GoldenFixtureError: Error {
     case missingFinalLineFeed
+    case expectedJSONObject
 }
 
 private enum GoldenPathComponent {
@@ -420,6 +1700,16 @@ private func isNullableField(
 ) -> Bool {
     let keys = Set(object.keys)
     func has(_ expected: Set<String>) -> Bool { keys == expected }
+    let isSessionSummary = has([
+        "folder_id", "session_id", "status", "error", "display_name", "status_text",
+        "folder_path", "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata",
+    ])
+    let isTranscriptRowDetailsPage = object["clause_state_text"] != nil && object["speakers"] != nil
+    let isPresentationState = has([
+        "recording_status_text", "recording_tone", "preparation_phase", "preparation_status_text",
+        "recovery_status_text", "processing_status_text", "live_failure_notices", "silence_warning_active",
+        "silence_warning_text", "audio_gap_count", "audio_gap_text", "processing_indicator",
+    ])
 
     if key == "request_id" {
         if objectPath.isEmpty { return root["event"] != nil }
@@ -430,22 +1720,32 @@ private func isNullableField(
     if key == "cursor" {
         if root["command"] as? String == "session.list", has(["cursor", "limit"]) { return true }
         if root["command"] as? String == "transcript.read", has(["session_id", "revision", "cursor", "limit"]) { return true }
+        if root["command"] as? String == "transcript.row_details" { return true }
     }
     if key == "revision", root["command"] as? String == "transcript.read",
        has(["session_id", "revision", "cursor", "limit"]) { return true }
     if key == "session_id" {
         if has(["code", "message", "stage", "request_id", "session_id", "severity", "recovery_action", "details", "cleanup_errors"]) { return true }
-        if has(["folder_id", "session_id", "status", "error"]) { return true }
+        if isSessionSummary { return true }
         if has(["stage", "completed_units", "total_units", "session_id"]) { return true }
     }
-    if key == "error", has(["folder_id", "session_id", "status", "error"]) { return true }
+    if key == "error", isSessionSummary { return true }
+    if key == "export_path", isSessionSummary { return true }
     if key == "path" || key == "device_id", has(["domain", "code", "message", "path", "device_id"]) { return true }
-    if key == "recording", has(["revision", "screen", "setup", "recovery", "recording", "queue", "failures"]) { return true }
+    if ["preparation_status_text", "recovery_status_text", "processing_status_text", "silence_warning_text", "audio_gap_text"].contains(key),
+       isPresentationState { return true }
+    if key == "recording", has(["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]) { return true }
     if key == "default_device_id", has(["source", "devices", "default_device_id"]) { return true }
+    if key == "previous_cursor" {
+        if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
+        if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
+        if isTranscriptRowDetailsPage { return true }
+    }
     if key == "next_cursor" {
-        if has(["sessions", "next_cursor"]) { return true }
-        if has(["session_id", "revision", "rows", "next_cursor"]) { return true }
+        if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
+        if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "kind", "rows", "removed_row_ids", "next_cursor"]) { return true }
+        if isTranscriptRowDetailsPage { return true }
     }
     if key == "clause_state", has(["row_id", "start_ms", "end_ms", "text", "headings", "clause_state"]) { return true }
     if key == "total_units", has(["stage", "completed_units", "total_units", "session_id"]) { return true }
@@ -459,4 +1759,22 @@ private func pathName(_ path: [GoldenPathComponent]) -> String {
         case let .index(index): "[\(index)]"
         }
     }.joined()
+}
+
+private func encodedObjectKeys<Value: Encodable>(_ value: Value) throws -> Set<String> {
+    let data = try JSONEncoder().encode(value)
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw GoldenFixtureError.expectedJSONObject
+    }
+    return Set(object.keys)
+}
+
+private func encodedStringValues<Value: Encodable>(_ values: [Value]) throws -> Set<String> {
+    var result = Set<String>()
+    for value in values {
+        let data = try JSONEncoder().encode(value)
+        let rawValue = try JSONDecoder().decode(String.self, from: data)
+        result.insert(rawValue)
+    }
+    return result
 }
