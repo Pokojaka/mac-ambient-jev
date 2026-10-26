@@ -81,7 +81,7 @@ lexical validation は root object、JSON grammar、有限数値、重複 object
 | `max_line_bytes = 1048576` | CRLF delimiter を除く record は最大 1 MiB。complete envelope/page も同じ record 上限内。 |
 | `transcript.row_details` envelope sizing | completed envelope 全体を canonical JSON UTF-8 bytes で実測し、`max_line_bytes` 内に収める。LF は含めない。最大 sequence / request ID と 36-byte cursor 2個を含む空 page の固定 overhead、および各 span の cached byte 数と comma を使う。 |
 | `max_depth = 32` | root object を depth 1 とする object/array nesting 上限。 |
-| transcript page / tail rows-array budget = 700000 bytes | `transcript.read` page と `transcript.watch` tail の rows 配列に使える予算。row ごとの canonical JSON UTF-8 byte 数と配列 comma を実際に数え、文字数や推定値は使わない。session list と `transcript.row_details` の speakers 配列には適用しない。 |
+| transcript page / tail rows-array budget = 700000 bytes | `transcript.read` page と `transcript.watch` tail の rows 配列に使える予算。row ごとの canonical JSON UTF-8 byte 数と配列 comma を実際に数え、文字数や推定値は使わない。session list と `transcript.row_details` の speakers 配列には適用しない。engine の page 分割だけが守る予算で、protocol codec は検査しない。 |
 | `max_row_bytes = 262144` | 個々の compact encoded row の上限。key と JSON escaping を含み、LF は含めない。1行でも超える row は `row_too_large` error。 |
 | session list count | request `limit` は 1...100。 |
 | transcript page count | `transcript.read` の request `limit` は 1...200。`transcript.read` / `transcript.watch` の rows は最大 200（`transcript.watch` に request limit はない）。`transcript.row_details` の request `limit` は 1...200、`EngineTranscriptRowDetailsPage.speakers` は最大 200。 |
