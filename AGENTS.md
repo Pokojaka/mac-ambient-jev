@@ -19,10 +19,14 @@
 ```bash
 python3 -B scripts/check_portable_core.py
 python3 scripts/check_doc_references.py
+dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
+dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore
 swift build --package-path app/MacAmbientJev
 swift test --package-path app/MacAmbientJev
 bash scripts/verify_v1.sh
 ```
+
+C# の portable libraries / tests は WinUI や Swift の build を必要とせず、macOS / Linux / Windows で実行できます（詳細は [docs/testing.md](docs/testing.md) と [docs/windows.md](docs/windows.md) を参照）。
 
 Linux 評価ツールのテストは作業ディレクトリを tools 内の linux-audio にして実行する。
 

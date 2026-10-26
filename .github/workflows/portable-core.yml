@@ -21,6 +21,8 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/**'
+      - 'app/Windows/**'
+      - 'global.json'
       - 'scripts/generate_windows_audio_fixtures.py'
       - 'scripts/fetch_onnxruntime.py'
       - 'scripts/test_fetch_onnxruntime.py'
@@ -89,6 +91,8 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/**'
+      - 'app/Windows/**'
+      - 'global.json'
       - 'scripts/generate_windows_audio_fixtures.py'
       - 'scripts/fetch_onnxruntime.py'
       - 'scripts/test_fetch_onnxruntime.py'
@@ -152,6 +156,42 @@ permissions:
   contents: read
 
 jobs:
+  dotnet-portable:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            shell: bash
+          - os: macos-15
+            shell: bash
+          - os: windows-2025
+            shell: powershell
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+      - name: .NET information
+        run: dotnet --info
+      - name: Restore portable solution
+        run: dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
+      - name: Test portable solution
+        run: dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore --minimum-expected-tests 2 --results-directory .build/dotnet-test-results --report-xunit-trx
+      - name: Upload .NET test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results-${{ matrix.os }}
+          path: .build/dotnet-test-results/**/*.trx
+          if-no-files-found: error
+
   linux:
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name != 'workflow_dispatch' || inputs.run_linux)
     runs-on: ubuntu-latest

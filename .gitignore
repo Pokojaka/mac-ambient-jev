@@ -19,3 +19,7 @@ test-data/generated/
 test-data/corpora-cache/
 
 scripts/__pycache__/
+
+# .NET build output
+app/Windows/**/bin/
+app/Windows/**/obj/

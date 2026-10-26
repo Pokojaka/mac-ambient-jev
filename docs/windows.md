@@ -2,6 +2,35 @@
 
 macOS app は Swift 6.4（[Swift 6.4 release](https://www.swift.org/blog/swift-6.4-released/)）、Windows / Linux の共通 portable targets は Swift 6.2（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）です。Windows では Swift 6.2 で共通 Core / Pipeline / EngineProtocol / EngineHost、WindowsSupport、ONNX、PortableRuntime、Windows engine process、評価 CLI 3 本、full-session file CLI `MacAmbientJevProcessRecording`、file transcription CLI `MacAmbientJevTranscribeFile`、および Core / Pipeline / EngineProtocol / EngineHost / WindowsSupport / ONNX / PortableRuntime / Engine / ProcessRecording / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と2つの file CLI を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。`MacAmbientJevProcessRecording` は音声ファイルを session に import して full-session finalization / recovery を実行します。`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) と ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter を使う別の評価 CLI で、WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming decoder と SRC に委譲します。Windows の engine process `MacAmbientJevEngine.exe` は WASAPI の microphone / system-audio capture を持ち、GUI とインストーラーはありません。macOS の app は Apple Silicon と macOS 15 以降で動作します。
 
+## C# portable libraries
+
+C# の portable library は [.NET SDK-native `.slnx` format](https://learn.microsoft.com/en-us/dotnet/core/compatibility/sdk/10.0/dotnet-new-sln-slnx-default) の [MacAmbientJev.Portable.slnx](../app/Windows/MacAmbientJev.Portable.slnx) を使います。solution に含む project は次の4つだけです。
+
+| 種別 | project |
+| --- | --- |
+| library | [`MacAmbientJev.Protocol`](../app/Windows/src/MacAmbientJev.Protocol/MacAmbientJev.Protocol.csproj) |
+| library | [`MacAmbientJev.Presentation`](../app/Windows/src/MacAmbientJev.Presentation/MacAmbientJev.Presentation.csproj) |
+| test | [`MacAmbientJev.Protocol.Tests`](../app/Windows/tests/MacAmbientJev.Protocol.Tests/MacAmbientJev.Protocol.Tests.csproj) |
+| test | [`MacAmbientJev.Presentation.Tests`](../app/Windows/tests/MacAmbientJev.Presentation.Tests/MacAmbientJev.Presentation.Tests.csproj) |
+
+[Directory.Build.props](../app/Windows/Directory.Build.props) は `net10.0`、nullable、warnings-as-errors と runtime 設定を共有し、[Directory.Packages.props](../app/Windows/Directory.Packages.props) は package version を中央管理します。4 project それぞれに生成済み [`packages.lock.json`](../app/Windows/src/MacAmbientJev.Protocol/packages.lock.json) があります: [Protocol.Tests](../app/Windows/tests/MacAmbientJev.Protocol.Tests/packages.lock.json)、[Presentation](../app/Windows/src/MacAmbientJev.Presentation/packages.lock.json)、[Presentation.Tests](../app/Windows/tests/MacAmbientJev.Presentation.Tests/packages.lock.json)。CI restore は locked mode です。
+
+| 固定項目 | 値 |
+| --- | --- |
+| .NET SDK | `10.0.402`。root [`global.json`](../global.json) は `rollForward: disable`、`allowPrerelease: false`。 |
+| .NET runtime | `10.0.13`。RuntimeFrameworkVersion を固定し、RollForward は Disable。 |
+| Target framework | `net10.0`。 |
+| `xunit.v3` | `4.0.2`（[release](https://xunit.net/releases/v3/4.0.2)）。 |
+| `xunit.runner.visualstudio` | `4.0.1`（[release](https://xunit.net/releases/visualstudio/4.0.1)）。 |
+| Microsoft.NET.Test.Sdk | `18.11.0`（[NuGet](https://www.nuget.org/packages/Microsoft.NET.Test.Sdk/18.11.0)）。 |
+| CI `setup-dotnet` | `v6.0.0`、commit `a98b56852c35b8e3190ac28c8c2271da59106c68`（[release](https://github.com/actions/setup-dotnet/releases/tag/v6.0.0)、[workflow](../.github/workflows/portable-core.yml)）。 |
+
+root の [global.json](../global.json) は test runner として Microsoft.Testing.Platform を明示します。これは .NET 10 上で xunit.v3 の Microsoft.Testing.Platform 2.5.1 を使うための選択です（[xUnit MTP の設定](https://xunit.net/docs/getting-started/v3/microsoft-testing-platform)）。VSTest logger ではなく MTP の report を使います。
+
+これらの library assembly は skeleton です。codec、transport、presentation の挙動は実装せず、WinUI project や full solution も含みません。WinUI / WinRT / platform API 依存、Windows path、MVVM framework はありません。
+
+Protocol test は MSBuild の Link と CopyToOutputDirectory で既存の共有 UTF-8 [wire-v1.ndjson](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson) を Fixtures として出力へコピーし、[WireCorpusTests.cs](../app/Windows/tests/MacAmbientJev.Protocol.Tests/WireCorpusTests.cs) が AppContext.BaseDirectory/Fixtures から読み、現在の corpus の102行が空白でないことを確認します。これは record 数と配置の smoke test であり、C# strict decoding や corpus の enum coverage を検証しません。Presentation test の [PortableAssemblyTests.cs](../app/Windows/tests/MacAmbientJev.Presentation.Tests/PortableAssemblyTests.cs) は library assembly が `net10.0` で load でき、TargetPlatformAttribute を持たないことを確認します。
+
 ## MacAmbientJevEngineProtocol NDJSON v1
 
 この節は portable `MacAmbientJevEngineProtocol` ライブラリの現行 wire 仕様です。Windows 専用の `MacAmbientJevEngine.exe` はこの protocol を使い、NDJSON transport・WASAPI capture・PortableRuntime inference を composition します（実行時の規則は[エンジンの composition](#エンジンの-composition起動時復旧と実行ファイル)を参照）。型と厳密 codec は Foundation の Codable / [Foundation JSONEncoder](https://developer.apple.com/documentation/foundation/jsonencoder) / [JSONDecoder](https://developer.apple.com/documentation/foundation/jsondecoder) / [KeyedDecodingContainer](https://developer.apple.com/documentation/swift/keyeddecodingcontainer) を使います（[Swift 6.4 release](https://www.swift.org/blog/swift-6.4-released/)、[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。行 framing は [NDJSON 1.0](https://raw.githubusercontent.com/ndjson/ndjson-spec/master/README.md) に従います。engine と client は strict NDJSON v1 の同じ schema と enum 集合を同時に出荷します。
