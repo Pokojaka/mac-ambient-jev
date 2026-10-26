@@ -3,357 +3,253 @@ import Testing
 import MacAmbientJevEngineProtocol
 
 struct EngineProtocolCorpusCoverageTests {
-    @Test func corpusCoversCompleteWireContract() throws {
-        let records = try coverageFixtureRecords()
-        let recorder = EngineProtocolCoverageRecorder()
-        var hasFailure = false
-        func recordIssue(_ message: String) {
-            hasFailure = true
-            Issue.record("\(message)")
-        }
-
+    /// Required tokens come from the Swift wire types (every CodingKeys case, every CaseIterable
+    /// enum value, both arms of every EngineNullable field); observed tokens come from the decoded corpus.
+    @Test func corpusCoversEveryKeyEnumValueAndNullableArm() throws {
+        let recorder = CoverageRecorder()
+        let schema = CoverageEncoder(recorder: recorder, isRequired: true)
         for value in try coverageRepresentativeValues() {
-            try EngineProtocolCoverageEncoder.traverse(value, recorder: recorder, phase: .required)
+            try schema.traverse(value)
         }
         for command in EngineCommandName.allCases {
-            recorder.recordRequiredToken("command EngineCommand=\(command.rawValue)")
+            recorder.required.insert("command \(command.rawValue)")
+            recorder.required.insert("result \(command.rawValue)")
         }
         for event in EngineEventName.allCases {
-            recorder.recordRequiredToken("event EngineEvent=\(event.rawValue)")
-        }
-        for command in EngineCommandName.allCases {
-            recorder.recordRequiredToken("result EngineResult=\(command.rawValue)")
+            recorder.required.insert("event \(event.rawValue)")
         }
 
-        // CodingKeys and Kind-derived enum values form union requirements: each envelope selects one branch,
-        // so a branch omitted from the fixtures stays required. Freeze the registry after schema discovery;
-        // fixture traversal only records observations.
-        for (offset, record) in records.enumerated() {
-            let recordNumber = offset + 1
-            let root: [String: Any]
-            do {
-                guard let object = try JSONSerialization.jsonObject(with: record) as? [String: Any] else {
-                    recordIssue("record \(recordNumber): expected a JSON object")
-                    continue
-                }
-                root = object
-            } catch {
-                recordIssue("record \(recordNumber): could not inspect envelope: \(error)")
-                continue
-            }
-
+        let corpus = CoverageEncoder(recorder: recorder, isRequired: false)
+        for record in try wireCorpusRecords() {
+            let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
             if root["event"] != nil {
-                let output: EngineOutput
-                do {
-                    output = try EngineCodec.decodeOutput(record)
-                } catch {
-                    hasFailure = true
-                    recordDecodeFailure(error, recordNumber: recordNumber)
-                    continue
-                }
-                do {
-                    let canonical = try EngineCodec.encodeOutput(output)
-                    if canonical != record + Data([0x0A]) {
-                        recordIssue("record \(recordNumber): output is not a canonical byte roundtrip")
-                    }
-                    try EngineProtocolCoverageEncoder.traverse(output, recorder: recorder, phase: .observed)
-                } catch {
-                    recordIssue("record \(recordNumber): output coverage traversal failed: \(error)")
-                    continue
-                }
-
-                recorder.recordObservedToken("event EngineEvent=\(output.event.name.rawValue)")
+                let output = try EngineCodec.decodeOutput(record)
+                try corpus.traverse(output)
+                recorder.observed.insert("event \(output.event.name.rawValue)")
                 if case let .completed(result) = output.event {
-                    recorder.recordObservedToken("result EngineResult=\(result.command.rawValue)")
+                    recorder.observed.insert("result \(result.command.rawValue)")
                 }
             } else {
-                let request: EngineRequest
-                do {
-                    request = try EngineCodec.decodeRequest(record)
-                } catch {
-                    hasFailure = true
-                    recordDecodeFailure(error, recordNumber: recordNumber)
-                    continue
-                }
-                do {
-                    let canonical = try EngineCodec.encodeRequest(request)
-                    if canonical != record + Data([0x0A]) {
-                        recordIssue("record \(recordNumber): request is not a canonical byte roundtrip")
-                    }
-                    try EngineProtocolCoverageEncoder.traverse(request, recorder: recorder, phase: .observed)
-                } catch {
-                    recordIssue("record \(recordNumber): request coverage traversal failed: \(error)")
-                    continue
-                }
-                recorder.recordObservedToken("command EngineCommand=\(request.command.name.rawValue)")
+                let request = try EngineCodec.decodeRequest(record)
+                try corpus.traverse(request)
+                recorder.observed.insert("command \(request.command.name.rawValue)")
             }
         }
 
-        let issues = recorder.coverageIssues()
-        for issue in issues {
-            recordIssue(issue)
-        }
-        if issues.isEmpty && !hasFailure {
-            print("Wire corpus: \(records.count) records, \(recorder.requiredTokens.count) required coverage tokens")
-        }
-    }
-
-    @Test func recorderRequiresIndependentTypedKeyEnumAndNullableCoverage() throws {
-        let child = CoverageSelfTestChild(value: "確認用")
-        let arrayElement = CoverageSelfTestArrayElement(value: "配列確認用")
-        let nilValue = CoverageSelfTestRoot(
-            value: "確認用", mode: .first, child: child, children: [arrayElement], nullable: nil
-        )
-        let nonNullValue = CoverageSelfTestRoot(
-            value: "確認用", mode: .first, child: child, children: [arrayElement], nullable: "確認用"
-        )
-        let recorder = EngineProtocolCoverageRecorder()
-
-        try EngineProtocolCoverageEncoder.traverse(nilValue, recorder: recorder, phase: .required)
-        try EngineProtocolCoverageEncoder.traverse(nilValue, recorder: recorder, phase: .observed)
-        try EngineProtocolCoverageEncoder.traverse(nonNullValue, recorder: recorder, phase: .observed)
-
-        #expect(recorder.requiredTokens.contains("key CoverageSelfTestChild.never_observed"))
-        #expect(!recorder.observedTokens.contains("key CoverageSelfTestChild.never_observed"))
-        #expect(recorder.requiredTokens.contains("key CoverageSelfTestRoot.value"))
-        #expect(recorder.requiredTokens.contains("key CoverageSelfTestChild.value"))
-        #expect(recorder.requiredTokens.contains("key CoverageSelfTestArrayElement.value"))
-        #expect(recorder.observedTokens.contains("key CoverageSelfTestArrayElement.value"))
-        #expect(recorder.requiredTokens.contains("enum CoverageSelfTestMode=first"))
-        #expect(recorder.requiredTokens.contains("enum CoverageSelfTestMode=second"))
-        #expect(recorder.observedTokens.contains("enum CoverageSelfTestMode=first"))
-        #expect(!recorder.observedTokens.contains("enum CoverageSelfTestMode=second"))
-        #expect(recorder.requiredTokens.contains("nullable CoverageSelfTestRoot.nullable=null"))
-        #expect(recorder.requiredTokens.contains("nullable CoverageSelfTestRoot.nullable=non-null"))
-        #expect(recorder.observedTokens.contains("nullable CoverageSelfTestRoot.nullable=null"))
-        #expect(recorder.observedTokens.contains("nullable CoverageSelfTestRoot.nullable=non-null"))
-
-        let nullableEnumRecorder = EngineProtocolCoverageRecorder()
-        let nilEnum = CoverageNullableEnumSelfTest(mode: nil)
-        let nonNullEnum = CoverageNullableEnumSelfTest(mode: .second)
-        try EngineProtocolCoverageEncoder.traverse(nilEnum, recorder: nullableEnumRecorder, phase: .required)
-        try EngineProtocolCoverageEncoder.traverse(nonNullEnum, recorder: nullableEnumRecorder, phase: .required)
-        try EngineProtocolCoverageEncoder.traverse(nilEnum, recorder: nullableEnumRecorder, phase: .observed)
-        try EngineProtocolCoverageEncoder.traverse(nonNullEnum, recorder: nullableEnumRecorder, phase: .observed)
-        #expect(nullableEnumRecorder.requiredTokens.contains("enum CoverageSelfTestMode=first"))
-        #expect(nullableEnumRecorder.requiredTokens.contains("enum CoverageSelfTestMode=second"))
-        #expect(!nullableEnumRecorder.observedTokens.contains("enum CoverageSelfTestMode=first"))
-        #expect(nullableEnumRecorder.observedTokens.contains("enum CoverageSelfTestMode=second"))
-    }
-
-    @Test func recorderReportsUnknownTokensAndMissingRepresentatives() throws {
-        let child = CoverageSelfTestChild(value: "確認用")
-
-        let observedRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestUnexpectedObservedRoot(child: CoverageSelfTestUnexpectedObservedChild(value: "確認用")),
-            recorder: observedRecorder,
-            phase: .observed
-        )
-        #expect(observedRecorder.coverageIssues().contains(
-            "Unregistered wire corpus token: key CoverageSelfTestUnexpectedObservedChild.value"
-        ))
-
-        let nullableRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestNullableObjectRoot(child: nil), recorder: nullableRecorder, phase: .required
-        )
-        #expect(nullableRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestNullableObject"
-        ))
-
-        let nullableDischargedRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestNullableObjectRepresentativeRoot(
-                child: nil,
-                representative: CoverageSelfTestNullableObject(value: "代表値")
-            ),
-            recorder: nullableDischargedRecorder,
-            phase: .required
-        )
-        #expect(!nullableDischargedRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestNullableObject"
-        ))
-
-        let emptyArrayRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestEmptyArrayRoot(children: []), recorder: emptyArrayRecorder, phase: .required
-        )
-        #expect(emptyArrayRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ))
-
-        let optionalArrayRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestOptionalArrayRoot(children: nil),
-            recorder: optionalArrayRecorder,
-            phase: .required
-        )
-        let nilOptionalArrayTypeIssues = optionalArrayRecorder.coverageIssues().filter {
-            $0.hasPrefix("Missing non-nil representative for wire type:")
-        }
-        #expect(nilOptionalArrayTypeIssues.count == 1)
-        #expect(nilOptionalArrayTypeIssues.first.map {
-            $0.contains("Array") || $0.contains("[")
-        } == true)
-        #expect(!nilOptionalArrayTypeIssues.contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ))
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestOptionalArrayRoot(children: []),
-            recorder: optionalArrayRecorder,
-            phase: .required
-        )
-        let emptyOptionalArrayTypeIssues = optionalArrayRecorder.coverageIssues().filter {
-            $0.hasPrefix("Missing non-nil representative for wire type:")
-        }
-        #expect(emptyOptionalArrayTypeIssues == [
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ])
-
-        let directOptionalRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestDirectOptionalRoot(child: nil), recorder: directOptionalRecorder, phase: .required
-        )
-        #expect(directOptionalRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ))
-
-        let synthesizedOptionalRecorder = EngineProtocolCoverageRecorder()
-        let synthesizedNil = CoverageSelfTestSynthesizedOptionalRoot(child: nil)
-        try EngineProtocolCoverageEncoder.traverse(
-            synthesizedNil, recorder: synthesizedOptionalRecorder, phase: .required
-        )
-        try EngineProtocolCoverageEncoder.traverse(
-            synthesizedNil, recorder: synthesizedOptionalRecorder, phase: .observed
-        )
-        #expect(synthesizedOptionalRecorder.requiredTokens.contains("key CoverageSelfTestSynthesizedOptionalRoot.child"))
-        #expect(!synthesizedOptionalRecorder.observedTokens.contains("key CoverageSelfTestSynthesizedOptionalRoot.child"))
-        #expect(synthesizedOptionalRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ))
-
-        let observedCannotDischargeRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestEmptyArrayRoot(children: []),
-            recorder: observedCannotDischargeRecorder,
-            phase: .required
-        )
-        try EngineProtocolCoverageEncoder.traverse(
-            child, recorder: observedCannotDischargeRecorder, phase: .observed
-        )
-        #expect(observedCannotDischargeRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ))
-
-        let requiredDischargeRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestEmptyArrayRoot(children: []),
-            recorder: requiredDischargeRecorder,
-            phase: .required
-        )
-        try EngineProtocolCoverageEncoder.traverse(
-            child, recorder: requiredDischargeRecorder, phase: .required
-        )
-        #expect(!requiredDischargeRecorder.coverageIssues().contains(
-            "Missing non-nil representative for wire type: CoverageSelfTestChild"
-        ))
-    }
-
-    @Test func rawRepresentableWireTypesRequireCaseIterable() {
-        let stringDiagnostic = "RawRepresentable wire type is not CaseIterable: CoverageSelfTestNonCaseIterableStringEnum"
-        expectCoverageTraversalFailure(
-            CoverageSelfTestNonCaseIterableStringEnum.first,
-            diagnostic: stringDiagnostic
-        )
-        expectCoverageTraversalFailure(
-            CoverageSelfTestRawRepresentableFieldRoot(value: .first),
-            diagnostic: stringDiagnostic
-        )
-        expectCoverageTraversalFailure(
-            CoverageSelfTestRawRepresentableOptionalRoot(value: nil),
-            diagnostic: stringDiagnostic
-        )
-        expectCoverageTraversalFailure(
-            [CoverageSelfTestNonCaseIterableStringEnum](),
-            diagnostic: stringDiagnostic
-        )
-
-        let intDiagnostic = "RawRepresentable wire type is not CaseIterable: CoverageSelfTestNonCaseIterableIntEnum"
-        expectCoverageTraversalFailure(CoverageSelfTestNonCaseIterableIntEnum.first, diagnostic: intDiagnostic)
-        expectCoverageTraversalFailure(CoverageSelfTestNonCaseIterableIntEnumRoot(value: .first), diagnostic: intDiagnostic)
-        expectCoverageTraversalFailure(CoverageSelfTestNullableIntEnumRoot(value: nil), diagnostic: intDiagnostic)
-        expectCoverageTraversalFailure([CoverageSelfTestNonCaseIterableIntEnum](), diagnostic: intDiagnostic)
-    }
-
-    @Test func recorderRequiresEveryCaseOfIntegerRawEnums() throws {
-        let recorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(CoverageSelfTestIntegerEnum.first, recorder: recorder, phase: .required)
-        try EngineProtocolCoverageEncoder.traverse(CoverageSelfTestIntegerEnum.first, recorder: recorder, phase: .observed)
-
-        #expect(recorder.requiredTokens.contains("enum CoverageSelfTestIntegerEnum=1"))
-        #expect(recorder.requiredTokens.contains("enum CoverageSelfTestIntegerEnum=2"))
-        #expect(recorder.observedTokens.contains("enum CoverageSelfTestIntegerEnum=1"))
-        #expect(!recorder.observedTokens.contains("enum CoverageSelfTestIntegerEnum=2"))
-        #expect(recorder.coverageIssues() == ["Missing wire corpus coverage: enum CoverageSelfTestIntegerEnum=2"])
-    }
-
-    @Test func stringKindDiscriminatorMustEncodeTypedEnum() {
-        expectCoverageTraversalFailure(
-            CoverageSelfTestAssociatedValueEnum.value("b"),
-            diagnostic: "Untyped wire discriminator: CoverageSelfTestAssociatedValueEnum.kind must encode a CaseIterable enum, not String"
-        )
-    }
-
-    @Test func optionalStringKindDiscriminatorMustEncodeTypedEnum() throws {
-        let diagnostic = "Untyped wire discriminator: CoverageSelfTestOptionalStringKind.kind must encode a CaseIterable enum, not String"
-        expectCoverageTraversalFailure(CoverageSelfTestOptionalStringKind(kind: "b"), diagnostic: diagnostic)
-
-        let nilRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestOptionalStringKind(kind: nil), recorder: nilRecorder, phase: .observed
-        )
-        #expect(!nilRecorder.observedTokens.contains("key CoverageSelfTestOptionalStringKind.kind"))
-
-        let ordinaryRecorder = EngineProtocolCoverageRecorder()
-        try EngineProtocolCoverageEncoder.traverse(
-            CoverageSelfTestOptionalStringValue(value: "ordinary"), recorder: ordinaryRecorder, phase: .observed
-        )
-        #expect(ordinaryRecorder.observedTokens.contains("key CoverageSelfTestOptionalStringValue.value"))
+        let missing = recorder.required.subtracting(recorder.observed).sorted()
+        let unregistered = recorder.observed.subtracting(recorder.required).sorted()
+        #expect(missing.isEmpty, "Missing wire corpus coverage: \(missing)")
+        #expect(unregistered.isEmpty, "Unregistered wire corpus tokens: \(unregistered)")
     }
 }
 
-private func coverageFixtureRecords() throws -> [Data] {
-    let url = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .appendingPathComponent("Fixtures/wire-v1.ndjson")
-    let bytes = try Data(contentsOf: url)
-    guard bytes.last == 0x0A else {
-        throw EngineProtocolError.invalidJSON("wire fixture must end with LF")
-    }
-    var framer = EngineLineFramer()
-    let records = try framer.append(bytes)
-    try framer.finish()
-    return records
+private final class CoverageRecorder {
+    var required: Set<String> = []
+    var observed: Set<String> = []
 }
 
-private func expectCoverageTraversalFailure(_ value: any Encodable, diagnostic: String) {
-    let recorder = EngineProtocolCoverageRecorder()
-    do {
-        try EngineProtocolCoverageEncoder.traverse(value, recorder: recorder, phase: .required)
-        Issue.record("Expected coverage traversal failure: \(diagnostic)")
-    } catch {
-        #expect(String(describing: error) == diagnostic)
+private protocol CoverageNullable {
+    var isNull: Bool { get }
+}
+
+extension EngineNullable: CoverageNullable {
+    fileprivate var isNull: Bool { wrappedValue == nil }
+}
+
+private protocol CoverageWrapper {
+    static var wrappedType: any Encodable.Type { get }
+}
+
+extension Optional: CoverageWrapper where Wrapped: Encodable {
+    fileprivate static var wrappedType: any Encodable.Type { Wrapped.self }
+}
+
+extension Array: CoverageWrapper where Element: Encodable {
+    fileprivate static var wrappedType: any Encodable.Type { Element.self }
+}
+
+extension EngineNullable: CoverageWrapper {
+    fileprivate static var wrappedType: any Encodable.Type { Value.self }
+}
+
+/// A traversal-only Encoder: it emits no bytes and records the keys and typed values that Codable implementations write.
+private struct CoverageEncoder: Encoder {
+    let recorder: CoverageRecorder
+    let isRequired: Bool
+    var codingPath: [any CodingKey] = []
+    var userInfo: [CodingUserInfoKey: Any] { [:] }
+
+    func traverse<T: Encodable>(_ value: T) throws {
+        if isRequired {
+            registerEnumCases(T.self)
+        } else if T.self is any CaseIterable.Type {
+            recorder.observed.insert("enum \(String(reflecting: T.self))=\(value)")
+        }
+        try value.encode(to: self)
+    }
+
+    private func registerEnumCases(_ type: any Encodable.Type) {
+        if let enumType = type as? any CaseIterable.Type {
+            for value in enumType.allCases {
+                recorder.required.insert("enum \(String(reflecting: type))=\(value)")
+            }
+        }
+        if let wrapper = type as? any CoverageWrapper.Type {
+            registerEnumCases(wrapper.wrappedType)
+        }
+    }
+
+    func record(_ token: String) {
+        if isRequired {
+            recorder.required.insert(token)
+        } else {
+            recorder.observed.insert(token)
+        }
+    }
+
+    func child(_ key: any CodingKey) -> CoverageEncoder {
+        CoverageEncoder(recorder: recorder, isRequired: isRequired, codingPath: codingPath + [key])
+    }
+
+    func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
+        let owner = String(reflecting: Key.self)
+        if isRequired, let keys = Key.self as? any CaseIterable.Type {
+            for key in keys.allCases {
+                if let key = key as? any CodingKey {
+                    recorder.required.insert("key \(owner).\(key.stringValue)")
+                }
+            }
+        }
+        return KeyedEncodingContainer(CoverageKeyedContainer<Key>(encoder: self, owner: owner))
+    }
+
+    func unkeyedContainer() -> any UnkeyedEncodingContainer {
+        CoverageUnkeyedContainer(encoder: self)
+    }
+
+    func singleValueContainer() -> any SingleValueEncodingContainer {
+        CoverageSingleValueContainer(encoder: self)
     }
 }
 
-private func recordDecodeFailure(_ error: Error, recordNumber: Int) {
-    if case let DecodingError.keyNotFound(key, context) = error {
-        let path = (context.codingPath + [key]).map { ".\($0.stringValue)" }.joined()
-        Issue.record("record \(recordNumber): missing key $\(path)")
-    } else {
-        Issue.record("record \(recordNumber): strict decode failed: \(error)")
+private struct CoverageKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
+    let encoder: CoverageEncoder
+    let owner: String
+    var codingPath: [any CodingKey] { encoder.codingPath }
+
+    private func mark(_ key: Key) { encoder.record("key \(owner).\(key.stringValue)") }
+
+    mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
+        mark(key)
+        if let nullable = value as? any CoverageNullable {
+            let field = "nullable \(owner).\(key.stringValue)"
+            if encoder.isRequired {
+                encoder.recorder.required.formUnion(["\(field)=null", "\(field)=non-null"])
+            } else {
+                encoder.recorder.observed.insert(nullable.isNull ? "\(field)=null" : "\(field)=non-null")
+            }
+        }
+        try encoder.child(key).traverse(value)
     }
+
+    mutating func encodeNil(forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Bool, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: String, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Double, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Float, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Int, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Int8, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Int16, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Int32, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: Int64, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: UInt, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: UInt8, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: UInt16, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: UInt32, forKey key: Key) throws { mark(key) }
+    mutating func encode(_ value: UInt64, forKey key: Key) throws { mark(key) }
+
+    mutating func nestedContainer<NestedKey: CodingKey>(
+        keyedBy keyType: NestedKey.Type, forKey key: Key
+    ) -> KeyedEncodingContainer<NestedKey> {
+        mark(key)
+        return encoder.child(key).container(keyedBy: keyType)
+    }
+
+    mutating func nestedUnkeyedContainer(forKey key: Key) -> any UnkeyedEncodingContainer {
+        mark(key)
+        return encoder.child(key).unkeyedContainer()
+    }
+
+    mutating func superEncoder() -> any Encoder { encoder }
+
+    mutating func superEncoder(forKey key: Key) -> any Encoder {
+        mark(key)
+        return encoder.child(key)
+    }
+}
+
+private struct CoverageUnkeyedContainer: UnkeyedEncodingContainer {
+    let encoder: CoverageEncoder
+    private(set) var count = 0
+    var codingPath: [any CodingKey] { encoder.codingPath }
+
+    mutating func encode<T: Encodable>(_ value: T) throws {
+        count += 1
+        try encoder.traverse(value)
+    }
+
+    mutating func encodeNil() throws { count += 1 }
+    mutating func encode(_ value: Bool) throws { count += 1 }
+    mutating func encode(_ value: String) throws { count += 1 }
+    mutating func encode(_ value: Double) throws { count += 1 }
+    mutating func encode(_ value: Float) throws { count += 1 }
+    mutating func encode(_ value: Int) throws { count += 1 }
+    mutating func encode(_ value: Int8) throws { count += 1 }
+    mutating func encode(_ value: Int16) throws { count += 1 }
+    mutating func encode(_ value: Int32) throws { count += 1 }
+    mutating func encode(_ value: Int64) throws { count += 1 }
+    mutating func encode(_ value: UInt) throws { count += 1 }
+    mutating func encode(_ value: UInt8) throws { count += 1 }
+    mutating func encode(_ value: UInt16) throws { count += 1 }
+    mutating func encode(_ value: UInt32) throws { count += 1 }
+    mutating func encode(_ value: UInt64) throws { count += 1 }
+
+    mutating func nestedContainer<NestedKey: CodingKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> {
+        count += 1
+        return encoder.container(keyedBy: keyType)
+    }
+
+    mutating func nestedUnkeyedContainer() -> any UnkeyedEncodingContainer {
+        count += 1
+        return encoder.unkeyedContainer()
+    }
+
+    mutating func superEncoder() -> any Encoder {
+        count += 1
+        return encoder
+    }
+}
+
+private struct CoverageSingleValueContainer: SingleValueEncodingContainer {
+    let encoder: CoverageEncoder
+    var codingPath: [any CodingKey] { encoder.codingPath }
+
+    func encode<T: Encodable>(_ value: T) throws { try encoder.traverse(value) }
+    func encodeNil() throws {}
+    func encode(_ value: Bool) throws {}
+    func encode(_ value: String) throws {}
+    func encode(_ value: Double) throws {}
+    func encode(_ value: Float) throws {}
+    func encode(_ value: Int) throws {}
+    func encode(_ value: Int8) throws {}
+    func encode(_ value: Int16) throws {}
+    func encode(_ value: Int32) throws {}
+    func encode(_ value: Int64) throws {}
+    func encode(_ value: UInt) throws {}
+    func encode(_ value: UInt8) throws {}
+    func encode(_ value: UInt16) throws {}
+    func encode(_ value: UInt32) throws {}
+    func encode(_ value: UInt64) throws {}
 }
 
 private func coverageRepresentativeValues() throws -> [any Encodable] {
@@ -555,309 +451,4 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         inspection,
         presentation,
     ]
-}
-
-private enum CoverageSelfTestMode: String, Codable, CaseIterable {
-    case first
-    case second
-}
-
-private struct CoverageSelfTestChild: Encodable {
-    let value: String
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-        case neverObserved = "never_observed"
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .value)
-    }
-}
-
-private struct CoverageSelfTestArrayElement: Encodable {
-    let value: String
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .value)
-    }
-}
-
-private struct CoverageSelfTestRoot: Encodable {
-    let value: String
-    let mode: CoverageSelfTestMode
-    let child: CoverageSelfTestChild
-    let children: [CoverageSelfTestArrayElement]
-    @EngineNullable var nullable: String?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-        case mode
-        case child
-        case children
-        case nullable
-    }
-
-    init(value: String, mode: CoverageSelfTestMode, child: CoverageSelfTestChild, children: [CoverageSelfTestArrayElement], nullable: String?) {
-        self.value = value
-        self.mode = mode
-        self.child = child
-        self.children = children
-        _nullable = EngineNullable(wrappedValue: nullable)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .value)
-        try container.encode(mode, forKey: .mode)
-        try container.encode(child, forKey: .child)
-        try container.encode(children, forKey: .children)
-        try container.encode(_nullable, forKey: .nullable)
-    }
-}
-
-private struct CoverageNullableEnumSelfTest: Encodable {
-    @EngineNullable var mode: CoverageSelfTestMode?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case mode
-    }
-
-    init(mode: CoverageSelfTestMode?) {
-        _mode = EngineNullable(wrappedValue: mode)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(_mode, forKey: .mode)
-    }
-}
-
-private struct CoverageSelfTestUnexpectedObservedChild: Encodable {
-    let value: String
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .value)
-    }
-}
-
-private struct CoverageSelfTestUnexpectedObservedRoot: Encodable {
-    let child: CoverageSelfTestUnexpectedObservedChild
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case child
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(child, forKey: .child)
-    }
-}
-
-private struct CoverageSelfTestNullableObject: Codable, Equatable, Sendable {
-    let value: String
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-}
-
-private struct CoverageSelfTestNullableObjectRoot: Encodable {
-    @EngineNullable var child: CoverageSelfTestNullableObject?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case child
-    }
-
-    init(child: CoverageSelfTestNullableObject?) {
-        _child = EngineNullable(wrappedValue: child)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(_child, forKey: .child)
-    }
-}
-
-private struct CoverageSelfTestNullableObjectRepresentativeRoot: Encodable {
-    @EngineNullable var child: CoverageSelfTestNullableObject?
-    let representative: CoverageSelfTestNullableObject
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case child
-        case representative
-    }
-
-    init(child: CoverageSelfTestNullableObject?, representative: CoverageSelfTestNullableObject) {
-        _child = EngineNullable(wrappedValue: child)
-        self.representative = representative
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(_child, forKey: .child)
-        try container.encode(representative, forKey: .representative)
-    }
-}
-
-private struct CoverageSelfTestEmptyArrayRoot: Encodable {
-    let children: [CoverageSelfTestChild]
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case children
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(children, forKey: .children)
-    }
-}
-
-private struct CoverageSelfTestOptionalArrayRoot: Encodable {
-    let children: [CoverageSelfTestChild]?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case children
-    }
-}
-
-private struct CoverageSelfTestDirectOptionalRoot: Encodable {
-    let child: CoverageSelfTestChild?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case child
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(child, forKey: .child)
-    }
-}
-
-private struct CoverageSelfTestSynthesizedOptionalRoot: Encodable {
-    let child: CoverageSelfTestChild?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case child
-    }
-}
-
-private enum CoverageSelfTestNonCaseIterableStringEnum: String, Encodable {
-    case first
-}
-
-private struct CoverageSelfTestRawRepresentableFieldRoot: Encodable {
-    let value: CoverageSelfTestNonCaseIterableStringEnum
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .value)
-    }
-}
-
-private struct CoverageSelfTestRawRepresentableOptionalRoot: Encodable {
-    let value: CoverageSelfTestNonCaseIterableStringEnum?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(value, forKey: .value)
-    }
-}
-
-private enum CoverageSelfTestNonCaseIterableIntEnum: Int, Codable, Equatable, Sendable {
-    case first = 1
-}
-
-private struct CoverageSelfTestNonCaseIterableIntEnumRoot: Encodable {
-    let value: CoverageSelfTestNonCaseIterableIntEnum
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .value)
-    }
-}
-
-private struct CoverageSelfTestNullableIntEnumRoot: Encodable {
-    @EngineNullable var value: CoverageSelfTestNonCaseIterableIntEnum?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    init(value: CoverageSelfTestNonCaseIterableIntEnum?) {
-        _value = EngineNullable(wrappedValue: value)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(_value, forKey: .value)
-    }
-}
-
-private enum CoverageSelfTestIntegerEnum: Int, Encodable, CaseIterable {
-    case first = 1
-    case second = 2
-}
-
-private enum CoverageSelfTestAssociatedValueEnum: Encodable {
-    case value(String)
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case kind
-    }
-
-    func encode(to encoder: Encoder) throws {
-        guard case let .value(value) = self else { return }
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(value, forKey: .kind)
-    }
-}
-
-private struct CoverageSelfTestOptionalStringKind: Encodable {
-    let kind: String?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case kind
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(kind, forKey: .kind)
-    }
-}
-
-private struct CoverageSelfTestOptionalStringValue: Encodable {
-    let value: String?
-
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case value
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(value, forKey: .value)
-    }
 }
