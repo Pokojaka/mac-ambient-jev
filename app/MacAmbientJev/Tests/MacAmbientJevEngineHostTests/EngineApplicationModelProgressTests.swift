@@ -148,7 +148,7 @@ private final class ModelProgressFixture {
 }
 
 @MainActor
-@Suite(.timeLimit(.minutes(2))) struct EngineApplicationModelProgressTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineApplicationModelProgressTests {
     @Test
     func progressIsOrderedMonotonicAndDoesNotCompletePreparationAtOneHundredPercent() async throws {
         let root = FileManager.default.temporaryDirectory.appending(

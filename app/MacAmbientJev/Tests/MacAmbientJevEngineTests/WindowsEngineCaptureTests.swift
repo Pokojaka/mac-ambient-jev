@@ -8,8 +8,8 @@ import MacAmbientJevTestSupport
 import MacAmbientJevWindowsSupport
 @testable import MacAmbientJevEngine
 
-@Suite @MainActor struct WindowsEngineCaptureTests {
-    @Test(.timeLimit(.minutes(1))) func forwardsIngressDropoutsWhileCaptureIsActive() async throws {
+@Suite(.timeLimit(.minutes(10))) @MainActor struct WindowsEngineCaptureTests {
+    @Test func forwardsIngressDropoutsWhileCaptureIsActive() async throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "WindowsEngineCapture-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

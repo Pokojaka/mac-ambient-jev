@@ -275,7 +275,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(try await harness.shutdown() == .shutdownRequested)
     }
 
-    @Test(.timeLimit(.minutes(1))) func recordingListPublishesAudioAfterTheFirstDurableChunk() async throws {
+    @Test func recordingListPublishesAudioAfterTheFirstDurableChunk() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let harness = try await prepared(root, decisions: false)

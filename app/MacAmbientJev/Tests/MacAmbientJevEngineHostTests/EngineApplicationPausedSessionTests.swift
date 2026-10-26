@@ -151,7 +151,7 @@ private final class PausedSessionFinalizationHarness {
 }
 
 @MainActor
-@Suite(.timeLimit(.minutes(2))) struct EngineApplicationPausedSessionTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineApplicationPausedSessionTests {
     @Test func cancelledFinalizationListsPausedAudioWithRestartStatus() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

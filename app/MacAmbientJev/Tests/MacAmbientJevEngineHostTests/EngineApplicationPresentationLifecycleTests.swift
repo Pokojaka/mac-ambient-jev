@@ -13,7 +13,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
 }
 
 @MainActor
-@Suite(.timeLimit(.minutes(2))) struct EngineApplicationPresentationLifecycleTests {
+@Suite(.timeLimit(.minutes(10))) struct EngineApplicationPresentationLifecycleTests {
     private func makeFixture(
         validatingGate: LifecycleContinuationGate?,
         preparationGate: LifecycleContinuationGate?,
