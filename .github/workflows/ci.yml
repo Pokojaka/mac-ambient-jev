@@ -16,6 +16,7 @@ jobs:
   verify-v1-tests:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -28,29 +29,79 @@ jobs:
           python3 -B scripts/test_fetch_clause_tagger.py
           python3 -B scripts/test_export_clause_tagger_onnx.py
           python3 -B scripts/test_build_app.py
-      - name: Swift version
-        run: swift --version
+      - name: Swift toolchain fingerprint
+        id: toolchain
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import subprocess
+
+          swift = subprocess.run(["swift", "--version"], check=True, capture_output=True)
+          xcode = subprocess.run(["xcodebuild", "-version"], check=True, capture_output=True)
+          print(swift.stdout.decode() + swift.stderr.decode(), end="")
+          print(xcode.stdout.decode() + xcode.stderr.decode(), end="")
+          digest = hashlib.sha256(swift.stdout + swift.stderr + xcode.stdout + xcode.stderr).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={digest}\n")
+          PY
       - name: Cache SwiftPM sources
-        uses: actions/cache@v4
+        id: swiftpm-sources
+        uses: actions/cache/restore@v4
         with:
           path: |
             app/MacAmbientJev/.build/checkouts
             app/MacAmbientJev/.build/repositories
             app/MacAmbientJev/.build/artifacts
             app/MacAmbientJev/.build/workspace-state.json
-          key: swiftpm-sources-${{ runner.os }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}
+          key: swiftpm-sources-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
       - name: Verify V1 tests
         run: bash scripts/verify_v1_tests.sh
+      - name: Save SwiftPM sources
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/MacAmbientJev/.build/checkouts
+            app/MacAmbientJev/.build/repositories
+            app/MacAmbientJev/.build/artifacts
+            app/MacAmbientJev/.build/workspace-state.json
+          key: ${{ steps.swiftpm-sources.outputs.cache-primary-key }}
+      - name: Report SwiftPM build size
+        if: always()
+        run: if [ -d app/MacAmbientJev/.build ]; then du -sk app/MacAmbientJev/.build; fi
+      - name: Upload Mac test events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-events-macos-verify-v1-tests
+          path: .build/test-events/*.jsonl
+          if-no-files-found: warn
   verify-v1-app:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-26
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Swift version
-        run: swift --version
+      - name: Swift toolchain fingerprint
+        id: toolchain
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import subprocess
+
+          swift = subprocess.run(["swift", "--version"], check=True, capture_output=True)
+          xcode = subprocess.run(["xcodebuild", "-version"], check=True, capture_output=True)
+          print(swift.stdout.decode() + swift.stderr.decode(), end="")
+          print(xcode.stdout.decode() + xcode.stderr.decode(), end="")
+          digest = hashlib.sha256(swift.stdout + swift.stderr + xcode.stdout + xcode.stderr).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={digest}\n")
+          PY
       - name: Install the Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Create the local signing certificate
@@ -73,13 +124,27 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
       - name: Cache SwiftPM sources
-        uses: actions/cache@v4
+        id: swiftpm-sources
+        uses: actions/cache/restore@v4
         with:
           path: |
             app/MacAmbientJev/.build/checkouts
             app/MacAmbientJev/.build/repositories
             app/MacAmbientJev/.build/artifacts
             app/MacAmbientJev/.build/workspace-state.json
-          key: swiftpm-sources-${{ runner.os }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}
+          key: swiftpm-sources-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
       - name: Verify V1 app
         run: bash scripts/verify_v1_app.sh
+      - name: Save SwiftPM sources
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/MacAmbientJev/.build/checkouts
+            app/MacAmbientJev/.build/repositories
+            app/MacAmbientJev/.build/artifacts
+            app/MacAmbientJev/.build/workspace-state.json
+          key: ${{ steps.swiftpm-sources.outputs.cache-primary-key }}
+      - name: Report SwiftPM build size
+        if: always()
+        run: if [ -d app/MacAmbientJev/.build ]; then du -sk app/MacAmbientJev/.build; fi

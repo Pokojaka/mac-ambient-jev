@@ -59,7 +59,7 @@ enum EngineProcess {
             let options = try EngineLaunchOptions.parse(arguments)
             return try await serve(options: options)
         } catch {
-            log("\(error.localizedDescription)")
+            reportFailure("\(error.localizedDescription)")
             return EngineExit.startupFailed("").processExitCode
         }
     }
@@ -86,7 +86,7 @@ enum EngineProcess {
         do {
             return try await operation()
         } catch {
-            log(error.localizedDescription)
+            reportFailure(error.localizedDescription)
             return EngineExit.startupFailed("").processExitCode
         }
     }
@@ -125,16 +125,22 @@ enum EngineProcess {
                 do {
                     try await application.handlers.shutdown.shutdown(reason: .outputFailed)
                 } catch {
-                    log("startup failure shutdown failed: \(error)")
+                    reportFailure("startup failure shutdown failed: \(error)")
                 }
             }
             await application.waitForStartupRecovery()
-            if exit.processExitCode != 0 { log("engine stopped: \(exit)") }
+            if exit.processExitCode != 0 { reportFailure("engine stopped: \(exit)") }
             return exit.processExitCode
         }
     }
 
-    static func log(_ message: String) {
-        EngineLog.write(message)
+    /// Terminal failure diagnostics must be written synchronously.
+    /// Clients must drain stderr; a blocked reader can block this path.
+    static func reportFailure(_ message: String) {
+        do {
+            try FileHandle.standardError.write(contentsOf: Data((message + "\n").utf8))
+        } catch {
+            fatalError("Could not write engine failure diagnostic to stderr: \(error)")
+        }
     }
 }

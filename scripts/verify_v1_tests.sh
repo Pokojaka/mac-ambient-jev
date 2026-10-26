@@ -8,6 +8,10 @@ python3 "$ROOT/scripts/test_doc_references.py"
 python3 "$ROOT/scripts/check_doc_references.py" "$ROOT"
 python3 "$ROOT/scripts/test_session_artifacts.py"
 python3 "$ROOT/scripts/test_japanese_numeral_exclusions.py"
+python3 -B "$ROOT/scripts/test_test_time_limits.py"
+python3 -B "$ROOT/scripts/check_test_time_limits.py"
+python3 -B "$ROOT/scripts/test_report_test_events.py"
+python3 -B "$ROOT/scripts/test_run_swift_tests.py"
 
 if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
   : "${ASR_SMOKE_AUDIO:?RUN_MODEL_TESTS=1 requires ASR_SMOKE_AUDIO to name an absolute WAV file}"
@@ -24,7 +28,12 @@ fi
 
 swift package --package-path "$PACKAGE" resolve
 swift build --package-path "$PACKAGE" --build-tests
-env -u RUN_MODEL_TESTS swift test --package-path "$PACKAGE" --skip-build
+EVENT_PATH="$ROOT/.build/test-events/macos-$(python3 -c 'import uuid; print(uuid.uuid4())').jsonl"
+printf 'Swift test event stream: %s\n' "$EVENT_PATH"
+env -u RUN_MODEL_TESTS python3 -B "$ROOT/scripts/run_swift_tests.py" \
+  --package-path "$PACKAGE" \
+  --skip-build \
+  --event-stream-output-path "$EVENT_PATH"
 swift build \
   --package-path "$PACKAGE" \
   --product MacAmbientJevProcessRecording

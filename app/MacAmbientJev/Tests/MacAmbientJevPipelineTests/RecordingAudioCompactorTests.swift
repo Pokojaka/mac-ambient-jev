@@ -396,19 +396,22 @@ func fullFLACValidationStopsAtTheStoredEnd(frames: Int, comparePCM: Bool) async 
     defer { cleanUp(layout) }
     let samples = (0..<frames).map { sin(Float($0) * 0.013) * 0.8 }
     let checkpoint = try await recordPCM(layout, samples: samples)
-    let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
-    try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACPartialURL, sessionURL: layout.sessionURL)
-    let reader = try FLACTimelineReader(url: layout.recordingFLACPartialURL, info: pcm.info, sessionURL: layout.sessionURL)
+    try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+        #expect(withUnsafeCurrentTask { $0?.unownedTaskExecutor == BlockingIOExecutor.shared.asUnownedTaskExecutor() })
+        let pcm = try ProcessingTimelineReader(directory: layout.processingDirectory, checkpoint: checkpoint, sessionURL: layout.sessionURL)
+        try RecordingFLAC.write(reader: pcm, to: layout.recordingFLACPartialURL, sessionURL: layout.sessionURL)
+        let reader = try FLACTimelineReader(url: layout.recordingFLACPartialURL, info: pcm.info, sessionURL: layout.sessionURL)
 
-    if comparePCM {
-        try reader.validateAudio(against: pcm)
-    } else {
-        try reader.validateAudio()
+        if comparePCM {
+            try reader.validateAudio(against: pcm)
+        } else {
+            try reader.validateAudio()
+        }
+
+        #expect(try reader.readSamples(frameRange: 0..<pcm.info.committedFrames) == quantized(samples))
+        #expect(try reader.readSamples(frameRange: (Int64(frames) - 1)..<Int64(frames)) == quantized([samples[frames - 1]]))
+        #expect(try reader.readSamples(frameRange: Int64(frames)..<Int64(frames)) == [])
     }
-
-    #expect(try reader.readSamples(frameRange: 0..<pcm.info.committedFrames) == quantized(samples))
-    #expect(try reader.readSamples(frameRange: (Int64(frames) - 1)..<Int64(frames)) == quantized([samples[frames - 1]]))
-    #expect(try reader.readSamples(frameRange: Int64(frames)..<Int64(frames)) == [])
 }
 
 @Test(arguments: [1, 9, 191, 4_095, 4_096, 4_097, 8_191, 8_192, 8_193, 16_384, 1_272_955])
@@ -418,16 +421,19 @@ func aRecordingRoundTripsExactlyCommittedFrames(frames: Int) async throws {
     let samples = (0..<frames).map { sin(Float($0) * 0.31) * 0.9 + 0.05 }
     try await recordPCM(layout, samples: samples)
 
-    let info = try freshCompactor.compact(layout: layout)
-    let expectedInfo = try TimelineAudioInfo(committedFrames: Int64(frames), gapEvents: [])
+    try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
+        #expect(withUnsafeCurrentTask { $0?.unownedTaskExecutor == BlockingIOExecutor.shared.asUnownedTaskExecutor() })
+        let info = try freshCompactor.compact(layout: layout)
+        let expectedInfo = try TimelineAudioInfo(committedFrames: Int64(frames), gapEvents: [])
 
-    #expect(info == expectedInfo)
-    try expectConverged(layout, info: info, samples: samples)
-    let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: expectedInfo, sessionURL: layout.sessionURL)
-    #expect(reader.info == expectedInfo)
-    let decoded = try reader.readSamples(frameRange: 0..<reader.info.committedFrames)
-    #expect(decoded.count == frames)
-    #expect(decoded == quantized(samples))
+        #expect(info == expectedInfo)
+        try expectConverged(layout, info: info, samples: samples)
+        let reader = try FLACTimelineReader(url: layout.recordingFLACURL, info: expectedInfo, sessionURL: layout.sessionURL)
+        #expect(reader.info == expectedInfo)
+        let decoded = try reader.readSamples(frameRange: 0..<reader.info.committedFrames)
+        #expect(decoded.count == frames)
+        #expect(decoded == quantized(samples))
+    }
 }
 
 @Test
