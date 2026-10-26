@@ -7,12 +7,7 @@ public abstract record EngineDevice
 {
     private EngineDevice() { }
 
-    public EngineDeviceKind Kind => this switch
-    {
-        Default _ => EngineDeviceKind.Default,
-        Id _ => EngineDeviceKind.Id,
-        _ => throw new InvalidOperationException("Unrecognized engine device case."),
-    };
+    public EngineDeviceKind Kind => StrictWireCodec.CaseValue<EngineDeviceKind>(this);
 
     [WireCase("default")]
     public sealed record Default() : EngineDevice;
@@ -150,30 +145,7 @@ public abstract record EngineCommand
 {
     private EngineCommand() { }
 
-    public EngineCommandName Name => this switch
-    {
-        Hello _ => EngineCommandName.Hello,
-        StateGet _ => EngineCommandName.StateGet,
-        DiagnosticsGet _ => EngineCommandName.DiagnosticsGet,
-        DevicesList _ => EngineCommandName.DevicesList,
-        RecordingStart _ => EngineCommandName.RecordingStart,
-        RecordingStop _ => EngineCommandName.RecordingStop,
-        SessionImport _ => EngineCommandName.SessionImport,
-        SessionInspect _ => EngineCommandName.SessionInspect,
-        SessionReprocess _ => EngineCommandName.SessionReprocess,
-        SessionRetryDecisions _ => EngineCommandName.SessionRetryDecisions,
-        SessionList _ => EngineCommandName.SessionList,
-        TranscriptRead _ => EngineCommandName.TranscriptRead,
-        TranscriptRowDetails _ => EngineCommandName.TranscriptRowDetails,
-        TranscriptWatch _ => EngineCommandName.TranscriptWatch,
-        SessionExport _ => EngineCommandName.SessionExport,
-        SettingsGet _ => EngineCommandName.SettingsGet,
-        SettingsReplace _ => EngineCommandName.SettingsReplace,
-        ModelsPrepare _ => EngineCommandName.ModelsPrepare,
-        ModelsInspect _ => EngineCommandName.ModelsInspect,
-        Shutdown _ => EngineCommandName.Shutdown,
-        _ => throw new InvalidOperationException("Unrecognized engine command case."),
-    };
+    public EngineCommandName Name => StrictWireCodec.CaseValue<EngineCommandName>(this);
 
     [WireCase("hello")]
     public sealed record Hello([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;

@@ -75,12 +75,7 @@ public abstract record EngineDecisionUsage
 {
     private EngineDecisionUsage() { }
 
-    public EngineDecisionUsageKind Kind => this switch
-    {
-        Available _ => EngineDecisionUsageKind.Available,
-        Unavailable _ => EngineDecisionUsageKind.Unavailable,
-        _ => throw new System.InvalidOperationException("Unrecognized engine decision usage case."),
-    };
+    public EngineDecisionUsageKind Kind => StrictWireCodec.CaseValue<EngineDecisionUsageKind>(this);
 
     [WireCase("available")]
     public sealed record Available(
@@ -145,12 +140,7 @@ public abstract record EngineClauseTaggerInspection
 {
     private EngineClauseTaggerInspection() { }
 
-    public EngineClauseTaggerInspectionKind Kind => this switch
-    {
-        Validated _ => EngineClauseTaggerInspectionKind.Validated,
-        Invalid _ => EngineClauseTaggerInspectionKind.Invalid,
-        _ => throw new System.InvalidOperationException("Unrecognized engine clause tagger inspection case."),
-    };
+    public EngineClauseTaggerInspectionKind Kind => StrictWireCodec.CaseValue<EngineClauseTaggerInspectionKind>(this);
 
     [WireCase("validated")]
     public sealed record Validated(

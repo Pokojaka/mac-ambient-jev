@@ -11,17 +11,7 @@ public abstract record EngineEvent
 {
     private EngineEvent() { }
 
-    public EngineEventName Name => this switch
-    {
-        Ready _ => EngineEventName.Ready,
-        State _ => EngineEventName.State,
-        Accepted _ => EngineEventName.Accepted,
-        Completed _ => EngineEventName.Completed,
-        Progress _ => EngineEventName.Progress,
-        Rows _ => EngineEventName.Rows,
-        Error _ => EngineEventName.Error,
-        _ => throw new InvalidOperationException("Unrecognized engine event case."),
-    };
+    public EngineEventName Name => StrictWireCodec.CaseValue<EngineEventName>(this);
 
     [WireCase("ready")]
     public sealed record Ready([property: WireMember("payload")] EngineReadyPayload Payload) : EngineEvent;

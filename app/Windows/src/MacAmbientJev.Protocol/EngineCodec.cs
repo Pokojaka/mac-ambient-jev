@@ -54,24 +54,15 @@ public static class EngineCodec
                     throw WrongType("$.payload", "Event payload must not be null.");
                 }
 
-                switch (completed.Payload)
+                var page = completed.Payload switch
                 {
-                    case EngineResult.TranscriptRead read:
-                        if (read.Result is null)
-                        {
-                            throw WrongType("$.payload.result", "Transcript result must not be null.");
-                        }
-
-                        ValidateRows(read.Result.Rows, "$.payload.result.rows");
-                        break;
-                    case EngineResult.TranscriptWatch watch:
-                        if (watch.Result is null)
-                        {
-                            throw WrongType("$.payload.result", "Transcript result must not be null.");
-                        }
-
-                        ValidateRows(watch.Result.Rows, "$.payload.result.rows");
-                        break;
+                    EngineResult.TranscriptRead read => read.Result ?? throw NullTranscriptResult(),
+                    EngineResult.TranscriptWatch watch => watch.Result ?? throw NullTranscriptResult(),
+                    _ => null,
+                };
+                if (page is not null)
+                {
+                    ValidateRows(page.Rows, "$.payload.result.rows");
                 }
 
                 break;
@@ -99,10 +90,6 @@ public static class EngineCodec
             {
                 encodedRow = StrictWireCodec.Encode(row);
             }
-            catch (ProtocolException exception) when (exception.Error == ProtocolError.LineTooLong)
-            {
-                throw OversizedRow(rowPath, row.RowID);
-            }
             catch (WireDecodeException exception)
             {
                 if (exception.Path.Length == 0 || exception.Path[0] != '$')
@@ -122,6 +109,9 @@ public static class EngineCodec
 
     private static WireDecodeException OversizedRow(string path, string rowID) =>
         new(WireError.OversizedRow, path, $"Transcript row '{rowID}' exceeds the {MaxRowBytes}-byte row limit.");
+
+    private static WireDecodeException NullTranscriptResult() =>
+        WrongType("$.payload.result", "Transcript result must not be null.");
 
     private static WireDecodeException WrongType(string path, string message) =>
         new(WireError.WrongType, path, message);

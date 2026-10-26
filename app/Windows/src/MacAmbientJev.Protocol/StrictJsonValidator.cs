@@ -1,14 +1,19 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 
 namespace MacAmbientJev.Protocol;
 
+/// <summary>Lexical gate for one NDJSON record, matching the Swift engine validator.</summary>
 public static class StrictJsonValidator
 {
     public const int MaxLineBytes = 1_048_576;
     public const int MaxDepth = 32;
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
+    // The walk below enforces MaxDepth itself so the error is NestingTooDeep, not a reader failure.
+    private static readonly JsonReaderOptions ReaderOptions = new() { MaxDepth = MaxDepth + 1 };
 
     public static void Validate(ReadOnlySpan<byte> record)
     {
@@ -26,502 +31,181 @@ public static class StrictJsonValidator
             throw new ProtocolException(ProtocolError.InvalidUtf8);
         }
 
-        if (record.Length >= 3 && record[0] == 0xEF && record[1] == 0xBB && record[2] == 0xBF)
+        if (record.StartsWith("﻿"u8))
         {
             throw new ProtocolException(ProtocolError.ByteOrderMark);
         }
 
-        if (record.Contains((byte)'\n') || record.Contains((byte)'\r'))
+        if (record.IndexOfAny((byte)'\n', (byte)'\r') >= 0)
         {
             throw new ProtocolException(ProtocolError.InvalidJson);
         }
 
-        var blank = true;
-        foreach (var value in record)
-        {
-            if (value is not (0x20 or 0x09))
-            {
-                blank = false;
-                break;
-            }
-        }
-
-        if (blank)
+        if (record.IndexOfAnyExcept((byte)' ', (byte)'\t') < 0)
         {
             throw new ProtocolException(ProtocolError.BlankLine);
         }
 
-        new Parser(record).ValidateObject();
+        Walk(record);
     }
 
-    private static string NormalizeKey(string key)
+    private static void Walk(ReadOnlySpan<byte> record)
     {
-        var separatorIndex = key.IndexOf('\uFFFE');
-        if (separatorIndex < 0)
+        var reader = new Utf8JsonReader(record, ReaderOptions);
+
+        // One entry per open container: the object's canonical keys, or null for an array.
+        var containers = new Stack<HashSet<string>?>();
+        var previous = JsonTokenType.None;
+        var previousEnd = 0;
+        try
         {
-            return key.Normalize(NormalizationForm.FormC);
-        }
-
-        // U+FFFE is inert for normalization, but .NET Normalize rejects it.
-        var builder = new StringBuilder(key.Length);
-        var segmentStart = 0;
-        while (separatorIndex >= 0)
-        {
-            builder.Append(key[segmentStart..separatorIndex].Normalize(NormalizationForm.FormC));
-            builder.Append('\uFFFE');
-            segmentStart = separatorIndex + 1;
-            separatorIndex = key.IndexOf('\uFFFE', segmentStart);
-        }
-
-        builder.Append(key[segmentStart..].Normalize(NormalizationForm.FormC));
-        return builder.ToString();
-    }
-
-    private ref struct Parser
-    {
-        private readonly ReadOnlySpan<byte> _bytes;
-        private int _index;
-
-        public Parser(ReadOnlySpan<byte> bytes)
-        {
-            _bytes = bytes;
-            _index = 0;
-        }
-
-        private byte? CurrentByte => _index < _bytes.Length ? _bytes[_index] : null;
-
-        public void ValidateObject()
-        {
-            SkipWhitespace();
-            if (CurrentByte != (byte)'{')
+            while (reader.Read())
             {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            ParseObject(1);
-            SkipWhitespace();
-            if (_index != _bytes.Length)
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-        }
-
-        private void SkipWhitespace()
-        {
-            while (CurrentByte is 0x20 or 0x09)
-            {
-                _index++;
-            }
-        }
-
-        private void ParseObject(int depth)
-        {
-            if (depth > MaxDepth)
-            {
-                throw new ProtocolException(ProtocolError.NestingTooDeep);
-            }
-
-            if (CurrentByte != (byte)'{')
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            _index++;
-            SkipWhitespace();
-            if (CurrentByte == (byte)'}')
-            {
-                _index++;
-                return;
-            }
-
-            var keys = new HashSet<string>(StringComparer.Ordinal);
-            while (true)
-            {
-                if (CurrentByte != (byte)'"')
+                if (previous == JsonTokenType.None && reader.TokenType != JsonTokenType.StartObject)
                 {
                     throw new ProtocolException(ProtocolError.InvalidJson);
                 }
 
-                var key = NormalizeKey(ParseString());
-                if (!keys.Add(key))
+                switch (reader.TokenType)
                 {
-                    throw new ProtocolException(ProtocolError.DuplicateKey);
-                }
-
-                SkipWhitespace();
-                if (CurrentByte != (byte)':')
-                {
-                    throw new ProtocolException(ProtocolError.InvalidJson);
-                }
-
-                _index++;
-                SkipWhitespace();
-                ParseValue(depth);
-                SkipWhitespace();
-                if (CurrentByte == (byte)'}')
-                {
-                    _index++;
-                    return;
-                }
-
-                if (CurrentByte != (byte)',')
-                {
-                    throw new ProtocolException(ProtocolError.InvalidJson);
-                }
-
-                _index++;
-                SkipWhitespace();
-            }
-        }
-
-        private void ParseArray(int depth)
-        {
-            if (depth > MaxDepth)
-            {
-                throw new ProtocolException(ProtocolError.NestingTooDeep);
-            }
-
-            if (CurrentByte != (byte)'[')
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            _index++;
-            SkipWhitespace();
-            if (CurrentByte == (byte)']')
-            {
-                _index++;
-                return;
-            }
-
-            while (true)
-            {
-                ParseValue(depth);
-                SkipWhitespace();
-                if (CurrentByte == (byte)']')
-                {
-                    _index++;
-                    return;
-                }
-
-                if (CurrentByte != (byte)',')
-                {
-                    throw new ProtocolException(ProtocolError.InvalidJson);
-                }
-
-                _index++;
-                SkipWhitespace();
-            }
-        }
-
-        private void ParseValue(int containerDepth)
-        {
-            SkipWhitespace();
-            switch (CurrentByte)
-            {
-                case (byte)'{':
-                case (byte)'[':
-                {
-                    var depth = containerDepth + 1;
-                    if (depth > MaxDepth)
-                    {
-                        throw new ProtocolException(ProtocolError.NestingTooDeep);
-                    }
-
-                    if (CurrentByte == (byte)'{')
-                    {
-                        ParseObject(depth);
-                    }
-                    else
-                    {
-                        ParseArray(depth);
-                    }
-
-                    break;
-                }
-                case (byte)'"':
-                    _ = ParseString();
-                    break;
-                case (byte)'t':
-                    ParseLiteral("true"u8);
-                    break;
-                case (byte)'f':
-                    ParseLiteral("false"u8);
-                    break;
-                case (byte)'n':
-                    ParseLiteral("null"u8);
-                    break;
-                case (byte)'N':
-                case (byte)'I':
-                case (byte)'+':
-                case (byte)'.':
-                    throw new ProtocolException(ProtocolError.InvalidNumber);
-                case (byte)'-':
-                case >= (byte)'0' and <= (byte)'9':
-                    ParseNumber();
-                    break;
-                case null:
-                default:
-                    throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-        }
-
-        private void ParseLiteral(ReadOnlySpan<byte> literal)
-        {
-            if (_index + literal.Length > _bytes.Length || !_bytes.Slice(_index, literal.Length).SequenceEqual(literal))
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            _index += literal.Length;
-        }
-
-        private void ParseNumber()
-        {
-            var start = _index;
-            if (CurrentByte == (byte)'-')
-            {
-                _index++;
-            }
-
-            if (CurrentByte is not byte first)
-            {
-                throw new ProtocolException(ProtocolError.InvalidNumber);
-            }
-
-            if (first == (byte)'0')
-            {
-                _index++;
-                if (CurrentByte is byte next && IsDigit(next))
-                {
-                    throw new ProtocolException(ProtocolError.InvalidNumber);
-                }
-            }
-            else if (first is >= (byte)'1' and <= (byte)'9')
-            {
-                _index++;
-                while (CurrentByte is byte digit && IsDigit(digit))
-                {
-                    _index++;
-                }
-            }
-            else
-            {
-                throw new ProtocolException(ProtocolError.InvalidNumber);
-            }
-
-            if (CurrentByte == (byte)'.')
-            {
-                _index++;
-                if (CurrentByte is not byte digit || !IsDigit(digit))
-                {
-                    throw new ProtocolException(ProtocolError.InvalidNumber);
-                }
-
-                do
-                {
-                    _index++;
-                }
-                while (CurrentByte is byte fractionDigit && IsDigit(fractionDigit));
-            }
-
-            if (CurrentByte is (byte)'e' or (byte)'E')
-            {
-                _index++;
-                if (CurrentByte is (byte)'+' or (byte)'-')
-                {
-                    _index++;
-                }
-
-                if (CurrentByte is not byte exponentDigit || !IsDigit(exponentDigit))
-                {
-                    throw new ProtocolException(ProtocolError.InvalidNumber);
-                }
-
-                do
-                {
-                    _index++;
-                }
-                while (CurrentByte is byte exponentTail && IsDigit(exponentTail));
-            }
-
-            if (CurrentByte is byte delimiter && delimiter is not (0x20 or 0x09 or 0x2C or 0x5D or 0x7D))
-            {
-                throw new ProtocolException(ProtocolError.InvalidNumber);
-            }
-
-            if (!double.TryParse(_bytes[start.._index], NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
-            {
-                throw new ProtocolException(ProtocolError.InvalidNumber);
-            }
-        }
-
-        private static bool IsDigit(byte value) => value is >= (byte)'0' and <= (byte)'9';
-
-        private string ParseString()
-        {
-            if (CurrentByte != (byte)'"')
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            _index++;
-            var builder = new StringBuilder();
-            var chunkStart = _index;
-            while (CurrentByte is byte value)
-            {
-                if (value == (byte)'"')
-                {
-                    AppendUtf8Chunk(builder, chunkStart, _index);
-                    _index++;
-                    return builder.ToString();
-                }
-
-                if (value < 0x20)
-                {
-                    throw new ProtocolException(ProtocolError.InvalidJson);
-                }
-
-                if (value != (byte)'\\')
-                {
-                    _index++;
-                    continue;
-                }
-
-                AppendUtf8Chunk(builder, chunkStart, _index);
-                _index++;
-                if (CurrentByte is not byte escape)
-                {
-                    throw new ProtocolException(ProtocolError.InvalidJson);
-                }
-
-                switch (escape)
-                {
-                    case (byte)'"':
-                        builder.Append('"');
-                        _index++;
-                        break;
-                    case (byte)'\\':
-                        builder.Append('\\');
-                        _index++;
-                        break;
-                    case (byte)'/':
-                        builder.Append('/');
-                        _index++;
-                        break;
-                    case (byte)'b':
-                        builder.Append('\b');
-                        _index++;
-                        break;
-                    case (byte)'f':
-                        builder.Append('\f');
-                        _index++;
-                        break;
-                    case (byte)'n':
-                        builder.Append('\n');
-                        _index++;
-                        break;
-                    case (byte)'r':
-                        builder.Append('\r');
-                        _index++;
-                        break;
-                    case (byte)'t':
-                        builder.Append('\t');
-                        _index++;
-                        break;
-                    case (byte)'u':
-                    {
-                        var highOrScalar = ParseHexCodeUnit();
-                        if (highOrScalar is >= 0xD800 and <= 0xDBFF)
+                    case JsonTokenType.StartObject:
+                    case JsonTokenType.StartArray:
+                        if (containers.Count == MaxDepth)
                         {
-                            if (CurrentByte != (byte)'\\' || _index + 1 >= _bytes.Length || _bytes[_index + 1] != (byte)'u')
-                            {
-                                throw new ProtocolException(ProtocolError.InvalidJson);
-                            }
-
-                            _index++;
-                            var low = ParseHexCodeUnit();
-                            if (low is < 0xDC00 or > 0xDFFF)
-                            {
-                                throw new ProtocolException(ProtocolError.InvalidJson);
-                            }
-
-                            builder.Append(char.ConvertFromUtf32(0x10000 + ((highOrScalar - 0xD800) << 10) + (low - 0xDC00)));
+                            throw new ProtocolException(ProtocolError.NestingTooDeep);
                         }
-                        else if (highOrScalar is >= 0xDC00 and <= 0xDFFF)
+
+                        containers.Push(reader.TokenType == JsonTokenType.StartObject ? new HashSet<string>(StringComparer.Ordinal) : null);
+                        break;
+                    case JsonTokenType.EndObject:
+                    case JsonTokenType.EndArray:
+                        containers.Pop();
+                        break;
+                    case JsonTokenType.PropertyName:
+                        // Keys compare after unescaping and NFC normalization, like Swift string equality.
+                        if (!containers.Peek()!.Add(WireCheck.CanonicalString(reader.GetString()!)))
                         {
-                            throw new ProtocolException(ProtocolError.InvalidJson);
-                        }
-                        else
-                        {
-                            builder.Append((char)highOrScalar);
+                            throw new ProtocolException(ProtocolError.DuplicateKey);
                         }
 
                         break;
-                    }
-                    default:
-                        throw new ProtocolException(ProtocolError.InvalidJson);
+                    case JsonTokenType.String when reader.ValueIsEscaped:
+                        // Unescaping rejects unpaired surrogate escapes.
+                        _ = reader.GetString();
+                        break;
+                    case JsonTokenType.Number:
+                        if (!IsFinite(reader.ValueSpan))
+                        {
+                            throw new ProtocolException(ProtocolError.InvalidNumber);
+                        }
+
+                        break;
                 }
 
-                chunkStart = _index;
+                previous = reader.TokenType;
+                previousEnd = checked((int)reader.BytesConsumed);
             }
-
+        }
+        catch (JsonException)
+        {
+            throw new ProtocolException(ClassifyReaderFailure(record, previous, previousEnd, containers));
+        }
+        catch (InvalidOperationException)
+        {
             throw new ProtocolException(ProtocolError.InvalidJson);
         }
+    }
 
-        private void AppendUtf8Chunk(StringBuilder builder, int start, int end)
+    /// <summary>
+    /// Maps a reader failure to the error the Swift validator reports first. A malformed token in value
+    /// position that starts like a number, or a number followed by a non-delimiter, is InvalidNumber.
+    /// The reader rejects a key that lacks its colon before returning it, so a repeated key there is
+    /// still DuplicateKey. Everything else is InvalidJson.
+    /// </summary>
+    private static ProtocolError ClassifyReaderFailure(ReadOnlySpan<byte> record, JsonTokenType previous, int previousEnd, Stack<HashSet<string>?> containers)
+    {
+        if (previous == JsonTokenType.Number && previousEnd < record.Length &&
+            record[previousEnd] is not ((byte)' ' or (byte)'\t' or (byte)',' or (byte)']' or (byte)'}'))
         {
-            if (end > start)
-            {
-                builder.Append(StrictUtf8.GetString(_bytes[start..end]));
-            }
+            return ProtocolError.InvalidNumber;
         }
 
-        private ushort ParseHexCodeUnit()
+        var objectKeys = containers.TryPeek(out var top) ? top : null;
+        var index = SkipBlank(record, previousEnd);
+        bool valuePosition;
+        bool keyPosition;
+        switch (previous)
         {
-            if (CurrentByte != (byte)'u')
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            _index++;
-            if (_index + 4 > _bytes.Length)
-            {
-                throw new ProtocolException(ProtocolError.InvalidJson);
-            }
-
-            ushort value = 0;
-            for (var count = 0; count < 4; count++)
-            {
-                if (!TryHexValue(_bytes[_index], out var digit))
+            case JsonTokenType.None:
+                return ProtocolError.InvalidJson;
+            case JsonTokenType.PropertyName:
+            case JsonTokenType.StartArray:
+                (valuePosition, keyPosition) = (true, false);
+                break;
+            case JsonTokenType.StartObject:
+                (valuePosition, keyPosition) = (false, true);
+                break;
+            default:
+                if (containers.Count == 0 || index == record.Length || record[index] != (byte)',')
                 {
-                    throw new ProtocolException(ProtocolError.InvalidJson);
+                    return ProtocolError.InvalidJson;
                 }
 
-                value = (ushort)((value << 4) | digit);
-                _index++;
-            }
-
-            return value;
+                index = SkipBlank(record, index + 1);
+                (valuePosition, keyPosition) = (objectKeys is null, objectKeys is not null);
+                break;
         }
 
-        private static bool TryHexValue(byte value, out byte digit)
+        if (index == record.Length)
         {
-            switch (value)
-            {
-                case >= (byte)'0' and <= (byte)'9':
-                    digit = (byte)(value - (byte)'0');
-                    return true;
-                case >= (byte)'A' and <= (byte)'F':
-                    digit = (byte)(value - (byte)'A' + 10);
-                    return true;
-                case >= (byte)'a' and <= (byte)'f':
-                    digit = (byte)(value - (byte)'a' + 10);
-                    return true;
-                default:
-                    digit = 0;
-                    return false;
-            }
+            return ProtocolError.InvalidJson;
         }
+
+        if (valuePosition && record[index] is (byte)'-' or (byte)'+' or (byte)'.' or (byte)'N' or (byte)'I' or >= (byte)'0' and <= (byte)'9')
+        {
+            return OpensWithFiniteNumber(record[index..]) ? ProtocolError.InvalidJson : ProtocolError.InvalidNumber;
+        }
+
+        return keyPosition && OpensWithKeyIn(record[index..], objectKeys!) ? ProtocolError.DuplicateKey : ProtocolError.InvalidJson;
+    }
+
+    /// <summary>True when the bytes open with a complete, delimited, finite number, so the failure lies after it.</summary>
+    private static bool OpensWithFiniteNumber(ReadOnlySpan<byte> bytes)
+    {
+        var reader = new Utf8JsonReader(bytes);
+        try
+        {
+            return reader.Read() && reader.TokenType == JsonTokenType.Number && IsFinite(reader.ValueSpan);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool OpensWithKeyIn(ReadOnlySpan<byte> bytes, HashSet<string> keys)
+    {
+        var reader = new Utf8JsonReader(bytes);
+        try
+        {
+            return reader.Read() && reader.TokenType == JsonTokenType.String && keys.Contains(WireCheck.CanonicalString(reader.GetString()!));
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsFinite(ReadOnlySpan<byte> number) =>
+        double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value);
+
+    private static int SkipBlank(ReadOnlySpan<byte> record, int index)
+    {
+        while (index < record.Length && record[index] is (byte)' ' or (byte)'\t')
+        {
+            index++;
+        }
+
+        return index;
     }
 }
