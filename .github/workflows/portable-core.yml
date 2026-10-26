@@ -48,6 +48,7 @@ on:
       - 'scripts/test_export_clause_tagger_onnx.py'
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
+      - 'scripts/stage-windows-engine.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
       - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
@@ -115,6 +116,7 @@ on:
       - 'scripts/test_export_clause_tagger_onnx.py'
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
+      - 'scripts/stage-windows-engine.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
       - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
@@ -261,12 +263,35 @@ jobs:
           if-no-files-found: warn
 
   windows:
+    name: Windows (${{ matrix.architecture }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: windows-2022
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: windows-2022
+            build_arch: amd64
+            python_architecture: x64
+            expected_arch: x86_64
+            expected_triple: x86_64-unknown-windows-msvc
+            expected_runner_arch: AMD64
+            payload_artifact: windows-engine-x64
+            test_event_artifact: test-events-windows-x64
+          - architecture: ARM64
+            runner: windows-11-arm
+            build_arch: arm64
+            python_architecture: arm64
+            expected_arch: aarch64
+            expected_triple: aarch64-unknown-windows-msvc
+            expected_runner_arch: ARM64
+            payload_artifact: windows-engine-arm64
+            test_event_artifact: test-events-windows-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
     steps:
       - uses: actions/checkout@v5
       # Its internal cache switch controls restore and save together with no save-only condition, so it can still save on PRs.
@@ -274,20 +299,40 @@ jobs:
         with:
           swift-version: swift-6.2-release
           swift-build: 6.2-RELEASE
+          build_arch: ${{ matrix.build_arch }}
           cache: true
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          architecture: ${{ matrix.python_architecture }}
       - name: Swift toolchain fingerprint
         id: toolchain
         run: |
           @'
           import hashlib
+          import json
           import os
           import subprocess
 
+          expected_arch = "${{ matrix.expected_arch }}"
+          expected_triple = "${{ matrix.expected_triple }}"
+          expected_runner_arch = "${{ matrix.expected_runner_arch }}"
+          processor_architecture = os.environ["PROCESSOR_ARCHITECTURE"]
+          if processor_architecture != expected_runner_arch:
+              raise RuntimeError(f"Expected native {expected_runner_arch} runner, found {processor_architecture!r}")
+
           result = subprocess.run(["swift", "--version"], check=True, capture_output=True)
           print(result.stdout.decode() + result.stderr.decode(), end="")
+          target_result = subprocess.run(["swift", "-print-target-info"], check=True, capture_output=True)
+          target_info = json.loads(target_result.stdout)
+          target = target_info["target"]
+          compiler_version = target_info["compilerVersion"]
+          if target["arch"] != expected_arch or target["triple"] != expected_triple:
+              raise RuntimeError(f"Unexpected Swift target: {target!r}")
+          if compiler_version != "Swift version 6.2 (swift-6.2-RELEASE)":
+              raise RuntimeError(f"Unexpected Swift compiler version: {compiler_version!r}")
+
+          print(f"Swift target architecture: {target['arch']}; triple: {target['triple']}")
           digest = hashlib.sha256(result.stdout + result.stderr).hexdigest()
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={digest}\n")
@@ -317,11 +362,12 @@ jobs:
         run: |
           python -B scripts/test_export_clause_tagger_onnx.py
           if ($LASTEXITCODE -ne 0) { throw 'Clause tagger exporter helper tests failed' }
+      # The test-only Win64 executable intentionally runs under Windows ARM64 x64 emulation.
       - name: Install FLAC
         run: |
           $ErrorActionPreference = 'Stop'
           $archive = Join-Path $env:RUNNER_TEMP 'flac-1.5.0-win.zip'
-          Invoke-WebRequest https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip -OutFile $archive
+          Invoke-WebRequest -UseBasicParsing https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip -OutFile $archive
           if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne '53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde') {
             throw 'FLAC 1.5.0 archive SHA-256 checksum mismatch.'
           }
@@ -338,7 +384,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP must be nonempty' }
-          if (-not [System.IO.Path]::IsPathFullyQualified($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP must be an absolute path' }
+          if ($env:RUNNER_TEMP -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') { throw 'RUNNER_TEMP must be a fully qualified Windows path' }
           if (-not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw 'RUNNER_TEMP must be an existing directory' }
           $env:TEMP = $env:RUNNER_TEMP
           $env:TMP = $env:RUNNER_TEMP
@@ -349,7 +395,18 @@ jobs:
           Write-Output "TMPDIR=$env:TMPDIR"
           python -c "import os,pathlib,sys,tempfile; expected=pathlib.Path(os.environ['RUNNER_TEMP']); actual=pathlib.Path(tempfile.gettempdir()); print(f'tempfile.gettempdir()={actual}'); sys.exit(0 if actual.resolve() == expected.resolve() else 1)"
           if ($LASTEXITCODE -ne 0) { throw 'Python tempfile.gettempdir() does not resolve to RUNNER_TEMP' }
-          ./scripts/test-windows.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows test suite failed' }
+      - name: Stage release Windows engine payload
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-engine.ps1 -Architecture '${{ matrix.architecture }}' -Destination (Join-Path $env:RUNNER_TEMP '${{ matrix.payload_artifact }}')
+          if ($LASTEXITCODE -ne 0) { throw "Windows ${{ matrix.architecture }} engine staging failed" }
+      - name: Upload Windows engine payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.payload_artifact }}
+          path: '${{ runner.temp }}/${{ matrix.payload_artifact }}/'
+          if-no-files-found: error
       - name: Save model directories
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.model-directories.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -371,7 +428,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-events-windows
+          name: ${{ matrix.test_event_artifact }}
           path: .build/test-events/*.jsonl
           if-no-files-found: warn
       - name: Report Windows SwiftPM build size
