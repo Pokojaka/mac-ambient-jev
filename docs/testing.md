@@ -190,7 +190,7 @@ bash scripts/verify_v1.sh
 
 `verify_v1.sh` は `RUN_MODEL_TESTS` と `ASR_SMOKE_AUDIO` を引き継ぎ、`scripts/verify_v1_tests.sh`、続けて `scripts/verify_v1_app.sh` の順に実行する。`RUN_MODEL_TESTS=1` の場合は、Swift コマンドを始める前に `ASR_SMOKE_AUDIO` が読み取り可能な絶対パスであることを検査する。`scripts/verify_v1_tests.sh` は次の1〜6を行い、`scripts/verify_v1_app.sh` は7を行う。
 
-1. `scripts/test_doc_references.py` でドキュメント参照 checker の自己テストを、`scripts/check_doc_references.py` で参照検査を実行する。`scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。`scripts/test_session_artifacts.py` で計測・capture summary の artifact 検査を合成セッションで実行する（処理・capture は開始しない）。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
+1. `scripts/check_doc_references.py` で参照検査を実行する。`scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
 2. SwiftPM の依存を解決し、`swift build --build-tests` で package とテストをまとめて build する。
 3. 事前に build したテストを再利用し、UUID の event path を `.build/test-events/` に作ってから `env -u RUN_MODEL_TESTS python3 -B scripts/run_swift_tests.py --package-path "$PACKAGE" --skip-build --event-stream-output-path "$EVENT_PATH"` を実行する。runner は test process の完了後に event を報告します。
 4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル3段階の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
@@ -864,7 +864,6 @@ Linux runner の全音声一つの ASR artifact には `MacAmbientJevEvaluateASR
 
 計測後は root 直下の manifest の完全 UUID を正規化して検索し、ちょうど一つの実フォルダーを解決します。ID 不在・複数一致・一致したフォルダーの名前/日時/suffix/source stem の不整合は明示エラーです。stem の Swift Character 境界での切り詰めを検査するため、実行する `python3` に `regex` package が必要です（`python3 -m pip install regex`）。日時は `created_at` から再計算しません。events、metadata、checkpoint、original は同じ解決済みフォルダーから読み、original が複数なら失敗します。import がセッション作成前に失敗して stdout に ID がない場合は、セッションの欠測理由を残します。ID がある場合は lookup の失敗を欠測扱いにしません。
 
-`scripts/test_session_artifacts.py` は shell script 内の実 artifact Python を抽出して合成セッションで実行し、成功・不在・重複・不正 suffix/stem・合成文字の切り詰め・original の重複を検査します。capture summary の実 path が指定 root 直下であること、完全 UUID、systemAudio source、録音フォルダー名も検査します。capture/playback 部分は実行せず、実音声・権限・GUI の検証根拠にはなりません。単独実行は `python3 scripts/test_session_artifacts.py` です。
 
 ```bash
 # macOS measurement build; the CLI has no --threads option on Mac
