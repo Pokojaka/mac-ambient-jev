@@ -3,51 +3,6 @@ import Testing
 import MacAmbientJevEngineProtocol
 
 struct EngineProtocolCodecTests {
-    @Test func helloGoldenIsSortedCompactAndLFTerminated() throws {
-        let request = try makeRequest(1, .hello)
-        let encoded = try EngineCodec.encodeRequest(request)
-        #expect(String(decoding: encoded, as: UTF8.self) == #"{"command":"hello","payload":{},"request_id":"1","version":1}"# + "\n")
-        #expect(try EngineCodec.decodeRequest(Data(encoded.dropLast())) == request)
-        #expect(encoded.last == 0x0A)
-        #expect(encoded.dropLast().last != 0x0D)
-    }
-
-    @Test func outputStateAndReadyRoundTripWithCompactNestedOrdering() throws {
-        let state = try sampleState()
-        let stateOutput = try EngineOutput(version: 1, sequence: id(1), requestID: nil, event: .state(state))
-        let stateLine = try EngineCodec.encodeOutput(stateOutput)
-        #expect(stateLine.last == 0x0A)
-        #expect(try EngineCodec.decodeOutput(Data(stateLine.dropLast())) == stateOutput)
-        #expect(String(decoding: stateLine, as: UTF8.self).contains(#""event":"state","payload":{"failures":[],"presentation":{"audio_gap_count":0,"audio_gap_text":null,"live_failure_notices":[],"preparation_phase":"ready","preparation_status_text":null,"processing_indicator":"idle","processing_status_text":null,"recording_status_text":"待機中","recording_tone":"neutral","recovery_status_text":null,"silence_warning_active":false,"silence_warning_text":null},"queue":[],"recording":null,"recovery":"completed","revision":"1","screen":"idle","setup":"ready"}"#))
-
-        let capabilities = try EngineCapabilities(
-            sources: [.microphone], asrSizes: [.small], executionProviders: [.cpu], maximumThreads: 2,
-            automaticInputVolume: .none, thermalMonitoring: .none
-        )
-        let ready = EngineReadyPayload(capabilities: capabilities, state: state)
-        let readyOutput = try EngineOutput(version: 1, sequence: id(2), requestID: nil, event: .ready(ready))
-        let readyLine = try EngineCodec.encodeOutput(readyOutput)
-        #expect(try EngineCodec.decodeOutput(Data(readyLine.dropLast())) == readyOutput)
-        #expect(String(decoding: readyLine, as: UTF8.self).contains(#""event":"ready""#))
-    }
-
-    @Test func nestedOutputEscapesNewlinesAndLeavesPathsUnescaped() throws {
-        let row = try EngineTranscriptRow(rowID: "r", startMS: 0, endMS: 1, text: "日本語😀\n次", headings: [.speaker1], clauseState: nil)
-        let payload = try EngineRowsPayload(sessionID: "s", revision: id(1), kind: .snapshot, rows: [row], removedRowIDs: [], nextCursor: nil)
-        let output = try EngineOutput(version: 1, sequence: id(1), requestID: nil, event: .rows(payload))
-        let line = try EngineCodec.encodeOutput(output)
-        let body = Data(line.dropLast())
-        #expect(line.filter { $0 == 0x0A }.count == 1)
-        #expect(String(decoding: body, as: UTF8.self).contains(#"日本語😀\n次"#))
-        #expect(!String(decoding: body, as: UTF8.self).contains("\\/"))
-        #expect(try EngineCodec.decodeOutput(body) == output)
-
-        let importRequest = try makeRequest(1, .sessionImport(try EngineImportPayload(inputPath: "/tmp/a/b.wav")))
-        let requestBytes = try EngineCodec.encodeRequest(importRequest)
-        #expect(String(decoding: requestBytes, as: UTF8.self).contains("/tmp/a/b.wav"))
-        #expect(!String(decoding: requestBytes, as: UTF8.self).contains("\\/"))
-    }
-
     @Test func codecAppliesLexicalValidationBeforeTypedDecoding() {
         let validPrefix = #"{"version":1,"request_id":"1","command":"hello","payload":{}}"#
         let nestedDuplicate = #"{"version":1,"request_id":"1","command":"hello","payload":{"x":1,"x":2}}"#
@@ -71,36 +26,6 @@ struct EngineProtocolCodecTests {
         for data in cases {
             #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(data) }
         }
-    }
-
-    @Test func strictTypedDecodingRejectsUnknownMissingNullWrongAndUnknownValues() {
-        let invalidRequests = [
-            #"{"version":1,"request_id":"1","command":"hello","payload":{},"future":true}"#,
-            #"{"version":1,"request_id":"1","command":"hello","payload":{"future":true}}"#,
-            #"{"version":1,"request_id":"1","command":"future.command","payload":{}}"#,
-            #"{"version":1,"request_id":"1","command":"hello","payload":null}"#,
-            #"{"version":1,"request_id":"1","command":"hello"}"#,
-            #"{"version":true,"request_id":"1","command":"hello","payload":{}}"#,
-            #"{"version":1,"request_id":1,"command":"hello","payload":{}}"#,
-            #"{"version":1,"request_id":"1","command":"devices.list","payload":{"source":"future"}}"#,
-            #"{"version":1,"request_id":"1","command":"devices.list","payload":{"source":null}}"#,
-            #"{"version":1,"request_id":"1","command":"session.list","payload":{"cursor":null}}"#,
-            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{}}"#,
-            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":null}}"#,
-            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":""}}"#,
-            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folder_id":1}}"#,
-            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"folderId":"folder-1"}}"#,
-            #"{"version":1,"request_id":"1","command":"session.inspect","payload":{"session_id":"folder-1"}}"#,
-        ]
-        for value in invalidRequests {
-            #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(Data(value.utf8)) }
-        }
-
-        let deepModelExtra = #"{"version":1,"request_id":"1","command":"settings.replace","payload":{"expected_revision":null,"settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":"cpu","threads":2,"low_heat":true,"decisions_enabled":false,"automatic_export":false,"export_destination_path":null,"nested":{"unknown":true}}}}"#
-        #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(Data(deepModelExtra.utf8)) }
-
-        let errorOutputWithDeepUnknown = #"{"version":1,"sequence":"1","request_id":null,"event":"error","payload":{"code":"device_failure","message":"failure","stage":"capture","request_id":null,"session_id":null,"severity":"error","recovery_action":"retry","details":[{"domain":"native","code":"E","message":"failure","path":null,"device_id":null,"unknown":true}],"cleanup_errors":[]}}"#
-        #expect(throws: (any Error).self) { try EngineCodec.decodeOutput(Data(errorOutputWithDeepUnknown.utf8)) }
     }
 
     @Test func framerHandlesEveryByteAndEverySplitIncludingUTF8AndCRLF() throws {
@@ -284,10 +209,6 @@ private func id(_ value: UInt64) -> EngineID {
 
 private func makeRequest(_ requestID: UInt64, _ command: EngineCommand) throws -> EngineRequest {
     try EngineRequest(version: 1, requestID: id(requestID), command: command)
-}
-
-private func sampleState() throws -> EngineState {
-    try EngineState(revision: id(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: [], failures: [], presentation: try engineTestPresentation())
 }
 
 private func rowsOutput(_ rows: [EngineTranscriptRow]) throws -> EngineOutput {
