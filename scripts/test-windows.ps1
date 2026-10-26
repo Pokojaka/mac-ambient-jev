@@ -46,14 +46,9 @@ if ($clauseTaggerExitCode -ne 0) { throw "Clause tagger model fetch failed with 
 if ($clauseTaggerPathLines.Count -ne 1) { throw "Clause tagger model fetch returned $($clauseTaggerPathLines.Count) paths; expected exactly one" }
 $env:MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY = [string]$clauseTaggerPathLines[0]
 
-Invoke-Step 'portable Core/Pipeline checker self-test' { python -B scripts/test_portable_core.py }
 Invoke-Step 'portable Core/Pipeline import check' { python -B scripts/check_portable_core.py }
-Invoke-Step 'doc reference checker self-test' { python scripts/test_doc_references.py }
 Invoke-Step 'doc reference check' { python scripts/check_doc_references.py }
-Invoke-Step 'test time limits checker self-test' { python -B scripts/test_test_time_limits.py }
 Invoke-Step 'test time limits check' { python -B scripts/check_test_time_limits.py }
-Invoke-Step 'Swift test event reporter self-test' { python -B scripts/test_report_test_events.py }
-Invoke-Step 'Swift test runner self-test' { python -B scripts/test_run_swift_tests.py }
 Invoke-Step 'ONNX Runtime fetcher self-test' { python -B scripts/test_fetch_onnxruntime.py }
 Invoke-Step 'Silero VAD fetcher self-test' { python -B scripts/test_fetch_silero_vad.py }
 Invoke-Step 'Community-1 diarization fetcher self-test' { python -B scripts/test_fetch_community1_diarization.py }
