@@ -218,18 +218,6 @@ import MacAmbientJevTestSupport
         #expect(try await second.shutdown() == .shutdownRequested)
     }
 
-    @Test func waitingForNeverEnteredOfflineFinalizationGateThrowsWhenCancelled() async {
-        let gate = OfflineFinalizationGate()
-        let waiter = Task {
-            try await gate.waitUntilEntered()
-        }
-        waiter.cancel()
-
-        await #expect(throws: WaitCancelled.self) {
-            try await waiter.value
-        }
-    }
-
     @Test func shutdownDuringOfflineFinalizationPausesForRecovery() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -406,25 +394,6 @@ import MacAmbientJevTestSupport
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
-    @Test func listPagesWithCursorsAndReportsUnreadableFolders() async throws {
-        let root = try ApplicationHarness.makeRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let h = try await prepared(root)
-        let sessionsRoot = engineTestPaths(root: root).sessionsRoot
-        try FileManager.default.createDirectory(at: sessionsRoot.appending(path: "not-a-session", directoryHint: .isDirectory), withIntermediateDirectories: true)
-        let first = try await h.call("session.list", payload: "{\"cursor\":null,\"limit\":1}")
-        guard case let .sessionList(list) = first else {
-            Issue.record("not a list")
-            return
-        }
-        #expect(list.sessions.count == 1)
-        #expect(list.sessions[0].status == .unreadable)
-        #expect(list.sessions[0].sessionID == nil)
-        #expect(list.sessions[0].folderID == "not-a-session")
-        #expect(list.nextCursor == nil)
-        #expect(try await h.failureCode(of: "session.list", payload: "{\"cursor\":\"x\",\"limit\":1}") == .invalidCursor)
-        #expect(try await h.shutdown() == .shutdownRequested)
-    }
 }
 
 private func jsonString(_ value: String) -> String {

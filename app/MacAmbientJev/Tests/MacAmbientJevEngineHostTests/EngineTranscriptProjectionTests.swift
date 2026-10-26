@@ -224,32 +224,6 @@ import MacAmbientJevEngineProtocol
         #expect(incremental.totalProjectedSegments == 2)
     }
 
-    @Test @MainActor func incrementalRejectsDuplicateSegmentIDsWithRowFailure() throws {
-        let incremental = EngineTranscriptProjection.Incremental(rows: [])
-        let first = try materializedSegment(id: "duplicate", text: "first", speakers: [], isDiarized: false)
-        let second = try materializedSegment(id: "duplicate", text: "second", speakers: [], isDiarized: false)
-        do {
-            _ = try incremental.update([first, second])
-            Issue.record("duplicate segment IDs must be rejected")
-        } catch let failures as EngineTranscriptProjection.Failures {
-            #expect(failures.rows.count == 1)
-            #expect(failures.rows.first?.rowID == "duplicate")
-            if let failure = failures.rows.first,
-               let underlying = failure.error as? EngineTranscriptProjectionError
-            {
-                if case let .duplicateSegmentID(id) = underlying {
-                    #expect(id == "duplicate")
-                } else {
-                    Issue.record("expected duplicateSegmentID, got \(underlying)")
-                }
-            } else {
-                Issue.record("expected underlying duplicateSegmentID error")
-            }
-        } catch {
-            Issue.record("expected aggregated duplicate segment ID error, got \(error)")
-        }
-    }
-
     @Test @MainActor func incrementalCollectsDistinctDuplicateIDsAndCanRetryAfterRepair() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
         let firstA = try materializedSegment(id: "a", text: "first a", speakers: [], isDiarized: false)

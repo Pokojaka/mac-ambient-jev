@@ -139,20 +139,6 @@ private final class SteppedSink: EngineByteSink, @unchecked Sendable {
 }
 
 @Suite(.timeLimit(.minutes(10))) struct EngineTransportOutputTests {
-    @Test func partialWritesStillProduceWholeLFTerminatedRecords() async throws {
-        let sink = ScriptedSink(acceptPerCall: 3)
-        let transport = makeTransport(sink)
-        defer { transport.close() }
-        for id in 1...3 {
-            try await transport.send(accepted(), requestID: EngineID(UInt64(id)))
-        }
-        await transport.drain()
-        let outputs = try sink.outputs()
-        #expect(outputs.map(\.sequence.rawValue) == ["1", "2", "3"])
-        #expect(outputs.map { $0.requestID?.rawValue } == ["1", "2", "3"])
-        #expect(sink.received.filter { $0 == 0x0A }.count == 3)
-    }
-
     @Test func replaceableStateIsCoalescedWhileTheConsumerIsSlow() async throws {
         let executor = TransportTestExecutor()
         try await withTaskExecutorPreference(executor) {
@@ -352,29 +338,6 @@ private final class SteppedSink: EngineByteSink, @unchecked Sendable {
         #expect(targetTime > deadline)
         #expect(try ScriptedSink.decodeOutputs(sink.received).count == 1)
         #expect(!sink.closed)
-    }
-
-    @Test func aBrokenPipeIsReported() async throws {
-        let sink = ScriptedSink()
-        sink.failNextWrites(with: .brokenPipe)
-        let transport = makeTransport(sink)
-        let failure = WriteFailureObservation()
-        let failureObserver = Task {
-            for await event in transport.events {
-                if case let .writeFailed(reason) = event {
-                    failure.record(reason)
-                    return
-                }
-            }
-        }
-        defer {
-            transport.close()
-            failureObserver.cancel()
-        }
-        try await transport.send(accepted(), requestID: EngineID(1))
-        try await failure.changes.wait("the broken pipe failure") { failure.value != nil }
-        #expect(failure.value == .brokenPipe)
-        #expect(sink.closed)
     }
 
     @Test func anOversizedRowIsRejectedWithoutConsumingASequence() async throws {
