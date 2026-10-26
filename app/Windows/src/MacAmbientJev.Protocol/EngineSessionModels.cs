@@ -9,13 +9,7 @@ public abstract record EngineSessionSource : IWireValidatable
 
     public abstract void Validate(string path);
 
-    public EngineSessionSourceKind Kind => this switch
-    {
-        Microphone _ => EngineSessionSourceKind.Microphone,
-        SystemAudio _ => EngineSessionSourceKind.SystemAudio,
-        Imported _ => EngineSessionSourceKind.Imported,
-        _ => throw new System.InvalidOperationException("Unrecognized engine session source case."),
-    };
+    public EngineSessionSourceKind Kind => StrictWireCodec.CaseValue<EngineSessionSourceKind>(this);
 
     [WireCase("microphone")]
     public sealed record Microphone() : EngineSessionSource
@@ -44,13 +38,7 @@ public abstract record EngineSessionAudio : IWireValidatable
 
     public abstract void Validate(string path);
 
-    public EngineSessionAudioKind Kind => this switch
-    {
-        Available _ => EngineSessionAudioKind.Available,
-        Missing _ => EngineSessionAudioKind.Missing,
-        Unreadable _ => EngineSessionAudioKind.Unreadable,
-        _ => throw new System.InvalidOperationException("Unrecognized engine session audio case."),
-    };
+    public EngineSessionAudioKind Kind => StrictWireCodec.CaseValue<EngineSessionAudioKind>(this);
 
     [WireCase("available")]
     public sealed record Available() : EngineSessionAudio
@@ -79,12 +67,7 @@ public abstract record EngineSessionMetadata : IWireValidatable
 
     public abstract void Validate(string path);
 
-    public EngineSessionMetadataKind Kind => this switch
-    {
-        Unreadable _ => EngineSessionMetadataKind.Unreadable,
-        Readable _ => EngineSessionMetadataKind.Readable,
-        _ => throw new System.InvalidOperationException("Unrecognized engine session metadata case."),
-    };
+    public EngineSessionMetadataKind Kind => StrictWireCodec.CaseValue<EngineSessionMetadataKind>(this);
 
     [WireCase("unreadable")]
     public sealed record Unreadable(

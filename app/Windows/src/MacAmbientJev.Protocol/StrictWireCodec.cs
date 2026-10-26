@@ -22,14 +22,10 @@ public static class StrictWireCodec
 
         using var document = JsonDocument.Parse(record.ToArray());
         EnsureSupportedSchema(type, new HashSet<Type>());
-        if (document.RootElement.ValueKind != JsonValueKind.Object)
-        {
-            throw new ProtocolException(ProtocolError.InvalidJson);
-        }
-
         return DecodeValue(type, document.RootElement, "$", allowNull: false, arrayElement: false);
     }
 
+    /// <summary>Encodes canonical JSON; record-level limits are checked once by <see cref="NdjsonFrameWriter"/>.</summary>
     public static byte[] Encode<T>(T value)
     {
         var type = typeof(T);
@@ -39,10 +35,7 @@ public static class StrictWireCodec
         }
 
         EnsureSupportedSchema(type, new HashSet<Type>());
-        var json = EncodeValue(type, value, "$", allowNull: false, arrayElement: false);
-        var bytes = StrictUtf8.GetBytes(json);
-        StrictJsonValidator.Validate(bytes);
-        return bytes;
+        return StrictUtf8.GetBytes(EncodeValue(type, value, "$", allowNull: false, arrayElement: false));
     }
 
     private static object DecodeValue(Type type, JsonElement element, string path, bool allowNull, bool arrayElement)
@@ -156,29 +149,18 @@ public static class StrictWireCodec
 
         if (type.IsArray)
         {
-            if (!IsVector(type))
-            {
-                throw new InvalidOperationException($"Only one-dimensional zero-based arrays are supported: '{type}'.");
-            }
-
             if (element.ValueKind != JsonValueKind.Array)
             {
                 throw WrongType(path, "Expected an array.");
             }
 
             var itemType = type.GetElementType()!;
-            var values = new object?[element.GetArrayLength()];
+            var array = Array.CreateInstance(itemType, element.GetArrayLength());
             var index = 0;
             foreach (var item in element.EnumerateArray())
             {
-                values[index] = DecodeValue(itemType, item, ArrayPath(path, index), allowNull: false, arrayElement: true);
+                array.SetValue(DecodeValue(itemType, item, ArrayPath(path, index), allowNull: false, arrayElement: true), index);
                 index++;
-            }
-
-            var array = Array.CreateInstance(itemType, values.Length);
-            for (var itemIndex = 0; itemIndex < values.Length; itemIndex++)
-            {
-                array.SetValue(values[itemIndex], itemIndex);
             }
 
             return array;
@@ -205,29 +187,23 @@ public static class StrictWireCodec
             throw WrongType(path, "Expected an object.");
         }
 
-        CaseSchema? flattenedCase = null;
+        // GetObjectSchema and GetUnionSchema already proved that these wire names cannot collide.
+        var allowed = new HashSet<string>(WireNames(schema.Members), StringComparer.Ordinal);
         UnionSchema? flattenedUnion = null;
-        HashSet<string> allowed;
+        CaseSchema? flattenedCase = null;
         if (schema.FlattenMember is not null)
         {
             flattenedUnion = GetUnionSchema(schema.FlattenMember.PropertyType);
             flattenedCase = SelectUnionCase(flattenedUnion, element, path);
-            allowed = GetFlattenedAllowedKeys(schema, flattenedUnion, flattenedCase);
-        }
-        else
-        {
-            allowed = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var member in schema.Members)
-            {
-                if (!allowed.Add(member.WireName!))
-                {
-                    throw new InvalidOperationException($"Duplicate wire member '{member.WireName}' on '{schema.Type}'.");
-                }
-            }
+            allowed.UnionWith(GetUnionAllowedKeys(flattenedUnion, flattenedCase));
         }
 
         CheckUnknownMembers(element, allowed, path);
-        CheckMissingMembers(element, schema.Members, path, flattenedUnion, flattenedCase);
+        CheckMissingMembers(element, schema.Members, path);
+        if (flattenedCase is not null)
+        {
+            CheckMissingMembers(element, flattenedCase.Object.Members, path);
+        }
 
         var instance = DecodeMembers(schema, element, path, flattenedUnion, flattenedCase);
         ValidateInstance(instance, path);
@@ -247,13 +223,9 @@ public static class StrictWireCodec
             }
             else
             {
-                var memberPath = MemberPath(path, member.WireName!);
-                if (!element.TryGetProperty(member.WireName!, out var memberElement))
-                {
-                    throw DecodeError(WireError.MissingMember, memberPath, "Required member is missing.");
-                }
-
-                value = DecodeValue(member.PropertyType, memberElement, memberPath, member.IsNullable, arrayElement: false);
+                // CheckMissingMembers ran before every DecodeMembers call.
+                var memberElement = element.GetProperty(member.WireName!);
+                value = DecodeValue(member.PropertyType, memberElement, MemberPath(path, member.WireName!), member.IsNullable, arrayElement: false);
             }
 
             arguments[schema.MemberParameterIndexes[index]] = value;
@@ -276,14 +248,13 @@ public static class StrictWireCodec
             throw DecodeError(WireError.WrongType, MemberPath(path, union.Discriminator), "Discriminator selects a different union case.");
         }
 
+        // A flattened union's keys were checked by the enclosing DecodeObject.
         if (!flattened)
         {
-            var allowed = GetUnionAllowedKeys(union, selected);
-            CheckUnknownMembers(element, allowed, path);
-            CheckMissingUnionMembers(element, union, selected, path);
+            CheckUnknownMembers(element, GetUnionAllowedKeys(union, selected), path);
+            CheckMissingMembers(element, selected.Object.Members, path);
         }
 
-        CheckMissingMembers(element, selected.Object.Members, path, null, null);
         var instance = DecodeMembers(selected.Object, element, path, null, null);
         ValidateInstance(instance, path);
         return instance;
@@ -316,14 +287,9 @@ public static class StrictWireCodec
             return (bool)value ? "true" : "false";
         }
 
-        if (type == typeof(int) || type == typeof(long))
+        if (type == typeof(int) || type == typeof(long) || type == typeof(ulong))
         {
             return Convert.ToString(value, CultureInfo.InvariantCulture)!;
-        }
-
-        if (type == typeof(ulong))
-        {
-            return ((ulong)value).ToString(CultureInfo.InvariantCulture);
         }
 
         if (type == typeof(double))
@@ -370,16 +336,7 @@ public static class StrictWireCodec
 
         if (type.IsArray)
         {
-            if (!IsVector(type))
-            {
-                throw new InvalidOperationException($"Only one-dimensional zero-based arrays are supported: '{type}'.");
-            }
-
-            if (value is not Array array || array.Rank != 1 || array.GetLowerBound(0) != 0)
-            {
-                throw WrongType(path, "Expected a zero-based array.");
-            }
-
+            var array = (Array)value;
             var builder = new StringBuilder();
             builder.Append('[');
             var itemType = type.GetElementType()!;
@@ -405,7 +362,9 @@ public static class StrictWireCodec
 
         if (TryGetUnionType(type, out var unionType))
         {
-            return EncodeUnion(type, unionType, value, path);
+            var unionProperties = new List<KeyValuePair<string, string>>();
+            AddUnionProperties(unionType, value, path, unionProperties);
+            return WriteObject(unionProperties, path);
         }
 
         var schema = GetObjectSchema(type, isCase: false);
@@ -449,19 +408,6 @@ public static class StrictWireCodec
         }
     }
 
-    private static string EncodeUnion(Type requestedType, Type unionType, object value, string path)
-    {
-        var union = GetUnionSchema(unionType);
-        if (!union.CasesByType.TryGetValue(value.GetType(), out var selected) || !requestedType.IsAssignableFrom(selected.Type))
-        {
-            throw WrongType(path, $"Runtime type '{value.GetType()}' is not a case of '{unionType}'.");
-        }
-
-        var properties = new List<KeyValuePair<string, string>>();
-        AddUnionProperties(unionType, value, path, properties);
-        return WriteObject(properties, path);
-    }
-
     private static void AddUnionProperties(Type unionType, object value, string path, List<KeyValuePair<string, string>> properties)
     {
         var union = GetUnionSchema(unionType);
@@ -470,40 +416,38 @@ public static class StrictWireCodec
             throw WrongType(path, $"Runtime type '{value.GetType()}' is not a case of '{unionType}'.");
         }
 
-        var tag = selected.Case.Tag;
-        if (!StringComparer.Ordinal.Equals(tag, selected.EnumEntry.Tag))
-        {
-            throw new InvalidOperationException($"Union case tag '{tag}' does not match its wire enum mapping.");
-        }
-
-        properties.Add(new KeyValuePair<string, string>(union.Discriminator, Quote(tag, MemberPath(path, union.Discriminator))));
+        properties.Add(new KeyValuePair<string, string>(union.Discriminator, Quote(selected.EnumEntry.Tag, MemberPath(path, union.Discriminator))));
         ValidateInstance(value, path);
         AddObjectProperties(selected.Object, value, path, properties);
     }
 
+    /// <summary>Returns the wire enum value that the [WireCase] tag of a union case maps to.</summary>
+    internal static TEnum CaseValue<TEnum>(object unionCase) where TEnum : struct, Enum
+    {
+        if (!TryGetUnionType(unionCase.GetType(), out var unionType))
+        {
+            throw new InvalidOperationException($"Type '{unionCase.GetType()}' is not a wire union case.");
+        }
+
+        return (TEnum)GetUnionSchema(unionType).CasesByType[unionCase.GetType()].EnumEntry.Value;
+    }
+
+    /// <summary>Writes keys in ordinal order; GetObjectSchema and GetUnionSchema proved they are unique.</summary>
     private static string WriteObject(List<KeyValuePair<string, string>> properties, string path)
     {
         properties.Sort(static (left, right) => StringComparer.Ordinal.Compare(left.Key, right.Key));
         var builder = new StringBuilder();
         builder.Append('{');
-        string? previous = null;
         for (var index = 0; index < properties.Count; index++)
         {
-            var property = properties[index];
-            if (previous is not null && StringComparer.Ordinal.Equals(previous, property.Key))
-            {
-                throw DecodeError(WireError.Constraint, MemberPath(path, property.Key), "Wire member names must be unique.");
-            }
-
             if (index != 0)
             {
                 builder.Append(',');
             }
 
-            builder.Append(Quote(property.Key, MemberPath(path, property.Key)));
+            builder.Append(Quote(properties[index].Key, MemberPath(path, properties[index].Key)));
             builder.Append(':');
-            builder.Append(property.Value);
-            previous = property.Key;
+            builder.Append(properties[index].Value);
         }
 
         builder.Append('}');
@@ -648,7 +592,7 @@ public static class StrictWireCodec
                 }
             }
 
-            var arm = new CaseSchema(nestedType, caseAttribute, enumEntry, objectSchema);
+            var arm = new CaseSchema(nestedType, enumEntry, objectSchema);
             if (!byTag.TryAdd(caseAttribute.Tag, arm) || !byType.TryAdd(nestedType, arm))
             {
                 throw new InvalidOperationException($"Wire union '{unionType}' contains duplicate case tags or types.");
@@ -873,38 +817,11 @@ public static class StrictWireCodec
         return selected;
     }
 
-    private static HashSet<string> GetUnionAllowedKeys(UnionSchema union, CaseSchema selected)
-    {
-        var keys = new HashSet<string>(StringComparer.Ordinal) { union.Discriminator };
-        foreach (var member in selected.Object.Members)
-        {
-            if (!keys.Add(member.WireName!))
-            {
-                throw new InvalidOperationException($"Union discriminator '{union.Discriminator}' collides with a member on '{selected.Type}'.");
-            }
-        }
+    private static HashSet<string> GetUnionAllowedKeys(UnionSchema union, CaseSchema selected) =>
+        new(WireNames(selected.Object.Members), StringComparer.Ordinal) { union.Discriminator };
 
-        return keys;
-    }
-
-    private static HashSet<string> GetFlattenedAllowedKeys(ObjectSchema schema, UnionSchema union, CaseSchema selected)
-    {
-        var keys = GetUnionAllowedKeys(union, selected);
-        foreach (var member in schema.Members)
-        {
-            if (member.IsFlatten)
-            {
-                continue;
-            }
-
-            if (!keys.Add(member.WireName!))
-            {
-                throw new InvalidOperationException($"Flattened wire key '{member.WireName}' collides in '{schema.Type}'.");
-            }
-        }
-
-        return keys;
-    }
+    private static IEnumerable<string> WireNames(List<MemberSchema> members) =>
+        members.Where(member => !member.IsFlatten).Select(member => member.WireName!);
 
     private static void CheckUnknownMembers(JsonElement element, HashSet<string> allowed, string path)
     {
@@ -917,37 +834,15 @@ public static class StrictWireCodec
         }
     }
 
-    private static void CheckMissingMembers(JsonElement element, List<MemberSchema> members, string path, UnionSchema? union, CaseSchema? selected)
+    private static void CheckMissingMembers(JsonElement element, List<MemberSchema> members, string path)
     {
-        foreach (var member in members)
+        foreach (var name in WireNames(members))
         {
-            if (member.IsFlatten)
+            if (!element.TryGetProperty(name, out _))
             {
-                continue;
-            }
-
-            var memberPath = MemberPath(path, member.WireName!);
-            if (!element.TryGetProperty(member.WireName!, out _))
-            {
-                throw DecodeError(WireError.MissingMember, memberPath, "Required member is missing.");
+                throw DecodeError(WireError.MissingMember, MemberPath(path, name), "Required member is missing.");
             }
         }
-
-        if (union is not null && selected is not null)
-        {
-            CheckMissingUnionMembers(element, union, selected, path);
-        }
-    }
-
-    private static void CheckMissingUnionMembers(JsonElement element, UnionSchema union, CaseSchema selected, string path)
-    {
-        var discriminatorPath = MemberPath(path, union.Discriminator);
-        if (!element.TryGetProperty(union.Discriminator, out _))
-        {
-            throw DecodeError(WireError.MissingMember, discriminatorPath, "Required discriminator is missing.");
-        }
-
-        CheckMissingMembers(element, selected.Object.Members, path, null, null);
     }
 
     private static object? GetPropertyValue(PropertyInfo property, object instance)
@@ -1375,7 +1270,7 @@ public static class StrictWireCodec
 
     private sealed record EnumSchema(Type Type, List<EnumEntry> Entries);
 
-    private sealed record CaseSchema(Type Type, WireCaseAttribute Case, EnumEntry EnumEntry, ObjectSchema Object);
+    private sealed record CaseSchema(Type Type, EnumEntry EnumEntry, ObjectSchema Object);
 
     private sealed record UnionSchema(Type Type, string Discriminator, EnumSchema Enum, Dictionary<string, CaseSchema> CasesByTag, Dictionary<Type, CaseSchema> CasesByType);
 }

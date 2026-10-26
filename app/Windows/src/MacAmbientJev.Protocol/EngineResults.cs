@@ -1,5 +1,3 @@
-using System;
-
 namespace MacAmbientJev.Protocol;
 
 [WireUnion("command", typeof(EngineCommandName))]
@@ -7,30 +5,7 @@ public abstract record EngineResult
 {
     private EngineResult() { }
 
-    public EngineCommandName Command => this switch
-    {
-        Hello _ => EngineCommandName.Hello,
-        StateGet _ => EngineCommandName.StateGet,
-        DiagnosticsGet _ => EngineCommandName.DiagnosticsGet,
-        DevicesList _ => EngineCommandName.DevicesList,
-        RecordingStart _ => EngineCommandName.RecordingStart,
-        RecordingStop _ => EngineCommandName.RecordingStop,
-        SessionImport _ => EngineCommandName.SessionImport,
-        SessionInspect _ => EngineCommandName.SessionInspect,
-        SessionReprocess _ => EngineCommandName.SessionReprocess,
-        SessionRetryDecisions _ => EngineCommandName.SessionRetryDecisions,
-        SessionList _ => EngineCommandName.SessionList,
-        TranscriptRead _ => EngineCommandName.TranscriptRead,
-        TranscriptRowDetails _ => EngineCommandName.TranscriptRowDetails,
-        TranscriptWatch _ => EngineCommandName.TranscriptWatch,
-        SessionExport _ => EngineCommandName.SessionExport,
-        SettingsGet _ => EngineCommandName.SettingsGet,
-        SettingsReplace _ => EngineCommandName.SettingsReplace,
-        ModelsPrepare _ => EngineCommandName.ModelsPrepare,
-        ModelsInspect _ => EngineCommandName.ModelsInspect,
-        Shutdown _ => EngineCommandName.Shutdown,
-        _ => throw new InvalidOperationException("Unrecognized engine result case."),
-    };
+    public EngineCommandName Command => StrictWireCodec.CaseValue<EngineCommandName>(this);
 
     [WireCase("hello")]
     public sealed record Hello([property: WireMember("result")] EngineReadyPayload Result) : EngineResult;
