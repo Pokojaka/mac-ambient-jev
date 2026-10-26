@@ -51,6 +51,7 @@ on:
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
       - 'scripts/stage-windows-engine.ps1'
+      - 'scripts/build-windows-shell.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
       - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
@@ -121,6 +122,7 @@ on:
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
       - 'scripts/stage-windows-engine.ps1'
+      - 'scripts/build-windows-shell.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
       - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
@@ -190,6 +192,66 @@ jobs:
         with:
           name: dotnet-test-results-${{ matrix.os }}
           path: .build/dotnet-test-results/**/*.trx
+          if-no-files-found: error
+
+  windows-shell:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+      - name: .NET information
+        run: |
+          dotnet --info
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet --info failed' }
+      - name: Validate Windows runner, SDK, and temporary directory
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PROCESSOR_ARCHITECTURE -cne 'AMD64') { throw "Expected PROCESSOR_ARCHITECTURE AMD64, found '$env:PROCESSOR_ARCHITECTURE'." }
+
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP must be nonempty' }
+          if ($env:RUNNER_TEMP -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') { throw 'RUNNER_TEMP must be a fully qualified Windows path' }
+          if (-not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw 'RUNNER_TEMP must be an existing directory' }
+
+          # WinUI 2.5.1 packaging requirements: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10'
+          $requiredSdkFiles = @(
+            (Join-Path $sdkRoot 'Include/10.0.26100.0/um/Windows.h'),
+            (Join-Path $sdkRoot 'Lib/10.0.26100.0/um/x64/kernel32.lib'),
+            (Join-Path $sdkRoot 'Lib/10.0.26100.0/um/arm64/kernel32.lib'),
+            (Join-Path $sdkRoot 'bin/10.0.26100.0/x64/makepri.exe'),
+            (Join-Path $sdkRoot 'bin/10.0.26100.0/x64/rc.exe')
+          )
+          foreach ($sdkFile in $requiredSdkFiles) {
+            if (-not (Test-Path -LiteralPath $sdkFile -PathType Leaf)) {
+              throw "Required Windows SDK 10.0.26100.0 file was not found: $sdkFile"
+            }
+          }
+      - name: Build Windows shell (x64)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-x64')
+          if ($LASTEXITCODE -ne 0) { throw "Windows shell x64 build failed with exit code $LASTEXITCODE" }
+      - name: Build Windows shell (ARM64)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-arm64')
+          if ($LASTEXITCODE -ne 0) { throw "Windows shell ARM64 build failed with exit code $LASTEXITCODE" }
+      - name: Upload Windows shell (x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shell-x64
+          path: '${{ runner.temp }}/windows-shell-x64/'
+          if-no-files-found: error
+      - name: Upload Windows shell (ARM64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shell-arm64
+          path: '${{ runner.temp }}/windows-shell-arm64/'
           if-no-files-found: error
 
   linux:

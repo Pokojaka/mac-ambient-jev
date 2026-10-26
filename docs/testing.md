@@ -25,6 +25,31 @@ dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore --mi
 
 job は TRX を `always()` で upload します。期待最小数は2件であり、0件（または2件未満）の実行は失敗します。これは Microsoft.Testing.Platform の report option で、VSTest の `--logger` は使いません。
 
+## Windows WinUI shell の検証
+
+WinUI shell は Windows 専用の XAML / CLI build target で、portable C# libraries / tests とは別に検証します。Windows PowerShell 5.1（`powershell`）、.NET SDK `10.0.402`、Windows SDK `10.0.26100.0` が必要です（[WinAppSDK 2.5.1 の unpackaged app 要件](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)）。repository root から次を実行します。`C:\builds` は事前に存在し、各 destination は未作成である必要があります。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+```
+
+[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は architecture ごとの RID（`win-x64` / `win-arm64`）で locked restore を行い、Release publish 後に出力 `MacAmbientJev.exe` の PE machine が指定 architecture と一致することを検証します。起動には対象 architecture に合う .NET Desktop Runtime `10.0.x`（patch `10.0.13` 以降）が必要です。portable C# tests と異なり、これは WinUI shell の build / publish 検証であり、アプリの起動や画面表示を自動検証しません。
+
+portable-core workflow の `windows-shell` job は `windows-2025` x64 host で x64 と ARM64（ARM64 は cross-build）を publish し、`windows-shell-x64` / `windows-shell-arm64` artifact を upload します。この job は WinUI app も Swift engine も起動しません。
+
+手動起動確認は repository 外の対応する published directory から行います（以下は x64 の例です）。5秒以上待って `MacAmbientJev` process の window title を取得した後、起動した process を停止します。
+
+```powershell
+Set-Location C:\builds\windows-shell-x64
+$process = Start-Process -FilePath .\MacAmbientJev.exe -PassThru
+Start-Sleep -Seconds 5
+Get-Process -Name MacAmbientJev | Select-Object Id, MainWindowTitle
+Stop-Process -Id $process.Id
+```
+
+GUI の目視確認と screenshot 採取は VMware console を使い、lead のみが行います。SSH の Session 0 では window が見えない場合があるため、その場合も実際に観測した内容をそのまま報告し、GUI pass と扱いません。
+
 ## 現行 EngineProtocol / EngineHost の検証範囲
 
 `MacAmbientJevEngineProtocol` と `MacAmbientJevEngineHost` は portable な library target で、macOS・Linux・Windows の build / test 対象です。[MacAmbientJevEngineProtocolTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/) は NDJSON v1 の strict codec、lexical validation、全 command / event の golden corpus を検証します。[MacAmbientJevEngineHostTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/) は scripted byte source / sink と fake handlers を使い、framing、queue/backpressure、request admission、dispatcher、settings store / lock を検証します。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は recovery maintenance の shutdown interruption を `cancelled` / `warning` / `restart`、stage `maintenance` とし、実エラーを `filesystem` / `error` / `inspect_session`、同じく stage `maintenance` とすることを検証します。[EngineApplicationTranscriptTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTranscriptTests.swift) は重複 identity による `.processingFailure` を同じ未変更状態で一度だけ報告し、別の失敗 row も報告すること、修復・再導入後の再報告、oversized row の複数 identity の失敗と修復、追跡上限（`failureLimit` の16件）を超えた失敗行は前の行の修復後に報告されることを検証します。`mixedProjectionAndEncodingFailuresRetainSkippedMarkers` は projection と encoding の失敗が混在しても source order で追跡し、無関係な行の更新や stage の skip で未検証 marker が消えず、修復・削除後も committed rows / revision が成功 update まで変わらないことを確認します。`skippedDiarizedValidationRetainsEncodingFailureMarker` は話者 context が不確かなため diarized projection を skip した間も oversized encoding failure が保持され、context の修復後に再投影されることを検証します。[EngineTranscriptProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTranscriptProjectionTests.swift) は重複 ID の集約と修復後の再投影、および commit 前の dirty row を次の update に保持することを検証します。これらは portable な protocol / host unit tests で、実 engine process を起動しません。
@@ -62,7 +87,7 @@ Windows の few-core run では、必須 asset setup を保つため同じ Power
 | Linux | [`verify_portable.sh`](../scripts/verify_portable.sh) の既定実行は fetch / check の後、manifest dump と unfiltered build を実行し、`run_swift_tests.py` で test を実行します。EngineProtocol / EngineHost と PortableRuntime 等を含みますが、`MacAmbientJevWindowsSupport` と本番 `MacAmbientJevEngine` product は Linux target ではありません。Linux CI fast job も fetch/check 後に package build と runner 経由の test を行い、Python process acceptance は実行しません。実モデルを使う `linux-model-e2e` は後述の full-model acceptance 手順です。 |
 | Windows x64 / ARM64 | portable-core workflow の job id `windows` が `Windows (${{ matrix.architecture }})` として定義され、matrix entry は `x64` / `windows-2022` と `ARM64` / `windows-11-arm` です。両 runtime entry は同じ [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) を実行します。unfiltered package build で test-only `MacAmbientJevEngineHarness` を含む products を build し、本番 `MacAmbientJevEngine` product も明示 build します。runner は ONNX Runtime DLL と必要な pinned test assets / 環境変数を用意し、native injected C tests の後に、unique event path を渡して `run_swift_tests.py` から unfiltered Swift tests を1回実行します。その後、engine acceptance driver と FLAC validator の self-tests、deterministic fake-capture engine process acceptance を順に実行し、workflow が `windows-engine-x64` / `windows-engine-arm64` payload artifact を success 時だけ stage / upload します。実モデルの追加 acceptance は `-FullModel` でだけ実行します。`timeout-minutes: 45` は testing と release build / staging / cache / artifact の overhead を含む workflow job 全体に適用されます。 |
 
-portable workflow の draft PR jobs は skip され、macOS CI も draft PR jobs を skip します。portable の `workflow_dispatch` は既定で Windows Swift の x64 / ARM64 2 entries と `dotnet-portable` の3 OS entries を実行し、`run_linux=true` で Linux Swift の `linux` と `linux-model-e2e` の2 jobs も追加します（Mac workflow_dispatch の対象を規定する説明ではありません）。Windows Swift job は Windows PowerShell 5.1（`powershell`）で実行し、`pwsh` は使いません。同じ branch / PR の古い run は既存 concurrency により取り消します。Windows tests には symlink 作成権限が必要で、Developer Mode または適切な privilege を使います。
+portable workflow の draft PR jobs は skip され、macOS CI も draft PR jobs を skip します。portable の `workflow_dispatch` は既定で Windows Swift の x64 / ARM64 2 entries、`dotnet-portable` の3 OS entries、および `windows-shell` job を実行します。`run_linux=true` の場合だけ Linux Swift の `linux` と `linux-model-e2e` の2 jobs も追加します（Mac workflow_dispatch の対象を規定する説明ではありません）。Windows Swift job は Windows PowerShell 5.1（`powershell`）で実行し、`pwsh` は使いません。同じ branch / PR の古い run は既存 concurrency により取り消します。Windows tests には symlink 作成権限が必要で、Developer Mode または適切な privilege を使います。
 
 ARM64 の `windows-11-arm` は VS2026 runner 上で、既定 MSVC 14.51 STL に必要な Clang 20 に対し Swift 6.2 同梱 Clang 19 を使うため、Visual Studio 2022 の MSVC v143 14.44 ARM64 / ARM64EC component <code>Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64</code> を VS2026 installation に追加し、SHA-pinned `gha-setup-vsdevenv@452f99effa381b81c025ccfbdccaca509bff1b29` が `arch: arm64` / `host_arch: arm64` / `toolset_version: '14.44'` を Swift setup より前に選択します。Swift 6.2 は変更せず、x64 の `windows-2022` は image 既定 toolset を保ちます。Swift setup 後の guard は既存 <code>VCToolsInstallDir</code> が `VC/Tools/MSVC/14.44.*` directory で、<code>VCToolsVersion</code> と一致することを要求し、drift で job を停止します。手順と installer の再起動要求時の扱いは [Windows build and verification](windows.md#ビルドと検証) と [portable-core workflow](../.github/workflows/portable-core.yml) を参照してください。
 

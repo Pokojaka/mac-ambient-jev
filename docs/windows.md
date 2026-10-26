@@ -1,10 +1,10 @@
 # Windows の共通コア
 
-macOS app は Swift 6.4（[Swift 6.4 release](https://www.swift.org/blog/swift-6.4-released/)）、Windows / Linux の共通 portable targets は Swift 6.2（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）です。Windows では Swift 6.2 で共通 Core / Pipeline / EngineProtocol / EngineHost、WindowsSupport、ONNX、PortableRuntime、Windows engine process、評価 CLI 3 本、full-session file CLI `MacAmbientJevProcessRecording`、file transcription CLI `MacAmbientJevTranscribeFile`、および Core / Pipeline / EngineProtocol / EngineHost / WindowsSupport / ONNX / PortableRuntime / Engine / ProcessRecording / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と2つの file CLI を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。`MacAmbientJevProcessRecording` は音声ファイルを session に import して full-session finalization / recovery を実行します。`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) と ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter を使う別の評価 CLI で、WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming decoder と SRC に委譲します。Windows の engine process `MacAmbientJevEngine.exe` は WASAPI の microphone / system-audio capture を持ち、GUI とインストーラーはありません。macOS の app は Apple Silicon と macOS 15 以降で動作します。
+macOS app は Swift 6.4（[Swift 6.4 release](https://www.swift.org/blog/swift-6.4-released/)）、Windows / Linux の共通 portable targets は Swift 6.2（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）です。Windows では Swift 6.2 で共通 Core / Pipeline / EngineProtocol / EngineHost、WindowsSupport、ONNX、PortableRuntime、Windows engine process、評価 CLI 3 本、full-session file CLI `MacAmbientJevProcessRecording`、file transcription CLI `MacAmbientJevTranscribeFile`、および Core / Pipeline / EngineProtocol / EngineHost / WindowsSupport / ONNX / PortableRuntime / Engine / ProcessRecording / TranscribeFile の各 test target を build / test できます（[Swift 6.2 release](https://www.swift.org/blog/swift-6.2-released/)）。Linux でも共通 Core / Pipeline、CMiniaudio、ONNX、PortableRuntime、同じ評価 CLI 3 本と2つの file CLI を build します。共通 Core の [`RecordingFLAC`](../app/MacAmbientJev/Sources/MacAmbientJevCore/RecordingFLAC.swift) と [`FLACTimelineReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FLACTimelineReader.swift) は、録音用の正規 `recording.flac`（16 kHz mono 16-bit）の streaming encoder / reader API と CRC / MD5 検証を提供し、Windows でも利用できます。共通の [`MacAmbientJevPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline) と [`MacAmbientJevPipelineTests`](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests) は Windows / Linux の build / test 対象です。`MacAmbientJevProcessRecording` は音声ファイルを session に import して full-session finalization / recovery を実行します。`MacAmbientJevTranscribeFile` は PortableRuntime の [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) と ONNX Qwen3-ASR engine / Silero final-transcript VAD segmenter を使う別の評価 CLI で、WindowsSupport の WAV / FLAC / MP3 / M4A / AAC streaming decoder と SRC に委譲します。Windows の engine process `MacAmbientJevEngine.exe` は WASAPI の microphone / system-audio capture を持つ headless process で、インストーラーはありません。別個の空の WinUI shell を用意しています（[WinUI shell](#winui-shell)）。macOS の app は Apple Silicon と macOS 15 以降で動作します。
 
 ## C# portable libraries
 
-C# の portable library は [.NET SDK-native `.slnx` format](https://learn.microsoft.com/en-us/dotnet/core/compatibility/sdk/10.0/dotnet-new-sln-slnx-default) の [MacAmbientJev.Portable.slnx](../app/Windows/MacAmbientJev.Portable.slnx) を使います。solution に含む project は次の4つだけです。
+C# の portable library は [.NET SDK-native `.slnx` format](https://learn.microsoft.com/en-us/dotnet/core/compatibility/sdk/10.0/dotnet-new-sln-slnx-default) の [MacAmbientJev.Portable.slnx](../app/Windows/MacAmbientJev.Portable.slnx) を使います。この portable solution に含む project は次の4つです。
 
 | 種別 | project |
 | --- | --- |
@@ -18,7 +18,7 @@ C# の portable library は [.NET SDK-native `.slnx` format](https://learn.micro
 | 固定項目 | 値 |
 | --- | --- |
 | .NET SDK | `10.0.402`。root [`global.json`](../global.json) は `rollForward: disable`、`allowPrerelease: false`。 |
-| .NET runtime | `10.0.13`。RuntimeFrameworkVersion を固定し、RollForward は Disable。 |
+| .NET runtime（portable libraries / tests） | `10.0.13`。RuntimeFrameworkVersion を固定し、RollForward は Disable。 |
 | Target framework | `net10.0`。 |
 | `xunit.v3` | `4.0.2`（[release](https://xunit.net/releases/v3/4.0.2)）。 |
 | `xunit.runner.visualstudio` | `4.0.1`（[release](https://xunit.net/releases/visualstudio/4.0.1)）。 |
@@ -27,9 +27,28 @@ C# の portable library は [.NET SDK-native `.slnx` format](https://learn.micro
 
 root の [global.json](../global.json) は test runner として Microsoft.Testing.Platform を明示します。これは .NET 10 上で xunit.v3 の Microsoft.Testing.Platform 2.5.1 を使うための選択です（[xUnit MTP の設定](https://xunit.net/docs/getting-started/v3/microsoft-testing-platform)）。VSTest logger ではなく MTP の report を使います。
 
-これらの library assembly は skeleton です。codec、transport、presentation の挙動は実装せず、WinUI project や full solution も含みません。WinUI / WinRT / platform API 依存、Windows path、MVVM framework はありません。
+これらの library assembly は skeleton です。codec、transport、presentation の挙動は実装せず、library project 自体に ProjectReference / PackageReference はありません。WinUI / WinRT / platform API 依存、Windows path、MVVM framework もありません。この依存関係の説明は portable libraries に限り、WinUI application は別の [full solution](../app/Windows/MacAmbientJev.Windows.slnx) にあります。
 
 Protocol test は MSBuild の Link と CopyToOutputDirectory で既存の共有 UTF-8 [wire-v1.ndjson](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson) を Fixtures として出力へコピーし、[WireCorpusTests.cs](../app/Windows/tests/MacAmbientJev.Protocol.Tests/WireCorpusTests.cs) が AppContext.BaseDirectory/Fixtures から読み、現在の corpus の102行が空白でないことを確認します。これは record 数と配置の smoke test であり、C# strict decoding や corpus の enum coverage を検証しません。Presentation test の [PortableAssemblyTests.cs](../app/Windows/tests/MacAmbientJev.Presentation.Tests/PortableAssemblyTests.cs) は library assembly が `net10.0` で load でき、TargetPlatformAttribute を持たないことを確認します。
+
+## WinUI shell
+
+Windows の空の UI shell は、portable C# libraries / tests と分けた [`MacAmbientJev.WinUI` project](../app/Windows/src/MacAmbientJev.WinUI/MacAmbientJev.WinUI.csproj) で、[full `MacAmbientJev.Windows.slnx`](../app/Windows/MacAmbientJev.Windows.slnx) に含まれます。`net10.0-windows10.0.26100.0` を target とし、最低 OS version は `10.0.22000.0` です。app の build platform は `x64` と `ARM64`、runtime identifier は `win-x64` と `win-arm64` で、AnyCPU app はありません。実行ファイルは `MacAmbientJev.exe`、window title は `MacAmbientJev` です。window content は空の Grid だけで、engine を起動せず、protocol に接続せず、icon asset も含みません。
+
+[deployment properties](../app/Windows/src/MacAmbientJev.WinUI/MacAmbientJev.WinUI.csproj) は `WindowsPackageType=None`、`WindowsAppSDKSelfContained=true`、`SelfContained=false` です。MSIX / installer package は作らず、self-contained .NET runtime、trim、AOT、single-file publish、runtime installer や独自 runtime 検出は使いません（[WinUI unpackaged deployment](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)）。app は対象 architecture の .NET Desktop Runtime 10.0.x を必要とし、patch `10.0.13` 以降を要求します。portable projects と異なり、app は RuntimeFrameworkVersion を固定しません。`RollForward=LatestPatch` と `TargetLatestRuntimePatch=true` を使い、pinned .NET SDK `10.0.402` から patch 下限を決めます（[SDK target properties](https://github.com/dotnet/sdk/blob/main/src/Tasks/Microsoft.NET.Build.Tasks/targets/Microsoft.NET.Sdk.DefaultItems.Shared.targets)）。必要な runtime がなければ標準 .NET apphost が不足を案内し、app 独自の処理はありません。
+
+WinUI component は [Microsoft.WindowsAppSDK 2.5.1 metapackage nuspec](https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk/2.5.1/microsoft.windowsappsdk.nuspec) が示す Microsoft.WindowsAppSDK.WinUI 2.3.9 と Microsoft.WindowsAppSDK.Foundation 2.3.12 を、[Directory.Packages.props](../app/Windows/Directory.Packages.props) で個別に直接参照します。metapackage を直接参照する必要はなく、locked restore は各 package の transitive dependencies を保持します。実際の .NET CLI restore / Release publish は x64 と ARM64 の両方で成功し、script は出力 exe の PE architecture も検証します。これは build artifact の確認であり、GUI の起動結果や screenshot を主張するものではありません。
+
+repository root で次の script を実行し、architecture ごとに publish します。destination は絶対 Windows path で、未作成でなければならず、その親 directory はあらかじめ存在する必要があります（例では `C:\builds` が既存であること）。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+```
+
+[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は root `global.json` の pinned SDK `10.0.402` を検証し、architecture ごとの RID を `-p:RuntimeIdentifier` で指定して locked restore します。restore に `-r` を使わないのは、RuntimeIdentifiers を置き換えないためです。その後 `-p:Platform` と RID を指定して `Release --no-restore` publish し、x64 / ARM64 ごとの絶対 `obj/<architecture>` と `bin/<architecture>` に intermediate / output を分離します。[Directory.Build.props](../app/Windows/Directory.Build.props) は WinUI project の `obj/**` と `bin/**` の root 全体を DefaultItemExcludes に加え、別 architecture の generated source が混入しないようにします。script は native CLI の nonzero exit code を error として扱い、publish 後に exe の PE machine が要求 architecture と一致することを検査します。
+
+`portable-core.yml` の `windows-shell` job は `windows-2025` x64 host 上で Windows SDK `10.0.26100.0` の x64 / ARM64 build files を検証し、同じ script で両 architecture を build します。artifact は `windows-shell-x64` と `windows-shell-arm64` として別々に upload され、Swift engine と組み合わせたり起動したりする job ではありません。
 
 ## MacAmbientJevEngineProtocol NDJSON v1
 

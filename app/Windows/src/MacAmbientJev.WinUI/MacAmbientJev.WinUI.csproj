@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>MacAmbientJev</AssemblyName>
+    <RootNamespace>MacAmbientJev.WinUI</RootNamespace>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.22000.0</TargetPlatformMinVersion>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>false</SelfContained>
+    <RollForward>LatestPatch</RollForward>
+    <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" />
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
+
+  <Target Name="ValidateWinUIPlatformAndRuntimeIdentifier" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(Platform)' != 'x64' and '$(Platform)' != 'ARM64'"
+           Text="Platform must be x64 or ARM64." />
+    <Error Condition="'$(RuntimeIdentifier)' != '' and '$(RuntimeIdentifier)' != 'win-x64' and '$(RuntimeIdentifier)' != 'win-arm64'"
+           Text="RuntimeIdentifier must be empty, win-x64, or win-arm64." />
+    <Error Condition="'$(Platform)' == 'x64' and '$(RuntimeIdentifier)' == 'win-arm64'"
+           Text="Platform x64 requires RuntimeIdentifier win-x64." />
+    <Error Condition="'$(Platform)' == 'ARM64' and '$(RuntimeIdentifier)' == 'win-x64'"
+           Text="Platform ARM64 requires RuntimeIdentifier win-arm64." />
+  </Target>
+</Project>

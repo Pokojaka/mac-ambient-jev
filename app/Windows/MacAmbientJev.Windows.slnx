@@ -1,0 +1,32 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="Release" />
+    <Platform Name="x64" />
+    <Platform Name="ARM64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/MacAmbientJev.Presentation/MacAmbientJev.Presentation.csproj">
+      <Platform Solution="*|x64" Project="Any CPU" />
+      <Platform Solution="*|ARM64" Project="Any CPU" />
+    </Project>
+    <Project Path="src/MacAmbientJev.Protocol/MacAmbientJev.Protocol.csproj">
+      <Platform Solution="*|x64" Project="Any CPU" />
+      <Platform Solution="*|ARM64" Project="Any CPU" />
+    </Project>
+    <Project Path="src/MacAmbientJev.WinUI/MacAmbientJev.WinUI.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|ARM64" Project="ARM64" />
+    </Project>
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MacAmbientJev.Presentation.Tests/MacAmbientJev.Presentation.Tests.csproj">
+      <Platform Solution="*|x64" Project="Any CPU" />
+      <Platform Solution="*|ARM64" Project="Any CPU" />
+    </Project>
+    <Project Path="tests/MacAmbientJev.Protocol.Tests/MacAmbientJev.Protocol.Tests.csproj">
+      <Platform Solution="*|x64" Project="Any CPU" />
+      <Platform Solution="*|ARM64" Project="Any CPU" />
+    </Project>
+  </Folder>
+</Solution>

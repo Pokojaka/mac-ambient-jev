@@ -28,6 +28,13 @@ bash scripts/verify_v1.sh
 
 C# の portable libraries / tests は WinUI や Swift の build を必要とせず、macOS / Linux / Windows で実行できます（詳細は [docs/testing.md](docs/testing.md) と [docs/windows.md](docs/windows.md) を参照）。
 
+Windows 専用 WinUI shell の build / publish は Windows PowerShell 5.1（`powershell`）で実行します。`C:\builds` は事前に存在し、各 destination は未作成である必要があります。詳細と起動確認は [docs/testing.md](docs/testing.md) を参照してください。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+```
+
 Linux 評価ツールのテストは作業ディレクトリを tools 内の linux-audio にして実行する。
 
 ```bash
