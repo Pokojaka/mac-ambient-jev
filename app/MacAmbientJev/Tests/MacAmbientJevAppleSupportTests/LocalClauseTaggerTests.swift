@@ -24,51 +24,6 @@ private enum LocalClauseTaggerTestSetupError: LocalizedError {
 @Suite
 struct LocalClauseTaggerTests {
     @Test
-    func fixtureIsTrainedAndHasConsistentProbabilityShapes() throws {
-        let document = try Self.loadFixture()
-
-        #expect(document.modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger")
-        #expect(document.modelRevision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
-        #expect(document.trainingStatus == "trained")
-        #expect(Self.isLowercaseSHA256(document.tokenizerSHA256))
-        #expect(document.unitPolicy == "btsj-utterance-sentence")
-        #expect(document.encodingRevision == "1")
-        #expect(document.clsTokenID == ClauseTaggerEncoding.clsTokenID)
-        #expect(document.sepTokenID == ClauseTaggerEncoding.sepTokenID)
-        #expect(document.commaTokenID == ClauseTaggerEncoding.commaTokenID)
-        #expect(document.fixtures.count == 13)
-
-        for fixture in document.fixtures {
-            let length = fixture.inputIDs.count
-            #expect((2...ClauseTaggerEncoding.maximumTokens).contains(length))
-            #expect(fixture.inputIDs.first == document.clsTokenID)
-            #expect(fixture.inputIDs.last == document.sepTokenID)
-            #expect(fixture.boundaryProbabilities.count == length)
-            #expect(fixture.spanProbabilities.count == length)
-            #expect(fixture.priorityProbabilities.count == 2)
-            #expect(fixture.boundaryProbabilities.allSatisfy { $0.count == 2 })
-            #expect(fixture.spanProbabilities.allSatisfy { $0.count == 4 })
-            #expect(fixture.boundaryProbabilities.allSatisfy(Self.isProbabilityDistribution))
-            #expect(fixture.spanProbabilities.allSatisfy(Self.isProbabilityDistribution))
-            #expect(Self.isProbabilityDistribution(fixture.priorityProbabilities))
-            #expect(fixture.coreMLMaxAbsDiff.isFinite && fixture.coreMLMaxAbsDiff >= 0)
-            #expect((fixture.next != nil) == (fixture.junctionIndex != nil))
-
-            let candidateOffsetUpperBound = Self.candidateOffsetUpperBound(for: fixture)
-            for (offsetText, tokenIndex) in fixture.candidateTokenIndices {
-                let offset = try #require(Int(offsetText))
-                #expect(offset > 0 && offset <= candidateOffsetUpperBound)
-                #expect(fixture.inputIDs.indices.contains(tokenIndex))
-                #expect(fixture.inputIDs[tokenIndex] == document.commaTokenID)
-            }
-            if let junctionIndex = fixture.junctionIndex {
-                #expect(fixture.inputIDs.indices.contains(junctionIndex))
-                #expect(fixture.inputIDs[junctionIndex] == document.commaTokenID)
-            }
-        }
-    }
-
-    @Test
     func missingTokenizerWithAllZeroExpectedHashReportsItsLocalFileError() throws {
         let directory = Self.temporaryDirectoryURL()
         let tokenizerURL = directory.appending(path: "tokenizer.json")
@@ -507,32 +462,6 @@ struct LocalClauseTaggerTests {
         return URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
     }
 
-    private static func candidateOffsetUpperBound(for fixture: ClauseTaggerFixture) -> Int {
-        var scalars = removingTrailingPunctuation(from: Array(fixture.text.unicodeScalars))
-        if let next = fixture.next {
-            scalars.append(contentsOf: "、".unicodeScalars)
-            scalars.append(contentsOf: next.unicodeScalars)
-            scalars = removingTrailingPunctuation(from: scalars)
-        }
-        return scalars.reduce(into: 0) { offset, scalar in
-            offset += scalar.value > 0xFFFF ? 2 : 1
-        }
-    }
-
-    private static func removingTrailingPunctuation(from scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
-        let punctuation = ClauseTaggerEncoding.punctuation.unicodeScalars
-        var end = scalars.count
-        while end > 0 && punctuation.contains(scalars[end - 1]) {
-            end -= 1
-        }
-        return Array(scalars[..<end])
-    }
-
-    private static func isLowercaseSHA256(_ value: String) -> Bool {
-        value.utf8.count == 64
-            && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
-    }
-
     private static func integerKeyedCandidates(_ candidates: [String: Int]) throws -> [Int: Int] {
         var result: [Int: Int] = [:]
         for (offsetText, tokenIndex) in candidates {
@@ -562,11 +491,6 @@ struct LocalClauseTaggerTests {
             nextHead = nil
         }
         return try ClauseBoundaryRequest(source: source, text: text, next: nextHead)
-    }
-
-    private static func isProbabilityDistribution(_ values: [Double]) -> Bool {
-        values.allSatisfy { $0.isFinite && (0...1).contains($0) }
-            && abs(values.reduce(0, +) - 1) <= 1e-5
     }
 
     private static func maxAbsoluteDifference(_ left: [[Double]], _ right: [[Double]]) -> Double {

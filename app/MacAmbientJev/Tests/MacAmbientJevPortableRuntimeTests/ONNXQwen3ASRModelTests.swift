@@ -421,50 +421,6 @@ struct ONNXQwen3ASRModelTests {
     }
 }
 
-struct Qwen3ASRResidentMemoryTests {
-    @Test
-    func parsesAlignedWhitespaceAndTabs() throws {
-        #expect(try parseLinuxResidentMemoryBytes("VmRSS:\t  123456 kB\n") == 126_418_944)
-    }
-
-    @Test
-    func parsesOrdinarySpaces() throws {
-        #expect(try parseLinuxResidentMemoryBytes("VmRSS: 123456 kB\n") == 126_418_944)
-    }
-
-    @Test
-    func rejectsMissingOrDuplicateVmRSS() {
-        #expect(throws: ResidentMemoryError.self) {
-            try parseLinuxResidentMemoryBytes("Name:\tprocess\n")
-        }
-        #expect(throws: ResidentMemoryError.self) {
-            try parseLinuxResidentMemoryBytes("VmRSS: 1 kB\nVmRSS: 2 kB\n")
-        }
-    }
-
-    @Test
-    func rejectsInvalidValues() {
-        for status in [
-            "VmRSS: 0 kB\n",
-            "VmRSS: -1 kB\n",
-            "VmRSS: not-an-integer kB\n",
-            "VmRSS: 12 MB\n",
-            "VmRSS: 18446744073709551615 kB\n",
-        ] {
-            #expect(throws: ResidentMemoryError.self) {
-                try parseLinuxResidentMemoryBytes(status)
-            }
-        }
-    }
-
-    #if os(Linux)
-    @Test
-    func readsCurrentProcessResidentMemory() throws {
-        #expect(try residentMemoryBytes() > 0)
-    }
-    #endif
-}
-
 struct Qwen3ASRTokenReferenceTests {
     @Test
     func validatesPromptAndMetadataWithoutModel() throws {

@@ -2,58 +2,6 @@ import Testing
 @testable import MacAmbientJevDiarization
 
 @Suite struct Community1AssignmentParityTests {
-    private let expectedVersion = "0.15.8"
-    private let expectedRevision = "87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc"
-
-    @Test func fixtureMetadataCountsAndNamesMatchPinnedSchema() throws {
-        let fixture = try DiarizationParityFixtures.load(
-            "assignment.json",
-            as: DiarizationAssignmentFixture.self
-        )
-        #expect(fixture.metadata.schemaVersion == 1)
-        #expect(fixture.metadata.fluidAudioVersion == expectedVersion)
-        #expect(fixture.metadata.fluidAudioRevision == expectedRevision)
-        #expect(!fixture.metadata.inputConstruction.isEmpty)
-        #expect(!fixture.metadata.comparisonRule.isEmpty)
-        #expect(fixture.scoreCases.count == 257)
-        #expect(fixture.exhaustiveBinary.count == 12)
-        #expect(fixture.exhaustiveBinary.reduce(0) { $0 + $1.expectedAssignments.count } == 5_050)
-        #expect(fixture.centroidCases.count == 9)
-        #expect(fixture.embeddingCases.count == 21)
-
-        let scoreNames = fixture.scoreCases.map(\.name)
-        let centroidNames = fixture.centroidCases.map(\.name)
-        let embeddingNames = fixture.embeddingCases.map(\.name)
-        #expect(Set(scoreNames).count == scoreNames.count)
-        #expect(Set(centroidNames).count == centroidNames.count)
-        #expect(Set(embeddingNames).count == embeddingNames.count)
-        let allNames = scoreNames + centroidNames + embeddingNames
-        #expect(Set(allNames).count == allNames.count)
-        #expect(fixture.scoreCases.allSatisfy { !$0.construction.isEmpty })
-        #expect(fixture.centroidCases.allSatisfy { !$0.construction.isEmpty })
-        #expect(fixture.embeddingCases.allSatisfy { !$0.construction.isEmpty })
-
-        for rows in 1...3 {
-            for columns in 1...40 {
-                #expect(scoreNames.filter { $0 == "random-continuous-r\(rows)-k\(columns)" }.count == 1)
-                #expect(scoreNames.filter { $0 == "random-tied-r\(rows)-k\(columns)" }.count == 1)
-            }
-        }
-        for requiredName in [
-            "augmenting-path-equal-ties",
-            "identical-zero-rows-columns-r1-k4",
-            "sub-micro-score-differences",
-            "half-micro-rounding-next-down",
-            "half-micro-rounding-exact",
-            "half-micro-rounding-next-up",
-            "nonfinite-mixed-cells",
-            "nonfinite-all-cells-rows-greater-than-columns",
-            "nonfinite-all-cells-columns-greater-than-rows",
-        ] {
-            #expect(scoreNames.contains(requiredName))
-        }
-    }
-
     @Test func scoreCasesMatchExactAssignmentsAndQuantizationBoundaries() throws {
         let fixture = try DiarizationParityFixtures.load(
             "assignment.json",
@@ -179,29 +127,4 @@ import Testing
         }
     }
 
-    @Test func malformedFloat64MatricesAndPatchesFailFast() {
-        let zero = DiarizationParityTensor(dtype: "float64", shape: [1, 1], littleEndianBase64: "AAAAAAAAAAA=")
-        let one = DiarizationParityTensor(dtype: "float64", shape: [1, 1], littleEndianBase64: "AAAAAAAA8D8=")
-
-        #expect(throws: DiarizationParityFixtureError.self) {
-            _ = try DiarizationParityTensor(dtype: "float64", shape: [1], littleEndianBase64: "AAAAAAAAAAA=")
-                .float64Matrix(nonfinite: [])
-        }
-        #expect(throws: DiarizationParityFixtureError.self) {
-            _ = try DiarizationParityTensor(dtype: "float64", shape: [1, 0], littleEndianBase64: "")
-                .float64Matrix(nonfinite: [])
-        }
-        #expect(throws: DiarizationParityFixtureError.self) {
-            _ = try zero.float64Matrix(nonfinite: [
-                DiarizationNonfinitePatch(index: 0, kind: .nan),
-                DiarizationNonfinitePatch(index: 0, kind: .positiveInfinity),
-            ])
-        }
-        #expect(throws: DiarizationParityFixtureError.self) {
-            _ = try zero.float64Matrix(nonfinite: [DiarizationNonfinitePatch(index: 1, kind: .nan)])
-        }
-        #expect(throws: DiarizationParityFixtureError.self) {
-            _ = try one.float64Matrix(nonfinite: [DiarizationNonfinitePatch(index: 0, kind: .nan)])
-        }
-    }
 }

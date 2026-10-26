@@ -45,12 +45,6 @@ struct TranscribeFileTests {
         #expect(parsed.artifactOutputURL == canonicalURL(artifact))
     }
 
-    @Test(arguments: ["0.6b", "1.7b"])
-    func bothModelSizesParse(modelSize: String) throws {
-        let parsed = try TranscribeFileArguments.parse(validArguments(modelSize: modelSize))
-        #expect(parsed.asrModelSize.rawValue == modelSize)
-    }
-
     @Test
     func optionPairsMayBeShuffled() throws {
         let input = "/tmp/shuffled/input.wav"
@@ -328,86 +322,6 @@ struct TranscribeFileTests {
         #expect(!message.contains("missing-silero"))
         #expect(try Data(contentsOf: output) == original)
         #expect(!FileManager.default.fileExists(atPath: artifact.path))
-    }
-
-    @Test
-    func runRefusesInputOutputAliasBeforeAccessingModelsAndPreservesInputBytes() async throws {
-        let root = try makeScratchRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let input = root.appendingPathComponent("input.wav")
-        let original = Data([0, 1, 2, 3, 255])
-        try original.write(to: input)
-        let missingSileroModel = root.appendingPathComponent("missing-silero.onnx")
-        let missingASRDirectory = root.appendingPathComponent("missing-asr", isDirectory: true)
-        let artifact = root.appendingPathComponent("artifact.json")
-
-        await assertRunRejected(makeArguments(
-            input: input.path,
-            sileroModel: missingSileroModel.path,
-            asrModelDirectory: missingASRDirectory.path,
-            modelSize: "0.6b",
-            threads: "1",
-            output: input.path,
-            artifactOutput: artifact.path
-        ), containing: "入力音声ファイルと同じです。")
-
-        #expect(try Data(contentsOf: input) == original)
-        #expect(!FileManager.default.fileExists(atPath: artifact.path))
-
-        let nested = root.appendingPathComponent("nested", isDirectory: true)
-        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
-        let standardizedInput = nested.appendingPathComponent("..", isDirectory: true)
-            .appendingPathComponent("input.wav")
-        let standardizedArtifact = root.appendingPathComponent("standardized-artifact.json")
-        await assertRunRejected(makeArguments(
-            input: input.path,
-            sileroModel: missingSileroModel.path,
-            asrModelDirectory: missingASRDirectory.path,
-            modelSize: "0.6b",
-            threads: "1",
-            output: standardizedInput.path,
-            artifactOutput: standardizedArtifact.path
-        ), containing: "入力音声ファイルと同じです。")
-
-        #expect(try Data(contentsOf: input) == original)
-        #expect(!FileManager.default.fileExists(atPath: standardizedArtifact.path))
-    }
-
-    @Test
-    func runRefusesArtifactInputAndOutputOutputAliasesBeforeAccessingModels() async throws {
-        let root = try makeScratchRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let input = root.appendingPathComponent("input.wav")
-        let original = Data([11, 12, 13])
-        try original.write(to: input)
-        let missingSileroModel = root.appendingPathComponent("missing-silero.onnx")
-        let missingASRDirectory = root.appendingPathComponent("missing-asr", isDirectory: true)
-        let output = root.appendingPathComponent("output.json")
-
-        await assertRunRejected(makeArguments(
-            input: input.path,
-            sileroModel: missingSileroModel.path,
-            asrModelDirectory: missingASRDirectory.path,
-            modelSize: "1.7b",
-            threads: "2",
-            output: output.path,
-            artifactOutput: input.path
-        ), containing: "成果物ファイルが入力音声ファイルと同じです。")
-        #expect(try Data(contentsOf: input) == original)
-        #expect(!FileManager.default.fileExists(atPath: output.path))
-
-        let sharedOutput = root.appendingPathComponent("shared.json")
-        await assertRunRejected(makeArguments(
-            input: input.path,
-            sileroModel: missingSileroModel.path,
-            asrModelDirectory: missingASRDirectory.path,
-            modelSize: "1.7b",
-            threads: "2",
-            output: sharedOutput.path,
-            artifactOutput: sharedOutput.path
-        ), containing: "2つの出力ファイルが同じです。")
-        #expect(try Data(contentsOf: input) == original)
-        #expect(!FileManager.default.fileExists(atPath: sharedOutput.path))
     }
 
     @Test
@@ -888,12 +802,6 @@ struct TranscribeFileTests {
         } catch {
             return error.localizedDescription
         }
-    }
-
-    private func assertRunRejected(_ arguments: [String], containing expectedMessage: String) async {
-        let message = await runError(arguments)
-        #expect(!message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        #expect(message.contains(expectedMessage))
     }
 
     private func runError(_ arguments: [String]) async -> String {

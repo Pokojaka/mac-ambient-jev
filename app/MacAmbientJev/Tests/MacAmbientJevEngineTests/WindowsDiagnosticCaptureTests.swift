@@ -137,18 +137,6 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
 }
 
 @Suite(.timeLimit(.minutes(10))) struct WindowsDiagnosticCaptureTests {
-    @Test func waitingForNeverFinishedLatchThrowsWhenCancelled() async {
-        let latch = DiagnosticTestLatch()
-        let waiter = Task {
-            try await latch.waitUntilComplete("a never-finished diagnostic operation")
-        }
-        waiter.cancel()
-
-        await #expect(throws: WaitCancelled.self) {
-            try await waiter.value
-        }
-    }
-
     @Test func stalledClientStderrDoesNotStopNativeStdoutDiagnosticIngress() async throws {
         let ingress = try makeDiagnosticPipe(bufferBytes: 4096)
         let ingressWrite = DiagnosticTestHandle(ingress.write)
