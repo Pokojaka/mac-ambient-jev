@@ -64,6 +64,8 @@ Windows の few-core run では、必須 asset setup を保つため同じ Power
 
 portable workflow の draft PR jobs は skip され、macOS CI も draft PR jobs を skip します。portable の `workflow_dispatch` は既定で Windows Swift の x64 / ARM64 2 entries と `dotnet-portable` の3 OS entries を実行し、`run_linux=true` で Linux Swift の `linux` と `linux-model-e2e` の2 jobs も追加します（Mac workflow_dispatch の対象を規定する説明ではありません）。Windows Swift job は Windows PowerShell 5.1（`powershell`）で実行し、`pwsh` は使いません。同じ branch / PR の古い run は既存 concurrency により取り消します。Windows tests には symlink 作成権限が必要で、Developer Mode または適切な privilege を使います。
 
+ARM64 の `windows-11-arm` は VS2026 runner 上で、既定 MSVC 14.51 STL に必要な Clang 20 に対し Swift 6.2 同梱 Clang 19 を使うため、Visual Studio 2022 の MSVC v143 14.44 ARM64 / ARM64EC component <code>Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64</code> を VS2026 installation に追加し、SHA-pinned `gha-setup-vsdevenv@452f99effa381b81c025ccfbdccaca509bff1b29` が `arch: arm64` / `host_arch: arm64` / `toolset_version: '14.44'` を Swift setup より前に選択します。Swift 6.2 は変更せず、x64 の `windows-2022` は image 既定 toolset を保ちます。Swift setup 後の guard は既存 <code>VCToolsInstallDir</code> が `VC/Tools/MSVC/14.44.*` directory で、<code>VCToolsVersion</code> と一致することを要求し、drift で job を停止します。手順と installer の再起動要求時の扱いは [Windows build and verification](windows.md#ビルドと検証) と [portable-core workflow](../.github/workflows/portable-core.yml) を参照してください。
+
 Windows matrix の x64 / ARM64 runtime entry は同じ wrapper で unfiltered Swift test を実行し、各実行に新しい event path を作ります。
 
 ```powershell
