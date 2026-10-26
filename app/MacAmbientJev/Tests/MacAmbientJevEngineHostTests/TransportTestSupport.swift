@@ -58,7 +58,7 @@ func testLimits(
     )
 }
 
-/// In-memory sink with scripted partial writes, a blockable gate and cancellation like a real pipe.
+/// In-memory sink with a blockable gate and cancellation like a real pipe.
 /// `changes` signals after every write call enters, after every accepted write, and on cancel and close.
 final class ScriptedSink: EngineByteSink, @unchecked Sendable {
     let changes = ChangeSignal()
@@ -70,12 +70,7 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
     private var failure: EngineSinkError?
     private var cancels = 0
     private var entered = 0
-    private let acceptPerCall: Int
-    private let delayPerCall: TimeInterval
-
-    init(acceptPerCall: Int = Int.max, delayPerCall: TimeInterval = 0, blocked: Bool = false) {
-        self.acceptPerCall = acceptPerCall
-        self.delayPerCall = delayPerCall
+    init(blocked: Bool = false) {
         self.blocked = blocked
     }
 
@@ -92,12 +87,11 @@ final class ScriptedSink: EngineByteSink, @unchecked Sendable {
             condition.unlock()
             throw failure
         }
-        let count = min(bytes.count, acceptPerCall)
+        let count = bytes.count
         storage.append(contentsOf: UnsafeRawBufferPointer(rebasing: bytes[..<count]))
         condition.broadcast()
         condition.unlock()
         changes.signal()
-        if delayPerCall > 0 { Thread.sleep(forTimeInterval: delayPerCall) }
         return count
     }
 
