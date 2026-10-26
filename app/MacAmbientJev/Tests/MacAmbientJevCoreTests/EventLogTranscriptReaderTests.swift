@@ -454,7 +454,7 @@ func readerRejectsAPublishedClauseRunWhoseClausesDoNotMatchItsBoundaries() async
         .replacingOccurrences(of: #""range":{"end":2,"start":0}"#, with: #""range":{"end":1,"start":0}"#)
         .replacingOccurrences(of: #""range":{"start":0,"end":2}"#, with: #""range":{"start":0,"end":1}"#)
     #expect(tampered != (try String(contentsOf: url, encoding: .utf8)))
-    try tampered.write(to: url, atomically: true, encoding: .utf8)
+    try tampered.write(to: url, atomically: false, encoding: .utf8)
 
     #expect(throws: (any Error).self) { try readPublished(root: root) }
 }

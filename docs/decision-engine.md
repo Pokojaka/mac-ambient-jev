@@ -86,9 +86,9 @@ ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、L
 
 Linux / Windows では PortableRuntime の `ONNXClauseTagger` actor（`DecisionProvider`）が同じ判定を担います。`init(modelDirectory:intraOpThreads:)` は throwing で、次の順に一度だけロードします。
 
-1. `ClauseTaggerAssets` が directory の5ファイルを bundled manifest の byte 数と SHA-256 に照合します。
+1. `ClauseTaggerAssets` が directory の5ファイルを bundled manifest の byte 数と SHA-256 に照合します。hash は `FileSHA256` の bounded streaming と、全 platform 共通の `CSHA256` batched compression で検証します。
 2. 検証済みの tokenizer.json から Core の `ClauseTaggerTokenizer` を、manifest の tokenizer SHA-256 を期待値にして作ります。
-3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
+3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。graph optimization level は設定で上書きせず [ONNX Runtime 1.31.0 の default](https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html) を使います。optimized graph / session の cache はありません。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
 
 session 作成後に graph の入出力 metadata を完全一致で検証します。入力は `input_ids` int64 `[1,-1]`、出力は `boundary_probs` float32 `[1,-1,2]`、`span_probs` float32 `[1,-1,4]`、`priority_probs` float32 `[1,2]` で、名前・dtype・rank・固定次元が一つでも違えば初期化エラーです。`identity` は manifest から作る `ClauseTaggerModelIdentity` で、ONNX ファイル内の metadata は読みません。
 
@@ -96,7 +96,7 @@ session 作成後に graph の入出力 metadata を完全一致で検証しま�
 
 判定 run の provenance `engine` は、ロードした tagger の backend 名です。`DecisionModelIdentity` が必須の `backend` を持ち（空白のみは不正）、`DecisionRunProvenance` はそれをそのまま `engine` に記録します。Core に既定値や OS 判定はなく、Mac の `ClauseTaggerModel` が `coreml-clause-tagger`、`ONNXClauseTagger` が `onnx-clause-tagger` を `ClauseTaggerModelIdentity` に渡します。ONNX の run が Core ML を名乗ることはありません。
 
-`ONNXClauseTagger` を `LoadedDecisionProvider` に包んで `DecisionProviderFactory` に渡すと、Mac の `LocalClauseTagger` と同じ cache と identity の経路になります。CLI への組み込みはまだなく、既存の判定無効 CLI は tagger をロードしません。
+`DecisionProviderFactory` は loaded provider と identity を一度だけ cache し、`localModelIdentity()` は同じ cache の identity を返して推論を行いません。[ProcessRecording CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift) の portable path は `PortableSessionEngineBundle` を使い、判定無効の bundle は tagger を構築しません。
 
 PortableRuntime の `PortableProcessingConfiguration.resolve` は環境変数（`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` は判定を要求したときだけ必須）と `--threads` の値を型付きの設定にします。変数の欠落・空・相対パス・存在しないパス・不正な model size・範囲外のスレッド数は明確なエラーで、モデルは読みません。`PortableSessionEngineBundle` は設定から Silero（1スレッド）、Qwen3 ASR、話者分離、（判定要求時のみ）`DecisionProviderFactory` に包んだ `ONNXClauseTagger` を作り、`SessionProcessingEngines` と `ContentPriorityAccess` として渡します。ASR・話者分離・tagger のモデルは最初の利用時にロードされます。
 
@@ -106,9 +106,9 @@ PortableRuntime の `PortableProcessingConfiguration.resolve` は環境変数（
 
 候補 offset は ASR 原文の句読点直後の UTF-16 offset です。Unicode scalar を正規化せず保持し、原文から末尾連続の `、。？！?!` だけを符号化対象から取り除きます。空白は trim しません。符号化時は各 `、。？！?!` を中立記号 `、` として扱い、句読点間を piecewise Unigram lattice で tokenize し、句読点は語彙 ID `275` を強制します。special-token 追加を tokenizer に任せず、先頭に `[CLS]` ID `6`、末尾に `[SEP]` ID `4` を付けます。入力は `[CLS]` + 内容 token（最大190）+ `[SEP]` で最大192 token です。優先度用の符号化は内容 token が190を超えると先頭190 token で切り、その後ろに `[SEP]` を付けます。切った後ろの内容は判定に使いません。
 
-`ClauseTaggerTokenizer`、型付き tokenizer configuration、Unigram Viterbi は Core にある Foundation-only 実装で、外部 Swift package に依存しません。Unigram は Unicode scalar trie 上の lattice を使い、Float32 score を累積します。各候補の score を加算してから比較し、strict-greater の比較で同点なら最初に挿入された候補を保持します。語彙 token の同一性は Swift の正規化等ではなく UTF-8 byte 列で判定し、同じ UTF-8 bytes の重複を拒否します。
+tokenizer configuration の parsing と `ClauseTaggerTokenizer` / Unigram Viterbi の tokenization は Core の Foundation-only 実装で、外部 Swift package に依存しません。Unigram は Unicode scalar trie 上の lattice を使い、Float32 score を累積します。各候補の score を加算してから比較し、strict-greater の比較で同点なら最初に挿入された候補を保持します。語彙 token の同一性は Swift の正規化等ではなく UTF-8 byte 列で判定し、同じ UTF-8 bytes の重複を拒否します。
 
-tokenizer.json は [Core の `FileSHA256`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift) で生 bytes の SHA-256 を検証し、モデル metadata と一致した時だけ typed configuration として解析します。configuration は Unigram 型を要求し、語彙件数は276...102400、各 token score は JSON の Double と Float への変換後の双方で有限値、語彙 token は UTF-8 byte 列で重複しないことを検証します。固定語彙 ID 0...14、byte fallback ID 15...270、comma ID 275 の token 表記を検証し、`byte_fallback=true`、`normalizer`・`truncation`・`padding` が明示的な null であることも要求します。Metaspace は置換 `▁`（U+2581）、`prepend_scheme=never`、`split=false` に固定します。added token の `single_word`・`lstrip`・`rstrip`・`normalized` は false に固定し、`special` は ID 0...6 だけ true を許可します。
+tokenizer.json は生 bytes の SHA-256 を Core の [`FileSHA256`](../app/MacAmbientJev/Sources/MacAmbientJevCore/FileSHA256.swift) 経由で `CSHA256` batched compression を使って検証し、モデル metadata と一致した時だけ typed configuration として解析します。configuration は Unigram 型を要求し、語彙件数は276...102400、各 token score は JSON の Double と Float への変換後の双方で有限値、語彙 token は UTF-8 byte 列で重複しないことを検証します。固定語彙 ID 0...14、byte fallback ID 15...270、comma ID 275 の token 表記を検証し、`byte_fallback=true`、`normalizer`・`truncation`・`padding` が明示的な null であることも要求します。Metaspace は置換 `▁`（U+2581）、`prepend_scheme=never`、`split=false` に固定します。added token の `single_word`・`lstrip`・`rstrip`・`normalized` は false に固定し、`special` は ID 0...6 だけ true を許可します。
 
 configuration は TemplateProcessing の single 系列（SpecialToken `<s>`、Sequence A、SpecialToken `</s>`）と pair 系列（SpecialToken `<s>`、Sequence A、SpecialToken `</s>`、SpecialToken `<s>`、Sequence B、SpecialToken `</s>`）、decoder の Sequence（Replace ▁ → ASCII space、ByteFallback、Fuse）も完全一致で検証しますが、`encodePiece` はこれらの処理を実行しません。special token の追加は符号化側が所有し、先頭に `[CLS]` ID `6`、末尾に `[SEP]` ID `4` を付けます。tokenizer による ID decoding も行いません。ASCII space は tokenize の間だけ Metaspace の U+2581 に置換します。原文対応の source token range と span 投影 index は source-only の `boundaryInputs` でのみ生成し、優先度入力の符号化と継続用入力では生成しません。
 

@@ -309,18 +309,22 @@ struct ONNXClauseTaggerTests {
         }
     }
 
-    @Test func factoryLoadsTheProviderOnceAndReturnsItsIdentity() throws {
-        let directory = try ClauseTaggerTestInputs.modelDirectory()
+    @Test func factoryInvokesTheProviderLoaderOnceAndReturnsItsIdentity() throws {
         let loads = LoadCounter()
         let factory = DecisionProviderFactory(usageCounter: DecisionUsageCounter()) {
             loads.record()
-            let tagger = try ONNXClauseTagger(modelDirectory: directory, intraOpThreads: ClauseTaggerTestInputs.intraOpThreads)
+            let tagger = try ClauseTaggerTestInputs.tagger.get()
             return LoadedDecisionProvider(provider: tagger, identity: tagger.identity)
         }
+        #expect(loads.count == 0)
+
         let pinned = try ClauseTaggerAssets.pinnedIdentity()
         #expect(try factory.localModelIdentity() == pinned)
+        #expect(loads.count == 1)
         _ = try factory.makeCoordinator()
+        #expect(loads.count == 1)
         _ = try factory.makeCoordinator()
+        #expect(loads.count == 1)
         #expect(try factory.localModelIdentity() == pinned)
         #expect(loads.count == 1)
     }

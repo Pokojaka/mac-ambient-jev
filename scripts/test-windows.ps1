@@ -10,6 +10,11 @@ function Invoke-Step([string]$Name, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
 }
 
+function New-TestEventStreamPath {
+    $fileName = "windows-$([Guid]::NewGuid().ToString()).jsonl"
+    return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $PSScriptRoot) (Join-Path '.build\test-events' $fileName)))
+}
+
 Write-Host '==> fetch ONNX Runtime'
 $runtimeRootLines = @(& python scripts/fetch_onnxruntime.py)
 $runtimeRootExitCode = $LASTEXITCODE
@@ -45,6 +50,10 @@ Invoke-Step 'portable Core/Pipeline checker self-test' { python -B scripts/test_
 Invoke-Step 'portable Core/Pipeline import check' { python -B scripts/check_portable_core.py }
 Invoke-Step 'doc reference checker self-test' { python scripts/test_doc_references.py }
 Invoke-Step 'doc reference check' { python scripts/check_doc_references.py }
+Invoke-Step 'test time limits checker self-test' { python -B scripts/test_test_time_limits.py }
+Invoke-Step 'test time limits check' { python -B scripts/check_test_time_limits.py }
+Invoke-Step 'Swift test event reporter self-test' { python -B scripts/test_report_test_events.py }
+Invoke-Step 'Swift test runner self-test' { python -B scripts/test_run_swift_tests.py }
 Invoke-Step 'ONNX Runtime fetcher self-test' { python -B scripts/test_fetch_onnxruntime.py }
 Invoke-Step 'Silero VAD fetcher self-test' { python -B scripts/test_fetch_silero_vad.py }
 Invoke-Step 'Community-1 diarization fetcher self-test' { python -B scripts/test_fetch_community1_diarization.py }
@@ -86,7 +95,11 @@ Invoke-Step 'Compile Windows capture safety injected C tests' { & $clangPath $in
 if (-not (Test-Path -LiteralPath $injectedTestExecutable -PathType Leaf)) { throw "Windows capture safety injected test executable was not produced: $injectedTestExecutable" }
 Invoke-Step 'Run Windows capture safety injected C tests' { & $injectedTestExecutable }
 
-Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift test --package-path app/MacAmbientJev }
+$testEventPath = New-TestEventStreamPath
+Write-Host "Swift test event stream: $testEventPath"
+Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' {
+    python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-stream-output-path $testEventPath
+}
 
 Invoke-Step 'engine acceptance driver self-test' { python -B scripts/test_engine_acceptance.py }
 Invoke-Step 'engine acceptance FLAC validator self-test' { python -B scripts/test_engine_acceptance_flac.py }
@@ -106,11 +119,13 @@ if ($FullModel) {
     # into terminating errors under 'Stop', so the preference is relaxed around the native call.
     function Invoke-ModelSuite([string]$Name, [string]$Filter) {
         Write-Host "==> model suite: $Name (filter: $Filter)"
+        $eventPath = New-TestEventStreamPath
+        Write-Host "Swift test event stream: $eventPath"
         $env:RUN_MODEL_TESTS = '1'
         $previousPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $lines = @(& swift test --package-path app/MacAmbientJev --filter $Filter 2>&1 | ForEach-Object { "$_" })
+            $lines = @(& python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-stream-output-path $eventPath --filter $Filter 2>&1 | ForEach-Object { "$_" })
             $exitCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousPreference

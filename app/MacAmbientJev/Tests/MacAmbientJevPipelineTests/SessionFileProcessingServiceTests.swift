@@ -207,7 +207,7 @@ private struct ServiceEnvironment {
 
     func makeInput(bytes: Data = Data([0x52, 0x49, 0x46, 0x46, 0x00, 0x73, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65])) throws -> URL {
         let url = root.appending(path: "source-\(UUID().uuidString).wav")
-        try bytes.write(to: url, options: .atomic)
+        try bytes.write(to: url)
         return url
     }
 

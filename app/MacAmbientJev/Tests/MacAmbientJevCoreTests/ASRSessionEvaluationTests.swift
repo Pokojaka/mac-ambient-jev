@@ -9,7 +9,7 @@ func manifestResolvesReferenceFileRelativeToManifest() throws {
         at: root.appending(path: "refs"), withIntermediateDirectories: true
     )
     defer { try? FileManager.default.removeItem(at: root) }
-    try "公開鍵暗号\n".write(to: root.appending(path: "refs/sample.txt"), atomically: true, encoding: .utf8)
+    try "公開鍵暗号\n".write(to: root.appending(path: "refs/sample.txt"), atomically: false, encoding: .utf8)
     let manifestURL = root.appending(path: "manifest.json")
     try Data(#"{"id":"r1","audio":"audio.wav","reference":{"file":"refs/sample.txt"}}"#.utf8)
         .write(to: manifestURL)

@@ -1199,7 +1199,7 @@ private actor SegmentLineDroppingASR: ASREngine {
         if createdIndices.count == 2 {
             var kept = lines
             kept.remove(at: createdIndices[0])
-            try (kept.joined(separator: "\n") + "\n").write(to: eventsURL, atomically: true, encoding: .utf8)
+            try (kept.joined(separator: "\n") + "\n").write(to: eventsURL, atomically: false, encoding: .utf8)
         }
         return ASRResult(text: index == 0 ? "前半" : "後半", detectedLanguage: "ja")
     }
