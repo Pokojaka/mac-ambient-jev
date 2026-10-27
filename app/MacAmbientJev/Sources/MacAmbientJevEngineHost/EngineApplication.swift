@@ -104,7 +104,6 @@ final class EngineApplicationCore {
     var recoveryStatus: EngineRecoveryStatus = .pending
     var recoveryOutstanding: Set<UUID> = []
     var scanFailed = false
-    var isImporting: Bool { recording.phase == .importing }
 
     // Transcript
     var watchedSessionID: UUID?
