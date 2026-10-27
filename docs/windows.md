@@ -767,50 +767,7 @@ docker run --rm \
 
 参照元は [Transformers v4.57.1 Whisper feature extractor](https://raw.githubusercontent.com/huggingface/transformers/v4.57.1/src/transformers/models/whisper/feature_extraction_whisper.py)、[ONNX Runtime v1.31.0 release](https://github.com/microsoft/onnxruntime/releases/tag/v1.31.0)、[ONNX Runtime Python API](https://onnxruntime.ai/docs/api/python/api_summary.html)、[tokenizers 0.22.2 API](https://huggingface.co/docs/tokenizers/v0.22.2/api/tokenizer) と [release](https://github.com/huggingface/tokenizers/releases/tag/v0.22.2) です。
 
-### 複数回推論の RSS benchmark
-
-[ONNXQwen3ASRModelTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift) の `memoryOverManyCalls` test は `QWEN3_ASR_MEMORY_BENCHMARK=1` と `RUN_MODEL_TESTS=1` の両方でのみ有効です。既存の `QWEN3_ASR_ONNX_MODEL_DIRECTORY` と `QWEN3_ASR_ONNX_MODEL_SIZE` も必須で、欠落・不正なら test は失敗します。engine を一度だけ prepare し、長い WAV に対して public `transcribe` を50回実行します。各結果は蓄積せず、text が毎回一定かを検査します。RSS は `after_prepare`、`after_call_1`、`after_call_10`、`after_call_25`、`after_call_50`、`after_unload` で出力します。
-
-Linux は [`/proc/self/status`](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html) の VmRSS kB 値を1024倍して byte 数にします。Windows は current process に対する WinSDK K32GetProcessMemoryInfo の `PROCESS_MEMORY_COUNTERS.WorkingSetSize` を byte 数として読みます（[Microsoft API reference](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo)）。値が欠落・不正、または Windows API 呼び出しに失敗した場合は例外にします。各呼び出しの RTF と50回合計の RTF を表示します。合計時間は prepare と unload を含まず、RTF の test threshold はありません。
-
 製品では Qwen3-ASR の encoder / decoder_init / decoder_step の3 session は `cpuMemoryArenaEnabled: false`、Silero は `true` を固定使用し、runtime selector はありません。Qwen の選択理由は arena disabled で warm RSS が低かった測定結果です（[2026-10-20 JST の記録](records/qwen3-asr-token-memory-2026-10-20.md)）。一般の `ONNXSession` は呼び出し側が必須の bool を指定し、default はありません。
-
-Windows では既存の model directory / size 環境変数を設定した状態で、release 用 ONNX Runtime DLL を配置してから実行します。以下は repository root から実行します。
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$env:RUN_MODEL_TESTS = '1'
-$env:QWEN3_ASR_MEMORY_BENCHMARK = '1'
-$runtimeRoot = python scripts/fetch_onnxruntime.py
-if ($LASTEXITCODE -ne 0) { throw 'ONNX Runtime fetch failed' }
-swift build --package-path app/MacAmbientJev -c release
-if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
-$releaseBin = swift build --package-path app/MacAmbientJev -c release --show-bin-path
-if ($LASTEXITCODE -ne 0) { throw 'Could not resolve release binary path' }
-Copy-Item -LiteralPath (Join-Path $runtimeRoot 'lib/onnxruntime.dll') `
-  -Destination (Join-Path $releaseBin 'onnxruntime.dll') -Force
-swift test --package-path app/MacAmbientJev -c release --filter ONNXQwen3ASRModelTests/memoryOverManyCalls
-if ($LASTEXITCODE -ne 0) { throw 'RSS benchmark failed' }
-```
-
-Linux Docker では model directory を読み取り専用で mount します。`/absolute/path/to/models` は手元で用意した絶対 path の例であり、既定 path ではありません。
-
-```bash
-docker run --rm \
-  -v "$PWD:/repo" \
-  -v "/absolute/path/to/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4:/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4:ro" \
-  -w /repo swift:6.2-noble bash -lc '
-    apt-get update -qq &&
-    apt-get install -y -qq python3 curl >/dev/null &&
-    python3 scripts/fetch_onnxruntime.py &&
-    RUN_MODEL_TESTS=1 \
-    QWEN3_ASR_MEMORY_BENCHMARK=1 \
-    QWEN3_ASR_ONNX_MODEL_DIRECTORY=/models/qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4 \
-    QWEN3_ASR_ONNX_MODEL_SIZE=0.6b \
-    swift test --package-path app/MacAmbientJev -c release \
-      --filter ONNXQwen3ASRModelTests/memoryOverManyCalls
-  '
-```
 
 ## Qwen3-ASR の log-mel 前処理
 
