@@ -6,7 +6,7 @@ using MacAmbientJev.Protocol;
 namespace MacAmbientJev.Presentation;
 
 /// <summary>Owns the immutable shell snapshot, not the engine client's lifetime.</summary>
-public sealed class ShellStore : IAsyncDisposable
+public sealed partial class ShellStore : IAsyncDisposable
 {
     private sealed class Work(Action action)
     {
@@ -16,6 +16,7 @@ public sealed class ShellStore : IAsyncDisposable
     }
 
     private readonly IEngineClient _client;
+    private readonly TimeProvider _timeProvider;
     private readonly Channel<Work> _work = Channel.CreateUnbounded<Work>(new UnboundedChannelOptions { SingleReader = true, AllowSynchronousContinuations = false });
     private readonly CancellationTokenSource _stop = new();
     private readonly object _postGate = new();
@@ -25,9 +26,12 @@ public sealed class ShellStore : IAsyncDisposable
     private Task? _disposeTask;
     private readonly Task _reducerTask, _watcherTask, _initialization;
 
-    public ShellStore(IEngineClient client)
+    public ShellStore(IEngineClient client) : this(client, TimeProvider.System) { }
+
+    public ShellStore(IEngineClient client, TimeProvider timeProvider)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
+        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _reducerTask = Task.Run(ReduceAsync);
         _watcherTask = Task.Run(WatchEventsAsync);
         _initialization = Task.Run(InitializeAsync);
@@ -78,7 +82,12 @@ public sealed class ShellStore : IAsyncDisposable
 
     private async Task FinishDisposeAsync(Task finalAcknowledgement)
     {
-        try { await Task.WhenAll(finalAcknowledgement, _initialization, _watcherTask, _reducerTask).ConfigureAwait(false); }
+        try
+        {
+            await finalAcknowledgement.ConfigureAwait(false);
+            var tailTask = _tailTask ?? Task.CompletedTask;
+            await Task.WhenAll(_initialization, _watcherTask, _reducerTask, tailTask).ConfigureAwait(false);
+        }
         finally { _stop.Dispose(); }
     }
 
@@ -208,7 +217,8 @@ public sealed class ShellStore : IAsyncDisposable
             case EngineEvent.State state: ApplyState(state.Payload); break;
             case EngineEvent.Progress progress: _working = _working with { Progress = progress.Payload }; break;
             case EngineEvent.Error error when output.RequestID is null: _working = _working with { LastError = error.Payload }; break;
-            case EngineEvent.Error: case EngineEvent.Accepted: case EngineEvent.Completed: case EngineEvent.Rows: break;
+            case EngineEvent.Rows rows: ReduceRows(rows.Payload); break;
+            case EngineEvent.Error: case EngineEvent.Accepted: case EngineEvent.Completed: break;
             default: throw new InvalidOperationException("Unrecognized engine event in the client inbox.");
         }
     }
@@ -224,8 +234,11 @@ public sealed class ShellStore : IAsyncDisposable
         _working = next;
     }
 
-    private async Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory)
+    private Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory) => RunRequestAsync(commandFactory, ApplyResult, HandleRequestFailure);
+
+    private async Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory, Action<EngineCommand, EngineResult> apply, Action<EngineCommandName, Exception, bool> failure)
     {
+        ArgumentNullException.ThrowIfNull(commandFactory); ArgumentNullException.ThrowIfNull(apply); ArgumentNullException.ThrowIfNull(failure);
         EngineCommand? command = null; Task<EngineResult>? request = null;
         await Post(() =>
         {
@@ -237,18 +250,22 @@ public sealed class ShellStore : IAsyncDisposable
             { _working = _working with { CommandError = "A request of this kind is already pending." }; return; }
             _working = _working with { Pending = _working.Pending.Add(command.Name), CommandError = null };
             try { request = _client.SendAsync(command); }
-            catch (Exception exception) { HandleRequestFailure(command.Name, exception, true); }
+            catch (Exception exception) { failure(command.Name, exception, true); }
         }).ConfigureAwait(false);
         if (command is null || request is null) return false;
         EngineResult result;
         try { result = await AwaitClientTask(request).ConfigureAwait(false); }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
-        catch (Exception exception) { await Post(() => HandleRequestFailure(command.Name, exception, false)).ConfigureAwait(false); return false; }
+        catch (Exception exception) { await Post(() => failure(command.Name, exception, false)).ConfigureAwait(false); return false; }
         var success = false;
         await Post(() =>
         {
             RemovePending(command.Name);
-            try { ApplyResult(command, result); success = true; }
+            try
+            {
+                if (result.Command != command.Name) throw new InvalidOperationException($"{command.Name} returned result for {result.Command}.");
+                apply(command, result); success = true;
+            }
             catch (Exception exception) { FailStore(exception); }
         }).ConfigureAwait(false);
         return success;

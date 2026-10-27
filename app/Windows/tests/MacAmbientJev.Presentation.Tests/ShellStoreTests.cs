@@ -6,7 +6,7 @@ using Xunit;
 
 namespace MacAmbientJev.Presentation.Tests;
 
-public sealed class ShellStoreTests
+public sealed partial class ShellStoreTests
 {
     [Theory]
     [InlineData(EngineSetupStatus.SettingsRequired, EngineErrorCode.SettingsRequired, ShellSettingsStatus.Required)]
@@ -191,7 +191,7 @@ public sealed class ShellStoreTests
         {
             Interlocked.Increment(ref _sentCount);
             if (command is EngineCommand.SettingsGet) return SettingsGetResponse;
-            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
+            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
             var result = new TaskCompletionSource<EngineResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             if (!_requests.Writer.TryWrite((command, result))) throw new InvalidOperationException("Request channel closed.");
             return result.Task;

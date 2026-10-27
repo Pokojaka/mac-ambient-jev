@@ -21,6 +21,8 @@ public sealed record ShellState
     public string? CommandError { get; init; }
     public EngineClientFailure? EngineFailure { get; init; }
     public string? StoreFailure { get; init; }
+    public ShellTranscriptState Transcript { get; init; } = new();
+    public ShellPageWindow<EngineSessionListResult> Sessions { get; init; } = new();
     public ImmutableHashSet<EngineCommandName> Pending { get; init; } = ImmutableHashSet<EngineCommandName>.Empty;
     public bool IsPending(EngineCommandName command) => Pending.Contains(command);
 }
