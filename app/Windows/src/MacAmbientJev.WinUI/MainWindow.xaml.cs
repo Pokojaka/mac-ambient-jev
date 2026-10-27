@@ -12,6 +12,7 @@ public sealed partial class MainWindow : Window
 {
     private AppWindow? _appWindow; private EngineProcessClient? _client; private ShellStore? _store;
     private ShellUiContext? _context; private LiveViewModel? _live; private TranscriptScrollAdapter? _scroll;
+    private SessionsViewModel? _sessions; private SavedSessionsWindow? _savedSessionsWindow;
     private bool _closeStarted, _allowFinalClose;
 
     public MainWindow()
@@ -29,6 +30,7 @@ public sealed partial class MainWindow : Window
             _context = new ShellUiContext(_store, new DispatcherQueueUiDispatcher(
                 DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("The UI dispatcher is unavailable.")), TimeProvider.System);
             _live = new LiveViewModel(_context); Root.DataContext = _live;
+            _sessions = new SessionsViewModel(_context, new ExplorerFolderRevealer());
             _scroll = new TranscriptScrollAdapter(TranscriptList, _live, ReportFailureAsync);
             _context.Refreshed += OnContextRefreshed;
         }
@@ -44,11 +46,39 @@ public sealed partial class MainWindow : Window
             if (_store is not { } store || _live is not { } live) return;
             await store.Initialization;
             if (_closeStarted) return;
+            SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
             if (live.RefreshDevices.CanExecute(null)) live.RefreshDevices.Execute(null);
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
     }
-    private void OnContextRefreshed(object? sender, EventArgs args) => _scroll?.Refresh();
+    private void OnContextRefreshed(object? sender, EventArgs args)
+    {
+        _scroll?.Refresh();
+        SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
+    }
+
+    private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
+    {
+        if (_closeStarted) return;
+        try
+        {
+            if (_savedSessionsWindow is { } existingWindow) { existingWindow.Activate(); return; }
+            var sessions = _sessions ?? throw new InvalidOperationException("The saved sessions view model is unavailable.");
+            var window = new SavedSessionsWindow(this, sessions);
+            _savedSessionsWindow = window;
+            window.Closed += OnSavedSessionsClosed;
+            window.Activate();
+            if (sessions.List.CanExecute(ShellPageMove.Reload)) sessions.List.Execute(ShellPageMove.Reload);
+        }
+        catch (Exception exception) { await ReportFailureAsync(exception); }
+    }
+
+    private void OnSavedSessionsClosed(object sender, WindowEventArgs args)
+    {
+        var window = sender as Window ?? throw new InvalidOperationException("The closed saved sessions window is unavailable.");
+        window.Closed -= OnSavedSessionsClosed;
+        _savedSessionsWindow = null;
+    }
 
     private async Task ReportFailureAsync(Exception exception)
     {
@@ -80,13 +110,15 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;
         if (_closeStarted) return;
         _closeStarted = true; Root.IsHitTestVisible = false;
-        Toolbar.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
+        Toolbar.IsEnabled = false; SavedSessionsButton.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
         ClosingStatus.Visibility = Visibility.Visible;
         await ShutDownAsync();
     }
 
     private async Task ShutDownAsync()
     {
+        if (_savedSessionsWindow is { } savedSessionsWindow)
+        { try { savedSessionsWindow.Close(); } catch (Exception exception) { ShowFailure(exception, _client?.Failure); } }
         if (_scroll is not null)
         { try { _scroll.Dispose(); } catch (Exception exception) { ShowFailure(exception, _client?.Failure); } _scroll = null; }
         if (_context is { } context)

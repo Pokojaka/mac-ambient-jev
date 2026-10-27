@@ -122,7 +122,7 @@ public sealed partial class ShellStoreTests
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
-        var live = new LiveViewModel(context); var queue = new ProcessingQueueViewModel(context); var sessions = new SessionsViewModel(context);
+        var live = new LiveViewModel(context); var queue = new ProcessingQueueViewModel(context); var sessions = new SessionsViewModel(context, new TestFolderRevealer());
         var settings = new SettingsViewModel(context); var diagnostics = new DiagnosticsViewModel(context);
         var notifications = 0; var commandNotifications = 0;
         void PropertyChanged(object? sender, PropertyChangedEventArgs args) { Assert.True(dispatcher.IsRunningCallback); Interlocked.Increment(ref notifications); }
@@ -291,6 +291,16 @@ public sealed partial class ShellStoreTests
         {
             Action callback; lock (_gate) { if (!_queue.TryDequeue(out var queued)) throw new InvalidOperationException("No dispatcher callback is queued."); callback = queued; }
             Interlocked.Exchange(ref _running, 1); try { callback(); } finally { Interlocked.Exchange(ref _running, 0); lock (_gate) _renderCount++; }
+        }
+    }
+    private sealed class TestFolderRevealer : IFolderRevealer
+    {
+        public string? RequestedPath { get; private set; }
+        public Exception? Failure { get; set; }
+        public Task RevealAsync(string path)
+        {
+            RequestedPath = path;
+            return Failure is null ? Task.CompletedTask : Task.FromException(Failure);
         }
     }
 }

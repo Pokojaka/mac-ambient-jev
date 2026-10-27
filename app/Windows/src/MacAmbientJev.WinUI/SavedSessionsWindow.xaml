@@ -1,0 +1,69 @@
+<Window
+    x:Class="MacAmbientJev.WinUI.SavedSessionsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="保存済み録音">
+    <Grid x:Name="Root" Margin="12" RowSpacing="8" RowDefinitions="Auto,Auto,*">
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8">
+            <Button x:Name="ReloadButton" Content="更新" Command="{Binding List}" ToolTipService.ToolTip="保存済み録音の一覧を更新します" />
+            <Button x:Name="PreviousButton" Content="前のページ" Command="{Binding List}" ToolTipService.ToolTip="前の保存済み録音ページを表示します" />
+            <Button x:Name="NextButton" Content="次のページ" Command="{Binding List}" ToolTipService.ToolTip="次の保存済み録音ページを表示します" />
+            <ProgressRing IsActive="{Binding IsBusy}" Width="24" Height="24" VerticalAlignment="Center" />
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" MaxHeight="96" VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="3">
+                <TextBlock Text="{Binding SelectionDisabledReason}" Visibility="{Binding SelectionDisabledReason, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                <TextBlock Text="{Binding CommandError}" Visibility="{Binding CommandError, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                <TextBlock Text="{Binding LastError.Message}" Visibility="{Binding LastError.Message, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                <TextBlock Text="{Binding StoreFailure}" Visibility="{Binding StoreFailure, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+            </StackPanel>
+        </ScrollViewer>
+        <Grid Grid.Row="2" ColumnDefinitions="320,*" ColumnSpacing="12">
+            <ListView x:Name="SessionList" ItemsSource="{Binding Pages.Current.Sessions}" SelectionMode="Single" SelectedValuePath="FolderID" SelectedValue="{Binding SelectedFolderID, Mode=OneWay}" IsEnabled="{Binding CanSelectSession}" ToolTipService.ToolTip="{Binding SelectionDisabledReason}" SelectionChanged="OnSessionSelectionChanged">
+                <ListView.ItemsPanel>
+                    <ItemsPanelTemplate><ItemsStackPanel /></ItemsPanelTemplate>
+                </ListView.ItemsPanel>
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Spacing="3" Margin="4">
+                            <TextBlock Text="{Binding DisplayName}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock Text="{Binding StatusText}" ToolTipService.ToolTip="{Binding StatusText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <Grid Grid.Column="1">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Visibility="{Binding HasInspection, Converter={StaticResource VisibilityConverter}}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="{Binding Inspection.DisplayName}" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        <TextBlock Text="{Binding Inspection.StatusText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        <TextBlock Text="{Binding MetadataText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="録音フォルダー ID:" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock Text="{Binding Inspection.FolderID}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="録音フォルダー" />
+                            <TextBlock Text="{Binding Inspection.FolderPath}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                        <StackPanel Spacing="2" Visibility="{Binding Inspection.ExportPath, Converter={StaticResource VisibilityConverter}}">
+                            <TextBlock Text="エクスポート先" />
+                            <TextBlock Text="{Binding Inspection.ExportPath}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding Inspection.Error.Message}" Visibility="{Binding Inspection.Error.Message, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        <StackPanel Spacing="6">
+                            <Button Content="{Binding ReprocessLabel}" Command="{Binding Reprocess}" ToolTipService.ToolTip="{Binding ActionDisabledReason}" />
+                            <Button Content="{Binding RetryDecisionsLabel}" Command="{Binding RetryDecisions}" ToolTipService.ToolTip="{Binding ActionDisabledReason}" />
+                            <Button Content="{Binding RevealFolderLabel}" Command="{Binding RevealFolder}" ToolTipService.ToolTip="録音データのフォルダーをエクスプローラーで開きます" />
+                            <TextBlock Text="{Binding ActionDisabledReason}" Visibility="{Binding ActionDisabledReason, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+                <StackPanel IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="4" Visibility="{Binding HasInspection, Converter={StaticResource VisibilityConverter}, ConverterParameter=Invert}">
+                    <TextBlock Text="{Binding EmptyTitle}" HorizontalAlignment="Center" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                    <TextBlock Text="{Binding EmptyDescription}" TextWrapping="Wrap" MaxWidth="480" HorizontalTextAlignment="Center" />
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

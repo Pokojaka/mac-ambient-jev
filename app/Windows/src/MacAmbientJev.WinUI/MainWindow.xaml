@@ -15,6 +15,9 @@
                 <AppBarButton Label="{Binding RefreshDevicesLabel}" Command="{Binding RefreshDevices}" ToolTipService.ToolTip="選択中の音声ソースのデバイス一覧を更新します">
                     <AppBarButton.Icon><SymbolIcon Symbol="Refresh" /></AppBarButton.Icon>
                 </AppBarButton>
+                <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
+                    <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
+                </AppBarButton>
             </CommandBar.PrimaryCommands>
             <CommandBar.Content>
                 <StackPanel Orientation="Horizontal" Spacing="8">

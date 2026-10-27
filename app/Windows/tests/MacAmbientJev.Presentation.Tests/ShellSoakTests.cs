@@ -55,7 +55,7 @@ public sealed partial class ShellStoreTests
         };
         await using var store = await Start(engine, clock);
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
-        _ = new LiveViewModel(context); _ = new ProcessingQueueViewModel(context); _ = new SessionsViewModel(context);
+        _ = new LiveViewModel(context); _ = new ProcessingQueueViewModel(context); _ = new SessionsViewModel(context, new TestFolderRevealer());
         _ = new SettingsViewModel(context); _ = new DiagnosticsViewModel(context);
         var renderTimes = new List<long>(); context.Refreshed += (_, _) => renderTimes.Add(clock.GetTimestamp());
         string? selected = null; ulong sequence = 0, stateRevision = 1, progressUnits = 0;

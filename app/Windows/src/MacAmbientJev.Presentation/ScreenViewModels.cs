@@ -202,42 +202,6 @@ public sealed class ProcessingQueueViewModel : ScreenViewModel
     public EngineProcessingIndicator? Indicator => Snapshot.Engine?.Presentation.ProcessingIndicator;
 }
 
-public sealed class SessionsViewModel : ScreenViewModel
-{
-    public SessionsViewModel(ShellUiContext context) : base(context)
-    {
-        List = Command(CanList, parameter => Context.Store.ListSessionsAsync((ShellPageMove)parameter!));
-        Select = Command(CanSelect, parameter => Context.Store.SelectSessionAsync(((EngineSessionSummary)parameter!).SessionID!));
-    }
-
-    public ShellPageWindow<EngineSessionListResult> Pages => Snapshot.Sessions;
-    public string Title => "保存済み録音"; public string RefreshLabel => "更新";
-    public string EmptyTitle => "録音を選択してください"; public string EmptyDescription => "選んだ録音の処理状態を確認できます。";
-    public ShellCommand List { get; } public ShellCommand Select { get; }
-
-    private bool CanList(object? parameter)
-    {
-        if (parameter is not ShellPageMove move) return false;
-        var state = Context.Store.State;
-        if (state.IsPending(EngineCommandName.SessionList)) return false;
-        if (move == ShellPageMove.Reload) return true;
-        var page = state.Sessions.Current;
-        return move switch
-        {
-            ShellPageMove.Next => page?.NextCursor is not null,
-            ShellPageMove.Previous => page?.PreviousCursor is not null,
-            _ => false
-        };
-    }
-
-    private bool CanSelect(object? parameter)
-    {
-        if (parameter is not EngineSessionSummary { SessionID: not null }) return false;
-        var state = Context.Store.State;
-        return state.Engine is { Recording: null } && !state.IsPending(EngineCommandName.TranscriptWatch);
-    }
-}
-
 public sealed class SettingsViewModel : ScreenViewModel
 {
     public SettingsViewModel(ShellUiContext context) : base(context)
