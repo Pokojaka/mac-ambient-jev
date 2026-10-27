@@ -9,16 +9,6 @@ public struct RecoveredJSONL: Sendable {
     public let lines: [Data]
     public let lastEventSequence: UInt64?
     public let droppedIncompleteTail: Bool
-
-    public var normalizedData: Data {
-        guard !lines.isEmpty else { return Data() }
-        var output = Data()
-        for line in lines {
-            output.append(line)
-            output.append(0x0A)
-        }
-        return output
-    }
 }
 
 public enum SessionRecovery {
