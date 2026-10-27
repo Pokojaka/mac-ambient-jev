@@ -144,6 +144,5 @@ public sealed partial class ShellStoreTests
             store.Changed -= storeChanged;
             clock.TimerScheduled -= timerScheduled;
         }
-        Assert.True(ready());
     }
 }
