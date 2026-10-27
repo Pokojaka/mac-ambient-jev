@@ -114,7 +114,7 @@ func diarizationArtifactEvaluationRejectsUnknownSchema() {
 @Test
 func speakerIdentityDecodingRejectsIndexOnOther() {
     let data = Data(
-        #"{\"kind\":\"other\",\"index\":1}"#.utf8
+        #"{"kind":"other","index":1}"#.utf8
     )
     #expect(throws: DecodingError.self) {
         _ = try JSONDecoder().decode(
