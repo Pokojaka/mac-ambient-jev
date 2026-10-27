@@ -200,7 +200,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     }
     private string FormatTransport() {
         var version = typeof(SettingsDialog).Assembly.GetName().Version ?? throw new InvalidOperationException("Shell assembly version is unavailable.");
-        var text = new StringBuilder().Append("アプリ バージョン: ").AppendLine(version.ToString()).Append(".NET: ").AppendLine(Environment.Version.ToString()).AppendLine("NDJSON: v1").AppendLine("エンジン バージョン: 未提供");
+        var text = new StringBuilder().Append("アプリ バージョン: ").AppendLine(version.ToString()).Append(".NET: ").AppendLine(Environment.Version.ToString()).AppendLine("NDJSON: v1");
         text.Append("終了コード: ").AppendLine(_diagnostics.EngineFailure?.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "未確定");
         if (_diagnostics.EngineFailure is { } failure) {
             text.Append("エンジン プロセス: ").AppendLine(failure.Message);
