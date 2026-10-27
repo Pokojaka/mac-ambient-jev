@@ -18,6 +18,9 @@
                 <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
                     <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
                 </AppBarButton>
+                <AppBarButton x:Name="SettingsButton" Label="設定" IsEnabled="False" Click="OnSettingsClick" ToolTipService.ToolTip="一般設定と診断を開きます">
+                    <AppBarButton.Icon><SymbolIcon Symbol="Setting" /></AppBarButton.Icon>
+                </AppBarButton>
             </CommandBar.PrimaryCommands>
             <CommandBar.Content>
                 <StackPanel Orientation="Horizontal" Spacing="8">

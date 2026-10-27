@@ -221,7 +221,24 @@ public sealed class SettingsViewModel : ScreenViewModel
     public string? ThermalMonitoring => Capabilities?.ThermalMonitoring switch
     { null => null, EngineUnavailableCapability.None => "なし", _ => throw new InvalidOperationException("Unknown thermal monitoring capability.") };
     public ShellCommand Commit { get; } public ShellCommand Reload { get; } public ShellCommand PrepareModels { get; }
-    public Task EditDraftAsync(EngineSettings draft) => Context.Store.SetSettingsDraftAsync(draft);
+    public Task EditDraftAsync(EngineSettings? draft) => Context.Store.SetSettingsDraftAsync(draft);
+
+    /// <summary>Null drafts are incomplete; exportDestinationChosen distinguishes a chosen null path from an unanswered choice.</summary>
+    public static EngineSettings? CreateDraft(
+        long? schemaVersion, EngineSource? source, EngineDevice? device, EngineASRSize? asrSize,
+        EngineExecutionProvider? executionProvider, long? threads, bool? lowHeat, bool? decisionsEnabled,
+        bool? automaticExport, bool exportDestinationChosen, string? exportDestinationPath)
+    {
+        if (schemaVersion is not long version || source is not EngineSource selectedSource || device is null ||
+            asrSize is not EngineASRSize selectedAsrSize || executionProvider is not EngineExecutionProvider selectedProvider ||
+            threads is not long selectedThreads || lowHeat is not bool selectedLowHeat ||
+            decisionsEnabled is not bool selectedDecisionsEnabled || automaticExport is not bool selectedAutomaticExport ||
+            !exportDestinationChosen) return null;
+        var draft = new EngineSettings(version, selectedSource, device, selectedAsrSize, selectedProvider, selectedThreads,
+            selectedLowHeat, selectedDecisionsEnabled, selectedAutomaticExport, exportDestinationPath);
+        draft.Validate("$.settings");
+        return draft;
+    }
 
     private bool CanCommit(object? parameter)
     {

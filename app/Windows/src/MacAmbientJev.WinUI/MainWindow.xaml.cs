@@ -13,6 +13,7 @@ public sealed partial class MainWindow : Window
     private AppWindow? _appWindow; private EngineProcessClient? _client; private ShellStore? _store;
     private ShellUiContext? _context; private LiveViewModel? _live; private TranscriptScrollAdapter? _scroll;
     private SessionsViewModel? _sessions; private SavedSessionsWindow? _savedSessionsWindow;
+    private SettingsViewModel? _settings; private DiagnosticsViewModel? _diagnostics; private SettingsDialog? _settingsDialog;
     private bool _closeStarted, _allowFinalClose;
 
     public MainWindow()
@@ -29,6 +30,7 @@ public sealed partial class MainWindow : Window
             _store = new ShellStore(_client);
             _context = new ShellUiContext(_store, new DispatcherQueueUiDispatcher(
                 DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("The UI dispatcher is unavailable.")), TimeProvider.System);
+            _settings = new SettingsViewModel(_context); _diagnostics = new DiagnosticsViewModel(_context);
             _live = new LiveViewModel(_context); Root.DataContext = _live;
             _sessions = new SessionsViewModel(_context, new ExplorerFolderRevealer());
             _scroll = new TranscriptScrollAdapter(TranscriptList, _live, ReportFailureAsync);
@@ -47,6 +49,7 @@ public sealed partial class MainWindow : Window
             await store.Initialization;
             if (_closeStarted) return;
             SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
+            RefreshSettingsButton();
             if (live.RefreshDevices.CanExecute(null)) live.RefreshDevices.Execute(null);
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
@@ -55,6 +58,7 @@ public sealed partial class MainWindow : Window
     {
         _scroll?.Refresh();
         SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
+        RefreshSettingsButton();
     }
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
@@ -72,6 +76,29 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
     }
+
+    private async void OnSettingsClick(object sender, RoutedEventArgs args)
+    {
+        if (_closeStarted || _settingsDialog is not null) return;
+        try
+        {
+            var context = _context ?? throw new InvalidOperationException("The settings context is unavailable.");
+            var settings = _settings ?? throw new InvalidOperationException("The settings view model is unavailable.");
+            var diagnostics = _diagnostics ?? throw new InvalidOperationException("The diagnostics view model is unavailable.");
+            var dialog = new SettingsDialog(context, settings, diagnostics) { XamlRoot = Root.XamlRoot };
+            _settingsDialog = dialog; SettingsButton.IsEnabled = false; await dialog.ShowAsync();
+        }
+        catch (Exception exception) { await ReportFailureAsync(exception); }
+        finally
+        {
+            if (_settingsDialog is { } dialog) { dialog.Dispose(); _settingsDialog = null; }
+            RefreshSettingsButton();
+        }
+    }
+
+    private void RefreshSettingsButton() => SettingsButton.IsEnabled = !_closeStarted && _settingsDialog is null &&
+        _context is { State.Capabilities: not null } && _store is
+        { Initialization.IsCompleted: true, State: { Capabilities: not null, Phase: ShellPhase.Running or ShellPhase.EngineFailed } };
 
     private void OnSavedSessionsClosed(object sender, WindowEventArgs args)
     {
@@ -117,6 +144,8 @@ public sealed partial class MainWindow : Window
 
     private async Task ShutDownAsync()
     {
+        if (_settingsDialog is { } settingsDialog)
+        { try { settingsDialog.Hide(); } catch (Exception exception) { ShowFailure(exception, _client?.Failure); } finally { settingsDialog.Dispose(); _settingsDialog = null; } }
         if (_savedSessionsWindow is { } savedSessionsWindow)
         { try { savedSessionsWindow.Close(); } catch (Exception exception) { ShowFailure(exception, _client?.Failure); } }
         if (_scroll is not null)

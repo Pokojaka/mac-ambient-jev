@@ -43,9 +43,9 @@ public sealed partial class ShellStore : IAsyncDisposable
     public event EventHandler? Changed;
     public Task Initialization => _initialization;
 
-    public async Task SetSettingsDraftAsync(EngineSettings draft)
+    public async Task SetSettingsDraftAsync(EngineSettings? draft)
     {
-        ArgumentNullException.ThrowIfNull(draft); await Post(() => _working = _working with { SettingsDraft = draft, CommandError = null }).ConfigureAwait(false);
+        await Post(() => _working = _working with { SettingsDraft = draft, CommandError = null }).ConfigureAwait(false);
     }
 
     public Task<bool> ReloadSettingsAsync() => RunRequestAsync(() => new EngineCommand.SettingsGet(new EngineEmptyPayload()));

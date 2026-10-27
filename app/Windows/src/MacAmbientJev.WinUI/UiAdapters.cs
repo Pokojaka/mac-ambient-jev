@@ -10,6 +10,15 @@ using VirtualKey = Windows.System.VirtualKey;
 
 namespace MacAmbientJev.WinUI;
 
+internal sealed class MicrophonePrivacyLauncher
+{
+    public async Task OpenAsync()
+    {
+        if (!await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:privacy-microphone")))
+            throw new InvalidOperationException("マイクのプライバシー設定を開けませんでした。");
+    }
+}
+
 internal sealed class DispatcherQueueUiDispatcher(DispatcherQueue queue) : IUiDispatcher
 {
     public bool TryEnqueue(Action callback) => queue.TryEnqueue(() => callback());

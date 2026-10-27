@@ -179,6 +179,29 @@ public sealed partial class ShellStoreTests
         Assert.Equal(edited, vm.Draft); Assert.Same(confirmed, store.State.ConfirmedSettings); Assert.Equal(sent, engine.SentCount);
     }
     [Fact]
+    public async Task CreateDraftRequiresEveryExplicitChoice()
+    {
+        var complete = SettingsViewModel.CreateDraft(1, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Large,
+            EngineExecutionProvider.Cpu, 1, false, false, false, true, null);
+        Assert.Equal(new EngineSettings(1, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Large,
+            EngineExecutionProvider.Cpu, 1, false, false, false, null), complete);
+        EngineSettings? Draft(int missing) => SettingsViewModel.CreateDraft(
+            missing == 0 ? null : 1, missing == 1 ? null : EngineSource.Microphone,
+            missing == 2 ? null : new EngineDevice.Default(), missing == 3 ? null : EngineASRSize.Large,
+            missing == 4 ? null : EngineExecutionProvider.Cpu, missing == 5 ? null : 1,
+            missing == 6 ? null : false, missing == 7 ? null : false, missing == 8 ? null : false,
+            missing != 9, null);
+        for (var missing = 0; missing < 10; missing++) Assert.Null(Draft(missing));
+
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var vm = new SettingsViewModel(context); var confirmed = store.State.ConfirmedSettings;
+        await vm.EditDraftAsync(null);
+        Assert.Same(confirmed, store.State.ConfirmedSettings); Assert.Null(store.State.SettingsDraft); Assert.False(vm.Commit.CanExecute(null));
+        await vm.EditDraftAsync(complete);
+        Assert.Same(confirmed, store.State.ConfirmedSettings); Assert.True(vm.Commit.CanExecute(null));
+    }
+    [Fact]
     public async Task DiagnosticsLoadingDoesNotInventCounters()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
