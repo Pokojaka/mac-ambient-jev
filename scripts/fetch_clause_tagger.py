@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import sys
 import tempfile
@@ -169,11 +167,6 @@ def load_manifest(format: str) -> Manifest:
     return parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), format)
 
 
-def _sha256(path: Path) -> str:
-    with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
-
-
 def verify_directory(directory: Path, members: list[Member]) -> None:
     """Requires exactly the pinned files and parent directories, with regular-file contents."""
     try:
@@ -226,22 +219,12 @@ def verify_directory(directory: Path, members: list[Member]) -> None:
                 f"ファイルサイズが一致しません: {path}。期待値 {member.byte_count}、実際 {metadata.st_size}。"
                 "directory を削除して再実行してください。"
             )
-        actual_sha256 = _sha256(path)
+        actual_sha256 = pinned_download.sha256(path)
         if actual_sha256 != member.sha256:
             raise ValueError(
                 f"SHA-256 が一致しません: {path}。期待値 {member.sha256}、実際 {actual_sha256}。"
                 "directory を削除して再実行してください。"
             )
-
-
-def _remove_tree(path: Path) -> None:
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeError(f"削除対象が通常のディレクトリではありません: {path}")
-    shutil.rmtree(path)
 
 
 def _member_url(source: Source, member: Member) -> str:
@@ -309,7 +292,7 @@ def fetch(manifest: Manifest) -> Path:
         os.replace(staging, destination)
     finally:
         if os.path.lexists(staging):
-            _remove_tree(staging)
+            pinned_download.remove_tree(staging)
     return destination
 
 
