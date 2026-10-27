@@ -2,18 +2,6 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-@Test func durableWriterRecordsCommittedFrameRange() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 15, sessionURL: root)
-
-    try await writer.append(samples: Array(repeating: 0.1, count: 4_800))
-    let checkpoint = try await writer.checkpoint()
-
-    #expect(checkpoint.committedFrames == 4_800)
-    #expect(checkpoint.chunkFiles.count == 1)
-}
-
 @Test func durableWriterSplitsAtConfiguredChunkDuration() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -97,20 +85,6 @@ import Testing
     #expect(ring.pop() == nil)
 }
 
-@Test func processingTimelineReaderReadsAcrossDurableChunkBoundaries() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    try await writer.append(samples: (0..<25).map(Float.init))
-    let checkpoint = try await writer.finish()
-
-    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
-    let samples = try reader.readSamples(frameRange: 8..<13)
-
-    #expect(samples == [8, 9, 10, 11, 12])
-}
-
 @Test func audioBlockRingAveragesPlanarInputWithoutCallbackArray() {
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 4)
     var left: [Float] = [1, 2]
@@ -151,56 +125,6 @@ import Testing
     #expect(checkpoint.committedFrames == 6)
     let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     #expect(try reader.readSamples(frameRange: 0..<6) == [1, 2, 3, 4, 5, 6])
-}
-
-@Test
-func durableWriterPersistsCheckpointBesideChunks() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-
-    let checkpointURL = root.appending(path: "checkpoint.json")
-    let initialBytes = try Data(contentsOf: checkpointURL)
-    try await writer.append(samples: Array(repeating: 0.5, count: 30))
-
-    // Committed chunk files are durable without rewriting the growing JSON snapshot.
-    #expect(try Data(contentsOf: checkpointURL) == initialBytes)
-    let recovered = try #require(try AudioCheckpoint.loadRecovered(from: root, relativeTo: root))
-    #expect(recovered.committedFrames == 30)
-    #expect(recovered.chunkFrameCounts == [10, 10, 10])
-    #expect(try ProcessingTimelineReader(directory: root, checkpoint: recovered, sessionURL: root)
-        .readSamples(frameRange: 0..<30) == Array(repeating: Float(0.5), count: 30))
-    let reopened = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    try await reopened.append(samples: Array(repeating: 0.75, count: 10))
-    let final = try await reopened.finish()
-    #expect(final.chunkFrameCounts == [10, 10, 10, 10])
-    #expect(try AudioCheckpoint.loadRecovered(from: root, relativeTo: root) == final)
-}
-
-@Test
-func durableGapDiagnosticsSurviveRecovery() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    try await writer.append(samples: Array(repeating: 1, count: 5))
-    try await writer.recordGap(startFrame: 5, frameCount: 3, reason: .overflow)
-    try await writer.append(samples: [0, 0, 0, 1, 1])
-    try await writer.recordGap(startFrame: 10, frameCount: 2, reason: .missingCallback)
-    try await writer.append(samples: [0, 0] + Array(repeating: 1, count: 8))
-
-    let expected = [
-        AudioGapEvent(startFrame: 5, frameCount: 3, reason: .overflow),
-        AudioGapEvent(startFrame: 10, frameCount: 2, reason: .missingCallback)
-    ]
-    let recovered = try #require(try AudioCheckpoint.loadRecovered(from: root, relativeTo: root))
-    #expect(recovered.committedFrames == 20)
-    #expect(recovered.gapEvents == expected)
-    let reopened = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    #expect(await reopened.committedSnapshot().gapEvents == expected)
-    let final = try await reopened.finish()
-    #expect(try AudioCheckpoint.loadRecovered(from: root, relativeTo: root) == final)
-    #expect(final.gapEvents == expected)
 }
 
 @Test

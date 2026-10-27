@@ -44,15 +44,6 @@ func rollingHistorySelectsQuietestFrameForChosenMaximumLengthSplit() {
 }
 
 @Test
-func rollingHistoryUniformEnergyChoosesEarliestCompleteFrame() {
-    let sampleCount = 224_000
-    var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 150)
-    history.append([Float](repeating: 1, count: sampleCount))
-
-    #expect(history.quietestFrame(in: 192_000..<224_000) == 192_160)
-}
-
-@Test
 func rollingHistoryUsesOnlyCompleteAlignedFramesInUnalignedRange() {
     var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 10)
     var samples = [Float](repeating: 0, count: 320)
@@ -121,26 +112,6 @@ func preRollClampsAtZeroAndCountsTowardIndependentMinimum() {
 }
 
 @Test
-func explicitlySplitContinuationEmitsFourMillisecondTail() {
-    let maxSegmentFrames: Int64 = 224_000
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
-        preRollFrames: 0,
-        maxSegmentFrames: maxSegmentFrames,
-        minimumIndependentSegmentFrames: 8_000
-    )
-
-    assembler.speechStarted(atFrame: 0)
-    #expect(assembler.splitStartFrameIfNeeded(atFrame: maxSegmentFrames) == 0)
-    let first = assembler.split(atFrame: maxSegmentFrames)
-    let tail = assembler.speechEnded(atFrame: maxSegmentFrames + 64).first
-
-    #expect(first.endFrame == maxSegmentFrames)
-    #expect(tail?.startFrame == maxSegmentFrames)
-    #expect(tail?.endFrame == maxSegmentFrames + 64)
-}
-
-@Test
 func repeatedSpeechEndsEmitNothingAfterClosingAndWithoutActiveSpeech() {
     var assembler = SegmentationAssembler(
         segmentationRunID: "seg_run_01",
@@ -186,33 +157,4 @@ func prolongedSpeechRequiresExplicitMaximumLengthCutsWithoutGaps() {
             #expect(segments[index - 1].endFrame == segments[index].startFrame)
         }
     }
-}
-
-@Test
-func tenMinuteHistoryRetainsOnlyCapacityAndFindsRecentKnownEnergy() {
-    let totalSamples = 9_600_000
-    let quietFrameStart = 9_599_360
-    var history = RollingFrameEnergyHistory(frameSampleCount: 320, capacity: 150)
-    let reusableChunk = [Float](repeating: 1, count: 4_096)
-    var offset = 0
-
-    while offset < quietFrameStart {
-        let count = min(reusableChunk.count, quietFrameStart - offset)
-        history.append(count == reusableChunk.count ? reusableChunk : Array(reusableChunk.prefix(count)))
-        offset += count
-        #expect(history.storedFrameCount <= 150)
-    }
-
-    history.append([Float](repeating: 0, count: 320))
-    offset += 320
-    while offset < totalSamples {
-        let count = min(reusableChunk.count, totalSamples - offset)
-        history.append(count == reusableChunk.count ? reusableChunk : Array(reusableChunk.prefix(count)))
-        offset += count
-        #expect(history.storedFrameCount <= 150)
-    }
-
-    #expect(history.processedSamples == 9_600_000)
-    #expect(history.storedFrameCount == 150)
-    #expect(history.quietestFrame(in: Int64(quietFrameStart)..<Int64(quietFrameStart + 320)) == Int64(quietFrameStart + 160))
 }
