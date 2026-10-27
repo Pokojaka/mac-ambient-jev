@@ -933,7 +933,7 @@ $clauseTagger = [string]$clauseTaggerLines[0]
 
 `--format coreml` は `.build/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger` に Core ML 形式を取得します。Mac の [`build_app.sh`](../scripts/build_app.sh) はこの形式を取得し、アプリ bundle に同梱します。
 
-Swift 側の PortableRuntime `ClauseTaggerAssets(modelDirectory:)` は、caller が指定した絶対 path の既存 directory で5ファイルすべて（LICENSE.md を含む）の通常ファイル型・byte count・SHA-256 を、他の処理より先に検証します。欠落・サイズ違い・hash 違い・通常ファイルでないものは、ファイル名、期待値と実際の値、`python3 scripts/fetch_clause_tagger.py --format onnx` を含む error で失敗し、修復や代替 path はありません。成功すると ONNX model URL、tokenizer URL、manifest 由来の `ClauseTaggerModelIdentity`（model ID、model revision、tokenizer SHA-256）を公開します。実モデルを使う test は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` で明示された directory を使います。runtime の環境変数による path 注入に変更はなく、既定値はありません。未設定・相対 path・存在しない directory は skip せず失敗します。
+Swift 側の PortableRuntime `ClauseTaggerAssets(modelDirectory:)` は、caller が指定した絶対 path の既存 directory で5ファイルすべて（LICENSE.md を含む）の通常ファイル型・byte count・SHA-256 を、他の処理より先に検証します。検証は `PortableClauseTaggerInspection.validateAssets(modelDirectory:)` と同じ `PortableAssetVerifier` 一つだけで行い、`ClauseTaggerAssets` 側に別の検証実装はありません。相対 path・欠落・サイズ違い・hash 違い・通常ファイルでないものは `PortableModelPreparationError`（`python3 scripts/fetch_clause_tagger.py --format onnx` を含む install command 付き）で失敗し、修復や代替 path はありません。成功すると ONNX model URL、tokenizer URL、manifest 由来の `ClauseTaggerModelIdentity`（model ID、model revision、tokenizer SHA-256）を公開します。実モデルを使う test は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` で明示された directory を使います。runtime の環境変数による path 注入に変更はなく、既定値はありません。未設定・相対 path・存在しない directory は skip せず失敗します。
 
 自己 test は次のとおりです。
 
@@ -941,7 +941,7 @@ Swift 側の PortableRuntime `ClauseTaggerAssets(modelDirectory:)` は、caller 
 python3 -B scripts/test_fetch_clause_tagger.py
 ```
 
-fetcher の test は単一 manifest、両形式の pin と URL、不正な manifest、完全な tree の公開、有効な既存 cache の再利用（network access なし）、破損・不足・余分・symlink の既存 cache の拒否、取得・hash・byte count 不一致時の retry なしと staging cleanup を検査します。test は network に接続せず、小さな合成データを使います。Swift の [ClauseTaggerAssetsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ClauseTaggerAssetsTests.swift) は PortableRuntime の test target（Linux / Windows）で、manifest の pin と、小さな stand-in の一時 directory による欠落・サイズ違い・hash 違い・directory・相対 path の拒否を、実モデルなしで検査します。
+fetcher の test は単一 manifest、両形式の pin と URL、不正な manifest、完全な tree の公開、有効な既存 cache の再利用（network access なし）、破損・不足・余分・symlink の既存 cache の拒否、取得・hash・byte count 不一致時の retry なしと staging cleanup を検査します。test は network に接続せず、小さな合成データを使います。Swift の [ClauseTaggerAssetsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ClauseTaggerAssetsTests.swift) は PortableRuntime の test target（Linux / Windows）で、manifest の pin と不正な manifest の拒否、小さな stand-in の一時 directory から得る URL と identity（空白・非 ASCII を含む path を含む）を、実モデルなしで検査します。欠落・サイズ違い・hash 違い・directory・相対 path の拒否は `PortableClauseTaggerInspectionTests.swift` が検査します。
 
 ## ビルドと検証
 
