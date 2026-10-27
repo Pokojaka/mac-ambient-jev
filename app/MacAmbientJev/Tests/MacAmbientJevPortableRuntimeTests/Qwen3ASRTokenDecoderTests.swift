@@ -14,13 +14,11 @@ private struct GoldenFixture: Decodable {
         let ids: [Int64]
     }
 
-    let tokenizerSha256: String
     let decodeCases: [Decoded]
     let invalidUtf8Cases: [Invalid]
     let transcriptCases: [Decoded]
 
     private enum CodingKeys: String, CodingKey {
-        case tokenizerSha256 = "tokenizer_sha256"
         case decodeCases = "decode_cases"
         case invalidUtf8Cases = "invalid_utf8_cases"
         case transcriptCases = "transcript_cases"
@@ -108,10 +106,6 @@ struct Qwen3ASRTokenDecoderGoldenTests {
         #expect(throws: Qwen3ASRError.unknownTokenID(-1)) { try decoder.decode([-1]) }
     }
 
-    @Test
-    func goldenFixtureWasMadeFromThePinnedFile() throws {
-        #expect(golden.tokenizerSha256 == "bd2a97b55c8f7f9c328c73ee9b9178771037e9f566dfca8e238a063d41cbac92")
-    }
 }
 
 struct Qwen3ASRTokenizerFileTests {

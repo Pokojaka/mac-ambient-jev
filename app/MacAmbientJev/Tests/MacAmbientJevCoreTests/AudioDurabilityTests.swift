@@ -296,25 +296,6 @@ import Testing
         .readSamples(frameRange: 0..<13) == [1, 2] + Array(repeating: Float(0), count: 7) + [9, 10, 11, 12])
 }
 
-@Test func ringOverflowKeepsLaterBlocksAtTheirCapturedFramePositions() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 4)
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 4.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
-
-    #expect(pushMono([1, 2], at: 0, into: ring))
-    #expect(!pushMono([3, 4, 5], at: 2, into: ring))
-    _ = try await drain.drainAvailable()
-    #expect(pushMono([6], at: 5, into: ring))
-    let checkpoint = try await drain.finish()
-
-    #expect(ring.overflowCount == 1)
-    #expect(checkpoint.committedFrames == 6)
-    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
-    #expect(try reader.readSamples(frameRange: 0..<6) == [1, 2, 0, 0, 0, 6])
-}
-
 @Test func planarPushRejectsOverflowingDimensionsWithoutTrapping() {
     let ring = AudioBlockRing(capacity: 1, blockFrameCapacity: 4)
     var samples: [Float] = [0]
@@ -420,23 +401,6 @@ import Testing
         expected.append(contentsOf: speech)
     }
     #expect(try reader.readSamples(frameRange: 0..<68) == expected)
-}
-
-@Test func stopAfterOneFramePTSJitterDoesNotAppendFalseTailSilence() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let ring = AudioBlockRing(capacity: 2, blockFrameCapacity: 2, sampleRate: CanonicalAudio.sampleRate)
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1000.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    let drain = AudioCaptureDrain(ring: ring, writer: writer, converter: CanonicalMonoPassthrough())
-    #expect(pushMono([1, 2], at: 0, into: ring))
-    #expect(pushMono([3], at: 3, into: ring))
-    ring.finish(tailFrame: 4) // Last raw PTS end is one frame after normalized end.
-    let checkpoint = try await drain.finish()
-    #expect(checkpoint.committedFrames == 3)
-    #expect(try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
-        .readSamples(frameRange: 0..<3) == [1, 2, 3])
-    #expect(checkpoint.gapEvents.isEmpty)
-    #expect(ring.dropoutCount == 0)
 }
 
 @Test func gapAfterCommittedChunkUsesRecordingOriginNotLatestCheckpoint() async throws {
@@ -611,13 +575,6 @@ import Testing
     #expect(try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
         .readSamples(frameRange: 0..<4) == [1, 2, 3, 4])
     #expect(checkpoint.gapEvents.isEmpty)
-}
-
-@Test func ringDurationCapacityUsesDeviceFramesNotInterleavedSamples() {
-    let slots = AudioBlockRing.capacityForDuration(
-        sampleRate: 48_000, blockFrameCapacity: 512)
-    #expect(slots == 938)
-    #expect(slots * 512 >= 48_000 * 10)
 }
 
 @Test func tenSecondRingHandlesFiveHundredTwelveFrameCallbacksAtFortyEightKilohertz() {

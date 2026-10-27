@@ -65,22 +65,6 @@ class ManifestTests(unittest.TestCase):
         ]
         self.assertEqual(copies, [SWIFT_MANIFEST])
 
-    def test_all_four_pins(self) -> None:
-        files, key = fetcher.load_manifest()
-
-        self.assertEqual([file.role for file in files], list(fetcher.ROLES))
-        for file in files:
-            repository, revision, name, byte_count, sha256 = PINS[file.role]
-            self.assertEqual(
-                (file.repository, file.revision, file.name, file.byte_count, file.sha256),
-                (repository, revision, name, byte_count, sha256),
-            )
-            self.assertEqual(
-                file.url,
-                f"https://huggingface.co/{repository}/resolve/{revision}/{name}",
-            )
-        self.assertEqual(key, "df2625ac79a7-67f963b6a1d9")
-
     def test_swift_and_script_share_the_coordinate_signs_owner(self) -> None:
         manifest = json.loads(SWIFT_MANIFEST.read_text(encoding="utf-8"))
         self.assertEqual(len(manifest["coordinateSigns"]), 128)

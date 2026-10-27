@@ -427,7 +427,7 @@ extension EngineApplicationCore: RecordingFinishEffects {
                 let durationSeconds = Double(checkpoint.committedFrames) / checkpoint.sampleRate
                 let segmentSuffix = vadSegmentCount > 0 ? "・発話 \(vadSegmentCount)区間" : ""
                 setRecordingStatus(
-                    "録音を保存しました（\(Self.formatRecordingDuration(durationSeconds))\(segmentSuffix)）",
+                    "録音を保存しました（\(SavedSessionDisplayText.recordingDuration(durationSeconds))\(segmentSuffix)）",
                     tone: .neutral
                 )
             }

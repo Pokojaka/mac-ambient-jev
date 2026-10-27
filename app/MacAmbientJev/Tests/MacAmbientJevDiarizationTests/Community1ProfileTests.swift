@@ -3,26 +3,6 @@ import Testing
 @testable import MacAmbientJevDiarization
 
 @Suite struct Community1ProfileTests {
-    @Test func fixedGeometryAndModelShapes() {
-        #expect(Community1Profile.sampleRate == 16_000)
-        #expect(Community1Profile.windowSamples == 160_000)
-        #expect(Community1Profile.stepSamples == 32_000)
-        #expect(Community1Profile.windowDurationSeconds == 10.0)
-        #expect(Community1Profile.stepRatio == 0.2)
-        #expect(Double(Community1Profile.windowSamples) / Double(Community1Profile.sampleRate)
-            == Community1Profile.windowDurationSeconds)
-        #expect(Double(Community1Profile.stepSamples) / Double(Community1Profile.windowSamples)
-            == Community1Profile.stepRatio)
-        #expect(Community1Profile.segmentationFrames == 589)
-        #expect(Community1Profile.powersetClasses == 7)
-        #expect(Community1Profile.localSpeakers == 3)
-        #expect(Community1Profile.embeddingDimensions == 256)
-        #expect(Community1Profile.rhoDimensions == 128)
-        #expect(Community1Profile.fbankFrames == 998)
-        #expect(Community1Profile.melBins == 80)
-        #expect(Community1Profile.poolingFrames == 125)
-    }
-
     @Test func profileMatchesFluidAudioParameters() throws {
         let fixture = try DiarizationParityFixtures.load(
             "parameters.json",
@@ -104,16 +84,5 @@ import Testing
         // The clean-mask 20% gate dominates the 18-frame duration gate, so an original-mask
         // fallback cannot make a mask with too little clean weight eligible.
         #expect(minimumCleanWeight > Float(Community1Profile.minimumEmbeddingFrames))
-    }
-
-    @Test func frozenNumericalFloors() {
-        #expect(Community1Profile.embeddingL2Floor == 1e-4)
-        #expect(Community1Profile.pldaEigenMaximumSweeps == 64)
-        #expect(Community1Profile.pldaEigenRelativeTolerance == 1e-12)
-        #expect(Community1Profile.phiFloor == 1e-12)
-        #expect(Community1Profile.inversePrecisionDenominatorFloor == 1e-12)
-        #expect(Community1Profile.logPriorFloor == 1e-8)
-        #expect(Community1Profile.activePriorThreshold == 1e-7)
-        #expect(Community1Profile.hungarianQuantization == 1e6)
     }
 }

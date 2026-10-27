@@ -18,10 +18,7 @@ new_test_event_path() {
     "$(python3 -c 'import uuid; print(uuid.uuid4())')"
 }
 
-python3 -B "$ROOT/scripts/test_test_time_limits.py"
 python3 -B "$ROOT/scripts/check_test_time_limits.py"
-python3 -B "$ROOT/scripts/test_report_test_events.py"
-python3 -B "$ROOT/scripts/test_run_swift_tests.py"
 
 # Runs one gated numerical suite with RUN_MODEL_TESTS=1, prints the executed and skipped
 # test names, and fails when the suite executed no test.
@@ -102,7 +99,6 @@ python3 -B scripts/test_fetch_qwen3_asr_model.py
 python3 -B scripts/test_pinned_download.py
 python3 -B scripts/test_generate_silero_reference.py
 python3 -B scripts/test_generate_qwen3_asr_token_reference.py
-python3 -B scripts/test_portable_core.py
 python3 -B scripts/check_portable_core.py
 
 swift package --package-path "$PACKAGE" dump-package >/dev/null

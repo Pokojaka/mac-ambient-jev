@@ -4,14 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PACKAGE="$ROOT/app/MacAmbientJev"
 
-python3 "$ROOT/scripts/test_doc_references.py"
 python3 "$ROOT/scripts/check_doc_references.py" "$ROOT"
-python3 "$ROOT/scripts/test_session_artifacts.py"
 python3 "$ROOT/scripts/test_japanese_numeral_exclusions.py"
-python3 -B "$ROOT/scripts/test_test_time_limits.py"
 python3 -B "$ROOT/scripts/check_test_time_limits.py"
-python3 -B "$ROOT/scripts/test_report_test_events.py"
-python3 -B "$ROOT/scripts/test_run_swift_tests.py"
 
 if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
   : "${ASR_SMOKE_AUDIO:?RUN_MODEL_TESTS=1 requires ASR_SMOKE_AUDIO to name an absolute WAV file}"

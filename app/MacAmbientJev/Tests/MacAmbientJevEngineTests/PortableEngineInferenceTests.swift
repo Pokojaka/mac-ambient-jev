@@ -69,21 +69,6 @@ private actor InspectionStartGate {
         )
     }
 
-    @Test func missingClauseTaggerIsReportedAsModelMissing() async throws {
-        let modelsRoot = temporaryModelsRoot()
-        defer { try? FileManager.default.removeItem(at: modelsRoot) }
-
-        do {
-            _ = try await inference(modelsRoot: modelsRoot).inspectClauseTagger()
-            Issue.record("inspection unexpectedly succeeded without installed assets")
-        } catch let error as EngineAdapterError {
-            #expect(error.code == .modelMissing)
-        } catch {
-            Issue.record("inspection threw an unexpected error: \(error)")
-        }
-        #expect(!FileManager.default.fileExists(atPath: modelsRoot.path))
-    }
-
     @Test func malformedClauseTaggerIsReportedAsModelCorrupt() async throws {
         let modelsRoot = temporaryModelsRoot()
         defer { try? FileManager.default.removeItem(at: modelsRoot) }

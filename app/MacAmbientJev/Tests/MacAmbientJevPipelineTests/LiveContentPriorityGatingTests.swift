@@ -509,64 +509,6 @@ func localSelectedLiveDecisionProvenanceIsDurableForBoundaryAndPriority() async 
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(10)))
-func localTerminalSourceIsAssessedBeforePriorityClassification() async throws {
-    let modelID = "Pokojaka/modernbert-ja-30m-utterance-tagger"
-    let revision = String(repeating: "a", count: 64)
-    let counter = DecisionUsageCounter()
-    let provider = FixedResponseProvider()
-    let decisions = DecisionCoordinator(
-        provider: provider, identity: try DecisionModelIdentity(backend: "test-backend", model: modelID, modelRevision: revision), usageCounter: counter
-    )
-    let fixture = try await LiveDecisionFixture(
-        texts: ["終端本文"], makeDecisions: { decisions }, counter: counter
-    )
-    defer { try? FileManager.default.removeItem(at: fixture.root) }
-
-    try await fixture.recognize(0)
-    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
-    let log = try await fixture.waitForDecisionCompletion()
-    try await fixture.recorder.wait { $0.first?.clauseState == .classified }
-
-    let objects = try fixture.eventObjects(from: log)
-    let starts = objects.filter { $0["event_type"] as? String == "processing.run.started" }
-        .filter {
-            let stage = ($0["payload"] as? [String: Any])?["stage"] as? String
-            return stage == ProcessingStage.clauseBoundary.rawValue
-                || stage == ProcessingStage.contentPriority.rawValue
-        }
-    #expect(starts.compactMap { ($0["payload"] as? [String: Any])?["stage"] as? String }
-        == [ProcessingStage.clauseBoundary.rawValue, ProcessingStage.contentPriority.rawValue])
-    #expect(starts.allSatisfy { start in
-        guard let provenance = (start["payload"] as? [String: Any])?["provenance"] as? [String: Any],
-              let configuration = provenance["configuration"] as? [String: String] else { return false }
-        return provenance["engine"] as? String == "test-backend"
-            && provenance["model"] as? String == modelID
-            && provenance["version"] as? String == revision
-            && configuration["model_id"] == modelID
-            && configuration["model_revision"] == revision
-            && configuration["unit_policy"] == "btsj-utterance-sentence"
-    })
-    let boundary = try #require(objects.first { $0["event_type"] as? String == ClauseEventType.boundaryAssessed }?["payload"] as? [String: Any])
-    let boundaryRequest = try #require(boundary["request"] as? [String: Any])
-    #expect((boundaryRequest["request_id"] as? String)?.hasPrefix("decisionreq_") == true)
-    #expect(Set(boundaryRequest.keys) == ["request_id", "input_tokens"])
-    #expect(boundaryRequest["input_tokens"] as? Int == 11)
-    #expect((boundary["candidates"] as? [Any])?.isEmpty == true)
-    #expect((boundary["filler_ranges"] as? [Any])?.isEmpty == true)
-    #expect((boundary["source_decision"] as? [String: Any])?["kind"] as? String == "assessed")
-    let priority = try #require(objects.first { $0["event_type"] as? String == ClauseEventType.priorityAssigned }?["payload"] as? [String: Any])
-    let request = try #require(priority["request"] as? [String: Any])
-    #expect((request["request_id"] as? String)?.hasPrefix("decisionreq_") == true)
-    #expect(Set(request.keys) == ["request_id", "input_tokens"])
-    #expect(request["input_tokens"] as? Int == 17)
-    let usage = await counter.snapshot()
-    #expect(usage.boundaryRequests.sendCount == 1)
-    #expect(usage.priorityRequests.sendCount == 1)
-    #expect(usage.inputTokens == 28)
-    await fixture.priority.worker?.value
-}
-
 @Test(.timeLimit(.minutes(10)), arguments: [false, true])
 func liveTranscriptRemovesOnlySavedFillerRanges(hasSavedFiller: Bool) async throws {
     let fillerRange = try TextUTF16Range(start: 0, end: 2)

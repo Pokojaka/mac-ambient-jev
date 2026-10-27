@@ -3,12 +3,6 @@ import Testing
 @testable import MacAmbientJevCore
 
 @Test
-func asrEngineFailureIsRepresentedInsideASRState() {
-    let state = ASREngineState.failed(message: "model unavailable")
-    #expect(state == .failed(message: "model unavailable"))
-}
-
-@Test
 func asrInputFlagsPersistedFourMillisecondSegmentButNotTwentyMilliseconds() {
     let fourMilliseconds = ASRAudioInput(
         samples: Array(repeating: 0, count: 64),

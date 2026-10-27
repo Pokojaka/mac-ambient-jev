@@ -70,7 +70,7 @@ Windows・Linux 向けの ONNX モデルは [export_clause_tagger_onnx.py](../sc
 
 ## ポータブル ONNX の配布
 
-ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt、LICENSE.md の5ファイルです。最初の4ファイルは onnx/ 以下に置き、LICENSE.md は repository root から取得します。LICENSE.txt は base model の MIT license、LICENSE.md は学習済みモデルの CC BY-NC-ND 4.0 license です。取得先は `.build/clause-tagger-onnx/<commit>/clause-tagger-onnx` です。Swift の `ClauseTaggerAssets` は manifest の byte 数と SHA-256 を用いてこの directory の5ファイルを全て検証してから推論用 asset を返します。モデルの探索や自動取得は runtime にありません。
+ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt、LICENSE.md の5ファイルです。最初の4ファイルは onnx/ 以下に置き、LICENSE.md は repository root から取得します。LICENSE.txt は base model の MIT license、LICENSE.md は学習済みモデルの CC BY-NC-ND 4.0 license です。取得先は `.build/clause-tagger-onnx/<commit>/clause-tagger-onnx` です。Swift の `ClauseTaggerAssets` は `PortableClauseTaggerInspection.validateAssets`（`PortableAssetVerifier`）で manifest の byte 数と SHA-256 を用いてこの directory の5ファイルを全て検証してから推論用 asset を返します。モデルの探索や自動取得は runtime にありません。
 
 ## モデルの検証と推論
 
@@ -86,7 +86,7 @@ ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、L
 
 Linux / Windows では PortableRuntime の `ONNXClauseTagger` actor（`DecisionProvider`）が同じ判定を担います。`init(modelDirectory:intraOpThreads:)` は throwing で、次の順に一度だけロードします。
 
-1. `ClauseTaggerAssets` が directory の5ファイルを bundled manifest の byte 数と SHA-256 に照合します。hash は `FileSHA256` の bounded streaming と、全 platform 共通の `CSHA256` batched compression で検証します。
+1. `ClauseTaggerAssets` が `PortableClauseTaggerInspection.validateAssets` を呼び、directory の5ファイルを bundled manifest の byte 数と SHA-256 に照合します。失敗は `PortableModelPreparationError` です。hash は `FileSHA256` の bounded streaming と、全 platform 共通の `CSHA256` batched compression で検証します。
 2. 検証済みの tokenizer.json から Core の `ClauseTaggerTokenizer` を、manifest の tokenizer SHA-256 を期待値にして作ります。
 3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。graph optimization level は設定で上書きせず [ONNX Runtime 1.31.0 の default](https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html) を使います。optimized graph / session の cache はありません。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
 

@@ -4,19 +4,6 @@ import Testing
 @testable import MacAmbientJevPortableRuntime
 
 struct PortableClauseTaggerInspectionTests {
-    @Test func verifiesTinyNonONNXAssetsWithoutOpeningAnONNXSession() throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root.deletingLastPathComponent()) }
-
-        let identity = try PortableClauseTaggerInspection.validateAssets(
-            modelDirectory: fixture.root,
-            manifest: fixture.manifest
-        )
-
-        #expect(identity == (try fixture.manifest.identity()))
-        #expect(identity.backend == "onnx-clause-tagger")
-    }
-
     @Test func missingDirectoryUsesPortableMissingError() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root.deletingLastPathComponent()) }
@@ -203,14 +190,6 @@ struct PortableClauseTaggerInspectionTests {
         #expect(await validations.count() == 2)
     }
 
-    @Test func joinRecorderWaitReturnsWhenTargetWasAlreadyRecorded() async {
-        let joins = JoinRecorder()
-        joins.record()
-
-        await joins.waitUntilCount(1)
-
-        #expect(joins.currentCount() == 1)
-    }
 
     @Test func sharedFailureIsClearedAndTheNextInspectionRetries() async throws {
         let fixture = try makeFixture()

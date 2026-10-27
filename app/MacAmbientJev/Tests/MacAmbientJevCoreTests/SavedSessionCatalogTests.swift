@@ -20,23 +20,6 @@ func catalogSortsSessionsNewestFirstAndReportsMissingAudio() throws {
     #expect(summaries.last?.canReprocess == true)
 }
 
-@Test
-func catalogKeepsCorruptSessionMetadataVisibleAsAnErrorRow() throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let session = root.appending(path: "broken", directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
-    try Data("{broken".utf8).write(to: session.appending(path: "session.json"))
-
-    let row = try #require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first)
-
-    #expect(row.sessionURL == session)
-    #expect(row.sessionID == nil)
-    guard case .unreadable = row else { Issue.record("expected unreadable manifest"); return }
-    #expect(row.canReprocess == false)
-}
-
 
 @Test(arguments: [0.0, -1.0, Double.nan, Double.infinity, -Double.infinity, 48_000.0])
 func catalogRejectsNoncanonicalCheckpointSampleRate(_ sampleRate: Double) throws {

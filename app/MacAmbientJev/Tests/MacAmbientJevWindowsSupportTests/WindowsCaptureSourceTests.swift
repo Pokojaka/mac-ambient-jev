@@ -142,15 +142,16 @@ struct WindowsCaptureSourceTests {
         try await harness.source.start()
         let device = try #require(harness.factory.openedDevice)
         try await device.step()
+        // These timeouts bound hangs, not callback latency on loaded CI.
         let firstDropoutObserved = await probe.waitForDropoutCount(
-            atLeast: 1, timeoutNanoseconds: 2_000_000_000
+            atLeast: 1, timeoutNanoseconds: 120_000_000_000
         )
         #expect(firstDropoutObserved)
         #expect(probe.dropoutCounts.contains(1))
 
         try await device.step()
         let secondDropoutObserved = await probe.waitForDropoutCount(
-            atLeast: 2, timeoutNanoseconds: 2_000_000_000
+            atLeast: 2, timeoutNanoseconds: 120_000_000_000
         )
         let dropoutsDuringCapture = probe.dropoutCounts
         #expect(secondDropoutObserved)

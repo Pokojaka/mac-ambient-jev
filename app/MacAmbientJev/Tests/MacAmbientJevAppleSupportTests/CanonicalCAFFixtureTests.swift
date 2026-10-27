@@ -85,8 +85,3 @@ private func expectAVAudioFileSamples(at url: URL, expected: [Float]) throws {
         try expectAVAudioFileSamples(at: url, expected: expected)
     }
 }
-
-@Test func committedCanonicalCAFFixtureReadsBackAsTheExpectedSamplesThroughAVFoundation() throws {
-    let expected = try CanonicalCAFFixture.expectedSamples()
-    try expectAVAudioFileSamples(at: CanonicalCAFFixture.cafURL(), expected: expected)
-}

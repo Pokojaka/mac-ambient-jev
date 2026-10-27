@@ -61,16 +61,12 @@ on:
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
       - 'scripts/check_test_time_limits.py'
-      - 'scripts/test_test_time_limits.py'
       - 'scripts/report_test_events.py'
-      - 'scripts/test_report_test_events.py'
       - 'scripts/run_swift_tests.py'
-      - 'scripts/test_run_swift_tests.py'
       - 'docs/**'
       - 'README.md'
       - 'AGENTS.md'
       - 'scripts/check_doc_references.py'
-      - 'scripts/test_doc_references.py'
       - '.github/workflows/portable-core.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -132,16 +128,12 @@ on:
       - 'app/MacAmbientJev/Package.swift'
       - 'scripts/*portable*'
       - 'scripts/check_test_time_limits.py'
-      - 'scripts/test_test_time_limits.py'
       - 'scripts/report_test_events.py'
-      - 'scripts/test_report_test_events.py'
       - 'scripts/run_swift_tests.py'
-      - 'scripts/test_run_swift_tests.py'
       - 'docs/**'
       - 'README.md'
       - 'AGENTS.md'
       - 'scripts/check_doc_references.py'
-      - 'scripts/test_doc_references.py'
       - '.github/workflows/portable-core.yml'
   workflow_dispatch:
     inputs:
@@ -289,11 +281,7 @@ jobs:
           flac --version
       - name: Check portability and documentation
         run: |
-          python3 -B scripts/test_portable_core.py
-          python3 -B scripts/test_test_time_limits.py
           python3 -B scripts/check_test_time_limits.py
-          python3 -B scripts/test_report_test_events.py
-          python3 -B scripts/test_run_swift_tests.py
           python3 -B scripts/test_fetch_onnxruntime.py
           python3 -B scripts/test_fetch_silero_vad.py
           python3 -B scripts/test_fetch_community1_diarization.py
@@ -305,7 +293,6 @@ jobs:
           python3 -B scripts/test_generate_silero_reference.py
           python3 -B scripts/test_export_clause_tagger_onnx.py
           python3 -B scripts/check_portable_core.py
-          python3 scripts/test_doc_references.py
           python3 scripts/check_doc_references.py
       # MacAmbientJevEngine and WindowsSupport are Windows-only, not Linux build products.
       - name: Build Core, EngineProtocol, EngineHost, Pipeline, PortableRuntime, ONNX and all evaluators

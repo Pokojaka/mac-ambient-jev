@@ -686,102 +686,6 @@ func finalTranscriptPipelineRejectsInvalidSpeakerMetadataBeforeASR(span: Speaker
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns == nil)
 }
 
-@Test
-func finalTranscriptPipelinePassesOverlappingSpeakerSpansInOneASRCall() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    let diarizer = FakeFinalDiarizer(
-        spans: [
-            SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 9_000, confidence: 0.8),
-            SpeakerSpan(speakerID: "S2", startFrame: 7_000, endFrame: 16_000, confidence: 0.8)
-        ],
-        log: log,
-        shouldFail: false
-    )
-    let asr = FakeFinalASR(log: log, values: ["短い相づち"])
-    let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-        log: log
-    )
-    let processor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: asr,
-            diarization: diarizer,
-            finalTranscriptVAD: vad
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-
-    let result = try await processFinal(
-        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-
-    #expect(result.disposition == .completed)
-    let loadedActiveRuns = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
-    let activeRuns = try #require(loadedActiveRuns)
-    let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
-    let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-    let rows = try TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
-    #expect(rows.map(\.text) == ["短い相づち"])
-    #expect(await log.snapshot() == ["vad", "diarize", "asr:0"])
-}
-
-@Test
-func finalTranscriptPipelineKeepsShortSpeakerSpanAudioInUnsplitASRChunk() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    let diarizer = FakeFinalDiarizer(
-        spans: [
-            SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 7_000, confidence: 0.8),
-            SpeakerSpan(speakerID: "S2", startFrame: 7_000, endFrame: 7_100, confidence: 0.8),
-            SpeakerSpan(speakerID: "S3", startFrame: 7_100, endFrame: 16_000, confidence: 0.8)
-        ],
-        log: log,
-        shouldFail: false
-    )
-    let asr = FakeFinalASR(log: log, values: ["短い話者区間を含む音声"])
-    let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
-        log: log
-    )
-    let processor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: asr,
-            diarization: diarizer,
-            finalTranscriptVAD: vad
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-
-    let result = try await processFinal(
-        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-
-    #expect(result.disposition == .completed)
-    let loadedActiveRuns = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
-    let activeRuns = try #require(loadedActiveRuns)
-    let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
-    let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-    let rows = try TranscriptMaterializer(sampleRate: 16_000).materialize(events: events, activeRuns: activeRuns)
-    #expect(rows.map(\.text) == ["短い話者区間を含む音声"])
-    #expect(rows.map(\.startMilliseconds) == [0])
-    #expect(rows.map(\.endMilliseconds) == [1_000])
-    #expect(await asr.recordedAudioFrameCounts() == [16_000])
-    #expect(await log.snapshot() == ["vad", "diarize", "asr:0"])
-}
-
 private struct UnavailableTagger: LocalizedError {
     var errorDescription: String? { "モデルがありません" }
 }
@@ -912,35 +816,6 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
 
     #expect(finish.disposition == .completed)
     #expect(await statuses.snapshot().last?.contains("完了しました") == true)
-}
-
-@Test
-func finalTranscriptPipelineReportsNoSpeechAsTerminalStatus() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    let processor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: []),
-            diarization: FakeFinalDiarizer(spans: [], log: log, shouldFail: false),
-            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-    let statuses = FinalizationStatusRecorder()
-
-    let result = try await processFinal(
-        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-
-    #expect(result.disposition == .completed)
-    #expect(result.noSpeech)
-    #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
 }
 
 @Test

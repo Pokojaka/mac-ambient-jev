@@ -21,11 +21,11 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
     func recoveryDidChange(_ event: SessionRecoveryEvent) {
         switch event {
         case .maintenanceStarted(let count):
-            let text = "保存済み録音の音声を整理しています（\(count)件）"
+            let text = SessionRecoveryEvent.maintenanceStatusText(count: count)
             processingStatusText = text
             transcriptViewModel.setStatus(text)
         case .maintenanceFinished(let count, let previous):
-            let text = "保存済み録音の音声を整理しています（\(count)件）"
+            let text = SessionRecoveryEvent.maintenanceStatusText(count: count)
             if processingStatusText == text {
                 processingStatusText = previous.processing
             }
@@ -36,40 +36,15 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             processingStatusText = "未完了の文字起こしを復旧しています（\(count)件）"
             transcriptViewModel.setStatus("未完了の文字起こしを復旧しています")
         case .reportedFailures(let scanFailures, let maintenanceFailures, let hasRecoveries):
-            var sentences: [String] = []
-            if !scanFailures.isEmpty {
-                sentences.append(
-                    "復旧できないセッションが\(scanFailures.count)件あります。詳細は「保存済み録音」で確認できます"
-                )
+            let failureReport = SessionRecoveryFailureReport(
+                scanFailures: scanFailures,
+                maintenanceFailures: maintenanceFailures,
+                hasRecoveries: hasRecoveries
+            )
+            if failureReport.marksPartialFailure {
+                processingState = .partialFailure(failureReport.message)
             }
-
-            let failedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
-                guard case .failed = issue else { return nil }
-                return issue.message
-            }.sorted()
-            if !failedMaintenance.isEmpty {
-                let details = failedMaintenance.joined(separator: " / ")
-                sentences.append(
-                    "保存済み録音の音声を整理できなかったセッションが\(failedMaintenance.count)件あります: \(details)"
-                )
-            }
-
-            let interruptedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
-                guard case .interruptedByShutdown = issue else { return nil }
-                return issue.message
-            }.sorted()
-            if !interruptedMaintenance.isEmpty {
-                let details = interruptedMaintenance.joined(separator: " / ")
-                sentences.append(
-                    "終了処理のため保存済み録音の音声整理が中断されたセッションが\(interruptedMaintenance.count)件あります。次回起動時に再実行します: \(details)"
-                )
-            }
-
-            let message = sentences.joined(separator: "。")
-            if !hasRecoveries && (!scanFailures.isEmpty || !failedMaintenance.isEmpty) {
-                processingState = .partialFailure(message)
-            }
-            processingStatusText = message
+            processingStatusText = failureReport.message
         case .failed(let reason):
             processingState = .partialFailure(reason)
             processingStatusText = "未完了セッションを復旧できませんでした: \(reason)"

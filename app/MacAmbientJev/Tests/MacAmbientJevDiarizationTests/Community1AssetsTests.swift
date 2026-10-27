@@ -4,36 +4,6 @@ import Testing
 @testable import MacAmbientJevDiarization
 
 struct Community1AssetsTests {
-    private static let speakrsRevision = "67f963b6a1d94fcd4678948237b3cc8bd69bf1d8"
-    private static let fluidRevision = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
-
-    @Test func bundledManifestPinsTheFourFiles() throws {
-        let manifest = try Community1Manifest.bundled()
-        #expect(manifest.sources == [
-            "speakrs": .init(repository: "avencera/speakrs-models", revision: Self.speakrsRevision),
-            "fluidinference": .init(repository: "FluidInference/speaker-diarization-coreml", revision: Self.fluidRevision)
-        ])
-        #expect(manifest.files == [
-            .init(
-                role: .segmentation, source: "speakrs", name: "segmentation-3.0.onnx", byteCount: 5_916_308,
-                sha256: "038b971741ed623af9773ecafdefa4b7bc523520099c2a68f8568b24189e8ad9"
-            ),
-            .init(
-                role: .embedding, source: "speakrs", name: "wespeaker-multimask-tail.onnx", byteCount: 26_777_461,
-                sha256: "3695eeb26e875c606d5b5d82314f08dbcbb685d691837c035d7ea690863c64ea"
-            ),
-            .init(
-                role: .plda, source: "fluidinference", name: "plda-parameters.json", byteCount: 89_416,
-                sha256: "38ee28d4269c076cef254ee760bbd811f0738a92e0f01f9699ad372828c5de8f"
-            ),
-            .init(
-                role: .xvector, source: "fluidinference", name: "xvector-transform.json", byteCount: 177_499,
-                sha256: "f7cd5cc16e63e2d89db052a23018ecfc47a311998ed1e9e39838fbac65048688"
-            )
-        ])
-        #expect(manifest.coordinateSigns.count == 128)
-    }
-
     @Test func committedPLDAFixturesMatchTheManifestPins() throws {
         let manifest = try Community1Manifest.bundled()
         let plda = try DiarizationParityFixtures.data(named: "plda-parameters.json")

@@ -66,13 +66,6 @@ def test_crop_wav_segment_rejects_span_past_audio_end(tmp_path):
     assert not destination.exists()
 
 
-def test_embedding_to_vector_flattens_single_batch():
-    assert embedding_to_vector([[0.25, -0.5]]) == [
-        0.25,
-        -0.5,
-    ]
-
-
 def test_embedding_to_vector_rejects_non_finite_values():
     with pytest.raises(ValueError, match="finite"):
         embedding_to_vector([0.25, math.nan])

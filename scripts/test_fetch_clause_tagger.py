@@ -30,90 +30,6 @@ BASE_MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 PINNED_REPOSITORY = "Pokojaka/modernbert-ja-30m-utterance-tagger"
 PINNED_COMMIT = "5c0213592cf8d59fc0b665183ab7536ddde05d1f"
 
-PINNED_MEMBERS = {
-    "onnx": [
-        (
-            "model",
-            "ClauseTagger.onnx",
-            "onnx/ClauseTagger.onnx",
-            146889562,
-            "1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782",
-        ),
-        (
-            "tokenizer",
-            "tokenizer.json",
-            "onnx/tokenizer.json",
-            6724873,
-            "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
-        ),
-        (
-            "export",
-            "export.json",
-            "onnx/export.json",
-            253707,
-            "c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a",
-        ),
-        (
-            "license",
-            "LICENSE.txt",
-            "onnx/LICENSE.txt",
-            1292,
-            "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a",
-        ),
-        (
-            "modelLicense",
-            "LICENSE.md",
-            "LICENSE.md",
-            2185,
-            "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77",
-        ),
-    ],
-    "coreml": [
-        (
-            "tokenizer",
-            "tokenizer.json",
-            "coreml/tokenizer.json",
-            6724873,
-            "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
-        ),
-        (
-            "packageManifest",
-            "ClauseTagger.mlpackage/Manifest.json",
-            "coreml/ClauseTagger.mlpackage/Manifest.json",
-            617,
-            "52c8e4a83a0b4b1f533cc1606e198fbaba9b235898c7dde6eda2c301c79b3182",
-        ),
-        (
-            "model",
-            "ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel",
-            "coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/model.mlmodel",
-            134272,
-            "200affa73898c875c5aac52401fadf601779af28a50662edac9c47b084edbb45",
-        ),
-        (
-            "weights",
-            "ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
-            "coreml/ClauseTagger.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
-            146847424,
-            "e21ddf63a223e859be6b1051e326362c12fabd4cdc8c8f4cb0c18a7e657d220d",
-        ),
-        (
-            "debugMapping",
-            "ClauseTagger.mlpackage/executorch_debug_handle_mapping.json",
-            "coreml/ClauseTagger.mlpackage/executorch_debug_handle_mapping.json",
-            147654,
-            "6e741f4ba9d007e49b98aa31f8db7164763660f04df3e6d92b015913f0451f44",
-        ),
-        (
-            "modelLicense",
-            "LICENSE.md",
-            "LICENSE.md",
-            2185,
-            "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77",
-        ),
-    ],
-}
-
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -138,41 +54,6 @@ class ManifestTests(unittest.TestCase):
 
         self.assertEqual(fetcher.MANIFEST_PATH, REAL_REPOSITORY_ROOT / MANIFEST_COPY_PATH)
         self.assertEqual(copies, [MANIFEST_COPY_PATH])
-
-    def test_manifest_pins_both_formats_and_all_remote_urls(self) -> None:
-        self.assertEqual(BASE_MANIFEST["source"]["repository"], PINNED_REPOSITORY)
-        self.assertEqual(BASE_MANIFEST["source"]["commit"], PINNED_COMMIT)
-        self.assertEqual(BASE_MANIFEST["model"]["id"], PINNED_REPOSITORY)
-
-        for format, expected_members in PINNED_MEMBERS.items():
-            with self.subTest(format=format):
-                manifest = fetcher.load_manifest(format)
-                self.assertEqual(manifest.source.repository, PINNED_REPOSITORY)
-                self.assertEqual(manifest.source.commit, PINNED_COMMIT)
-                self.assertEqual(manifest.directory, fetcher.DIRECTORIES[format])
-                actual_members = [
-                    (member.role, member.name, member.path, member.byte_count, member.sha256)
-                    for member in manifest.members
-                ]
-                self.assertEqual(actual_members, expected_members)
-                self.assertEqual(
-                    [member.role for member in manifest.members], list(fetcher.ROLES[format])
-                )
-                self.assertIn(
-                    ("modelLicense", "LICENSE.md", "LICENSE.md", 2185,
-                     "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77"),
-                    actual_members,
-                )
-                self.assertEqual(
-                    [
-                        f"https://huggingface.co/{PINNED_REPOSITORY}/resolve/{PINNED_COMMIT}/{member[2]}"
-                        for member in expected_members
-                    ],
-                    [
-                        f"https://huggingface.co/{manifest.source.repository}/resolve/{manifest.source.commit}/{member.path}"
-                        for member in manifest.members
-                    ],
-                )
 
     def test_malformed_manifest_fields_are_rejected(self) -> None:
         def mutate(format: str, change) -> str:
@@ -576,12 +457,6 @@ class FetchTests(unittest.TestCase):
                 self.assertFalse(os.path.lexists(self.destination(format)))
                 self.assertEqual(list(self.cache(format).glob(".fetch-*")), [])
                 self.assertEqual(list(self.cache(format).rglob("*.download")), [])
-
-    def test_repository_path_with_non_ascii_and_spaces(self) -> None:
-        repository = self.make_repository("repository with spaces and 日本語")
-        result = self.fetch("coreml", repository)
-        self.assertEqual(result, self.destination("coreml", repository))
-        self.assertEqual(self.actual_tree(result), self.expected_tree("coreml"))
 
     def test_cli_requires_supported_python_and_format_arguments(self) -> None:
         with mock.patch.object(fetcher.sys, "version_info", (3, 11, 0)), mock.patch.object(

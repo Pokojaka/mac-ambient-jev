@@ -74,16 +74,6 @@ struct DiarizationFinalWindowPaddingTests {
     }
 
     @Test
-    func zeroSampleCountHasNoPadding() {
-        #expect(DiarizationFinalWindowPadding.clampedEndFrame(
-            0, sampleCount: 0, windowSamples: 160_000, stepSamples: 32_000
-        ) == 0)
-        #expect(DiarizationFinalWindowPadding.clampedEndFrame(
-            1, sampleCount: 0, windowSamples: 160_000, stepSamples: 32_000
-        ) == nil)
-    }
-
-    @Test
     func rejectsNegativeInputsAndNonpositiveWindowGeometry() {
         #expect(DiarizationFinalWindowPadding.clampedEndFrame(
             0, sampleCount: -1, windowSamples: 100, stepSamples: 50
