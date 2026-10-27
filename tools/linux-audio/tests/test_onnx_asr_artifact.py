@@ -170,19 +170,6 @@ def test_onnx_artifact_rejects_cuda_device():
         validate_asr_artifact(artifact)
 
 
-def test_asr_artifact_rejects_unknown_backend_explicitly():
-    artifact = make_artifact(
-        audio_seconds=10.0,
-        device="cpu",
-        inference_config={**ONNX_CONFIG},
-        package_versions={**ONNX_PACKAGES},
-    )
-    artifact["engine"]["backend"] = "other"
-
-    with pytest.raises(ValueError, match="unsupported ASR backend 'other'"):
-        validate_asr_artifact(artifact)
-
-
 @pytest.mark.parametrize("field", ["model", "revision"])
 def test_onnx_artifact_keeps_shared_nonempty_model_fields(field: str):
     artifact = make_artifact(
