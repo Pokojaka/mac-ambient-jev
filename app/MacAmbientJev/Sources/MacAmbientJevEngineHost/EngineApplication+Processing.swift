@@ -232,52 +232,27 @@ extension EngineApplicationCore {
     func recoveryDidChange(_ event: SessionRecoveryEvent) {
         switch event {
         case let .maintenanceStarted(count):
-            presentation.recoveryStatusText = "保存済み録音の音声を整理しています（\(count)件）"
+            presentation.recoveryStatusText = SessionRecoveryEvent.maintenanceStatusText(count: count)
         case let .maintenanceFinished(count, previous):
-            let text = "保存済み録音の音声を整理しています（\(count)件）"
+            let text = SessionRecoveryEvent.maintenanceStatusText(count: count)
             if presentation.recoveryStatusText == text {
                 presentation.recoveryStatusText = previous.processing
             }
         case let .recovering(count):
             presentation.recoveryStatusText = "未完了の文字起こしを復旧しています（\(count)件）"
         case let .reportedFailures(scanFailures, maintenanceFailures, hasRecoveries):
-            var sentences: [String] = []
-            if !scanFailures.isEmpty {
-                sentences.append(
-                    "復旧できないセッションが\(scanFailures.count)件あります。詳細は「保存済み録音」で確認できます"
-                )
-            }
-
-            let failedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
-                guard case .failed = issue else { return nil }
-                return issue.message
-            }.sorted()
-            if !failedMaintenance.isEmpty {
-                let details = failedMaintenance.joined(separator: " / ")
-                sentences.append(
-                    "保存済み録音の音声を整理できなかったセッションが\(failedMaintenance.count)件あります: \(details)"
-                )
-            }
-
-            let interruptedMaintenance = maintenanceFailures.values.compactMap { issue -> String? in
-                guard case .interruptedByShutdown = issue else { return nil }
-                return issue.message
-            }.sorted()
-            if !interruptedMaintenance.isEmpty {
-                let details = interruptedMaintenance.joined(separator: " / ")
-                sentences.append(
-                    "終了処理のため保存済み録音の音声整理が中断されたセッションが\(interruptedMaintenance.count)件あります。次回起動時に再実行します: \(details)"
-                )
-            }
-
-            let message = sentences.joined(separator: "。")
-            guard !message.isEmpty else {
+            let failureReport = SessionRecoveryFailureReport(
+                scanFailures: scanFailures,
+                maintenanceFailures: maintenanceFailures,
+                hasRecoveries: hasRecoveries
+            )
+            guard !failureReport.message.isEmpty else {
                 preconditionFailure("Reported recovery failures must include at least one issue")
             }
-            if !hasRecoveries && (!scanFailures.isEmpty || !failedMaintenance.isEmpty) {
-                presentation.processingState = .partialFailure(message)
+            if failureReport.marksPartialFailure {
+                presentation.processingState = .partialFailure(failureReport.message)
             }
-            presentation.recoveryStatusText = message
+            presentation.recoveryStatusText = failureReport.message
 
             for failure in scanFailures {
                 report(EngineFailures.failure(
