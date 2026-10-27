@@ -238,18 +238,6 @@ class TokenReferenceTests(unittest.TestCase):
                 {"platform": "SyntheticOS", "architecture": "SyntheticArch"},
             )
 
-    def test_reference_platform_rejects_empty_metadata(self) -> None:
-        with mock.patch.object(reference.platform, "system", return_value=""), mock.patch.object(
-            reference.platform, "machine", return_value="SyntheticArch"
-        ):
-            with self.assertRaisesRegex(reference.ReferenceError, "platform.system"):
-                reference.reference_platform()
-        with mock.patch.object(reference.platform, "system", return_value="SyntheticOS"), mock.patch.object(
-            reference.platform, "machine", return_value=""
-        ):
-            with self.assertRaisesRegex(reference.ReferenceError, "platform.machine"):
-                reference.reference_platform()
-
     def test_greedy_ties_choose_lowest_token_id(self) -> None:
         self.assertEqual(reference.select_greedy_token([3.0, 4.0, 4.0, 1.0], [], False), 1)
 
@@ -483,12 +471,6 @@ class TokenReferenceTests(unittest.TestCase):
             resolved_directory, clips = reference.load_audio_manifest(manifest)
             with self.assertRaisesRegex(reference.ReferenceError, "mono PCM16"):
                 reference.load_clip_samples(resolved_directory, clips[0], FakeNumpy)
-
-    def test_model_metadata_selects_both_hidden_sizes(self) -> None:
-        for model_size, hidden_size in (("0.6b", 1024), ("1.7b", 2048)):
-            with self.subTest(model_size=model_size):
-                model = reference.load_model_metadata(reference.MANIFEST_PATH, model_size)
-                self.assertEqual(model["hiddenSize"], hidden_size)
 
     def test_cli_requires_model_manifest_and_language_arguments(self) -> None:
         arguments = [

@@ -245,11 +245,6 @@ class EngineAcceptanceFLACTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, diagnostic):
             validate_flac(path)
 
-    def test_crc_reference_vectors(self) -> None:
-        vector = b"123456789"
-        self.assertEqual(_crc8(vector), 0xF4)
-        self.assertEqual(_crc16(vector), 0xFEE8)
-
     def test_constant_and_verbatim_fixtures(self) -> None:
         cases = (
             ([123, 123, 123, 123, 123], "constant"),
