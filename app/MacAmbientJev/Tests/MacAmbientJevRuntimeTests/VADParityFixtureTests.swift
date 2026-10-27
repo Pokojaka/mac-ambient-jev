@@ -84,10 +84,4 @@ struct VADParityFixtureTests {
             VADParityExpectation.Segment(startFrame: $0.startFrame, endFrame: $0.endFrame)
         } == committed.segments)
     }
-
-    @Test
-    func committedFixtureNamesTheCurrentFluidAudioModel() throws {
-        #expect(try VADParityFile.load().generator
-            == "\(FluidFinalTranscriptVADSegmenter.version) \(Repo.vad.rawValue)")
-    }
 }

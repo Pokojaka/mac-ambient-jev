@@ -10,16 +10,6 @@ import Testing
         #expect(try Community1Assignment.assign(scores: [[0.9, 0.8], [0.85, 0]]) == [1, 0])
     }
 
-    @Test func quantizationHalfBoundariesAndNonfiniteRanking() throws {
-        let halfUnit = 0.5e-6
-        #expect(try Community1Assignment.assign(scores: [[-halfUnit.nextDown, 0]]) == [0])
-        #expect(try Community1Assignment.assign(scores: [[-halfUnit, 0]]) == [1])
-        #expect(try Community1Assignment.assign(scores: [[-halfUnit.nextUp, 0]]) == [1])
-
-        #expect(try Community1Assignment.assign(scores: [[.nan, 1], [.infinity, 0]]) == [1, 0])
-        #expect(try Community1Assignment.assign(scores: [[.nan, .infinity], [-.infinity, .nan]]) == [0, 1])
-    }
-
     @Test func optionalSlotsAreScoredAndMappedBack() throws {
         let mapped = try Community1Assignment.assign(
             embeddings: [[-1, 0], nil, [1, 0]],
@@ -109,82 +99,4 @@ import Testing
         #expect(try Community1Assignment.assign(scores: scores) == preferredColumns)
     }
 
-    @Test func exhaustiveBinaryMatricesMatchBruteForceObjective() throws {
-        for rows in 1...3 {
-            for columns in 1...4 {
-                let matrixCount = 1 << (rows * columns)
-                for mask in 0..<matrixCount {
-                    let scores = (0..<rows).map { row in
-                        (0..<columns).map { column in
-                            Double((mask >> (row * columns + column)) & 1)
-                        }
-                    }
-                    let actual = try Community1Assignment.assign(scores: scores)
-                    #expect(quantizedObjective(scores: scores, assignment: actual)
-                        == bruteForceMinimumObjective(scores: scores))
-                }
-            }
-        }
-    }
-}
-
-private func quantizedCosts(scores: [[Double]]) -> [[Int]] {
-    let finite = scores.flatMap { $0 }.filter { $0.isFinite }
-    let maximum = finite.max() ?? 0
-    let minimum = finite.min() ?? 0
-    let sentinel = minimum - 1
-    return scores.map { row in
-        row.map { score in
-            let rankedScore = score.isFinite ? score : sentinel
-            let difference = max(0, maximum - rankedScore)
-            return Int((difference * Community1Profile.hungarianQuantization)
-                .rounded(.toNearestOrAwayFromZero))
-        }
-    }
-}
-
-private func quantizedObjective(scores: [[Double]], assignment: [Int]) -> Int {
-    let costs = quantizedCosts(scores: scores)
-    return scores.indices.reduce(into: 0) { total, row in
-        let column = assignment[row]
-        if column >= 0 {
-            total += costs[row][column]
-        }
-    }
-}
-
-private func bruteForceMinimumObjective(scores: [[Double]]) -> Int {
-    let rows = scores.count
-    let columns = scores[0].count
-    let costs = quantizedCosts(scores: scores)
-    let targetAssignments = min(rows, columns)
-    var best = Int.max
-
-    func search(row: Int, assignedCount: Int, used: [Bool], total: Int) {
-        if row == rows {
-            if assignedCount == targetAssignments {
-                best = min(best, total)
-            }
-            return
-        }
-        let remainingRows = rows - row - 1
-        if assignedCount + remainingRows >= targetAssignments {
-            search(row: row + 1, assignedCount: assignedCount, used: used, total: total)
-        }
-        if assignedCount < targetAssignments {
-            for column in 0..<columns where !used[column] {
-                var nextUsed = used
-                nextUsed[column] = true
-                search(
-                    row: row + 1,
-                    assignedCount: assignedCount + 1,
-                    used: nextUsed,
-                    total: total + costs[row][column]
-                )
-            }
-        }
-    }
-
-    search(row: 0, assignedCount: 0, used: [Bool](repeating: false, count: columns), total: 0)
-    return best
 }

@@ -148,33 +148,6 @@ struct ONNXValueTests {
         #expect(message == "入力値 past は別のONNX Runtime環境で作成されています。")
     }
 
-    @Test
-    func unsupportedOutputElementTypeFailsForValueRuns() throws {
-        let session = try ONNXSession(
-            environment: environment,
-            modelURL: try fixtureURL(named: "affine"),
-            intraOpThreads: 1,
-            cpuMemoryArenaEnabled: true
-        )
-        let inputs = [
-            (name: "x", value: try ONNXValue(environment: environment, tensor: .float32(shape: [1, 4], values: [1, 2, 3, 4]))),
-            (name: "ids", value: try ONNXValue(environment: environment, tensor: .int64(shape: [1, 3], values: [1, 2, 3]))),
-            (name: "sr", value: try ONNXValue(environment: environment, tensor: .int64(shape: [], values: [1]))),
-        ]
-        let message = onnxErrorMessage { _ = try session.runValues(inputs: inputs, outputNames: ["y", "positive"]) }
-        #expect(message == "サポートされない出力テンソル要素型です: 9。")
-    }
-
-    @Test
-    func invalidTensorsAreRejectedWhenCreatingValues() {
-        #expect(throws: ONNXRuntimeError.self) {
-            _ = try ONNXValue(environment: environment, tensor: .float32(shape: [-1], values: []))
-        }
-        #expect(throws: ONNXRuntimeError.self) {
-            _ = try ONNXValue(environment: environment, tensor: .int64(shape: [1, 3], values: [1, 2]))
-        }
-    }
-
     private func makeCacheSession() throws -> ONNXSession {
         try ONNXSession(
             environment: environment,

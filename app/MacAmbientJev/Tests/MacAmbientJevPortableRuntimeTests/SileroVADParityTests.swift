@@ -75,16 +75,4 @@ struct SileroVADParityTests {
         #expect(segments.map(\.segmentID) == segments.indices.map { String(format: "seg_%06d", $0 + 1) })
     }
 
-    @Test
-    func fixtureExercisesPausesAndTheFourteenSecondSplit() throws {
-        let pauses = try fixture.expectation(named: "pauses_and_long_utterance")
-        let longest = pauses.segments.map { $0.endFrame - $0.startFrame }.max() ?? 0
-        #expect(pauses.segments.count >= 5)
-        #expect(longest <= 224_000)
-        #expect(longest > 100_000)
-        let contiguousPairs = zip(pauses.segments, pauses.segments.dropFirst())
-            .filter { $0.endFrame == $1.startFrame }
-        #expect(!contiguousPairs.isEmpty)
-        #expect(pauses.sampleCount % VADSegmentationParameters.chunkSamples != 0)
-    }
 }

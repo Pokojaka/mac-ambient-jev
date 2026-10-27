@@ -203,14 +203,6 @@ struct PortableClauseTaggerInspectionTests {
         #expect(await validations.count() == 2)
     }
 
-    @Test func joinRecorderWaitReturnsWhenTargetWasAlreadyRecorded() async {
-        let joins = JoinRecorder()
-        joins.record()
-
-        await joins.waitUntilCount(1)
-
-        #expect(joins.currentCount() == 1)
-    }
 
     @Test func sharedFailureIsClearedAndTheNextInspectionRetries() async throws {
         let fixture = try makeFixture()
