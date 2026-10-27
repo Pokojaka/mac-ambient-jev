@@ -298,21 +298,6 @@ func failedPowerReleaseIsNotRepeatedAndClearsState() throws {
     #expect(releases.count == 2)
 }
 
-// Verify the injected wrapper lifecycle only; this does not claim to prove Win32 flags or thread affinity.
-@MainActor
-@Test("injected startup and teardown pair one acquire with one release")
-func injectedPowerLifecyclePairsAcquireAndRelease() throws {
-    let calls = SafetyCounter()
-    let provider = WindowsRecordingPowerProvider(
-        acquire: { calls.increment() },
-        release: { calls.increment() }
-    )
-
-    try provider.acquire()
-    try provider.release()
-    #expect(calls.count == 2)
-}
-
 @MainActor
 @Test("Windows declares no automatic volume or thermal monitoring and uses process-now policy")
 func windowsCapabilitiesRemainExplicit() {

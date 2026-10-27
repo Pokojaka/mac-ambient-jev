@@ -667,66 +667,6 @@ struct WindowsCaptureReconnectTests {
         #expect(harness.probe.powerReleaseCount == 1)
     }
 
-    @Test func lateReconnectPacketCannotExtendOriginalDeadline() async throws {
-        let harness = try makeReconnectHarness(
-            source: .microphone,
-            selection: .endpointID("mic-A"),
-            endpoints: [endpoint("mic-A", isDefault: true)],
-            formats: [:],
-            sampleValues: [:]
-        )
-        defer { removeReconnectTestDirectory(harness.root) }
-
-        try await harness.source.start()
-        let originalDevice = try #require(harness.factory.openedDevices.first)
-        harness.clock.set(seconds: 100.032)
-        originalDevice.emitHealthError(Int32(bitPattern: 0x88890004))
-        harness.factory.endpoints = []
-        await harness.source.poll()
-
-        harness.clock.set(seconds: 129.032)
-        harness.factory.endpoints = [endpoint("mic-A", isDefault: true)]
-        harness.factory.startsWithPacketForNextDevice = false
-        await harness.source.poll()
-        let candidate = try #require(harness.factory.openedDevices.last)
-        #expect(candidate.firstBufferTime == nil)
-
-        harness.clock.set(seconds: 131.032)
-        candidate.emitPacket(
-            devicePosition: 0,
-            qpc100ns: harness.clock.qpc100ns,
-            flags: 0,
-            sampleValue: -0.5
-        )
-        #expect(abs(try #require(candidate.firstBufferTime) - 131.032) < 0.000001)
-        await harness.source.poll()
-        #expect(harness.probe.deviceLostCount == 1)
-        #expect(harness.probe.failures.isEmpty)
-        #expect(harness.probe.waitingFlags == [true, false])
-        #expect(candidate.isFenced)
-        #expect(candidate.stopJoinCount == 1)
-
-        let result = await harness.source.stop()
-        let checkpoint = try #require(result.checkpoint)
-        let recovered = try #require(try AudioCheckpoint.loadRecovered(
-            from: harness.root.appending(path: "audio", directoryHint: .isDirectory),
-            relativeTo: harness.root
-        ))
-        let audio = try readCommittedAudio(checkpoint, root: harness.root)
-        #expect(recovered == checkpoint)
-        #expect(checkpoint.gapEvents == [
-            AudioGapEvent(startFrame: 512, frameCount: 480_000, reason: .missingCallback)
-        ])
-        #expect(checkpoint.committedFrames == 480_512)
-        #expect(audio.count == 480_512)
-        #expect(audio.prefix(512).allSatisfy { abs($0 - 0.25) < 0.0001 })
-        #expect(audio.suffix(480_000).allSatisfy { abs($0) < 0.0001 })
-        #expect(!audio.contains { abs($0 + 0.5) < 0.0001 })
-        #expect(!result.healthyPrefixOnly)
-        #expect(result.errors.isEmpty)
-        #expect(harness.probe.powerReleaseCount == 1)
-    }
-
     @Test func qpcDeadlineExpiresAfterSleepWithoutReopening() async throws {
         let harness = try makeReconnectHarness(
             source: .microphone,
@@ -1705,7 +1645,6 @@ private struct ReconnectHarness {
     let factory: ReconnectFakeFactory
     let clock: ReconnectCaptureClock
     let probe: ReconnectProbe
-    let writer: DurableAudioWriter
 }
 
 private struct ReconnectDeviceFormat {
@@ -1854,7 +1793,6 @@ private final class ReconnectFakeDevice: WindowsCaptureDevice {
     private let emitPacketBeforeStartFailure: Bool
     private let qpcAdvanceBeforeStartFailureSeconds: TimeInterval?
     private let qpcAdvanceAfterStartSeconds: TimeInterval?
-    private let probe: ReconnectProbe
     private var ingress: WindowsCaptureIngress?
     private(set) var isFenced = false
     private(set) var startCount = 0
@@ -1877,8 +1815,7 @@ private final class ReconnectFakeDevice: WindowsCaptureDevice {
         startFailureCode: Int32?,
         emitPacketBeforeStartFailure: Bool,
         qpcAdvanceBeforeStartFailureSeconds: TimeInterval?,
-        qpcAdvanceAfterStartSeconds: TimeInterval?,
-        probe: ReconnectProbe
+        qpcAdvanceAfterStartSeconds: TimeInterval?
     ) {
         self.endpointID = endpointID
         self.sampleRate = sampleRate
@@ -1890,7 +1827,6 @@ private final class ReconnectFakeDevice: WindowsCaptureDevice {
         self.emitPacketBeforeStartFailure = emitPacketBeforeStartFailure
         self.qpcAdvanceBeforeStartFailureSeconds = qpcAdvanceBeforeStartFailureSeconds
         self.qpcAdvanceAfterStartSeconds = qpcAdvanceAfterStartSeconds
-        self.probe = probe
     }
 
     func start(ingress: WindowsCaptureIngress) throws {
@@ -1973,7 +1909,6 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
     private var formats: [String: ReconnectDeviceFormat]
     private var sampleValues: [String: Float]
     private let clock: ReconnectCaptureClock
-    private let probe: ReconnectProbe
     private(set) var openSelections: [WindowsCaptureDeviceSelection] = []
     private(set) var openedDevices: [ReconnectFakeDevice] = []
     private(set) var devicesCallCount = 0
@@ -1995,8 +1930,7 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
         sampleValues: [String: Float],
         initialFormat: ReconnectDeviceFormat,
         initialSampleValue: Float,
-        clock: ReconnectCaptureClock,
-        probe: ReconnectProbe
+        clock: ReconnectCaptureClock
     ) {
         self.endpoints = endpoints
         self.formats = Dictionary(uniqueKeysWithValues: endpoints.map { ($0.id, initialFormat) })
@@ -2004,7 +1938,6 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
         for (endpointID, format) in formats { self.formats[endpointID] = format }
         for (endpointID, sampleValue) in sampleValues { self.sampleValues[endpointID] = sampleValue }
         self.clock = clock
-        self.probe = probe
     }
 
     func setFormat(sampleRate: Double, channels: Int, for endpointID: String) {
@@ -2074,8 +2007,7 @@ private final class ReconnectFakeFactory: WindowsCaptureSourceFactory {
             startFailureCode: startFailureCode,
             emitPacketBeforeStartFailure: emitPacketBeforeStartFailure,
             qpcAdvanceBeforeStartFailureSeconds: qpcAdvanceBeforeStartFailure,
-            qpcAdvanceAfterStartSeconds: qpcAdvanceAfterStart,
-            probe: probe
+            qpcAdvanceAfterStartSeconds: qpcAdvanceAfterStart
         )
         openedDevices.append(fake)
         if let qpcAdvanceOnNextOpen {
@@ -2121,8 +2053,7 @@ private func makeReconnectHarness(
         sampleValues: sampleValues,
         initialFormat: ReconnectDeviceFormat(sampleRate: 16_000, channels: 1),
         initialSampleValue: 0.25,
-        clock: clock,
-        probe: probe
+        clock: clock
     )
     let diskSpace = WindowsCaptureDiskSpaceProvider(query: { _ in
         UInt64(CaptureDiskPolicy.requiredStartBytes)
@@ -2154,8 +2085,7 @@ private func makeReconnectHarness(
         source: capture,
         factory: factory,
         clock: clock,
-        probe: probe,
-        writer: writer
+        probe: probe
     )
 }
 

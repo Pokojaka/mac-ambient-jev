@@ -49,15 +49,7 @@ private func nativeFailureMessages(
         )
     }
     messages.append(contentsOf: diagnostics)
-    return uniqueFailureMessages(messages)
-}
-
-private func uniqueFailureMessages(_ messages: [String]) -> [String] {
-    var uniqueMessages: [String] = []
-    for message in messages where !uniqueMessages.contains(message) {
-        uniqueMessages.append(message)
-    }
-    return uniqueMessages
+    return uniqueCaptureFailureMessages(messages)
 }
 
 @MainActor
@@ -156,7 +148,7 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             var stopCleanupErrors = mja_capture_cleanup_errors(stop: 0, environment: 0, context: 0)
             let stopResult = mja_capture_stop_join(openedCapture, &stopCleanupErrors)
             mja_capture_destroy(openedCapture)
-            let failures = uniqueFailureMessages(
+            let failures = uniqueCaptureFailureMessages(
                 openFailures + nativeFailureMessages(
                     operation: "mja_capture_stop_join",
                     code: mja_capture_is_device_lost_error(stopResult) != 0 ? 0 : stopResult,
@@ -194,7 +186,7 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             )
             guard cleanupFailures.isEmpty else {
                 throw WindowsCaptureAdapterError.combined(
-                    uniqueFailureMessages([endpointError.localizedDescription] + cleanupFailures)
+                    uniqueCaptureFailureMessages([endpointError.localizedDescription] + cleanupFailures)
                 )
             }
             throw endpointError
@@ -217,7 +209,7 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             )
             guard cleanupFailures.isEmpty else {
                 throw WindowsCaptureAdapterError.combined(
-                    uniqueFailureMessages([formatError.localizedDescription] + cleanupFailures)
+                    uniqueCaptureFailureMessages([formatError.localizedDescription] + cleanupFailures)
                 )
             }
             throw formatError

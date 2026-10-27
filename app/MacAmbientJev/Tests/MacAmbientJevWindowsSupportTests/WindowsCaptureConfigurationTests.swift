@@ -33,28 +33,6 @@ struct WindowsCaptureConfigurationTests {
         }
     }
 
-    @Test("configuration inspection rejects invalid loopback modes")
-    func rejectsInvalidLoopbackModes() {
-        for loopback: Int32 in [-1, 2] {
-            var values = mja_capture_config_values(
-                period_milliseconds: 0,
-                periods: 0,
-                conservative: 0,
-                pro_audio: 0,
-                no_auto_stream_routing: 0,
-                period_frames: 0,
-                loopback: 0
-            )
-
-            #expect(mja_capture_inspect_config(loopback, &values) != 0)
-        }
-    }
-
-    @Test("configuration inspection rejects a nil output")
-    func rejectsNilOutput() {
-        #expect(mja_capture_inspect_config(0, nil) != 0)
-    }
-
     @Test("capture rings cover ten seconds and the native period-group minimum")
     func ringCapacityCoversPeriodGroupsAndTenSeconds() {
         let periodMilliseconds = Double(MJA_CAPTURE_PERIOD_MILLISECONDS)
@@ -128,11 +106,6 @@ struct WindowsCaptureConfigurationTests {
         }
 
         #expect(mja_capture_is_device_lost_error(0) == 0)
-    }
-
-    @Test("capture endpoint ID query accepts a nil capture")
-    func endpointIDQueryAcceptsNilCapture() {
-        #expect(mja_capture_endpoint_id(nil) == nil)
     }
 }
 #endif

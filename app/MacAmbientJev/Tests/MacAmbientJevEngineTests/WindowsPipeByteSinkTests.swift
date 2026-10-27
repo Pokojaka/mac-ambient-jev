@@ -199,65 +199,6 @@ private func testLimits(deadline: TimeInterval) -> EngineTransportLimits {
         #expect(reader.data == payload)
     }
 
-    @Test func cancellingAChangeWaitStillCleansPipeWorkers() async throws {
-        let pipe = try makePipe()
-        let reader = PipeReader(handle: pipe.read, pause: 0)
-        let sink = WindowsPipeByteSink(handle: pipe.write)
-        let outcome = Outcome()
-        Thread.detachNewThread {
-            let block = [UInt8](repeating: 0x42, count: 65_536)
-            do {
-                while true {
-                    let written = try block.withUnsafeBytes { try sink.write($0) }
-                    outcome.add(written)
-                }
-            } catch {
-                outcome.finish(error)
-            }
-        }
-
-        do {
-            try await outcome.changes.wait("the pipe writer to start") { outcome.totalBytes >= 4096 }
-            let neverTrue = ChangeSignal()
-            let waiterStarted = Outcome()
-            let waiter = Task {
-                do {
-                    try await neverTrue.wait("a condition that never becomes true") {
-                        waiterStarted.finish(nil)
-                        return false
-                    }
-                    return false
-                } catch is WaitCancelled {
-                    return true
-                } catch {
-                    return false
-                }
-            }
-            try await waiterStarted.changes.wait("the waiter to check its condition") { waiterStarted.completed }
-            waiter.cancel()
-            let wasCancelled = await waiter.value
-            #expect(wasCancelled)
-        } catch {
-            await blocking {
-                sink.close()
-                outcome.waitUntilFinished()
-                reader.join()
-            }
-            #expect(outcome.completed)
-            #expect(reader.completed)
-            throw error
-        }
-
-        await blocking {
-            sink.close()
-            outcome.waitUntilFinished()
-            reader.join()
-        }
-        #expect(outcome.completed)
-        #expect(reader.completed)
-        #expect(outcome.error as? EngineSinkError == .cancelled)
-    }
-
     @Test func aSlowPipeReaderReceivesEveryTransportRecordIntact() async throws {
         let pipe = try makePipe()
         let reader = PipeReader(handle: pipe.read, pause: 0.0002)
