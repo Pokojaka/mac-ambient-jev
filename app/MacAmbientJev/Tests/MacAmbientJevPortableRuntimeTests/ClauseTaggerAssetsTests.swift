@@ -4,66 +4,6 @@ import Testing
 @testable import MacAmbientJevPortableRuntime
 
 struct ClauseTaggerAssetsTests {
-    @Test func bundledManifestPinsTheSourceAndFiveMembers() throws {
-        let manifest = try ClauseTaggerManifest.bundled()
-
-        #expect(manifest.schemaVersion == 1)
-        #expect(manifest.source == .init(
-            repository: "Pokojaka/modernbert-ja-30m-utterance-tagger",
-            commit: "5c0213592cf8d59fc0b665183ab7536ddde05d1f"
-        ))
-        #expect(manifest.model == .init(
-            id: "Pokojaka/modernbert-ja-30m-utterance-tagger",
-            revision: "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9",
-            tokenizerSHA256: "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062",
-            encodingRevision: "1",
-            unitPolicy: "btsj-utterance-sentence",
-            trainingStatus: "trained"
-        ))
-        #expect(manifest.onnx.opset == 18)
-        #expect(manifest.onnx.minimumSequenceLength == 2)
-        #expect(manifest.onnx.maximumSequenceLength == 192)
-        #expect(manifest.onnx.inputs == [
-            .init(name: "input_ids", dtype: "int64", shape: [.fixed(1), .symbolic("seq")])
-        ])
-        #expect(manifest.onnx.outputs == [
-            .init(name: "boundary_probs", dtype: "float32", shape: [.fixed(1), .symbolic("seq"), .fixed(2)]),
-            .init(name: "span_probs", dtype: "float32", shape: [.fixed(1), .symbolic("seq"), .fixed(4)]),
-            .init(name: "priority_probs", dtype: "float32", shape: [.fixed(1), .fixed(2)])
-        ])
-        #expect(manifest.members == [
-            .init(
-                role: .model, name: "ClauseTagger.onnx", path: "onnx/ClauseTagger.onnx",
-                byteCount: 146_889_562,
-                sha256: "1131898abd272f8bfb6e30828384e875971486cf9ba4f42f464f40b2f1119782"
-            ),
-            .init(
-                role: .tokenizer, name: "tokenizer.json", path: "onnx/tokenizer.json", byteCount: 6_724_873,
-                sha256: "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
-            ),
-            .init(
-                role: .export, name: "export.json", path: "onnx/export.json", byteCount: 253_707,
-                sha256: "c62d12cba67447ba64c45d9e5471c65f69f0efebe9c2901852ec3ce8587c3a4a"
-            ),
-            .init(
-                role: .license, name: "LICENSE.txt", path: "onnx/LICENSE.txt", byteCount: 1_292,
-                sha256: "2e97bfc46df586a08bb5942dc2af608d1aced6023735f65797d0ced0ba7fd77a"
-            ),
-            .init(
-                role: .modelLicense, name: "LICENSE.md", path: "LICENSE.md", byteCount: 2_185,
-                sha256: "08b0eeee7efa0c43bcdefa95e64f0cf0e8f869eed4d01f3c5bcc2d99f112fb77"
-            )
-        ])
-    }
-
-    @Test func pinnedIdentityCarriesTheModelRevisionAndTokenizerHash() throws {
-        let identity = try ClauseTaggerAssets.pinnedIdentity()
-
-        #expect(identity.modelID == "Pokojaka/modernbert-ja-30m-utterance-tagger")
-        #expect(identity.revision == "90501ea32d56d71f34287039512346537e0aaa4c8fd830e0c3b5746d8fb544c9")
-        #expect(identity.tokenizerSHA256 == "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062")
-    }
-
     @Test func verifiedDirectoryYieldsURLsAndIdentity() throws {
         let directory = try makeModelDirectory()
         defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }

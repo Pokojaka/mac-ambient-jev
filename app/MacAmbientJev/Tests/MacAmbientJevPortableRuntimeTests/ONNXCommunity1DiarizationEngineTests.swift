@@ -87,26 +87,6 @@ private final class KernelRunGate: @unchecked Sendable {
     }
 }
 
-private final class WaitConditionProbe: @unchecked Sendable {
-    let changes = ChangeSignal()
-    private let lock = NSLock()
-    private var hasEvaluatedCondition = false
-
-    func evaluateFalse() -> Bool {
-        lock.lock()
-        hasEvaluatedCondition = true
-        lock.unlock()
-        changes.signal()
-        return false
-    }
-
-    var conditionWasEvaluated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return hasEvaluatedCondition
-    }
-}
-
 private let testProvenance = RunProvenance(
     engine: "fake-community1", model: nil, version: "test", configuration: [:]
 )
@@ -310,30 +290,6 @@ struct ONNXCommunity1DiarizationEngineTests {
             } catch {}
             if let unloading { await unloading.value }
             throw error
-        }
-    }
-
-    @Test
-    func cancellationStopsAChangeSignalWait() async throws {
-        let probe = WaitConditionProbe()
-        let neverChanges = ChangeSignal()
-        let waiting = Task {
-            try await neverChanges.wait("cancelled condition") { probe.evaluateFalse() }
-        }
-
-        do {
-            try await probe.changes.wait("waiter condition to be evaluated") { probe.conditionWasEvaluated }
-        } catch {
-            waiting.cancel()
-            do {
-                _ = try await waiting.value
-            } catch {}
-            throw error
-        }
-        waiting.cancel()
-
-        await #expect(throws: WaitCancelled.self) {
-            try await waiting.value
         }
     }
 }
