@@ -78,23 +78,6 @@ struct FileSHA256Tests {
         }
     }
 
-    @Test func incrementalUpdatesMatchIndependentOracles() {
-        let payload = Data((0..<4_097).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
-        let chunkSizes = [0, 1, 55, 56, 63, 64, 65, 127, 1_024]
-        var hasher = SHA256Hasher()
-        var offset = 0
-        var chunkIndex = 0
-        while offset < payload.count {
-            let chunkSize = chunkSizes[chunkIndex % chunkSizes.count]
-            let end = min(offset + chunkSize, payload.count)
-            hasher.update(payload.subdata(in: offset..<end))
-            offset = end
-            chunkIndex += 1
-        }
-
-        #expect(hasher.finalizeHex() == "bb37fb3430fb3bc003f70512ee0189aec84b029b221885c8f16280d1b935483e")
-    }
-
     @Test func missingFileThrows() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

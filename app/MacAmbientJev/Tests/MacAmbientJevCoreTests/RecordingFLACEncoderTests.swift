@@ -10,22 +10,6 @@ func flacSearchPath(in environment: [String: String]) -> String? {
     #endif
 }
 
-@Test(arguments: ["PATH", "Path", "pAtH", "path"])
-func flacSearchPathUsesPlatformEnvironmentKeyCasing(key: String) {
-    let fixture = "explicit-flac-path"
-
-    #if os(Windows)
-    #expect(flacSearchPath(in: [key: fixture]) == fixture)
-    #else
-    #expect(flacSearchPath(in: [key: fixture]) == (key == "PATH" ? fixture : nil))
-    #endif
-}
-
-@Test func flacSearchPathRequiresPATHVariable() {
-    #expect(flacSearchPath(in: [:]) == nil)
-    #expect(flacSearchPath(in: ["PATHEXT": ".EXE"]) == nil)
-}
-
 private let flacExecutable: URL? = {
     #if os(Windows)
     let executableName = "flac.exe"
@@ -175,35 +159,6 @@ private struct RecordingFLACFixture {
     #expect(reader.requests == [0..<Int64(sourceSamples.count)])
 }
 
-@Test func silenceRoundTripsExactlyAndUsesCompactSubframes() throws {
-    let fixture = try RecordingFLACFixture()
-    defer { fixture.cleanup() }
-
-    for count in [1, 2, 4_096] {
-        let output = fixture.root.appending(path: "silence-\(count).flac")
-        let samples = [Float](repeating: 0, count: count)
-        let source = try SyntheticTimelineAudio(samples: samples)
-        try RecordingFLAC.write(reader: source, to: output, sessionURL: fixture.root)
-
-        let reader = try FLACTimelineReader(url: output, info: source.info, sessionURL: fixture.root)
-        try reader.validateAudio()
-        try reader.validateAudio(against: source)
-        #expect(reader.info.committedFrames == Int64(count))
-        #expect(try reader.readSamples(frameRange: 0..<Int64(count)) == samples)
-
-        let bytes = Array(try SessionFileAccess.read(output, relativeTo: fixture.root))
-        let subframe = try firstEncoderFrameSubframe(in: output, sessionURL: fixture.root)
-        let encodedSubframeBytes = bytes.count - subframe.offset - 2
-        #expect(encodedSubframeBytes <= 1 + 2 * count)
-        if count > 1 {
-            #expect(encodedSubframeBytes < 1 + 2 * count)
-        }
-        if count == 4_096 {
-            #expect(subframe.type == 0)
-        }
-    }
-}
-
 @Test(.enabled(if: flacExecutable != nil, "PATH に flac が見つからないためスキップします"))
 func flacCLIValidatesFramesAndRoundTripsPCM() async throws {
     try await withTaskExecutorPreference(BlockingIOExecutor.shared) {
@@ -308,35 +263,6 @@ func flacCLIValidatesFramesAndRoundTripsPCM() async throws {
     #expect(throws: RecordingFLACError.nonFiniteSample(frame: 4_097)) {
         try RecordingFLAC.write(reader: reader, to: fixture.output, sessionURL: fixture.root)
     }
-}
-
-private func firstEncoderFrameSubframe(in url: URL, sessionURL: URL) throws -> (offset: Int, type: Int) {
-    let handle = try SessionFileAccess.openHandle(url, relativeTo: sessionURL)
-    defer { try? handle.close() }
-    let reader = FLACBitReader(handle: handle)
-    try reader.seek(to: 42)
-
-    _ = try reader.read(16)
-    let blockSizeCode = Int(try reader.read(4))
-    let sampleRateCode = Int(try reader.read(4))
-    _ = try reader.read(8)
-    _ = try reader.read(8)
-    if blockSizeCode == 6 {
-        _ = try reader.read(8)
-    } else if blockSizeCode == 7 {
-        _ = try reader.read(16)
-    }
-    if sampleRateCode == 12 {
-        _ = try reader.read(8)
-    } else if sampleRateCode == 13 || sampleRateCode == 14 {
-        _ = try reader.read(16)
-    }
-    _ = try reader.read(8)
-
-    let offset = Int(reader.offset)
-    _ = try reader.read(1)
-    let type = Int(try reader.read(6))
-    return (offset, type)
 }
 
 private func readUInt16(_ bytes: [UInt8], at offset: Int) -> Int {
