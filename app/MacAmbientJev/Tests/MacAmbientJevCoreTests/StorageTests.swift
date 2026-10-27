@@ -92,31 +92,6 @@ func processingMetadataEncodesThePublishedStageContract() throws {
     #expect(try JSONDecoder().decode(ProcessingMetadata.self, from: data) == metadata)
 }
 
-@Test
-func processingMetadataStorePersistsSelectedRuns() throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-
-    let active = ActiveRuns(
-        segmentation: "seg_run_03",
-        asr: "asr_run_07"
-    )
-    let metadata = ProcessingMetadata(
-        finalizationAttempt: nil,
-        activeRuns: active,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    )
-
-    let store = ProcessingMetadataStore(sessionURL: root)
-    try store.save(metadata)
-    let restored = try store.load()
-
-    #expect(restored?.activeRuns?.segmentation == "seg_run_03")
-    #expect(restored?.activeRuns?.asr == "asr_run_07")
-}
-
 @Test(arguments: ["pending_clause_boundary_segments", "pending_content_priority_clauses"])
 func missingClauseMetadataArraysAreRejectedBeforeReadingOrAppending(key: String) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

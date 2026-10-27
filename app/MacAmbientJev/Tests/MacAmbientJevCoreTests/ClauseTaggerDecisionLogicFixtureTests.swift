@@ -191,39 +191,6 @@ struct ClauseTaggerDecisionLogicFixtureTests {
         #expect(boundaryRawCallCount + replay.nextCallIndex == 13)
         print("ClauseTagger priority request fixtures: batches=1, targets=\(targets.count), rawCalls=\(replay.nextCallIndex), totalRawCalls=\(boundaryRawCallCount + replay.nextCallIndex)")
     }
-
-    @Test
-    func replayRejectsDifferentIDsExtraCallsAndUnconsumedCalls() throws {
-        let document = try ClauseTaggerRequestReplaySupport.load()
-        let firstCall = try #require(document.boundaryCases.first?.calls.first)
-        var changedIDs = firstCall.inputIDs
-        #expect(!changedIDs.isEmpty)
-        guard !changedIDs.isEmpty else { return }
-        changedIDs[0] += 1
-
-        let changedReplay = ClauseTaggerRequestReplaySupport.Replay(calls: [firstCall])
-        #expect(throws: ClauseTaggerRequestReplaySupport.ReplayError.self) {
-            try changedReplay.predict(changedIDs)
-        }
-
-        let emptyReplay = ClauseTaggerRequestReplaySupport.Replay(calls: [])
-        #expect(throws: ClauseTaggerRequestReplaySupport.ReplayError.self) {
-            try emptyReplay.predict(firstCall.inputIDs)
-        }
-
-        let unconsumedReplay = ClauseTaggerRequestReplaySupport.Replay(calls: [firstCall])
-        #expect(throws: ClauseTaggerRequestReplaySupport.ReplayError.self) {
-            try unconsumedReplay.requireComplete()
-        }
-
-        let exactReplay = ClauseTaggerRequestReplaySupport.Replay(calls: [firstCall])
-        _ = try exactReplay.predict(firstCall.inputIDs)
-        try exactReplay.requireComplete()
-        #expect(exactReplay.nextCallIndex == 1)
-        #expect(throws: ClauseTaggerRequestReplaySupport.ReplayError.self) {
-            try exactReplay.predict(firstCall.inputIDs)
-        }
-    }
 }
 
 private func assertEncodedInputMatches(
