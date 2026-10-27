@@ -67,8 +67,8 @@ public sealed class EngineProcessClient : IAsyncDisposable
         _writeSignal.Release();
     }
 
-    public static EngineProcessClient Start(string enginePath) =>
-        new(ProcessEngineChild.Start(enginePath, Array.Empty<string>()), EngineClientLimits.Production);
+    public static EngineProcessClient Start() =>
+        new(ProcessEngineChild.Start(EnginePathResolver.Resolve(), Array.Empty<string>()), EngineClientLimits.Production);
 
     public Task<EngineResult> Hello { get; }
 

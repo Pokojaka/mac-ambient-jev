@@ -51,6 +51,7 @@ on:
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
       - 'scripts/stage-windows-engine.ps1'
+      - 'scripts/stage-windows-app.ps1'
       - 'scripts/build-windows-shell.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
@@ -118,6 +119,7 @@ on:
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
       - 'scripts/stage-windows-engine.ps1'
+      - 'scripts/stage-windows-app.ps1'
       - 'scripts/build-windows-shell.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
@@ -383,6 +385,14 @@ jobs:
         shell: powershell
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+          architecture: ${{ matrix.python_architecture }}
+      - name: .NET information
+        run: |
+          dotnet --info
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet --info failed' }
       # VS 2026 ARM64 component ID and mapping: https://raw.githubusercontent.com/MicrosoftDocs/visualstudio-docs/main/docs/install/includes/vs-2026/workload-component-id-vs-enterprise.md
       # Installer command-line options and reboot exit code 3010: https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022
       - name: Install MSVC 14.44 component on ARM64
