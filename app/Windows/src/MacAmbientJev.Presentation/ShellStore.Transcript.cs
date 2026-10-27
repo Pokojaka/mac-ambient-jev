@@ -14,17 +14,19 @@ public sealed partial class ShellStore
     public Task SelectSessionAsync(string sessionID)
     {
         ArgumentException.ThrowIfNullOrEmpty(sessionID);
-        return Post(() =>
-        {
-            var current = _working.Transcript;
-            if (current.SessionID == sessionID) return;
-            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
-            _selectionGeneration = checked(_selectionGeneration + 1);
-            _historyEpoch = checked(_historyEpoch + 1);
-            _working = _working with { Transcript = new ShellTranscriptState { SessionID = sessionID, Follow = current.Follow }, CommandError = null };
-            _tailDirty = true;
-            EnsureTailWorker();
-        });
+        return Post(() => SelectSession(sessionID));
+    }
+
+    private void SelectSession(string sessionID)
+    {
+        var current = _working.Transcript;
+        if (current.SessionID == sessionID) return;
+        if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
+        _selectionGeneration = checked(_selectionGeneration + 1);
+        _historyEpoch = checked(_historyEpoch + 1);
+        _working = _working with { Transcript = new ShellTranscriptState { SessionID = sessionID, Follow = current.Follow }, CommandError = null };
+        _tailDirty = true;
+        EnsureTailWorker();
     }
 
     public Task UserScrolledAsync() => Post(() =>

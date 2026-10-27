@@ -91,6 +91,38 @@ public sealed partial class ShellStoreTests
     }
 
     [Fact]
+    public async Task RecordingStartSelectsReturnedSessionAndRefreshesItsTail()
+    {
+        var engine = new Fake(State(EngineSetupStatus.Ready, 2), Response(SettingsResult(7, Settings(2, false, false, false, null))));
+        var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        await store.SelectSessionAsync("old-session");
+        var oldWatch = await engine.NextRequestAsync();
+        oldWatch.Complete(new EngineResult.TranscriptWatch(Page("old-session", 1, "old-tail", null, null)));
+        await ChangedTo(store, s => s.Transcript.Tail?.Revision == new EngineID(1));
+        var history = store.ReadHistoryAsync(ShellPageMove.Reload); var historyRequest = await engine.NextRequestAsync();
+        historyRequest.Complete(new EngineResult.TranscriptRead(Page("old-session", 2, "old-history", null, null)));
+        Assert.True(await history);
+        Assert.Equal("old-tail", store.State.Transcript.Tail!.Rows[0].Text);
+        Assert.Equal("old-history", store.State.Transcript.History.Current!.Rows[0].Text);
+
+        clock.Advance(TimeSpan.FromMilliseconds(250));
+        var start = store.ExecuteAsync(new EngineCommand.RecordingStart(new EngineRecordingStartPayload(EngineSource.Microphone, new EngineDevice.Default())));
+        var startRequest = await engine.NextRequestAsync();
+        startRequest.Complete(new EngineResult.RecordingStart(new EngineSessionPayload("new-session")));
+        Assert.True(await start);
+        var switched = await ChangedTo(store, s => s.Transcript.SessionID == "new-session" && s.Transcript.Tail is null && s.Transcript.History.Pages.IsEmpty);
+        Assert.Null(switched.Transcript.Tail);
+        Assert.Empty(switched.Transcript.History.Pages);
+
+        var newWatch = await engine.NextRequestAsync();
+        Assert.Equal("new-session", Assert.IsType<EngineCommand.TranscriptWatch>(newWatch.Command).Payload.SessionID);
+        newWatch.Complete(new EngineResult.TranscriptWatch(Page("new-session", 3, "new-tail", null, null)));
+        var refreshed = await ChangedTo(store, s => s.Transcript.Tail?.Revision == new EngineID(3));
+        Assert.Equal("new-session", refreshed.Transcript.Tail!.SessionID);
+        Assert.Equal("new-tail", refreshed.Transcript.Tail.Rows[0].Text);
+    }
+
+    [Fact]
     public async Task ClientFailurePublishesEarlyThenFinalSnapshotWithoutLosingShellData()
     {
         var engine = new Fake(State(EngineSetupStatus.Ready, 5), Response(SettingsResult(7, Settings(2, false, false, false, null))));

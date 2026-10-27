@@ -106,21 +106,15 @@ try {
         throw "WinUI project file is missing: $projectPath"
     }
 
-    $intermediateOutputDirectory = [System.IO.Path]::GetFullPath((Join-Path -Path $projectDirectory -ChildPath "obj/$platform")) + [System.IO.Path]::DirectorySeparatorChar
-    $baseOutputDirectory = [System.IO.Path]::GetFullPath((Join-Path -Path $projectDirectory -ChildPath "bin/$platform")) + [System.IO.Path]::DirectorySeparatorChar
     $projectPathProperties = @(
         "-p:Platform=$platform",
-        "-p:BaseIntermediateOutputPath=$intermediateOutputDirectory",
-        "-p:MSBuildProjectExtensionsPath=$intermediateOutputDirectory",
-        "-p:BaseOutputPath=$baseOutputDirectory"
+        "-p:WindowsShellRuntimeIdentifier=$runtimeIdentifier"
     )
 
-    # Use the RuntimeIdentifier property instead of restore -r, which resets RuntimeIdentifiers.
     $restoreArguments = @(
         'restore',
         $projectPath,
-        '--locked-mode',
-        "-p:RuntimeIdentifier=$runtimeIdentifier"
+        '--locked-mode'
     ) + $projectPathProperties
     Invoke-NativeCapture -Name "Restore WinUI shell for $platform ($runtimeIdentifier)" -Executable $dotnetExecutable -ArgumentList $restoreArguments -DisplayOutput $true | Out-Null
 
@@ -132,7 +126,6 @@ try {
         $projectPath,
         '-c', 'Release',
         '--no-restore',
-        '-r', $runtimeIdentifier,
         '--output', $destinationPath
     ) + $projectPathProperties
     Invoke-NativeCapture -Name "Publish WinUI shell for $platform ($runtimeIdentifier)" -Executable $dotnetExecutable -ArgumentList $publishArguments -DisplayOutput $true | Out-Null

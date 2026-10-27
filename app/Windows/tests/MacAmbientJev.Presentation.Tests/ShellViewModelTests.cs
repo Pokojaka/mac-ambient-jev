@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.ComponentModel;
 using MacAmbientJev.EngineClient;
 using MacAmbientJev.Presentation;
@@ -15,13 +16,13 @@ public sealed partial class ShellStoreTests
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
         var live = new LiveViewModel(context); var diagnostics = new DiagnosticsViewModel(context);
         var payload = new EngineRecordingStartPayload(EngineSource.Microphone, new EngineDevice.Default());
-        Assert.True(live.StartRecording.CanExecute(payload)); live.StartRecording.Execute(payload); live.StartRecording.Execute(payload);
-        Assert.False(live.StartRecording.CanExecute(payload)); var execution = live.StartRecording.Execution!; var request = await engine.NextRequestAsync();
+        Assert.True(live.StartRecording.CanExecute(null)); live.StartRecording.Execute(null); live.StartRecording.Execute(null);
+        Assert.False(live.StartRecording.CanExecute(null)); var execution = live.StartRecording.Execution!; var request = await engine.NextRequestAsync();
         await ChangedTo(store, s => s.IsPending(EngineCommandName.RecordingStart));
-        Assert.False(live.StartRecording.CanExecute(payload)); Assert.Equal(2, engine.SentCount);
+        Assert.False(live.StartRecording.CanExecute(null)); Assert.Equal(2, engine.SentCount);
         request.Reject(Failure(EngineErrorCode.Busy, "busy", EngineRecoveryAction.Retry)); await execution;
         var direct = store.ExecuteAsync(new EngineCommand.RecordingStart(payload)); request = await engine.NextRequestAsync();
-        await ChangedTo(store, s => s.IsPending(EngineCommandName.RecordingStart)); Assert.False(live.StartRecording.CanExecute(payload));
+        await ChangedTo(store, s => s.IsPending(EngineCommandName.RecordingStart)); Assert.False(live.StartRecording.CanExecute(null));
         request.Reject(Failure(EngineErrorCode.Busy, "busy", EngineRecoveryAction.Retry)); Assert.False(await direct);
         var revision = 1UL;
         foreach (var phase in Enum.GetValues<EngineRecordingPhase>())
@@ -29,13 +30,93 @@ public sealed partial class ShellStoreTests
             var state = State(EngineSetupStatus.Ready, ++revision) with { Recording = new EngineRecordingState("session", EngineSource.Microphone, new EngineDevice.Default(), phase) };
             engine.EmitBatch(new EngineOutput(1, new EngineID(revision), null, new EngineEvent.State(state)));
             await ChangedTo(store, s => s.Engine?.Revision == new EngineID(revision));
-            Assert.False(live.StartRecording.CanExecute(payload));
+            Assert.False(live.StartRecording.CanExecute(null));
             Assert.Equal(phase is EngineRecordingPhase.Recording or EngineRecordingPhase.WaitingForDevice, live.StopRecording.CanExecute(null));
         }
         var failed = new EngineClientFailure("exited", 1, Failure(EngineErrorCode.DeviceFailure, "failed", EngineRecoveryAction.Retry), new StderrSnapshot([], 0));
         engine.SignalFailure(failed); engine.CompleteFailure(failed); await ChangedTo(store, s => s.Phase == ShellPhase.EngineFailed);
-        Assert.False(live.StartRecording.CanExecute(payload)); Assert.False(diagnostics.Refresh.CanExecute(null));
+        Assert.False(live.StartRecording.CanExecute(null)); Assert.False(diagnostics.Refresh.CanExecute(null));
     }
+    [Fact]
+    public async Task RecordingSelectionUsesCurrentSourceAndDeviceDraft()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var live = new LiveViewModel(context);
+        Assert.Equal(EngineSource.Microphone, live.SelectedSource);
+        Assert.Equal(new EngineDevice.Default(), live.SelectedDevice);
+        Assert.Equal("既定のデバイス", Assert.Single(live.Devices).Label);
+
+        var capabilities = new EngineCapabilities([EngineSource.Microphone, EngineSource.SystemAudio], [EngineASRSize.Small],
+            [EngineExecutionProvider.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None);
+        var capabilitiesChanged = ChangedAfter(store, state => ReferenceEquals(state.Capabilities, capabilities));
+        engine.EmitBatch(new EngineOutput(1, new EngineID(1), null,
+            new EngineEvent.Ready(new EngineReadyPayload(capabilities, State(EngineSetupStatus.Ready, 2)))));
+        await capabilitiesChanged; dispatcher.Run();
+        var sourceChoices = live.Sources;
+        Assert.Equal(new[] { EngineSource.Microphone, EngineSource.SystemAudio }, sourceChoices.Select(choice => choice.Value));
+        Assert.Equal(new[] { "マイク", "システム音声" }, sourceChoices.Select(choice => choice.Label));
+
+        var requestedSources = new List<EngineSource>();
+        EngineResult DevicesResponse(EngineCommand command)
+        {
+            var request = Assert.IsType<EngineCommand.DevicesList>(command);
+            var source = request.Payload.Source; requestedSources.Add(source);
+            var endpoint = source switch
+            {
+                EngineSource.Microphone => new EngineDeviceInfo("mic-endpoint", "Microphone endpoint", false),
+                EngineSource.SystemAudio => new EngineDeviceInfo("system-endpoint", "System endpoint", false),
+                _ => throw new InvalidOperationException($"Unexpected source {source}.")
+            };
+            return new EngineResult.DevicesList(new EngineDevicesResult(source, [endpoint], null));
+        }
+        engine.AutoResponse = DevicesResponse;
+        Assert.True(live.RefreshDevices.CanExecute(null));
+        live.RefreshDevices.Execute(null); await live.RefreshDevices.Execution!;
+        await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run();
+        Assert.Equal(new[] { EngineSource.Microphone }, requestedSources);
+        var microphoneChoices = live.Devices;
+        var microphoneChoice = Assert.Single(microphoneChoices, choice => choice.Value is EngineDevice.Id);
+        Assert.Equal("Microphone endpoint", microphoneChoice.Label);
+        Assert.Same(sourceChoices, live.Sources);
+
+        engine.AutoResponse = null;
+        live.SelectedDevice = microphoneChoice.Value;
+        Assert.True(live.StartRecording.CanExecute(null));
+        live.StartRecording.Execute(null);
+        var startExecution = live.StartRecording.Execution!; var startRequest = await engine.NextRequestAsync();
+        await ChangedTo(store, state => state.IsPending(EngineCommandName.RecordingStart));
+        Assert.False(live.CanChangeRecordingSelection);
+        Assert.Equal(new EngineRecordingStartPayload(EngineSource.Microphone, new EngineDevice.Id("mic-endpoint")),
+            Assert.IsType<EngineCommand.RecordingStart>(startRequest.Command).Payload);
+        startRequest.Reject(Failure(EngineErrorCode.Busy, "busy", EngineRecoveryAction.Retry)); await startExecution;
+        await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run();
+        Assert.Same(sourceChoices, live.Sources); Assert.Same(microphoneChoices, live.Devices);
+
+        live.SelectedDevice = null;
+        Assert.False(live.StartRecording.CanExecute(null));
+        live.SelectedDevice = microphoneChoice.Value;
+        engine.AutoResponse = DevicesResponse;
+        var systemDevicesPending = ChangedAfter(store, state => state.IsPending(EngineCommandName.DevicesList));
+        live.SelectedSource = EngineSource.SystemAudio;
+        Assert.Null(live.SelectedDevice);
+        Assert.Equal("既定のデバイス", Assert.Single(live.Devices).Label);
+        await systemDevicesPending;
+        await live.RefreshDevices.Execution!;
+        await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run();
+        engine.AutoResponse = null;
+        Assert.Equal(new[] { EngineSource.Microphone, EngineSource.SystemAudio }, requestedSources);
+        Assert.DoesNotContain(live.Devices, choice => choice.Value is EngineDevice.Id id && id.ID == "mic-endpoint");
+        Assert.Contains(live.Devices, choice => choice.Value is EngineDevice.Id id && id.ID == "system-endpoint");
+        live.SelectedDevice = microphoneChoice.Value;
+        Assert.False(live.StartRecording.CanExecute(null));
+        live.SelectedDevice = null;
+        Assert.False(live.StartRecording.CanExecute(null));
+        live.SelectedSource = (EngineSource)999;
+        Assert.False(live.StartRecording.CanExecute(null));
+        Assert.False(live.RefreshDevices.CanExecute(null));
+    }
+
     [Fact]
     public async Task OneDispatcherRefreshPerBatch()
     {
@@ -117,6 +198,76 @@ public sealed partial class ShellStoreTests
         pendingChange = ChangedAfter(store, s => s.IsPending(EngineCommandName.DiagnosticsGet)); vm.Refresh.Execute(null); request = await engine.NextRequestAsync(); await ChangedTo(store, s => s.IsPending(EngineCommandName.DiagnosticsGet)); await pendingChange;
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run(); Assert.True(vm.IsLoading); Assert.Equal(usage, vm.Usage);
         request.Reject(Failure(EngineErrorCode.Busy, "busy", EngineRecoveryAction.Retry)); await vm.Refresh.Execution!;
+    }
+    [Fact]
+    public async Task LiveRowsProjectAndReconcileInsideDispatcher()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var live = new LiveViewModel(context);
+        var sawSnapshotBeforeRows = false;
+        live.PropertyChanged += (_, _) =>
+        {
+            Assert.True(dispatcher.IsRunningCallback);
+            var emptyInSnapshot = live.Transcript.Tail is not { Rows.Length: > 0 };
+            Assert.Equal(emptyInSnapshot, live.IsEmpty);
+            if (!emptyInSnapshot && !sawSnapshotBeforeRows) { Assert.Empty(live.Rows); sawSnapshotBeforeRows = true; }
+        };
+        ((INotifyCollectionChanged)live.Rows).CollectionChanged += (_, change) =>
+        {
+            Assert.True(dispatcher.IsRunningCallback); Assert.NotEqual(NotifyCollectionChangedAction.Reset, change.Action);
+            Assert.InRange(live.Rows.Count, 0, 200);
+        };
+        EngineTranscriptRow TranscriptRow(string id, long start, string text, EngineSpeakerLabel[] headings, EngineClauseState? clause = null) =>
+            new(id, start, start, text, headings, clause);
+        var a = TranscriptRow("a", 65_000, "こんにちは🌸\n次の行", [EngineSpeakerLabel.Speaker1], EngineClauseState.AwaitingNextSegment);
+        var b = TranscriptRow("b", 125_000, "続き😊\n二行目", [EngineSpeakerLabel.Speaker1]);
+        var c = TranscriptRow("c", 190_000, "空の見出し", []);
+        var d = TranscriptRow("d", 605_000, "OTHER", [EngineSpeakerLabel.Other]);
+        await store.SelectSessionAsync("session"); var watch = await engine.NextRequestAsync();
+        watch.Complete(new EngineResult.TranscriptWatch(new EngineTranscriptPage("session", new EngineID(1), [a, b, c, d], null, null)));
+        await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(1));
+        Assert.Empty(live.Rows); dispatcher.Run(); Assert.True(sawSnapshotBeforeRows); Assert.False(live.IsEmpty);
+        Assert.Equal(new[]
+        {
+            new ShellTranscriptRowViewModel("a", a.Text, "01:05", "Speaker 1", "発話文の続き待ち"),
+            new ShellTranscriptRowViewModel("b", b.Text, "02:05", "", ""),
+            new ShellTranscriptRowViewModel("c", c.Text, "03:10", "", ""),
+            new ShellTranscriptRowViewModel("d", d.Text, "10:05", "OTHER", "")
+        }, live.Rows);
+        var stable = live.Rows[0]; var oldD = live.Rows[3];
+        var progress = new EngineProgressPayload(EngineStage.ValidatingModels, 1, 2, null);
+        engine.EmitBatch(Rows("session", EngineRowsKind.Changes), new EngineOutput(1, new EngineID(2), null, new EngineEvent.Progress(progress)));
+        await ChangedTo(store, state => state.Progress == progress);
+        await clock.WaitForTimerAsync(); await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
+        watch = await engine.NextRequestAsync();
+        var changedD = TranscriptRow("d", 610_000, "OTHER updated", [EngineSpeakerLabel.Other]);
+        var added = TranscriptRow("e", 2_000, "追加", []);
+        watch.Complete(new EngineResult.TranscriptWatch(new EngineTranscriptPage("session", new EngineID(2), [changedD, a, added], null, null)));
+        await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(2)); dispatcher.Run();
+        Assert.Equal(new[]
+        {
+            new ShellTranscriptRowViewModel("d", "OTHER updated", "10:10", "OTHER", ""),
+            new ShellTranscriptRowViewModel("a", a.Text, "01:05", "Speaker 1", "発話文の続き待ち"),
+            new ShellTranscriptRowViewModel("e", "追加", "00:02", "", "")
+        }, live.Rows);
+        Assert.Same(stable, live.Rows[1]); Assert.NotSame(oldD, live.Rows[0]);
+        async Task RenderScreen(EngineScreen screen, ulong revision, string expected)
+        {
+            engine.EmitBatch(new EngineOutput(1, new EngineID(revision), null,
+                new EngineEvent.State(State(EngineSetupStatus.Ready, revision) with { Screen = screen })));
+            await ChangedTo(store, state => state.Engine?.Revision == new EngineID(revision));
+            await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run(); Assert.Equal(expected, live.BadgeText);
+        }
+        await RenderScreen(EngineScreen.Live, 2, "ライブ（暫定）");
+        await RenderScreen(EngineScreen.Finalizing, 3, "確定処理中");
+        await RenderScreen(EngineScreen.Finalized, 4, "確定済み");
+        var failure = new EngineClientFailure("process exited", 7, Failure(EngineErrorCode.DeviceFailure, "final engine error", EngineRecoveryAction.Retry),
+            new StderrSnapshot(System.Text.Encoding.UTF8.GetBytes("stderr details"), 0));
+        engine.SignalFailure(failure); engine.CompleteFailure(failure);
+        await ChangedTo(store, state => state.EngineFailure is { ExitCode: 7 });
+        await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run();
+        Assert.Contains("process exited", live.FailureText); Assert.Contains("終了コード: 7", live.FailureText);
+        Assert.Contains("標準エラー出力: stderr details", live.FailureText); Assert.Equal("a", live.Rows[1].RowID); Assert.False(live.IsEmpty);
     }
     private static async Task<ShellState> ChangedAfter(ShellStore store, Func<ShellState, bool> predicate)
     {

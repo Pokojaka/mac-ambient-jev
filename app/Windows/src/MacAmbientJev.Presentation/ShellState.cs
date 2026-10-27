@@ -11,6 +11,7 @@ public sealed record ShellState
 {
     public ShellPhase Phase { get; init; } = ShellPhase.Connecting;
     public EngineCapabilities? Capabilities { get; init; }
+    public EngineDevicesResult? Devices { get; init; }
     public EngineState? Engine { get; init; }
     public EngineProgressPayload? Progress { get; init; }
     public EngineDiagnosticsResult? Diagnostics { get; init; }

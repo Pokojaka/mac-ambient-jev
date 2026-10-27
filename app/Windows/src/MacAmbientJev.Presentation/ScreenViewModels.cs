@@ -3,23 +3,116 @@ using MacAmbientJev.Protocol;
 
 namespace MacAmbientJev.Presentation;
 
-public sealed class LiveViewModel : ScreenViewModel
+public sealed record ShellSourceChoice(EngineSource Value, string Label);
+public sealed record ShellDeviceChoice(EngineDevice Value, string Label);
+
+public sealed partial class LiveViewModel : ScreenViewModel
 {
+    private EngineSource? _selectedSource = EngineSource.Microphone;
+    private EngineDevice? _selectedDevice = new EngineDevice.Default();
+    private bool _hasSourceChoices, _hasDeviceChoices;
+    private EngineCapabilities? _sourceChoicesCapabilities, _deviceChoicesCapabilities;
+    private EngineDevicesResult? _deviceChoicesResult;
+    private EngineSource? _deviceChoicesSource;
+    private IReadOnlyList<ShellSourceChoice> _sourceChoices = Array.Empty<ShellSourceChoice>();
+    private IReadOnlyList<ShellDeviceChoice> _deviceChoices = Array.Empty<ShellDeviceChoice>();
+
     public LiveViewModel(ShellUiContext context) : base(context)
     {
-        StartRecording = Command(CanStartRecording, parameter => Context.Store.ExecuteAsync(
-            new EngineCommand.RecordingStart((EngineRecordingStartPayload)parameter!)));
+        StartRecording = Command(CanStartRecording, _ => Context.Store.ExecuteAsync(
+            new EngineCommand.RecordingStart(CreateRecordingStartPayload())));
         StopRecording = Command(CanStopRecording, _ =>
         {
             var recording = Context.Store.State.Engine?.Recording ?? throw new InvalidOperationException("There is no authoritative recording session to stop.");
             return Context.Store.ExecuteAsync(new EngineCommand.RecordingStop(new EngineSessionPayload(recording.SessionID)));
         });
+        RefreshDevices = Command(CanRefreshDevices, _ => Context.Store.ReloadDevicesAsync(
+            _selectedSource ?? throw new InvalidOperationException("A source must be selected before loading devices.")));
         ReturnToLatest = Command(_ =>
         {
             var state = Context.Store.State;
             return state.Transcript.SessionID is not null && !state.Transcript.Follow && !state.IsPending(EngineCommandName.TranscriptWatch);
         }, _ => Context.Store.ReturnToLatestAsync());
         ReadHistory = Command(CanReadHistory, parameter => Context.Store.ReadHistoryAsync((ShellPageMove)parameter!));
+        _readOnlyRows = new System.Collections.ObjectModel.ReadOnlyObservableCollection<ShellTranscriptRowViewModel>(_rows);
+        InitializeDisplay();
+    }
+
+    public EngineSource? SelectedSource
+    {
+        get => _selectedSource;
+        set
+        {
+            if (_selectedSource == value) return;
+            _selectedSource = value;
+            _selectedDevice = null;
+            _hasDeviceChoices = false;
+            Context.RequestRefresh();
+            if (RefreshDevices.CanExecute(null)) RefreshDevices.Execute(null);
+        }
+    }
+
+    public EngineDevice? SelectedDevice
+    {
+        get => _selectedDevice;
+        set
+        {
+            if (Equals(_selectedDevice, value)) return;
+            _selectedDevice = value;
+            Context.RequestRefresh();
+        }
+    }
+
+    public IReadOnlyList<ShellSourceChoice> Sources
+    {
+        get
+        {
+            var capabilities = Snapshot.Capabilities;
+            if (!_hasSourceChoices || !ReferenceEquals(_sourceChoicesCapabilities, capabilities))
+            {
+                _sourceChoicesCapabilities = capabilities;
+                _sourceChoices = Array.AsReadOnly(capabilities is null
+                    ? Array.Empty<ShellSourceChoice>()
+                    : capabilities.Sources.Select(source => new ShellSourceChoice(source, SourceLabel(source))).ToArray());
+                _hasSourceChoices = true;
+            }
+            return _sourceChoices;
+        }
+    }
+
+    public IReadOnlyList<ShellDeviceChoice> Devices
+    {
+        get
+        {
+            var state = Snapshot;
+            var capabilities = state.Capabilities;
+            var devices = state.Devices;
+            var source = _selectedSource;
+            if (!_hasDeviceChoices || !ReferenceEquals(_deviceChoicesCapabilities, capabilities) ||
+                !ReferenceEquals(_deviceChoicesResult, devices) || _deviceChoicesSource != source)
+            {
+                _deviceChoicesCapabilities = capabilities;
+                _deviceChoicesResult = devices;
+                _deviceChoicesSource = source;
+                var choices = new List<ShellDeviceChoice> { new(new EngineDevice.Default(), "既定のデバイス") };
+                if (source is EngineSource selectedSource && devices?.Source == selectedSource && devices.Devices is not null)
+                    choices.AddRange(devices.Devices.Select(device => new ShellDeviceChoice(new EngineDevice.Id(device.ID), device.Name)));
+                _deviceChoices = Array.AsReadOnly(choices.ToArray());
+                _hasDeviceChoices = true;
+            }
+            return _deviceChoices;
+        }
+    }
+
+    public bool CanChangeRecordingSelection
+    {
+        get
+        {
+            var state = Context.Store.State;
+            return state.Phase == ShellPhase.Running && state.Engine is { Recording: null } &&
+                !state.IsPending(EngineCommandName.RecordingStart) && !state.IsPending(EngineCommandName.RecordingStop) &&
+                !state.IsPending(EngineCommandName.DevicesList);
+        }
     }
 
     public EnginePresentationState? Presentation => Snapshot.Engine?.Presentation;
@@ -33,19 +126,47 @@ public sealed class LiveViewModel : ScreenViewModel
     public string ReturnToLatestLabel => "最新へ戻る"; public string EmptyTitle => "文字起こしはまだありません";
     public string EmptyDescription => "録音を開始するか、音声ファイルを読み込むとここに文字起こしが表示されます。";
     public ShellCommand StartRecording { get; } public ShellCommand StopRecording { get; }
-    public ShellCommand ReturnToLatest { get; } public ShellCommand ReadHistory { get; }
+    public ShellCommand RefreshDevices { get; } public ShellCommand ReturnToLatest { get; } public ShellCommand ReadHistory { get; }
     public Task UserScrolledAsync() => Context.Store.UserScrolledAsync();
+
+    private EngineRecordingStartPayload CreateRecordingStartPayload() => new(
+        _selectedSource ?? throw new InvalidOperationException("A source must be selected before recording."),
+        _selectedDevice ?? throw new InvalidOperationException("A device must be selected before recording."));
 
     private bool CanStartRecording(object? parameter)
     {
-        if (parameter is not EngineRecordingStartPayload) return false;
+        if (parameter is not null) return false;
         var state = Context.Store.State;
+        var source = _selectedSource;
+        var device = _selectedDevice;
+        if (source is not EngineSource selectedSource || device is null || state.Capabilities is not { } capabilities ||
+            !capabilities.Sources.Contains(selectedSource)) return false;
+        if (device is EngineDevice.Id id &&
+            (state.Devices is not { } listedDevices || listedDevices.Source != selectedSource || listedDevices.Devices is null ||
+                !listedDevices.Devices.Any(endpoint => endpoint.ID == id.ID))) return false;
         var engine = state.Engine;
         return engine is { Setup: EngineSetupStatus.Ready, Recovery: EngineRecoveryStatus.Completed, Recording: null } &&
             engine.Presentation.PreparationPhase != EnginePreparationPhase.Preparing &&
             !state.IsPending(EngineCommandName.RecordingStart) && !state.IsPending(EngineCommandName.RecordingStop) &&
-            !state.IsPending(EngineCommandName.ModelsPrepare) && !state.IsPending(EngineCommandName.SettingsReplace);
+            !state.IsPending(EngineCommandName.DevicesList) && !state.IsPending(EngineCommandName.ModelsPrepare) &&
+            !state.IsPending(EngineCommandName.SettingsReplace);
     }
+
+    private bool CanRefreshDevices(object? parameter)
+    {
+        if (parameter is not null) return false;
+        var source = _selectedSource;
+        var state = Context.Store.State;
+        return source is EngineSource selectedSource && state.Capabilities is { } capabilities &&
+            capabilities.Sources.Contains(selectedSource) && !state.IsPending(EngineCommandName.DevicesList);
+    }
+
+    private static string SourceLabel(EngineSource source) => source switch
+    {
+        EngineSource.Microphone => "マイク",
+        EngineSource.SystemAudio => "システム音声",
+        _ => throw new InvalidOperationException($"Unknown engine source: {source}.")
+    };
 
     private bool CanStopRecording(object? parameter)
     {

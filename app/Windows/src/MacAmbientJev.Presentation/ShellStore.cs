@@ -49,6 +49,12 @@ public sealed partial class ShellStore : IAsyncDisposable
     }
 
     public Task<bool> ReloadSettingsAsync() => RunRequestAsync(() => new EngineCommand.SettingsGet(new EngineEmptyPayload()));
+    public Task<bool> ReloadDevicesAsync(EngineSource source)
+    {
+        if (!Enum.IsDefined(source)) throw new ArgumentOutOfRangeException(nameof(source), source, "Unknown engine source.");
+        return RunRequestAsync(() => new EngineCommand.DevicesList(new EngineDevicesListPayload(source)));
+    }
+
     public Task<bool> CommitSettingsAsync() => RunRequestAsync(() =>
     {
         if (_working.SettingsDraft is null) { _working = _working with { CommandError = "Settings must be loaded or explicitly drafted before commit." }; return null; }
@@ -283,11 +289,16 @@ public sealed partial class ShellStore : IAsyncDisposable
         switch (command, result)
         {
             case (EngineCommand.StateGet, EngineResult.StateGet state): ApplyState(state.Result); break;
+            case (EngineCommand.DevicesList devicesCommand, EngineResult.DevicesList devices):
+                if (devices.Result.Source != devicesCommand.Payload.Source)
+                    throw new InvalidOperationException($"devices.list requested {devicesCommand.Payload.Source} but returned {devices.Result.Source}.");
+                _working = _working with { Devices = devices.Result };
+                break;
             case (EngineCommand.DiagnosticsGet, EngineResult.DiagnosticsGet diagnostics): _working = _working with { Diagnostics = diagnostics.Result }; break;
             case (EngineCommand.ModelsInspect, EngineResult.ModelsInspect models): _working = _working with { ModelsInspection = models.Result }; break;
             case (EngineCommand.SettingsGet, EngineResult.SettingsGet settings): ApplySettings(settings.Result, false); break;
             case (EngineCommand.SettingsReplace, EngineResult.SettingsReplace settings): ApplySettings(settings.Result, true); break;
-            case (EngineCommand.RecordingStart, EngineResult.RecordingStart):
+            case (EngineCommand.RecordingStart, EngineResult.RecordingStart started): SelectSession(started.Result.SessionID); break;
             case (EngineCommand.RecordingStop, EngineResult.RecordingStop):
             case (EngineCommand.ModelsPrepare, EngineResult.ModelsPrepare): break;
             default: throw new InvalidOperationException($"{command.Name} returned unexpected result {result.GetType().Name}.");

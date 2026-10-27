@@ -20,6 +20,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../MacAmbientJev.Presentation/MacAmbientJev.Presentation.csproj"
+                      GlobalPropertiesToRemove="BaseIntermediateOutputPath;MSBuildProjectExtensionsPath;BaseOutputPath;Platform;RuntimeIdentifier" />
+    <ProjectReference Include="../MacAmbientJev.EngineClient/MacAmbientJev.EngineClient.csproj"
+                      GlobalPropertiesToRemove="BaseIntermediateOutputPath;MSBuildProjectExtensionsPath;BaseOutputPath;Platform;RuntimeIdentifier" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" />
     <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
