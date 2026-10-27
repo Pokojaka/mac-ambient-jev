@@ -13,6 +13,8 @@ public sealed record ShellState
     public EngineCapabilities? Capabilities { get; init; }
     public EngineState? Engine { get; init; }
     public EngineProgressPayload? Progress { get; init; }
+    public EngineDiagnosticsResult? Diagnostics { get; init; }
+    public EngineModelsInspection? ModelsInspection { get; init; }
     public EngineSettingsResult? ConfirmedSettings { get; init; }
     public EngineSettings? SettingsDraft { get; init; }
     public ShellSettingsStatus SettingsStatus { get; init; } = ShellSettingsStatus.Unknown;

@@ -227,7 +227,7 @@ public sealed partial class ShellStoreTests
         public void Advance(TimeSpan amount)
         {
             if (amount < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(amount)); List<(TimerCallback Callback, object? State)> ready;
-            lock (_gate) { _ticks = checked(_ticks + amount.Ticks); ready = _timers.Where(t => t.TakeIfDue(_ticks)).Select(t => (t.Callback, t.State)).ToList(); }
+            lock (_gate) { while (_registrations.Reader.TryRead(out _)) { } _ticks = checked(_ticks + amount.Ticks); ready = _timers.Where(t => t.TakeIfDue(_ticks)).Select(t => (t.Callback, t.State)).ToList(); }
             foreach (var timer in ready) timer.Callback(timer.State);
         }
         private sealed class ManualTimer(ManualClock clock, TimerCallback callback, object? state) : ITimer
@@ -243,7 +243,7 @@ public sealed partial class ShellStoreTests
                 return true;
             }
             internal bool TakeIfDue(long now) { if (_disposed || _due is not long due || due > now) return false; _due = null; return true; }
-            public void Dispose() { lock (clock._gate) { _disposed = true; _due = null; } }
+            public void Dispose() { lock (clock._gate) { _disposed = true; _due = null; clock._timers.Remove(this); } }
             public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
         }
     }

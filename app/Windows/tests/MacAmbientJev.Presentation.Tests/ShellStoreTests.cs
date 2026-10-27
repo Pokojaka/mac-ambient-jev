@@ -120,8 +120,9 @@ public sealed partial class ShellStoreTests
         var notices = new[] { "録音エラー" };
         var incoming = State(EngineSetupStatus.Ready, 5) with { Presentation = new EnginePresentationState("録音中", EngineRecordingTone.Neutral, EnginePreparationPhase.Preparing, "モデル準備中", null, null, notices, false, null, 0, null, EngineProcessingIndicator.Idle) };
         var progress = new EngineProgressPayload(EngineStage.ValidatingModels, 100, 100, null);
+        var publishedChanged = ChangedAfter(store, s => s.Engine?.Revision == new EngineID(5) && s.Progress == progress);
         engine.EmitBatch(new EngineOutput(1, new EngineID(1), null, new EngineEvent.State(incoming)), new EngineOutput(1, new EngineID(2), null, new EngineEvent.Progress(progress)));
-        var published = await ChangedTo(store, s => s.Engine?.Revision == new EngineID(5) && s.Progress == progress);
+        var published = await publishedChanged;
         Assert.Equal(1, Volatile.Read(ref changes)); Assert.Equal("録音中", published.Engine!.Presentation.RecordingStatusText);
         Assert.Equal(EnginePreparationPhase.Preparing, published.Engine.Presentation.PreparationPhase);
         Assert.Equal(new[] { "録音エラー" }, published.Engine.Presentation.LiveFailureNotices);
@@ -185,13 +186,15 @@ public sealed partial class ShellStoreTests
         private int _sentCount;
         public Task<EngineResult> Hello { get; } = Task.FromResult<EngineResult>(new EngineResult.Hello(new EngineReadyPayload(new EngineCapabilities([EngineSource.Microphone], [EngineASRSize.Small], [EngineExecutionProvider.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None), initial)));
         public Task<EngineResult> SettingsGetResponse { get; set; } = settingsGet;
+        public Func<EngineCommand, EngineResult>? AutoResponse { get; set; }
         public int SentCount => Volatile.Read(ref _sentCount); public Task<EngineClientState> Completion => _completion.Task;
         public EngineClientState State { get; private set; } = EngineClientState.Running; public EngineClientFailure? Failure { get; private set; }
         public Task<EngineResult> SendAsync(EngineCommand command)
         {
             Interlocked.Increment(ref _sentCount);
             if (command is EngineCommand.SettingsGet) return SettingsGetResponse;
-            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
+            if (AutoResponse is not null) return Task.FromResult(AutoResponse(command));
+            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect or EngineCommand.DiagnosticsGet or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
             var result = new TaskCompletionSource<EngineResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             if (!_requests.Writer.TryWrite((command, result))) throw new InvalidOperationException("Request channel closed.");
             return result.Task;

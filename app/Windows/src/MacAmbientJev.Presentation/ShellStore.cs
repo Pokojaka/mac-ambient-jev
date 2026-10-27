@@ -62,9 +62,15 @@ public sealed partial class ShellStore : IAsyncDisposable
     public Task<bool> ExecuteAsync(EngineCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
-        if (command is not (EngineCommand.StateGet or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare))
+        if (command is not (EngineCommand.StateGet or EngineCommand.DiagnosticsGet or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect))
             throw new ArgumentException("ShellStore does not support this command.", nameof(command));
         return RunRequestAsync(() => command);
+    }
+
+    public Task ReportPresentationFailureAsync(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return Post(() => FailStore(exception));
     }
 
     /// <summary>Stops only this store's observers and reducer; the caller owns and closes the client.</summary>
@@ -277,6 +283,8 @@ public sealed partial class ShellStore : IAsyncDisposable
         switch (command, result)
         {
             case (EngineCommand.StateGet, EngineResult.StateGet state): ApplyState(state.Result); break;
+            case (EngineCommand.DiagnosticsGet, EngineResult.DiagnosticsGet diagnostics): _working = _working with { Diagnostics = diagnostics.Result }; break;
+            case (EngineCommand.ModelsInspect, EngineResult.ModelsInspect models): _working = _working with { ModelsInspection = models.Result }; break;
             case (EngineCommand.SettingsGet, EngineResult.SettingsGet settings): ApplySettings(settings.Result, false); break;
             case (EngineCommand.SettingsReplace, EngineResult.SettingsReplace settings): ApplySettings(settings.Result, true); break;
             case (EngineCommand.RecordingStart, EngineResult.RecordingStart):
