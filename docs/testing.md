@@ -355,13 +355,12 @@ Core ML の入力は dynamic `input_ids` int32 `[1,L]`（`2...192`）、出力�
 swift test --package-path app/MacAmbientJev --filter 'catalogRejectsUnreadableEventLog|validatedEmptyVADCompletesWithoutSpeechInference|recordingPreservesCaptureAndReleaseFailures|coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState'
 LIVE_ASR_REGISTRATION_MEASUREMENT=1 swift test --package-path app/MacAmbientJev --filter measureLiveRegistrationCost
 LIVE_ASR_BACKLOG_MEASUREMENT=1 swift test --package-path app/MacAmbientJev --filter measureLatestCheckpointRetentionDuringThermalStall
-MATERIALIZER_BENCHMARK=1 swift test --package-path app/MacAmbientJev --filter materializerTenThousandSegmentBenchmark
 swift test --package-path app/MacAmbientJev --filter 'liveASR|liveRows|stoppingRecordingCancels'
 swift test --package-path app/MacAmbientJev --filter 'appRecordingShowsLiveRowsWhileDecisionsWait|appRecordingShowsDecisionFactoryFailureReason|liveRowsShowAtOnce|nativeTakeover'
 CLAUSE_INCREMENTAL_BENCHMARK=1 swift test --package-path app/MacAmbientJev --filter liveClauseIncrementalBenchmark
 ```
 
-registration、backlog、materializer の計測 test は、それぞれ `LIVE_ASR_REGISTRATION_MEASUREMENT`、`LIVE_ASR_BACKLOG_MEASUREMENT`、`MATERIALIZER_BENCHMARK` が厳密に `1` の場合だけ有効です。環境変数が未設定または `1` 以外なら Swift Testing の `.enabled(if:)` が test を無効にします。portable CI は Swift 6.2 を使います。条件付き test の仕様は [Swift Testing の有効化と無効化](https://docs.swift.org/latest/documentation/testing/enablinganddisabling/)を参照してください。通常の `materializerHandlesTenThousandSegmentLog` は 10,000 件の count と最終本文だけを確認します。benchmark は materialization の経過時間を出力しますが、時間閾値は設けません。
+registration と backlog の計測 test は、それぞれ `LIVE_ASR_REGISTRATION_MEASUREMENT`、`LIVE_ASR_BACKLOG_MEASUREMENT` が厳密に `1` の場合だけ有効です。環境変数が未設定または `1` 以外なら Swift Testing の `.enabled(if:)` が test を無効にします。portable CI は Swift 6.2 を使います。条件付き test の仕様は [Swift Testing の有効化と無効化](https://docs.swift.org/latest/documentation/testing/enablinganddisabling/)を参照してください。`materializerHandlesTenThousandSegmentLog` は 10,000 件の count と最終本文だけを確認します。
 
 correctness test は読み取れないイベントログ、検証済み VAD の空結果、録音障害と停止時の資源解放障害、冷却後のライブ認識再開の境界を合成イベントで検証する。計測 test は 5 秒ごとに一発話とした 10 分・1 時間・4 時間相当の合成イベントを使い、再登録の中央値時間と critical 時に保持する ASR バッチ・区間参照・checkpoint・chunk 一覧の項目数を出力する。計測 test の成功は性能合格を意味しない。時間はモデル推論を含まず、保持数は RSS ではない。実キャプチャ、GUI 起動、権限要求は行わない。
 

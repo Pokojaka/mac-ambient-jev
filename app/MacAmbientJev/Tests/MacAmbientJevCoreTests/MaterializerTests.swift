@@ -543,20 +543,6 @@ func materializerHandlesTenThousandSegmentLog() throws {
     #expect(materialized.last?.text == "utterance 9999")
 }
 
-@Test(.enabled(if: ProcessInfo.processInfo.environment["MATERIALIZER_BENCHMARK"] == "1"))
-func materializerTenThousandSegmentBenchmark() throws {
-    let events = makeTenThousandSegmentEvents()
-    let clock = ContinuousClock()
-    let start = clock.now
-    let materialized = try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
-    )
-    let elapsed = start.duration(to: clock.now)
-    #expect(materialized.count == 10_000)
-    #expect(materialized.last?.text == "utterance 9999")
-    print("MATERIALIZER_MEASUREMENT segments=10000 elapsed=\(elapsed)")
-}
-
 @Test
 func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrSpeakerTiming() async throws {
     let root = temporarySessionRoot()
