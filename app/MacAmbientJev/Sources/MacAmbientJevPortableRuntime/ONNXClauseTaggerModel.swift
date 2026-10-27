@@ -19,7 +19,7 @@ final class ONNXClauseTaggerModel {
     private let session: ONNXSession
 
     init(assets: ClauseTaggerAssets, intraOpThreads: Int) throws {
-        let environment = try ONNXEnvironment(loggingID: "MacAmbientJev-ClauseTagger")
+        let environment = try ONNXEnvironment.shared()
         session = try ONNXSession(
             environment: environment,
             modelURL: assets.modelURL,

@@ -3,6 +3,11 @@ import CMiniaudio
 import MacAmbientJevCore
 import MacAmbientJevPipeline
 
+func uniqueCaptureFailureMessages(_ messages: [String]) -> [String] {
+    var seen = Set<String>()
+    return messages.filter { seen.insert($0).inserted }
+}
+
 public enum WindowsCaptureDeviceSelection: Sendable, Equatable {
     case systemDefault
     case endpointID(String)
@@ -842,11 +847,11 @@ public final class WindowsCaptureSource {
         do {
             deadlinePassed = try reconnectQPCDeadlineHasPassed()
         } catch {
-            let cleanupErrors = await discardUnassignedDevice(device)
+            let cleanupErrors = stopDevice(device)
             throw WindowsCaptureAdapterError.combined([Self.message(for: error)] + cleanupErrors)
         }
         guard deadlinePassed else { return false }
-        let cleanupErrors = await discardUnassignedDevice(device)
+        let cleanupErrors = stopDevice(device)
         guard cleanupErrors.isEmpty else {
             throw WindowsCaptureAdapterError.combined(cleanupErrors)
         }
@@ -895,12 +900,12 @@ public final class WindowsCaptureSource {
         do {
             try Self.validateEndpointID(openedDevice.endpointID)
         } catch {
-            let cleanupErrors = await discardUnassignedDevice(openedDevice)
+            let cleanupErrors = stopDevice(openedDevice)
             if cleanupErrors.isEmpty { throw error }
             throw WindowsCaptureAdapterError.combined([Self.message(for: error)] + cleanupErrors)
         }
         guard openedDevice.endpointID == endpointID else {
-            let cleanupErrors = await discardUnassignedDevice(openedDevice)
+            let cleanupErrors = stopDevice(openedDevice)
             if followsDefaultOutput {
                 guard cleanupErrors.isEmpty else {
                     throw WindowsCaptureAdapterError.combined(cleanupErrors)
@@ -923,13 +928,13 @@ public final class WindowsCaptureSource {
         do {
             try Self.validateFormat(sampleRate: openedDevice.sampleRate, channels: openedDevice.channels)
         } catch {
-            let cleanupErrors = await discardUnassignedDevice(openedDevice)
+            let cleanupErrors = stopDevice(openedDevice)
             if cleanupErrors.isEmpty { throw error }
             throw WindowsCaptureAdapterError.combined([Self.message(for: error)] + cleanupErrors)
         }
         if try await fenceUnassignedDeviceIfQPCDeadlinePassed(openedDevice) { return }
         guard let epoch = lastEndEpochQPC100ns else {
-            let cleanupErrors = await discardUnassignedDevice(openedDevice)
+            let cleanupErrors = stopDevice(openedDevice)
             let missingEpoch = WindowsCaptureAdapterError.timestamp(
                 "Windows capture reconnect has no valid segment epoch"
             )
@@ -955,7 +960,7 @@ public final class WindowsCaptureSource {
                 try candidateIngress.prepareReconnect(startQPC100ns: try qpc100ns())
             }
         } catch {
-            let cleanupErrors = await discardUnassignedDevice(openedDevice)
+            let cleanupErrors = stopDevice(openedDevice)
             if cleanupErrors.isEmpty { throw error }
             throw WindowsCaptureAdapterError.combined([Self.message(for: error)] + cleanupErrors)
         }
@@ -968,7 +973,7 @@ public final class WindowsCaptureSource {
             try openedDevice.start(ingress: candidateIngress)
         } catch WindowsCaptureAdapterError.native(let operation, let code) {
             let error = WindowsCaptureAdapterError.native(operation: operation, code: code)
-            let stopErrors = await discardUnassignedDevice(openedDevice)
+            let stopErrors = stopDevice(openedDevice)
             guard stopErrors.isEmpty else {
                 throw WindowsCaptureAdapterError.combined([error.localizedDescription] + stopErrors)
             }
@@ -1004,7 +1009,7 @@ public final class WindowsCaptureSource {
             try scheduleReconnectRetry(after: clock.now())
             return
         } catch {
-            let stopErrors = await discardUnassignedDevice(openedDevice)
+            let stopErrors = stopDevice(openedDevice)
             let capturedAudio = candidateIngress.isReady
             let audioErrors = await finishUnassignedCandidateIfNeeded(candidate)
             throw WindowsCaptureAdapterError.combined(
@@ -1018,7 +1023,7 @@ public final class WindowsCaptureSource {
             candidateTimelyReadiness = try candidateHasTimelyReadiness(candidateIngress)
             candidateDeadlinePassed = try reconnectDeadlineHasPassed()
         } catch {
-            let cleanupErrors = await discardUnassignedDevice(openedDevice)
+            let cleanupErrors = stopDevice(openedDevice)
             throw WindowsCaptureAdapterError.combined([Self.message(for: error)] + cleanupErrors)
         }
         if let failure = candidateIngress.failure {
@@ -1033,7 +1038,7 @@ public final class WindowsCaptureSource {
             }
             if Self.isFatalCandidateFailure(failure), !retryable {
                 let message = Self.describeIngressFailure(failure, ingress: candidateIngress)
-                let cleanupErrors = await discardUnassignedDevice(openedDevice)
+                let cleanupErrors = stopDevice(openedDevice)
                 throw WindowsCaptureAdapterError.combined([message] + cleanupErrors)
             }
         }
@@ -1131,11 +1136,7 @@ public final class WindowsCaptureSource {
         precondition(currentSegment === candidate)
         var errors: [String] = []
         if let device = candidate.device {
-            do {
-                try device.stopJoin()
-            } catch {
-                errors.append("Native capture stop failed: \(Self.message(for: error))")
-            }
+            errors.append(contentsOf: stopDevice(device))
             candidate.device = nil
         }
         currentSegment = nil
@@ -1147,11 +1148,7 @@ public final class WindowsCaptureSource {
         guard currentSegment === segment else { return [] }
         var errors: [String] = []
         if let device = segment.device {
-            do {
-                try device.stopJoin()
-            } catch {
-                errors.append("Native capture stop failed: \(Self.message(for: error))")
-            }
+            errors.append(contentsOf: stopDevice(device))
             segment.device = nil
         }
         segment.ring.finish(tailFrame: segment.sink.lastEndFrame)
@@ -1183,7 +1180,7 @@ public final class WindowsCaptureSource {
         return errors
     }
 
-    private func discardUnassignedDevice(_ device: any WindowsCaptureDevice) async -> [String] {
+    private func stopDevice(_ device: any WindowsCaptureDevice) -> [String] {
         do {
             try device.stopJoin()
             return []
@@ -1270,20 +1267,12 @@ public final class WindowsCaptureSource {
         }
 
         if let openingDevice {
-            do {
-                try openingDevice.stopJoin()
-            } catch {
-                appendError("Native capture stop failed: \(Self.message(for: error))")
-            }
+            for message in stopDevice(openingDevice) { appendError(message) }
             self.openingDevice = nil
         }
         if let currentSegment {
             if let device = currentSegment.device {
-                do {
-                    try device.stopJoin()
-                } catch {
-                    appendError("Native capture stop failed: \(Self.message(for: error))")
-                }
+                for message in stopDevice(device) { appendError(message) }
                 currentSegment.device = nil
             }
             currentSegment.ring.finish(tailFrame: currentSegment.sink.lastEndFrame)
@@ -1378,13 +1367,13 @@ public final class WindowsCaptureSource {
         let originalMessage = Self.message(for: error)
         if let cleanupTask {
             let result = await cleanupTask.value
-            throw WindowsCaptureAdapterError.combined(Self.unique([originalMessage] + result.errors))
+            throw WindowsCaptureAdapterError.combined(uniqueCaptureFailureMessages([originalMessage] + result.errors))
         }
         let needsCleanup = openingDevice != nil || currentSegment != nil || powerAcquired || latestDrain != nil
         if needsCleanup {
             appendError(originalMessage)
             let result = await beginCleanup().value
-            let combined = Self.unique([originalMessage] + result.errors)
+            let combined = uniqueCaptureFailureMessages([originalMessage] + result.errors)
             throw WindowsCaptureAdapterError.combined(combined)
         }
 
@@ -1418,11 +1407,6 @@ public final class WindowsCaptureSource {
     private func appendError(_ message: String) {
         guard !pendingErrors.contains(message) else { return }
         pendingErrors.append(message)
-    }
-
-    private static func unique(_ messages: [String]) -> [String] {
-        var seen = Set<String>()
-        return messages.filter { seen.insert($0).inserted }
     }
 
     private static func message(for error: any Error) -> String {

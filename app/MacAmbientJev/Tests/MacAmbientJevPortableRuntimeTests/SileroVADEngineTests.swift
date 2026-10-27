@@ -13,7 +13,7 @@ struct SileroVADEngineTests {
 
     init() throws {
         modelURL = try SileroTestInputs.modelURL(environment: ProcessInfo.processInfo.environment)
-        environment = try ONNXEnvironment(loggingID: "SileroVADEngineTests")
+        environment = try ONNXEnvironment.shared()
         clip = try SileroTestInputs.speechClipSamples()
     }
 

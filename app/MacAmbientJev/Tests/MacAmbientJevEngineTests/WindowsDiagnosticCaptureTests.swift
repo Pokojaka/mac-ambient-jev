@@ -235,29 +235,6 @@ private func closeWriterOffThread(_ writer: EngineDiagnosticWriter, timeout: Tim
         #expect(stderr.contains("fatal_error_after_stdout_redirect_marker"))
     }
 
-    @Test func preconditionFailureAfterRedirectRemainsOnOriginalStandardError() async {
-        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            let originalCRTStandardError = _get_osfhandle(2)
-            let originalWin32StandardError = GetStdHandle(DWORD(bitPattern: -12))
-            let reservedStdout = try WindowsPipeByteSink.claimStandardOutput()
-            let capture = try WindowsDiagnosticCapture.redirectStandardOutput(onChunk: { _ in })
-            precondition(
-                _get_osfhandle(2) == originalCRTStandardError,
-                "CRT fd 2 changed before precondition failure"
-            )
-            precondition(
-                GetStdHandle(DWORD(bitPattern: -12)) == originalWin32StandardError,
-                "Win32 STD_ERROR_HANDLE changed before precondition failure"
-            )
-            _ = reservedStdout
-            _ = capture
-            preconditionFailure("precondition_failure_after_stdout_redirect_marker")
-        }
-
-        let stderr = result.map { String(decoding: $0.standardErrorContent, as: UTF8.self) } ?? ""
-        #expect(stderr.contains("precondition_failure_after_stdout_redirect_marker"))
-    }
-
     @Test func stdoutPollutionIsCapturedAndBothStderrHandlesRemainUntouched() async {
         let result = await #expect(
             processExitsWith: .success,

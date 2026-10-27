@@ -54,7 +54,7 @@ struct Community1ONNXStageTests {
         }
         let assets = try Community1Assets(modelDirectory: try Community1ONNXTestInputs.modelDirectory())
         inference = try Community1ONNXInference(
-            environment: try ONNXEnvironment(loggingID: "Community1ONNXStageTests"),
+            environment: try ONNXEnvironment.shared(),
             assets: assets,
             intraOpThreads: 4
         )

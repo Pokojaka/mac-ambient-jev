@@ -6,7 +6,7 @@ struct ONNXSessionTests {
     private let environment: ONNXEnvironment
 
     init() throws {
-        environment = try ONNXEnvironment(loggingID: "MacAmbientJevONNXTests")
+        environment = try ONNXEnvironment.shared()
     }
 
     @Test
@@ -83,13 +83,13 @@ struct ONNXSessionTests {
     }
 
     @Test
-    func sessionsRetainTheirEnvironmentUntilBothAreReleased() throws {
+    func sharedEnvironmentSurvivesSessionRelease() throws {
         let pair = try makeSessionPair(modelURL: fixtureURL(named: "affine"))
-        #expect(pair.environment.value != nil)
+        #expect(pair.environment.value === (try ONNXEnvironment.shared()))
 
         var retainedSession: ONNXSession? = pair.second
         pair.first = nil
-        #expect(pair.environment.value != nil)
+        #expect(pair.environment.value === (try ONNXEnvironment.shared()))
 
         let output = try #require(retainedSession).run(
             inputs: fixtureInputs(sampleRate: 1),
@@ -99,7 +99,7 @@ struct ONNXSessionTests {
 
         retainedSession = nil
         pair.second = nil
-        #expect(pair.environment.value == nil)
+        #expect(pair.environment.value === (try ONNXEnvironment.shared()))
     }
 
     @Test
@@ -328,16 +328,6 @@ struct ONNXSessionTests {
         } == "モデルURLはファイルURLである必要があります。")
     }
 
-    @Test
-    func invalidLoggingIdentifiersAreRejected() {
-        #expect(onnxErrorMessage {
-            _ = try ONNXEnvironment(loggingID: "")
-        } == "ONNX Runtimeのログ識別子を空にすることはできません。")
-        #expect(onnxErrorMessage {
-            _ = try ONNXEnvironment(loggingID: "invalid\0id")
-        } == "ONNX Runtimeのログ識別子にNUL文字は使用できません。")
-    }
-
     private func makeSession(modelURL: URL, intraOpThreads: Int) throws -> ONNXSession {
         try ONNXSession(
             environment: environment,
@@ -387,7 +377,7 @@ private func fixtureInputs(sampleRate: Int64) -> [(name: String, tensor: ONNXTen
 }
 
 private func makeSessionPair(modelURL: URL) throws -> SessionPair {
-    let environment = try ONNXEnvironment(loggingID: "ONNXSessionLifetimeTests")
+    let environment = try ONNXEnvironment.shared()
     let first = try ONNXSession(
         environment: environment,
         modelURL: modelURL,

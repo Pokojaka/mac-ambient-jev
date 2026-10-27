@@ -21,7 +21,7 @@ struct SileroVADParityTests {
 
     init() throws {
         modelURL = try SileroTestInputs.modelURL(environment: ProcessInfo.processInfo.environment)
-        environment = try ONNXEnvironment(loggingID: "SileroVADParityTests")
+        environment = try ONNXEnvironment.shared()
         clip = try SileroTestInputs.speechClipSamples()
         fixture = try VADParityFile.load()
     }

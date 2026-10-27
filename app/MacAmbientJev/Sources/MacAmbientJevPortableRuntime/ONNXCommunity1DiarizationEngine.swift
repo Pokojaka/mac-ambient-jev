@@ -50,7 +50,7 @@ public actor ONNXCommunity1DiarizationEngine: DiarizationEngine {
         self.provenanceValue = Self.makeProvenance(identity: identity, intraOpThreads: intraOpThreads)
         self.loadKernel = { directory in
             let assets = try Community1Assets(modelDirectory: directory)
-            let environment = try ONNXEnvironment(loggingID: "MacAmbientJev-Community1Diarization")
+            let environment = try ONNXEnvironment.shared()
             let inference = try Community1ONNXInference(
                 environment: environment,
                 assets: assets,
