@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Threading.Channels;
 using MacAmbientJev.EngineClient;
 using MacAmbientJev.Presentation;
 using MacAmbientJev.Protocol;
@@ -64,7 +65,7 @@ public sealed partial class ShellStoreTests
         {
             var desired = selectedSessions[(batch - 1) / 125 % 3]; var changed = selected != desired;
             if (changed) { selected = desired; exercised.Add(selected); await store.SelectSessionAsync(selected); await PumpUntil(
-                () => store.State.Transcript.Tail is { } tail && tail.SessionID == selected && tail.Rows.Length == 200, clock, store, selected); }
+                () => store.State.Transcript.Tail is { } tail && tail.SessionID == selected && tail.Rows.Length == 200, clock, store); }
             var activeSession = selected ?? throw new InvalidOperationException("No session was selected.");
             var finalProgress = new EngineProgressPayload(EngineStage.ValidatingModels, progressUnits + (ulong)triplets, null, null);
             var outputs = new EngineOutput[batchSize];
@@ -91,15 +92,15 @@ public sealed partial class ShellStoreTests
             if (batch % 4 == 0 && dispatcher.PendingCount > 0) dispatcher.Run();
             if (batch % 200 == 0)
             {
-                await PumpUntil(() => ReferenceEquals(context.State, store.State), clock, store, activeSession, dispatcher);
+                await PumpUntil(() => ReferenceEquals(context.State, store.State), clock, store, dispatcher);
                 var heap = GC.GetTotalMemory(true);
                 if (batch == 200) heapBaseline = heap;
                 else { maxHeapGrowth = Math.Max(maxHeapGrowth, heap - heapBaseline); Assert.True(heap - heapBaseline < maxGrowth, $"Managed heap grew {heap - heapBaseline} bytes."); }
             }
         }
         var lastSession = selected ?? throw new InvalidOperationException("No session was selected.");
-        await PumpUntil(() => store.State.Transcript.Tail is { Rows.Length: 200 }, clock, store, lastSession);
-        await PumpUntil(() => ReferenceEquals(context.State, store.State), clock, store, lastSession, dispatcher);
+        await PumpUntil(() => store.State.Transcript.Tail is { } tail && tail.SessionID == lastSession && tail.Rows.Length == 200, clock, store);
+        await PumpUntil(() => ReferenceEquals(context.State, store.State), clock, store, dispatcher);
         Assert.Equal(batches * batchSize, emitted); Assert.Equal(1_002_000L, emitted);
         Assert.Equal(200_000L, historyRowsCreated); Assert.Equal(3, exercised.Count);
         Assert.Equal(800, historyHighWater); Assert.Equal(300, sessionsHighWater);
@@ -113,13 +114,36 @@ public sealed partial class ShellStoreTests
     }
 
     private static long RowsIn(ShellState state) => state.Transcript.History.Pages.Sum(page => page.Rows.Length) + (state.Transcript.Tail?.Rows.Length ?? 0);
-    private static async Task PumpUntil(Func<bool> ready, ManualClock clock, ShellStore store, string session, TestDispatcher? dispatcher = null)
+
+    private static async Task PumpUntil(Func<bool> ready, ManualClock clock, ShellStore store, TestDispatcher? dispatcher = null)
     {
-        for (var attempt = 0; attempt < 30 && !ready(); attempt++)
+        var wake = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
         {
-            clock.Advance(TimeSpan.FromMilliseconds(100)); await Task.Yield(); await store.SelectSessionAsync(session);
-            if (dispatcher is not null && dispatcher.PendingCount > 0) dispatcher.Run();
+            FullMode = BoundedChannelFullMode.DropWrite,
+            SingleReader = true,
+            SingleWriter = false
+        });
+        EventHandler storeChanged = (_, _) => wake.Writer.TryWrite(true);
+        Action timerScheduled = () => wake.Writer.TryWrite(true);
+        store.Changed += storeChanged;
+        clock.TimerScheduled += timerScheduled;
+        try
+        {
+            while (!ready())
+            {
+                if (dispatcher is not null && dispatcher.PendingCount > 0) dispatcher.Run();
+                if (ready()) break;
+                if (clock.TryAdvanceToNextTimer()) continue;
+                if (ready()) break;
+                await wake.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            }
         }
-        Assert.True(ready(), "Timed out while pumping simulated time.");
+        finally
+        {
+            store.Changed -= storeChanged;
+            clock.TimerScheduled -= timerScheduled;
+        }
+        Assert.True(ready());
     }
 }

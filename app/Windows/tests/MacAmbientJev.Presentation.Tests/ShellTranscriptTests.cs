@@ -195,6 +195,7 @@ public sealed partial class ShellStoreTests
         request.Complete(new EngineResult.TranscriptRead(Page("A", 13, "fresh", null, null))); Assert.True(await reload);
         Assert.Equal("fresh", store.State.Transcript.History.Current!.Rows[0].Text); Assert.False(store.State.Transcript.HistoryStale);
     }
+
     private static Fake NewEngine() => new(State(EngineSetupStatus.Ready, 1), Response(SettingsResult(1, Settings(2, false, false, false, null))));
     private static async Task<ShellStore> Start(Fake engine, TimeProvider clock) { var store = new ShellStore(engine, clock); await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); return store; }
     private static async Task<Request> SelectRequest(ShellStore store, Fake engine, string id)
@@ -216,6 +217,7 @@ public sealed partial class ShellStoreTests
     {
         private readonly object _gate = new(); private readonly List<ManualTimer> _timers = []; private readonly Channel<bool> _registrations = Channel.CreateUnbounded<bool>();
         private long _ticks;
+        public event Action? TimerScheduled;
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override long GetTimestamp() { lock (_gate) return _ticks; }
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(GetTimestamp());
@@ -230,16 +232,38 @@ public sealed partial class ShellStoreTests
             lock (_gate) { while (_registrations.Reader.TryRead(out _)) { } _ticks = checked(_ticks + amount.Ticks); ready = _timers.Where(t => t.TakeIfDue(_ticks)).Select(t => (t.Callback, t.State)).ToList(); }
             foreach (var timer in ready) timer.Callback(timer.State);
         }
+        public bool TryAdvanceToNextTimer()
+        {
+            List<(TimerCallback Callback, object? State)> ready;
+            lock (_gate)
+            {
+                long? earliest = null;
+                foreach (var timer in _timers)
+                    if (timer.DueTimestamp is long due && (earliest is null || due < earliest)) earliest = due;
+                if (earliest is null) return false;
+                _ticks = Math.Max(_ticks, earliest.Value);
+                while (_registrations.Reader.TryRead(out _)) { }
+                ready = _timers.Where(timer => timer.TakeIfDue(_ticks)).Select(timer => (timer.Callback, timer.State)).ToList();
+            }
+            foreach (var timer in ready) timer.Callback(timer.State);
+            return true;
+        }
+        private void NotifyTimerScheduled() => TimerScheduled?.Invoke();
         private sealed class ManualTimer(ManualClock clock, TimerCallback callback, object? state) : ITimer
         {
             private long? _due; private bool _disposed;
             internal TimerCallback Callback { get; } = callback; internal object? State { get; } = state;
+            internal long? DueTimestamp => _due;
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
                 if (period != Timeout.InfiniteTimeSpan) throw new NotSupportedException("ManualClock supports one-shot timers only.");
                 if (dueTime < Timeout.InfiniteTimeSpan) throw new ArgumentOutOfRangeException(nameof(dueTime));
                 lock (clock._gate) { if (_disposed) return false; _due = dueTime == Timeout.InfiniteTimeSpan ? null : checked(clock._ticks + dueTime.Ticks); }
-                if (dueTime != Timeout.InfiniteTimeSpan && !clock._registrations.Writer.TryWrite(true)) throw new InvalidOperationException("Timer registration channel closed.");
+                if (dueTime != Timeout.InfiniteTimeSpan)
+                {
+                    if (!clock._registrations.Writer.TryWrite(true)) throw new InvalidOperationException("Timer registration channel closed.");
+                    clock.NotifyTimerScheduled();
+                }
                 return true;
             }
             internal bool TakeIfDue(long now) { if (_disposed || _due is not long due || due > now) return false; _due = null; return true; }
