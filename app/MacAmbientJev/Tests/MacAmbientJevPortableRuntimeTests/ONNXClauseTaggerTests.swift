@@ -139,26 +139,6 @@ private func maxAbsoluteError(_ actual: [[Double]], _ expected: [[Double]]) -> D
 
 @Suite(.serialized)
 struct ONNXClauseTaggerTests {
-    @Test func relativeModelDirectoryFailsBeforeLoading() throws {
-        let relative = try #require(URL(string: "relative/clause-tagger"))
-        let error = try #require(throwing { try ONNXClauseTagger(modelDirectory: relative, intraOpThreads: 1) })
-        guard case ClauseTaggerAssetsError.directoryNotAbsolute = error else {
-            Issue.record("expected directoryNotAbsolute, got \(error)")
-            return
-        }
-    }
-
-    @Test func missingModelDirectoryNamesTheFetchCommand() throws {
-        let missing = FileManager.default.temporaryDirectory
-            .appendingPathComponent("onnx-clause-tagger-missing-\(UUID().uuidString)", isDirectory: true)
-        let error = try #require(throwing { try ONNXClauseTagger(modelDirectory: missing, intraOpThreads: 1) })
-        guard case ClauseTaggerAssetsError.directoryMissing = error else {
-            Issue.record("expected directoryMissing, got \(error)")
-            return
-        }
-        #expect("\(error)".contains("python3 scripts/fetch_clause_tagger.py --format onnx"))
-    }
-
     @Test func nonPositiveThreadCountIsRejectedBeforeLoading() throws {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("onnx-clause-tagger-missing-\(UUID().uuidString)", isDirectory: true)

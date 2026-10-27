@@ -3,34 +3,11 @@ import MacAmbientJevCore
 
 enum ClauseTaggerAssetsError: Error, CustomStringConvertible {
     case invalidManifest(String)
-    case directoryNotAbsolute(path: String)
-    case directoryMissing(path: String)
-    case missingFile(name: String, directory: String)
-    case notRegularFile(path: String)
-    case sizeMismatch(name: String, expected: Int, actual: Int)
-    case hashMismatch(name: String, expected: String, actual: String)
-    case unreadable(path: String, reason: String)
-
-    static let fetchCommand = "python3 scripts/fetch_clause_tagger.py --format onnx"
 
     var description: String {
         switch self {
         case let .invalidManifest(reason):
             return "Invalid clause tagger manifest: \(reason)"
-        case let .directoryNotAbsolute(path):
-            return "The clause tagger model directory must be an absolute path: \(path)"
-        case let .directoryMissing(path):
-            return "The clause tagger model directory is not an existing directory: \(path). Run `\(Self.fetchCommand)` and pass the directory it prints."
-        case let .missingFile(name, directory):
-            return "Clause tagger file \(name) is missing from \(directory). Run `\(Self.fetchCommand)` and pass the directory it prints."
-        case let .notRegularFile(path):
-            return "Clause tagger path is not a regular file: \(path)"
-        case let .sizeMismatch(name, expected, actual):
-            return "Clause tagger file \(name) has \(actual) bytes; the manifest pins \(expected). Delete the cache directory and run `\(Self.fetchCommand)` again."
-        case let .hashMismatch(name, expected, actual):
-            return "Clause tagger file \(name) SHA-256 mismatch: expected \(expected), actual \(actual). Delete the cache directory and run `\(Self.fetchCommand)` again."
-        case let .unreadable(path, reason):
-            return "Clause tagger file cannot be read: \(path) (\(reason))"
         }
     }
 }
@@ -232,58 +209,19 @@ public struct ClauseTaggerAssets: Sendable {
     public let tokenizerURL: URL
     public let identity: ClauseTaggerModelIdentity
 
-    /// Verifies every member the bundled manifest pins in `modelDirectory` (regular file, size, streamed
-    /// SHA-256). Any missing, wrong-size or corrupt file throws; nothing is repaired or downloaded.
+    /// Verifies every member the bundled manifest pins in `modelDirectory` with `PortableClauseTaggerInspection.validateAssets`.
+    /// Any missing, wrong-size or corrupt file throws `PortableModelPreparationError`; nothing is repaired or downloaded.
     public init(modelDirectory: URL) throws {
         try self.init(modelDirectory: modelDirectory, manifest: ClauseTaggerManifest.bundled())
     }
 
     init(modelDirectory: URL, manifest: ClauseTaggerManifest) throws {
-        try manifest.validate()
-        let path = modelDirectory.path
-        guard modelDirectory.isFileURL, (path as NSString).isAbsolutePath else {
-            throw ClauseTaggerAssetsError.directoryNotAbsolute(path: path)
-        }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw ClauseTaggerAssetsError.directoryMissing(path: path)
-        }
-        for member in manifest.members {
-            try Self.verify(member, at: modelDirectory.appendingPathComponent(member.name, isDirectory: false), directory: modelDirectory)
-        }
+        self.identity = try PortableClauseTaggerInspection.validateAssets(modelDirectory: modelDirectory, manifest: manifest)
         self.modelURL = modelDirectory.appendingPathComponent(try manifest.member(.model).name, isDirectory: false)
         self.tokenizerURL = modelDirectory.appendingPathComponent(try manifest.member(.tokenizer).name, isDirectory: false)
-        self.identity = try manifest.identity()
     }
 
     public static func pinnedIdentity() throws -> ClauseTaggerModelIdentity {
         try ClauseTaggerManifest.bundled().identity()
-    }
-
-    private static func verify(_ member: ClauseTaggerManifest.Member, at url: URL, directory: URL) throws {
-        let attributes: [FileAttributeKey: Any]
-        do {
-            attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
-            throw ClauseTaggerAssetsError.missingFile(name: member.name, directory: directory.path)
-        } catch {
-            throw ClauseTaggerAssetsError.unreadable(path: url.path, reason: error.localizedDescription)
-        }
-        guard attributes[.type] as? FileAttributeType == .typeRegular else {
-            throw ClauseTaggerAssetsError.notRegularFile(path: url.path)
-        }
-        let size = (attributes[.size] as? NSNumber)?.intValue ?? -1
-        guard size == member.byteCount else {
-            throw ClauseTaggerAssetsError.sizeMismatch(name: member.name, expected: member.byteCount, actual: size)
-        }
-        let actual: String
-        do {
-            actual = try FileSHA256.hexDigest(ofFileAt: url)
-        } catch {
-            throw ClauseTaggerAssetsError.unreadable(path: url.path, reason: error.localizedDescription)
-        }
-        guard actual == member.sha256 else {
-            throw ClauseTaggerAssetsError.hashMismatch(name: member.name, expected: member.sha256, actual: actual)
-        }
     }
 }

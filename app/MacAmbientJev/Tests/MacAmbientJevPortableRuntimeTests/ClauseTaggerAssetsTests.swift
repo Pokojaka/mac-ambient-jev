@@ -83,117 +83,6 @@ struct ClauseTaggerAssetsTests {
         _ = try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest)
     }
 
-    @Test func missingMemberNamesTheFileAndTheFetchCommand() throws {
-        let directory = try makeModelDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
-        try FileManager.default.removeItem(at: directory.root.appendingPathComponent("export.json"))
-
-        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
-        guard case let .missingFile(name, _) = error else {
-            Issue.record("expected missingFile, got \(error)")
-            return
-        }
-        #expect(name == "export.json")
-        #expect(error.description.contains("python3 scripts/fetch_clause_tagger.py --format onnx"))
-    }
-
-    @Test func missingModelLicenseIsRejected() throws {
-        let directory = try makeModelDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
-        try FileManager.default.removeItem(at: directory.root.appendingPathComponent("LICENSE.md"))
-
-        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
-        guard case let .missingFile(name, _) = error else {
-            Issue.record("expected missingFile, got \(error)")
-            return
-        }
-        #expect(name == "LICENSE.md")
-    }
-
-    @Test func corruptModelLicenseIsRejected() throws {
-        let directory = try makeModelDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
-        let original = try #require(directory.payloads["LICENSE.md"])
-        let tampered = Data(original.map { $0 ^ 0xFF })
-        try tampered.write(to: directory.root.appendingPathComponent("LICENSE.md"))
-
-        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
-        guard case let .hashMismatch(name, expected, actual) = error else {
-            Issue.record("expected hashMismatch, got \(error)")
-            return
-        }
-        #expect(name == "LICENSE.md")
-        #expect(expected == FileSHA256.hexDigest(of: original))
-        #expect(actual == FileSHA256.hexDigest(of: tampered))
-    }
-
-    @Test func wrongSizeMemberReportsExpectedAndActualSizes() throws {
-        let directory = try makeModelDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
-        let url = directory.root.appendingPathComponent("tokenizer.json")
-        try Data("longer tokenizer stand-in".utf8).write(to: url)
-
-        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
-        guard case let .sizeMismatch(name, expected, actual) = error else {
-            Issue.record("expected sizeMismatch, got \(error)")
-            return
-        }
-        #expect(name == "tokenizer.json")
-        #expect(expected == directory.payloads["tokenizer.json"]?.count)
-        #expect(actual == "longer tokenizer stand-in".utf8.count)
-        #expect(error.description.contains("python3 scripts/fetch_clause_tagger.py --format onnx"))
-    }
-
-    @Test func sameSizeDifferentContentReportsBothHashes() throws {
-        let directory = try makeModelDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
-        let original = try #require(directory.payloads["ClauseTagger.onnx"])
-        let tampered = Data(original.map { $0 ^ 0xFF })
-        try tampered.write(to: directory.root.appendingPathComponent("ClauseTagger.onnx"))
-
-        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
-        guard case let .hashMismatch(name, expected, actual) = error else {
-            Issue.record("expected hashMismatch, got \(error)")
-            return
-        }
-        #expect(name == "ClauseTagger.onnx")
-        #expect(expected == FileSHA256.hexDigest(of: original))
-        #expect(actual == FileSHA256.hexDigest(of: tampered))
-    }
-
-    @Test func directoryInPlaceOfMemberIsRejected() throws {
-        let directory = try makeModelDirectory()
-        defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
-        let url = directory.root.appendingPathComponent("LICENSE.txt")
-        try FileManager.default.removeItem(at: url)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-
-        let error = try #require(failure { try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest) })
-        guard case .notRegularFile = error else {
-            Issue.record("expected notRegularFile, got \(error)")
-            return
-        }
-    }
-
-    @Test func missingAndRelativeDirectoriesAreRejected() throws {
-        let manifest = try ClauseTaggerManifest.bundled()
-        let missing = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClauseTaggerAssetsTests-\(UUID().uuidString)", isDirectory: true)
-
-        let missingError = try #require(failure { try ClauseTaggerAssets(modelDirectory: missing, manifest: manifest) })
-        guard case .directoryMissing = missingError else {
-            Issue.record("expected directoryMissing, got \(missingError)")
-            return
-        }
-
-        let relative = try #require(URL(string: "relative/models"))
-        let relativeError = try #require(failure { try ClauseTaggerAssets(modelDirectory: relative, manifest: manifest) })
-        guard case .directoryNotAbsolute = relativeError else {
-            Issue.record("expected directoryNotAbsolute, got \(relativeError)")
-            return
-        }
-    }
-
     @Test func invalidManifestsAreRejected() throws {
         let valid = try ClauseTaggerManifest.bundled()
         func with(
@@ -257,22 +146,9 @@ struct ClauseTaggerAssetsTests {
         }
     }
 
-    private func failure(_ body: () throws -> Void) -> ClauseTaggerAssetsError? {
-        do {
-            try body()
-            return nil
-        } catch let error as ClauseTaggerAssetsError {
-            return error
-        } catch {
-            Issue.record("unexpected error \(error)")
-            return nil
-        }
-    }
-
     private struct ModelDirectory {
         let root: URL
         let manifest: ClauseTaggerManifest
-        let payloads: [String: Data]
     }
 
     /// Small stand-in members whose pins replace the real ones in the test manifest.
@@ -284,11 +160,9 @@ struct ClauseTaggerAssetsTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         var members: [ClauseTaggerManifest.Member] = []
-        var payloads: [String: Data] = [:]
         for member in bundled.members {
             let payload = Data("stand-in \(member.name)".utf8)
             try payload.write(to: root.appendingPathComponent(member.name))
-            payloads[member.name] = payload
             members.append(.init(
                 role: member.role, name: member.name, path: member.path,
                 byteCount: payload.count, sha256: FileSHA256.hexDigest(of: payload)
@@ -307,8 +181,7 @@ struct ClauseTaggerAssetsTests {
             manifest: .init(
                 schemaVersion: bundled.schemaVersion, source: bundled.source, model: model,
                 onnx: bundled.onnx, members: members
-            ),
-            payloads: payloads
+            )
         )
     }
 }
