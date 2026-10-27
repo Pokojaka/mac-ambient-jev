@@ -373,7 +373,9 @@ final class EngineApplicationCore {
         return inference
     }
 
-    var isIdleForSettingsChange: Bool {
+    /// Nothing uses the models, so settings may change and the models may be released:
+    /// no recording, no queued, held or running processing or live transcription, no model preparation.
+    var isIdle: Bool {
         recording.phase == .idle && isProcessingIdle && !isPreparingModels
     }
 
@@ -519,7 +521,7 @@ extension EngineApplicationCore: EngineSettingsHandling {
         EngineSettingsStoreHandler(store: settingsStore) { [self] current, proposed in
             guard !isPreparingModels, !isShuttingDown else { return true }
             guard let current else { return false }
-            return !isIdleForSettingsChange && profileDiffers(current, proposed)
+            return !isIdle && profileDiffers(current, proposed)
         }
     }
 
@@ -572,7 +574,7 @@ extension EngineApplicationCore: EngineModelsHandling {
             throw EngineFailures.commandError(.cancelled, "終了処理中のためモデルを準備できません", stage: .shutdown)
         }
         // Prepared models stay prepared while work uses them; verifying again would compete with that work.
-        if inference != nil, !isIdleForSettingsChange { return }
+        if inference != nil, !isIdle { return }
         isPreparingModels = true
         presentation.preparationPhase = .preparing
         presentation.preparationStatusText = UserFacingStatus.preparingASR.text

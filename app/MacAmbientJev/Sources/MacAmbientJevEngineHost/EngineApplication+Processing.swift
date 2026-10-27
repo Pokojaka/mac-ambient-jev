@@ -202,16 +202,11 @@ extension EngineApplicationCore: SessionProcessingEffects {
 // MARK: Idle release
 
 extension EngineApplicationCore {
-    /// Nothing uses the models: no recording, live transcription, queued, held, running processing or model preparation.
-    var isIdleForRelease: Bool {
-        recording.phase == .idle && isProcessingIdle && !isPreparingModels
-    }
-
     /// Unloads the ASR and diarization models once the engine is idle; they load again on next use.
     func releaseIdleResourcesIfIdle() {
-        guard isIdleForRelease, idleReleaseTask == nil, !isShuttingDown else { return }
+        guard isIdle, idleReleaseTask == nil, !isShuttingDown else { return }
         idleReleaseTask = Task { [self] in
-            if isIdleForRelease {
+            if isIdle {
                 presentation.preparationPhase = .idle
                 presentation.preparationStatusText = nil
                 stateDidChange()
