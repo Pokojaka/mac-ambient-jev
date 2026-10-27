@@ -168,7 +168,7 @@ public struct PortableModelPreparationService: Sendable {
                 },
                 load: {
                     try await Self.load(.vad, path: silero.path) {
-                        let environment = try ONNXEnvironment(loggingID: "MacAmbientJev-ModelPreparation")
+                        let environment = try ONNXEnvironment.shared()
                         try await Task.detached(executorPreference: BlockingIOExecutor.shared) { _ = try SileroVAD(environment: environment, modelURL: silero, intraOpThreads: 1) }.value
                     }
                 }

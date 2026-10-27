@@ -36,7 +36,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         }
         try size.validateModelDirectory(modelDirectory)
 
-        let environment = try ONNXEnvironment(loggingID: "MacAmbientJev-Qwen3ASR-\(size.rawValue)")
+        let environment = try ONNXEnvironment.shared()
         let encoderSession = try ONNXSession(
             environment: environment,
             modelURL: modelDirectory.appendingPathComponent(size.encoderFilename),

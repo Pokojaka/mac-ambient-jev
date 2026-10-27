@@ -192,9 +192,7 @@ internal enum TranscribeFileCommand {
         do {
             let audio = try await PortableAudioFileImporter.open(inputURL: options.inputURL, sessionURL: scratchURL)
             audioSeconds = audio.info.durationSeconds
-            let environment = try ONNXEnvironment(
-                loggingID: "MacAmbientJev-SileroFinalTranscript-\(UUID().uuidString)"
-            )
+            let environment = try ONNXEnvironment.shared()
             let vad = SileroFinalTranscriptVADSegmenter(
                 environment: environment,
                 modelURL: options.sileroModelURL,
