@@ -9,7 +9,7 @@ struct SileroVADTests {
 
     init() throws {
         modelURL = try SileroTestInputs.modelURL(environment: ProcessInfo.processInfo.environment)
-        environment = try ONNXEnvironment(loggingID: "SileroVADTests")
+        environment = try ONNXEnvironment.shared()
     }
 
     @Test

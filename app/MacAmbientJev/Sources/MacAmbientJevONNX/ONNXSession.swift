@@ -44,19 +44,22 @@ func checkStatus(
 }
 
 /// ONNX Runtime documents `OrtEnv` as safe to share across threads, and this wrapper never mutates it.
+/// The shared environment lives for the process lifetime; its initialization result, including failure, is cached.
 public final class ONNXEnvironment: @unchecked Sendable {
     public static let runtimeVersion = "1.31.0"
+
+    private static let sharedResult: Result<ONNXEnvironment, Error> = Result { try ONNXEnvironment() }
 
     let api: UnsafePointer<OrtApi>
     let handle: OpaquePointer
 
-    public init(loggingID: String) throws {
-        guard !loggingID.isEmpty else {
-            throw ONNXRuntimeError(message: "ONNX Runtimeのログ識別子を空にすることはできません。")
-        }
-        guard !loggingID.utf8.contains(0) else {
-            throw ONNXRuntimeError(message: "ONNX Runtimeのログ識別子にNUL文字は使用できません。")
-        }
+    /// Returns the process-wide ONNX Runtime environment.
+    /// Initialization is attempted once; any failure is cached for the process lifetime.
+    public static func shared() throws -> ONNXEnvironment {
+        try sharedResult.get()
+    }
+
+    private init() throws {
         guard let apiBase = OrtGetApiBase() else {
             throw ONNXRuntimeError(message: "ONNX Runtime APIの取得に失敗しました。")
         }
@@ -74,17 +77,12 @@ public final class ONNXEnvironment: @unchecked Sendable {
         }
 
         var createdEnvironment: OpaquePointer?
-        let environmentStatus = loggingID.withCString { loggingIDPointer in
+        let environmentStatus = "MacAmbientJev".withCString { loggingIDPointer in
             runtimeAPI.pointee.CreateEnv!(
                 ORT_LOGGING_LEVEL_WARNING,
                 loggingIDPointer,
                 &createdEnvironment
             )
-        }
-        defer {
-            if let createdEnvironment {
-                runtimeAPI.pointee.ReleaseEnv!(createdEnvironment)
-            }
         }
         try checkStatus(environmentStatus, api: runtimeAPI, context: "ONNX Runtime環境の作成に失敗しました")
         guard let environmentHandle = createdEnvironment else {
@@ -99,11 +97,6 @@ public final class ONNXEnvironment: @unchecked Sendable {
 
         self.api = runtimeAPI
         self.handle = environmentHandle
-        createdEnvironment = nil
-    }
-
-    deinit {
-        api.pointee.ReleaseEnv!(handle)
     }
 }
 
@@ -353,8 +346,8 @@ public final class ONNXSession {
     }
 
     /// Runs the model on `inputs` without copying tensor data in or out. Every input value must
-    /// come from this session's environment. Input values are only read, so an output value can be
-    /// passed straight back as the next run's input.
+    /// come from the shared process environment. Input values are only read, so an output value can
+    /// be passed straight back as the next run's input.
     public func runValues(
         inputs: [(name: String, value: ONNXValue)],
         outputNames: [String]
@@ -363,7 +356,7 @@ public final class ONNXSession {
             throw ONNXRuntimeError(message: "出力名を1つ以上指定する必要があります。")
         }
         var inputNameSet = Set<String>()
-        for (name, value) in inputs {
+        for (name, _) in inputs {
             guard !name.isEmpty else {
                 throw ONNXRuntimeError(message: "入出力名を空にすることはできません。")
             }
@@ -372,9 +365,6 @@ public final class ONNXSession {
             }
             guard inputNameSet.insert(name).inserted else {
                 throw ONNXRuntimeError(message: "入力名を重複させることはできません。")
-            }
-            guard value.environment === environment else {
-                throw ONNXRuntimeError(message: "入力値 \(name) は別のONNX Runtime環境で作成されています。")
             }
         }
         for name in outputNames {

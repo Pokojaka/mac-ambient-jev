@@ -3,12 +3,12 @@ import MacAmbientJevCore
 import MacAmbientJevONNX
 import MacAmbientJevPipeline
 
-/// The concrete portable engines of one processing operation. Building it validates the Silero file and creates the ONNX
+/// The concrete portable engines of one processing operation. Building it validates the Silero file and acquires the process-wide ONNX
 /// environment; the ASR, diarization and clause tagger models load on first use, and a failure there stops the operation.
 public struct PortableSessionEngineBundle: Sendable {
     public let configuration: PortableProcessingConfiguration
     public let engines: SessionProcessingEngines
-    /// The VAD's environment, which the live VAD session factory shares.
+    /// The shared process-wide ONNX environment used by VAD and the live VAD session factory.
     public let vadEnvironment: ONNXEnvironment
     /// Non-nil exactly when the configuration requests decisions; `localModelIdentity()` loads the tagger once.
     public let decisionProviderFactory: DecisionProviderFactory?
@@ -16,7 +16,7 @@ public struct PortableSessionEngineBundle: Sendable {
 
     public init(configuration: PortableProcessingConfiguration, usageCounter: DecisionUsageCounter) throws {
         try SileroVADModel.validate(at: configuration.sileroModelURL)
-        let vadEnvironment = try ONNXEnvironment(loggingID: "MacAmbientJev-PortableProcessing")
+        let vadEnvironment = try ONNXEnvironment.shared()
         let engines = SessionProcessingEngines(
             asr: ONNXQwen3ASREngine(
                 modelDirectory: configuration.qwen3ModelDirectory,

@@ -6,7 +6,7 @@ struct ONNXValueTests {
     private let environment: ONNXEnvironment
 
     init() throws {
-        environment = try ONNXEnvironment(loggingID: "MacAmbientJevONNXValueTests")
+        environment = try ONNXEnvironment.shared()
     }
 
     @Test
@@ -132,20 +132,19 @@ struct ONNXValueTests {
     }
 
     @Test
-    func valuesFromAnotherEnvironmentAreRejected() throws {
+    func valuesFromSharedEnvironmentAccessAreAccepted() throws {
         let session = try makeCacheSession()
-        let otherEnvironment = try ONNXEnvironment(loggingID: "MacAmbientJevONNXValueTests.other")
-        let foreign = try ONNXValue(environment: otherEnvironment, tensor: .float32(shape: [1, 1, 2], values: [0, 0]))
+        let sharedEnvironment = try ONNXEnvironment.shared()
+        #expect(sharedEnvironment === environment)
+        let past = try ONNXValue(environment: sharedEnvironment, tensor: .float32(shape: [1, 1, 2], values: [0, 0]))
         let step = try ONNXValue(environment: environment, tensor: .float32(shape: [1, 1, 2], values: [0, 0]))
         let count = try ONNXValue(environment: environment, tensor: .int64(shape: [1], values: [0]))
 
-        let message = onnxErrorMessage {
-            _ = try session.runValues(
-                inputs: [(name: "past", value: foreign), (name: "step", value: step), (name: "count", value: count)],
-                outputNames: ["present"]
-            )
-        }
-        #expect(message == "入力値 past は別のONNX Runtime環境で作成されています。")
+        let outputs = try session.runValues(
+            inputs: [(name: "past", value: past), (name: "step", value: step), (name: "count", value: count)],
+            outputNames: ["present"]
+        )
+        #expect(try outputs[0].tensor() == .float32(shape: [1, 2, 2], values: [0, 0, 0, 0]))
     }
 
     private func makeCacheSession() throws -> ONNXSession {
