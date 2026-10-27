@@ -20,6 +20,11 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("アプリ情報") {
+                LabeledContent("バージョン", value: Self.bundleString("CFBundleShortVersionString"))
+                LabeledContent("ビルド", value: Self.bundleString("CFBundleVersion"))
+            }
+
             Section("音声認識モデル") {
                 LabeledContent("状態", value: appState.modelPreparation.statusText)
 
@@ -195,6 +200,13 @@ struct SettingsView: View {
         .task {
             microphoneAccess = AVCaptureDevice.authorizationStatus(for: .audio)
         }
+    }
+
+    private static func bundleString(_ key: String) -> String {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String else {
+            preconditionFailure("Info.plist に \(key) がありません")
+        }
+        return value
     }
 
     private var decisionControlsDisabled: Bool {

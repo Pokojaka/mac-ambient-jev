@@ -183,7 +183,7 @@ Mac アプリの判定モデルは [Pokojaka/modernbert-ja-30m-utterance-tagger]
 
 Core の `DecisionProvider` が判定の境界で、Core ML / ONNX tagger とテスト用 provider が同じ要求・応答型を使います。`DecisionCoordinator` と共有 `DecisionUsageCounter` は provider 呼出し一回ごとに1 request として計数し、モデルが読んだ入力 token を記録します。境界の一 request は候補と全 source token を網羅する source-only 窓、および後続区間があれば任意の継続入力を含みます。窓の数によらず一 request と数え、全窓と継続入力の token 数を合計します。優先度判定は最大40 sequence の一 batch 呼出しを一 request とし、実入力 ID 数を合計します。
 
-境界要求は raw ASR text を入力にします。本文のある終端区間は候補がなくても F・B除去範囲を判定する source-only 推論を実行し、成功時は実際の request と `clause_boundaries.assessed.filler_ranges` を保存します。保存 key `filler_ranges` の値は `{start,end}` の配列で、raw ASR text の UTF-16 半開範囲によりフィラー・相槌除去範囲を表します。優先度要求はフィラー・相槌除去後本文の最大40件です。設定の「モデルを確認」は cache した tagger の identity を表示するだけで、判定 request・利用回数・token を発生させません。
+境界要求は raw ASR text を入力にします。本文のある終端区間は候補がなくても F・B除去範囲を判定する source-only 推論を実行し、成功時は実際の request と `clause_boundaries.assessed.filler_ranges` を保存します。保存 key `filler_ranges` の値は `{start,end}` の配列で、raw ASR text の UTF-16 半開範囲によりフィラー・相槌除去範囲を表します。優先度要求はフィラー・相槌除去後本文の最大40件です。設定の「アプリ情報」は Info.plist（[app_info_plist.sh](../scripts/app_info_plist.sh)）の CFBundleShortVersionString と CFBundleVersion を読んで表示します。設定の「モデルを確認」は cache した tagger の identity を表示するだけで、判定 request・利用回数・token を発生させません。
 
 ASR 原文とイベントは変更しません。保存済み境界 assessment の F・B除去範囲だけを原文の raw UTF-16 座標へ適用し、materialization は保存済み範囲と再試行待ちでない保存済み LOW slice を表示本文へ投影するだけで、辞書もモデルも使いません。画面、コピー、accessibility、文字起こし txt、CLI JSON の `display_text` は共通の表示本文を使います。ProcessRecording CLI で判定を無効にした場合は assessment や F・B除去範囲を作らず、`display_text` に原文を出します。
 
