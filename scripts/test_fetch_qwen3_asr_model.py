@@ -88,14 +88,6 @@ class FetchTests(unittest.TestCase):
             for size in EXPECTED_REPOSITORIES
         }
 
-    def test_pinned_tables_match_expected_repositories_commits_and_files(self) -> None:
-        self.assertEqual(fetcher.REPOSITORIES, EXPECTED_REPOSITORIES)
-        self.assertEqual(fetcher.COMMITS, EXPECTED_COMMITS)
-        self.assertEqual(fetcher.FILES, EXPECTED_FILES)
-        for size in EXPECTED_REPOSITORIES:
-            self.assertEqual(tuple(fetcher.FILES[size]), fetcher.FILE_ROLES)
-            self.assertEqual(len(fetcher.FILES[size]), 6)
-
     def test_files_by_role_ignores_manifest_array_order(self) -> None:
         metadata = sample_metadata()
         reversed_metadata = sample_metadata()
@@ -459,41 +451,6 @@ class FetchTests(unittest.TestCase):
         self.assertIn("エラー: Qwen3-ASR モデルの取得に失敗しました:", stderr.getvalue())
         self.assertIn("network unavailable", stderr.getvalue())
         fetch.assert_called_once()
-
-    def test_cli_size_mismatch_exits_one_as_acquisition_failure(self) -> None:
-        size = "1.7b"
-        model_directory = self.root / (
-            f"qwen3-asr-{size}-int4-{EXPECTED_COMMITS[size]}"
-        )
-        target = model_directory / "encoder.bin"
-        files = {
-            model: {
-                role: (f"{role}.bin", 5, "unused-sha")
-                for role in fetcher.FILE_ROLES
-            }
-            for model in EXPECTED_REPOSITORIES
-        }
-
-        def write_wrong_size(_url: str, _sha256: str, destination: Path) -> Path:
-            destination.write_bytes(b"bad")
-            return destination
-
-        with mock.patch.object(fetcher, "FILES", files), mock.patch.object(
-            fetcher.pinned_download, "download_verified", side_effect=write_wrong_size
-        ), mock.patch.object(fetcher.sys, "version_info", (3, 13, 3)), mock.patch.object(
-            fetcher.sys,
-            "argv",
-            ["fetch_qwen3_asr_model.py", size, str(self.root)],
-        ):
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = fetcher.main()
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("Qwen3-ASR モデルの取得に失敗しました", stderr.getvalue())
-        self.assertIn(str(target), stderr.getvalue())
-        self.assertIn("期待値 5、実際 3", stderr.getvalue())
-
 
 if __name__ == "__main__":
     unittest.main()

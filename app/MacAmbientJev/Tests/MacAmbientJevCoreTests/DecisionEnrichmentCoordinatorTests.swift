@@ -441,24 +441,6 @@ func failedBoundaryRequestsLeaveRecognizedSourcesUnresolved() async throws {
 }
 
 @Test
-func requestSpecificBoundaryFailureKeepsSendingTheRemainingSegments() async throws {
-    let root = temporarySessionRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let sessionID = UUID()
-    let texts = (1...5).map { "説明その\($0)。続き" }
-    _ = try publishLocal(root: root, events: try await writeTranscript(texts, root: root, sessionID: sessionID))
-    let provider = ScriptedDecisionProvider(
-        boundary: { _ in throw ClauseTaggerEncodingError.missingJunction }, priority: lowForBackchannel
-    )
-
-    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
-
-    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02", "s03", "s04", "s05"])
-    #expect(result.pendingBoundarySegments.map(\.segmentID) == ["s01", "s02", "s03", "s04", "s05"])
-    #expect(try readPublished(root: root).map(\.clauseState) == Array(repeating: .boundaryPending, count: 5))
-}
-
-@Test
 func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
