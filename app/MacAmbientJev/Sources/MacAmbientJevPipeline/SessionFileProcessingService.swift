@@ -224,9 +224,15 @@ public struct SessionFileProcessingService: Sendable {
         await callbacks.onEvent(.sessionCreated(sessionID: retained.sessionID, sessionURL: retained.sessionURL))
 
         do {
-            let result = try await processImport(
-                request,
-                retained: retained,
+            await callbacks.onStatus(.message("処理を開始します: \(request.audioURL.path)"))
+            let result = try await finalizeAndExport(
+                sessionID: retained.finalize.sessionID,
+                metadataPolicy: retained.finalize.metadataPolicy,
+                pacingMode: request.pacingMode,
+                outputURL: request.outputURL,
+                withDecisions: request.withDecisions,
+                sessionURL: retained.sessionURL,
+                context: "imported audio \(request.audioURL.path) in session \(retained.sessionURL.path)",
                 paths: validated.paths,
                 resources: resources,
                 callbacks: callbacks
@@ -294,9 +300,14 @@ public struct SessionFileProcessingService: Sendable {
                     "finalization for session \(sessionURL.path) requires processing resources, but the initial recovery inspection did not"
                 )
             }
-            return try await finalizeResume(
-                request,
+            return try await finalizeAndExport(
+                sessionID: request.sessionID,
+                metadataPolicy: .reject,
+                pacingMode: request.pacingMode,
+                outputURL: request.outputURL,
+                withDecisions: request.withDecisions,
                 sessionURL: sessionURL,
+                context: "session \(sessionURL.path)",
                 paths: operationPaths,
                 resources: resources,
                 callbacks: callbacks
@@ -337,59 +348,14 @@ public struct SessionFileProcessingService: Sendable {
         }
     }
 
-    private func processImport(
-        _ request: ImportRequest,
-        retained: RetainedSession,
-        paths: AppPaths,
-        resources: SessionFileProcessingResources,
-        callbacks: Callbacks
-    ) async throws -> SessionProcessingResult {
-        let sessionURL = retained.sessionURL
-        let processor = makeProcessor(paths: paths, resources: resources)
-        let collector = ProcessingResultCollector()
-        do {
-            await callbacks.onStatus(.message("処理を開始します: \(request.audioURL.path)"))
-            let result = await processor.processSession(
-                sessionID: retained.finalize.sessionID,
-                pacingMode: request.pacingMode,
-                shouldPause: callbacks.shouldPause,
-                onPhase: callbacks.onPhase,
-                metadataPolicy: retained.finalize.metadataPolicy,
-                onStatus: callbacks.onStatus,
-                onUpdate: updateHandler(callbacks: callbacks, collector: collector)
-            )
-            guard result.disposition == .completed else {
-                await processor.releaseIdleResources()
-                return result
-            }
-            let state = await collector.snapshot().state
-            guard state == .complete else {
-                throw SessionFileProcessingError.processingFailed(
-                    "finalizing imported audio \(request.audioURL.path) in session \(sessionURL.path) returned completed without a complete transcript update (state: \(describe(state)))"
-                )
-            }
-            try exportTranscript(
-                sessionURL: sessionURL,
-                outputURL: request.outputURL,
-                withDecisions: request.withDecisions
-            )
-            await callbacks.onEvent(.exported(request.outputURL))
-            await processor.releaseIdleResources()
-            return result
-        } catch let error as SessionFileProcessingError {
-            await processor.releaseIdleResources()
-            throw error
-        } catch {
-            await processor.releaseIdleResources()
-            throw SessionFileProcessingError.processingFailed(
-                "processing imported audio \(request.audioURL.path) in session \(sessionURL.path) failed: \(error.localizedDescription)"
-            )
-        }
-    }
-
-    private func finalizeResume(
-        _ request: ResumeRequest,
+    private func finalizeAndExport(
+        sessionID: UUID,
+        metadataPolicy: UnreadableMetadataPolicy,
+        pacingMode: ASRPacingMode,
+        outputURL: URL,
+        withDecisions: Bool,
         sessionURL: URL,
+        context: String,
         paths: AppPaths,
         resources: SessionFileProcessingResources,
         callbacks: Callbacks
@@ -398,11 +364,11 @@ public struct SessionFileProcessingService: Sendable {
         let collector = ProcessingResultCollector()
         do {
             let result = await processor.processSession(
-                sessionID: request.sessionID,
-                pacingMode: request.pacingMode,
+                sessionID: sessionID,
+                pacingMode: pacingMode,
                 shouldPause: callbacks.shouldPause,
                 onPhase: callbacks.onPhase,
-                metadataPolicy: .reject,
+                metadataPolicy: metadataPolicy,
                 onStatus: callbacks.onStatus,
                 onUpdate: updateHandler(callbacks: callbacks, collector: collector)
             )
@@ -413,15 +379,15 @@ public struct SessionFileProcessingService: Sendable {
             let state = await collector.snapshot().state
             guard state == .complete else {
                 throw SessionFileProcessingError.processingFailed(
-                    "finalizing session \(sessionURL.path) returned completed without a complete transcript update (state: \(describe(state)))"
+                    "finalizing \(context) returned completed without a complete transcript update (state: \(describe(state)))"
                 )
             }
             try exportTranscript(
                 sessionURL: sessionURL,
-                outputURL: request.outputURL,
-                withDecisions: request.withDecisions
+                outputURL: outputURL,
+                withDecisions: withDecisions
             )
-            await callbacks.onEvent(.exported(request.outputURL))
+            await callbacks.onEvent(.exported(outputURL))
             await processor.releaseIdleResources()
             return result
         } catch {
