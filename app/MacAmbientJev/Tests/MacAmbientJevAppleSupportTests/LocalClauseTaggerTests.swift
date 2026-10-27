@@ -46,25 +46,6 @@ struct LocalClauseTaggerTests {
     }
 
     @Test
-    func missingPackageReportsItsLocalFileError() throws {
-        let packageURL = Self.temporaryDirectoryURL()
-            .appending(path: "ClauseTagger.mlpackage", directoryHint: .isDirectory)
-
-        do {
-            _ = try ClauseTaggerModel(packageURL: packageURL)
-            Issue.record("A missing Core ML package unexpectedly loaded.")
-        } catch let error as ClauseTaggerModelError {
-            guard case .unavailable(let detail) = error else {
-                Issue.record("Unexpected model error: \(error.localizedDescription)")
-                return
-            }
-            #expect(detail.contains(".mlpackage が見つからないか、読み込めません"))
-        } catch {
-            Issue.record("Unexpected error for a missing package: \(error)")
-        }
-    }
-
-    @Test
     func missingModelPackageFailsFast() throws {
         let directory = Self.temporaryDirectoryURL()
         #expect(!FileManager.default.fileExists(atPath: directory.path))
