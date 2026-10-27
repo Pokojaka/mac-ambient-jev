@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import stat
 import sys
 import tarfile
@@ -105,16 +104,6 @@ def _extract(archive: Path, staging: Path, root_name: str, is_zip: bool) -> None
     _validate_tree(staging / root_name, is_zip)
 
 
-def _remove_tree(path: Path) -> None:
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeError(f"削除対象が通常のディレクトリではありません: {path}")
-    shutil.rmtree(path)
-
-
 def fetch() -> Path:
     platform_name, asset_name, expected = choose_asset(platform.system(), platform.machine())
     repository = Path(__file__).resolve().parent.parent
@@ -130,7 +119,7 @@ def fetch() -> Path:
         return destination.resolve()
 
     for stale_staging in cache.glob(".extract-*"):
-        _remove_tree(stale_staging)
+        pinned_download.remove_tree(stale_staging)
     for cached_asset_name in {asset[1] for asset in ASSETS.values()}:
         for temporary in cache.glob(f".{cached_asset_name}.*.download"):
             if not stat.S_ISREG(temporary.lstat().st_mode):
@@ -147,7 +136,7 @@ def fetch() -> Path:
         os.replace(staging / root_name, destination)
         return destination.resolve()
     finally:
-        _remove_tree(staging)
+        pinned_download.remove_tree(staging)
 
 
 def main() -> int:
