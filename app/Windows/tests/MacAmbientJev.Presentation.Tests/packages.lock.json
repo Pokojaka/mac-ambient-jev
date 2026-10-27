@@ -163,7 +163,20 @@
           "xunit.v3.runner.common": "[4.0.2]"
         }
       },
+      "macambientjev.engineclient": {
+        "type": "Project",
+        "dependencies": {
+          "MacAmbientJev.Protocol": "[1.0.0, )"
+        }
+      },
       "macambientjev.presentation": {
+        "type": "Project",
+        "dependencies": {
+          "MacAmbientJev.EngineClient": "[1.0.0, )",
+          "MacAmbientJev.Protocol": "[1.0.0, )"
+        }
+      },
+      "macambientjev.protocol": {
         "type": "Project"
       }
     }

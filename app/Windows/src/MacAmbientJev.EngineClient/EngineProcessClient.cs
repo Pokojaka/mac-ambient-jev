@@ -8,7 +8,7 @@ using MacAmbientJev.Protocol;
 namespace MacAmbientJev.EngineClient;
 
 /// <summary>Owns one engine child, its NDJSON transport, and the request lifecycle.</summary>
-public sealed class EngineProcessClient : IAsyncDisposable
+public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
 {
     private enum RequestLane { Ordinary, Stop, Shutdown }
 

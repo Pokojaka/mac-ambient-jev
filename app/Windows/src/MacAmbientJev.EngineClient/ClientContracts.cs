@@ -12,6 +12,18 @@ public interface IEngineChild : IDisposable
     void Kill();
 }
 
+/// <summary>Exposes correlated request results and a coalesced output inbox; lifetime ownership stays with the caller.</summary>
+public interface IEngineClient
+{
+    Task<EngineResult> Hello { get; }
+    Task<EngineResult> SendAsync(EngineCommand command);
+    IReadOnlyList<EngineOutput> DrainEvents();
+    Task WaitForEventsAsync(CancellationToken cancellationToken);
+    Task<EngineClientState> Completion { get; }
+    EngineClientState State { get; }
+    EngineClientFailure? Failure { get; }
+}
+
 public enum EngineClientState
 {
     Running,
