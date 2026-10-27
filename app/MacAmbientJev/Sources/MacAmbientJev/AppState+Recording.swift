@@ -244,7 +244,7 @@ extension AppState: RecordingFinishEffects, RecordingStartEffects {
                     ? "・発話 \(vadSegmentCount)区間"
                     : ""
                 setCaptureStatus(
-                    "録音を保存しました（\(Self.formatDuration(durationSeconds))\(segmentSuffix)）",
+                    "録音を保存しました（\(SavedSessionDisplayText.recordingDuration(durationSeconds))\(segmentSuffix)）",
                     tone: .neutral
                 )
             }
@@ -314,27 +314,5 @@ extension AppState: RecordingFinishEffects, RecordingStartEffects {
     func setCaptureStatus(_ text: String, tone: StatusTone) {
         statusText = text
         statusTone = tone
-    }
-
-    static func formatDuration(_ seconds: Double) -> String {
-        let totalSeconds = max(0, Int(seconds.rounded(.down)))
-        let hours = totalSeconds / 3_600
-        let minutes = (totalSeconds % 3_600) / 60
-        let remainingSeconds = totalSeconds % 60
-
-        if hours > 0 {
-            return String(
-                format: "%d:%02d:%02d",
-                hours,
-                minutes,
-                remainingSeconds
-            )
-        }
-
-        return String(
-            format: "%02d:%02d",
-            minutes,
-            remainingSeconds
-        )
     }
 }
