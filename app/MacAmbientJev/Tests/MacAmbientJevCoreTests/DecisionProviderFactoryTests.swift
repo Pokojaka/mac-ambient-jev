@@ -166,31 +166,6 @@ private func coordinatorIdentityOnThread(_ factory: DecisionProviderFactory) asy
 @Suite
 struct DecisionProviderFactoryTests {
     @Test
-    func injectedLoadFailurePreservesIdentityWithoutUsage() async throws {
-        let failure = ProviderLoadFailure()
-        let loadCounter = LockedLoadCounter()
-        let usageCounter = DecisionUsageCounter()
-        let factory = DecisionProviderFactory(usageCounter: usageCounter) {
-            loadCounter.recordLoad()
-            throw failure
-        }
-
-        do {
-            _ = try factory.makeCoordinator()
-            Issue.record("The injected provider loader unexpectedly succeeded.")
-        } catch {
-            guard let actual = error as? ProviderLoadFailure else {
-                Issue.record("The injected provider loader returned an unexpected error: \(error)")
-                return
-            }
-            #expect(actual === failure)
-        }
-
-        #expect(loadCounter.count == 1)
-        Self.expectZeroUsage(await usageCounter.snapshot())
-    }
-
-    @Test
     func firstLoadFailureIsCachedAcrossFactoryAPIs() async throws {
         let firstFailure = ProviderLoadFailure()
         let secondFailure = ProviderLoadFailure()

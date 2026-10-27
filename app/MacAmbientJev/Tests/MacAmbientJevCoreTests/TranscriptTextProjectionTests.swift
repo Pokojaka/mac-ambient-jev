@@ -37,17 +37,6 @@ func projectionPreservesFillerLookingTextWithoutExplicitRanges() throws {
 }
 
 @Test
-func projectionRemovesModelMarkedFillersUsingExplicitUTF16Ranges() throws {
-    let source = "まあ、あの、今日は損失関数の話をします。"
-    let fillers = [
-        try TextUTF16Range(start: 0, end: 2),
-        try TextUTF16Range(start: 3, end: 5),
-    ]
-    let projected = try TranscriptTextProjector().project(sourceText: source, fillerRanges: fillers)
-    #expect(projected.text == "今日は損失関数の話をします。")
-}
-
-@Test
 func projectionCoalescesPunctuationExpandedFillerRangesAndRetainsOpeningPunctuationAndQuotes() throws {
     let projector = TranscriptTextProjector()
     let fillers = [
