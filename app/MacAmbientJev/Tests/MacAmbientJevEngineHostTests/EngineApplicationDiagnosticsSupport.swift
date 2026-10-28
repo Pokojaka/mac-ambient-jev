@@ -333,7 +333,7 @@ func withDiagnosticsHarness<T>(
 
 func diagnosticsEngineSettings(decisions: Bool = true, asrSize: EngineASRSize = .small) throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: asrSize,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: asrSize,
         executionProvider: .cpu, threads: 1, lowHeat: false,
         decisionsEnabled: decisions, automaticExport: false, exportDestinationPath: nil
     )

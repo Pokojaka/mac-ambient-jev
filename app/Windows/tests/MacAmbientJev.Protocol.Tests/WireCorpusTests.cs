@@ -28,6 +28,29 @@ public sealed class WireCorpusTests
         Assert.True(expected.AsSpan().SequenceEqual(encoded), $"Record {recordNumber} changed during typed round-trip.");
     }
 
+    [Theory]
+    [MemberData(nameof(NegativeCorpusRecords))]
+    public void negativeCorpusRecordsAreRejected(byte[] record)
+    {
+        bool isOutput;
+        using (var document = JsonDocument.Parse(record))
+        {
+            isOutput = document.RootElement.TryGetProperty("event", out _);
+        }
+
+        Assert.ThrowsAny<Exception>(() =>
+        {
+            if (isOutput)
+            {
+                _ = EngineCodec.DecodeOutput(record);
+            }
+            else
+            {
+                _ = EngineCodec.DecodeRequest(record);
+            }
+        });
+    }
+
     public static IEnumerable<object[]> CorpusRecords()
     {
         var records = ReadCorpus();
@@ -37,9 +60,22 @@ public sealed class WireCorpusTests
         }
     }
 
-    internal static byte[][] ReadCorpus()
+    public static IEnumerable<object[]> NegativeCorpusRecords()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "wire-v1.ndjson");
+        var records = ReadNegativeCorpus();
+        foreach (var record in records)
+        {
+            yield return new object[] { record };
+        }
+    }
+
+    internal static byte[][] ReadCorpus() => ReadCorpus("wire-v1.ndjson");
+
+    internal static byte[][] ReadNegativeCorpus() => ReadCorpus("wire-v1-negative.ndjson");
+
+    private static byte[][] ReadCorpus(string fileName)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", fileName);
         var bytes = File.ReadAllBytes(path);
         if (bytes.Length == 0 || bytes[^1] != (byte)'\n')
         {

@@ -43,10 +43,10 @@ struct EngineProtocolEventPayloadTests {
 
     @Test func boundedCollectionsAcceptLimitsAndRejectOverflowAndDuplicates() throws {
         let operation = try EngineQueuedOperation(sessionID: "s", stage: .asr)
-        let state16 = try EngineState(revision: engineID(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 16), failures: [], presentation: try engineTestPresentation())
+        let state16 = try EngineState(revision: engineID(1), screen: .idle, setup: .ready, profileSetup: .init(evaluation: nil), resourceProtection: try .init(holdReasons: []), recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 16), failures: [], presentation: try engineTestPresentation())
         #expect(state16.queue.count == 16)
         #expect(throws: (any Error).self) {
-            try EngineState(revision: engineID(1), screen: .idle, setup: .ready, recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 17), failures: [], presentation: try engineTestPresentation())
+            try EngineState(revision: engineID(1), screen: .idle, setup: .ready, profileSetup: .init(evaluation: nil), resourceProtection: try .init(holdReasons: []), recovery: .completed, recording: nil, queue: Array(repeating: operation, count: 17), failures: [], presentation: try engineTestPresentation())
         }
         #expect(throws: (any Error).self) { try EngineQueuedOperation(sessionID: "", stage: .asr) }
 

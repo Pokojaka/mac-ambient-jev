@@ -66,8 +66,8 @@ public sealed class EngineHarnessTests
         if (!Path.IsPathFullyQualified(path)) throw new InvalidOperationException($"Environment variable {variable} must contain an absolute path; received '{path}'.");
         return path;
     }
-    private static EngineSettings ExpectedSettings() => new(SchemaVersion: 1, Source: EngineSource.Microphone,
-        Device: new EngineDevice.Default(), AsrSize: EngineASRSize.Small, ExecutionProvider: EngineExecutionProvider.Cpu,
+    private static EngineSettings ExpectedSettings() => new(SchemaVersion: 2, Source: EngineSource.Microphone,
+        Device: new EngineDevice.Default(), AsrSize: EngineASRSize.Small, ExecutionProvider: new EngineExecutionProvider.Cpu(),
         Threads: 1, LowHeat: false, DecisionsEnabled: false, AutomaticExport: false, ExportDestinationPath: null);
     private static async Task<string> StartRecordingAsync(EngineProcessClient client, CancellationToken token)
     {

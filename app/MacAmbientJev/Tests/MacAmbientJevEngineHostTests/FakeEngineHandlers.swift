@@ -218,6 +218,18 @@ final class FakeEngineHandlers:
         )))
     }
 
+    func evaluate(_ payload: EngineProfilesEvaluatePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation {
+        try await enter("profiles.evaluate")
+        return try EngineProfileEvaluation(
+            initialSize: .small,
+            recommendLarge: false,
+            reason: .noGPU,
+            explanation: "GPU がないため、0.6B を使用します。",
+            measuredRTF: nil,
+            predictedRTF: nil
+        )
+    }
+
     func shutdown(reason: EngineShutdownReason) async throws {
         calls.append("shutdown")
         shutdownReasons.append(reason)
@@ -228,7 +240,7 @@ final class FakeEngineHandlers:
 
 func sampleSettings() throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
         threads: 2, lowHeat: false, decisionsEnabled: true, automaticExport: false, exportDestinationPath: nil
     )
 }

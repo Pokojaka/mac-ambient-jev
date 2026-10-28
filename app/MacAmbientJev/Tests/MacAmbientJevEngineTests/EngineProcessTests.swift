@@ -195,8 +195,8 @@ private func makeRoot() throws -> URL {
 }
 
 private let settingsPayload = """
-{"expected_revision":null,"settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},\
-"asr_size":"0.6b","execution_provider":"cpu","threads":1,"low_heat":false,"decisions_enabled":false,\
+{"expected_revision":null,"settings":{"schema_version":2,"source":"microphone","device":{"kind":"default"},\
+"asr_size":"0.6b","execution_provider":{"kind":"cpu"},"threads":1,"low_heat":false,"decisions_enabled":false,\
 "automatic_export":false,"export_destination_path":null}}
 """
 

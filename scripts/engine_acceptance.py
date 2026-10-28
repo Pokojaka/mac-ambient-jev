@@ -35,11 +35,11 @@ FULL_MODEL_FINALIZATION_TIMEOUT_SECONDS = 600.0
 TRANSCRIPT_TEXT = "エンジンの受け入れテストです。"
 TRANSCRIPT_FILE = "[00:00] Speaker 1: エンジンの受け入れテストです。\n"
 EXPECTED_SETTINGS: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "source": "microphone",
     "device": {"kind": "default"},
     "asr_size": "0.6b",
-    "execution_provider": "cpu",
+    "execution_provider": {"kind": "cpu"},
     "threads": 1,
     "low_heat": False,
     "decisions_enabled": False,
@@ -1770,11 +1770,11 @@ def _resolve_executable(candidate: Path) -> Path:
 
 def _full_model_settings(asr_size: str, threads: int) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": "microphone",
         "device": {"kind": "default"},
         "asr_size": asr_size,
-        "execution_provider": "cpu",
+        "execution_provider": {"kind": "cpu"},
         "threads": threads,
         "low_heat": False,
         "decisions_enabled": True,

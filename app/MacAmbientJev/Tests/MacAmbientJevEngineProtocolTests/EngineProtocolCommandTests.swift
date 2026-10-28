@@ -12,6 +12,7 @@ struct EngineProtocolCommandTests {
             "low_heat", "decisions_enabled", "automatic_export", "export_destination_path"
         ])
         #expect(object["export_destination_path"] is NSNull)
+        #expect(object["execution_provider"] as? [String: String] == ["kind": "cpu"])
         #expect(try JSONDecoder().decode(EngineSettings.self, from: encoded) == settings)
         try settings.validate(logicalCPUCount: 4)
         #expect(capturedEngineError { try settings.validate(logicalCPUCount: 2) } == .invalidJSON("threads exceed logical CPU limit"))
@@ -46,7 +47,7 @@ struct EngineProtocolCommandTests {
         for threads in [0, 5] {
             #expect(capturedEngineError { _ = try sampleSettings(threads: threads) } != nil)
         }
-        #expect(capturedEngineError { _ = try sampleSettings(schemaVersion: 2) } == .invalidJSON("schema_version must be 1"))
+        #expect(capturedEngineError { _ = try sampleSettings(schemaVersion: 1) } == .invalidJSON("schema_version must be 2"))
     }
 
     @Test func emptyStringsAndInvalidIDsAreRejected() throws {
@@ -75,12 +76,12 @@ struct EngineProtocolCommandTests {
         #expect(decodingFails(EngineDevice.self, from: Data(#"{"kind":"other"}"#.utf8)))
         #expect(decodingFails(EngineSource.self, from: Data("\"future\"".utf8)))
         #expect(decodingFails(EngineASRSize.self, from: Data("\"future\"".utf8)))
-        #expect(decodingFails(EngineExecutionProvider.self, from: Data("\"future\"".utf8)))
+        #expect(decodingFails(EngineExecutionProvider.self, from: Data(#"{"kind":"future"}"#.utf8)))
     }
 }
 
 private func sampleSettings(
-    schemaVersion: Int = 1,
+    schemaVersion: Int = 2,
     threads: Int = 2,
     automaticExport: Bool = false,
     exportDestinationPath: String? = "/exports"

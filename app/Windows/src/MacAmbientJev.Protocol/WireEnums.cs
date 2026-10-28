@@ -12,9 +12,10 @@ public enum EngineASRSize
     [WireValue("1.7b")] Large,
 }
 
-public enum EngineExecutionProvider
+public enum EngineExecutionProviderKind
 {
     [WireValue("cpu")] Cpu,
+    [WireValue("windows_ml")] WindowsML,
 }
 
 public enum EngineDeviceKind
@@ -44,6 +45,7 @@ public enum EngineCommandName
     [WireValue("settings.replace")] SettingsReplace,
     [WireValue("models.prepare")] ModelsPrepare,
     [WireValue("models.inspect")] ModelsInspect,
+    [WireValue("profiles.evaluate")] ProfilesEvaluate,
     [WireValue("shutdown")] Shutdown,
 }
 

@@ -245,6 +245,8 @@ public final class EngineController {
             return .modelsPrepare
         case .modelsInspect:
             return .modelsInspect(try await handlers.models.inspect(context: context))
+        case let .profilesEvaluate(payload):
+            return .profilesEvaluate(try await handlers.models.evaluate(payload, context: context))
         case .shutdown:
             preconditionFailure("shutdown is handled inline by the dispatcher")
         }

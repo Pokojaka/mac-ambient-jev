@@ -300,7 +300,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         await fixture.gate.waitUntilEntered()
 
         let proposed = try EngineSettings(
-            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            schemaVersion: 2, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
             threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
         )
         let replacement = EngineSettingsReplacePayload(expectedRevision: try EngineID(1), settings: proposed)

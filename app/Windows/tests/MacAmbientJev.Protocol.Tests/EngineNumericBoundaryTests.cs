@@ -14,7 +14,7 @@ public sealed class EngineNumericBoundaryTests
     private const string Queued = """{"session_id":"queued","stage":"asr"}""";
     private const string Speaker = """{"speaker_id":"speaker","display_label":"Speaker 1","start_ms":0,"end_ms":1}""";
     private const string Session = """{"folder_id":"folder","session_id":"s","status":"finalized","error":null,"display_name":"Session","status_text":"Finalized","folder_path":"/sessions/folder","export_path":null,"can_reprocess":true,"can_retry_decisions":true,"can_export":true,"metadata":{"kind":"readable","created_at":0,"source":{"kind":"microphone"},"audio":{"kind":"available"},"has_transcript":false}}""";
-    private const string State = """{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"Idle","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}""";
+    private const string State = """{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"profile_setup":{"evaluation":null},"resource_protection":{"hold_reasons":[]},"presentation":{"recording_status_text":"Idle","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}""";
 
     [Fact]
     public void NumericBoundariesAndOverflowSafeInvariantsAreDecodedFromWireSamples()
@@ -31,7 +31,7 @@ public sealed class EngineNumericBoundaryTests
             "{\"version\":1,\"request_id\":\"1\",\"command\":" + System.Text.Json.JsonSerializer.Serialize(command) + ",\"payload\":" + payload + "}";
         string Settings(long threads, long schema) =>
             "{\"expected_revision\":null,\"settings\":{\"schema_version\":" + threadsOrSchema(schema) +
-            ",\"source\":\"microphone\",\"device\":{\"kind\":\"default\"},\"asr_size\":\"0.6b\",\"execution_provider\":\"cpu\",\"threads\":" + threadsOrSchema(threads) +
+            ",\"source\":\"microphone\",\"device\":{\"kind\":\"default\"},\"asr_size\":\"0.6b\",\"execution_provider\":{\"kind\":\"cpu\"},\"threads\":" + threadsOrSchema(threads) +
             ",\"low_heat\":true,\"decisions_enabled\":false,\"automatic_export\":false,\"export_destination_path\":null}}";
         string threadsOrSchema(long value) => value.ToString(CultureInfo.InvariantCulture);
         string Snapshot(string totalInput, string boundaryInput, string priorityInput) =>
@@ -96,12 +96,12 @@ public sealed class EngineNumericBoundaryTests
         foreach (var threads in new[] { 0, 1, 4, 5 })
         {
             var error = threads is 0 or 5 ? WireError.OutOfRange : (WireError?)null;
-            Add(typeof(EngineRequest), Request("settings.replace", Settings(threads, 1)), error, "$.payload.settings.threads",
+            Add(typeof(EngineRequest), Request("settings.replace", Settings(threads, 2)), error, "$.payload.settings.threads",
                 error is null ? (long)threads : null, error is null ? RequestThreads : null);
         }
-        foreach (var schema in new[] { 0, 1, 2 })
+        foreach (var schema in new[] { 0, 1, 2, 3 })
         {
-            var error = schema == 1 ? (WireError?)null : WireError.Constraint;
+            var error = schema == 2 ? (WireError?)null : WireError.Constraint;
             Add(typeof(EngineRequest), Request("settings.replace", Settings(2, schema)), error, "$.payload.settings.schema_version",
                 error is null ? (long)schema : null, error is null ? RequestSchema : null);
         }

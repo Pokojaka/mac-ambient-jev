@@ -5,13 +5,33 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolCorpusTests {
     @Test func everyCorpusRecordRoundTripsByteIdentically() throws {
         let records = try wireCorpusRecords()
-        #expect(records.count == 102)
+        #expect(records.count == 142)
         for record in records {
             let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
             if root["event"] != nil {
                 #expect(try EngineCodec.encodeOutput(EngineCodec.decodeOutput(record)) == record + Data([0x0A]))
             } else {
                 #expect(try EngineCodec.encodeRequest(EngineCodec.decodeRequest(record)) == record + Data([0x0A]))
+            }
+        }
+    }
+
+    @Test func rejectsEveryNegativeCorpusRecord() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/wire-v1-negative.ndjson")
+        let bytes = try Data(contentsOf: url)
+        guard bytes.last == 0x0A else { throw CorpusFixtureError.missingFinalLineFeed }
+        let records = bytes.split(separator: 0x0A)
+        #expect(records.count == 123)
+
+        for rawRecord in records {
+            let record = Data(rawRecord)
+            let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
+            if root["event"] != nil {
+                #expect(throws: (any Error).self) { try EngineCodec.decodeOutput(record) }
+            } else {
+                #expect(throws: (any Error).self) { try EngineCodec.decodeRequest(record) }
             }
         }
     }
@@ -249,6 +269,12 @@ private func isNullableField(
         "recovery_status_text", "processing_status_text", "live_failure_notices", "silence_warning_active",
         "silence_warning_text", "audio_gap_count", "audio_gap_text", "processing_indicator",
     ])
+    let isProfileHardwareGPU = has([
+        "kind", "name", "adapter_id", "device_id", "driver_version", "dedicated_vram_bytes",
+    ])
+    let isProfileEvaluation = has([
+        "initial_size", "recommend_large", "reason", "explanation", "measured_rtf", "predicted_rtf",
+    ])
 
     if key == "request_id" {
         if objectPath.isEmpty { return root["event"] != nil }
@@ -273,7 +299,13 @@ private func isNullableField(
     if key == "path" || key == "device_id", has(["domain", "code", "message", "path", "device_id"]) { return true }
     if ["preparation_status_text", "recovery_status_text", "processing_status_text", "silence_warning_text", "audio_gap_text"].contains(key),
        isPresentationState { return true }
-    if key == "recording", has(["revision", "screen", "setup", "recovery", "recording", "queue", "failures", "presentation"]) { return true }
+    if key == "recording", has([
+        "revision", "screen", "setup", "profile_setup", "resource_protection", "recovery", "recording",
+        "queue", "failures", "presentation",
+    ]) { return true }
+    if key == "dedicated_vram_bytes", isProfileHardwareGPU { return true }
+    if (key == "measured_rtf" || key == "predicted_rtf"), isProfileEvaluation { return true }
+    if key == "evaluation", has(["evaluation"]) { return true }
     if key == "default_device_id", has(["source", "devices", "default_device_id"]) { return true }
     if key == "previous_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }

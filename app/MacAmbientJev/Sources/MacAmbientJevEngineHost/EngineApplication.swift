@@ -79,6 +79,7 @@ final class EngineApplicationCore {
     // Settings and models
     var settingsResult: EngineSettingsResult?
     var inference: EngineInference?
+    var profileEvaluation: EngineProfileEvaluation? = nil
     var isPreparingModels = false
     var presentation = EnginePresentation()
     var isShuttingDown = false
@@ -251,6 +252,8 @@ final class EngineApplicationCore {
                 revision: try EngineID(revision),
                 screen: screen,
                 setup: setupStatus,
+                profileSetup: EngineProfileSetup(evaluation: profileEvaluation),
+                resourceProtection: try resourceProtectionState(),
                 recovery: recoveryStatus,
                 recording: try recordingState(),
                 queue: try queueState(),
@@ -260,6 +263,20 @@ final class EngineApplicationCore {
         } catch {
             preconditionFailure("engine state fields are valid by construction: \(error)")
         }
+    }
+
+    /// Empty means the processing queue has no current holds; it does not indicate healthy memory.
+    private func resourceProtectionState() throws -> EngineResourceProtection {
+        let heldReasons = Set(processingQueue.held.map { held -> EngineResourceHoldReason in
+            switch held.reason {
+            case .thermal: .thermal
+            case .resourcePressure: .resourcePressure
+            case .monitorFailed: .monitorFailed
+            }
+        })
+        return try EngineResourceProtection(
+            holdReasons: EngineResourceHoldReason.allCases.filter { heldReasons.contains($0) }
+        )
     }
 
     private var screen: EngineScreen {
@@ -536,6 +553,7 @@ extension EngineApplicationCore: EngineSettingsHandling {
             savedSessionOperations.resetExportDestination()
         }
         settingsResult = result
+        profileEvaluation = nil
         gateway.setPacing(result.settings.lowHeat ? .lowHeat : .normal)
         if let previous, profileDiffers(previous, result.settings) {
             // A changed model profile invalidates the prepared state; no work is running (the handler refused otherwise).
@@ -552,6 +570,103 @@ extension EngineApplicationCore: EngineSettingsHandling {
 // MARK: EngineModelsHandling
 
 extension EngineApplicationCore: EngineModelsHandling {
+    private func coreHardware(_ hardware: EngineProfileHardware) -> ASRHardware {
+        switch hardware {
+        case .noGPU:
+            .noGPU
+        case let .queryFailed(message):
+            .queryFailed(message)
+        case let .gpu(name, adapterID, deviceID, driverVersion, dedicatedVRAMBytes):
+            .gpu(
+                name: name,
+                adapterID: adapterID,
+                deviceID: deviceID,
+                driverVersion: driverVersion,
+                dedicatedVRAMBytes: dedicatedVRAMBytes
+            )
+        }
+    }
+
+    private func coreProvider(_ provider: EngineProfileProvider) -> ASRExecutionProvider {
+        switch provider {
+        case .cpu: .cpu
+        case .nvTensorRtRtx: .nvTensorRtRtx
+        case .openVINO: .openVINO
+        case .miGraphX: .miGraphX
+        case .vitisAI: .vitisAI
+        case .qnn: .qnn
+        }
+    }
+
+    private func coreAcquisition(_ acquisition: EngineProfileAcquisition) -> ASRAcquisition {
+        switch acquisition {
+        case .unavailable:
+            .unavailable
+        case let .failed(message):
+            .failed(message)
+        case let .acquired(provider):
+            .acquired(coreProvider(provider))
+        }
+    }
+
+    private func profileReason(_ reason: ASRSizeSelectionReason) -> EngineProfileSelectionReason {
+        switch reason {
+        case .noGPU: .noGPU
+        case .hardwareQueryFailed: .hardwareQueryFailed
+        case .providerUnavailable: .providerUnavailable
+        case .providerAcquisitionFailed: .providerAcquisitionFailed
+        case .unknownDedicatedVRAM: .unknownDedicatedVRAM
+        case .insufficientDedicatedVRAM: .insufficientDedicatedVRAM
+        case .insufficientMemory: .insufficientMemory
+        case .awaitingAssets: .awaitingAssets
+        case .eligible: .eligible
+        case .verificationRequired: .verificationRequired
+        case .verificationFailed: .verificationFailed
+        case .uncalibrated: .uncalibrated
+        case .unmeasured: .unmeasured
+        case .recommendLarge: .recommendLarge
+        case .tooSlow: .tooSlow
+        }
+    }
+
+    func evaluate(
+        _ payload: EngineProfilesEvaluatePayload,
+        context: EngineRequestContext
+    ) async throws -> EngineProfileEvaluation {
+        guard logicalCPUCount > 0, payload.threads <= min(PortableThreadLimit.maximum, logicalCPUCount) else {
+            throw EngineFailures.commandError(
+                .invalidRequest,
+                "スレッド数が論理 CPU 数の上限を超えています",
+                stage: .settings
+            )
+        }
+
+        // This path has no engine-side verification or RTF measurement; keep both explicitly absent.
+        let gate = initialSizeGate(
+            hardware: coreHardware(payload.hardware),
+            acquisition: coreAcquisition(payload.acquisition),
+            memoryEnvelope: .unmeasured,
+            assetsAvailable: inference != nil
+        )
+        let selection = try recommendLarge(
+            gate: gate,
+            verification: .unverified,
+            measuredRTF: nil,
+            calibration: nil
+        )
+        let evaluation = try EngineProfileEvaluation(
+            initialSize: .small,
+            recommendLarge: selection.recommendLarge,
+            reason: profileReason(selection.reason),
+            explanation: selection.explanation,
+            measuredRTF: selection.measuredRTF,
+            predictedRTF: selection.predictedRTF
+        )
+        profileEvaluation = evaluation
+        stateDidChange()
+        return evaluation
+    }
+
     private func checkModelPreparationCanContinue() throws {
         do {
             try Task.checkCancellation()
@@ -564,7 +679,17 @@ extension EngineApplicationCore: EngineModelsHandling {
     }
 
     func prepare(context: EngineRequestContext) async throws {
+        profileEvaluation = nil
+        stateDidChange()
         let settings = try requireSettings(stage: .validatingModels)
+        if case .windowsML = settings.executionProvider {
+            throw EngineFailures.commandError(
+                .invalidSettings,
+                "Windows ML 実行プロバイダーの登録は未実装のため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください",
+                stage: .validatingModels,
+                recoveryAction: .replaceSettings
+            )
+        }
         guard !isPreparingModels else {
             throw EngineFailures.commandError(
                 .busy, "モデルの準備が実行中です", stage: .validatingModels, recoveryAction: .retry

@@ -306,7 +306,7 @@ func engineTestPaths(root: URL) -> AppPaths {
 
 func engineTestSettings(decisions: Bool = false, automaticExport: Bool = false, exportPath: String? = nil) throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
         threads: 1, lowHeat: false, decisionsEnabled: decisions, automaticExport: automaticExport, exportDestinationPath: exportPath
     )
 }

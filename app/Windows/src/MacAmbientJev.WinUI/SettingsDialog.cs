@@ -62,7 +62,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private static void Add(ComboBox box, object? value, string label) => box.Items.Add(new ComboBoxItem { Content = label, Tag = value });
     private static void Select(ComboBox box, object? value) { box.SelectedIndex = -1; for (var i = 0; i < box.Items.Count; i++) if (Equals(((ComboBoxItem)box.Items[i]).Tag, value)) { box.SelectedIndex = i; return; } }
     private void BuildChoices() {
-        Add(_schema, 1L, "1"); foreach (var value in _capabilities.Sources) Add(_source, value, value switch { EngineSource.Microphone => "マイク", EngineSource.SystemAudio => "システム音声", _ => throw new InvalidOperationException($"Unknown source: {value}.") });
+        Add(_schema, 2L, "2"); foreach (var value in _capabilities.Sources) Add(_source, value, value switch { EngineSource.Microphone => "マイク", EngineSource.SystemAudio => "システム音声", _ => throw new InvalidOperationException($"Unknown source: {value}.") });
         foreach (var value in _capabilities.AsrSizes) Add(_asr, value, value switch { EngineASRSize.Large => "1.7B", EngineASRSize.Small => "0.6B", _ => throw new InvalidOperationException($"Unknown ASR size: {value}.") });
         foreach (var value in _capabilities.ExecutionProviders) Add(_provider, value, value switch { EngineExecutionProvider.Cpu => "CPU", _ => throw new InvalidOperationException($"Unknown provider: {value}.") });
         if (_capabilities.MaximumThreads is < 1 or > 4) throw new InvalidOperationException("Engine maximum thread capability is invalid.");
@@ -102,6 +102,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     }
     private EngineSource? SelectedSource() => (_source.SelectedItem as ComboBoxItem)?.Tag is EngineSource value ? value : null;
     private EngineDevice? SelectedDevice() => (_device.SelectedItem as ComboBoxItem)?.Tag as EngineDevice;
+    private EngineExecutionProvider? SelectedProvider() => (_provider.SelectedItem as ComboBoxItem)?.Tag as EngineExecutionProvider;
     private static T? Value<T>(ComboBox box) where T : struct => (box.SelectedItem as ComboBoxItem)?.Tag is T value ? value : null;
     private async void OnDraftChanged(object sender, SelectionChangedEventArgs args) {
         try { if (!_hydrating && !_disposed) await ApplyDraftAsync(); }
@@ -120,7 +121,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         EngineSettings? draft = null;
         try
         {
-            draft = SettingsViewModel.CreateDraft(Value<long>(_schema), SelectedSource(), SelectedDevice(), Value<EngineASRSize>(_asr), Value<EngineExecutionProvider>(_provider),
+            draft = SettingsViewModel.CreateDraft(Value<long>(_schema), SelectedSource(), SelectedDevice(), Value<EngineASRSize>(_asr), SelectedProvider(),
                 Value<long>(_threads), Value<bool>(_lowHeat), Value<bool>(_decisions), Value<bool>(_autoExport), export is not null, export?.Tag as string);
             if (draft is not null) _localError = null;
         }

@@ -66,6 +66,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case settingsReplace(EngineSettingsResult)
     case modelsPrepare
     case modelsInspect(EngineModelsInspection)
+    case profilesEvaluate(EngineProfileEvaluation)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -94,6 +95,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
         case .modelsInspect: .modelsInspect
+        case .profilesEvaluate: .profilesEvaluate
         case .shutdown: .shutdown
         }
     }
@@ -151,6 +153,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .modelsPrepare
         case .modelsInspect:
             return .modelsInspect(try EngineModelsInspection(from: result))
+        case .profilesEvaluate:
+            return .profilesEvaluate(try EngineProfileEvaluation(from: result))
         case .shutdown:
             _ = try EngineEmptyPayload(from: result)
             return .shutdown
@@ -186,6 +190,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try EngineEmptyPayload().encode(to: encoder)
         case let .modelsInspect(inspection):
             try inspection.encode(to: encoder)
+        case let .profilesEvaluate(evaluation):
+            try evaluation.encode(to: encoder)
         }
     }
 }

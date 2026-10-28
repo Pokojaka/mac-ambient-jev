@@ -64,6 +64,9 @@ public abstract record EngineResult
     [WireCase("models.inspect")]
     public sealed record ModelsInspect([property: WireMember("result")] EngineModelsInspection Result) : EngineResult;
 
+    [WireCase("profiles.evaluate")]
+    public sealed record ProfilesEvaluate([property: WireMember("result")] EngineProfileEvaluation Result) : EngineResult;
+
     [WireCase("shutdown")]
     public sealed record Shutdown([property: WireMember("result")] EngineEmptyPayload Result) : EngineResult;
 }

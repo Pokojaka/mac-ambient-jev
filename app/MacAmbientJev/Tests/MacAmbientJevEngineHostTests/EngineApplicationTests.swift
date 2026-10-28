@@ -17,6 +17,112 @@ import MacAmbientJevTestSupport
         return harness
     }
 
+    @Test func profilesEvaluateUsesCoreAndPublishesRevisionedState() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+
+        let before = try await h.state()
+        #expect(before.profileSetup.evaluation == nil)
+        guard case let .profilesEvaluate(evaluation) = try await h.call(
+            "profiles.evaluate",
+            payload: #"{"hardware":{"kind":"no_gpu"},"acquisition":{"kind":"unavailable"},"threads":1}"#
+        ) else {
+            Issue.record("profiles.evaluate did not return an evaluation")
+            return
+        }
+        let expected = try EngineProfileEvaluation(
+            initialSize: .small,
+            recommendLarge: false,
+            reason: .noGPU,
+            explanation: "GPU がないため、0.6B を使用します。",
+            measuredRTF: nil,
+            predictedRTF: nil
+        )
+        #expect(evaluation == expected)
+
+        let evaluated = try await h.state()
+        #expect(evaluated.profileSetup.evaluation == evaluation)
+        #expect(evaluated.revision.value > before.revision.value)
+        #expect(evaluated.resourceProtection.holdReasons.isEmpty)
+
+        guard case let .profilesEvaluate(gpuEvaluation) = try await h.call(
+            "profiles.evaluate",
+            payload: #"{"hardware":{"kind":"gpu","name":"test GPU","adapter_id":"adapter0","device_id":"gpu0","driver_version":"driver0","dedicated_vram_bytes":0},"acquisition":{"kind":"acquired","provider":"qnn"},"threads":1}"#
+        ) else {
+            Issue.record("GPU profiles.evaluate did not return an evaluation")
+            return
+        }
+        #expect(gpuEvaluation.initialSize == .small)
+        #expect(!gpuEvaluation.recommendLarge)
+        #expect(gpuEvaluation.reason == .insufficientDedicatedVRAM)
+        #expect(gpuEvaluation.explanation == "専用 VRAM が不足するため、0.6B を使用します。")
+        #expect(gpuEvaluation.measuredRTF == nil)
+        #expect(gpuEvaluation.predictedRTF == nil)
+        #expect(try await h.state().profileSetup.evaluation == gpuEvaluation)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func schemaOneRequiresReplacementAndWindowsMLPrepareFailsExplicitly() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = engineTestPaths(root: root)
+        let settingsStore = EngineSettingsStore(paths: paths, logicalCPUCount: 4)
+        let schemaOne = Data(#"{"revision":"1","settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":"cpu","threads":1,"low_heat":false,"decisions_enabled":false,"automatic_export":false,"export_destination_path":null}}"#.utf8)
+        try FileManager.default.createDirectory(at: settingsStore.root, withIntermediateDirectories: true)
+        try schemaOne.write(to: settingsStore.fileURL)
+
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        do {
+            _ = try await h.call("settings.get")
+            Issue.record("schema version 1 settings unexpectedly loaded")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .invalidSettings)
+            #expect(error.failure.recoveryAction == .replaceSettings)
+        }
+        #expect(try await h.state().setup == .settingsRequired)
+        #expect(try Data(contentsOf: settingsStore.fileURL) == schemaOne)
+
+        let windowsML = try EngineSettings(
+            schemaVersion: 2,
+            source: .microphone,
+            device: .default,
+            asrSize: .small,
+            executionProvider: .windowsML(
+                providerName: "NvTensorRtRtxExecutionProvider", deviceID: "gpu0", verificationID: "receipt0"
+            ),
+            threads: 1,
+            lowHeat: false,
+            decisionsEnabled: false,
+            automaticExport: false,
+            exportDestinationPath: nil
+        )
+        try await h.replaceSettings(windowsML, expectedRevision: nil)
+        guard case let .settingsGet(persisted) = try await h.call("settings.get") else {
+            Issue.record("settings.get did not return persisted settings")
+            return
+        }
+        #expect(persisted.revision.value == 1)
+        #expect(persisted.settings.schemaVersion == 2)
+        #expect(persisted.settings.executionProvider == windowsML.executionProvider)
+
+        do {
+            try await h.call("models.prepare")
+            Issue.record("Windows ML preparation unexpectedly succeeded")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .invalidSettings)
+            #expect(error.failure.message == "Windows ML 実行プロバイダーの登録は未実装のため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください")
+            #expect(error.failure.recoveryAction == .replaceSettings)
+        }
+        #expect(try await h.state().setup == .modelsRequired)
+        #expect(h.inference.calls.count("prepare") == 0)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
     @Test func recordStopFinalizeAndExportThroughTheComposedController() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -175,7 +281,7 @@ import MacAmbientJevTestSupport
         let h = try await prepared(root)
         try await h.call("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
         let larger = try EngineSettings(
-            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            schemaVersion: 2, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
             threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
         )
         let payload = String(decoding: try JSONEncoder().encode(EngineSettingsReplacePayload(expectedRevision: try EngineID(1), settings: larger)), as: UTF8.self)

@@ -203,11 +203,11 @@ public sealed partial class ShellStoreTests
         try { if (predicate(store.State)) result.TrySetResult(store.State); return await result.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); }
         finally { store.Changed -= handler; }
     }
-    private static EngineSettings Settings(long threads, bool lowHeat, bool decisions, bool export, string? path) => new(1, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Small, EngineExecutionProvider.Cpu, threads, lowHeat, decisions, export, path);
+    private static EngineSettings Settings(long threads, bool lowHeat, bool decisions, bool export, string? path) => new(2, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Small, new EngineExecutionProvider.Cpu(), threads, lowHeat, decisions, export, path);
     private static EngineSettingsResult SettingsResult(ulong revision, EngineSettings settings) => new(new EngineID(revision), settings);
     private static Task<EngineResult> Response(EngineSettingsResult result) => Task.FromResult<EngineResult>(new EngineResult.SettingsGet(result));
     private static EngineFailure Failure(EngineErrorCode code, string message, EngineRecoveryAction action) => new(code, message, EngineStage.Settings, null, null, EngineSeverity.Error, action, [], []);
-    private static EngineState State(EngineSetupStatus setup, ulong revision) => new(new EngineID(revision), EngineScreen.Idle, setup, EngineRecoveryStatus.Completed, null, [], [], new EnginePresentationState("Idle", EngineRecordingTone.Neutral, EnginePreparationPhase.Idle, null, null, null, [], false, null, 0, null, EngineProcessingIndicator.Idle));
+    private static EngineState State(EngineSetupStatus setup, ulong revision) => new(new EngineID(revision), EngineScreen.Idle, setup, new EngineProfileSetup(null), new EngineResourceProtection([]), EngineRecoveryStatus.Completed, null, [], [], new EnginePresentationState("Idle", EngineRecordingTone.Neutral, EnginePreparationPhase.Idle, null, null, null, [], false, null, 0, null, EngineProcessingIndicator.Idle));
 
     private sealed class Fake(EngineState initial, Task<EngineResult> settingsGet) : IEngineClient
     {
@@ -216,7 +216,7 @@ public sealed partial class ShellStoreTests
         private readonly object _gate = new(); private readonly List<EngineOutput> _events = [];
         private readonly TaskCompletionSource<EngineClientState> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _sentCount;
-        public Task<EngineResult> Hello { get; } = Task.FromResult<EngineResult>(new EngineResult.Hello(new EngineReadyPayload(new EngineCapabilities([EngineSource.Microphone], [EngineASRSize.Small], [EngineExecutionProvider.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None), initial)));
+        public Task<EngineResult> Hello { get; } = Task.FromResult<EngineResult>(new EngineResult.Hello(new EngineReadyPayload(new EngineCapabilities([EngineSource.Microphone], [EngineASRSize.Small], [new EngineExecutionProvider.Cpu()], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None), initial)));
         public Task<EngineResult> SettingsGetResponse { get; set; } = settingsGet;
         public Func<EngineCommand, EngineResult>? AutoResponse { get; set; }
         public int SentCount => Volatile.Read(ref _sentCount); public Task<EngineClientState> Completion => _completion.Task;
