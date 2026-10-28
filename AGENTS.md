@@ -19,9 +19,26 @@
 ```bash
 python3 -B scripts/check_portable_core.py
 python3 scripts/check_doc_references.py
+dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
+dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore
 swift build --package-path app/MacAmbientJev
 swift test --package-path app/MacAmbientJev
 bash scripts/verify_v1.sh
+```
+
+C# の portable libraries / tests は WinUI や Swift の build を必要とせず、macOS / Linux / Windows で実行できます（詳細は [docs/testing.md](docs/testing.md) と [docs/windows.md](docs/windows.md) を参照）。
+
+Windows 専用 WinUI shell の build / publish は Windows PowerShell 5.1（`powershell`）で実行します。`C:\builds` は事前に存在し、各 destination は未作成である必要があります。詳細と起動確認は [docs/testing.md](docs/testing.md) を参照してください。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+```
+
+Windows CI は Windows PowerShell 5.1（`powershell`）を使い、`pwsh` は使いません。[`scripts/test-windows.ps1`](scripts/test-windows.ps1) は Swift build / tests と Engine.Tests（実 engine smoke test と C#→Swift harness）を実行します。portable solution tests は別の CI job です（[詳細](docs/testing.md#windows-c-process-client-tests)）。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1
 ```
 
 Linux 評価ツールのテストは作業ディレクトリを tools 内の linux-audio にして実行する。

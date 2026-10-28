@@ -21,6 +21,8 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/**'
+      - 'app/Windows/**'
+      - 'global.json'
       - 'scripts/generate_windows_audio_fixtures.py'
       - 'scripts/fetch_onnxruntime.py'
       - 'scripts/test_fetch_onnxruntime.py'
@@ -48,6 +50,9 @@ on:
       - 'scripts/test_export_clause_tagger_onnx.py'
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
+      - 'scripts/stage-windows-engine.ps1'
+      - 'scripts/stage-windows-app.ps1'
+      - 'scripts/build-windows-shell.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
       - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
@@ -84,6 +89,8 @@ on:
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/**'
+      - 'app/Windows/**'
+      - 'global.json'
       - 'scripts/generate_windows_audio_fixtures.py'
       - 'scripts/fetch_onnxruntime.py'
       - 'scripts/test_fetch_onnxruntime.py'
@@ -111,6 +118,9 @@ on:
       - 'scripts/test_export_clause_tagger_onnx.py'
       - 'tools/clause-tagger-export/**'
       - 'scripts/test-windows.ps1'
+      - 'scripts/stage-windows-engine.ps1'
+      - 'scripts/stage-windows-app.ps1'
+      - 'scripts/build-windows-shell.ps1'
       - 'scripts/fetch_qwen3_asr_model.py'
       - 'scripts/test_fetch_qwen3_asr_model.py'
       - 'app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/**'
@@ -142,6 +152,102 @@ permissions:
   contents: read
 
 jobs:
+  dotnet-portable:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            shell: bash
+          - os: macos-15
+            shell: bash
+          - os: windows-2025
+            shell: powershell
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+      - name: .NET information
+        run: dotnet --info
+      - name: Restore portable solution
+        run: dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
+      - name: Test portable solution
+        run: dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore --minimum-expected-tests 2 --results-directory .build/dotnet-test-results --report-xunit-trx
+      - name: Upload .NET test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results-${{ matrix.os }}
+          path: .build/dotnet-test-results/**/*.trx
+          if-no-files-found: error
+
+  windows-shell:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+      - name: .NET information
+        run: |
+          dotnet --info
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet --info failed' }
+      - name: Validate Windows runner, SDK, and temporary directory
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PROCESSOR_ARCHITECTURE -cne 'AMD64') { throw "Expected PROCESSOR_ARCHITECTURE AMD64, found '$env:PROCESSOR_ARCHITECTURE'." }
+
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP must be nonempty' }
+          if ($env:RUNNER_TEMP -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') { throw 'RUNNER_TEMP must be a fully qualified Windows path' }
+          if (-not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw 'RUNNER_TEMP must be an existing directory' }
+
+          # WinUI 2.5.1 packaging requirements: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10'
+          $requiredSdkFiles = @(
+            (Join-Path $sdkRoot 'Include/10.0.26100.0/um/Windows.h'),
+            (Join-Path $sdkRoot 'Lib/10.0.26100.0/um/x64/kernel32.lib'),
+            (Join-Path $sdkRoot 'Lib/10.0.26100.0/um/arm64/kernel32.lib'),
+            (Join-Path $sdkRoot 'bin/10.0.26100.0/x64/makepri.exe'),
+            (Join-Path $sdkRoot 'bin/10.0.26100.0/x64/rc.exe')
+          )
+          foreach ($sdkFile in $requiredSdkFiles) {
+            if (-not (Test-Path -LiteralPath $sdkFile -PathType Leaf)) {
+              throw "Required Windows SDK 10.0.26100.0 file was not found: $sdkFile"
+            }
+          }
+      - name: Build Windows shell (x64)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-x64')
+          if ($LASTEXITCODE -ne 0) { throw "Windows shell x64 build failed with exit code $LASTEXITCODE" }
+      - name: Build Windows shell (ARM64)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-arm64')
+          if ($LASTEXITCODE -ne 0) { throw "Windows shell ARM64 build failed with exit code $LASTEXITCODE" }
+      - name: Upload Windows shell (x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shell-x64
+          path: '${{ runner.temp }}/windows-shell-x64/'
+          if-no-files-found: error
+      - name: Upload Windows shell (ARM64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-shell-arm64
+          path: '${{ runner.temp }}/windows-shell-arm64/'
+          if-no-files-found: error
+
   linux:
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name != 'workflow_dispatch' || inputs.run_linux)
     runs-on: ubuntu-latest
@@ -248,33 +354,149 @@ jobs:
           if-no-files-found: warn
 
   windows:
+    name: Windows (${{ matrix.architecture }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: windows-2022
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: windows-2022
+            build_arch: amd64
+            python_architecture: x64
+            expected_arch: x86_64
+            expected_triple: x86_64-unknown-windows-msvc
+            expected_runner_arch: AMD64
+            payload_artifact: windows-engine-x64
+            test_event_artifact: test-events-windows-x64
+          - architecture: ARM64
+            runner: windows-11-arm
+            build_arch: arm64
+            python_architecture: arm64
+            expected_arch: aarch64
+            expected_triple: aarch64-unknown-windows-msvc
+            expected_runner_arch: ARM64
+            payload_artifact: windows-engine-arm64
+            test_event_artifact: test-events-windows-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+          architecture: ${{ matrix.python_architecture }}
+      - name: .NET information
+        run: |
+          dotnet --info
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet --info failed' }
+      # VS 2026 ARM64 component ID and mapping: https://raw.githubusercontent.com/MicrosoftDocs/visualstudio-docs/main/docs/install/includes/vs-2026/workload-component-id-vs-enterprise.md
+      # Installer command-line options and reboot exit code 3010: https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022
+      - name: Install MSVC 14.44 component on ARM64
+        if: matrix.architecture == 'ARM64'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installerDirectory = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'
+          $vswhere = Join-Path $installerDirectory 'vswhere.exe'
+          $setup = Join-Path $installerDirectory 'setup.exe'
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw "Required vswhere.exe was not found at $vswhere" }
+          if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "Required Visual Studio setup.exe was not found at $setup" }
+
+          $installationJson = (& $vswhere -latest -products '*' -version '[18.0,19.0)' -format json -utf8) -join [Environment]::NewLine
+          $vswhereExitCode = $LASTEXITCODE
+          if ($vswhereExitCode -ne 0) { throw "vswhere installation discovery failed with exit code $vswhereExitCode" }
+          $installationData = $installationJson | ConvertFrom-Json
+          if ($null -eq $installationData) { $installations = @() } else { $installations = @($installationData) }
+          if ($installations.Count -ne 1) { throw "Expected exactly one Visual Studio 2026 installation, found $($installations.Count)" }
+          $installation = $installations[0]
+          $installationPath = [string]$installation.installationPath
+          $channelId = [string]$installation.channelId
+          if ([string]::IsNullOrWhiteSpace($installationPath)) { throw 'Visual Studio installationPath must be nonempty' }
+          if ([string]::IsNullOrWhiteSpace($channelId)) { throw 'Visual Studio channelId must be nonempty' }
+          if (-not (Test-Path -LiteralPath $installationPath -PathType Container)) { throw "Visual Studio installation directory does not exist: $installationPath" }
+
+          $component = 'Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64'
+          $arguments = 'modify --installPath "{0}" --channelId "{1}" --add {2} --quiet --norestart --nocache' -f $installationPath, $channelId, $component
+          $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -eq 3010) { throw 'Installing MSVC 14.44 requires a reboot (exit code 3010); the hosted job cannot continue.' }
+          if ($process.ExitCode -ne 0) { throw "Visual Studio component installation failed with exit code $($process.ExitCode)" }
+
+          $verifiedPathOutput = & $vswhere -latest -products '*' -version '[18.0,19.0)' -requires $component -property installationPath
+          $vswhereExitCode = $LASTEXITCODE
+          if ($vswhereExitCode -ne 0) { throw "vswhere component verification failed with exit code $vswhereExitCode" }
+          $verifiedPath = ($verifiedPathOutput -join [Environment]::NewLine).Trim()
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($verifiedPath, $installationPath)) {
+            throw "MSVC 14.44 component verification did not return the selected installation path. Expected '$installationPath', found '$verifiedPath'."
+          }
+      # Pinned action inputs and environment exports: https://raw.githubusercontent.com/compnerd/gha-setup-vsdevenv/452f99effa381b81c025ccfbdccaca509bff1b29/action.yml
+      - name: Select MSVC 14.44 environment on ARM64
+        if: matrix.architecture == 'ARM64'
+        uses: compnerd/gha-setup-vsdevenv@452f99effa381b81c025ccfbdccaca509bff1b29
+        with:
+          arch: arm64
+          host_arch: arm64
+          toolset_version: '14.44'
+          components: Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64
       # Its internal cache switch controls restore and save together with no save-only condition, so it can still save on PRs.
+      # Pinned Swift 6.2 action environment behavior: https://raw.githubusercontent.com/compnerd/gha-setup-swift/775d3f4111c5be58a0f62f2efdd353bb8fac15c7/action.yml
       - uses: compnerd/gha-setup-swift@775d3f4111c5be58a0f62f2efdd353bb8fac15c7
         with:
           swift-version: swift-6.2-release
           swift-build: 6.2-RELEASE
+          build_arch: ${{ matrix.build_arch }}
           cache: true
+      - name: Verify active ARM64 MSVC 14.44 toolchain
+        if: matrix.architecture == 'ARM64'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:VCToolsInstallDir)) { throw 'VCToolsInstallDir must be set by the ARM64 Visual Studio environment.' }
+          $toolsDirectory = $env:VCToolsInstallDir.TrimEnd([char[]]@('\', '/'))
+          if ($toolsDirectory -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') { throw "VCToolsInstallDir must be an absolute Windows path; found '$toolsDirectory'." }
+          if (-not (Test-Path -LiteralPath $toolsDirectory -PathType Container)) { throw "VCToolsInstallDir is not an existing directory: '$toolsDirectory'." }
+          $normalizedToolsDirectory = [System.IO.Path]::GetFullPath($toolsDirectory).TrimEnd([char[]]@('\', '/'))
+          if ($normalizedToolsDirectory -notmatch '\\VC\\Tools\\MSVC\\14\.44\.[0-9.]+$') { throw "VCToolsInstallDir must resolve to a VC\Tools\MSVC\14.44.<version> directory; found '$normalizedToolsDirectory'." }
+          if ($env:VCToolsVersion -notmatch '^14\.44\.') { throw "VCToolsVersion must begin with 14.44.; found '$env:VCToolsVersion'." }
+          $directoryVersion = Split-Path -Leaf $normalizedToolsDirectory
+          if ($env:VCToolsVersion -cne $directoryVersion) { throw "VCToolsVersion '$env:VCToolsVersion' does not match VCToolsInstallDir leaf '$directoryVersion'." }
+          Write-Host "VCToolsInstallDir=$normalizedToolsDirectory"
+          Write-Host "VCToolsVersion=$env:VCToolsVersion"
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          architecture: ${{ matrix.python_architecture }}
       - name: Swift toolchain fingerprint
         id: toolchain
         run: |
           @'
           import hashlib
+          import json
           import os
           import subprocess
 
+          expected_arch = "${{ matrix.expected_arch }}"
+          expected_triple = "${{ matrix.expected_triple }}"
+          expected_runner_arch = "${{ matrix.expected_runner_arch }}"
+          processor_architecture = os.environ["PROCESSOR_ARCHITECTURE"]
+          if processor_architecture != expected_runner_arch:
+              raise RuntimeError(f"Expected native {expected_runner_arch} runner, found {processor_architecture!r}")
+
           result = subprocess.run(["swift", "--version"], check=True, capture_output=True)
           print(result.stdout.decode() + result.stderr.decode(), end="")
+          target_result = subprocess.run(["swift", "-print-target-info"], check=True, capture_output=True)
+          target_info = json.loads(target_result.stdout)
+          target = target_info["target"]
+          compiler_version = target_info["compilerVersion"]
+          if target["arch"] != expected_arch or target["triple"] != expected_triple:
+              raise RuntimeError(f"Unexpected Swift target: {target!r}")
+          if compiler_version != "Swift version 6.2 (swift-6.2-RELEASE)":
+              raise RuntimeError(f"Unexpected Swift compiler version: {compiler_version!r}")
+
+          print(f"Swift target architecture: {target['arch']}; triple: {target['triple']}")
           digest = hashlib.sha256(result.stdout + result.stderr).hexdigest()
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={digest}\n")
@@ -304,11 +526,12 @@ jobs:
         run: |
           python -B scripts/test_export_clause_tagger_onnx.py
           if ($LASTEXITCODE -ne 0) { throw 'Clause tagger exporter helper tests failed' }
+      # The test-only Win64 executable intentionally runs under Windows ARM64 x64 emulation.
       - name: Install FLAC
         run: |
           $ErrorActionPreference = 'Stop'
           $archive = Join-Path $env:RUNNER_TEMP 'flac-1.5.0-win.zip'
-          Invoke-WebRequest https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip -OutFile $archive
+          Invoke-WebRequest -UseBasicParsing https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip -OutFile $archive
           if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ne '53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde') {
             throw 'FLAC 1.5.0 archive SHA-256 checksum mismatch.'
           }
@@ -325,7 +548,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP must be nonempty' }
-          if (-not [System.IO.Path]::IsPathFullyQualified($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP must be an absolute path' }
+          if ($env:RUNNER_TEMP -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') { throw 'RUNNER_TEMP must be a fully qualified Windows path' }
           if (-not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw 'RUNNER_TEMP must be an existing directory' }
           $env:TEMP = $env:RUNNER_TEMP
           $env:TMP = $env:RUNNER_TEMP
@@ -336,7 +559,18 @@ jobs:
           Write-Output "TMPDIR=$env:TMPDIR"
           python -c "import os,pathlib,sys,tempfile; expected=pathlib.Path(os.environ['RUNNER_TEMP']); actual=pathlib.Path(tempfile.gettempdir()); print(f'tempfile.gettempdir()={actual}'); sys.exit(0 if actual.resolve() == expected.resolve() else 1)"
           if ($LASTEXITCODE -ne 0) { throw 'Python tempfile.gettempdir() does not resolve to RUNNER_TEMP' }
-          ./scripts/test-windows.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows test suite failed' }
+      - name: Stage release Windows engine payload
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-engine.ps1 -Architecture '${{ matrix.architecture }}' -Destination (Join-Path $env:RUNNER_TEMP '${{ matrix.payload_artifact }}')
+          if ($LASTEXITCODE -ne 0) { throw "Windows ${{ matrix.architecture }} engine staging failed" }
+      - name: Upload Windows engine payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.payload_artifact }}
+          path: '${{ runner.temp }}/${{ matrix.payload_artifact }}/'
+          if-no-files-found: error
       - name: Save model directories
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.model-directories.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -358,7 +592,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-events-windows
+          name: ${{ matrix.test_event_artifact }}
           path: .build/test-events/*.jsonl
           if-no-files-found: warn
       - name: Report Windows SwiftPM build size

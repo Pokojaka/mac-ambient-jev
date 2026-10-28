@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/MacAmbientJev.EngineClient/MacAmbientJev.EngineClient.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NET.Test.Sdk">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../../MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson"
+          Link="Fixtures/wire-v1.ndjson"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'MacAmbientJev.WinUI'">
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)/obj/**;$(MSBuildProjectDirectory)/bin/**</DefaultItemExcludes>
+    <BaseIntermediateOutputPath>$(MSBuildProjectDirectory)/obj/$(Platform)/</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <BaseOutputPath>$(MSBuildProjectDirectory)/bin/$(Platform)/</BaseOutputPath>
+    <RuntimeIdentifier Condition="'$(WindowsShellRuntimeIdentifier)' != ''">$(WindowsShellRuntimeIdentifier)</RuntimeIdentifier>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' != 'MacAmbientJev.WinUI'">
+    <RuntimeFrameworkVersion>10.0.13</RuntimeFrameworkVersion>
+    <RollForward>Disable</RollForward>
+  </PropertyGroup>
+</Project>

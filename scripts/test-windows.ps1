@@ -63,6 +63,23 @@ Invoke-Step 'Qwen3-ASR token reference generator self-test' { python -B scripts/
 Invoke-Step 'Swift build EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' { swift build --package-path app/MacAmbientJev }
 Invoke-Step 'Swift build Windows MacAmbientJevEngine executable' { swift build --package-path app/MacAmbientJev --product MacAmbientJevEngine }
 
+$engineArchitecture = switch -CaseSensitive ($env:PROCESSOR_ARCHITECTURE) {
+    'AMD64' { 'x64' }
+    'ARM64' { 'ARM64' }
+    default { throw "Unsupported or missing PROCESSOR_ARCHITECTURE: '$env:PROCESSOR_ARCHITECTURE'" }
+}
+
+$engineStageDestination = Join-Path -Path $env:TEMP -ChildPath "windows-engine-smoke-$([Guid]::NewGuid().ToString('N'))"
+Invoke-Step 'Stage native release Windows engine for real-engine smoke' {
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-engine.ps1 -Architecture $engineArchitecture -Destination $engineStageDestination
+}
+$engineExecutablePath = Join-Path -Path $engineStageDestination -ChildPath 'MacAmbientJevEngine.exe'
+if (-not (Test-Path -LiteralPath $engineExecutablePath -PathType Leaf)) {
+    throw "Staged Windows engine executable is missing: $engineExecutablePath"
+}
+Invoke-Step 'Restore Windows engine real-engine tests' {
+    dotnet restore app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj --locked-mode
+}
 Write-Host '==> resolve Swift debug bin path'
 $binPathLines = @(& swift build --package-path app/MacAmbientJev --show-bin-path)
 $binPathExitCode = $LASTEXITCODE
@@ -79,6 +96,14 @@ if (-not (Test-Path -LiteralPath $runtimeDll -PathType Leaf)) { throw "ONNX Runt
 $destinationDll = Join-Path $binDir 'onnxruntime.dll'
 Copy-Item -LiteralPath $runtimeDll -Destination $destinationDll -Force -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $destinationDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied to the Swift debug bin directory: $destinationDll" }
+
+$harnessExecutablePath = Join-Path -Path $binDir -ChildPath 'MacAmbientJevEngineHarness.exe'
+if (-not (Test-Path -LiteralPath $harnessExecutablePath -PathType Leaf)) {
+    throw "Swift deterministic engine harness executable is missing: $harnessExecutablePath"
+}
+Invoke-Step 'Test Engine.Tests with staged native engine and Swift deterministic harness' {
+    dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj -c Release --no-restore --minimum-expected-tests 4 --environment "MAC_AMBIENT_JEV_TEST_ENGINE_PATH=$engineExecutablePath" --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=$harnessExecutablePath"
+}
 
 $swiftExecutable = (Get-Command swift -CommandType Application -ErrorAction Stop).Source
 $swiftToolchainDirectory = Split-Path -Parent $swiftExecutable

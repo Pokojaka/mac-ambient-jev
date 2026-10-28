@@ -48,6 +48,19 @@ Windows の OS file adapter は [CWindowsSession.c](../app/MacAmbientJev/Sources
 
 WindowsSupport の timeline builder は PortableRuntime の [`PortableImportedAudioTimelineBuilder`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableImportedAudioTimelineBuilder.swift) から使われます。TranscribeFile は [`PortableAudioFileImporter`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/PortableAudioFileImporter.swift) を使い、ProcessRecording は同 builder を Pipeline の共有 session finalization に注入します。WindowsSupport は import audio adapter に加えて WASAPI live-capture adapter を提供し、`MacAmbientJevEngine` がそれを共通 Pipeline に接続します。VAD・ASR・話者分離の統合は WindowsSupport ではなく PortableRuntime と Pipeline が担います。WindowsSupport は UI を提供しません。
 
+### Windows C# shell
+
+| project | role / direct dependencies |
+| --- | --- |
+| [`MacAmbientJev.Protocol`](../app/Windows/src/MacAmbientJev.Protocol/MacAmbientJev.Protocol.csproj) | strict NDJSON v1 wire DTO / codec / framing。依存なし |
+| [`MacAmbientJev.EngineClient`](../app/Windows/src/MacAmbientJev.EngineClient/MacAmbientJev.EngineClient.csproj) | child process、request correlation、lifecycle。Protocol |
+| [`MacAmbientJev.Presentation`](../app/Windows/src/MacAmbientJev.Presentation/MacAmbientJev.Presentation.csproj) | store / reducer、immutable snapshot、view model。Protocol + EngineClient |
+| [`MacAmbientJev.WinUI`](../app/Windows/src/MacAmbientJev.WinUI/MacAmbientJev.WinUI.csproj) | XAML windows と OS UI wiring。Presentation + EngineClient（Protocol は推移依存） |
+
+最初の3 project は BCL-only の `net10.0` portable libraries、WinUI は `net10.0-windows10.0.26100.0` の Windows-only project です。C# shell は別 process の Swift `MacAmbientJevEngine.exe` と stdin/stdout の NDJSON v1 で通信し、stderr は診断用に分離します。
+
+録音・処理・設定永続化・書き出しは Swift が所有し、C# は engine の transcript 本文を変更せず表示します。C# の OS adapter は UI dispatcher、file/folder picker、folder reveal、icon と engine launch path に限り、音声・保存・処理の実装を持ちません。詳細は [portable libraries](windows.md#c-portable-libraries) と [WinUI shell](windows.md#winui-shell) を参照してください。
+
 ### Linux ターゲット
 
 | ターゲット | 種類 | 責務・直接依存 |

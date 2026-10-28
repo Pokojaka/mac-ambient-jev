@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MacAmbientJev.EngineClient/MacAmbientJev.EngineClient.csproj" />
+    <Project Path="src/MacAmbientJev.Presentation/MacAmbientJev.Presentation.csproj" />
+    <Project Path="src/MacAmbientJev.Protocol/MacAmbientJev.Protocol.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MacAmbientJev.EngineClient.Tests/MacAmbientJev.EngineClient.Tests.csproj" />
+    <Project Path="tests/MacAmbientJev.Presentation.Tests/MacAmbientJev.Presentation.Tests.csproj" />
+    <Project Path="tests/MacAmbientJev.Protocol.Tests/MacAmbientJev.Protocol.Tests.csproj" />
+  </Folder>
+</Solution>

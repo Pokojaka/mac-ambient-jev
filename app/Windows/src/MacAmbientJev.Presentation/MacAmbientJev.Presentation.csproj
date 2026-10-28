@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../MacAmbientJev.Protocol/MacAmbientJev.Protocol.csproj" />
+    <ProjectReference Include="../MacAmbientJev.EngineClient/MacAmbientJev.EngineClient.csproj" />
+  </ItemGroup>
+</Project>
