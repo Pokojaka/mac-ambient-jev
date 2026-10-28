@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 import MacAmbientJevONNX
 
 internal struct Qwen3ASRTranscription: Sendable, Equatable {
@@ -28,7 +29,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
     private let tokenizer: Qwen3ASRTokenDecoder
     private let frontend: Qwen3ASRMelFrontend
 
-    init(modelDirectory: URL, size: Qwen3ASRModelSize, intraOpThreads: Int) throws {
+    init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int) throws {
         guard intraOpThreads > 0, Int32(exactly: intraOpThreads) != nil else {
             throw Qwen3ASRModelError.invalid(
                 "ONNX Runtime intra-op thread count must be a positive Int32: \(intraOpThreads)"
@@ -165,7 +166,7 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         graph: Qwen3ASRGraph,
         inputs: [ONNXTensorMetadata],
         outputs: [ONNXTensorMetadata],
-        size: Qwen3ASRModelSize
+        size: ASRModelSize
     ) throws {
         let expected = metadata(for: graph, hiddenSize: Int64(size.hiddenSize))
         try validateMetadataDirection(graph: graph, direction: "input", expected: expected.inputs, actual: inputs)

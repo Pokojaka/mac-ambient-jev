@@ -8,7 +8,7 @@ internal struct TranscribeFileArguments: Sendable {
     let inputURL: URL
     let sileroModelURL: URL
     let asrModelDirectory: URL
-    let asrModelSize: Qwen3ASRModelSize
+    let asrModelSize: ASRModelSize
     let threads: Int
     let outputURL: URL
     let artifactOutputURL: URL
@@ -53,7 +53,7 @@ internal struct TranscribeFileArguments: Sendable {
         }
 
         guard let sizeValue = values["--asr-model-size"],
-              let size = Qwen3ASRModelSize(rawValue: sizeValue) else {
+              let size = ASRModelSize(rawValue: sizeValue) else {
             throw TranscribeFileCommandError.invalidArguments("ASRモデルサイズは 0.6b または 1.7b で指定してください。")
         }
         guard let threadValue = values["--threads"],

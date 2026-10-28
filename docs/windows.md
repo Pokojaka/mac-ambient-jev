@@ -720,7 +720,7 @@ PortableRuntime の純粋 Swift embedding・生成・text helper は、重みな
 
 ### ONNX Qwen3-ASR engine
 
-[`ONNXQwen3ASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXQwen3ASREngine.swift) は PortableRuntime の公開 `ASREngine` actor です。公開 initializer は `init(modelDirectory:size:intraOpThreads:)` で、モデル directory、size、各 ONNX session の intra-op thread 数をすべて明示します（default 引数はありません）。公開 `Qwen3ASRModelSize.small` の raw value は `0.6b`、hidden size は1024、`.large` の raw value は `1.7b`、hidden size は2048です。
+[`ONNXQwen3ASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXQwen3ASREngine.swift) は PortableRuntime の公開 `ASREngine` actor です。公開 initializer は `init(modelDirectory:size:intraOpThreads:)` で、モデル directory、size、各 ONNX session の intra-op thread 数をすべて明示します（default 引数はありません）。size は Core の [`ASRModelSize.small` / `ASRModelSize.large`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRProfile.swift) で、raw value はそれぞれ `0.6b` / `1.7b` です。`hiddenSize` の1024 / 2048は Core 定数ではなく、[`Qwen3ASRModelManifest.swift`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Qwen3ASR/Qwen3ASRModelManifest.swift) が runtime manifest から `ASRModelSize` に加える拡張値です。
 
 [`qwen3_asr_models.json`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) は Swift engine と [`fetch_qwen3_asr_model.py`](../scripts/fetch_qwen3_asr_model.py) が共有する唯一のモデル情報源です。2サイズそれぞれの Hugging Face repository、pinned commit、hidden size、6ファイル名・正確な byte 数・SHA-256 を定義し、各ファイルには `encoder`、`decoder_init`、`decoder_step`、`decoder_weights`、`embed_tokens`、`tokenizer` のいずれかを必須かつ一意な `role` として割り当てます。Swift engine と fetcher は配列順ではなく `role` でファイルを参照します。`role` の欠落、重複、未対応値、必須 role の不在は不正です。同梱 manifest の不正は Swift engine が package 設定の欠陥として `fatalError` にし、fetcher はネットワーク取得前に ValueError で失敗します。fetcher は同じ resource を読んで取得・hash 検証に使います。`prepare()` は外部 model directory と6つすべての通常ファイルについて readable であることと manifest の正確な byte 数を検証しますが、起動時に SHA-256 は計算しません。モデルファイルや directory の不備は `prepare()` が throw します。
 
@@ -742,6 +742,21 @@ provenance は `engine = onnxruntime-qwen3-asr`、`model = <repository>@<commit>
 | `mel_variant` | `whisper-slaney-128-nfft400-hop160-reflect-global-log10` |
 | `max_new_tokens` | `448` |
 | `no_repeat_ngram` | `3 when input_seconds > 15; disabled otherwise` |
+
+### Core の初期サイズ判定
+
+Core の [`initialSizeGate(hardware:acquisition:memoryEnvelope:assetsAvailable:)` / `recommendLarge(gate:verification:measuredRTF:calibration:)`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSizeSelection.swift) は呼び出し可能な純粋選択関数です。前者は `ASRInitialSizeGate` を返し、後者はその gate を必須入力とするため、`.verified` でも gate が拒否した offer は開き直しません（`.failed` は CPU 選択を明示する理由として返します）。出力 `ASRSizeSelection` の `size` は常に `.small`、`recommendLarge` は1.7Bの推奨 flag で、reason、日本語 explanation、nullable な `measuredRTF` / `predictedRTF` を持ちます。
+
+| 条件 | 結果 |
+| --- | --- |
+| GPU なし／GPU 情報照会失敗、EP acquisition が unavailable / failed、専用 VRAM が不明・0・閾値未満、または測定 RAM 不足 | `.small`、offer なし |
+| gate の他条件を満たすが `assetsAvailable == false` | `.small`、`awaitingAssets` |
+| verification が `.failed`（gate の合否にかかわらず EP unusable） | `.small`、`verificationFailed`。説明は CPU を明示選択するよう示し、自動では選びません |
+| memory envelope が `.unmeasured`、ratio calibration がない、または provider coverage が合わない | `.small`、`uncalibrated` |
+| verified、memory 十分、provider を coverage する calibration があり、測定した small の RTF × 上限比率が `<= 0.70` | `.small` のまま `recommendLarge == true` として1.7Bを offer |
+| それ以外（verification 未完了、RTF 未計測、予測が閾値超過、その他の gate 拒否） | `.small`、offer なし。reason と nullable な測定値を返す |
+
+`hardware` は `.noGPU` と `.queryFailed`、専用 VRAM の実測 `0` と不明 `nil`（shared RAM は専用 VRAM ではない）、memory の `.unmeasured` と測定済み RAM `0` を区別します。EP acquisition は verification を意味せず、GPU 名・adapter・device・driver は不透明値で性能名 lookup に使いません。公開関数は `assetsAvailable` と明示された測定 memory envelope の閾値を受け取り、bytes を推測しません。calibration は任意の明示 `ASRRatioCalibration`（id、provider coverage、有限かつ正の `ratioUpperBound`）で、既定比率はありません。供給する RTF は有限かつ正でなければならず、`nil` は未計測のまま、`0` は無効です。不正 RTF / calibration / prediction は `ASRSelectionError` を throw します。calibration 不在・coverage 不一致は uncalibrated となり、CPU-only calibration は GPU offer を許可しません。`0.70` は暫定閾値で、計測上の保証ではありません。この関数は resource admission を行いません。この判定は Core の純粋関数で、Windows engine の設定・EP 登録や UI の自動選択は行いません。
 
 ### 実モデルを使う opt-in test
 

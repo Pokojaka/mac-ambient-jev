@@ -16,9 +16,9 @@ internal enum ONNXQwen3ASREngineError: Error, LocalizedError, Equatable {
 public actor ONNXQwen3ASREngine: ASREngine {
     private nonisolated let provenanceValue: RunProvenance
     private let modelDirectory: URL
-    private let size: Qwen3ASRModelSize
+    private let size: ASRModelSize
     private let intraOpThreads: Int
-    private let loadModel: @Sendable (URL, Qwen3ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
+    private let loadModel: @Sendable (URL, ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
 
     private var model: (any Qwen3ASRTranscribingModel)?
     private var preparationTask: Task<Void, Error>?
@@ -31,7 +31,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
         provenanceValue
     }
 
-    public init(modelDirectory: URL, size: Qwen3ASRModelSize, intraOpThreads: Int) {
+    public init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int) {
         self.modelDirectory = modelDirectory
         self.size = size
         self.intraOpThreads = intraOpThreads
@@ -49,9 +49,9 @@ public actor ONNXQwen3ASREngine: ASREngine {
 
     internal init(
         modelDirectory: URL,
-        size: Qwen3ASRModelSize,
+        size: ASRModelSize,
         intraOpThreads: Int,
-        loadModel: @escaping @Sendable (URL, Qwen3ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
+        loadModel: @escaping @Sendable (URL, ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
     ) {
         self.modelDirectory = modelDirectory
         self.size = size
@@ -156,7 +156,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
     }
 
     private nonisolated static func makeProvenance(
-        size: Qwen3ASRModelSize,
+        size: ASRModelSize,
         intraOpThreads: Int
     ) -> RunProvenance {
         RunProvenance(

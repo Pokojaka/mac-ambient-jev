@@ -8,7 +8,7 @@ import Testing
 struct ONNXQwen3ASREngineTests {
     @Test
     func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() {
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             for intraOpThreads in [2, 7] {
                 let engine = ONNXQwen3ASREngine(
                     modelDirectory: URL(fileURLWithPath: "/not-loaded/\(size.rawValue)"),
@@ -35,7 +35,7 @@ struct ONNXQwen3ASREngineTests {
 
         let provenance = engine.provenance
         #expect(provenance.engine == "onnxruntime-qwen3-asr")
-        #expect(provenance.model == "\(Qwen3ASRModelSize.large.repository)@\(Qwen3ASRModelSize.large.commit)")
+        #expect(provenance.model == "\(ASRModelSize.large.repository)@\(ASRModelSize.large.commit)")
         #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
         #expect(provenance.configuration == expectedConfiguration(intraOpThreads: 7))
     }
@@ -403,7 +403,7 @@ struct ONNXQwen3ASREngineTests {
         let emptyDirectory = directory.appendingPathComponent("empty", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyDirectory, withIntermediateDirectories: false)
         verifyResolvedTemporaryPath(emptyDirectory)
-        let emptyFilePath = emptyDirectory.appendingPathComponent(Qwen3ASRModelSize.small.files[0].name).path
+        let emptyFilePath = emptyDirectory.appendingPathComponent(ASRModelSize.small.files[0].name).path
         let emptyMessage = await preparationError(
             for: ONNXQwen3ASREngine(modelDirectory: emptyDirectory, size: .small, intraOpThreads: 1)
         )
@@ -412,7 +412,7 @@ struct ONNXQwen3ASREngineTests {
         let truncatedDirectory = directory.appendingPathComponent("truncated", isDirectory: true)
         try FileManager.default.createDirectory(at: truncatedDirectory, withIntermediateDirectories: false)
         verifyResolvedTemporaryPath(truncatedDirectory)
-        let encoder = Qwen3ASRModelSize.small.files[0]
+        let encoder = ASRModelSize.small.files[0]
         let encoderURL = truncatedDirectory.appendingPathComponent(encoder.name)
         try Data([0]).write(to: encoderURL)
         let truncatedMessage = await preparationError(
@@ -459,7 +459,7 @@ struct ONNXQwen3ASREngineTests {
 
 private struct ModelLoadArguments: Sendable, Equatable {
     let directory: URL
-    let size: Qwen3ASRModelSize
+    let size: ASRModelSize
     let intraOpThreads: Int
 }
 
