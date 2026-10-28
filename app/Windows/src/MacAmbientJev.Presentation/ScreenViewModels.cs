@@ -26,6 +26,7 @@ public sealed partial class LiveViewModel : ScreenViewModel
             var recording = Context.Store.State.Engine?.Recording ?? throw new InvalidOperationException("There is no authoritative recording session to stop.");
             return Context.Store.ExecuteAsync(new EngineCommand.RecordingStop(new EngineSessionPayload(recording.SessionID)));
         });
+        ImportAudio = Command(CanImportAudio, ImportAudioAsync);
         RefreshDevices = Command(CanRefreshDevices, _ => Context.Store.ReloadDevicesAsync(
             _selectedSource ?? throw new InvalidOperationException("A source must be selected before loading devices.")));
         ReturnToLatest = Command(_ =>
@@ -123,9 +124,22 @@ public sealed partial class LiveViewModel : ScreenViewModel
     public ShellTranscriptState Transcript => Snapshot.Transcript;
     public EngineRecordingState? Recording => Snapshot.Engine?.Recording;
     public string StartLabel => "録音を開始"; public string StopLabel => "録音を停止";
+    public string ImportLabel => "音声ファイルを読み込む"; public bool IsImporting => Snapshot.IsPending(EngineCommandName.SessionImport);
+    public string? ImportDisabledReason
+    {
+        get
+        {
+            var state = Snapshot;
+            return state.Phase != ShellPhase.Running ? "エンジンの起動後に音声ファイルを読み込めます。" :
+                state.Engine is null ? "エンジンの状態を確認してから音声ファイルを読み込んでください。" :
+                state.Engine.Recording is not null ? "録音中は音声ファイルを読み込めません。" :
+                state.IsPending(EngineCommandName.RecordingStart) || state.IsPending(EngineCommandName.RecordingStop) ? "録音の開始・停止中は音声ファイルを読み込めません。" :
+                state.IsPending(EngineCommandName.SessionImport) || ImportAudio.Execution is { IsCompleted: false } ? "音声ファイルの読み込み中です。" : null;
+        }
+    }
     public string ReturnToLatestLabel => "最新へ戻る"; public string EmptyTitle => "文字起こしはまだありません";
     public string EmptyDescription => "録音を開始するか、音声ファイルを読み込むとここに文字起こしが表示されます。";
-    public ShellCommand StartRecording { get; } public ShellCommand StopRecording { get; }
+    public ShellCommand StartRecording { get; } public ShellCommand StopRecording { get; } public ShellCommand ImportAudio { get; }
     public ShellCommand RefreshDevices { get; } public ShellCommand ReturnToLatest { get; } public ShellCommand ReadHistory { get; }
     public Task UserScrolledAsync() => Context.Store.UserScrolledAsync();
 
@@ -167,6 +181,15 @@ public sealed partial class LiveViewModel : ScreenViewModel
         EngineSource.SystemAudio => "システム音声",
         _ => throw new InvalidOperationException($"Unknown engine source: {source}.")
     };
+
+    private bool CanImportAudio(object? parameter) => parameter is IPathPicker && ImportDisabledReason is null;
+
+    private async Task ImportAudioAsync(object? parameter)
+    {
+        string? path; try { path = await ((IPathPicker)parameter!).PickAudioFileAsync(); }
+        catch (Exception exception) { await Context.Store.ReportCommandErrorAsync(exception.Message); return; }
+        if (path is not null) await Context.Store.ImportAudioAsync(path);
+    }
 
     private bool CanStopRecording(object? parameter)
     {

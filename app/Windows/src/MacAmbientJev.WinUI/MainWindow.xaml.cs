@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
         Root.Loaded += OnRootLoaded;
         try
         {
+            ImportButton.CommandParameter = new WindowsPathPicker(this);
             var handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
             _appWindow = AppWindow.GetFromWindowId(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(handle));
             _appWindow.Closing += OnAppWindowClosing;
@@ -85,7 +86,7 @@ public sealed partial class MainWindow : Window
             var context = _context ?? throw new InvalidOperationException("The settings context is unavailable.");
             var settings = _settings ?? throw new InvalidOperationException("The settings view model is unavailable.");
             var diagnostics = _diagnostics ?? throw new InvalidOperationException("The diagnostics view model is unavailable.");
-            var dialog = new SettingsDialog(context, settings, diagnostics) { XamlRoot = Root.XamlRoot };
+            var dialog = new SettingsDialog(context, settings, diagnostics, new WindowsPathPicker(this)) { XamlRoot = Root.XamlRoot };
             _settingsDialog = dialog; SettingsButton.IsEnabled = false; await dialog.ShowAsync();
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }

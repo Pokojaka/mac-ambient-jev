@@ -10,24 +10,26 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private readonly ShellUiContext _context;
     private readonly SettingsViewModel _settings;
     private readonly DiagnosticsViewModel _diagnostics;
+    private readonly IPathPicker _pathPicker;
     private readonly EngineCapabilities _capabilities;
     private readonly ComboBox _schema = Box(), _source = Box(), _device = Box(), _asr = Box(), _provider = Box(), _threads = Box();
     private readonly ComboBox _lowHeat = Box(), _decisions = Box(), _autoExport = Box(), _exportPath = Box();
     private readonly Button _save = new() { Content = "保存" }, _reload = new() { Content = "再読み込み", Visibility = Visibility.Collapsed };
     private readonly Button _privacy = new() { Content = "マイクのプライバシー設定を開く" }, _prepare = new() { Content = "モデルを準備" };
+    private readonly Button _pickExport = new() { Content = "フォルダを選択…" };
     private readonly Button _refresh = new() { Content = "利用状況を更新" }, _inspect = new() { Content = "モデルを確認" };
     private readonly TextBlock _generalError = Text(), _diagnosticError = Text(), _usage = Text(), _models = Text(), _transport = Text(), _preparation = Text("状態: 未取得"), _exportCurrent = Text();
     private readonly ProgressRing _settingsProgress = Ring(), _modelsProgress = Ring(), _usageProgress = Ring();
     private readonly MicrophonePrivacyLauncher _privacyLauncher = new();
     private EngineDevicesResult? _deviceResult;
     private EngineSource? _deviceSource, _deferredDeviceSource;
-    private bool _deferredDeviceForce, _hydrating, _disposed, _loadingDevices, _privacyPending, _reloadRunning, _commitRunning, _prepareRunning, _draftPostPending;
+    private bool _deferredDeviceForce, _hydrating, _disposed, _loadingDevices, _privacyPending, _pickerPending, _reloadRunning, _commitRunning, _prepareRunning, _draftPostPending;
     private int _editVersion;
     private string? _localError;
-    public SettingsDialog(ShellUiContext context, SettingsViewModel settings, DiagnosticsViewModel diagnostics) {
+    public SettingsDialog(ShellUiContext context, SettingsViewModel settings, DiagnosticsViewModel diagnostics, IPathPicker pathPicker) {
         DefaultStyleKey = typeof(ContentDialog);
         _context = context ?? throw new ArgumentNullException(nameof(context)); _settings = settings ?? throw new ArgumentNullException(nameof(settings));
-        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics)); _pathPicker = pathPicker ?? throw new ArgumentNullException(nameof(pathPicker));
         _capabilities = settings.Capabilities ?? throw new InvalidOperationException("Engine capabilities are unavailable.");
         Title = "設定"; CloseButtonText = "閉じる"; MaxWidth = 620; BuildChoices();
         var general = new StackPanel { Spacing = 8 };
@@ -38,7 +40,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         AddField(general, "音声認識モデル", _asr); AddField(general, "実行プロバイダー", _provider); AddField(general, "スレッド数", _threads);
         AddField(general, "低発熱ペーシング", _lowHeat); AddField(general, "発話文の判定", _decisions); AddField(general, "処理完了後に自動で書き出す", _autoExport);
         AddField(general, "書き出し先", _exportPath); general.Children.Add(_exportCurrent);
-        general.Children.Add(new Button { Content = "フォルダを選択…", IsEnabled = false }); general.Children.Add(Text("保存先 / 録音データ: LocalAppData/mac-ambient-jev/sessions（固定）")); general.Children.Add(new Button { Content = "フォルダを選択…", IsEnabled = false });
+        general.Children.Add(_pickExport); general.Children.Add(Text("保存先 / 録音データ: LocalAppData/mac-ambient-jev/sessions（固定）"));
         general.Children.Add(_settingsProgress); general.Children.Add(_prepare); general.Children.Add(_preparation); general.Children.Add(_generalError); general.Children.Add(_reload); general.Children.Add(_save);
         var diag = new StackPanel { Spacing = 8 }; _refresh.Content = _diagnostics.RefreshLabel; _inspect.Content = _diagnostics.InspectModelsLabel;
         _refresh.Click += OnRefresh; _inspect.Click += OnInspect; diag.Children.Add(_refresh); diag.Children.Add(_usageProgress); diag.Children.Add(_usage); diag.Children.Add(_inspect);
@@ -47,7 +49,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         tabs.TabItems.Add(new TabViewItem { Header = "一般", Content = View(general), IsClosable = false }); tabs.TabItems.Add(new TabViewItem { Header = "診断", Content = View(diag), IsClosable = false }); Content = tabs; Hydrate(context.Store.State.SettingsDraft);
         _schema.SelectionChanged += OnDraftChanged; _source.SelectionChanged += OnSourceChanged; _device.SelectionChanged += OnDraftChanged; _asr.SelectionChanged += OnDraftChanged;
         _provider.SelectionChanged += OnDraftChanged; _threads.SelectionChanged += OnDraftChanged; _lowHeat.SelectionChanged += OnDraftChanged; _decisions.SelectionChanged += OnDraftChanged;
-        _autoExport.SelectionChanged += OnDraftChanged; _exportPath.SelectionChanged += OnDraftChanged; _save.Click += OnSave; _reload.Click += OnReload; _privacy.Click += OnPrivacy; _prepare.Click += OnPrepare;
+        _autoExport.SelectionChanged += OnDraftChanged; _exportPath.SelectionChanged += OnDraftChanged; _save.Click += OnSave; _reload.Click += OnReload; _privacy.Click += OnPrivacy; _prepare.Click += OnPrepare; _pickExport.Click += OnPickExport;
         ToolTipService.SetToolTip(_source, "録音元を選択すると、その録音元のデバイス一覧を更新します。"); ToolTipService.SetToolTip(_device, "既定のデバイスまたは一覧にあるデバイスを明示的に選択します。");
         ToolTipService.SetToolTip(_save, "全項目を選択してください。録音中または処理中は設定を保存できません。"); context.Refreshed += OnRefreshed; UpdateViews();
         if (SelectedSource() is EngineSource source && context.Store.State.Devices?.Source != source) _ = LoadDevicesAsync(source, false);
@@ -157,8 +159,9 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         var state = _context.Store.State; var pending = state.IsPending(EngineCommandName.SettingsGet) || state.IsPending(EngineCommandName.SettingsReplace) || state.IsPending(EngineCommandName.ModelsPrepare);
         _settingsProgress.IsActive = pending; _settingsProgress.Visibility = pending ? Visibility.Visible : Visibility.Collapsed;
         var locked = _loadingDevices || state.IsPending(EngineCommandName.DevicesList); _source.IsEnabled = !locked; _device.IsEnabled = !locked; _reload.Visibility = state.SettingsConflict ? Visibility.Visible : Visibility.Collapsed;
-        _save.IsEnabled = !_draftPostPending && !pending && !locked && !_commitRunning && !_reloadRunning && _settings.Commit.CanExecute(null) && state.SettingsDraft is not null;
-        _reload.IsEnabled = !_reloadRunning && !_commitRunning && !_prepareRunning && _settings.Reload.CanExecute(null); _privacy.IsEnabled = !_privacyPending;
+        _save.IsEnabled = !_draftPostPending && !pending && !locked && !_commitRunning && !_reloadRunning && !_pickerPending && _settings.Commit.CanExecute(null) && state.SettingsDraft is not null;
+        _reload.IsEnabled = !_reloadRunning && !_commitRunning && !_prepareRunning && !_pickerPending && _settings.Reload.CanExecute(null); _privacy.IsEnabled = !_privacyPending;
+        _pickExport.IsEnabled = !_disposed && state.Phase == ShellPhase.Running && !_pickerPending && !_commitRunning && !_reloadRunning && !_prepareRunning && !_draftPostPending;
         _prepare.IsEnabled = !_prepareRunning && !_commitRunning && !_reloadRunning && _settings.PrepareModels.CanExecute(null); _refresh.IsEnabled = _diagnostics.Refresh.CanExecute(null); _inspect.IsEnabled = _diagnostics.InspectModels.CanExecute(null);
         var errors = new List<string>(); if (_localError is not null) errors.Add(_localError); if (state.SettingsConflict) errors.Add("設定が変更されています。再読み込みしてください。");
         if (state.LastError is not null) errors.Add(state.LastError.Code + ": " + state.LastError.Message); if (state.CommandError is not null) errors.Add(state.CommandError); if (state.StoreFailure is not null) errors.Add(state.StoreFailure);
@@ -211,7 +214,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     }
     private async void OnSave(object sender, RoutedEventArgs args) {
         try {
-            if (_disposed || _commitRunning || _reloadRunning || _prepareRunning || _loadingDevices || _context.Store.State.IsPending(EngineCommandName.DevicesList) || _draftPostPending || !_settings.Commit.CanExecute(null) || _context.Store.State.SettingsDraft is null) return;
+            if (_disposed || _commitRunning || _reloadRunning || _prepareRunning || _pickerPending || _loadingDevices || _context.Store.State.IsPending(EngineCommandName.DevicesList) || _draftPostPending || !_settings.Commit.CanExecute(null) || _context.Store.State.SettingsDraft is null) return;
             _commitRunning = true; UpdateViews(); _settings.Commit.Execute(null); await (_settings.Commit.Execution ?? throw new InvalidOperationException("Settings commit did not start."));
             if (_disposed) return;
         }
@@ -221,7 +224,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private async void OnReload(object sender, RoutedEventArgs args) {
         var before = _context.Store.State.ConfirmedSettings;
         try {
-            if (_disposed || _reloadRunning || _commitRunning || !_settings.Reload.CanExecute(null)) return;
+            if (_disposed || _reloadRunning || _commitRunning || _pickerPending || !_settings.Reload.CanExecute(null)) return;
             _reloadRunning = true; UpdateViews(); _settings.Reload.Execute(null); await (_settings.Reload.Execution ?? throw new InvalidOperationException("Settings reload did not start."));
             if (_disposed) return; var state = _context.Store.State;
             if (state.SettingsStatus == ShellSettingsStatus.Available && state.ConfirmedSettings is { } confirmed && !ReferenceEquals(before, confirmed) && !state.SettingsConflict) { _localError = null; Hydrate(state.SettingsDraft); }
@@ -231,7 +234,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     }
     private async void OnPrepare(object sender, RoutedEventArgs args) {
         try {
-            if (_disposed || _prepareRunning || _commitRunning || _reloadRunning || !_settings.PrepareModels.CanExecute(null)) return;
+            if (_disposed || _prepareRunning || _commitRunning || _reloadRunning || _pickerPending || !_settings.PrepareModels.CanExecute(null)) return;
             _prepareRunning = true; UpdateViews(); _settings.PrepareModels.Execute(null); await (_settings.PrepareModels.Execution ?? throw new InvalidOperationException("Model preparation did not start."));
             if (_disposed) return;
         }
@@ -244,6 +247,17 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         try { if (_disposed || !command.CanExecute(null)) return; command.Execute(null); await (command.Execution ?? throw new InvalidOperationException("Diagnostic command did not start.")); if (!_disposed) UpdateViews(); }
         catch (Exception error) { ReportError(error); }
     }
+    private async void OnPickExport(object sender, RoutedEventArgs args) {
+        try {
+            if (_disposed || _pickerPending || _commitRunning || _reloadRunning || _prepareRunning || _draftPostPending || _context.Store.State.Phase != ShellPhase.Running) return;
+            _pickerPending = true; UpdateViews(); var path = await _pathPicker.PickExportFolderAsync();
+            if (_disposed || path is null) return;
+            var wasHydrating = _hydrating; _hydrating = true;
+            try { SetExportChoices(path, true); } finally { _hydrating = wasHydrating; }
+            await ApplyDraftAsync();
+        } catch (Exception error) { ReportError(error); }
+        finally { if (!_disposed) { _pickerPending = false; try { UpdateViews(); } catch (Exception error) { ReportError(error); } } }
+    }
     private async void OnPrivacy(object sender, RoutedEventArgs args) {
         try { if (_disposed || _privacyPending) return; _privacyPending = true; UpdateViews(); await _privacyLauncher.OpenAsync(); if (!_disposed) _localError = null; }
         catch (Exception error) { ReportError(error); }
@@ -253,6 +267,6 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         if (_disposed) return; _disposed = true; _context.Refreshed -= OnRefreshed;
         _schema.SelectionChanged -= OnDraftChanged; _source.SelectionChanged -= OnSourceChanged; _device.SelectionChanged -= OnDraftChanged; _asr.SelectionChanged -= OnDraftChanged;
         _provider.SelectionChanged -= OnDraftChanged; _threads.SelectionChanged -= OnDraftChanged; _lowHeat.SelectionChanged -= OnDraftChanged; _decisions.SelectionChanged -= OnDraftChanged; _autoExport.SelectionChanged -= OnDraftChanged; _exportPath.SelectionChanged -= OnDraftChanged;
-        _save.Click -= OnSave; _reload.Click -= OnReload; _privacy.Click -= OnPrivacy; _prepare.Click -= OnPrepare; _refresh.Click -= OnRefresh; _inspect.Click -= OnInspect;
+        _save.Click -= OnSave; _reload.Click -= OnReload; _privacy.Click -= OnPrivacy; _prepare.Click -= OnPrepare; _pickExport.Click -= OnPickExport; _refresh.Click -= OnRefresh; _inspect.Click -= OnInspect;
     }
 }

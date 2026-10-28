@@ -18,6 +18,7 @@ public sealed partial class SavedSessionsWindow : Window
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(sessions);
         InitializeComponent();
+        ExportButton.CommandParameter = new WindowsPathPicker(this);
         _sessions = sessions;
         Root.DataContext = sessions;
         ReloadButton.CommandParameter = ShellPageMove.Reload;

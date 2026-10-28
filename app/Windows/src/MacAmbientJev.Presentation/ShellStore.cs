@@ -55,6 +55,28 @@ public sealed partial class ShellStore : IAsyncDisposable
         return RunRequestAsync(() => new EngineCommand.DevicesList(new EngineDevicesListPayload(source)));
     }
 
+    public Task<bool> ImportAudioAsync(string inputPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(inputPath);
+        return RunRequestAsync(() =>
+        {
+            if (_working.Engine?.Recording is not null || _working.Pending.Contains(EngineCommandName.RecordingStart) || _working.Pending.Contains(EngineCommandName.RecordingStop))
+            { _working = _working with { CommandError = "録音中または録音の開始・停止中は音声を取り込めません。" }; return null; }
+            return new EngineCommand.SessionImport(new EngineImportPayload(inputPath));
+        });
+    }
+
+    public Task<bool> SetExportDestinationAsync(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        return RunRequestAsync(() =>
+        {
+            var confirmed = _working.ConfirmedSettings;
+            if (confirmed is null) { _working = _working with { CommandError = "設定を保存してから書き出してください。" }; return null; }
+            return new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(confirmed.Revision, confirmed.Settings with { ExportDestinationPath = path }));
+        });
+    }
+
     public Task<bool> CommitSettingsAsync() => RunRequestAsync(() =>
     {
         if (_working.SettingsDraft is null) { _working = _working with { CommandError = "Settings must be loaded or explicitly drafted before commit." }; return null; }
@@ -299,6 +321,7 @@ public sealed partial class ShellStore : IAsyncDisposable
             case (EngineCommand.SettingsGet, EngineResult.SettingsGet settings): ApplySettings(settings.Result, false); break;
             case (EngineCommand.SettingsReplace, EngineResult.SettingsReplace settings): ApplySettings(settings.Result, true); break;
             case (EngineCommand.RecordingStart, EngineResult.RecordingStart started): SelectSession(started.Result.SessionID); break;
+            case (EngineCommand.SessionImport, EngineResult.SessionImport):
             case (EngineCommand.RecordingStop, EngineResult.RecordingStop):
             case (EngineCommand.ModelsPrepare, EngineResult.ModelsPrepare): break;
             default: throw new InvalidOperationException($"{command.Name} returned unexpected result {result.GetType().Name}.");

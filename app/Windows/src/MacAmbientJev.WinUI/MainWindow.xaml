@@ -6,6 +6,12 @@
     <Grid x:Name="Root" Margin="12" RowSpacing="8" RowDefinitions="Auto,Auto,Auto,*">
         <CommandBar x:Name="Toolbar" Grid.Row="0" DefaultLabelPosition="Right">
             <CommandBar.PrimaryCommands>
+                <AppBarButton x:Name="ImportButton" Label="{Binding ImportLabel}" Command="{Binding ImportAudio}" ToolTipService.ToolTip="{Binding ImportDisabledReason}">
+                    <AppBarButton.Icon><SymbolIcon Symbol="OpenFile" /></AppBarButton.Icon>
+                </AppBarButton>
+                <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
+                    <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
+                </AppBarButton>
                 <AppBarButton Label="{Binding StartLabel}" Command="{Binding StartRecording}" ToolTipService.ToolTip="{Binding StartDisabledReason}">
                     <AppBarButton.Icon><SymbolIcon Symbol="Microphone" /></AppBarButton.Icon>
                 </AppBarButton>
@@ -14,9 +20,6 @@
                 </AppBarButton>
                 <AppBarButton Label="{Binding RefreshDevicesLabel}" Command="{Binding RefreshDevices}" ToolTipService.ToolTip="選択中の音声ソースのデバイス一覧を更新します">
                     <AppBarButton.Icon><SymbolIcon Symbol="Refresh" /></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
-                    <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton x:Name="SettingsButton" Label="設定" IsEnabled="False" Click="OnSettingsClick" ToolTipService.ToolTip="一般設定と診断を開きます">
                     <AppBarButton.Icon><SymbolIcon Symbol="Setting" /></AppBarButton.Icon>
@@ -27,6 +30,7 @@
                     <ComboBox Header="録音元" ItemsSource="{Binding Sources}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedSource, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="150" />
                     <ComboBox Header="デバイス" ItemsSource="{Binding Devices}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedDevice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="200" />
                     <ProgressRing IsActive="{Binding IsBusy}" Width="24" Height="24" VerticalAlignment="Bottom" />
+                    <ProgressRing IsActive="{Binding IsImporting}" Width="24" Height="24" VerticalAlignment="Bottom" ToolTipService.ToolTip="{Binding ImportDisabledReason}" />
                 </StackPanel>
             </CommandBar.Content>
         </CommandBar>

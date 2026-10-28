@@ -226,7 +226,7 @@ public sealed partial class ShellStoreTests
             Interlocked.Increment(ref _sentCount);
             if (command is EngineCommand.SettingsGet) return SettingsGetResponse;
             if (AutoResponse is not null) return Task.FromResult(AutoResponse(command));
-            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect or EngineCommand.DiagnosticsGet or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
+            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.SessionInspect or EngineCommand.SessionImport or EngineCommand.SessionExport or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect or EngineCommand.DiagnosticsGet or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
             var result = new TaskCompletionSource<EngineResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             if (!_requests.Writer.TryWrite((command, result))) throw new InvalidOperationException("Request channel closed.");
             return result.Task;

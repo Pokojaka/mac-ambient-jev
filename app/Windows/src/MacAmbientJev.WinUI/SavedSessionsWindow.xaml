@@ -55,6 +55,9 @@
                             <Button Content="{Binding ReprocessLabel}" Command="{Binding Reprocess}" ToolTipService.ToolTip="{Binding ActionDisabledReason}" />
                             <Button Content="{Binding RetryDecisionsLabel}" Command="{Binding RetryDecisions}" ToolTipService.ToolTip="{Binding ActionDisabledReason}" />
                             <Button Content="{Binding RevealFolderLabel}" Command="{Binding RevealFolder}" ToolTipService.ToolTip="録音データのフォルダーをエクスプローラーで開きます" />
+                            <Button x:Name="ExportButton" Content="{Binding ExportLabel}" Command="{Binding Export}" ToolTipService.ToolTip="{Binding ExportDisabledReason}" />
+                            <TextBlock Text="{Binding ExportDisabledReason}" Visibility="{Binding ExportDisabledReason, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <Button Content="{Binding RevealExportFolderLabel}" Command="{Binding RevealExportFolder}" Visibility="{Binding Inspection.ExportPath, Converter={StaticResource VisibilityConverter}}" ToolTipService.ToolTip="エクスポートした録音データ一式のフォルダーをエクスプローラーで開きます" />
                             <TextBlock Text="{Binding ActionDisabledReason}" Visibility="{Binding ActionDisabledReason, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
                         </StackPanel>
                     </StackPanel>

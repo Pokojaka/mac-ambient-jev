@@ -7,7 +7,7 @@ public sealed partial class ShellStore
     internal static bool CanUseSavedSelection(ShellState state) => state.Phase == ShellPhase.Running && state.Engine is { Recording: null } &&
         !state.Pending.Contains(EngineCommandName.RecordingStart) && !state.Pending.Contains(EngineCommandName.RecordingStop) &&
         !state.Pending.Contains(EngineCommandName.SessionInspect) && !state.Pending.Contains(EngineCommandName.SessionReprocess) &&
-        !state.Pending.Contains(EngineCommandName.SessionRetryDecisions);
+        !state.Pending.Contains(EngineCommandName.SessionRetryDecisions) && !state.Pending.Contains(EngineCommandName.SessionExport);
 
     public Task<bool> InspectSessionAsync(string folderID)
     {
@@ -30,6 +30,28 @@ public sealed partial class ShellStore
 
     public Task<bool> ReprocessSessionAsync() => RunSavedSessionActionAsync(false);
     public Task<bool> RetrySessionDecisionsAsync() => RunSavedSessionActionAsync(true);
+
+    public async Task<bool> ExportSessionAsync(string folderID, string destinationPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(folderID); ArgumentException.ThrowIfNullOrEmpty(destinationPath);
+        string? sessionID = null;
+        var completed = await RunRequestAsync(() =>
+        {
+            var inspection = _working.SessionInspection;
+            var inspectedSessionID = inspection?.SessionID;
+            if (!CanUseSavedSelection(_working) || _working.ConfirmedSettings is null || _working.SelectedFolderID != folderID ||
+                inspection is null || inspection.FolderID != folderID || inspectedSessionID is null || !inspection.CanExport)
+            { _working = _working with { CommandError = "この録音を書き出せません。" }; return null; }
+            sessionID = inspectedSessionID;
+            return new EngineCommand.SessionExport(new EngineExportPayload(inspectedSessionID, destinationPath));
+        }, (command, result) =>
+        {
+            if (result is not EngineResult.SessionExport exported || exported.Result.SessionID != sessionID)
+                throw new InvalidOperationException("session.export returned an unexpected result or session.");
+            _working = _working with { CommandError = null };
+        }, HandleRequestFailure).ConfigureAwait(false);
+        return completed && await InspectSavedSessionAsync(folderID, true).ConfigureAwait(false);
+    }
 
     private async Task<bool> RunSavedSessionActionAsync(bool retry)
     {

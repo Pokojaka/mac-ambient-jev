@@ -4,6 +4,7 @@ using MacAmbientJev.Protocol;
 namespace MacAmbientJev.Presentation;
 
 public interface IFolderRevealer { Task RevealAsync(string path); }
+public interface IPathPicker { Task<string?> PickAudioFileAsync(); Task<string?> PickExportFolderAsync(); }
 
 public sealed class SessionsViewModel : ScreenViewModel
 {
@@ -16,7 +17,9 @@ public sealed class SessionsViewModel : ScreenViewModel
         Select = Command(CanSelect, parameter => Context.Store.InspectSessionAsync(((EngineSessionSummary)parameter!).FolderID));
         Reprocess = Command(parameter => CanRunAction(parameter, true), _ => Context.Store.ReprocessSessionAsync());
         RetryDecisions = Command(parameter => CanRunAction(parameter, false), _ => Context.Store.RetrySessionDecisionsAsync());
-        RevealFolder = Command(CanRevealFolder, RevealFolderAsync);
+        RevealFolder = Command(CanRevealFolder, _ => RevealAsync(false));
+        Export = Command(CanExport, ExportAsync);
+        RevealExportFolder = Command(CanRevealExportFolder, _ => RevealAsync(true));
     }
 
     public ShellPageWindow<EngineSessionListResult> Pages => Snapshot.Sessions;
@@ -24,15 +27,32 @@ public sealed class SessionsViewModel : ScreenViewModel
     public string? SelectedFolderID => Snapshot.SelectedFolderID;
     public bool HasInspection => Inspection is not null;
     public bool CanSelectSession => ShellStore.CanUseSavedSelection(Context.Store.State);
-    public bool IsBusy => Snapshot.IsPending(EngineCommandName.SessionList) || Snapshot.IsPending(EngineCommandName.SessionInspect) || Snapshot.IsPending(EngineCommandName.SessionReprocess) || Snapshot.IsPending(EngineCommandName.SessionRetryDecisions);
+    public bool IsBusy => Snapshot.IsPending(EngineCommandName.SessionList) || Snapshot.IsPending(EngineCommandName.SessionInspect) || Snapshot.IsPending(EngineCommandName.SessionReprocess) || Snapshot.IsPending(EngineCommandName.SessionRetryDecisions) || Snapshot.IsPending(EngineCommandName.SessionExport);
     public string? SelectionDisabledReason => CanSelectSession ? null : "録音中または処理中は録音を選択できません。";
     public string? ActionDisabledReason => ShellStore.CanUseSavedSelection(Context.Store.State) ? Inspection?.StatusText : "録音中または処理中は録音を選択できません。";
+    public string? ExportDisabledReason
+    {
+        get
+        {
+            var state = Snapshot; var inspection = state.SessionInspection;
+            return state.ConfirmedSettings is null ? "設定を保存してから書き出してください。" :
+                state.Phase != ShellPhase.Running ? "エンジンの起動後に書き出してください。" :
+                state.IsPending(EngineCommandName.SettingsGet) || state.IsPending(EngineCommandName.SettingsReplace) ? "設定の読み込みまたは保存中は書き出せません。" :
+                Export.Execution is { IsCompleted: false } ? "書き出し中です。" :
+                !ShellStore.CanUseSavedSelection(state) ? "録音中または処理中は録音を書き出せません。" :
+                state.SelectedFolderID is not { } folderID || inspection is null || inspection.FolderID != folderID ? "書き出す録音を選択してください。" :
+                inspection.SessionID is null || !inspection.CanExport ? inspection.StatusText : null;
+        }
+    }
     public string? MetadataText => Inspection is null ? null : FormatMetadata(Inspection.Metadata);
     public string Title => "保存済み録音"; public string RefreshLabel => "更新";
+    public string ExportLabel => Snapshot.ConfirmedSettings?.Settings.ExportDestinationPath is null ? "書き出す…" : "書き出す";
+    public string RevealExportFolderLabel => "書き出し先をエクスプローラーで表示";
     public string EmptyTitle => "録音を選択してください"; public string EmptyDescription => "選んだ録音の処理状態を確認できます。";
     public string ReprocessLabel => "再処理"; public string RetryDecisionsLabel => "保留中の判定を再試行";
     public string RevealFolderLabel => "録音データをエクスプローラーで表示";
     public ShellCommand List { get; } public ShellCommand Select { get; } public ShellCommand Reprocess { get; } public ShellCommand RetryDecisions { get; } public ShellCommand RevealFolder { get; }
+    public ShellCommand Export { get; } public ShellCommand RevealExportFolder { get; }
 
     private bool CanList(object? parameter)
     {
@@ -71,19 +91,32 @@ public sealed class SessionsViewModel : ScreenViewModel
             (reprocess ? inspection.CanReprocess : inspection.CanRetryDecisions);
     }
 
-    private bool CanRevealFolder(object? parameter) => parameter is null && Context.Store.State.SessionInspection is not null;
+    private bool CanExport(object? parameter) => parameter is IPathPicker && ExportDisabledReason is null;
 
-    private async Task RevealFolderAsync(object? parameter)
+    private async Task ExportAsync(object? parameter)
+    {
+        var picker = (IPathPicker)parameter!;
+        var state = Context.Store.State;
+        var folderID = state.SelectedFolderID!;
+        var path = state.ConfirmedSettings!.Settings.ExportDestinationPath;
+        if (path is not null) { await Context.Store.ExportSessionAsync(folderID, path); return; }
+        try { path = await picker.PickExportFolderAsync(); }
+        catch (Exception exception) { await Context.Store.ReportCommandErrorAsync(exception.Message); return; }
+        if (path is null || !await Context.Store.SetExportDestinationAsync(path)) return;
+        await Context.Store.ExportSessionAsync(folderID, path);
+    }
+
+    private bool CanRevealFolder(object? parameter) => parameter is null && Context.Store.State.SessionInspection is not null;
+    private bool CanRevealExportFolder(object? parameter) => parameter is null && Context.Store.State.SessionInspection?.ExportPath is not null;
+
+    private async Task RevealAsync(bool export)
     {
         try
         {
             var inspection = Context.Store.State.SessionInspection ?? throw new InvalidOperationException("There is no inspected session folder to reveal.");
-            await _folderRevealer.RevealAsync(inspection.FolderPath);
+            await _folderRevealer.RevealAsync(export ? inspection.ExportPath ?? throw new InvalidOperationException("There is no inspected session export folder to reveal.") : inspection.FolderPath);
         }
-        catch (Exception exception)
-        {
-            await Context.Store.ReportCommandErrorAsync(exception.Message);
-        }
+        catch (Exception exception) { await Context.Store.ReportCommandErrorAsync(exception.Message); }
     }
 
     private static string FormatMetadata(EngineSessionMetadata metadata) => metadata switch
