@@ -227,7 +227,7 @@ struct CaptureSystemAudioCommand {
             let processing = await processor.processSession(
                 sessionID: sessionID,
                 pacingMode: .normal,
-                shouldPause: { MacThermalMonitor().isCritical },
+                shouldPause: { MacThermalMonitor().isCritical ? .thermal : nil },
                 onPhase: { _ in },
                 metadataPolicy: .reject,
                 onStatus: { _ in },

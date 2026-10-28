@@ -19,6 +19,13 @@ extension EngineApplicationCore: SessionProcessingEffects {
                  .diarizing, .classifyingContent, .decisionDeferred:
                 return activity.text
             }
+        case let .paused(reason):
+            switch reason {
+            case .thermal:
+                preconditionFailure("Windows engine cannot present a thermal processor status")
+            case .resourcePressure, .monitorFailed:
+                return reason.finalizationExplanation
+            }
         }
     }
 
@@ -123,7 +130,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
             presentation.processingStatusText = "次の文字起こし処理を開始します"
         case .willFinishDrain:
             if presentation.processingState == .running || presentation.processingState == .backlogged,
-               processingQueue.thermallyHeld.isEmpty,
+               processingQueue.held.isEmpty,
                processingQueue.pending.isEmpty,
                !pausesProcessing {
                 presentation.processingState = .complete

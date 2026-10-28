@@ -298,7 +298,7 @@ final class EngineApplicationCore {
             operations.append(try EngineQueuedOperation(sessionID: EngineFailures.wireID(current), stage: .finalization))
         }
         for request in processingQueue.pending { try add(request) }
-        for request in processingQueue.thermallyHeld { try add(request) }
+        for entry in processingQueue.held { try add(entry.request) }
         return Array(operations.prefix(Self.queueLimit))
     }
 
@@ -382,7 +382,7 @@ final class EngineApplicationCore {
     /// No finalization, decision retry or live transcription is queued or running.
     var isProcessingIdle: Bool {
         processingQueue.pending.isEmpty
-            && processingQueue.thermallyHeld.isEmpty
+            && processingQueue.held.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty

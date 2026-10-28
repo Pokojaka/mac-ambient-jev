@@ -156,13 +156,15 @@ final class AppState: ObservableObject {
     lazy var processingCoordinator = SessionProcessingCoordinator(
         effects: self,
         processor: sessionProcessor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceMonitor: nil
     )
     lazy var liveCoordinator: LiveTranscriptionCoordinator = LiveTranscriptionCoordinator(
         state: liveTranscription,
         effects: self,
         processor: sessionProcessor,
         thermalMonitor: thermalMonitor,
+        resourceMonitor: nil,
         sleep: liveTranscriptionSleep
     )
     var modelPreparationTask: Task<Void, Never>?
@@ -219,7 +221,7 @@ final class AppState: ObservableObject {
         )
         self.exportDirectoryPath = exportDestination.path
         thermalObservation = thermalMonitor.observeChanges { [weak self] in
-            self?.resumeThermallyHeldProcessing()
+            self?.processingCoordinator.resumeHeldProcessing()
         }
 
         terminationObserver = TerminationObservation(center: .default) { [weak self] in

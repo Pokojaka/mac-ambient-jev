@@ -76,11 +76,11 @@ import MacAmbientJevPipeline
         var queue = SessionProcessingQueue()
         queue.enqueue(.finalize(sessionID: pendingID, metadataPolicy: .reject))
         queue.begin(.finalize(sessionID: currentID, metadataPolicy: .reject))
-        queue.holdForHeat(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []))
+        queue.hold(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []), reason: .thermal)
         fixture.app.core.processingQueue = queue
         return QueueSnapshot(
             pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,
-            heldIDs: queue.thermallyHeld.map(\.sessionID), claimedIDs: queue.claimedSessionIDs
+            heldIDs: queue.held.map { $0.request.sessionID }, claimedIDs: queue.claimedSessionIDs
         )
     }
 
@@ -88,7 +88,7 @@ import MacAmbientJevPipeline
         let queue = fixture.app.core.processingQueue
         return QueueSnapshot(
             pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,
-            heldIDs: queue.thermallyHeld.map(\.sessionID), claimedIDs: queue.claimedSessionIDs
+            heldIDs: queue.held.map { $0.request.sessionID }, claimedIDs: queue.claimedSessionIDs
         )
     }
 

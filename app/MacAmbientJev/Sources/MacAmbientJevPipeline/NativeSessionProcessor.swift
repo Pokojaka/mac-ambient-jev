@@ -125,11 +125,13 @@ public actor NativeSessionProcessor {
     public enum Status: Sendable, Equatable {
         case activity(UserFacingStatus)
         case message(String)
+        case paused(InferenceHoldReason)
 
         public var text: String {
             switch self {
             case let .activity(status): status.text
             case let .message(text): text
+            case let .paused(reason): reason.finalizationExplanation
             }
         }
     }
@@ -141,7 +143,7 @@ public actor NativeSessionProcessor {
         _ segments: [MaterializedTranscriptSegment],
         _ state: ProcessingState
     ) async -> Void
-    public typealias PauseCheck = @Sendable () async -> Bool
+    public typealias PauseCheck = @Sendable () async -> InferenceHoldReason?
     public typealias PhaseHandler = @Sendable (RunPhase) async -> Void
 
     private let sessionsRoot: URL
@@ -827,11 +829,11 @@ public actor NativeSessionProcessor {
         }
 
         switch outcome {
-        case .paused(let metrics):
+        case .paused(let metrics, let reason):
             return await pauseFinalization(
                 attemptID: attemptID,
                 metrics: metrics,
-                status: .activity(.finalizationPausedForHeat),
+                status: .paused(reason),
                 metadataStore: metadataStore,
                 sessionLayout: sessionLayout,
                 previous: previous,

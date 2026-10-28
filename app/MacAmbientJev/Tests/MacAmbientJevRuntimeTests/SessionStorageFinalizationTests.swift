@@ -162,13 +162,13 @@ private struct Fixture {
 
     func process(
         _ processor: NativeSessionProcessor,
-        shouldPause: Bool = false,
+        holdReason: InferenceHoldReason? = nil,
         recorder: UpdateRecorder = UpdateRecorder()
     ) async throws -> (SessionProcessingResult, UpdateRecorder) {
         let result = await processor.processSession(
             sessionID: sessionID,
             pacingMode: .normal,
-            shouldPause: { shouldPause },
+            shouldPause: { holdReason },
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { await recorder.record(status: $0.text) },
@@ -232,7 +232,7 @@ private func everyOutcomeRemovesTheDiarizationInputAndTheImportTimeline(outcome:
     let observations = EngineObservations()
 
     let (result, _) = try await fixture.process(
-        fixture.processor(engines(for: outcome, observations: observations)), shouldPause: outcome == .paused
+        fixture.processor(engines(for: outcome, observations: observations)), holdReason: outcome == .paused ? .thermal : nil
     )
 
     #expect(result.disposition == (
@@ -302,7 +302,7 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
     let result = await fixture.processor(engines(for: .success, observations: EngineObservations()))
         .finishLiveTranscription(
             sessionID: fixture.sessionID, checkpoint: checkpoint, finalSegments: [], pacingMode: .normal,
-            shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
+            shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
         )
 
     #expect(result.disposition == .completed)
@@ -451,7 +451,7 @@ func aCleanupFailureDuringAPauseStaysPausedAndReportsTheCleanupError() async thr
     defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
 
     let (result, recorder) = try await fixture.process(
-        fixture.processor(engines(for: .paused, observations: EngineObservations())), shouldPause: true
+        fixture.processor(engines(for: .paused, observations: EngineObservations())), holdReason: .thermal
     )
 
     #expect(result.disposition == .paused)

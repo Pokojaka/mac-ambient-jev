@@ -1461,3 +1461,46 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
     #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
     #expect(effects.events.contains(.recognitionFailed(sessionID, missingSessionMessage)))
 }
+
+@MainActor
+@Test(arguments: [InferenceResourceSignal.pressure, .monitorFailed])
+func inferenceResourceLiveSuspensionLatchesWithoutStoppingRecording(_ signal: InferenceResourceSignal) async throws {
+    let sessionID = UUID()
+    let state = LiveTranscriptionState()
+    state.begin(sessionID: sessionID)
+    let checkpoint = makeCheckpoint(100)
+    let orderLog = SharedCoordinatorOrderLog()
+    let effects = FakeLiveTranscriptionEffects(recordingSessionID: sessionID, checkpoint: checkpoint, orderLog: orderLog, stopsRecordingOnVADEnqueue: false)
+    let gate = OneShotAsyncGate()
+    let processor = FakeLiveTranscriptionExecutor(startRunID: "asr_resource_test", registrationScript: [.succeed, .succeed], processingScript: [.suspend(gate, outcome: .succeed)], orderLog: orderLog)
+    let monitor = TestInferenceResourceMonitor(.healthy)
+    let coordinator = LiveTranscriptionCoordinator(state: state, effects: effects, processor: processor, thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal), resourceMonitor: monitor, sleep: { _ in preconditionFailure("リソース停止テストで待機してはいけません") })
+    let firstBatch = [makeSegment("seg_resource_first", at: 0)]
+    await coordinator.enqueue(sessionID: sessionID, segments: firstBatch, checkpoint: checkpoint)
+    await gate.waitUntilEntered()
+    await coordinator.enqueue(sessionID: sessionID, segments: [makeSegment("seg_resource_second", at: 1)], checkpoint: checkpoint)
+    #expect(state.pendingSegmentCount(sessionID: sessionID) == 1)
+
+    monitor.setSignal(signal)
+    let message = signal.holdReason!.liveExplanation
+    #expect(state.failure(sessionID: sessionID) == message)
+    #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
+    #expect(effects.recordingSessionID == sessionID)
+    #expect(await processor.cancelledSessions().isEmpty)
+    #expect(effects.events.contains(.recognitionFailed(sessionID, message)))
+    _ = try await effects.committedLiveCheckpoint()
+    #expect(effects.committedCheckpoints == [checkpoint])
+
+    monitor.setSignal(.healthy)
+    await coordinator.enqueue(sessionID: sessionID, segments: [makeSegment("seg_resource_third", at: 2)], checkpoint: checkpoint)
+    #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
+    await gate.release()
+    await coordinator.waitForDrain(sessionID: sessionID)
+
+    #expect(await processor.processingRecords() == [RecordedLiveASRBatch(segments: firstBatch, checkpoint: checkpoint)])
+    #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
+    #expect(await processor.cancelledSessions().isEmpty)
+    #expect(state.failure(sessionID: sessionID) == message)
+    coordinator.cleanup(sessionID: sessionID)
+    #expect(state.failure(sessionID: sessionID) == nil)
+}

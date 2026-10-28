@@ -31,7 +31,7 @@ public enum PendingProcessing: Sendable {
 
 public struct SessionProcessingQueue: Sendable {
     public private(set) var pending: [PendingProcessing] = []
-    public private(set) var thermallyHeld: [PendingProcessing] = []
+    public private(set) var held: [(request: PendingProcessing, reason: InferenceHoldReason)] = []
     public private(set) var currentSessionID: UUID?
     public private(set) var isMaintainingStorage = false
     private var finalizationGate = SavedSessionReprocessGate()
@@ -43,7 +43,7 @@ public struct SessionProcessingQueue: Sendable {
     public var sessionIDs: Set<UUID> {
         finalizationGate.sessionIDs
             .union(pending.map(\.sessionID))
-            .union(thermallyHeld.map(\.sessionID))
+            .union(held.map { $0.request.sessionID })
             .union(currentSessionID.map { [$0] } ?? [])
     }
 
@@ -51,6 +51,7 @@ public struct SessionProcessingQueue: Sendable {
         finalizationGate.sessionIDs.contains(id)
             || currentSessionID == id
             || pending.contains { $0.sessionID == id }
+            || held.contains { $0.request.sessionID == id }
     }
 
     @discardableResult
@@ -83,20 +84,18 @@ public struct SessionProcessingQueue: Sendable {
         currentSessionID = nil
     }
 
-    public mutating func holdForHeat(_ request: PendingProcessing) {
-        thermallyHeld.append(request)
+    public mutating func hold(_ request: PendingProcessing, reason: InferenceHoldReason) {
+        held.append((request: request, reason: reason))
     }
 
     @discardableResult
     public mutating func resumeHeld(
-        isCritical: Bool,
+        holdReason: InferenceHoldReason?,
         pausesProcessing: Bool
     ) -> Bool {
-        guard !isCritical, !thermallyHeld.isEmpty, !pausesProcessing else {
-            return false
-        }
-        pending.insert(contentsOf: thermallyHeld, at: 0)
-        thermallyHeld = []
+        guard holdReason == nil, !held.isEmpty, !pausesProcessing else { return false }
+        pending.insert(contentsOf: held.map { $0.request }, at: 0)
+        held = []
         return true
     }
 

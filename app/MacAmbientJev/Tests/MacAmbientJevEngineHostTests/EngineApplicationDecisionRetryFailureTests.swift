@@ -503,7 +503,7 @@ private final class DecisionRetryFailureApplicationHarness {
             await harness.app.core.failureEventTask?.value
             let state = try #require(harness.app.core.publishedState)
             let hasSessionFailure = state.failures.contains { $0.sessionID == imported.sessionID }
-            let isHeld = harness.app.core.processingQueue.thermallyHeld.contains { $0.sessionID == importedSessionID }
+            let isHeld = harness.app.core.processingQueue.held.contains { $0.request.sessionID == importedSessionID }
             let backgroundProcessingFailures = try Self.backgroundFailures(
                 in: harness.outputs, sessionID: imported.sessionID
             ).filter { $0.code == .processingFailure }
@@ -629,7 +629,7 @@ private final class DecisionRetryFailureApplicationHarness {
             #expect(backgroundProcessingFailures == [expectedFailure])
             let cancelledEvents = try Self.cancelledFailures(in: harness.outputs, sessionID: prepared.sessionID)
             #expect(cancelledEvents.isEmpty)
-            #expect(harness.app.core.processingQueue.thermallyHeld.isEmpty)
+            #expect(harness.app.core.processingQueue.held.isEmpty)
             #expect(harness.app.core.processingQueue.pending.isEmpty)
             #expect(harness.app.core.processingQueue.currentSessionID == nil)
             let unchangedMetadata = try #require(
@@ -745,7 +745,7 @@ private final class DecisionRetryFailureApplicationHarness {
             #expect(backgroundProcessingFailures == [expectedStateFailure])
             let cancelledEvents = try Self.cancelledFailures(in: harness.outputs, sessionID: prepared.sessionID)
             #expect(cancelledEvents.isEmpty)
-            #expect(harness.app.core.processingQueue.thermallyHeld.isEmpty)
+            #expect(harness.app.core.processingQueue.held.isEmpty)
             #expect(harness.app.core.processingQueue.pending.isEmpty)
             #expect(harness.app.core.processingQueue.currentSessionID == nil)
             let unchangedMetadata = try #require(
