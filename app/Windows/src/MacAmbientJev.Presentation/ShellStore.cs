@@ -101,6 +101,15 @@ public sealed partial class ShellStore : IAsyncDisposable
         return Post(() => FailStore(exception));
     }
 
+    public Task DismissDeviceLostNoticeAsync(DeviceLostNotice notice)
+    {
+        ArgumentNullException.ThrowIfNull(notice);
+        return Post(() =>
+        {
+            if (ReferenceEquals(_working.DeviceLostNotice, notice)) _working = _working with { DeviceLostNotice = null };
+        });
+    }
+
     /// <summary>Stops only this store's observers and reducer; the caller owns and closes the client.</summary>
     public ValueTask DisposeAsync()
     {
@@ -250,7 +259,11 @@ public sealed partial class ShellStore : IAsyncDisposable
             case EngineEvent.Ready ready: _working = _working with { Capabilities = ready.Payload.Capabilities }; ApplyState(ready.Payload.State); break;
             case EngineEvent.State state: ApplyState(state.Payload); break;
             case EngineEvent.Progress progress: _working = _working with { Progress = progress.Payload }; break;
-            case EngineEvent.Error error when output.RequestID is null: _working = _working with { LastError = error.Payload }; break;
+            case EngineEvent.Error error when output.RequestID is null:
+                _working = _working with { LastError = error.Payload };
+                if (error.Payload.Code == EngineErrorCode.DeviceLost && error.Payload.Severity == EngineSeverity.Warning)
+                    _working = _working with { DeviceLostNotice = new DeviceLostNotice(error.Payload.Message, error.Payload.SessionID ?? throw new InvalidOperationException("Device-lost warning omitted its session ID.")) };
+                break;
             case EngineEvent.Rows rows: ReduceRows(rows.Payload); break;
             case EngineEvent.Error: case EngineEvent.Accepted: case EngineEvent.Completed: break;
             default: throw new InvalidOperationException("Unrecognized engine event in the client inbox.");

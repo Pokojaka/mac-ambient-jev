@@ -6,6 +6,7 @@ namespace MacAmbientJev.Presentation;
 
 public enum ShellPhase { Connecting, Running, EngineFailed, Closed, Disposed }
 public enum ShellSettingsStatus { Unknown, Required, Corrupt, Available }
+public sealed record DeviceLostNotice(string Message, string SessionID);
 
 public sealed record ShellState
 {
@@ -21,6 +22,7 @@ public sealed record ShellState
     public ShellSettingsStatus SettingsStatus { get; init; } = ShellSettingsStatus.Unknown;
     public bool SettingsConflict { get; init; }
     public EngineFailure? LastError { get; init; }
+    public DeviceLostNotice? DeviceLostNotice { get; init; }
     public string? CommandError { get; init; }
     public EngineClientFailure? EngineFailure { get; init; }
     public string? StoreFailure { get; init; }

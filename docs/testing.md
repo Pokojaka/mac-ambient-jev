@@ -50,6 +50,15 @@ Stop-Process -Id $process.Id
 
 WinUI は VM の SSH session 0 から起動できません。build / PE checks は GUI の動作を証明しません。GUI の起動・表示、file / folder picker、Explorer reveal、DPI は lead が interactive VM console で手動確認する必要があり、これらを確認済みとは主張しません。
 
+device-loss は interactive VM console で次の GUI checklist を手動確認します。GUI は build / portable tests では検証されず、以下の実施を主張するものではありません。
+
+- 実デバイスを切断し、status text「録音デバイスの復帰を待っています」が表示されることを確認する。30秒以内に同じデバイスを戻した場合は同一 session に戻り、`device_lost` toast / dialog が出ないことを確認する。
+- 30秒以内に戻さない場合、録音の保存と finalization が進み、engine reason をそのまま含む toast と、engine message および「ここまでの録音は保存されています。」を含む dialog が各1回だけ表示されることを確認する。更新を繰り返しても再表示されないことを確認する。
+- 「デバイスを選んで新しく録音」は現在の source の device list を更新して pending 解消後に selector へ focus し、自動で録音を開始しないこと、「閉じる」は dismiss のみであることを確認する。
+- Settings を開いたまま device loss を起こし、toast は直ちに表示され、dialog は Settings を閉じた後に1つだけ表示されることを確認する。
+- notification registration / show failure を起こし、window 内に WindowFailure が見え、device-loss dialog は表示され、通常の commands が使用できることを確認する。
+- dialog 表示中に MainWindow を閉じ、安全に dialog を閉じて通知を unregister することを確認する。fatal capture failure / exit code 7 は通常の failure として扱われ、device-loss dialog にならないことも確認する。
+
 実 microphone、loopback（system audio）、long recordings は fake acceptance の対象外で、手動の real-hardware verification が必要です。
 
 ## 現行 EngineProtocol / EngineHost の検証範囲
