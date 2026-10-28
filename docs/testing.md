@@ -98,7 +98,21 @@ $eventPath = Join-Path (Get-Location) ".build/test-events/windows-$([guid]::NewG
 python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-stream-output-path $eventPath
 ```
 
-各 Windows matrix entry の runner は `swift build --build-tests` の後に `swift test --skip-build` を1回実行し、終了後に event を報告します。runner は test process に対する suite budget timer を持ちません。EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows test set 全体が両 entry で対象です。runner は先に `swift build --show-bin-path` で `$binDir` を解決し、unfiltered package build が生成した `MacAmbientJevEngineHarness.exe` を acceptance driver に渡します。native injected C tests の後に wrapper 経由の Swift tests を実行し、その後 driver と FLAC validator の Python self-tests、deterministic fake-capture process acceptance を実行します。Python acceptance driver は build を行いません。workflow はこれらの test の後に release payload も staging しますが、staging script 自身は engine を起動しません。
+各 Windows matrix entry の runner は `swift build --build-tests` の後に `swift test --skip-build` を1回実行し、終了後に event を報告します。runner は test process に対する suite budget timer を持ちません。EngineProtocol / EngineHost / WindowsSupport / PortableRuntime / Core / Pipeline / ONNX 等を含む Windows test set 全体が両 entry で対象です。runner は先に `swift build --show-bin-path` で `$binDir` を解決し、unfiltered package build が生成した `MacAmbientJevEngineHarness.exe` を acceptance driver に渡します。ONNX Runtime DLL の配置後に、staged native engine と Swift deterministic harness を使う C# process-client gate（次節）を実行し、native injected C tests、wrapper 経由の Swift tests を順に実行し、その後 driver と FLAC validator の Python self-tests、deterministic fake-capture process acceptance を実行します。Python acceptance driver は build を行いません。workflow はこれらの test の後に release payload も staging しますが、staging script 自身は engine を起動しません。
+
+### Windows C# process client tests
+
+[`MacAmbientJev.Engine.Tests.csproj`](../app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj) は [`MacAmbientJev.Portable.slnx`](../app/Windows/MacAmbientJev.Portable.slnx) に含まれません。そのため macOS の portable solution tests は engine 環境変数を必要としません。Windows runner は unfiltered Swift build 済み harness と staged native engine を使い、ONNX Runtime DLL 配置後に project 全体を `--minimum-expected-tests 4` で実行します。x64 / ARM64 の両 matrix entry が対象です。[EngineSmokeTests.cs](../app/Windows/tests/MacAmbientJev.Engine.Tests/EngineSmokeTests.cs) は native engine、[EngineHarnessTests.cs](../app/Windows/tests/MacAmbientJev.Engine.Tests/EngineHarnessTests.cs) は deterministic harness を対象にします。両 path は絶対 path が必須で、unset / relative path は失敗し、skip しません。
+
+```powershell
+dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj -c Release --no-restore --minimum-expected-tests 4 `
+  --environment "MAC_AMBIENT_JEV_TEST_ENGINE_PATH=C:\absolute\path\to\MacAmbientJevEngine.exe" `
+  --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=C:\absolute\path\to\MacAmbientJevEngineHarness.exe"
+```
+
+EngineHarnessTests.cs は実際の ProcessEngineChild と EngineProcessClient を通し、test-only harness に `--root`、`--fixture`、`--sample-rate 16000`、`--channels 1`、`--inference deterministic`、`--threads 1` の6 CLI arguments を明示して起動します。自身で headerless little-endian Float32 mono の33,000 sample fixture を作り、schema version 1、microphone / default device、ASR small、CPU、threads 1、low heat / decisions / automatic export false、export destination null の10 settings をすべて明示します。主シナリオは hello / setup / prepare / start / watch / stop / final publication を経て `transcript.read` limit 1 の一行が「エンジンの受け入れテストです。」・Speaker 1 であること、2回の export が同じ bytes を出すこと、shutdown exit 0 を検証します。EOF 後の durable stop は child exit 0 と client Failed state を確認し、kill 後は non-zero exit と client Failed state を確認して、どちらも test が起動する別 process で recovery します。個々の operation wait は30秒、recovery / publication polling は180秒、poll interval は250msです。production の auto-restart や API 変更を加えるものではありません。
+
+EngineHarnessTests の3 tests は実 process transport と storage を deterministic test harness で検証しますが、WASAPI / audio hardware、実モデルや認識品質は検証しません。出荷 Windows engine の startup は、この gate に含まれる別の production smoke test が検証します。既存 Python acceptance checks は変更せず、Linux CI / `verify_portable.sh` にもこの gate は配線していません。
 
 [`test_engine_acceptance.py`](../scripts/test_engine_acceptance.py) と [`test_engine_acceptance_flac.py`](../scripts/test_engine_acceptance_flac.py) は no-build self-tests です。build 済み test-only harness がある場合、[`engine_acceptance.py`](../scripts/engine_acceptance.py) は subcommand を明示して実行します。Windows runner は `$binDir` から `.exe` の完全 path を渡します。
 

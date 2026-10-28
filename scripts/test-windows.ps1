@@ -80,10 +80,6 @@ if (-not (Test-Path -LiteralPath $engineExecutablePath -PathType Leaf)) {
 Invoke-Step 'Restore Windows engine real-engine tests' {
     dotnet restore app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj --locked-mode
 }
-Invoke-Step 'Test Windows engine against staged native executable' {
-    dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj -c Release --no-restore --minimum-expected-tests 1 --environment "MAC_AMBIENT_JEV_TEST_ENGINE_PATH=$engineExecutablePath"
-}
-
 Write-Host '==> resolve Swift debug bin path'
 $binPathLines = @(& swift build --package-path app/MacAmbientJev --show-bin-path)
 $binPathExitCode = $LASTEXITCODE
@@ -100,6 +96,14 @@ if (-not (Test-Path -LiteralPath $runtimeDll -PathType Leaf)) { throw "ONNX Runt
 $destinationDll = Join-Path $binDir 'onnxruntime.dll'
 Copy-Item -LiteralPath $runtimeDll -Destination $destinationDll -Force -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $destinationDll -PathType Leaf)) { throw "ONNX Runtime DLL was not copied to the Swift debug bin directory: $destinationDll" }
+
+$harnessExecutablePath = Join-Path -Path $binDir -ChildPath 'MacAmbientJevEngineHarness.exe'
+if (-not (Test-Path -LiteralPath $harnessExecutablePath -PathType Leaf)) {
+    throw "Swift deterministic engine harness executable is missing: $harnessExecutablePath"
+}
+Invoke-Step 'Test Engine.Tests with staged native engine and Swift deterministic harness' {
+    dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj -c Release --no-restore --minimum-expected-tests 4 --environment "MAC_AMBIENT_JEV_TEST_ENGINE_PATH=$engineExecutablePath" --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=$harnessExecutablePath"
+}
 
 $swiftExecutable = (Get-Command swift -CommandType Application -ErrorAction Stop).Source
 $swiftToolchainDirectory = Split-Path -Parent $swiftExecutable
