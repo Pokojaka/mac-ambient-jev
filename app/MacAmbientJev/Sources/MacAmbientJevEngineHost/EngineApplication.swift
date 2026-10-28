@@ -67,6 +67,7 @@ final class EngineApplicationCore {
     let paths: AppPaths
     let logicalCPUCount: Int
     let settingsStore: EngineSettingsStore
+    let profileDecisionStore: EngineProfileDecisionStore
     let capture: any EngineCaptureProviding
     let inferenceProvider: any EngineInferenceProviding
     let events: EngineEventEmitter
@@ -150,12 +151,20 @@ final class EngineApplicationCore {
         paths = configuration.paths
         logicalCPUCount = configuration.logicalCPUCount
         settingsStore = EngineSettingsStore(paths: configuration.paths, logicalCPUCount: configuration.logicalCPUCount)
+        profileDecisionStore = EngineProfileDecisionStore(paths: configuration.paths)
         self.capture = capture
         inferenceProvider = inference
         self.events = events
         sleep = configuration.sleep
         shutdownPauseTimeout = configuration.shutdownPauseTimeout
         loadSettings()
+        do { profileEvaluation = try profileDecisionStore.load() }
+        catch {
+            report(EngineFailures.failure(
+                code: .filesystem, message: error.localizedDescription, stage: .settings, sessionID: nil,
+                severity: .error, recoveryAction: .retry, details: [EngineFailures.detail(for: error)]
+            ))
+        }
     }
 
     func performMutation<T: Sendable>(
@@ -178,6 +187,21 @@ final class EngineApplicationCore {
     // MARK: Settings
 
     var settings: EngineSettings? { settingsResult?.settings }
+
+    func profileDecisionCommandError(_ error: any Error) -> EngineCommandError {
+        EngineFailures.commandError(
+            .filesystem, "プロファイル判定を読み書きできません: \(error.localizedDescription)", stage: .settings,
+            recoveryAction: .retry, details: [EngineFailures.detail(for: error)]
+        )
+    }
+
+    func completingProfileDecision(_ evaluation: EngineProfileEvaluation) throws -> EngineProfileEvaluation {
+        try EngineProfileEvaluation(
+            initialSize: evaluation.initialSize, recommendLarge: evaluation.recommendLarge, reason: evaluation.reason,
+            explanation: evaluation.explanation, measuredRTF: evaluation.measuredRTF, predictedRTF: evaluation.predictedRTF,
+            decisionState: .complete, calibrationID: evaluation.calibrationID
+        )
+    }
 
     /// Reads settings.json. A missing or corrupt file leaves the engine in `settings_required`; the specific
     /// problem is reported by `settings.get`.
@@ -549,11 +573,19 @@ extension EngineApplicationCore: EngineSettingsHandling {
     func replace(_ payload: EngineSettingsReplacePayload, context: EngineRequestContext) async throws -> EngineSettingsResult {
         let previous = settings
         let result = try await settingsHandler.replace(payload, context: context)
+        var completedEvaluation: EngineProfileEvaluation?
+        var decisionWriteError: Error?
+        if let evaluation = profileEvaluation, evaluation.decisionState != .complete {
+            do {
+                let completed = try completingProfileDecision(evaluation)
+                try profileDecisionStore.save(completed)
+                completedEvaluation = completed
+            } catch { decisionWriteError = error }
+        }
         if previous?.exportDestinationPath != result.settings.exportDestinationPath {
             savedSessionOperations.resetExportDestination()
         }
         settingsResult = result
-        profileEvaluation = nil
         gateway.setPacing(result.settings.lowHeat ? .lowHeat : .normal)
         if let previous, profileDiffers(previous, result.settings) {
             // A changed model profile invalidates the prepared state; no work is running (the handler refused otherwise).
@@ -562,7 +594,9 @@ extension EngineApplicationCore: EngineSettingsHandling {
             presentation.preparationStatusText = nil
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
         }
+        if let completedEvaluation { profileEvaluation = completedEvaluation }
         stateDidChange()
+        if let decisionWriteError { throw profileDecisionCommandError(decisionWriteError) }
         return result
     }
 }
@@ -633,6 +667,20 @@ extension EngineApplicationCore: EngineModelsHandling {
         _ payload: EngineProfilesEvaluatePayload,
         context: EngineRequestContext
     ) async throws -> EngineProfileEvaluation {
+        let persisted: EngineProfileEvaluation?
+        do { persisted = try profileDecisionStore.load() }
+        catch { throw profileDecisionCommandError(error) }
+        if let persisted, persisted.decisionState == .complete || persisted.decisionState == .offered {
+            profileEvaluation = persisted
+            stateDidChange()
+            return persisted
+        }
+        guard !isShuttingDown else {
+            throw EngineFailures.commandError(.cancelled, "終了処理中のためプロファイル判定を変更できません", stage: .settings)
+        }
+        guard isIdle else {
+            throw EngineFailures.commandError(.busy, "録音または処理の実行中はプロファイル判定を変更できません", stage: .settings, recoveryAction: .retry)
+        }
         guard logicalCPUCount > 0, payload.threads <= min(PortableThreadLimit.maximum, logicalCPUCount) else {
             throw EngineFailures.commandError(
                 .invalidRequest,
@@ -654,14 +702,25 @@ extension EngineApplicationCore: EngineModelsHandling {
             measuredRTF: nil,
             calibration: nil
         )
+        let decisionState: EngineProfileDecisionState
+        if settings?.asrSize == .large {
+            decisionState = .complete
+        } else {
+            decisionState = selection.reason == .awaitingAssets
+                ? .awaitingAssets : selection.recommendLarge ? .offered : .complete
+        }
         let evaluation = try EngineProfileEvaluation(
             initialSize: .small,
             recommendLarge: selection.recommendLarge,
             reason: profileReason(selection.reason),
             explanation: selection.explanation,
             measuredRTF: selection.measuredRTF,
-            predictedRTF: selection.predictedRTF
+            predictedRTF: selection.predictedRTF,
+            decisionState: decisionState,
+            calibrationID: nil
         )
+        do { try profileDecisionStore.save(evaluation) }
+        catch { throw profileDecisionCommandError(error) }
         profileEvaluation = evaluation
         stateDidChange()
         return evaluation
@@ -679,8 +738,6 @@ extension EngineApplicationCore: EngineModelsHandling {
     }
 
     func prepare(context: EngineRequestContext) async throws {
-        profileEvaluation = nil
-        stateDidChange()
         let settings = try requireSettings(stage: .validatingModels)
         if case .windowsML = settings.executionProvider {
             throw EngineFailures.commandError(

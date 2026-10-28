@@ -24,6 +24,65 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 根拠: [SessionFolderName.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionFolderName.swift)、[SessionDirectoryLocator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionDirectoryLocator.swift)、[SavedSessionCatalog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SavedSessionCatalog.swift)。
 
+### エンジンのプロファイル記録
+
+`accelerators` は `AppPaths.root` 直下にあり、session folder や `sessionsRoot` override とは独立した application storage です。engine は以下の JSON を `SessionFileAccess.writeAtomically` で保存します。この path は native atomic helper を使い、Foundation の `Data.write(.atomic)` は使いません（#71）。
+
+実装: [EngineVerificationStore.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineVerificationStore.swift)、[EngineProfileDecisionStore.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineProfileDecisionStore.swift)。
+
+```text
+AppPaths.root/
+└── accelerators/
+    ├── <SHA256-of-sorted-JSON-key>.json
+    └── profile-decision.json
+```
+
+`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。key の全フィールドは必須です。
+
+| key field | 型 | 意味 |
+| --- | --- | --- |
+| `gpuName` | String | GPU 名 |
+| `driverVersion` | String | driver version |
+| `adapterID` | String | adapter identity |
+| `deviceID` | String | device identity |
+| `architecture` | String | architecture |
+| `epPackageHash` | String | EP package の hash |
+| `epLibraryHash` | String | EP library の hash |
+| `ortVersion` | String | ONNX Runtime version |
+| `modelRevision` | String | model revision |
+| `modelSize` | String | model size |
+| `decodingSettings` | String | decoding 設定 identity |
+| `fixtureHash` | String | verification fixture の hash |
+| `verificationPolicyVersion` | String | verification policy version |
+| `threads` | Int | 実際の推論 threads 数 |
+
+key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。library path は保存しません。receipt JSON は camelCase で、次の5 key を全て持ちます。
+
+| receipt key | 型 | 検証 |
+| --- | --- | --- |
+| `key` | `EngineVerificationKey` | 要求された file identity と sortedKeys JSON UTF-8 digest が一致 |
+| `observedOutput` | String | 実際に観測した出力 |
+| `passed` | Bool | 成否。`false` は approval にならない |
+| `rtf` | Double | 有限かつ正 |
+| `timestamp` | Date | default Codable 表現の reference-date seconds（2001-01-01 起点）。ISO 8601 文字列ではない |
+
+要求 key の receipt がない場合は未検証です。key が変わると異なる digest/file になり、以前の receipt を流用しません。埋め込み key は要求 key との Swift equality ではなく、埋め込み key 自身を sortedKeys JSON に encode した UTF-8 bytes の SHA-256 が要求された file identifier に一致することを検証します。存在する receipt の JSON・型・値または埋め込み key が不正・不一致なら、欠損扱いにせず corruption error です。この store は receipt の保存・読込のみで、verification command は実装されていません。
+
+`EngineProfileDecisionStore` は上記の app-root file に `EngineProfileEvaluation` を保存します。これは全8 key 必須の strict snake_case JSON です。ファイルがなければ評価なし、破損していれば明示 error であり、未評価とは扱いません。
+
+| key | 型・制約 |
+| --- | --- |
+| `initial_size` | `EngineASRSize`。常に `0.6b` |
+| `recommend_large` | Bool。true は `reason: "recommend_large"` の場合だけ |
+| `reason` | `no_gpu`, `hardware_query_failed`, `provider_unavailable`, `provider_acquisition_failed`, `unknown_dedicated_vram`, `insufficient_dedicated_vram`, `insufficient_memory`, `awaiting_assets`, `eligible`, `verification_required`, `verification_failed`, `uncalibrated`, `unmeasured`, `recommend_large`, `too_slow` |
+| `explanation` | 空でない String |
+| `measured_rtf` | 必須 nullable Double。非 null は有限かつ正 |
+| `predicted_rtf` | 必須 nullable Double。非 null は有限かつ正 |
+| `decision_state` | `awaiting_assets`, `offered`, `complete` |
+| `calibration_id` | 必須 nullable String。非 null は空でない |
+
+`awaiting_assets` は assets が利用可能になった後の明示的な再評価で更新できます。`offered` と `complete` は次の `profiles.evaluate` で保存済み evidence のまま返り、decision を自動再評価しません。成功した `settings.replace` は全 settings を置換し、保留中の evaluation を `complete` にします。必須の `asr_size` が同じ値でも完了し、evaluation の根拠・数値・説明は保持します。`models.prepare` は evaluation を消去しません。hardware/key の変更は一致する EP verification receipt の有無を変えますが、選択済み `asr_size` は変更しません。これらの記録は実 accelerator support や verification の実行を示すものではありません。
+
 ### セッション内のファイルアクセス境界
 
 Windows では root を CreateFileW で検査し、固定した親 handle から NtCreateFile で子を開きます。reparse point は全て拒否します。原子保存は同一ディレクトリに排他的な一時ファイルを作成して FlushFileBuffers で同期し、`writeAtomically` は `msj_rename` helper で公開します。公開 file access API は helper 呼び出し前にファイルを flush し、呼び出し後に親ディレクトリを flush します。`msj_rename` は `FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS` を設定して NtSetInformationFile を呼び出すだけです。`SessionFileAccess.rename` も同じ helper を使います。ログは LockFileEx で排他制御します。API の失敗はエラーにし、保証の弱い経路へ切り替えません。詳細は [windows.md](windows.md) を参照してください。以下の POSIX descriptor の説明は macOS と Linux に適用します。
@@ -285,15 +344,16 @@ CancellationError または取り消し済み task を一時停止とするの�
 | `engine` | String | 実装・エンジンの名前 |
 | `model` | optional String | モデル ID。モデルを使わない段階では省略 |
 | `version` | String | 実装または依存 package の version / revision |
-| `configuration` | String → String の object | その run の設定。数値も文字列で保存 |
+| `configuration` | String key → String または明示的 null の object | その run の設定。数値も文字列で保存 |
 
-判定 run は開始時に読み込んだモデル、または読み込めなかったことの provenance を `processing.run.started` に保存します。run の `configuration` は全て string 値です。境界判定の `span_policy` は、F・B除去範囲の投影方針を識別します。
+判定 run は開始時に読み込んだモデル、または読み込めなかったことの provenance を `processing.run.started` に保存します。`configuration` の value は String または明示的 `null` で、数値も文字列で保存します。境界判定の `span_policy` は、F・B除去範囲の投影方針を識別します。
 
 | 段階 | engine / model / version | configuration |
 | --- | --- | --- |
 | segmentation（Mac） | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`vad_threshold` = `0.5`、`split_search_window_seconds` = `2.0`、`split_energy_frame_seconds` = `0.02`、`minimum_independent_segment_seconds` = `0.5` |
 | segmentation（Linux / Windows） | `onnxruntime-silero-vad` / 固定 model のファイル名 `silero_vad_16k_op15.onnx` / `silero-vad@5cd7945676eb32225748052e2e6a0580e4686a08+onnxruntime@1.31.0` | Mac の segmentation と同じ7キーに、`negative_vad_threshold` = `0.35`、`chunk_samples` = `4096`、`frame_samples` = `512`、`frame_aggregation` = `noisy-or`、`model_sha256` = 固定 model の SHA-256、`intra_op_threads` を加える。詳細は [windows.md](windows.md#silero-vad-の区間検出) |
-| asr | `qwen3-asr-swift` / 外部モデル ID aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language=Japanese`、`minimum_input_seconds=0.02` |
+| asr（Mac） | `qwen3-asr-swift` / 外部モデル ID aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language=Japanese`、`minimum_input_seconds=0.02` |
+| asr（Linux / Windows） | `onnxruntime-qwen3-asr` / `<repository>@<commit>`（選択した `ASRModelSize` の pinned identity） / `onnxruntime-1.31.0` | `asr_size` と `intra_op_threads` は engine 初期化時の実 loader 引数をそのまま固定して記録。全 key と null / string 値は [windows.md](windows.md#onnx-qwen3-asr-engine) の provenance 表を参照 |
 | diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default、`embedding.min_segment_duration_seconds` = `0.3` |
 | clauseBoundary | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | `model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`window_content_tokens=190`、`window_policy=whole-piece-max-min-context`、`span_policy=argmax-o-f-d-b-remove-f-b`、`span_window_policy=whole-piece-max-min-context`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=neutral-punctuation-piecewise` |
 | contentPriority | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=filler-backchannel-removed-neutral-punctuation-piecewise` |
@@ -303,9 +363,9 @@ CancellationError または取り消し済み task を一時停止とするの�
 
 保存済み transcript の読込・materialization は保存済み run を使い、現在の `model_id` とは照合しません。利用者の再試行は保留対象だけを再判定し、成功済み判定を source record として引き継ぎます。確定処理は、live 優先度 run と確定処理の state-hash `model_revision` が一致するときに、各 run の保存済み `filler_ranges` を適用した発話文本文の UTF-8 byte 列が完全一致する判定を再利用し、`model_id` は照合しません。全量再処理は境界と優先度を再計算し、この条件を満たす live 優先度だけを再利用します。
 
-ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・diarization・ASR は実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
+ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・diarization・ASR は実行した上で、任意の decision run を実行しません。ライブ ASR と確定処理 ASR は、それぞれ独立した run ID と `processing.run.started` provenance を持ちます。
 
-根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[SileroFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroFinalTranscriptVADSegmenter.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
+根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[SileroFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroFinalTranscriptVADSegmenter.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[ONNXQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
 ローカル判定と固定 model path の実装: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[LocalClauseTagger.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[ClauseTaggerModel.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizer.swift)、[ClauseTaggerEncoding.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)。
 

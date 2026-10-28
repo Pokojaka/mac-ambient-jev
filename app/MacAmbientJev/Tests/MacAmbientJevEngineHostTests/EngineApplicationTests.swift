@@ -23,6 +23,7 @@ import MacAmbientJevTestSupport
         let h = ApplicationHarness(root: root)
         h.start()
         try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
 
         let before = try await h.state()
         #expect(before.profileSetup.evaluation == nil)
@@ -39,7 +40,9 @@ import MacAmbientJevTestSupport
             reason: .noGPU,
             explanation: "GPU がないため、0.6B を使用します。",
             measuredRTF: nil,
-            predictedRTF: nil
+            predictedRTF: nil,
+            decisionState: .complete,
+            calibrationID: nil
         )
         #expect(evaluation == expected)
 
@@ -55,13 +58,94 @@ import MacAmbientJevTestSupport
             Issue.record("GPU profiles.evaluate did not return an evaluation")
             return
         }
-        #expect(gpuEvaluation.initialSize == .small)
-        #expect(!gpuEvaluation.recommendLarge)
-        #expect(gpuEvaluation.reason == .insufficientDedicatedVRAM)
-        #expect(gpuEvaluation.explanation == "専用 VRAM が不足するため、0.6B を使用します。")
-        #expect(gpuEvaluation.measuredRTF == nil)
-        #expect(gpuEvaluation.predictedRTF == nil)
-        #expect(try await h.state().profileSetup.evaluation == gpuEvaluation)
+        #expect(gpuEvaluation == evaluation)
+        #expect(gpuEvaluation.reason == .noGPU)
+        #expect(gpuEvaluation.decisionState == .complete)
+        #expect(try await h.state().profileSetup.evaluation == evaluation)
+        #expect(try await h.shutdown() == .shutdownRequested)
+        let persistedSettings = try EngineSettingsStore(
+            paths: engineTestPaths(root: root), logicalCPUCount: 4
+        ).load()
+        #expect(persistedSettings.settings.asrSize == .small)
+        #expect(persistedSettings.revision.value == 1)
+        let restarted = ApplicationHarness(root: root)
+        restarted.start()
+        try await restarted.hello()
+        #expect(try await restarted.state().profileSetup.evaluation == evaluation)
+        #expect(try await restarted.shutdown() == .shutdownRequested)
+    }
+
+    @Test func profileEvaluationWaitsForAssetsAndExplicitSettingsAcrossRestarts() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = #"{"hardware":{"kind":"gpu","name":"test GPU","adapter_id":"adapter0","device_id":"gpu0","driver_version":"driver0","dedicated_vram_bytes":8589934592},"acquisition":{"kind":"acquired","provider":"qnn"},"threads":1}"#
+        let first = ApplicationHarness(root: root)
+        first.start()
+        try await first.hello()
+        try await first.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        guard case let .profilesEvaluate(pending) = try await first.call("profiles.evaluate", payload: payload) else {
+            Issue.record("profiles.evaluate did not return an evaluation")
+            return
+        }
+        #expect(pending.reason == .awaitingAssets && pending.decisionState == .awaitingAssets)
+        #expect(try await first.shutdown() == .shutdownRequested)
+
+        let second = ApplicationHarness(root: root)
+        second.start()
+        try await second.hello()
+        #expect(try await second.state().profileSetup.evaluation == pending)
+        try await second.call("models.prepare")
+        guard case let .profilesEvaluate(uncalibrated) = try await second.call("profiles.evaluate", payload: payload) else {
+            Issue.record("profiles.evaluate did not return a completed evaluation")
+            return
+        }
+        #expect(uncalibrated.reason == .uncalibrated && uncalibrated.decisionState == .complete)
+        #expect(uncalibrated.measuredRTF == nil && uncalibrated.predictedRTF == nil)
+        #expect(try await second.shutdown() == .shutdownRequested)
+
+        let offered = try EngineProfileEvaluation(
+            initialSize: .small, recommendLarge: true, reason: .recommendLarge, explanation: "計測結果から 1.7B を推奨します。",
+            measuredRTF: 0.25, predictedRTF: 0.5, decisionState: .offered, calibrationID: "calibration-1"
+        )
+        try EngineProfileDecisionStore(paths: engineTestPaths(root: root)).save(offered)
+        let third = ApplicationHarness(root: root)
+        third.start()
+        try await third.hello()
+        #expect(try await third.state().profileSetup.evaluation == offered)
+        guard case let .profilesEvaluate(returned) = try await third.call("profiles.evaluate", payload: payload) else {
+            Issue.record("profiles.evaluate did not return the saved offer")
+            return
+        }
+        #expect(returned == offered)
+        try await third.replaceSettings(engineTestSettings(), expectedRevision: 1)
+        let completed = try #require(try await third.state().profileSetup.evaluation)
+        #expect(completed.decisionState == .complete && completed.reason == .recommendLarge)
+        #expect(completed.measuredRTF == 0.25 && completed.predictedRTF == 0.5 && completed.calibrationID == "calibration-1")
+        #expect(try await third.shutdown() == .shutdownRequested)
+
+        let fourth = ApplicationHarness(root: root)
+        fourth.start()
+        try await fourth.hello()
+        #expect(try await fourth.state().profileSetup.evaluation == completed)
+        #expect(try await fourth.shutdown() == .shutdownRequested)
+    }
+
+    @Test func corruptProfileDecisionIsVisibleAndNotOverwritten() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = engineTestPaths(root: root).root.appending(path: "accelerators/profile-decision.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corrupt = Data("{invalid".utf8)
+        try corrupt.write(to: file)
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        #expect(try await h.state().failures.contains { $0.code == .filesystem })
+        #expect(try await h.failureCode(
+            of: "profiles.evaluate",
+            payload: #"{"hardware":{"kind":"no_gpu"},"acquisition":{"kind":"unavailable"},"threads":1}"#
+        ) == .filesystem)
+        #expect(try Data(contentsOf: file) == corrupt)
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 

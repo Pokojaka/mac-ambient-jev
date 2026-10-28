@@ -23,7 +23,7 @@ struct EngineProtocolCorpusTests {
         let bytes = try Data(contentsOf: url)
         guard bytes.last == 0x0A else { throw CorpusFixtureError.missingFinalLineFeed }
         let records = bytes.split(separator: 0x0A)
-        #expect(records.count == 123)
+        #expect(records.count == 130)
 
         for rawRecord in records {
             let record = Data(rawRecord)
@@ -274,6 +274,7 @@ private func isNullableField(
     ])
     let isProfileEvaluation = has([
         "initial_size", "recommend_large", "reason", "explanation", "measured_rtf", "predicted_rtf",
+        "decision_state", "calibration_id",
     ])
 
     if key == "request_id" {
@@ -304,7 +305,7 @@ private func isNullableField(
         "queue", "failures", "presentation",
     ]) { return true }
     if key == "dedicated_vram_bytes", isProfileHardwareGPU { return true }
-    if (key == "measured_rtf" || key == "predicted_rtf"), isProfileEvaluation { return true }
+    if (key == "measured_rtf" || key == "predicted_rtf" || key == "calibration_id"), isProfileEvaluation { return true }
     if key == "evaluation", has(["evaluation"]) { return true }
     if key == "default_device_id", has(["source", "devices", "default_device_id"]) { return true }
     if key == "previous_cursor" {

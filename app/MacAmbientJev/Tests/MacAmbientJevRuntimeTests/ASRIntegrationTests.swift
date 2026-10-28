@@ -54,7 +54,7 @@ struct ASRIntegrationTests {
             ModelConfiguration.self,
             from: Data(contentsOf: modelStore.qwen3ASRCacheRoot.appending(path: "config.json"))
         )
-        let promptLanguage = try #require(engine.provenance.configuration["language"])
+        let promptLanguage = try #require(engine.provenance.configuration["language"] ?? nil)
         try #require(configuration.support_languages.contains(promptLanguage),
                      "The decoder prompt must use a language name supported by the loaded model.")
         let result = try await engine.transcribe(

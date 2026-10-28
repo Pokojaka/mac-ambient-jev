@@ -29,6 +29,13 @@ public enum EngineProfileSelectionReason
     [WireValue("too_slow")] TooSlow,
 }
 
+public enum EngineProfileDecisionState
+{
+    [WireValue("awaiting_assets")] AwaitingAssets,
+    [WireValue("offered")] Offered,
+    [WireValue("complete")] Complete,
+}
+
 public enum EngineProfileHardwareKind
 {
     [WireValue("no_gpu")] NoGPU,
@@ -129,7 +136,9 @@ public sealed record EngineProfileEvaluation(
     [property: WireMember("reason")] EngineProfileSelectionReason Reason,
     [property: WireMember("explanation")] string Explanation,
     [property: WireMember("measured_rtf", IsNullable = true)] double? MeasuredRTF,
-    [property: WireMember("predicted_rtf", IsNullable = true)] double? PredictedRTF) : IWireValidatable
+    [property: WireMember("predicted_rtf", IsNullable = true)] double? PredictedRTF,
+    [property: WireMember("decision_state")] EngineProfileDecisionState DecisionState,
+    [property: WireMember("calibration_id", IsNullable = true)] string? CalibrationID) : IWireValidatable
 {
     public void Validate(string path)
     {
@@ -144,6 +153,11 @@ public sealed record EngineProfileEvaluation(
         if (PredictedRTF.HasValue)
         {
             WireCheck.Require(double.IsFinite(PredictedRTF.Value) && PredictedRTF.Value > 0, path + ".predicted_rtf", "predicted_rtf must be finite and positive.");
+        }
+
+        if (CalibrationID is not null)
+        {
+            WireCheck.Nonempty(CalibrationID, path + ".calibration_id");
         }
     }
 }

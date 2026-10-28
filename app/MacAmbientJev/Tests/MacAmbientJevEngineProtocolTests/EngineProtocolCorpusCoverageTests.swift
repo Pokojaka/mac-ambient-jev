@@ -309,7 +309,13 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         reason: .recommendLarge,
         explanation: "確認用",
         measuredRTF: 0.25,
-        predictedRTF: 0.5
+        predictedRTF: 0.5,
+        decisionState: .offered,
+        calibrationID: "calibration-1"
+    )
+    let completeEvaluation = try EngineProfileEvaluation(
+        initialSize: .small, recommendLarge: false, reason: .noGPU, explanation: "確認用",
+        measuredRTF: nil, predictedRTF: nil, decisionState: .complete, calibrationID: nil
     )
     let profileSetup = EngineProfileSetup(evaluation: profileEvaluation)
     let profileEvaluatePayload = try EngineProfilesEvaluatePayload(
@@ -446,6 +452,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         EngineProfileAcquisition.failed("provider acquisition failed"),
         EngineProfileAcquisition.acquired(.openVINO),
         profileEvaluation,
+        completeEvaluation,
         profileSetup,
         resourceProtection,
         EngineDevice.id("coverage-device"),

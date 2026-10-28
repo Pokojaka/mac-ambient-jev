@@ -31,7 +31,7 @@ root の [global.json](../global.json) は test runner として Microsoft.Testi
 
 [`MacAmbientJev.Protocol`](../app/Windows/src/MacAmbientJev.Protocol/MacAmbientJev.Protocol.csproj) が実装するのは byte framing、字句 JSON 検証、writer、canonical UInt64 helper、typed DTO codec で、process、correlation、presentation は含みません。Protocol に ProjectReference / PackageReference はなく、EngineClient は Protocol を、Presentation は Protocol と EngineClient を参照します。3 library project はすべて `net10.0` の BCL-only で、NuGet package、WinUI / WinRT / Windows API に依存しません。EngineClient は engine の staging layout や依存 DLL の検証を持たず、実行ファイル path と process architecture は portable な [engine path resolver](../app/Windows/src/MacAmbientJev.EngineClient/EnginePathResolver.cs) が検証します。この依存関係の説明は portable libraries に限り、WinUI application は別の [full solution](../app/Windows/MacAmbientJev.Windows.slnx) にあります。
 
-Protocol test は MSBuild の Link と CopyToOutputDirectory で共有 UTF-8 の [positive corpus `wire-v1.ndjson`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson)（142 records）と [negative corpus `wire-v1-negative.ndjson`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1-negative.ndjson)（123 records）を Fixtures として出力へコピーします。[WireCorpusTests.cs](../app/Windows/tests/MacAmbientJev.Protocol.Tests/WireCorpusTests.cs) は positive records を typed decode / 再 encode して元 bytes と LF 1 byte への一致を検証し、negative records をすべて拒否します。[WireCorpusCoverageTests.cs](../app/Windows/tests/MacAmbientJev.Protocol.Tests/WireCorpusCoverageTests.cs) は corpus が C# schema の全 wire key、enum 値、union case、nullable member の null / non-null を含むことを確かめます。[EngineProtocolCorpusTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolCorpusTests.swift) は positive corpus の全 object で unknown / missing / 非 nullable null / wrong JSON category の mutation を網羅的に拒否し、shared negative corpus も全件拒否します。Presentation test の [PortableAssemblyTests.cs](../app/Windows/tests/MacAmbientJev.Presentation.Tests/PortableAssemblyTests.cs) は library assembly が `net10.0` で load でき、TargetPlatformAttribute を持たないことを確認します。
+Protocol test は MSBuild の Link と CopyToOutputDirectory で共有 UTF-8 の [positive corpus `wire-v1.ndjson`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson)（142 records）と [negative corpus `wire-v1-negative.ndjson`](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1-negative.ndjson)（130 records）を Fixtures として出力へコピーします。[WireCorpusTests.cs](../app/Windows/tests/MacAmbientJev.Protocol.Tests/WireCorpusTests.cs) は positive records を typed decode / 再 encode して元 bytes と LF 1 byte への一致を検証し、negative records をすべて拒否します。[WireCorpusCoverageTests.cs](../app/Windows/tests/MacAmbientJev.Protocol.Tests/WireCorpusCoverageTests.cs) は corpus が C# schema の全 wire key、enum 値、union case、nullable member の null / non-null を含むことを確かめます。[EngineProtocolCorpusTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/EngineProtocolCorpusTests.swift) は positive corpus の全 object で unknown / missing / 非 nullable null / wrong JSON category の mutation を網羅的に拒否し、shared negative corpus も全件拒否します。Presentation test の [PortableAssemblyTests.cs](../app/Windows/tests/MacAmbientJev.Presentation.Tests/PortableAssemblyTests.cs) は library assembly が `net10.0` で load でき、TargetPlatformAttribute を持たないことを確認します。
 
 ### C# framing、字句検証、typed codec
 
@@ -183,7 +183,7 @@ host が request admission を最大 16 件に制限する場合、それは hos
 | `settings.replace` | `EngineSettingsReplacePayload` `{expected_revision: EngineID|null, settings: EngineSettings}` | `EngineSettingsResult`。10 field 全体の strict replacement。`expected_revision: null` は first setup または invalid settings file の明示的な全体修復だけに使う。schema 1 を含む corrupt file は `invalid_settings` で拒否し、修復置換が成功するまで変更しない。busy 中に recording/model/state と競合する replacement は host が `busy` error で拒否する。 |
 | `models.prepare` | `EngineEmptyPayload` `{}` | `{}`。設定された CPU model profile の検証・load と progress。download はしない。`windows_ml` は settings schema と persistence では有効だが、実行境界では `invalid_settings` / `validating_models` / `replace_settings` で失敗し、message は `Windows ML 実行プロバイダーの登録は未実装のため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください`。CPU への fallback はしない。 |
 | `models.inspect` | `EngineEmptyPayload` `{}` | `EngineModelsInspection`。installed clause tagger の read-only inspection。 |
-| `profiles.evaluate` | [`EngineProfilesEvaluatePayload`](../app/Windows/src/MacAmbientJev.Protocol/EngineProfileModels.cs) `{hardware: EngineProfileHardware, acquisition: EngineProfileAcquisition, threads: Int}` | [`EngineProfileEvaluation`](../app/Windows/src/MacAmbientJev.Protocol/EngineProfileModels.cs)。Core の `initialSizeGate` と `recommendLarge` を実行し、advisory result を返して `state.profile_setup.evaluation` に保持する。設定は保存・変更しない。 |
+| `profiles.evaluate` | [`EngineProfilesEvaluatePayload`](../app/Windows/src/MacAmbientJev.Protocol/EngineProfileModels.cs) `{hardware: EngineProfileHardware, acquisition: EngineProfileAcquisition, threads: Int}` | [`EngineProfileEvaluation`](../app/Windows/src/MacAmbientJev.Protocol/EngineProfileModels.cs)。Core の `initialSizeGate` と `recommendLarge` による advisory result を app-root の profile decision file（[保存形式](storage.md#エンジンのプロファイル記録)）に永続化し、`state.profile_setup.evaluation` に公開する。設定は変更しない。persisted の `offered` / `complete` はそのまま返し、`awaiting_assets` は明示的な再評価対象。 |
 | `shutdown` | `EngineEmptyPayload` `{}` | `{}`。host が capture を安全に停止し resource を release した後に terminal completion して終了する。 |
 
 ### Nested model の exact schema
@@ -219,8 +219,9 @@ host が request admission を最大 16 件に制限する場合、それは hos
 | `EngineProfilesEvaluatePayload` | `hardware: EngineProfileHardware`, `acquisition: EngineProfileAcquisition`, `threads: Int` (1...4)。 |
 | `EngineProfileHardware` | `{kind:"no_gpu"}`、`{kind:"query_failed", message:String}`、または `{kind:"gpu", name:String, adapter_id:String, device_id:String, driver_version:String, dedicated_vram_bytes:UInt64|null}`。variant ごとの key のみ許可し、message / GPU の4 string は空不可。nullable VRAM key も必須で、bytes は JSON UInt64 number。 |
 | `EngineProfileAcquisition` | `{kind:"unavailable"}`、`{kind:"failed", message:String}`、または `{kind:"acquired", provider:EngineProfileProvider}`。variant ごとの key のみ許可し、failed message は空不可。`EngineProfileProvider` は `cpu`, `nv_tensor_rt_rtx`, `open_vino`, `mi_graph_x`, `vitis_ai`, `qnn`。 |
-| `EngineProfileEvaluation` | `initial_size: EngineASRSize` (= `0.6b`), `recommend_large: Bool`, `reason: EngineProfileSelectionReason`, `explanation: String`, `measured_rtf: Double|null`, `predicted_rtf: Double|null`。全6 key 必須。explanation は空でない producer の日本語文、non-null RTF は有限かつ正。`recommend_large` が true なのは reason が `recommend_large` の場合だけ。 |
+| `EngineProfileEvaluation` | 必須8 key: `initial_size: EngineASRSize` (= `0.6b`), `recommend_large: Bool`, `reason: EngineProfileSelectionReason`, `explanation: String`, `measured_rtf: Double|null`, `predicted_rtf: Double|null`, `decision_state: EngineProfileDecisionState`, `calibration_id: String|null`。nullable key も必須で、null を省略できない。explanation と non-null `calibration_id` は空でなく、non-null RTF は有限かつ正。`recommend_large` が true なのは reason が `recommend_large` の場合だけ。 |
 | `EngineProfileSelectionReason` | `no_gpu`, `hardware_query_failed`, `provider_unavailable`, `provider_acquisition_failed`, `unknown_dedicated_vram`, `insufficient_dedicated_vram`, `insufficient_memory`, `awaiting_assets`, `eligible`, `verification_required`, `verification_failed`, `uncalibrated`, `unmeasured`, `recommend_large`, `too_slow`。 |
+| `EngineProfileDecisionState` | `awaiting_assets`, `offered`, `complete`。 |
 | `EngineProfileSetup` | `evaluation: EngineProfileEvaluation|null`。key は必須で、評価未実施時は明示的 `null`。 |
 | `EngineResourceProtection` | `hold_reasons: [EngineResourceHoldReason]`。key は必須、値は重複のない `thermal`, `resource_pressure`, `monitor_failed` の部分集合。 |
 | `EngineReadyPayload` | `capabilities: EngineCapabilities`, `state: EngineState`。 |
@@ -255,7 +256,9 @@ settings と `profiles.evaluate` の `threads` は wire 上 `1...4` です。Win
 
 ### プロファイル評価とリソース保護
 
-`profiles.evaluate` は [`EngineModelsHandling.evaluate`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineHandlers.swift) から [`EngineApplicationCore.evaluate`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication.swift) に入り、Core の [`initialSizeGate`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSizeSelection.swift) と [`recommendLarge`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSizeSelection.swift) を呼びます。Windows engine は memory envelope を `.unmeasured`、verification を `.unverified`、`measuredRTF` / calibration を `nil` とし、`assetsAvailable` は現在 inference が準備済みかだけを表します。この経路は installed assets を probe せず、download・benchmark・RTF 計測・settings の保存・モデル選択の自動変更を行いません。評価は engine process 内の state にだけ保持し、成功した `settings.replace` または `models.prepare` の呼び出しで `profile_setup.evaluation` を null に戻します。
+`profiles.evaluate` は [`EngineModelsHandling.evaluate`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineHandlers.swift) から [`EngineApplicationCore.evaluate`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication.swift) に入り、Core の [`initialSizeGate`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSizeSelection.swift) と [`recommendLarge`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSizeSelection.swift) を呼びます。Windows engine は memory envelope を `.unmeasured`、verification を `.unverified`、`measuredRTF` / calibration を `nil` とし、`assetsAvailable` は現在 inference が準備済みかだけを表します。この経路は installed assets を probe せず、download・benchmark・RTF 計測を行いません。新しい evaluation は app-root の profile decision file（[保存形式](storage.md#エンジンのプロファイル記録)）に保存され、engine 起動時にも読み込まれます。ファイル欠損は評価なし、破損は明示 error であり欠損扱いにしません。`awaiting_assets` は assets の準備後に `profiles.evaluate` を明示的に再実行すれば再評価しますが、`offered` / `complete` は保存済み evaluation を変更せず返し、自動で再評価しません。成功した `settings.replace` は全 settings を明示置換し、保留中の decision を `complete` にします。`asr_size` が以前と同じ値でも完了し、evidence は保持します。`models.prepare` は evaluation を消去しません。評価が EngineSettings を保存したり、ASR size / execution provider を自動選択したりすることはありません。
+
+`EngineVerificationStore` の receipt は hardware・driver・adapter・device・architecture・EP package/library hash・ORT・model revision/size・decoding・fixture・policy version・threads の key に結び付いています。いずれかの key が変われば一致する receipt はなく、過去の approval を流用しませんが、chosen `asr_size` は変更しません。現時点で verification command は実装されておらず、Windows handler は測定・verification evidence を生成しません。`windows_ml` の `models.prepare` は CPU へ fallback せず明示 error になります。
 
 Engine は GlobalMemoryStatusEx や `/proc/meminfo` による memory fact adapter を持たず、`resources.preflight` と `resources.acknowledge` は `EngineCommandName` に存在しません。これらは未対応 stub の command でもありません。`resource_protection.hold_reasons` は現在 processing queue が保持する hold 理由から作り、`thermal`, `resource_pressure`, `monitor_failed` の重複なし配列です。空配列は現在 hold がないことだけを示し、memory が健全であることを示しません。
 
@@ -749,16 +752,24 @@ Actor は同時の `prepare()` 呼び出しで1つの準備 task を共有しま
 
 `transcribe(_:)` はまず16 kHz以外の sample rate を拒否し、次に prepared 状態を確認し、その後に最小音声長を判定します。最小長は `ASRAudioInput.minimumDurationSeconds` の0.02秒（16 kHzで320 samples）で、これ未満の入力は推論せず空 text と `detectedLanguage == nil` を返します。認識言語は日本語固定で、戻り値の `detectedLanguage` は常に `nil` です。生成は最大448 token、停止 token ID `151645` / `151643` で終了し、音声が厳密に15秒を超える場合だけ生成済み token に対する3-gram抑制を有効にします。
 
-provenance は `engine = onnxruntime-qwen3-asr`、`model = <repository>@<commit>`、`version = onnxruntime-1.31.0` です。configuration は次の値です。
+provenance は `engine = onnxruntime-qwen3-asr`、`model = <repository>@<commit>`、`version = onnxruntime-1.31.0` です。`configuration` は String または明示的 `null` の値を持ち、数値・boolean に対応する値も文字列です。size と thread 数は immutable な engine の実 loader 引数から記録し、後の settings や推定値から再構成しません。
 
 | key | value |
 | --- | --- |
+| `asr_size` | 実際に load した `ASRModelSize.rawValue`（`0.6b` または `1.7b`） |
+| `execution_provider` | `cpu` |
+| `device` | `cpu` |
+| `gpu_name`, `driver_version`, `adapter_id`, `device_id`, `ep_package_hash`, `ep_library_hash`, `verification_id`, `calibration_id` | すべて明示的 `null` |
+| `memory_policy` | `cpu_arena_disabled` |
 | `language` | `ja` |
-| `minimum_input_seconds` | `0.02` |
+| `minimum_input_seconds` | string `0.02` |
 | `quantization` | `int4` |
 | `mel_variant` | `whisper-slaney-128-nfft400-hop160-reflect-global-log10` |
-| `max_new_tokens` | `448` |
+| `max_new_tokens` | string `448` |
 | `no_repeat_ngram` | `3 when input_seconds > 15; disabled otherwise` |
+| `intra_op_threads` | engine initializer / loader に渡した値の string |
+| `inter_op_threads` | string `1` |
+| `cpu_memory_arena` | string `false` |
 
 ### Core の初期サイズ判定
 

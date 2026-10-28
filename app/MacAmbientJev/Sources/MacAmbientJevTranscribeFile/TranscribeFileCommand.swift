@@ -375,14 +375,14 @@ internal enum TranscribeFileCommand {
         return object
     }
 
-    private static func requiredConfiguration(_ key: String, from configuration: [String: String]) throws -> String {
-        guard let value = configuration[key] else {
+    private static func requiredConfiguration(_ key: String, from configuration: [String: String?]) throws -> String {
+        guard let storedValue = configuration[key], let value = storedValue else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定に \(key) がありません。")
         }
         return value
     }
 
-    private static func requiredDoubleConfiguration(_ key: String, from configuration: [String: String]) throws -> Double {
+    private static func requiredDoubleConfiguration(_ key: String, from configuration: [String: String?]) throws -> Double {
         let string = try requiredConfiguration(key, from: configuration)
         guard let value = Double(string), value.isFinite else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定 \(key) を数値に変換できません: \(string)")
@@ -390,7 +390,7 @@ internal enum TranscribeFileCommand {
         return value
     }
 
-    private static func requiredIntConfiguration(_ key: String, from configuration: [String: String]) throws -> Int {
+    private static func requiredIntConfiguration(_ key: String, from configuration: [String: String?]) throws -> Int {
         let string = try requiredConfiguration(key, from: configuration)
         guard let value = Int(string) else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定 \(key) を整数に変換できません: \(string)")
@@ -398,7 +398,7 @@ internal enum TranscribeFileCommand {
         return value
     }
 
-    private static func requiredBoolConfiguration(_ key: String, from configuration: [String: String]) throws -> Bool {
+    private static func requiredBoolConfiguration(_ key: String, from configuration: [String: String?]) throws -> Bool {
         let string = try requiredConfiguration(key, from: configuration)
         guard let value = Bool(string) else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定 \(key) を真偽値に変換できません: \(string)")

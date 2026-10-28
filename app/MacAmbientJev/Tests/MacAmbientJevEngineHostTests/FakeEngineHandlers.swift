@@ -226,7 +226,9 @@ final class FakeEngineHandlers:
             reason: .noGPU,
             explanation: "GPU がないため、0.6B を使用します。",
             measuredRTF: nil,
-            predictedRTF: nil
+            predictedRTF: nil,
+            decisionState: .complete,
+            calibrationID: nil
         )
     }
 

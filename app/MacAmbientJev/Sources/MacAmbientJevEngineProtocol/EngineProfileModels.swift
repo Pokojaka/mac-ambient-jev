@@ -55,6 +55,12 @@ public enum EngineProfileSelectionReason: String, Codable, CaseIterable, Equatab
     }
 }
 
+public enum EngineProfileDecisionState: String, Codable, CaseIterable, Equatable, Sendable {
+    case awaitingAssets = "awaiting_assets"
+    case offered
+    case complete
+}
+
 public enum EngineProfileHardware: Codable, Equatable, Sendable {
     case noGPU
     case queryFailed(String)
@@ -291,6 +297,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
     public let explanation: String
     @EngineNullable public private(set) var measuredRTF: Double?
     @EngineNullable public private(set) var predictedRTF: Double?
+    public let decisionState: EngineProfileDecisionState
+    @EngineNullable public private(set) var calibrationID: String?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case initialSize = "initial_size"
@@ -299,6 +307,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         case explanation
         case measuredRTF = "measured_rtf"
         case predictedRTF = "predicted_rtf"
+        case decisionState = "decision_state"
+        case calibrationID = "calibration_id"
     }
 
     public init(
@@ -307,7 +317,9 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         reason: EngineProfileSelectionReason,
         explanation: String,
         measuredRTF: Double?,
-        predictedRTF: Double?
+        predictedRTF: Double?,
+        decisionState: EngineProfileDecisionState,
+        calibrationID: String?
     ) throws {
         try Self.validate(
             initialSize: initialSize,
@@ -315,7 +327,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
             reason: reason,
             explanation: explanation,
             measuredRTF: measuredRTF,
-            predictedRTF: predictedRTF
+            predictedRTF: predictedRTF,
+            calibrationID: calibrationID
         )
         self.initialSize = initialSize
         self.recommendLarge = recommendLarge
@@ -323,6 +336,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         self.explanation = explanation
         _measuredRTF = EngineNullable(wrappedValue: measuredRTF)
         _predictedRTF = EngineNullable(wrappedValue: predictedRTF)
+        self.decisionState = decisionState
+        _calibrationID = EngineNullable(wrappedValue: calibrationID)
     }
 
     private static func validate(
@@ -331,7 +346,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         reason: EngineProfileSelectionReason,
         explanation: String,
         measuredRTF: Double?,
-        predictedRTF: Double?
+        predictedRTF: Double?,
+        calibrationID: String?
     ) throws {
         try engineProfileRequire(initialSize == .small, "initial_size must be small")
         try engineProfileRequireNonempty(explanation, "explanation")
@@ -341,6 +357,9 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         }
         if let predictedRTF {
             try engineProfileRequire(predictedRTF.isFinite && predictedRTF > 0, "predicted_rtf must be finite and positive")
+        }
+        if let calibrationID {
+            try engineProfileRequireNonempty(calibrationID, "calibration_id")
         }
     }
 
@@ -352,7 +371,9 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
             reason: container.decode(EngineProfileSelectionReason.self, forKey: .reason),
             explanation: container.decode(String.self, forKey: .explanation),
             measuredRTF: container.decode(EngineNullable<Double>.self, forKey: .measuredRTF).wrappedValue,
-            predictedRTF: container.decode(EngineNullable<Double>.self, forKey: .predictedRTF).wrappedValue
+            predictedRTF: container.decode(EngineNullable<Double>.self, forKey: .predictedRTF).wrappedValue,
+            decisionState: container.decode(EngineProfileDecisionState.self, forKey: .decisionState),
+            calibrationID: container.decode(EngineNullable<String>.self, forKey: .calibrationID).wrappedValue
         )
     }
 
@@ -363,7 +384,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
             reason: reason,
             explanation: explanation,
             measuredRTF: measuredRTF,
-            predictedRTF: predictedRTF
+            predictedRTF: predictedRTF,
+            calibrationID: calibrationID
         )
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(initialSize, forKey: .initialSize)
@@ -372,6 +394,8 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         try container.encode(explanation, forKey: .explanation)
         try container.encode(_measuredRTF, forKey: .measuredRTF)
         try container.encode(_predictedRTF, forKey: .predictedRTF)
+        try container.encode(decisionState, forKey: .decisionState)
+        try container.encode(_calibrationID, forKey: .calibrationID)
     }
 }
 
