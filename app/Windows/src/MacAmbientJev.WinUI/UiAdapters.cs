@@ -183,3 +183,13 @@ internal sealed class TranscriptScrollAdapter : IDisposable
         DetachTemplateHandlers();
     }
 }
+
+internal static class AppIcon
+{
+    public static void Apply(Microsoft.UI.Windowing.AppWindow window)
+    {
+        var path = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+        if (!System.IO.File.Exists(path)) throw new System.IO.FileNotFoundException("The application icon is missing: " + path, path);
+        window.SetIcon(path);
+    }
+}

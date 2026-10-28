@@ -20,6 +20,7 @@ public sealed partial class MainWindow : Window
     {
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
         InitializeComponent();
+        AppIcon.Apply(AppWindow);
         Root.Loaded += OnRootLoaded;
         try
         {
