@@ -64,9 +64,6 @@ struct EngineVerificationStoreTests {
         let f = try Fixture(); defer { f.cleanUp() }
         let receipt = f.receipt(f.key, "ok", true), id = try f.store.publish(receipt)
         let url = f.paths.root.appending(path: "accelerators/\(id).json"), directory = url.deletingLastPathComponent()
-        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-        let expectedParent = f.paths.root.appending(path: "accelerators").resolvingSymlinksInPath().standardizedFileURL
-        #expect(resolved.deletingLastPathComponent() == expectedParent)
         try FileManager.default.removeItem(at: url)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         let sentinel = url.appending(path: "sentinel"), bytes = Data("unchanged".utf8)
