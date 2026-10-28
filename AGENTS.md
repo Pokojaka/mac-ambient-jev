@@ -35,6 +35,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
 ```
 
+Windows CI は Windows PowerShell 5.1（`powershell`）を使い、`pwsh` は使いません。[`scripts/test-windows.ps1`](scripts/test-windows.ps1) は Swift build / tests と Engine.Tests（実 engine smoke test と C#→Swift harness）を実行します。portable solution tests は別の CI job です（[詳細](docs/testing.md#windows-c-process-client-tests)）。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1
+```
+
 Linux 評価ツールのテストは作業ディレクトリを tools 内の linux-audio にして実行する。
 
 ```bash

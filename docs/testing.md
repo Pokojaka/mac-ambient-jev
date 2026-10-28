@@ -15,7 +15,7 @@ dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
 dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore
 ```
 
-Protocol の smoke test は既存の共有 corpus を出力先から読み、現在の102行が空白でないことを確認します。Presentation の smoke test は library assembly を `net10.0` で load し、TargetPlatformAttribute がないことを確認します（詳細は [Windows の C# portable libraries](windows.md#c-portable-libraries)）。これらのテストは skeleton assembly の配置・portable target を確認し、codec / transport / UI の挙動を検証しません。Swift、model、音声 hardware は必要ありません。
+Protocol は共有102-record corpus の typed decode / reencode と codec / framing validation を検証します。EngineClient は in-memory fake child を使う process-client tests、Presentation は fake engine による store / view-model / paging / guard tests と portable assembly check を行います（詳細は [Windows の C# portable libraries](windows.md#c-portable-libraries)）。Swift、model、音声 hardware は必要ありません。
 
 CI の `dotnet-portable` job は `ubuntu-24.04`、`macos-15`、`windows-2025` matrix で実行し、`dotnet --info` を記録します。CI の test / report command は次のとおりです。
 
@@ -48,7 +48,9 @@ Get-Process -Name MacAmbientJev | Select-Object Id, MainWindowTitle
 Stop-Process -Id $process.Id
 ```
 
-GUI の目視確認と screenshot 採取は VMware console を使い、lead のみが行います。SSH の Session 0 では window が見えない場合があるため、その場合も実際に観測した内容をそのまま報告し、GUI pass と扱いません。
+WinUI は VM の SSH session 0 から起動できません。build / PE checks は GUI の動作を証明しません。GUI の起動・表示、file / folder picker、Explorer reveal、DPI は lead が interactive VM console で手動確認する必要があり、これらを確認済みとは主張しません。
+
+実 microphone、loopback（system audio）、long recordings は fake acceptance の対象外で、手動の real-hardware verification が必要です。
 
 ## 現行 EngineProtocol / EngineHost の検証範囲
 
@@ -105,6 +107,7 @@ python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-st
 [`MacAmbientJev.Engine.Tests.csproj`](../app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj) は [`MacAmbientJev.Portable.slnx`](../app/Windows/MacAmbientJev.Portable.slnx) に含まれません。そのため macOS の portable solution tests は engine 環境変数を必要としません。Windows runner は unfiltered Swift build 済み harness と staged native engine を使い、ONNX Runtime DLL 配置後に project 全体を `--minimum-expected-tests 4` で実行します。x64 / ARM64 の両 matrix entry が対象です。[EngineSmokeTests.cs](../app/Windows/tests/MacAmbientJev.Engine.Tests/EngineSmokeTests.cs) は native engine、[EngineHarnessTests.cs](../app/Windows/tests/MacAmbientJev.Engine.Tests/EngineHarnessTests.cs) は deterministic harness を対象にします。両 path は絶対 path が必須で、unset / relative path は失敗し、skip しません。
 
 ```powershell
+dotnet restore app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj --locked-mode
 dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj -c Release --no-restore --minimum-expected-tests 4 `
   --environment "MAC_AMBIENT_JEV_TEST_ENGINE_PATH=C:\absolute\path\to\MacAmbientJevEngine.exe" `
   --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=C:\absolute\path\to\MacAmbientJevEngineHarness.exe"
