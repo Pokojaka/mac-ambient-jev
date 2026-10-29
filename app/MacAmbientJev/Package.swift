@@ -53,7 +53,8 @@ var targets: [Target] = [
     .target(name: "MacAmbientJevEngineProtocol"),
     .target(
         name: "MacAmbientJevEngineHost",
-        dependencies: ["MacAmbientJevEngineProtocol", "MacAmbientJevCore", "MacAmbientJevPipeline"]
+        dependencies: ["MacAmbientJevEngineProtocol", "MacAmbientJevCore", "MacAmbientJevPipeline"],
+        resources: [.copy("Resources")]
     ),
     .target(
         name: "MacAmbientJevDiarization",

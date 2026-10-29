@@ -585,7 +585,10 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case settingsReplace = "settings.replace"
     case modelsPrepare = "models.prepare"
     case modelsInspect = "models.inspect"
+    case acceleratorsBind = "accelerators.bind"
+    case acceleratorsVerify = "accelerators.verify"
     case profilesEvaluate = "profiles.evaluate"
+    case profilesDecide = "profiles.decide"
     case shutdown
 
     public init(from decoder: Decoder) throws {
@@ -619,7 +622,10 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case settingsReplace(EngineSettingsReplacePayload)
     case modelsPrepare
     case modelsInspect
+    case acceleratorsBind(EngineAcceleratorsBindPayload)
+    case acceleratorsVerify(EngineAcceleratorsVerifyPayload)
     case profilesEvaluate(EngineProfilesEvaluatePayload)
+    case profilesDecide(EngineProfilesDecidePayload)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -648,7 +654,10 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
         case .modelsInspect: .modelsInspect
+        case .acceleratorsBind: .acceleratorsBind
+        case .acceleratorsVerify: .acceleratorsVerify
         case .profilesEvaluate: .profilesEvaluate
+        case .profilesDecide: .profilesDecide
         case .shutdown: .shutdown
         }
     }
@@ -711,8 +720,14 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .modelsInspect:
             _ = try EngineEmptyPayload(from: payload)
             return .modelsInspect
+        case .acceleratorsBind:
+            return .acceleratorsBind(try EngineAcceleratorsBindPayload(from: payload))
+        case .acceleratorsVerify:
+            return .acceleratorsVerify(try EngineAcceleratorsVerifyPayload(from: payload))
         case .profilesEvaluate:
             return .profilesEvaluate(try EngineProfilesEvaluatePayload(from: payload))
+        case .profilesDecide:
+            return .profilesDecide(try EngineProfilesDecidePayload(from: payload))
         case .shutdown:
             _ = try EngineEmptyPayload(from: payload)
             return .shutdown
@@ -743,7 +758,13 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .settingsReplace(payload):
             try payload.encode(to: encoder)
+        case let .acceleratorsBind(payload):
+            try payload.encode(to: encoder)
+        case let .acceleratorsVerify(payload):
+            try payload.encode(to: encoder)
         case let .profilesEvaluate(payload):
+            try payload.encode(to: encoder)
+        case let .profilesDecide(payload):
             try payload.encode(to: encoder)
         }
     }

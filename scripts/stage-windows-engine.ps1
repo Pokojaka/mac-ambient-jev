@@ -231,12 +231,14 @@ try {
     $resourcePaths = @(
         'MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/clause_tagger_model.json',
         'MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/qwen3_asr_models.json',
-        'MacAmbientJev_MacAmbientJevDiarization.resources/Resources/community1_diarization_models.json'
+        'MacAmbientJev_MacAmbientJevDiarization.resources/Resources/community1_diarization_models.json',
+        'MacAmbientJev_MacAmbientJevEngineHost.resources/Resources/qwen3_asr_voicevox_short.wav',
+        'MacAmbientJev_MacAmbientJevEngineHost.resources/Resources/qwen3_asr_voicevox.LICENSE.txt'
     )
     foreach ($resourcePath in $resourcePaths) {
         $resourceSource = Join-Path -Path $releaseBinDirectory -ChildPath $resourcePath
         if (-not (Test-Path -LiteralPath $resourceSource -PathType Leaf)) {
-            throw "Required SwiftPM resource manifest is missing from the release bin directory: $resourceSource"
+            throw "Required SwiftPM resource is missing from the release bin directory: $resourceSource"
         }
     }
 

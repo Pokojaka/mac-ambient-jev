@@ -35,9 +35,13 @@ public final class EngineApplication {
         configuration: EngineApplicationConfiguration,
         capture: any EngineCaptureProviding,
         inference: any EngineInferenceProviding,
-        events: EngineEventEmitter
+        events: EngineEventEmitter,
+        acceleratorRegistry: any EngineAcceleratorRegistry = EngineUnavailableAcceleratorRegistry()
     ) {
-        core = EngineApplicationCore(configuration: configuration, capture: capture, inference: inference, events: events)
+        core = EngineApplicationCore(
+            configuration: configuration, capture: capture, inference: inference, events: events,
+            acceleratorRegistry: acceleratorRegistry
+        )
     }
 
     public var handlers: EngineHandlers {
@@ -68,6 +72,8 @@ final class EngineApplicationCore {
     let logicalCPUCount: Int
     let settingsStore: EngineSettingsStore
     let profileDecisionStore: EngineProfileDecisionStore
+    let verificationStore: EngineVerificationStore
+    let acceleratorRegistry: any EngineAcceleratorRegistry
     let capture: any EngineCaptureProviding
     let inferenceProvider: any EngineInferenceProviding
     let events: EngineEventEmitter
@@ -81,6 +87,9 @@ final class EngineApplicationCore {
     var settingsResult: EngineSettingsResult?
     var inference: EngineInference?
     var profileEvaluation: EngineProfileEvaluation? = nil
+    var profileSetupOperation: EngineProfileSetupOperation? = nil
+    var acceleratorBindings: [String: EngineAcceleratorDescriptor] = [:]
+    var acceleratorSetupTask: Task<EngineAcceleratorsVerifyResult, Error>? = nil
     var isPreparingModels = false
     var presentation = EnginePresentation()
     var isShuttingDown = false
@@ -146,12 +155,15 @@ final class EngineApplicationCore {
         configuration: EngineApplicationConfiguration,
         capture: any EngineCaptureProviding,
         inference: any EngineInferenceProviding,
-        events: EngineEventEmitter
+        events: EngineEventEmitter,
+        acceleratorRegistry: any EngineAcceleratorRegistry
     ) {
         paths = configuration.paths
         logicalCPUCount = configuration.logicalCPUCount
         settingsStore = EngineSettingsStore(paths: configuration.paths, logicalCPUCount: configuration.logicalCPUCount)
         profileDecisionStore = EngineProfileDecisionStore(paths: configuration.paths)
+        verificationStore = EngineVerificationStore(paths: configuration.paths)
+        self.acceleratorRegistry = acceleratorRegistry
         self.capture = capture
         inferenceProvider = inference
         self.events = events
@@ -195,11 +207,14 @@ final class EngineApplicationCore {
         )
     }
 
-    func completingProfileDecision(_ evaluation: EngineProfileEvaluation) throws -> EngineProfileEvaluation {
+    func completingProfileDecision(
+        _ evaluation: EngineProfileEvaluation,
+        requestedChoice: EngineProfileChoice
+    ) throws -> EngineProfileEvaluation {
         try EngineProfileEvaluation(
             initialSize: evaluation.initialSize, recommendLarge: evaluation.recommendLarge, reason: evaluation.reason,
             explanation: evaluation.explanation, measuredRTF: evaluation.measuredRTF, predictedRTF: evaluation.predictedRTF,
-            decisionState: .complete, calibrationID: evaluation.calibrationID
+            decisionState: .complete, requestedChoice: requestedChoice, calibrationID: evaluation.calibrationID
         )
     }
 
@@ -276,7 +291,7 @@ final class EngineApplicationCore {
                 revision: try EngineID(revision),
                 screen: screen,
                 setup: setupStatus,
-                profileSetup: EngineProfileSetup(evaluation: profileEvaluation),
+                profileSetup: EngineProfileSetup(evaluation: profileEvaluation, operation: profileSetupOperation),
                 resourceProtection: try resourceProtectionState(),
                 recovery: recoveryStatus,
                 recording: try recordingState(),
@@ -400,6 +415,11 @@ final class EngineApplicationCore {
     }
 
     func requireModelsPrepared(stage: EngineStage) throws -> EngineInference {
+        guard profileSetupOperation == nil else {
+            throw EngineFailures.commandError(
+                .busy, "アクセラレーター設定中のため操作を開始できません", stage: stage, recoveryAction: .retry
+            )
+        }
         guard !isPreparingModels else {
             throw EngineFailures.commandError(
                 .busy, "モデルの準備が実行中です", stage: stage, recoveryAction: .retry
@@ -415,9 +435,9 @@ final class EngineApplicationCore {
     }
 
     /// Nothing uses the models, so settings may change and the models may be released:
-    /// no recording, no queued, held or running processing or live transcription, no model preparation.
+    /// no recording, queued, held or running processing, live transcription, model preparation or accelerator setup.
     var isIdle: Bool {
-        recording.phase == .idle && isProcessingIdle && !isPreparingModels
+        recording.phase == .idle && isProcessingIdle && !isPreparingModels && profileSetupOperation == nil
     }
 
     /// No finalization, decision retry or live transcription is queued or running.
@@ -560,7 +580,7 @@ extension EngineApplicationCore: EngineStateHandling {
 extension EngineApplicationCore: EngineSettingsHandling {
     private var settingsHandler: EngineSettingsStoreHandler {
         EngineSettingsStoreHandler(store: settingsStore) { [self] current, proposed in
-            guard !isPreparingModels, !isShuttingDown else { return true }
+            guard !isPreparingModels, profileSetupOperation == nil, !isShuttingDown else { return true }
             guard let current else { return false }
             return !isIdle && profileDiffers(current, proposed)
         }
@@ -575,9 +595,11 @@ extension EngineApplicationCore: EngineSettingsHandling {
         let result = try await settingsHandler.replace(payload, context: context)
         var completedEvaluation: EngineProfileEvaluation?
         var decisionWriteError: Error?
-        if let evaluation = profileEvaluation, evaluation.decisionState != .complete {
+        if previous?.asrSize != result.settings.asrSize,
+           let evaluation = profileEvaluation, evaluation.decisionState != .complete {
             do {
-                let completed = try completingProfileDecision(evaluation)
+                let choice: EngineProfileChoice = result.settings.asrSize == .small ? .small : .large
+                let completed = try completingProfileDecision(evaluation, requestedChoice: choice)
                 try profileDecisionStore.save(completed)
                 completedEvaluation = completed
             } catch { decisionWriteError = error }
@@ -670,7 +692,8 @@ extension EngineApplicationCore: EngineModelsHandling {
         let persisted: EngineProfileEvaluation?
         do { persisted = try profileDecisionStore.load() }
         catch { throw profileDecisionCommandError(error) }
-        if let persisted, persisted.decisionState == .complete || persisted.decisionState == .offered {
+        if let persisted,
+           (persisted.decisionState == .complete || persisted.decisionState == .offered || persisted.requestedChoice != nil) {
             profileEvaluation = persisted
             stateDidChange()
             return persisted
@@ -717,6 +740,7 @@ extension EngineApplicationCore: EngineModelsHandling {
             measuredRTF: selection.measuredRTF,
             predictedRTF: selection.predictedRTF,
             decisionState: decisionState,
+            requestedChoice: nil,
             calibrationID: nil
         )
         do { try profileDecisionStore.save(evaluation) }
@@ -738,6 +762,11 @@ extension EngineApplicationCore: EngineModelsHandling {
     }
 
     func prepare(context: EngineRequestContext) async throws {
+        guard profileSetupOperation == nil else {
+            throw EngineFailures.commandError(
+                .busy, "アクセラレーター設定中のためモデルを準備できません", stage: .validatingModels, recoveryAction: .retry
+            )
+        }
         let settings = try requireSettings(stage: .validatingModels)
         if case .windowsML = settings.executionProvider {
             throw EngineFailures.commandError(
@@ -893,13 +922,19 @@ extension EngineApplicationCore: EngineShutdownHandling {
     /// Stops capture durably, pauses inference at its next boundary and waits for it. Sessions left unfinished are
     /// recovered on the next launch. Fails when running work does not pause within `shutdownPauseTimeout`.
     func shutdown(reason: EngineShutdownReason) async throws {
+        isShuttingDown = true
+        let acceleratorSetupTaskAtShutdown = acceleratorSetupTask
+        acceleratorSetupTaskAtShutdown?.cancel()
+        _ = await acceleratorSetupTaskAtShutdown?.result
+        acceleratorSetupTask = nil
+        profileSetupOperation = nil
+
         eventsClosed = true
         eventsEnabled = false
         pendingFailureEvents.removeAll()
         onBackgroundEventStateChange?()
         let failureEventTaskAtShutdown = failureEventTask
 
-        isShuttingDown = true
         processingCoordinator.requestPause()
         var sessionIDs = processingQueue.sessionIDs
         if let recordingSessionID = recording.sessionID {

@@ -26,9 +26,9 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 ### エンジンのプロファイル記録
 
-`accelerators` は `AppPaths.root` 直下にあり、session folder や `sessionsRoot` override とは独立した application storage です。engine は以下の JSON を `SessionFileAccess.writeAtomically` で保存します。この path は native atomic helper を使い、Foundation の `Data.write(.atomic)` は使いません（#71）。
+`accelerators` は `AppPaths.root` 直下にあり、session folder や `sessionsRoot` override とは独立した application storage です。engine は以下の JSON を `SessionFileAccess.writeAtomically` で保存します。この path は native atomic helper を使い、Foundation の `Data.write(.atomic)` は使いません（#71）。descriptor の `library_path` / dependency path と process-local `binding_id` は保存しません。`state.profile_setup.operation` も現在の engine process state だけにあり、decision file には保存しません。`EngineState.revision` は `profiles.decide.expected_revision` が compare-and-swap に使う実行中 state revision であり、永続化しません。
 
-実装: [EngineVerificationStore.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineVerificationStore.swift)、[EngineProfileDecisionStore.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineProfileDecisionStore.swift)。
+実装: [EngineVerificationStore.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineVerificationStore.swift)、[EngineProfileDecisionStore.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineProfileDecisionStore.swift)、[EngineApplication+Accelerators.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Accelerators.swift)、[EngineAcceleratorModels.swift](../app/MacAmbientJev/Sources/MacAmbientJevEngineProtocol/EngineAcceleratorModels.swift) / [C# EngineAcceleratorModels.cs](../app/Windows/src/MacAmbientJev.Protocol/EngineAcceleratorModels.cs)。
 
 ```text
 AppPaths.root/
@@ -37,7 +37,7 @@ AppPaths.root/
     └── profile-decision.json
 ```
 
-`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。key の全フィールドは必須です。
+`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。`accelerators.verify` の `verification_id` はこの既存 file name（`.json` 拡張子を除く digest）と同じ値で、pass / fail receipt をこの名前で公開します。key の全フィールドは必須です。
 
 | key field | 型 | 意味 |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ AppPaths.root/
 | `adapterID` | String | adapter identity |
 | `deviceID` | String | device identity |
 | `architecture` | String | architecture |
-| `epPackageHash` | String | EP package の hash |
+| `epPackageHash` | String | JSON string array `[provider_name, package_identity] + sorted dependency hashes` を JSONEncoder で encode した bytes の SHA-256（lowercase hex）。dependency hash は辞書順。DLL path は使わない |
 | `epLibraryHash` | String | EP library の hash |
 | `ortVersion` | String | ONNX Runtime version |
 | `modelRevision` | String | model revision |
@@ -56,7 +56,7 @@ AppPaths.root/
 | `verificationPolicyVersion` | String | verification policy version |
 | `threads` | Int | 実際の推論 threads 数 |
 
-key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。library path は保存しません。receipt JSON は camelCase で、次の5 key を全て持ちます。
+key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。library / dependency path と process-local `binding_id` は保存しません。receipt JSON は現在の camelCase schema のまま、次の5 key を全て持ちます。
 
 | receipt key | 型 | 検証 |
 | --- | --- | --- |
@@ -66,9 +66,9 @@ key の String は opaque な identity 値であり、この store は空文字�
 | `rtf` | Double | 有限かつ正 |
 | `timestamp` | Date | default Codable 表現の reference-date seconds（2001-01-01 起点）。ISO 8601 文字列ではない |
 
-要求 key の receipt がない場合は未検証です。key が変わると異なる digest/file になり、以前の receipt を流用しません。埋め込み key は要求 key との Swift equality ではなく、埋め込み key 自身を sortedKeys JSON に encode した UTF-8 bytes の SHA-256 が要求された file identifier に一致することを検証します。存在する receipt の JSON・型・値または埋め込み key が不正・不一致なら、欠損扱いにせず corruption error です。この store は receipt の保存・読込のみで、verification command は実装されていません。
+要求 key の receipt がない場合は未検証です。key が変わると異なる digest/file になり、以前の receipt を流用しません。埋め込み key は要求 key との Swift equality ではなく、埋め込み key 自身を sortedKeys JSON に encode した UTF-8 bytes の SHA-256 が要求された file identifier に一致することを検証します。存在する receipt の JSON・型・値または埋め込み key が不正・不一致なら、欠損扱いにせず corruption error です。verification の pass / output mismatch と、model 作成・prepare 後の inference error は receipt を publish し、fail は `passed: false` として approval になりません。registry / selection / preparation / fixture setup failure と cancellation は receipt を作りません。実行は [`EngineApplication+Accelerators.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Accelerators.swift) が行い、この store は receipt の保存・読込を担います。
 
-`EngineProfileDecisionStore` は上記の app-root file に `EngineProfileEvaluation` を保存します。これは全8 key 必須の strict snake_case JSON です。ファイルがなければ評価なし、破損していれば明示 error であり、未評価とは扱いません。
+`EngineProfileDecisionStore` は上記の app-root file に `EngineProfileEvaluation` を保存します。これは全9 key 必須の strict snake_case JSON です。ファイルがなければ評価なし、破損していれば明示 error であり、未評価とは扱いません。
 
 | key | 型・制約 |
 | --- | --- |
@@ -79,9 +79,10 @@ key の String は opaque な identity 値であり、この store は空文字�
 | `measured_rtf` | 必須 nullable Double。非 null は有限かつ正 |
 | `predicted_rtf` | 必須 nullable Double。非 null は有限かつ正 |
 | `decision_state` | `awaiting_assets`, `offered`, `complete` |
+| `requested_choice` | 必須 nullable `EngineProfileChoice` (`small` / `large`)。明示選択がなければ `null` |
 | `calibration_id` | 必須 nullable String。非 null は空でない |
 
-`awaiting_assets` は assets が利用可能になった後の明示的な再評価で更新できます。`offered` と `complete` は次の `profiles.evaluate` で保存済み evidence のまま返り、decision を自動再評価しません。成功した `settings.replace` は全 settings を置換し、保留中の evaluation を `complete` にします。必須の `asr_size` が同じ値でも完了し、evaluation の根拠・数値・説明は保持します。`models.prepare` は evaluation を消去しません。hardware/key の変更は一致する EP verification receipt の有無を変えますが、選択済み `asr_size` は変更しません。これらの記録は実 accelerator support や verification の実行を示すものではありません。
+`profiles.decide` は explicit choice をこの file と `EngineState.profile_setup.evaluation` に記録しますが、settings 適用・download・model 切替はしません。`small` は `complete`、`large` は既存の `asr_size: 1.7b` settings profile が準備済みの場合だけ `complete` になり、それ以外は `awaiting_assets` です。`awaiting_assets` の自動再評価は `requested_choice: null` のときだけで、選択済み pending `large` は `profiles.evaluate` でも保持します。`offered` / `complete` は次の `profiles.evaluate` でそのまま維持されます。`settings.replace` は `asr_size` が実際に変化した場合にだけ pending decision を `complete` にし、`requested_choice` に変更後の size (`small` / `large`) を記録します。同じ `asr_size` の replacement は pending decision を完了しません。`models.prepare` は evaluation を消去しません。hardware/key の変更は一致する EP verification receipt の有無を変えますが、receipt 自体が選択済み `asr_size` を変更することはありません。Windows production registry は利用不能を明示するため、この保存形式だけで production accelerator availability / Windows ML success を示しません。
 
 ### セッション内のファイルアクセス境界
 

@@ -203,6 +203,16 @@ final class FakeEngineHandlers:
         }
     }
 
+    func bind(_ payload: EngineAcceleratorsBindPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsBindResult {
+        try await enter("accelerators.bind")
+        preconditionFailure("not configured")
+    }
+
+    func verify(_ payload: EngineAcceleratorsVerifyPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsVerifyResult {
+        try await enter("accelerators.verify")
+        preconditionFailure("not configured")
+    }
+
     func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection {
         try await enter("models.inspect")
         return EngineModelsInspection(clauseTagger: .invalid(try EngineFailure(
@@ -228,8 +238,14 @@ final class FakeEngineHandlers:
             measuredRTF: nil,
             predictedRTF: nil,
             decisionState: .complete,
+            requestedChoice: nil,
             calibrationID: nil
         )
+    }
+
+    func decide(_ payload: EngineProfilesDecidePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation {
+        try await enter("profiles.decide")
+        preconditionFailure("not configured")
     }
 
     func shutdown(reason: EngineShutdownReason) async throws {

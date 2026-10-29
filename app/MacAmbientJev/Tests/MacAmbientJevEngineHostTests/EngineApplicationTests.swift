@@ -42,6 +42,7 @@ import MacAmbientJevTestSupport
             measuredRTF: nil,
             predictedRTF: nil,
             decisionState: .complete,
+            requestedChoice: nil,
             calibrationID: nil
         )
         #expect(evaluation == expected)
@@ -105,7 +106,7 @@ import MacAmbientJevTestSupport
 
         let offered = try EngineProfileEvaluation(
             initialSize: .small, recommendLarge: true, reason: .recommendLarge, explanation: "計測結果から 1.7B を推奨します。",
-            measuredRTF: 0.25, predictedRTF: 0.5, decisionState: .offered, calibrationID: "calibration-1"
+            measuredRTF: 0.25, predictedRTF: 0.5, decisionState: .offered, requestedChoice: nil, calibrationID: "calibration-1"
         )
         try EngineProfileDecisionStore(paths: engineTestPaths(root: root)).save(offered)
         let third = ApplicationHarness(root: root)
@@ -118,8 +119,22 @@ import MacAmbientJevTestSupport
         }
         #expect(returned == offered)
         try await third.replaceSettings(engineTestSettings(), expectedRevision: 1)
+        let afterReplacement = try await third.state()
+        let stillOffered = try #require(afterReplacement.profileSetup.evaluation)
+        #expect(stillOffered == offered)
+        #expect(stillOffered.decisionState == .offered)
+
+        let decideRequest = try EngineProfilesDecidePayload(expectedRevision: afterReplacement.revision, choice: .small)
+        let decidePayload = String(decoding: try JSONEncoder().encode(decideRequest), as: UTF8.self)
+        guard case let .profilesDecide(decided) = try await third.call("profiles.decide", payload: decidePayload) else {
+            Issue.record("profiles.decide did not return an evaluation")
+            return
+        }
         let completed = try #require(try await third.state().profileSetup.evaluation)
-        #expect(completed.decisionState == .complete && completed.reason == .recommendLarge)
+        #expect(decided == completed)
+        #expect(completed.decisionState == .complete)
+        #expect(completed.requestedChoice == .small)
+        #expect(completed.reason == .eligible)
         #expect(completed.measuredRTF == 0.25 && completed.predictedRTF == 0.5 && completed.calibrationID == "calibration-1")
         #expect(try await third.shutdown() == .shutdownRequested)
 

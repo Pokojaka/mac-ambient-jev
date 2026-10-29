@@ -61,6 +61,11 @@ public enum EngineProfileDecisionState: String, Codable, CaseIterable, Equatable
     case complete
 }
 
+public enum EngineProfileSetupOperation: String, Codable, CaseIterable, Equatable, Sendable {
+    case binding
+    case verifying
+}
+
 public enum EngineProfileHardware: Codable, Equatable, Sendable {
     case noGPU
     case queryFailed(String)
@@ -298,6 +303,7 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
     @EngineNullable public private(set) var measuredRTF: Double?
     @EngineNullable public private(set) var predictedRTF: Double?
     public let decisionState: EngineProfileDecisionState
+    @EngineNullable public private(set) var requestedChoice: EngineProfileChoice?
     @EngineNullable public private(set) var calibrationID: String?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -308,6 +314,7 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         case measuredRTF = "measured_rtf"
         case predictedRTF = "predicted_rtf"
         case decisionState = "decision_state"
+        case requestedChoice = "requested_choice"
         case calibrationID = "calibration_id"
     }
 
@@ -319,6 +326,7 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         measuredRTF: Double?,
         predictedRTF: Double?,
         decisionState: EngineProfileDecisionState,
+        requestedChoice: EngineProfileChoice?,
         calibrationID: String?
     ) throws {
         try Self.validate(
@@ -337,6 +345,7 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         _measuredRTF = EngineNullable(wrappedValue: measuredRTF)
         _predictedRTF = EngineNullable(wrappedValue: predictedRTF)
         self.decisionState = decisionState
+        _requestedChoice = EngineNullable(wrappedValue: requestedChoice)
         _calibrationID = EngineNullable(wrappedValue: calibrationID)
     }
 
@@ -373,6 +382,7 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
             measuredRTF: container.decode(EngineNullable<Double>.self, forKey: .measuredRTF).wrappedValue,
             predictedRTF: container.decode(EngineNullable<Double>.self, forKey: .predictedRTF).wrappedValue,
             decisionState: container.decode(EngineProfileDecisionState.self, forKey: .decisionState),
+            requestedChoice: container.decode(EngineNullable<EngineProfileChoice>.self, forKey: .requestedChoice).wrappedValue,
             calibrationID: container.decode(EngineNullable<String>.self, forKey: .calibrationID).wrappedValue
         )
     }
@@ -395,28 +405,36 @@ public struct EngineProfileEvaluation: Codable, Equatable, Sendable {
         try container.encode(_measuredRTF, forKey: .measuredRTF)
         try container.encode(_predictedRTF, forKey: .predictedRTF)
         try container.encode(decisionState, forKey: .decisionState)
+        try container.encode(_requestedChoice, forKey: .requestedChoice)
         try container.encode(_calibrationID, forKey: .calibrationID)
     }
 }
 
 public struct EngineProfileSetup: Codable, Equatable, Sendable {
     @EngineNullable public private(set) var evaluation: EngineProfileEvaluation?
+    @EngineNullable public private(set) var operation: EngineProfileSetupOperation?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case evaluation
+        case operation
     }
 
-    public init(evaluation: EngineProfileEvaluation?) {
+    public init(evaluation: EngineProfileEvaluation?, operation: EngineProfileSetupOperation?) {
         _evaluation = EngineNullable(wrappedValue: evaluation)
+        _operation = EngineNullable(wrappedValue: operation)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
-        self.init(evaluation: try container.decode(EngineNullable<EngineProfileEvaluation>.self, forKey: .evaluation).wrappedValue)
+        self.init(
+            evaluation: try container.decode(EngineNullable<EngineProfileEvaluation>.self, forKey: .evaluation).wrappedValue,
+            operation: try container.decode(EngineNullable<EngineProfileSetupOperation>.self, forKey: .operation).wrappedValue
+        )
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(_evaluation, forKey: .evaluation)
+        try container.encode(_operation, forKey: .operation)
     }
 }

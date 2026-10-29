@@ -311,13 +311,18 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         measuredRTF: 0.25,
         predictedRTF: 0.5,
         decisionState: .offered,
+        requestedChoice: nil,
         calibrationID: "calibration-1"
     )
     let completeEvaluation = try EngineProfileEvaluation(
         initialSize: .small, recommendLarge: false, reason: .noGPU, explanation: "確認用",
-        measuredRTF: nil, predictedRTF: nil, decisionState: .complete, calibrationID: nil
+        measuredRTF: nil, predictedRTF: nil, decisionState: .complete, requestedChoice: nil, calibrationID: nil
     )
-    let profileSetup = EngineProfileSetup(evaluation: profileEvaluation)
+    let chosenEvaluation = try EngineProfileEvaluation(
+        initialSize: .small, recommendLarge: false, reason: .eligible, explanation: "確認用",
+        measuredRTF: nil, predictedRTF: nil, decisionState: .complete, requestedChoice: .small, calibrationID: nil
+    )
+    let profileSetup = EngineProfileSetup(evaluation: profileEvaluation, operation: .binding)
     let profileEvaluatePayload = try EngineProfilesEvaluatePayload(
         hardware: .gpu(
             name: "Coverage GPU", adapterID: "coverage-adapter", deviceID: "coverage-device",
@@ -336,7 +341,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         revision: id,
         screen: .idle,
         setup: .ready,
-        profileSetup: EngineProfileSetup(evaluation: nil),
+        profileSetup: EngineProfileSetup(evaluation: nil, operation: nil),
         resourceProtection: try EngineResourceProtection(holdReasons: []),
         recovery: .completed,
         recording: recording,
@@ -414,6 +419,21 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         thermalMonitoring: .none
     )
     let sha256 = String(repeating: "a", count: 64)
+    let dependency = try EngineAcceleratorDependency(path: "C:/Coverage/dependency.dll", hash: sha256)
+    let acceleratorDescriptor = try EngineAcceleratorDescriptor(
+        providerName: "coverage-provider", deviceID: "coverage-device", gpuName: "Coverage GPU",
+        driverVersion: "1.0", adapterID: "coverage-adapter", architecture: "x64",
+        dedicatedVRAMBytes: 24576, packageIdentity: "coverage-package",
+        libraryPath: "C:/Coverage/provider.dll", libraryHash: sha256, dependencies: [dependency]
+    )
+    let bindPayload = try EngineAcceleratorsBindPayload(descriptor: acceleratorDescriptor)
+    let bindResult = try EngineAcceleratorsBindResult(bindingID: "coverage-binding")
+    let verifyPayload = try EngineAcceleratorsVerifyPayload(bindingID: "coverage-binding", asrSize: .small, threads: 1)
+    let verifyPass = EngineAcceleratorsVerifyResult.pass(verificationID: "coverage-verification", rtf: 0.5)
+    let verifyFail = EngineAcceleratorsVerifyResult.fail(
+        verificationID: "coverage-verification", reason: "verification failed", observedOutput: "unexpected output"
+    )
+    let decidePayload = try EngineProfilesDecidePayload(expectedRevision: id, choice: .small)
     let identity = try EngineClauseTaggerIdentity(
         backend: "coverage", modelID: "coverage", revision: sha256, tokenizerSHA256: sha256
     )
@@ -442,6 +462,13 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         EngineSettingsReplacePayload(expectedRevision: nil, settings: settings),
         settings,
         profileEvaluatePayload,
+        acceleratorDescriptor,
+        bindPayload,
+        bindResult,
+        verifyPayload,
+        verifyPass,
+        verifyFail,
+        decidePayload,
         EngineProfileHardware.noGPU,
         EngineProfileHardware.queryFailed("GPU query failed"),
         EngineProfileHardware.gpu(
@@ -453,6 +480,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         EngineProfileAcquisition.acquired(.openVINO),
         profileEvaluation,
         completeEvaluation,
+        chosenEvaluation,
         profileSetup,
         resourceProtection,
         EngineDevice.id("coverage-device"),

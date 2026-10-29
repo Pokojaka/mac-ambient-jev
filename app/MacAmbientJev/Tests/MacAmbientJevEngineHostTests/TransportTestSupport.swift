@@ -225,7 +225,7 @@ func stateEvent(revision: UInt64) throws -> EngineEvent {
 func sampleState(revision: UInt64) throws -> EngineState {
     try EngineState(
         revision: EngineID(revision), screen: .idle, setup: .ready,
-        profileSetup: .init(evaluation: nil), resourceProtection: try .init(holdReasons: []), recovery: .completed,
+        profileSetup: .init(evaluation: nil, operation: nil), resourceProtection: try .init(holdReasons: []), recovery: .completed,
         recording: nil, queue: [], failures: [],
         presentation: try EnginePresentationState(
             recordingStatusText: "待機中", recordingTone: .neutral, preparationPhase: .ready,

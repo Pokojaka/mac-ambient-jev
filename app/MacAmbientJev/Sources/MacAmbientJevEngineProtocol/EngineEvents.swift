@@ -66,7 +66,10 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case settingsReplace(EngineSettingsResult)
     case modelsPrepare
     case modelsInspect(EngineModelsInspection)
+    case acceleratorsBind(EngineAcceleratorsBindResult)
+    case acceleratorsVerify(EngineAcceleratorsVerifyResult)
     case profilesEvaluate(EngineProfileEvaluation)
+    case profilesDecide(EngineProfileEvaluation)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -95,7 +98,10 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
         case .modelsInspect: .modelsInspect
+        case .acceleratorsBind: .acceleratorsBind
+        case .acceleratorsVerify: .acceleratorsVerify
         case .profilesEvaluate: .profilesEvaluate
+        case .profilesDecide: .profilesDecide
         case .shutdown: .shutdown
         }
     }
@@ -153,8 +159,14 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .modelsPrepare
         case .modelsInspect:
             return .modelsInspect(try EngineModelsInspection(from: result))
+        case .acceleratorsBind:
+            return .acceleratorsBind(try EngineAcceleratorsBindResult(from: result))
+        case .acceleratorsVerify:
+            return .acceleratorsVerify(try EngineAcceleratorsVerifyResult(from: result))
         case .profilesEvaluate:
             return .profilesEvaluate(try EngineProfileEvaluation(from: result))
+        case .profilesDecide:
+            return .profilesDecide(try EngineProfileEvaluation(from: result))
         case .shutdown:
             _ = try EngineEmptyPayload(from: result)
             return .shutdown
@@ -190,7 +202,11 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try EngineEmptyPayload().encode(to: encoder)
         case let .modelsInspect(inspection):
             try inspection.encode(to: encoder)
-        case let .profilesEvaluate(evaluation):
+        case let .acceleratorsBind(result):
+            try result.encode(to: encoder)
+        case let .acceleratorsVerify(result):
+            try result.encode(to: encoder)
+        case let .profilesEvaluate(evaluation), let .profilesDecide(evaluation):
             try evaluation.encode(to: encoder)
         }
     }

@@ -31,7 +31,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
 
     /// Queued work waits for settings and prepared models, and stops for good once shutdown begins.
     var pausesProcessing: Bool {
-        isShuttingDown || setupStatus != .ready
+        isShuttingDown || setupStatus != .ready || profileSetupOperation != nil
     }
 
     /// Models load on first use, so there is nothing to warm up when work is queued.

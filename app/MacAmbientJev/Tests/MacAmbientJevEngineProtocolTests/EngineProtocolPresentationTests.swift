@@ -198,7 +198,7 @@ private func stateWithPresentation(_ presentation: EnginePresentationState) thro
         revision: engineID(1),
         screen: .idle,
         setup: .ready,
-        profileSetup: .init(evaluation: nil),
+        profileSetup: .init(evaluation: nil, operation: nil),
         resourceProtection: try .init(holdReasons: []),
         recovery: .completed,
         recording: nil,

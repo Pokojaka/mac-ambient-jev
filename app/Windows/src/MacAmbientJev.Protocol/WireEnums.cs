@@ -45,7 +45,10 @@ public enum EngineCommandName
     [WireValue("settings.replace")] SettingsReplace,
     [WireValue("models.prepare")] ModelsPrepare,
     [WireValue("models.inspect")] ModelsInspect,
+    [WireValue("accelerators.bind")] AcceleratorsBind,
+    [WireValue("accelerators.verify")] AcceleratorsVerify,
     [WireValue("profiles.evaluate")] ProfilesEvaluate,
+    [WireValue("profiles.decide")] ProfilesDecide,
     [WireValue("shutdown")] Shutdown,
 }
 

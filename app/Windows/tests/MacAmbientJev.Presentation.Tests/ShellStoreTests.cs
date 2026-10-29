@@ -207,7 +207,7 @@ public sealed partial class ShellStoreTests
     private static EngineSettingsResult SettingsResult(ulong revision, EngineSettings settings) => new(new EngineID(revision), settings);
     private static Task<EngineResult> Response(EngineSettingsResult result) => Task.FromResult<EngineResult>(new EngineResult.SettingsGet(result));
     private static EngineFailure Failure(EngineErrorCode code, string message, EngineRecoveryAction action) => new(code, message, EngineStage.Settings, null, null, EngineSeverity.Error, action, [], []);
-    private static EngineState State(EngineSetupStatus setup, ulong revision) => new(new EngineID(revision), EngineScreen.Idle, setup, new EngineProfileSetup(null), new EngineResourceProtection([]), EngineRecoveryStatus.Completed, null, [], [], new EnginePresentationState("Idle", EngineRecordingTone.Neutral, EnginePreparationPhase.Idle, null, null, null, [], false, null, 0, null, EngineProcessingIndicator.Idle));
+    private static EngineState State(EngineSetupStatus setup, ulong revision) => new(new EngineID(revision), EngineScreen.Idle, setup, new EngineProfileSetup(null, null), new EngineResourceProtection([]), EngineRecoveryStatus.Completed, null, [], [], new EnginePresentationState("Idle", EngineRecordingTone.Neutral, EnginePreparationPhase.Idle, null, null, null, [], false, null, 0, null, EngineProcessingIndicator.Idle));
 
     private sealed class Fake(EngineState initial, Task<EngineResult> settingsGet) : IEngineClient
     {

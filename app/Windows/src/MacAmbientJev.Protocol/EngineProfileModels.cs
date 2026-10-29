@@ -36,6 +36,12 @@ public enum EngineProfileDecisionState
     [WireValue("complete")] Complete,
 }
 
+public enum EngineProfileSetupOperation
+{
+    [WireValue("binding")] Binding,
+    [WireValue("verifying")] Verifying,
+}
+
 public enum EngineProfileHardwareKind
 {
     [WireValue("no_gpu")] NoGPU,
@@ -138,6 +144,7 @@ public sealed record EngineProfileEvaluation(
     [property: WireMember("measured_rtf", IsNullable = true)] double? MeasuredRTF,
     [property: WireMember("predicted_rtf", IsNullable = true)] double? PredictedRTF,
     [property: WireMember("decision_state")] EngineProfileDecisionState DecisionState,
+    [property: WireMember("requested_choice", IsNullable = true)] EngineProfileChoice? RequestedChoice,
     [property: WireMember("calibration_id", IsNullable = true)] string? CalibrationID) : IWireValidatable
 {
     public void Validate(string path)
@@ -164,7 +171,8 @@ public sealed record EngineProfileEvaluation(
 
 [WireObject]
 public sealed record EngineProfileSetup(
-    [property: WireMember("evaluation", IsNullable = true)] EngineProfileEvaluation? Evaluation);
+    [property: WireMember("evaluation", IsNullable = true)] EngineProfileEvaluation? Evaluation,
+    [property: WireMember("operation", IsNullable = true)] EngineProfileSetupOperation? Operation);
 
 public enum EngineResourceHoldReason
 {

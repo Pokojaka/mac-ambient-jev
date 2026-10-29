@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolCorpusTests {
     @Test func everyCorpusRecordRoundTripsByteIdentically() throws {
         let records = try wireCorpusRecords()
-        #expect(records.count == 142)
+        #expect(records.count == 156)
         for record in records {
             let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
             if root["event"] != nil {
@@ -23,7 +23,7 @@ struct EngineProtocolCorpusTests {
         let bytes = try Data(contentsOf: url)
         guard bytes.last == 0x0A else { throw CorpusFixtureError.missingFinalLineFeed }
         let records = bytes.split(separator: 0x0A)
-        #expect(records.count == 130)
+        #expect(records.count == 146)
 
         for rawRecord in records {
             let record = Data(rawRecord)
@@ -272,10 +272,15 @@ private func isNullableField(
     let isProfileHardwareGPU = has([
         "kind", "name", "adapter_id", "device_id", "driver_version", "dedicated_vram_bytes",
     ])
+    let isHardwareDescriptor = has([
+        "provider_name", "device_id", "gpu_name", "driver_version", "adapter_id", "architecture",
+        "dedicated_vram_bytes", "package_identity", "library_path", "library_hash", "dependencies",
+    ])
     let isProfileEvaluation = has([
         "initial_size", "recommend_large", "reason", "explanation", "measured_rtf", "predicted_rtf",
-        "decision_state", "calibration_id",
+        "decision_state", "calibration_id", "requested_choice",
     ])
+    let isProfileSetup = has(["evaluation", "operation"])
 
     if key == "request_id" {
         if objectPath.isEmpty { return root["event"] != nil }
@@ -304,9 +309,9 @@ private func isNullableField(
         "revision", "screen", "setup", "profile_setup", "resource_protection", "recovery", "recording",
         "queue", "failures", "presentation",
     ]) { return true }
-    if key == "dedicated_vram_bytes", isProfileHardwareGPU { return true }
-    if (key == "measured_rtf" || key == "predicted_rtf" || key == "calibration_id"), isProfileEvaluation { return true }
-    if key == "evaluation", has(["evaluation"]) { return true }
+    if key == "dedicated_vram_bytes", isProfileHardwareGPU || isHardwareDescriptor { return true }
+    if ["measured_rtf", "predicted_rtf", "calibration_id", "requested_choice"].contains(key), isProfileEvaluation { return true }
+    if (key == "evaluation" || key == "operation"), isProfileSetup { return true }
     if key == "default_device_id", has(["source", "devices", "default_device_id"]) { return true }
     if key == "previous_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }

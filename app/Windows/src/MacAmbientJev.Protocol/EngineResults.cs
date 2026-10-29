@@ -64,6 +64,15 @@ public abstract record EngineResult
     [WireCase("models.inspect")]
     public sealed record ModelsInspect([property: WireMember("result")] EngineModelsInspection Result) : EngineResult;
 
+    [WireCase("accelerators.bind")]
+    public sealed record AcceleratorsBind([property: WireMember("result")] EngineAcceleratorsBindResult Result) : EngineResult;
+
+    [WireCase("accelerators.verify")]
+    public sealed record AcceleratorsVerify([property: WireMember("result")] EngineAcceleratorsVerifyResult Result) : EngineResult;
+
+    [WireCase("profiles.decide")]
+    public sealed record ProfilesDecide([property: WireMember("result")] EngineProfileEvaluation Result) : EngineResult;
+
     [WireCase("profiles.evaluate")]
     public sealed record ProfilesEvaluate([property: WireMember("result")] EngineProfileEvaluation Result) : EngineResult;
 

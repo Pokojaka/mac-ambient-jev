@@ -229,6 +229,15 @@ public abstract record EngineCommand
     [WireCase("models.inspect")]
     public sealed record ModelsInspect([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;
 
+    [WireCase("accelerators.bind")]
+    public sealed record AcceleratorsBind([property: WireMember("payload")] EngineAcceleratorsBindPayload Payload) : EngineCommand;
+
+    [WireCase("accelerators.verify")]
+    public sealed record AcceleratorsVerify([property: WireMember("payload")] EngineAcceleratorsVerifyPayload Payload) : EngineCommand;
+
+    [WireCase("profiles.decide")]
+    public sealed record ProfilesDecide([property: WireMember("payload")] EngineProfilesDecidePayload Payload) : EngineCommand;
+
     [WireCase("profiles.evaluate")]
     public sealed record ProfilesEvaluate([property: WireMember("payload")] EngineProfilesEvaluatePayload Payload) : EngineCommand;
 
