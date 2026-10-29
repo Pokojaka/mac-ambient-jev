@@ -54,6 +54,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
 
         try await fixture.start()
         try await fixture.replaceSettings()
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         try await fixture.app.handlers.models.prepare(context: fixture.context)
         #expect(fixture.app.core.setupStatus == .ready)
         #expect(fixture.app.core.presentation.preparationPhase == .ready)
@@ -93,6 +94,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
 
         try await fixture.start()
         try await fixture.replaceSettings()
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         let beforePreparation = try await fixture.currentState()
         var idleReleaseTask: Task<Void, Never>?
         let preparationTask = Task { @MainActor in

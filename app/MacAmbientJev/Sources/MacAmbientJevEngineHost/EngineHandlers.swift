@@ -157,6 +157,8 @@ public protocol EngineModelsHandling {
     func verify(_ payload: EngineAcceleratorsVerifyPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsVerifyResult
     func evaluate(_ payload: EngineProfilesEvaluatePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation
     func decide(_ payload: EngineProfilesDecidePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation
+    func preflight(_ payload: EngineResourcesPreflightPayload, context: EngineRequestContext) async throws -> EngineResourceAssessment
+    func acknowledge(_ payload: EngineResourcesAcknowledgePayload, context: EngineRequestContext) async throws -> EngineResourcesAcknowledgePayload
 }
 
 @MainActor

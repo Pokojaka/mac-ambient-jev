@@ -13,7 +13,7 @@ import MacAmbientJevTestSupport
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        try await harness.callAcknowledgingResources("models.prepare")
         return harness
     }
 
@@ -95,7 +95,7 @@ import MacAmbientJevTestSupport
         second.start()
         try await second.hello()
         #expect(try await second.state().profileSetup.evaluation == pending)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         guard case let .profilesEvaluate(uncalibrated) = try await second.call("profiles.evaluate", payload: payload) else {
             Issue.record("profiles.evaluate did not return a completed evaluation")
             return
@@ -210,7 +210,7 @@ import MacAmbientJevTestSupport
         #expect(persisted.settings.executionProvider == windowsML.executionProvider)
 
         do {
-            try await h.call("models.prepare")
+            try await h.callAcknowledgingResources("models.prepare")
             Issue.record("Windows ML preparation unexpectedly succeeded")
         } catch let error as CommandFailure {
             #expect(error.failure.code == .invalidSettings)
@@ -236,7 +236,7 @@ import MacAmbientJevTestSupport
         #expect(try await h.state().setup == .modelsRequired)
         #expect(try await h.failureCode(of: "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}") == .modelMissing)
 
-        try await h.call("models.prepare")
+        try await h.callAcknowledgingResources("models.prepare")
         #expect(try await h.state().setup == .ready)
         let progress = try h.outputs.compactMap { output -> EngineProgressPayload? in
             if case let .progress(payload) = output.event { payload } else { nil }
@@ -251,7 +251,7 @@ import MacAmbientJevTestSupport
         #expect(devices.defaultDeviceID == "fake-endpoint")
 
         // Record two seconds, watching the session as the live screen does.
-        guard case let .recordingStart(started) = try await h.call(
+        guard case let .recordingStart(started) = try await h.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")
@@ -345,6 +345,11 @@ import MacAmbientJevTestSupport
         h.capture.startError = EngineAdapterError(
             code: .deviceNotFound, message: "録音デバイスが見つかりません", recoveryAction: .selectDevice, details: []
         )
+        try await acknowledgeResourceWarning(
+            h.app,
+            workload: .live,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: h.transport))
+        )
         let code = try await h.failureCode(of: "recording.start", payload: "{\"source\":\"system_audio\",\"device\":{\"kind\":\"id\",\"id\":\"gone\"}}")
         #expect(code == .captureFailure || code == .deviceNotFound)
         #expect(try await h.state().recording == nil)
@@ -363,7 +368,7 @@ import MacAmbientJevTestSupport
             code: .modelMissing, message: "モデルがありません: D:\\models", recoveryAction: .prepareModels, details: []
         ))
         do {
-            try await h.call("models.prepare")
+            try await h.callAcknowledgingResources("models.prepare")
             Issue.record("prepare should fail")
         } catch let error as CommandFailure {
             #expect(error.failure.code == .modelMissing)
@@ -378,7 +383,7 @@ import MacAmbientJevTestSupport
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let h = try await prepared(root)
-        try await h.call("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
+        try await h.callAcknowledgingResources("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
         let larger = try EngineSettings(
             schemaVersion: 2, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
             threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
@@ -402,7 +407,7 @@ import MacAmbientJevTestSupport
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let first = try await prepared(root)
-        try await first.call("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
+        try await first.callAcknowledgingResources("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
         try await first.capture.session?.appendSpeech(seconds: 2)
         #expect(try await first.shutdown() == .shutdownRequested)
         #expect(first.capture.session?.isStopped == true)
@@ -415,7 +420,7 @@ import MacAmbientJevTestSupport
         #expect(try await second.state().setup == .modelsRequired)
         #expect(try await second.waitForSession(status: .queued).sessionID != nil)
         #expect(try await second.state().recovery == .pending)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         _ = try await second.waitForSession(status: .finalized)
         let state = try await second.state()
         #expect(state.recovery == .completed)
@@ -431,8 +436,18 @@ import MacAmbientJevTestSupport
         first.start()
         try await first.hello()
         try await first.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        try await acknowledgeResourceWarning(
+            first.app,
+            workload: .load,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: first.transport))
+        )
         try await first.call("models.prepare")
 
+        try await acknowledgeResourceWarning(
+            first.app,
+            workload: .live,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: first.transport))
+        )
         guard case let .recordingStart(started) = try await first.call(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
@@ -462,7 +477,7 @@ import MacAmbientJevTestSupport
         try await second.hello()
         await second.app.waitForStartupRecovery()
         #expect(try await second.state().setup == .modelsRequired)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         let completed = try await second.waitForSession(status: .finalized)
         #expect(completed.sessionID == started.sessionID)
         #expect(try await second.state().recovery == .completed)
@@ -483,7 +498,7 @@ import MacAmbientJevTestSupport
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let first = try await prepared(root)
-        guard case let .recordingStart(started) = try await first.call(
+        guard case let .recordingStart(started) = try await first.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")
@@ -514,7 +529,7 @@ import MacAmbientJevTestSupport
         await second.app.waitForStartupRecovery()
         #expect(try await second.state().setup == .modelsRequired)
         #expect(try await second.waitForSession(status: .queued).sessionID == started.sessionID)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         let recovered = try await second.waitForSession(status: .finalized)
         #expect(recovered.sessionID == started.sessionID)
         guard case let .transcriptRead(page) = try await second.call(
@@ -549,7 +564,7 @@ import MacAmbientJevTestSupport
         h.start()
         try await h.hello()
         await h.app.waitForStartupRecovery()
-        try await h.call("models.prepare")
+        try await h.callAcknowledgingResources("models.prepare")
         let recovered = try await h.waitForSession(status: .finalized)
         #expect(recovered.sessionID == EngineFailures_wireID(sessionID))
         guard case let .transcriptRead(page) = try await h.call(
@@ -715,9 +730,11 @@ private final class FinalizationShutdownHarness {
         paths = engineTestPaths(root: root)
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         self.transport = transport
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
+                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
+                sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,

@@ -253,6 +253,10 @@ public final class EngineController {
             return .profilesEvaluate(try await handlers.models.evaluate(payload, context: context))
         case let .profilesDecide(payload):
             return .profilesDecide(try await handlers.models.decide(payload, context: context))
+        case let .resourcesPreflight(payload):
+            return .resourcesPreflight(try await handlers.models.preflight(payload, context: context))
+        case let .resourcesAcknowledge(payload):
+            return .resourcesAcknowledge(try await handlers.models.acknowledge(payload, context: context))
         case .shutdown:
             preconditionFailure("shutdown is handled inline by the dispatcher")
         }

@@ -18,9 +18,11 @@ import MacAmbientJevPipeline
         let root = try ApplicationHarness.makeRoot()
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture, inference: FakeInferenceProvider(), events: events

@@ -36,9 +36,11 @@ extension EngineApplicationCore {
         )
         let transport = EngineTransport(source: source, sink: sink, limits: limits)
         // The unstarted queue isolates MainActor producer scheduling; live writer backpressure/deadlines are covered by EngineTransportOutputTests and EngineDiagnosticWriterTests.
+        let resourceMonitor = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor, memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(5)
             ),
             capture: FakeCapture(), inference: FakeInferenceProvider(),

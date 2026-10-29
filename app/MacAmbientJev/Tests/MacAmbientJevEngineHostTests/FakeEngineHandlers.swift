@@ -193,6 +193,27 @@ final class FakeEngineHandlers:
         return EngineSettingsResult(revision: try EngineID(2), settings: payload.settings)
     }
 
+    func preflight(
+        _ payload: EngineResourcesPreflightPayload,
+        context: EngineRequestContext
+    ) async throws -> EngineResourceAssessment {
+        try await enter("resources.preflight")
+        return try EngineResourceAssessment(
+            assessmentID: "resource-assessment-1",
+            result: .warning,
+            reason: .envelopeUnmeasured,
+            explanation: "推論のメモリ使用量が未計測です。"
+        )
+    }
+
+    func acknowledge(
+        _ payload: EngineResourcesAcknowledgePayload,
+        context: EngineRequestContext
+    ) async throws -> EngineResourcesAcknowledgePayload {
+        try await enter("resources.acknowledge")
+        return payload
+    }
+
     func prepare(context: EngineRequestContext) async throws {
         try await enter("models.prepare")
         if progressOnPrepare {

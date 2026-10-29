@@ -70,6 +70,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case acceleratorsVerify(EngineAcceleratorsVerifyResult)
     case profilesEvaluate(EngineProfileEvaluation)
     case profilesDecide(EngineProfileEvaluation)
+    case resourcesPreflight(EngineResourceAssessment)
+    case resourcesAcknowledge(EngineResourcesAcknowledgePayload)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -102,6 +104,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .acceleratorsVerify: .acceleratorsVerify
         case .profilesEvaluate: .profilesEvaluate
         case .profilesDecide: .profilesDecide
+        case .resourcesPreflight: .resourcesPreflight
+        case .resourcesAcknowledge: .resourcesAcknowledge
         case .shutdown: .shutdown
         }
     }
@@ -167,6 +171,10 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .profilesEvaluate(try EngineProfileEvaluation(from: result))
         case .profilesDecide:
             return .profilesDecide(try EngineProfileEvaluation(from: result))
+        case .resourcesPreflight:
+            return .resourcesPreflight(try EngineResourceAssessment(from: result))
+        case .resourcesAcknowledge:
+            return .resourcesAcknowledge(try EngineResourcesAcknowledgePayload(from: result))
         case .shutdown:
             _ = try EngineEmptyPayload(from: result)
             return .shutdown
@@ -208,6 +216,10 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try result.encode(to: encoder)
         case let .profilesEvaluate(evaluation), let .profilesDecide(evaluation):
             try evaluation.encode(to: encoder)
+        case let .resourcesPreflight(assessment):
+            try assessment.encode(to: encoder)
+        case let .resourcesAcknowledge(payload):
+            try payload.encode(to: encoder)
         }
     }
 }

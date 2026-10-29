@@ -33,6 +33,8 @@ extension EngineApplicationCore: EngineRecordingHandling {
                 .busy, "文字起こしの確定処理が実行中のため録音を開始できません", stage: .capture, recoveryAction: .retry
             )
         }
+        try admitResources(.live)
+        liveResourceHoldReason = nil
 
         // Claim the recording before the first suspension so a second start sees a busy engine.
         presentation.isSilent = false
@@ -280,6 +282,7 @@ extension EngineApplicationCore: RecordingStartEffects {
 
     func recordingStartWillCleanUp() {
         captureSession = nil
+        liveResourceHoldReason = nil
         presentation.isSilent = false
     }
 
@@ -525,6 +528,8 @@ extension EngineApplicationCore: LiveTranscriptionEffects {
             if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         case let .recognitionFailed(sessionID, message):
             let text = "録音は継続しています。ライブ文字起こしを停止しました: \(message)"
+            if recording.sessionID == sessionID,
+               let reason = resourceMonitor.signal.holdReason { liveResourceHoldReason = reason }
             reportLiveWarning(sessionID, text, stage: .asr)
             if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         case let .vadFailed(sessionID, message):

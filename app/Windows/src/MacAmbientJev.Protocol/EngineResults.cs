@@ -76,6 +76,12 @@ public abstract record EngineResult
     [WireCase("profiles.evaluate")]
     public sealed record ProfilesEvaluate([property: WireMember("result")] EngineProfileEvaluation Result) : EngineResult;
 
+    [WireCase("resources.preflight")]
+    public sealed record ResourcesPreflight([property: WireMember("result")] EngineResourceAssessment Result) : EngineResult;
+
+    [WireCase("resources.acknowledge")]
+    public sealed record ResourcesAcknowledge([property: WireMember("result")] EngineResourcesAcknowledgePayload Result) : EngineResult;
+
     [WireCase("shutdown")]
     public sealed record Shutdown([property: WireMember("result")] EngineEmptyPayload Result) : EngineResult;
 }

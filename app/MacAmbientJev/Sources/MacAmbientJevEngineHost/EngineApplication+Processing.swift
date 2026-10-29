@@ -112,9 +112,17 @@ extension EngineApplicationCore: SessionProcessingEffects {
         case let .held(request):
             presentation.processingState = .idle
             presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
+            if let held = processingQueue.held.first(where: { $0.request.sessionID == request.sessionID }),
+               held.reason == .resourcePressure || held.reason == .monitorFailed {
+                let waitingForCurrent = processingQueue.currentSessionID == request.sessionID
+                presentation.processingStatusText = held.reason.finalizationExplanation
+                    + (waitingForCurrent ? "（実行中の処理の終了待ち）" : "")
+            }
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .began(request):
             presentation.processingState = .running
+            resourceFinalizingSessionID = request.finalizesTranscript ? request.sessionID : nil
+            finalizationResourceHoldReason = nil
             if request.finalizesTranscript, request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .liveFailed(message):
             let notice = "ライブ文字起こしは停止しました。録音全体を確定処理します: \(message)"
@@ -136,12 +144,16 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 presentation.processingState = .complete
             }
         case .drained:
+            resourceFinalizingSessionID = nil
+            finalizationResourceHoldReason = nil
             releaseIdleResourcesIfIdle()
         }
         stateDidChange()
     }
 
     private func finished(_ request: PendingProcessing, result: SessionProcessingResult?) {
+        resourceFinalizingSessionID = nil
+        finalizationResourceHoldReason = nil
         let sessionID = request.sessionID
         recoveryOutstanding.remove(sessionID)
         updateRecoveryStatus()
@@ -170,13 +182,19 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 severity: .error, recoveryAction: request.finalizesTranscript ? .reprocess : .retryDecisions
             ))
         case .paused?, nil:
-            break
+            guard result?.disposition == .paused,
+                  let held = processingQueue.held.first(where: { $0.request.sessionID == sessionID }),
+                  held.reason == .resourcePressure || held.reason == .monitorFailed else { break }
+            presentation.processingState = .idle
+            presentation.processingStatusText = held.reason.finalizationExplanation
+            finalizationResourceHoldReason = nil
         }
         completions.finished(request, result: result)
     }
 
     private func processingStatusDidChange(_ text: String, sessionID: UUID) {
-        presentation.processingStatusText = text
+        presentation.processingStatusText = resourceFinalizingSessionID == sessionID
+            ? finalizationResourceHoldReason.map { $0.finalizationExplanation + "（実行中の処理の終了待ち）" } ?? text : text
         stateDidChange()
         let stage: EngineStage
         switch text {

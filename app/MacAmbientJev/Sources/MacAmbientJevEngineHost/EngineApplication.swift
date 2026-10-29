@@ -6,6 +6,8 @@ import MacAmbientJevPipeline
 public struct EngineApplicationConfiguration: Sendable {
     public let paths: AppPaths
     public let logicalCPUCount: Int
+    public let resourceMonitor: any InferenceResourceMonitoring
+    public let memoryProber: any InferenceMemoryProbing
     /// The pacing sleep of live transcription.
     public let sleep: @MainActor @Sendable (Duration) async throws -> Void
     /// How long shutdown waits for running finalization to stop at its next boundary before it fails.
@@ -14,11 +16,15 @@ public struct EngineApplicationConfiguration: Sendable {
     public init(
         paths: AppPaths,
         logicalCPUCount: Int,
+        resourceMonitor: any InferenceResourceMonitoring,
+        memoryProber: any InferenceMemoryProbing,
         sleep: @escaping @MainActor @Sendable (Duration) async throws -> Void,
         shutdownPauseTimeout: Duration
     ) {
         self.paths = paths
         self.logicalCPUCount = logicalCPUCount
+        self.resourceMonitor = resourceMonitor
+        self.memoryProber = memoryProber
         self.sleep = sleep
         self.shutdownPauseTimeout = shutdownPauseTimeout
     }
@@ -70,6 +76,8 @@ final class EngineApplicationCore {
 
     let paths: AppPaths
     let logicalCPUCount: Int
+    let resourceMonitor: any InferenceResourceMonitoring
+    let memoryProber: any InferenceMemoryProbing
     let settingsStore: EngineSettingsStore
     let profileDecisionStore: EngineProfileDecisionStore
     let verificationStore: EngineVerificationStore
@@ -85,6 +93,7 @@ final class EngineApplicationCore {
 
     // Settings and models
     var settingsResult: EngineSettingsResult?
+    var resourceAssessments: [EngineResourceAssessmentEntry] = []
     var inference: EngineInference?
     var profileEvaluation: EngineProfileEvaluation? = nil
     var profileSetupOperation: EngineProfileSetupOperation? = nil
@@ -92,6 +101,10 @@ final class EngineApplicationCore {
     var acceleratorSetupTask: Task<EngineAcceleratorsVerifyResult, Error>? = nil
     var isPreparingModels = false
     var presentation = EnginePresentation()
+    var liveResourceHoldReason: InferenceHoldReason? = nil
+    var finalizationResourceHoldReason: InferenceHoldReason? = nil
+    var resourceFinalizingSessionID: UUID? = nil
+    var resourceObservation: (any InferenceResourceObservation)? = nil
     var isShuttingDown = false
     private(set) var mutationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -138,10 +151,12 @@ final class EngineApplicationCore {
     var onBackgroundEventStateChange: (@MainActor () -> Void)?
 
     lazy var processingCoordinator = SessionProcessingCoordinator(
-        effects: self, processor: gateway, thermalMonitor: thermalMonitor
+        effects: self, processor: gateway, thermalMonitor: thermalMonitor, resourceMonitor: resourceMonitor,
+        releaseResources: { [gateway] in await gateway.releaseIdleResources() }
     )
     lazy var liveCoordinator = LiveTranscriptionCoordinator(
-        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor, sleep: sleep
+        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor,
+        resourceMonitor: resourceMonitor, sleep: sleep
     )
 
     struct StartAttempt {
@@ -160,6 +175,8 @@ final class EngineApplicationCore {
     ) {
         paths = configuration.paths
         logicalCPUCount = configuration.logicalCPUCount
+        resourceMonitor = configuration.resourceMonitor
+        memoryProber = configuration.memoryProber
         settingsStore = EngineSettingsStore(paths: configuration.paths, logicalCPUCount: configuration.logicalCPUCount)
         profileDecisionStore = EngineProfileDecisionStore(paths: configuration.paths)
         verificationStore = EngineVerificationStore(paths: configuration.paths)
@@ -177,6 +194,20 @@ final class EngineApplicationCore {
                 severity: .error, recoveryAction: .retry, details: [EngineFailures.detail(for: error)]
             ))
         }
+        resourceObservation = resourceMonitor.observeChanges { [weak self] in
+            self?.resourceMonitorDidChange()
+        }
+    }
+
+    private func resourceMonitorDidChange() {
+        guard !isShuttingDown else { return }
+        if let currentSessionID = processingQueue.currentSessionID,
+           currentSessionID == resourceFinalizingSessionID,
+           let reason = resourceMonitor.signal.holdReason {
+            finalizationResourceHoldReason = reason
+            presentation.processingStatusText = reason.finalizationExplanation + "（実行中の処理の終了待ち）"
+        }
+        stateDidChange()
     }
 
     func performMutation<T: Sendable>(
@@ -304,15 +335,30 @@ final class EngineApplicationCore {
         }
     }
 
-    /// Empty means the processing queue has no current holds; it does not indicate healthy memory.
+    /// Projects current queue holds, live suspension and finalization pausing reasons; empty does not imply healthy memory.
     private func resourceProtectionState() throws -> EngineResourceProtection {
-        let heldReasons = Set(processingQueue.held.map { held -> EngineResourceHoldReason in
+        var heldReasons = Set(processingQueue.held.map { held -> EngineResourceHoldReason in
             switch held.reason {
             case .thermal: .thermal
             case .resourcePressure: .resourcePressure
             case .monitorFailed: .monitorFailed
             }
         })
+        func include(_ reason: InferenceHoldReason) {
+            switch reason {
+            case .thermal: heldReasons.insert(.thermal)
+            case .resourcePressure: heldReasons.insert(.resourcePressure)
+            case .monitorFailed: heldReasons.insert(.monitorFailed)
+            }
+        }
+        if (recording.phase == .recording || recording.phase == .stopping), let liveResourceHoldReason {
+            include(liveResourceHoldReason)
+        }
+        if let currentSessionID = processingQueue.currentSessionID,
+           currentSessionID == resourceFinalizingSessionID,
+           let finalizationResourceHoldReason {
+            include(finalizationResourceHoldReason)
+        }
         return try EngineResourceProtection(
             holdReasons: EngineResourceHoldReason.allCases.filter { heldReasons.contains($0) }
         )
@@ -786,6 +832,7 @@ extension EngineApplicationCore: EngineModelsHandling {
         }
         // Prepared models stay prepared while work uses them; verifying again would compete with that work.
         if inference != nil, !isIdle { return }
+        try admitResources(.load)
         isPreparingModels = true
         presentation.preparationPhase = .preparing
         presentation.preparationStatusText = UserFacingStatus.preparingASR.text

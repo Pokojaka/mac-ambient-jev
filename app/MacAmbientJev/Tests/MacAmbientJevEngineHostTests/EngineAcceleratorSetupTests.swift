@@ -45,8 +45,10 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
         let accelerator = FakeAccelerator(output: output)
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(paths: paths, logicalCPUCount: 4,
+                resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)),
             capture: FakeCapture(), inference: FakeInferenceProvider(), events: events, acceleratorRegistry: accelerator
         )

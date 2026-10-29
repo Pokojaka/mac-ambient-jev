@@ -62,10 +62,13 @@ private final class ModelProgressFixture {
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         provider = OutOfOrderModelProgressProvider(completionGate: completionGate)
         let events = EngineEventEmitter(transport: transport)
+        let resourceMonitor = FakeResourceMonitor()
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20)
             ),
@@ -165,6 +168,7 @@ private final class ModelProgressFixture {
 
         try await fixture.start()
         try await fixture.replaceSettings()
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         let initial = try await fixture.currentState()
         #expect(initial.setup == .modelsRequired)
 

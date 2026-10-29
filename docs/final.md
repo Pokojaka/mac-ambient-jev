@@ -88,12 +88,13 @@ CLI は開始時の熱状態が nominal / fair 以外なら開始を拒否しま
 
 ## リソース監視による確定処理の保留
 
-`SessionProcessingCoordinator` は初期化時に optional `resourceMonitor` と optional `releaseResources` closure を受け取ります。`resourceMonitor` が設定されている場合、監視状態は新しい確定要求をモデル準備前に通すか決めます。`resourceMonitor: nil` は monitor 未設定であり、`.healthy` を観測した意味ではありません。保留は `thermal`・`resourcePressure`・`monitorFailed` の理由を持つ単一の held queue に入ります。
-resourcePressure / monitorFailed の表示はそれぞれ「メモリ不足のため確定処理を一時停止中」「リソース監視に失敗したため確定処理を一時停止中」です。実行中の処理は既存の安全な ASR 区間境界で一時停止し、decoder step や VAD window の途中では中断しません。
-`NativeSessionProcessor` が戻った後、設定された `releaseResources` closure でモデル解放を行います。一時停止 metadata は既存経路で保存し、既に公開した結果は保持します。
-healthy になると、held 要求を FIFO 順でキュー先頭へ戻し、確定処理は cursor を続けず保存音声全体を新しい attempt / run で処理します。明示 pause / cancellation 中は再開しません。`monitorFailed` は healthy と見なさず、温度状態も作りません。
-これは注入可能な portable seam で、OS monitor の自動導入、NDJSON 出力や専用 UI の提供を意味しません。Mac の [`AppState`](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift) は `resourceMonitor: nil` を明示し、Windows には本番の resource wiring はありません。[SessionProcessingCoordinator](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingCoordinator.swift)、[SessionProcessingQueue](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingQueue.swift)、[monitoring protocol](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/InferenceResourceMonitoring.swift) を参照してください。
-`PauseCheck` と pause outcome は `InferenceHoldReason` を運び、`NativeSessionProcessor.Status.paused(reason)` の表示文は `reason.finalizationExplanation` から得ます。thermal の Mac 表示文は `UserFacingStatus.finalizationPausedForHeat.text` のままで、status string の後処理書換えはしません。
+Windows Engine の [`EngineProcess`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) は [`WindowsInferenceResourceMonitor`](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsInferenceResourceMonitor.swift) を生成し、[`SessionProcessingCoordinator`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingCoordinator.swift) に渡します。[`EngineApplication`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication.swift) はリソース保護による一時停止後、`releaseResources` から gateway の `releaseIdleResources()` を呼びます。Mac GUI の [`AppState`](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift) は `resourceMonitor: nil` を明示し、`.healthy` を観測した意味ではありません。
+
+resourcePressure / monitorFailed のとき、coordinator は確定要求を開始前に held queue へ保留し、実行中なら「メモリ不足のため確定処理を一時停止中」「リソース監視に失敗したため確定処理を一時停止中」と表示します。実行中の処理は安全な ASR 区間境界まで進み、native execution を途中で中断しません。境界で一時停止した後は `paused` metadata を保存し、公開済み結果を保持して `releaseResources` を実行し、表示から「（実行中の処理の終了待ち）」を外します。
+
+monitor が healthy に戻ると held 要求を FIFO 順でキュー先頭へ戻し、cursor 続行ではなく保存音声全体を新しい attempt / run で処理します。`resources.preflight(finalization)` は表示用 assessment だけで、確定処理の preflight / acknowledge は不要です。shutdown cancellation は別経路で、shutdown 後に healthy へ戻っても自動再開しません。
+
+`resource_protection.hold_reasons` は既存 schema のまま、live の latch・実行中の一時停止・held queue の理由を示します。空配列は健全性を意味しません。熱状態・熱制御は変更ありません。詳細は [processing queue](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingQueue.swift)、[processing status presentation](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Processing.swift)、[resource admission](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Resources.swift)、[Windows のリソース保護 schema](windows.md#プロファイル評価とリソース保護) を参照してください。
 
 ## 復旧と明示的な再処理
 

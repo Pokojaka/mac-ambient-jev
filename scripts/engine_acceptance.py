@@ -814,6 +814,19 @@ def _read_settings(child: EngineChild) -> dict[str, Any]:
     return settings
 
 
+def _acknowledge_resources(child: EngineChild, workload: str) -> None:
+    assessment = child.call("resources.preflight", {"workload": workload})
+    if not isinstance(assessment, dict) or set(assessment) != {"assessment_id", "result", "reason", "explanation"}:
+        raise AcceptanceError(f"{workload} resource preflight returned an invalid assessment: {assessment!r}")
+    if (assessment["result"] != "warning" or assessment["reason"] != "envelope_unmeasured"
+            or not isinstance(assessment["assessment_id"], str) or not assessment["assessment_id"]
+            or not isinstance(assessment["explanation"], str) or not assessment["explanation"]):
+        raise AcceptanceError(f"{workload} resource preflight must report warning/envelope_unmeasured with nonempty id and explanation: {assessment!r}")
+    acknowledged = child.call("resources.acknowledge", {"assessment_id": assessment["assessment_id"]})
+    if acknowledged != {"assessment_id": assessment["assessment_id"]}:
+        raise AcceptanceError(f"{workload} resource acknowledgement did not echo the assessment_id: {acknowledged!r}")
+
+
 def _wait_for_recovery(child: EngineChild) -> dict[str, Any]:
     while True:
         state = child.call_empty("state.get")
@@ -1222,6 +1235,7 @@ def _validate_checkpoint(session_dir: Path, full_frames: int) -> tuple[int, list
 
 
 def _start_recording(child: EngineChild) -> str:
+    _acknowledge_resources(child, "live")
     result = child.call(
         "recording.start",
         {"source": "microphone", "device": {"kind": "default"}},
@@ -1241,6 +1255,7 @@ def _setup_new_session(child: EngineChild) -> None:
     result = child.call("settings.replace", {"expected_revision": None, "settings": EXPECTED_SETTINGS})
     if not isinstance(result, dict) or result.get("settings") != EXPECTED_SETTINGS:
         raise AcceptanceError(f"settings.replace did not persist all ten required settings: {result!r}")
+    _acknowledge_resources(child, "load")
     child.call_empty("models.prepare")
     _wait_for_recovery(child)
 
@@ -1333,6 +1348,7 @@ def run_forced_kill_recovery(
         if not isinstance(hello, dict) or not isinstance(hello.get("state"), dict):
             raise AcceptanceError(f"recovery hello returned an invalid state: {hello!r}")
         _read_settings(child)
+        _acknowledge_resources(child, "load")
         child.call_empty("models.prepare")
         _wait_for_recovery(child)
         finalized = _wait_finalized(child, session_id, FINALIZATION_TIMEOUT_SECONDS)
@@ -1959,6 +1975,7 @@ def run_full_model_scenario(
         replaced = child.call("settings.replace", {"expected_revision": None, "settings": settings})
         if not isinstance(replaced, dict) or replaced.get("settings") != settings:
             raise AcceptanceError(f"{label}: settings.replace did not echo every required setting: {replaced!r}")
+        _acknowledge_resources(child, "load")
         prepared = child.call_empty("models.prepare")
         if not isinstance(prepared, dict):
             raise AcceptanceError(f"{label}: models.prepare returned an invalid result: {prepared!r}")

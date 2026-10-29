@@ -241,9 +241,10 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let source = ScriptedSource()
         let sink = ScriptedSink()
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: FakeCapture(), inference: GatedInferenceProvider(gate: gate),
@@ -262,9 +263,10 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         let capture = FakeCapture()
         let events = EngineEventEmitter(transport: transport)
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30)
             ),
             capture: capture,
@@ -280,6 +282,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         _ = try await fixture.app.core.replace(
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: fixture.context
         )
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         try await fixture.app.core.prepare(context: fixture.context)
         while fixture.app.core.processingCoordinator.isDraining { await Task.yield() }
     }
@@ -296,6 +299,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let original = try await configureSettings(for: fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         let prepareTask = Task { @MainActor in try await fixture.app.core.prepare(context: fixture.context) }
         await fixture.gate.waitUntilEntered()
 
@@ -325,6 +329,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try await configureSettings(for: fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         let prepareTask = Task { @MainActor in try await fixture.app.core.prepare(context: fixture.context) }
         await fixture.gate.waitUntilEntered()
 
@@ -425,6 +430,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try gatedASRFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         try await prepareForRecording(fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .live, context: fixture.context)
 
         let recording = try await fixture.app.core.start(
             EngineRecordingStartPayload(source: .microphone, device: .default), context: fixture.context
@@ -463,6 +469,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try gatedASRFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         try await prepareForRecording(fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .live, context: fixture.context)
 
         let recording = try await fixture.app.core.start(
             EngineRecordingStartPayload(source: .microphone, device: .default), context: fixture.context

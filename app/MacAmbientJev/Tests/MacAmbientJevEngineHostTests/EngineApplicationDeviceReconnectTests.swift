@@ -48,8 +48,8 @@ struct EngineApplicationDeviceReconnectTests {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
-        guard case let .recordingStart(started) = try await harness.call(
+        try await harness.callAcknowledgingResources("models.prepare")
+        guard case let .recordingStart(started) = try await harness.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")
@@ -130,8 +130,8 @@ struct EngineApplicationDeviceReconnectTests {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
-        guard case let .recordingStart(started) = try await harness.call(
+        try await harness.callAcknowledgingResources("models.prepare")
+        guard case let .recordingStart(started) = try await harness.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")

@@ -332,6 +332,12 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         threads: 2
     )
     let resourceProtection = try EngineResourceProtection(holdReasons: EngineResourceHoldReason.allCases)
+    let resourcePreflight = EngineResourcesPreflightPayload(workload: .load)
+    let resourceAcknowledge = try EngineResourcesAcknowledgePayload(assessmentID: "resource-assessment-1")
+    let resourceAssessment = try EngineResourceAssessment(
+        assessmentID: "resource-assessment-1", result: .warning,
+        reason: .envelopeUnmeasured, explanation: "リソースの測定がありません"
+    )
     let recording = try EngineRecordingState(
         sessionID: "coverage-session", source: .microphone,
         device: .id("coverage-device"), phase: .recording
@@ -483,6 +489,9 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         chosenEvaluation,
         profileSetup,
         resourceProtection,
+        resourcePreflight,
+        resourceAcknowledge,
+        resourceAssessment,
         EngineDevice.id("coverage-device"),
         EngineAcceptedPayload(command: .hello),
         try EngineExportResult(sessionID: "coverage-session", destinationPath: "D:/Coverage"),

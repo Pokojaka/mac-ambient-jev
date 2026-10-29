@@ -49,6 +49,8 @@ public enum EngineCommandName
     [WireValue("accelerators.verify")] AcceleratorsVerify,
     [WireValue("profiles.evaluate")] ProfilesEvaluate,
     [WireValue("profiles.decide")] ProfilesDecide,
+    [WireValue("resources.preflight")] ResourcesPreflight,
+    [WireValue("resources.acknowledge")] ResourcesAcknowledge,
     [WireValue("shutdown")] Shutdown,
 }
 

@@ -3,8 +3,8 @@ import MacAmbientJevCore
 import MacAmbientJevEngineE2ESupport
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
-#if os(Linux) || os(Windows)
 import MacAmbientJevPipeline
+#if os(Linux) || os(Windows)
 import MacAmbientJevPortableRuntime
 #endif
 
@@ -74,10 +74,13 @@ struct HarnessMain {
         }
 
         let transport = EngineTransport(source: source, sink: sink, limits: .production)
+        let resourceMonitor = HarnessResourceMonitor()
         let application = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: logicalCPUCount,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(30)
             ),
@@ -107,6 +110,28 @@ struct HarnessMain {
         return engineExit.processExitCode
     }
 }
+
+private final class HarnessResourceMonitor: InferenceResourceMonitoring, InferenceMemoryProbing {
+    var signal: InferenceResourceSignal { .healthy }
+
+    @MainActor
+    func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any InferenceResourceObservation {
+        HarnessEmptyResourceObservation()
+    }
+
+    func memoryFacts() throws -> InferenceMemoryFacts {
+        InferenceMemoryFacts(
+            physicalMemoryBytes: UInt64(16) << 30,
+            freePhysicalMemoryBytes: UInt64(8) << 30,
+            commitHeadroomBytes: UInt64(8) << 30,
+            lowMemorySignal: false
+        )
+    }
+}
+
+private final class HarnessEmptyResourceObservation: InferenceResourceObservation {}
 
 private enum HarnessInferenceSelection: Equatable {
     case deterministic

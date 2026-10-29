@@ -589,6 +589,8 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case acceleratorsVerify = "accelerators.verify"
     case profilesEvaluate = "profiles.evaluate"
     case profilesDecide = "profiles.decide"
+    case resourcesPreflight = "resources.preflight"
+    case resourcesAcknowledge = "resources.acknowledge"
     case shutdown
 
     public init(from decoder: Decoder) throws {
@@ -626,6 +628,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case acceleratorsVerify(EngineAcceleratorsVerifyPayload)
     case profilesEvaluate(EngineProfilesEvaluatePayload)
     case profilesDecide(EngineProfilesDecidePayload)
+    case resourcesPreflight(EngineResourcesPreflightPayload)
+    case resourcesAcknowledge(EngineResourcesAcknowledgePayload)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -658,6 +662,8 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .acceleratorsVerify: .acceleratorsVerify
         case .profilesEvaluate: .profilesEvaluate
         case .profilesDecide: .profilesDecide
+        case .resourcesPreflight: .resourcesPreflight
+        case .resourcesAcknowledge: .resourcesAcknowledge
         case .shutdown: .shutdown
         }
     }
@@ -728,6 +734,10 @@ public enum EngineCommand: Codable, Equatable, Sendable {
             return .profilesEvaluate(try EngineProfilesEvaluatePayload(from: payload))
         case .profilesDecide:
             return .profilesDecide(try EngineProfilesDecidePayload(from: payload))
+        case .resourcesPreflight:
+            return .resourcesPreflight(try EngineResourcesPreflightPayload(from: payload))
+        case .resourcesAcknowledge:
+            return .resourcesAcknowledge(try EngineResourcesAcknowledgePayload(from: payload))
         case .shutdown:
             _ = try EngineEmptyPayload(from: payload)
             return .shutdown
@@ -765,6 +775,10 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case let .profilesEvaluate(payload):
             try payload.encode(to: encoder)
         case let .profilesDecide(payload):
+            try payload.encode(to: encoder)
+        case let .resourcesPreflight(payload):
+            try payload.encode(to: encoder)
+        case let .resourcesAcknowledge(payload):
             try payload.encode(to: encoder)
         }
     }

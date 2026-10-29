@@ -106,10 +106,13 @@ enum EngineProcess {
                 sink: WindowsPipeByteSink(handle: stdout),
                 limits: .production
             )
+            let resourceMonitor = WindowsInferenceResourceMonitor()
             let application = EngineApplication(
                 configuration: EngineApplicationConfiguration(
                     paths: paths,
                     logicalCPUCount: logicalCPUCount,
+                    resourceMonitor: resourceMonitor,
+                    memoryProber: resourceMonitor,
                     sleep: { try await Task.sleep(for: $0) },
                     shutdownPauseTimeout: shutdownPauseTimeout
                 ),

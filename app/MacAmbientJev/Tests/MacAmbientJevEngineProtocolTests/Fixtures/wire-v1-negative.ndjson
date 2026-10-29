@@ -144,3 +144,30 @@
 {"event":"completed","payload":{"command":"accelerators.verify","result":{"result":"pass","verification_id":"verification-1","rtf":0.25,"reason":"extra"}},"request_id":"907","sequence":"907","version":1}
 {"event":"completed","payload":{"command":"accelerators.verify","result":{"result":"fail","verification_id":"verification-1","reason":"mismatch"}},"request_id":"908","sequence":"908","version":1}
 {"event":"completed","payload":{"command":"accelerators.verify","result":{"result":"pass","verification_id":"verification-1","rtf":0}},"request_id":"909","sequence":"909","version":1}
+{"command":"resources.preflight","payload":{},"request_id":"600","version":1}
+{"command":"resources.preflight","payload":{"workload":null},"request_id":"601","version":1}
+{"command":"resources.preflight","payload":{"workload":17},"request_id":"602","version":1}
+{"command":"resources.preflight","payload":{"unexpected":"x","workload":"load"},"request_id":"603","version":1}
+{"command":"resources.preflight","payload":{"workload":"unknown"},"request_id":"604","version":1}
+{"command":"resources.acknowledge","payload":{},"request_id":"605","version":1}
+{"command":"resources.acknowledge","payload":{"assessment_id":null},"request_id":"606","version":1}
+{"command":"resources.acknowledge","payload":{"assessment_id":17},"request_id":"607","version":1}
+{"command":"resources.acknowledge","payload":{"assessment_id":"resource-assessment-1","unexpected":"x"},"request_id":"608","version":1}
+{"command":"resources.acknowledge","payload":{"assessment_id":""},"request_id":"609","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"explanation":"A valid resource assessment.","reason":"ready","result":"ready"}},"request_id":"610","sequence":"610","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":null,"explanation":"A valid resource assessment.","reason":"ready","result":"ready"}},"request_id":"611","sequence":"611","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":17,"explanation":"A valid resource assessment.","reason":"ready","result":"ready"}},"request_id":"612","sequence":"612","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":"ready"}},"request_id":"613","sequence":"613","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":"ready","result":null}},"request_id":"614","sequence":"614","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":"ready","result":17}},"request_id":"615","sequence":"615","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","result":"ready"}},"request_id":"616","sequence":"616","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":null,"result":"ready"}},"request_id":"617","sequence":"617","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":17,"result":"ready"}},"request_id":"618","sequence":"618","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","reason":"ready","result":"ready"}},"request_id":"619","sequence":"619","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":null,"reason":"ready","result":"ready"}},"request_id":"620","sequence":"620","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":17,"reason":"ready","result":"ready"}},"request_id":"621","sequence":"621","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":"ready","result":"ready","unexpected":"x"}},"request_id":"622","sequence":"622","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"","explanation":"A valid resource assessment.","reason":"ready","result":"ready"}},"request_id":"623","sequence":"623","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"","reason":"ready","result":"ready"}},"request_id":"624","sequence":"624","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":"ready","result":"unknown"}},"request_id":"625","sequence":"625","version":1}
+{"event":"completed","payload":{"command":"resources.preflight","result":{"assessment_id":"resource-assessment-1","explanation":"A valid resource assessment.","reason":"unknown","result":"ready"}},"request_id":"626","sequence":"626","version":1}

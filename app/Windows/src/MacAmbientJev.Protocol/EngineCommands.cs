@@ -241,6 +241,12 @@ public abstract record EngineCommand
     [WireCase("profiles.evaluate")]
     public sealed record ProfilesEvaluate([property: WireMember("payload")] EngineProfilesEvaluatePayload Payload) : EngineCommand;
 
+    [WireCase("resources.preflight")]
+    public sealed record ResourcesPreflight([property: WireMember("payload")] EngineResourcesPreflightPayload Payload) : EngineCommand;
+
+    [WireCase("resources.acknowledge")]
+    public sealed record ResourcesAcknowledge([property: WireMember("payload")] EngineResourcesAcknowledgePayload Payload) : EngineCommand;
+
     [WireCase("shutdown")]
     public sealed record Shutdown([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;
 }

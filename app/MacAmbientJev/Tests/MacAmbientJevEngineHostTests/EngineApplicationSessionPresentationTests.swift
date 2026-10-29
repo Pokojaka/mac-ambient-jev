@@ -45,7 +45,10 @@ private actor PresentationDecisionProvider: DecisionProvider {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(try engineTestSettings(decisions: decisions), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        try await harness.callAcknowledgingResources("models.prepare")
+        try await acknowledgeResourceWarning(
+            harness.app, workload: .live, context: try requestContext(for: harness)
+        )
         return harness
     }
 
