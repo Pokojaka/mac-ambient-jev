@@ -315,6 +315,7 @@ var portableRuntimeDependencies: [Target.Dependency] = [
     "MacAmbientJevDiarization"
 ]
 #if os(Windows)
+portableRuntimeDependencies.append("CWindowsSession")
 portableRuntimeDependencies.append("MacAmbientJevWindowsSupport")
 #elseif os(Linux)
 portableRuntimeDependencies.append("CMiniaudio")

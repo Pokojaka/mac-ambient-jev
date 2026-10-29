@@ -32,7 +32,8 @@ uint32_t msj_kind(MSJHandle handle, int *directory) {
     return ERROR_SUCCESS;
 }
 
-uint32_t msj_open_root(const wchar_t *path, int create, int writable, MSJHandle *result) {
+static uint32_t open_path(const wchar_t *path, int create, int writable,
+                          int expected_directory, MSJHandle *result) {
     /* CreateFileW must not truncate a long boundary to Win32's MAX_PATH. */
     DWORD needed = GetFullPathNameW(path, 0, NULL, NULL);
     if (!needed) return GetLastError();
@@ -61,9 +62,28 @@ uint32_t msj_open_root(const wchar_t *path, int create, int writable, MSJHandle 
     if (open_error) return open_error;
     int directory = 0;
     DWORD error = msj_kind(handle, &directory);
-    if (!error && !directory) error = ERROR_DIRECTORY;
+    if (!error && expected_directory && !directory) error = ERROR_DIRECTORY;
+    if (!error && !expected_directory && directory) error = ERROR_INVALID_NAME;
     if (error) { CloseHandle(handle); return error; }
     *result = handle;
+    return ERROR_SUCCESS;
+}
+
+uint32_t msj_open_root(const wchar_t *path, int create, int writable, MSJHandle *result) {
+    return open_path(path, create, writable, 1, result);
+}
+
+uint32_t msj_open_readonly_file(const wchar_t *path, MSJHandle *result) {
+    return open_path(path, 0, 0, 0, result);
+}
+
+uint32_t msj_copy_mapped(const void *source, void *destination, size_t count) {
+    __try {
+        memcpy(destination, source, count);
+    } __except(GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+        ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return ERROR_READ_FAULT;
+    }
     return ERROR_SUCCESS;
 }
 
