@@ -1463,7 +1463,7 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
 }
 
 @MainActor
-@Test(arguments: [InferenceResourceSignal.pressure, .monitorFailed])
+@Test(arguments: [InferenceResourceSignal.pressure, .monitorFailed("QueryMemoryResourceNotification failed (Win32 1234)")])
 func inferenceResourceLiveSuspensionLatchesWithoutStoppingRecording(_ signal: InferenceResourceSignal) async throws {
     let sessionID = UUID()
     let state = LiveTranscriptionState()

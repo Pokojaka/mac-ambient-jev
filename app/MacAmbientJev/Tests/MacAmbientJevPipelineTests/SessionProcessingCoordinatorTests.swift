@@ -1004,7 +1004,7 @@ func inferenceResourceStoppedLiveRequeuesWholeFinalizationWithoutDrain() async t
 }
 
 @MainActor
-@Test(arguments: [InferenceResourceSignal.pressure, .monitorFailed], [false, true])
+@Test(arguments: [InferenceResourceSignal.pressure, .monitorFailed("QueryMemoryResourceNotification failed (Win32 1234)")], [false, true])
 func inferenceResourceFinalizationPausesAndReplaysWholeAttempt(
     _ signal: InferenceResourceSignal, _ recoverBeforeReturn: Bool
 ) async throws {

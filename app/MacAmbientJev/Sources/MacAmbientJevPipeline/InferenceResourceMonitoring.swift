@@ -19,13 +19,13 @@ public extension InferenceHoldReason {
 }
 
 public enum InferenceResourceSignal: Sendable, Equatable {
-    case healthy, pressure, monitorFailed
+    case healthy, pressure, monitorFailed(String)
 
     public var holdReason: InferenceHoldReason? {
         switch self {
         case .healthy: nil
         case .pressure: .resourcePressure
-        case .monitorFailed: .monitorFailed
+        case .monitorFailed(_): .monitorFailed
         }
     }
 }
@@ -37,4 +37,27 @@ public protocol InferenceResourceMonitoring: Sendable {
     @MainActor func observeChanges(
         _ onChange: @escaping @MainActor @Sendable () -> Void
     ) -> any InferenceResourceObservation
+}
+
+public struct InferenceMemoryFacts: Sendable, Equatable {
+    public let physicalMemoryBytes: UInt64
+    public let freePhysicalMemoryBytes: UInt64
+    public let commitHeadroomBytes: UInt64
+    public let lowMemorySignal: Bool
+
+    public init(
+        physicalMemoryBytes: UInt64,
+        freePhysicalMemoryBytes: UInt64,
+        commitHeadroomBytes: UInt64,
+        lowMemorySignal: Bool
+    ) {
+        self.physicalMemoryBytes = physicalMemoryBytes
+        self.freePhysicalMemoryBytes = freePhysicalMemoryBytes
+        self.commitHeadroomBytes = commitHeadroomBytes
+        self.lowMemorySignal = lowMemorySignal
+    }
+}
+
+public protocol InferenceMemoryProbing: Sendable {
+    func memoryFacts() throws -> InferenceMemoryFacts
 }

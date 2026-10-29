@@ -37,6 +37,24 @@ public enum InferenceAdmissionError: Error, Sendable, Equatable {
     case invalidPhysicalMemory, invalidMeasuredRTF, envelopeOverflow
 }
 
+public func inferenceMemoryHeadroomIsAdequate(
+    physicalMemoryBytes: UInt64,
+    freePhysicalMemoryBytes: UInt64,
+    commitHeadroomBytes: UInt64
+) throws -> Bool {
+    guard physicalMemoryBytes > 0, freePhysicalMemoryBytes <= physicalMemoryBytes else {
+        throw InferenceAdmissionError.invalidPhysicalMemory
+    }
+
+    let reserve = inferenceMemoryReserveBytes(physicalMemoryBytes: physicalMemoryBytes)
+    return freePhysicalMemoryBytes >= reserve && commitHeadroomBytes >= reserve
+}
+
+private func inferenceMemoryReserveBytes(physicalMemoryBytes: UInt64) -> UInt64 {
+    let tenth = physicalMemoryBytes / 10 + (physicalMemoryBytes % 10 == 0 ? 0 : 1)
+    return max(UInt64(1) << 30, tenth)
+}
+
 public func admitInference(
     physicalMemoryBytes: UInt64, freePhysicalMemoryBytes: UInt64, commitHeadroomBytes: UInt64,
     envelope: InferenceEnvelope, measuredRTF: InferenceRTF, threads: Int, logicalCPUCount: Int,
@@ -59,8 +77,7 @@ public func admitInference(
     guard logicalCPUCount >= 2 else { return .block(.unsupportedCPUCount) }
     guard (1...min(4, logicalCPUCount - 1)).contains(threads) else { return .block(.invalidThreads) }
     guard !lowMemorySignal else { return .block(.lowMemory) }
-    let tenth = physicalMemoryBytes / 10 + (physicalMemoryBytes % 10 == 0 ? 0 : 1)
-    let reserve = max(UInt64(1) << 30, tenth)
+    let reserve = inferenceMemoryReserveBytes(physicalMemoryBytes: physicalMemoryBytes)
     guard freePhysicalMemoryBytes >= reserve else { return .block(.insufficientPhysicalMemory) }
     guard commitHeadroomBytes >= reserve else { return .block(.insufficientCommitHeadroom) }
     if let required {
