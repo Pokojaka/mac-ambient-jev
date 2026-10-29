@@ -11,7 +11,7 @@ using Xunit;
 
 namespace MacAmbientJev.EngineClient.Tests;
 
-public sealed class EngineProcessClientTests
+public sealed partial class EngineProcessClientTests
 {
     private static readonly TimeSpan Guard = TimeSpan.FromSeconds(10);
     [Fact]
