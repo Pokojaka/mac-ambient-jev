@@ -254,6 +254,16 @@ private let settingsPayload = """
         #expect(recordingRefused.code == .modelMissing)
         #expect(recordingRefused.recoveryAction == .prepareModels)
 
+        // Envelopes are unmeasured, so loading needs an explicit acknowledgement before models are checked.
+        guard case let .completed(.resourcesPreflight(assessment)) = try await child.call(
+            "resources.preflight", payload: "{\"workload\":\"load\"}"
+        ), case .completed(.resourcesAcknowledge) = try await child.call(
+            "resources.acknowledge", payload: "{\"assessment_id\":\"\(assessment.assessmentID)\"}"
+        ) else {
+            Issue.record("resources.preflight / resources.acknowledge did not complete")
+            return
+        }
+
         guard case let .error(modelsMissing) = try await child.call("models.prepare") else {
             Issue.record("models.prepare should fail without installed models")
             return
