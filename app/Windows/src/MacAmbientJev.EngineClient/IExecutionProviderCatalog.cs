@@ -22,13 +22,24 @@ public interface IExecutionProviderCatalog
 
 public sealed record ExecutionProviderInfo(
     string Name,
-    string DeviceID,
-    string GPUName,
-    string DriverVersion,
-    string AdapterID,
-    string Architecture,
-    ulong? DedicatedVRAMBytes,
-    string PackageIdentity);
+    string PackageFullName,
+    string PackageArchitecture,
+    ExecutionProviderReadyState ReadyState,
+    ExecutionProviderCertification Certification);
+
+public enum ExecutionProviderReadyState
+{
+    Ready = 0,
+    NotReady = 1,
+    NotPresent = 2,
+}
+
+public enum ExecutionProviderCertification
+{
+    Unknown = 0,
+    Certified = 1,
+    Uncertified = 2,
+}
 
 public sealed record ExecutionProviderDependency(string Path, string Hash);
 

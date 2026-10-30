@@ -37,26 +37,26 @@ AppPaths.root/
     └── profile-decision.json
 ```
 
-`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。`accelerators.verify` の `verification_id` はこの既存 file name（`.json` 拡張子を除く digest）と同じ値で、pass / fail receipt をこの名前で公開します。key の全フィールドは必須です。
+`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` の全 field を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。`accelerators.verify` の `verification_id` はこの file name（`.json` 拡張子を除く digest）と同じ値で、pass / fail receipt をこの名前で公開します。key は次の14個の camelCase field を全て必須で持ち、完全な key digest の一致だけが同じ receipt identity になります。
 
 | key field | 型 | 意味 |
 | --- | --- | --- |
-| `gpuName` | String | GPU 名 |
-| `driverVersion` | String | driver version |
-| `adapterID` | String | adapter identity |
-| `deviceID` | String | device identity |
-| `architecture` | String | architecture |
-| `epPackageHash` | String | JSON string array `[provider_name, package_identity] + sorted dependency hashes` を JSONEncoder で encode した bytes の SHA-256（lowercase hex）。dependency hash は辞書順。DLL path は使わない |
-| `epLibraryHash` | String | EP library の hash |
-| `ortVersion` | String | ONNX Runtime version |
-| `modelRevision` | String | model revision |
-| `modelSize` | String | model size |
+| `providerName` | String | descriptor の package provider name |
+| `packageFullName` | String | 登録した package full name |
+| `libraryHash` | String | EP library の SHA-256 hash |
+| `packageArchitecture` | String | package architecture (`x64` または `arm64`) |
+| `deviceKey` | String | engine が所有する stable device key（`gpu` / `npu` と vendor / device の lowercase hex identity） |
+| `description` | String | bound engine device の description |
+| `driverVersion` | String | bound engine device の driver version |
+| `ortVersion` | String | device が返す ONNX Runtime version |
+| `modelRevision` | String | device が返す model revision |
+| `modelSize` | String | 検証する ASR model size |
 | `decodingSettings` | String | decoding 設定 identity |
-| `fixtureHash` | String | verification fixture の hash |
+| `fixtureHash` | String | verification fixture の SHA-256 hash |
 | `verificationPolicyVersion` | String | verification policy version |
 | `threads` | Int | 実際の推論 threads 数 |
 
-key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。library / dependency path と process-local `binding_id` は保存しません。receipt JSON は現在の camelCase schema のまま、次の5 key を全て持ちます。
+key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。dependency hash の集約は key に含めず、library / dependency path と process-local `binding_id` も保存しません。どれかの key value が変われば別 digest/file となり、以前の receipt を流用しません。receipt JSON は camelCase schema のまま、次の5 key を全て持ちます。
 
 | receipt key | 型 | 検証 |
 | --- | --- | --- |

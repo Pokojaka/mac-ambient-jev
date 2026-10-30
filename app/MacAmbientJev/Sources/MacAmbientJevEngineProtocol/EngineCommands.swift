@@ -48,7 +48,7 @@ public enum EngineASRSize: String, Codable, CaseIterable, Equatable, Sendable {
 
 public enum EngineExecutionProvider: Codable, Equatable, Sendable {
     case cpu
-    case windowsML(providerName: String, deviceID: String, verificationID: String)
+    case windowsML(providerName: String, deviceKey: String, verificationID: String)
 
     enum Kind: String, Codable, CaseIterable, Sendable {
         case cpu
@@ -67,7 +67,7 @@ public enum EngineExecutionProvider: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
         case providerName = "provider_name"
-        case deviceID = "device_id"
+        case deviceKey = "device_key"
         case verificationID = "verification_id"
     }
 
@@ -79,9 +79,9 @@ public enum EngineExecutionProvider: Codable, Equatable, Sendable {
     }
 
     private func validate() throws {
-        if case let .windowsML(providerName, deviceID, verificationID) = self {
+        if case let .windowsML(providerName, deviceKey, verificationID) = self {
             try engineRequireNonempty(providerName, "provider_name")
-            try engineRequireNonempty(deviceID, "device_id")
+            try engineRequireNonempty(deviceKey, "device_key")
             try engineRequireNonempty(verificationID, "verification_id")
         }
     }
@@ -96,16 +96,16 @@ public enum EngineExecutionProvider: Codable, Equatable, Sendable {
             self = .cpu
         case .windowsML:
             try engineRequire(
-                Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "provider_name", "device_id", "verification_id"],
+                Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "provider_name", "device_key", "verification_id"],
                 "windows_ml execution provider has invalid fields"
             )
             let providerName = try container.decode(String.self, forKey: .providerName)
-            let deviceID = try container.decode(String.self, forKey: .deviceID)
+            let deviceKey = try container.decode(String.self, forKey: .deviceKey)
             let verificationID = try container.decode(String.self, forKey: .verificationID)
             try engineRequireNonempty(providerName, "provider_name")
-            try engineRequireNonempty(deviceID, "device_id")
+            try engineRequireNonempty(deviceKey, "device_key")
             try engineRequireNonempty(verificationID, "verification_id")
-            self = .windowsML(providerName: providerName, deviceID: deviceID, verificationID: verificationID)
+            self = .windowsML(providerName: providerName, deviceKey: deviceKey, verificationID: verificationID)
         }
     }
 
@@ -116,9 +116,9 @@ public enum EngineExecutionProvider: Codable, Equatable, Sendable {
         switch self {
         case .cpu:
             break
-        case let .windowsML(providerName, deviceID, verificationID):
+        case let .windowsML(providerName, deviceKey, verificationID):
             try container.encode(providerName, forKey: .providerName)
-            try container.encode(deviceID, forKey: .deviceID)
+            try container.encode(deviceKey, forKey: .deviceKey)
             try container.encode(verificationID, forKey: .verificationID)
         }
     }

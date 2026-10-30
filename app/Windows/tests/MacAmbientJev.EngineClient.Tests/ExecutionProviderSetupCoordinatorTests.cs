@@ -17,42 +17,47 @@ public sealed partial class EngineProcessClientTests
     {
         await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
         await session.CompleteHelloAsync();
-        var provider = new ExecutionProviderInfo("UnverifiedVendorExecutionProvider", "device-distinct", "gpu-distinct",
-            "driver-distinct", "adapter-distinct", "arm64", passes ? 123456UL : null, "package-distinct");
+        var provider = new ExecutionProviderInfo("UnverifiedVendorExecutionProvider", "package-distinct", "arm64",
+            ExecutionProviderReadyState.NotPresent, ExecutionProviderCertification.Uncertified);
         var dependency = new ExecutionProviderDependency(@"C:\providers\dependency.dll", new string('b', 64));
         var ready = new ExecutionProviderReadyResult.Ready(@"C:\providers\selected.dll", new string('a', 64), new[] { dependency });
         var catalog = new FakeExecutionProviderCatalog(provider, ready);
-        var chosen = Assert.Single(await catalog.FindAllProvidersAsync(TestContext.Current.CancellationToken));
         var coordinator = new ExecutionProviderSetupCoordinator(catalog, session.Client);
-        var setup = coordinator.SetupAsync(chosen, 3, catalog, TestContext.Current.CancellationToken);
+        var binding = coordinator.BindAsync(provider, catalog, TestContext.Current.CancellationToken);
 
         var bind = await session.ReadRequestAsync(2, EngineCommandName.AcceleratorsBind);
         var descriptor = Assert.IsType<EngineCommand.AcceleratorsBind>(bind.Command).Payload.Descriptor;
         Assert.Equal(provider.Name, descriptor.ProviderName);
-        Assert.Equal(provider.DeviceID, descriptor.DeviceID);
-        Assert.Equal(provider.GPUName, descriptor.GPUName);
-        Assert.Equal(provider.DriverVersion, descriptor.DriverVersion);
-        Assert.Equal(provider.AdapterID, descriptor.AdapterID);
-        Assert.Equal(provider.Architecture, descriptor.Architecture);
-        Assert.Equal(provider.DedicatedVRAMBytes, descriptor.DedicatedVRAMBytes);
-        Assert.Equal(provider.PackageIdentity, descriptor.PackageIdentity);
+        Assert.Equal(provider.PackageFullName, descriptor.PackageFullName);
+        Assert.Equal(provider.PackageArchitecture, descriptor.PackageArchitecture);
         Assert.Equal(ready.LibraryPath, descriptor.LibraryPath);
         Assert.Equal(ready.LibraryHash, descriptor.LibraryHash);
         Assert.Equal(new[] { new EngineAcceleratorDependency(dependency.Path, dependency.Hash) }, descriptor.Dependencies);
         Assert.Equal(1, catalog.Calls);
         Assert.Equal(new ExecutionProviderProgress("acquiring", 0.5), catalog.LastProgress);
-        Assert.False(setup.IsCompleted);
+        Assert.False(binding.IsCompleted);
 
-        await session.AcceptAndCompleteAsync(bind, new EngineResult.AcceleratorsBind(new EngineAcceleratorsBindResult("binding-chosen")));
+        var devices = new[]
+        {
+            new EngineAcceleratorDeviceInfo("gpu:10de:2684", "gpu", "Engine GPU", "engine-driver", 123UL),
+            new EngineAcceleratorDeviceInfo("npu:8086:1234", "npu", "Engine NPU", "npu-driver", null),
+        };
+        var bindingResult = new EngineAcceleratorsBindResult("binding-chosen", devices);
+        await session.AcceptAndCompleteAsync(bind, new EngineResult.AcceleratorsBind(bindingResult));
+        var bound = Assert.IsType<ExecutionProviderBindResult.Bound>(await binding.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        Assert.Equal(bindingResult.BindingID, bound.Result.BindingID);
+        Assert.Equal(devices, bound.Result.Devices);
+
+        var verificationTask = coordinator.VerifyAsync(bound.Result.BindingID, bound.Result.Devices[1].DeviceKey, 3,
+            TestContext.Current.CancellationToken);
         var verify = await session.ReadRequestAsync(3, EngineCommandName.AcceleratorsVerify);
-        Assert.Equal(new EngineAcceleratorsVerifyPayload("binding-chosen", EngineASRSize.Small, 3),
+        Assert.Equal(new EngineAcceleratorsVerifyPayload("binding-chosen", "npu:8086:1234", EngineASRSize.Small, 3),
             Assert.IsType<EngineCommand.AcceleratorsVerify>(verify.Command).Payload);
         EngineAcceleratorsVerifyResult verification = passes
             ? new EngineAcceleratorsVerifyResult.Pass("verification-pass", 0.25)
             : new EngineAcceleratorsVerifyResult.Fail("verification-fail", "exact mismatch", "unexpected output\n");
         await session.AcceptAndCompleteAsync(verify, new EngineResult.AcceleratorsVerify(verification));
-        var result = await setup.WaitAsync(Guard, TestContext.Current.CancellationToken);
-        Assert.Equal(verification, Assert.IsType<ExecutionProviderSetupResult.Verified>(result).Result);
+        Assert.Equal(verification, await verificationTask.WaitAsync(Guard, TestContext.Current.CancellationToken));
         await session.CloseAndCompleteAsync(4);
     }
 
@@ -61,14 +66,14 @@ public sealed partial class EngineProcessClientTests
     {
         await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
         await session.CompleteHelloAsync();
-        var provider = new ExecutionProviderInfo("UnverifiedVendorExecutionProvider", "device-distinct", "gpu-distinct",
-            "driver-distinct", "adapter-distinct", "arm64", 654321UL, "package-distinct");
+        var provider = new ExecutionProviderInfo("UnverifiedVendorExecutionProvider", "package-distinct", "arm64",
+            ExecutionProviderReadyState.NotPresent, ExecutionProviderCertification.Uncertified);
         var failure = new ExecutionProviderReadyResult.Failure(unchecked((int)0x80070005),
             "HRESULT 0x80070005: acquisition denied");
         var catalog = new FakeExecutionProviderCatalog(provider, failure);
         var coordinator = new ExecutionProviderSetupCoordinator(catalog, session.Client);
-        var result = await coordinator.SetupAsync(provider, 2, catalog, TestContext.Current.CancellationToken);
-        var acquired = Assert.IsType<ExecutionProviderSetupResult.AcquisitionFailed>(result);
+        var result = await coordinator.BindAsync(provider, catalog, TestContext.Current.CancellationToken);
+        var acquired = Assert.IsType<ExecutionProviderBindResult.AcquisitionFailed>(result);
         Assert.Same(failure, acquired.Failure);
         Assert.Equal(unchecked((int)0x80070005), acquired.Failure.HResult);
         Assert.Equal("HRESULT 0x80070005: acquisition denied", acquired.Failure.DiagnosticText);

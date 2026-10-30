@@ -3,22 +3,22 @@ import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
 
 public struct EngineVerificationKey: Codable, Equatable, Sendable {
-    public let gpuName, driverVersion, adapterID, deviceID: String
-    public let architecture, epPackageHash, epLibraryHash, ortVersion: String
+    public let providerName, packageFullName, libraryHash, packageArchitecture: String
+    public let deviceKey, description, driverVersion, ortVersion: String
     public let modelRevision, modelSize, decodingSettings, fixtureHash: String
     public let verificationPolicyVersion: String
     public let threads: Int
 
     public init(
-        gpuName: String, driverVersion: String, adapterID: String, deviceID: String,
-        architecture: String, epPackageHash: String, epLibraryHash: String, ortVersion: String,
+        providerName: String, packageFullName: String, libraryHash: String, packageArchitecture: String,
+        deviceKey: String, description: String, driverVersion: String, ortVersion: String,
         modelRevision: String, modelSize: String, decodingSettings: String, fixtureHash: String,
         verificationPolicyVersion: String, threads: Int
     ) {
-        self.gpuName = gpuName; self.driverVersion = driverVersion
-        self.adapterID = adapterID; self.deviceID = deviceID
-        self.architecture = architecture; self.epPackageHash = epPackageHash
-        self.epLibraryHash = epLibraryHash; self.ortVersion = ortVersion
+        self.providerName = providerName; self.packageFullName = packageFullName
+        self.libraryHash = libraryHash; self.packageArchitecture = packageArchitecture
+        self.deviceKey = deviceKey; self.description = description
+        self.driverVersion = driverVersion; self.ortVersion = ortVersion
         self.modelRevision = modelRevision; self.modelSize = modelSize
         self.decodingSettings = decodingSettings; self.fixtureHash = fixtureHash
         self.verificationPolicyVersion = verificationPolicyVersion

@@ -192,7 +192,7 @@ import MacAmbientJevTestSupport
             device: .default,
             asrSize: .small,
             executionProvider: .windowsML(
-                providerName: "NvTensorRtRtxExecutionProvider", deviceID: "gpu0", verificationID: "receipt0"
+                providerName: "NvTensorRtRtxExecutionProvider", deviceKey: "gpu:10de:2684", verificationID: "receipt0"
             ),
             threads: 1,
             lowHeat: false,

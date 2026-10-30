@@ -97,7 +97,8 @@ final class EngineApplicationCore {
     var inference: EngineInference?
     var profileEvaluation: EngineProfileEvaluation? = nil
     var profileSetupOperation: EngineProfileSetupOperation? = nil
-    var acceleratorBindings: [String: EngineAcceleratorDescriptor] = [:]
+    var acceleratorBindings: [String: (descriptor: EngineAcceleratorDescriptor, devices: [any EngineAcceleratorDevice])] = [:]
+    var acceleratorBindingTask: Task<[any EngineAcceleratorDevice], Error>? = nil
     var acceleratorSetupTask: Task<EngineAcceleratorsVerifyResult, Error>? = nil
     var isPreparingModels = false
     var presentation = EnginePresentation()
@@ -970,9 +971,13 @@ extension EngineApplicationCore: EngineShutdownHandling {
     /// recovered on the next launch. Fails when running work does not pause within `shutdownPauseTimeout`.
     func shutdown(reason: EngineShutdownReason) async throws {
         isShuttingDown = true
+        let acceleratorBindingTaskAtShutdown = acceleratorBindingTask
         let acceleratorSetupTaskAtShutdown = acceleratorSetupTask
+        acceleratorBindingTaskAtShutdown?.cancel()
         acceleratorSetupTaskAtShutdown?.cancel()
+        _ = await acceleratorBindingTaskAtShutdown?.result
         _ = await acceleratorSetupTaskAtShutdown?.result
+        acceleratorBindingTask = nil
         acceleratorSetupTask = nil
         profileSetupOperation = nil
 

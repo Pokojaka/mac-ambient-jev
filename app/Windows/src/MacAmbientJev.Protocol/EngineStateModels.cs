@@ -71,7 +71,7 @@ public sealed record EngineCapabilities(
                 EngineExecutionProvider.Cpu cpu => cpu,
                 EngineExecutionProvider.WindowsML windowsML => new EngineExecutionProvider.WindowsML(
                     WireCheck.CanonicalString(windowsML.ProviderName),
-                    WireCheck.CanonicalString(windowsML.DeviceID),
+                    WireCheck.CanonicalString(windowsML.DeviceKey),
                     WireCheck.CanonicalString(windowsML.VerificationID)),
                 _ => throw new InvalidOperationException("Unknown execution provider type."),
             }).ToArray();

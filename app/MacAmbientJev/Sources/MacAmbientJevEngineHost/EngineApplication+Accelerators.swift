@@ -7,9 +7,27 @@ extension EngineApplicationCore {
     func bind(_ payload: EngineAcceleratorsBindPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsBindResult {
         try acquireAcceleratorSetup(.binding)
         defer { finishAcceleratorSetup() }
-        let bindingID = UUID().uuidString.lowercased()
-        acceleratorBindings[bindingID] = payload.descriptor
-        return try EngineAcceleratorsBindResult(bindingID: bindingID)
+        let task = Task { @MainActor [self] in try await acceleratorRegistry.bind(payload.descriptor) }
+        acceleratorBindingTask = task
+        do {
+            let devices = try await task.value
+            try checkAcceleratorSetupCanContinue()
+            let deviceKeys = devices.map { $0.info.deviceKey }
+            guard Set(deviceKeys).count == deviceKeys.count else {
+                throw EngineFailures.commandError(
+                    .modelFailure, "同じ device_key のアダプターを区別できません。同一アダプターの複数接続には対応していません",
+                    stage: .loadingModels
+                )
+            }
+            let bindingID = UUID().uuidString.lowercased()
+            acceleratorBindings[bindingID] = (payload.descriptor, devices)
+            return try EngineAcceleratorsBindResult(bindingID: bindingID, devices: devices.map(\.info))
+        } catch {
+            if isAcceleratorCancellation(error) || Task.isCancelled || isShuttingDown {
+                throw acceleratorCancellationError()
+            }
+            throw EngineFailures.commandError(from: error, fallback: .modelFailure, stage: .loadingModels)
+        }
     }
 
     func verify(_ payload: EngineAcceleratorsVerifyPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsVerifyResult {
@@ -21,11 +39,14 @@ extension EngineApplicationCore {
         guard logicalCPUCount > 0, payload.threads <= min(PortableThreadLimit.maximum, logicalCPUCount) else {
             throw EngineFailures.commandError(.invalidRequest, "スレッド数が論理 CPU 数の上限を超えています", stage: .loadingModels)
         }
-        guard let descriptor = acceleratorBindings[payload.bindingID] else {
+        guard let binding = acceleratorBindings[payload.bindingID] else {
             throw EngineFailures.commandError(.invalidRequest, "アクセラレーターの binding が見つかりません", stage: .loadingModels)
         }
+        guard let device = binding.devices.first(where: { $0.info.deviceKey == payload.deviceKey }) else {
+            throw EngineFailures.commandError(.invalidRequest, "アクセラレーターの device_key が binding に見つかりません", stage: .loadingModels)
+        }
         let task = Task { @MainActor [self] in
-            try await runAcceleratorVerification(descriptor: descriptor, threads: payload.threads)
+            try await runAcceleratorVerification(descriptor: binding.descriptor, device: device, threads: payload.threads)
         }
         acceleratorSetupTask = task
         do {
@@ -91,6 +112,7 @@ extension EngineApplicationCore {
 
     private func finishAcceleratorSetup() {
         profileSetupOperation = nil
+        acceleratorBindingTask = nil
         acceleratorSetupTask = nil
         guard !isShuttingDown else { return }
         stateDidChange()
@@ -99,14 +121,10 @@ extension EngineApplicationCore {
 
     private func runAcceleratorVerification(
         descriptor: EngineAcceleratorDescriptor,
+        device: any EngineAcceleratorDevice,
         threads: Int
     ) async throws -> EngineAcceleratorsVerifyResult {
-        try await acceleratorRegistry.registerLibrary(descriptor)
-        try checkAcceleratorVerificationCanContinue()
-        let device = try await acceleratorRegistry.selectDevice(
-            providerName: descriptor.providerName, deviceID: descriptor.deviceID
-        )
-        try checkAcceleratorVerificationCanContinue()
+        try checkAcceleratorSetupCanContinue()
         let ortVersion = device.ortVersion
         guard ortVersion == "1.31.0" else {
             throw EngineAdapterError(
@@ -121,13 +139,12 @@ extension EngineApplicationCore {
                 recoveryAction: .none, details: []
             )
         }
-        let packageIdentity = [descriptor.providerName, descriptor.packageIdentity] + descriptor.dependencies.map(\.hash).sorted()
-        let packageHash = FileSHA256.hexDigest(of: try JSONEncoder().encode(packageIdentity))
-        let key = EngineVerificationKey(gpuName: descriptor.gpuName, driverVersion: descriptor.driverVersion,
-            adapterID: descriptor.adapterID, deviceID: descriptor.deviceID,
-            architecture: descriptor.architecture, epPackageHash: packageHash,
-            epLibraryHash: descriptor.libraryHash, ortVersion: ortVersion,
-            modelRevision: modelRevision, modelSize: EngineASRSize.small.rawValue,
+        let key = EngineVerificationKey(
+            providerName: descriptor.providerName, packageFullName: descriptor.packageFullName,
+            libraryHash: descriptor.libraryHash, packageArchitecture: descriptor.packageArchitecture,
+            deviceKey: device.info.deviceKey, description: device.info.description,
+            driverVersion: device.info.driverVersion, ortVersion: ortVersion, modelRevision: modelRevision,
+            modelSize: EngineASRSize.small.rawValue,
             decodingSettings: EngineAcceleratorVerificationFixture.decodingSettings,
             fixtureHash: EngineAcceleratorVerificationFixture.fixtureHash,
             verificationPolicyVersion: EngineAcceleratorVerificationFixture.policyVersion, threads: threads
@@ -150,7 +167,7 @@ extension EngineApplicationCore {
                 failedInference = error
             }
             let elapsed = started.duration(to: clock.now).components
-            try checkAcceleratorVerificationCanContinue()
+            try checkAcceleratorSetupCanContinue()
             let inferenceSeconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1_000_000_000_000_000_000
             let audioSeconds = Double(fixture.samples.count) / Double(fixture.sampleRate)
             let measuredRTF = inferenceSeconds / audioSeconds
@@ -173,7 +190,7 @@ extension EngineApplicationCore {
             && verification.output.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText.utf8)
         let receipt = EngineVerificationReceipt(key: key,
             observedOutput: verification.output, passed: passed, rtf: verification.rtf, timestamp: Date())
-        try checkAcceleratorVerificationCanContinue()
+        try checkAcceleratorSetupCanContinue()
         let verificationID = try verificationStore.publish(receipt)
         if passed { return .pass(verificationID: verificationID, rtf: verification.rtf) }
         if let error = verification.inferenceError {
@@ -192,7 +209,7 @@ extension EngineApplicationCore {
         error is CancellationError || (error as? EngineCommandError)?.code == .cancelled || (error as? EngineAdapterError)?.code == .cancelled
     }
 
-    private func checkAcceleratorVerificationCanContinue() throws {
+    private func checkAcceleratorSetupCanContinue() throws {
         try Task.checkCancellation()
         guard !isShuttingDown else { throw CancellationError() }
     }

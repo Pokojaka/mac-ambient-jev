@@ -6,14 +6,12 @@ using MacAmbientJev.Protocol;
 
 namespace MacAmbientJev.EngineClient;
 
-public abstract record ExecutionProviderSetupResult
+public abstract record ExecutionProviderBindResult
 {
-    private ExecutionProviderSetupResult() { }
+    private ExecutionProviderBindResult() { }
 
-    public sealed record AcquisitionFailed(ExecutionProviderReadyResult.Failure Failure) : ExecutionProviderSetupResult;
-
-    /// <summary>Verification completed; Result may represent either a pass or a fail.</summary>
-    public sealed record Verified(EngineAcceleratorsVerifyResult Result) : ExecutionProviderSetupResult;
+    public sealed record AcquisitionFailed(ExecutionProviderReadyResult.Failure Failure) : ExecutionProviderBindResult;
+    public sealed record Bound(EngineAcceleratorsBindResult Result) : ExecutionProviderBindResult;
 }
 
 public sealed class ExecutionProviderSetupCoordinator
@@ -29,22 +27,19 @@ public sealed class ExecutionProviderSetupCoordinator
         _engineClient = engineClient;
     }
 
-    /// <summary>Acquires, binds, and verifies one explicitly supplied provider.</summary>
-    /// <remarks>Cancellation is observed during acquisition and between commands, not by abandoning an issued engine command.</remarks>
-    public async Task<ExecutionProviderSetupResult> SetupAsync(
+    /// <summary>Acquires and binds one explicitly supplied provider.</summary>
+    public async Task<ExecutionProviderBindResult> BindAsync(
         ExecutionProviderInfo provider,
-        long threads,
         IProgress<ExecutionProviderProgress> progress,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(progress);
-        if (threads is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(threads));
         cancellationToken.ThrowIfCancellationRequested();
 
         var readiness = await _catalog.EnsureReadyAsync(provider, progress, cancellationToken).ConfigureAwait(false);
         if (readiness is ExecutionProviderReadyResult.Failure failure)
-            return new ExecutionProviderSetupResult.AcquisitionFailed(failure);
+            return new ExecutionProviderBindResult.AcquisitionFailed(failure);
         if (readiness is not ExecutionProviderReadyResult.Ready ready)
             throw new InvalidOperationException("Provider catalog returned an unexpected readiness result.");
         cancellationToken.ThrowIfCancellationRequested();
@@ -53,8 +48,7 @@ public sealed class ExecutionProviderSetupCoordinator
             .Select(dependency => new EngineAcceleratorDependency(dependency.Path, dependency.Hash))
             .ToArray();
         var descriptor = new EngineAcceleratorDescriptor(
-            provider.Name, provider.DeviceID, provider.GPUName, provider.DriverVersion, provider.AdapterID,
-            provider.Architecture, provider.DedicatedVRAMBytes, provider.PackageIdentity,
+            provider.Name, provider.PackageFullName, provider.PackageArchitecture,
             ready.LibraryPath, ready.LibraryHash, dependencies);
         var bindingResult = await _engineClient.SendAsync(new EngineCommand.AcceleratorsBind(
             new EngineAcceleratorsBindPayload(descriptor))).ConfigureAwait(false);
@@ -62,10 +56,25 @@ public sealed class ExecutionProviderSetupCoordinator
             throw new InvalidOperationException("Engine returned an unexpected accelerator bind result.");
 
         cancellationToken.ThrowIfCancellationRequested();
+        return new ExecutionProviderBindResult.Bound(binding.Result);
+    }
+
+    /// <summary>Verifies the explicitly supplied binding and device.</summary>
+    public async Task<EngineAcceleratorsVerifyResult> VerifyAsync(
+        string bindingID,
+        string deviceKey,
+        long threads,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(bindingID);
+        ArgumentException.ThrowIfNullOrEmpty(deviceKey);
+        if (threads is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(threads));
+        cancellationToken.ThrowIfCancellationRequested();
+
         var verifyResult = await _engineClient.SendAsync(new EngineCommand.AcceleratorsVerify(
-            new EngineAcceleratorsVerifyPayload(binding.Result.BindingID, EngineASRSize.Small, threads))).ConfigureAwait(false);
+            new EngineAcceleratorsVerifyPayload(bindingID, deviceKey, EngineASRSize.Small, threads))).ConfigureAwait(false);
         if (verifyResult is not EngineResult.AcceleratorsVerify verification)
             throw new InvalidOperationException("Engine returned an unexpected accelerator verify result.");
-        return new ExecutionProviderSetupResult.Verified(verification.Result);
+        return verification.Result;
     }
 }

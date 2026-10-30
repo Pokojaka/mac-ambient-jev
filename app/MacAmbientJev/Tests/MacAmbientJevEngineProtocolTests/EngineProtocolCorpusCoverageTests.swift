@@ -298,7 +298,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
     let capabilities = try EngineCapabilities(
         sources: EngineSource.allCases,
         asrSizes: EngineASRSize.allCases,
-        executionProviders: [.cpu, .windowsML(providerName: "Windows ML", deviceID: "gpu-adapter-01", verificationID: "verification-200")],
+        executionProviders: [.cpu, .windowsML(providerName: "Windows ML", deviceKey: "gpu:10de:2684", verificationID: "verification-200")],
         maximumThreads: 1,
         automaticInputVolume: .none,
         thermalMonitoring: .none
@@ -427,14 +427,22 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
     let sha256 = String(repeating: "a", count: 64)
     let dependency = try EngineAcceleratorDependency(path: "C:/Coverage/dependency.dll", hash: sha256)
     let acceleratorDescriptor = try EngineAcceleratorDescriptor(
-        providerName: "coverage-provider", deviceID: "coverage-device", gpuName: "Coverage GPU",
-        driverVersion: "1.0", adapterID: "coverage-adapter", architecture: "x64",
-        dedicatedVRAMBytes: 24576, packageIdentity: "coverage-package",
+        providerName: "coverage-provider", packageFullName: "coverage-package", packageArchitecture: "x64",
         libraryPath: "C:/Coverage/provider.dll", libraryHash: sha256, dependencies: [dependency]
     )
     let bindPayload = try EngineAcceleratorsBindPayload(descriptor: acceleratorDescriptor)
-    let bindResult = try EngineAcceleratorsBindResult(bindingID: "coverage-binding")
-    let verifyPayload = try EngineAcceleratorsVerifyPayload(bindingID: "coverage-binding", asrSize: .small, threads: 1)
+    let gpuAccelerator = try EngineAcceleratorDeviceInfo(
+        deviceKey: "gpu:10de:2684", type: "gpu", description: "Coverage GPU",
+        driverVersion: "1.0", dedicatedMemoryBytes: 24576
+    )
+    let npuAccelerator = try EngineAcceleratorDeviceInfo(
+        deviceKey: "npu:8086:1234", type: "npu", description: "Coverage NPU",
+        driverVersion: "1.0", dedicatedMemoryBytes: nil
+    )
+    let bindResult = try EngineAcceleratorsBindResult(bindingID: "coverage-binding", devices: [gpuAccelerator, npuAccelerator])
+    let verifyPayload = try EngineAcceleratorsVerifyPayload(
+        bindingID: "coverage-binding", deviceKey: "gpu:10de:2684", asrSize: .small, threads: 1
+    )
     let verifyPass = EngineAcceleratorsVerifyResult.pass(verificationID: "coverage-verification", rtf: 0.5)
     let verifyFail = EngineAcceleratorsVerifyResult.fail(
         verificationID: "coverage-verification", reason: "verification failed", observedOutput: "unexpected output"

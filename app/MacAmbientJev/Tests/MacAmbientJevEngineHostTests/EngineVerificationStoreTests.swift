@@ -10,8 +10,8 @@ private struct Fixture {
     let key: EngineVerificationKey
     init() throws {
         let fields: [String: Any] = [
-            "gpuName": "GPU", "driverVersion": "driver", "adapterID": "adapter", "deviceID": "device",
-            "architecture": "arch", "epPackageHash": "package", "epLibraryHash": "library", "ortVersion": "1.31.0",
+            "providerName": "provider", "packageFullName": "package", "libraryHash": "library", "packageArchitecture": "x64",
+            "deviceKey": "gpu:0000:0000", "description": "GPU", "driverVersion": "driver", "ortVersion": "1.31.0",
             "modelRevision": "revision", "modelSize": "small", "decodingSettings": "settings", "fixtureHash": "fixture",
             "verificationPolicyVersion": "policy", "threads": 2]
         key = try JSONDecoder().decode(EngineVerificationKey.self, from: JSONSerialization.data(withJSONObject: fields))
@@ -40,7 +40,7 @@ struct EngineVerificationStoreTests {
         let url = f.paths.root.appending(path: "accelerators/\(id).json")
         try Data([0xFF, 0x00]).write(to: url)
         expectCorrupt { try f.store.load(for: f.key) }
-        var mismatch = fields; mismatch["gpuName"] = "other"
+        var mismatch = fields; mismatch["description"] = "other"
         let key = try JSONDecoder().decode(EngineVerificationKey.self, from: JSONSerialization.data(withJSONObject: mismatch))
         try JSONEncoder().encode(f.receipt(key, "ok", true)).write(to: url)
         expectCorrupt { try f.store.load(for: f.key) }
@@ -49,7 +49,7 @@ struct EngineVerificationStoreTests {
     @Test func passingAndFailingReceiptsRoundTripExactOutput() throws {
         let f = try Fixture(); defer { f.cleanUp() }
         var fields = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(f.key)) as? [String: Any])
-        fields["gpuName"] = "other"
+        fields["description"] = "other"
         let failingKey = try JSONDecoder().decode(EngineVerificationKey.self, from: JSONSerialization.data(withJSONObject: fields))
         let pass = f.receipt(f.key, "こんにちは\n🙂", true), fail = f.receipt(failingKey, "mismatch: \"音声\"", false)
         let passID = try f.store.publish(pass), failID = try f.store.publish(fail)

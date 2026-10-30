@@ -36,55 +36,29 @@ public struct EngineAcceleratorDependency: Codable, Equatable, Sendable {
 }
 
 public struct EngineAcceleratorDescriptor: Codable, Equatable, Sendable {
-    public let providerName, deviceID, gpuName, driverVersion, adapterID, architecture: String
-    @EngineNullable public private(set) var dedicatedVRAMBytes: UInt64?
-    public let packageIdentity, libraryPath, libraryHash: String
+    public let providerName, packageFullName, packageArchitecture: String
+    public let libraryPath, libraryHash: String
     public let dependencies: [EngineAcceleratorDependency]
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case providerName = "provider_name", deviceID = "device_id", gpuName = "gpu_name"
-        case driverVersion = "driver_version", adapterID = "adapter_id", architecture
-        case dedicatedVRAMBytes = "dedicated_vram_bytes"
-        case packageIdentity = "package_identity", libraryPath = "library_path", libraryHash = "library_hash"
+        case providerName = "provider_name", packageFullName = "package_full_name"
+        case packageArchitecture = "package_architecture", libraryPath = "library_path", libraryHash = "library_hash"
         case dependencies
     }
 
-    private static func validate(
-        providerName: String, deviceID: String, gpuName: String, driverVersion: String,
-        adapterID: String, architecture: String, packageIdentity: String, libraryPath: String,
-        libraryHash: String, dependencies: [EngineAcceleratorDependency]
+    public init(
+        providerName: String, packageFullName: String, packageArchitecture: String,
+        libraryPath: String, libraryHash: String, dependencies: [EngineAcceleratorDependency]
     ) throws {
         try engineAcceleratorRequireNonempty(providerName, "provider_name")
-        try engineAcceleratorRequireNonempty(deviceID, "device_id")
-        try engineAcceleratorRequireNonempty(gpuName, "gpu_name")
-        try engineAcceleratorRequireNonempty(driverVersion, "driver_version")
-        try engineAcceleratorRequireNonempty(adapterID, "adapter_id")
-        try engineAcceleratorRequire(architecture == "x64" || architecture == "arm64", "architecture must be x64 or arm64")
-        try engineAcceleratorRequireNonempty(packageIdentity, "package_identity")
+        try engineAcceleratorRequireNonempty(packageFullName, "package_full_name")
+        try engineAcceleratorRequire(packageArchitecture == "x64" || packageArchitecture == "arm64", "package_architecture must be x64 or arm64")
         try engineAcceleratorRequireNonempty(libraryPath, "library_path")
         try engineAcceleratorValidateHash(libraryHash, "library_hash")
         try engineAcceleratorRequire(dependencies.count <= 64, "dependencies must contain at most 64 entries")
-
-    }
-
-    public init(
-        providerName: String, deviceID: String, gpuName: String, driverVersion: String,
-        adapterID: String, architecture: String, dedicatedVRAMBytes: UInt64?, packageIdentity: String,
-        libraryPath: String, libraryHash: String, dependencies: [EngineAcceleratorDependency]
-    ) throws {
-        try Self.validate(
-            providerName: providerName, deviceID: deviceID, gpuName: gpuName, driverVersion: driverVersion,
-            adapterID: adapterID, architecture: architecture, packageIdentity: packageIdentity,
-            libraryPath: libraryPath, libraryHash: libraryHash, dependencies: dependencies
-        )
         self.providerName = providerName
-        self.deviceID = deviceID
-        self.gpuName = gpuName
-        self.driverVersion = driverVersion
-        self.adapterID = adapterID
-        self.architecture = architecture
-        _dedicatedVRAMBytes = EngineNullable(wrappedValue: dedicatedVRAMBytes)
-        self.packageIdentity = packageIdentity
+        self.packageFullName = packageFullName
+        self.packageArchitecture = packageArchitecture
         self.libraryPath = libraryPath
         self.libraryHash = libraryHash
         self.dependencies = dependencies
@@ -94,16 +68,51 @@ public struct EngineAcceleratorDescriptor: Codable, Equatable, Sendable {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         try self.init(
             providerName: container.decode(String.self, forKey: .providerName),
-            deviceID: container.decode(String.self, forKey: .deviceID),
-            gpuName: container.decode(String.self, forKey: .gpuName),
-            driverVersion: container.decode(String.self, forKey: .driverVersion),
-            adapterID: container.decode(String.self, forKey: .adapterID),
-            architecture: container.decode(String.self, forKey: .architecture),
-            dedicatedVRAMBytes: container.decode(EngineNullable<UInt64>.self, forKey: .dedicatedVRAMBytes).wrappedValue,
-            packageIdentity: container.decode(String.self, forKey: .packageIdentity),
+            packageFullName: container.decode(String.self, forKey: .packageFullName),
+            packageArchitecture: container.decode(String.self, forKey: .packageArchitecture),
             libraryPath: container.decode(String.self, forKey: .libraryPath),
             libraryHash: container.decode(String.self, forKey: .libraryHash),
             dependencies: container.decode([EngineAcceleratorDependency].self, forKey: .dependencies)
+        )
+    }
+}
+
+public struct EngineAcceleratorDeviceInfo: Codable, Equatable, Sendable {
+    public let deviceKey, type, description, driverVersion: String
+    @EngineNullable public private(set) var dedicatedMemoryBytes: UInt64?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case deviceKey = "device_key", type, description
+        case driverVersion = "driver_version", dedicatedMemoryBytes = "dedicated_memory_bytes"
+    }
+
+    public init(
+        deviceKey: String, type: String, description: String, driverVersion: String,
+        dedicatedMemoryBytes: UInt64?
+    ) throws {
+        try engineAcceleratorRequire(type == "gpu" || type == "npu", "type must be gpu or npu")
+        try engineAcceleratorRequire(
+            deviceKey.range(of: "^\(type):[0-9a-f]{4}:[0-9a-f]{4}\\z", options: .regularExpression) != nil,
+            "device_key must match type:xxxx:xxxx using lowercase hexadecimal"
+        )
+        try engineAcceleratorRequireNonempty(description, "description")
+        try engineAcceleratorRequireNonempty(driverVersion, "driver_version")
+        try engineAcceleratorRequire(type != "gpu" || dedicatedMemoryBytes != nil, "dedicated_memory_bytes must not be null for GPUs")
+        self.deviceKey = deviceKey
+        self.type = type
+        self.description = description
+        self.driverVersion = driverVersion
+        _dedicatedMemoryBytes = EngineNullable(wrappedValue: dedicatedMemoryBytes)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(
+            deviceKey: container.decode(String.self, forKey: .deviceKey),
+            type: container.decode(String.self, forKey: .type),
+            description: container.decode(String.self, forKey: .description),
+            driverVersion: container.decode(String.self, forKey: .driverVersion),
+            dedicatedMemoryBytes: container.decode(EngineNullable<UInt64>.self, forKey: .dedicatedMemoryBytes).wrappedValue
         )
     }
 }
@@ -124,31 +133,38 @@ public struct EngineAcceleratorsBindPayload: Codable, Equatable, Sendable {
 
 public struct EngineAcceleratorsBindResult: Codable, Equatable, Sendable {
     public let bindingID: String
-    private enum CodingKeys: String, CodingKey, CaseIterable { case bindingID = "binding_id" }
+    public let devices: [EngineAcceleratorDeviceInfo]
+    private enum CodingKeys: String, CodingKey, CaseIterable { case bindingID = "binding_id", devices }
 
-    public init(bindingID: String) throws {
+    public init(bindingID: String, devices: [EngineAcceleratorDeviceInfo]) throws {
         try engineAcceleratorRequireNonempty(bindingID, "binding_id")
         self.bindingID = bindingID
+        self.devices = devices
     }
 
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
-        try self.init(bindingID: container.decode(String.self, forKey: .bindingID))
+        try self.init(
+            bindingID: container.decode(String.self, forKey: .bindingID),
+            devices: container.decode([EngineAcceleratorDeviceInfo].self, forKey: .devices)
+        )
     }
 }
 
 public struct EngineAcceleratorsVerifyPayload: Codable, Equatable, Sendable {
-    public let bindingID: String
+    public let bindingID, deviceKey: String
     public let asrSize: EngineASRSize
     public let threads: Int
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case bindingID = "binding_id", asrSize = "asr_size", threads
+        case bindingID = "binding_id", deviceKey = "device_key", asrSize = "asr_size", threads
     }
 
-    public init(bindingID: String, asrSize: EngineASRSize, threads: Int) throws {
+    public init(bindingID: String, deviceKey: String, asrSize: EngineASRSize, threads: Int) throws {
         try engineAcceleratorRequireNonempty(bindingID, "binding_id")
+        try engineAcceleratorRequireNonempty(deviceKey, "device_key")
         try engineAcceleratorRequire((1...4).contains(threads), "threads must be between 1 and 4")
         self.bindingID = bindingID
+        self.deviceKey = deviceKey
         self.asrSize = asrSize
         self.threads = threads
     }
@@ -157,6 +173,7 @@ public struct EngineAcceleratorsVerifyPayload: Codable, Equatable, Sendable {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         try self.init(
             bindingID: container.decode(String.self, forKey: .bindingID),
+            deviceKey: container.decode(String.self, forKey: .deviceKey),
             asrSize: container.decode(EngineASRSize.self, forKey: .asrSize),
             threads: container.decode(Int.self, forKey: .threads)
         )

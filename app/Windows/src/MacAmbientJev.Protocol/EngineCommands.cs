@@ -32,13 +32,13 @@ public abstract record EngineExecutionProvider
     [WireCase("windows_ml")]
     public sealed record WindowsML(
         [property: WireMember("provider_name")] string ProviderName,
-        [property: WireMember("device_id")] string DeviceID,
+        [property: WireMember("device_key")] string DeviceKey,
         [property: WireMember("verification_id")] string VerificationID) : EngineExecutionProvider, IWireValidatable
     {
         public void Validate(string path)
         {
             WireCheck.Nonempty(ProviderName, path + ".provider_name");
-            WireCheck.Nonempty(DeviceID, path + ".device_id");
+            WireCheck.Nonempty(DeviceKey, path + ".device_key");
             WireCheck.Nonempty(VerificationID, path + ".verification_id");
         }
     }

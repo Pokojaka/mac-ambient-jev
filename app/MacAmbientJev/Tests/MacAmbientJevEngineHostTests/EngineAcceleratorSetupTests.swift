@@ -5,18 +5,21 @@ import Testing
 @testable import MacAmbientJevEngineProtocol
 
 private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevice, ASREngine {
+    nonisolated let info: EngineAcceleratorDeviceInfo
     nonisolated let ortVersion = "1.31.0"
     nonisolated let modelRevision = "fake-model-revision"
     nonisolated let provenance = RunProvenance(engine: "fake-accelerator", model: nil, version: "test", configuration: [:])
     private let output: String
+    private let duplicateDevices: Bool
     private(set) var calls: [String] = []
 
-    init(output: String) { self.output = output }
-    func registerLibrary(_ descriptor: EngineAcceleratorDescriptor) async throws {
-        calls.append("register:\(descriptor.providerName):\(descriptor.deviceID)")
+    init(output: String, duplicateDevices: Bool = false) throws {
+        self.output = output; self.duplicateDevices = duplicateDevices
+        info = try EngineAcceleratorDeviceInfo(deviceKey: "gpu:10de:2684", type: "gpu", description: "Engine GPU",
+            driverVersion: "engine-driver", dedicatedMemoryBytes: 4)
     }
-    func selectDevice(providerName: String, deviceID: String) async throws -> any EngineAcceleratorDevice {
-        calls.append("select:\(providerName):\(deviceID)"); return self
+    func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice] {
+        calls.append("bind:\(descriptor.providerName)"); return duplicateDevices ? [self, self] : [self]
     }
     func makeASREngine(size: ASRModelSize, threads: Int, language: String, maxNewTokens: Int, noRepeatNgramSize: Int?) async throws -> any ASREngine {
         calls.append("make:\(size):\(threads):\(language):\(maxNewTokens):\(String(describing: noRepeatNgramSize))"); return self
@@ -39,12 +42,13 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         let context: EngineRequestContext
     }
 
-    private func fixture(root existingRoot: URL? = nil, output: String = EngineAcceleratorVerificationFixture.expectedText) throws -> Fixture {
+    private func fixture(root existingRoot: URL? = nil, output: String = EngineAcceleratorVerificationFixture.expectedText,
+                         duplicateDevices: Bool = false) throws -> Fixture {
         let root = try existingRoot ?? ApplicationHarness.makeRoot()
         let paths = engineTestPaths(root: root)
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
-        let accelerator = FakeAccelerator(output: output)
+        let accelerator = try FakeAccelerator(output: output, duplicateDevices: duplicateDevices)
         let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(paths: paths, logicalCPUCount: 4,
@@ -62,12 +66,12 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
             : String(EngineAcceleratorVerificationFixture.expectedText.dropLast()) + "?"
         let f = try fixture(output: output)
         defer { try? FileManager.default.removeItem(at: f.root) }
-        let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", deviceID: "catalog-device",
-            gpuName: "Catalog GPU", driverVersion: "driver-test", adapterID: "adapter-test", architecture: "x64",
-            dedicatedVRAMBytes: 4, packageIdentity: "catalog-package", libraryPath: #"C:\catalog\ep.dll"#,
+        let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", packageFullName: "catalog-package",
+            packageArchitecture: "x64", libraryPath: #"C:\catalog\ep.dll"#,
             libraryHash: String(repeating: "a", count: 64), dependencies: [])
         let binding = try await f.app.core.bind(EngineAcceleratorsBindPayload(descriptor: descriptor), context: f.context)
-        let result = try await f.app.core.verify(EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, asrSize: .small, threads: 2), context: f.context)
+        let result = try await f.app.core.verify(EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID,
+            deviceKey: binding.devices[0].deviceKey, asrSize: .small, threads: 2), context: f.context)
         let verificationID: String
         switch result {
         case let .pass(id, rtf):
@@ -80,43 +84,57 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         let receipt = try JSONDecoder().decode(EngineVerificationReceipt.self, from: bytes)
         let key = receipt.key
         #expect(receipt.passed == passes && receipt.observedOutput == output && receipt.rtf.isFinite && receipt.rtf > 0)
-        #expect(key.gpuName == descriptor.gpuName && key.driverVersion == descriptor.driverVersion && key.adapterID == descriptor.adapterID)
-        #expect(key.deviceID == descriptor.deviceID && key.architecture == descriptor.architecture && key.epLibraryHash == descriptor.libraryHash)
+        #expect(key.providerName == descriptor.providerName && key.packageFullName == descriptor.packageFullName)
+        #expect(key.libraryHash == descriptor.libraryHash && key.packageArchitecture == descriptor.packageArchitecture)
+        #expect(key.deviceKey == f.accelerator.info.deviceKey && key.description == f.accelerator.info.description)
+        #expect(key.driverVersion == f.accelerator.info.driverVersion)
         #expect(key.modelSize == EngineASRSize.small.rawValue && key.threads == 2)
         #expect(key.modelRevision == f.accelerator.modelRevision && key.ortVersion == f.accelerator.ortVersion && key.ortVersion == "1.31.0")
-        let packageIdentity = [descriptor.providerName, descriptor.packageIdentity] + descriptor.dependencies.map(\.hash).sorted()
-        #expect(key.epPackageHash == FileSHA256.hexDigest(of: try JSONEncoder().encode(packageIdentity)))
         #expect(key.decodingSettings == EngineAcceleratorVerificationFixture.decodingSettings)
         #expect(key.fixtureHash == EngineAcceleratorVerificationFixture.fixtureHash && key.verificationPolicyVersion == EngineAcceleratorVerificationFixture.policyVersion)
         #expect(try EngineVerificationStore(paths: f.paths).load(for: key) == receipt)
         let receiptText = String(decoding: bytes, as: UTF8.self)
         #expect(!receiptText.contains(descriptor.libraryPath) && !receiptText.contains(binding.bindingID))
-        #expect(await f.accelerator.history() == ["register:catalog-provider:catalog-device", "select:catalog-provider:catalog-device",
-            "make:small:2:ja:448:nil", "prepare", "transcribe", "unload"])
+        #expect(await f.accelerator.history() == ["bind:catalog-provider", "make:small:2:ja:448:nil", "prepare", "transcribe", "unload"])
     }
 
     @Test func rejectsUnknownAndUnsupportedBindingsAndBusyRecording() async throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
-        let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", deviceID: "catalog-device",
-            gpuName: "Catalog GPU", driverVersion: "driver-test", adapterID: "adapter-test", architecture: "x64",
-            dedicatedVRAMBytes: nil, packageIdentity: "catalog-package", libraryPath: #"C:\catalog\ep.dll"#,
+        let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", packageFullName: "catalog-package",
+            packageArchitecture: "x64", libraryPath: #"C:\catalog\ep.dll"#,
             libraryHash: String(repeating: "b", count: 64), dependencies: [])
         let binding = try await f.app.core.bind(EngineAcceleratorsBindPayload(descriptor: descriptor), context: f.context)
-        for payload in [try EngineAcceleratorsVerifyPayload(bindingID: "unknown", asrSize: .small, threads: 2),
-                        try EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, asrSize: .large, threads: 2)] {
+        for payload in [try EngineAcceleratorsVerifyPayload(bindingID: "unknown", deviceKey: binding.devices[0].deviceKey, asrSize: .small, threads: 2),
+                        try EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, deviceKey: "gpu:0000:0000", asrSize: .small, threads: 2),
+                        try EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, deviceKey: binding.devices[0].deviceKey, asrSize: .large, threads: 2)] {
             do { _ = try await f.app.core.verify(payload, context: f.context); Issue.record("invalid verification was accepted") }
             catch let error as EngineCommandError { #expect(error.code == .invalidRequest) }
         }
-        #expect(await f.accelerator.history().isEmpty)
+        #expect(await f.accelerator.history() == ["bind:catalog-provider"])
         let sessionID = UUID()
         f.app.core.recording.start(sessionID: sessionID); f.app.core.recording.didStart(sessionID: sessionID)
         defer { f.app.core.recording.finish() }
         do { _ = try await f.app.core.bind(EngineAcceleratorsBindPayload(descriptor: descriptor), context: f.context); Issue.record("busy bind was accepted") }
         catch let error as EngineCommandError { #expect(error.code == .busy && error.message.contains("録音")) }
-        do { _ = try await f.app.core.verify(EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, asrSize: .small, threads: 2), context: f.context); Issue.record("busy verify was accepted") }
+        do { _ = try await f.app.core.verify(EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID,
+            deviceKey: binding.devices[0].deviceKey, asrSize: .small, threads: 2), context: f.context); Issue.record("busy verify was accepted") }
         catch let error as EngineCommandError { #expect(error.code == .busy && error.message.contains("録音")) }
-        #expect(await f.accelerator.history().isEmpty)
+        #expect(await f.accelerator.history() == ["bind:catalog-provider"])
+    }
+
+    @Test func duplicateDeviceKeysRejectBinding() async throws {
+        let f = try fixture(duplicateDevices: true)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", packageFullName: "catalog-package",
+            packageArchitecture: "x64", libraryPath: #"C:\catalog\ep.dll"#,
+            libraryHash: String(repeating: "a", count: 64), dependencies: [])
+        do { _ = try await f.app.core.bind(EngineAcceleratorsBindPayload(descriptor: descriptor), context: f.context); Issue.record("duplicate device keys were accepted") }
+        catch let error as EngineCommandError {
+            #expect(error.code == .modelFailure && error.message.contains("同じ device_key") && error.message.contains("区別"))
+        }
+        #expect(f.app.core.acceleratorBindings.isEmpty && f.app.core.profileSetupOperation == nil)
+        #expect(await f.accelerator.history() == ["bind:catalog-provider"])
     }
 
     @Test func profileChoicesUseFreshRevisionsAndSurviveRestart() async throws {
