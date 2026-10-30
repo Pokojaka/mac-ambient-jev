@@ -29,7 +29,8 @@ import MacAmbientJevPortableRuntime
             _ = try windowsAcceleratorIdentity(luid: String(UInt64.max), deviceName: "missing-device", type: "gpu")
             Issue.record("Expected an unmatched DXCore LUID to fail.")
         } catch {
-            #expect(error.localizedDescription.contains("No DXCore adapter"))
+            #expect(error.localizedDescription.contains("DXCore"))
+            #expect(error.localizedDescription.contains("HardwareIDParts"))
             #expect(error.localizedDescription.contains("missing-device"))
         }
     }

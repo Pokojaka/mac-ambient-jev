@@ -17,22 +17,20 @@ func acceleratorDeviceKeys(_ devices: [(type: ONNXHardwareType, vendorID: UInt32
     return result
 }
 
-func windowsAcceleratorIdentity(luid: String?, deviceName: String, type: String) throws -> (driverVersion: String, memory: UInt64?) {
+func windowsAcceleratorIdentity(luid: String?, deviceName: String, type: String) throws -> (driverVersion: String, memory: UInt64?, adapterIdentity: String) {
     guard let luid, !luid.isEmpty, luid.utf8.allSatisfy({ (0x30...0x39).contains($0) }), let value = UInt64(luid) else {
         throw windowsAcceleratorError("Missing or invalid decimal UInt64 LUID for device \(deviceName).")
     }
     var driver: UInt64 = 0, memory: UInt64 = 0, available: Int32 = 0
-    let hr = mja_dxcore_identity(value, &driver, &memory, &available)
+    var adapterIdentity = [CChar](repeating: 0, count: 45)
+    let hr = mja_dxcore_identity(value, &driver, &memory, &available, &adapterIdentity)
     if hr != 0 {
         let formatted = String(format: "0x%08x", UInt32(bitPattern: hr))
-        if UInt32(bitPattern: hr) == 0x80070057 {
-            throw windowsAcceleratorError("No DXCore adapter matches LUID \(luid) for device \(deviceName) (HRESULT \(formatted)).")
-        }
-        throw windowsAcceleratorError("DXCore adapter/driver version lookup failed for device \(deviceName), LUID \(luid) (HRESULT \(formatted)).")
+        throw windowsAcceleratorError("DXCore adapter/HardwareIDParts/driver version lookup failed for device \(deviceName), LUID \(luid) (HRESULT \(formatted)).")
     }
     let version = [48, 32, 16, 0].map { String((driver >> UInt64($0)) & 0xffff) }.joined(separator: ".")
     guard available == 1 || type != "gpu" else { throw windowsAcceleratorError("Dedicated memory is unavailable for GPU device \(deviceName), LUID \(luid).") }
-    return (version, available == 1 ? memory : nil)
+    return (driverVersion: version, memory: available == 1 ? memory : nil, adapterIdentity: String(decoding: adapterIdentity.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self))
 }
 
 internal actor WindowsEngineAcceleratorRegistry: EngineAcceleratorRegistry {
@@ -72,7 +70,7 @@ internal actor WindowsEngineAcceleratorRegistry: EngineAcceleratorRegistry {
             let identity = try windowsAcceleratorIdentity(luid: raw.metadata["LUID"], deviceName: description, type: raw.hardwareType.rawValue)
             let info = try EngineAcceleratorDeviceInfo(deviceKey: item.key, type: raw.hardwareType.rawValue,
                 description: description, driverVersion: identity.driverVersion, dedicatedMemoryBytes: identity.memory)
-            return WindowsEngineAcceleratorDevice(info: info, raw: raw, layout: layout)
+            return WindowsEngineAcceleratorDevice(info: info, raw: raw, layout: layout, adapterIdentity: identity.adapterIdentity)
         }
     }
 }
@@ -81,6 +79,7 @@ private struct WindowsEngineAcceleratorDevice: EngineAcceleratorDevice {
     let info: EngineAcceleratorDeviceInfo
     let raw: ONNXProviderDevice
     let layout: PortableInstalledModelLayout
+    let adapterIdentity: String
     var ortVersion: String { ONNXEnvironment.runtimeVersion }
     var modelRevision: String { "\(ASRModelSize.small.repository)@\(ASRModelSize.small.commit)" }
 

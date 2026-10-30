@@ -2,6 +2,13 @@ import Foundation
 import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
 
+struct EngineValidatedAcceleratorSelection {
+    let descriptor: EngineAcceleratorDescriptor
+    let device: any EngineAcceleratorDevice
+    let receipt: EngineVerificationReceipt
+    let verificationID: String
+}
+
 @MainActor
 extension EngineApplicationCore {
     func bind(_ payload: EngineAcceleratorsBindPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsBindResult {
@@ -19,6 +26,7 @@ extension EngineApplicationCore {
                     stage: .loadingModels
                 )
             }
+            acceleratorBindings = acceleratorBindings.filter { $0.value.descriptor.providerName != payload.descriptor.providerName }
             let bindingID = UUID().uuidString.lowercased()
             acceleratorBindings[bindingID] = (payload.descriptor, devices)
             return try EngineAcceleratorsBindResult(bindingID: bindingID, devices: devices.map(\.info))
@@ -57,6 +65,44 @@ extension EngineApplicationCore {
             }
             throw EngineFailures.commandError(from: error, fallback: .modelFailure, stage: .loadingModels)
         }
+    }
+
+    func admitAccelerator(_ settings: EngineSettings) throws -> EngineValidatedAcceleratorSelection? {
+        guard case let .windowsML(providerName, deviceKey, verificationID) = settings.executionProvider else { return nil }
+        guard settings.asrSize == .small else {
+            throw acceleratorAdmissionError("1.7B のアクセラレーター検証には対応していないため、モデルを準備できません")
+        }
+        guard let binding = acceleratorBindings.values.first(where: { $0.descriptor.providerName == providerName }) else {
+            throw acceleratorAdmissionError("保存された実行プロバイダーの現在の binding がありません。再接続してください")
+        }
+        guard let device = binding.devices.first(where: { $0.info.deviceKey == deviceKey }) else {
+            throw acceleratorAdmissionError("保存された device_key が現在の binding にありません。デバイスを選び直してください")
+        }
+        let loaded: EngineVerificationReceipt?
+        do {
+            loaded = try verificationStore.load(identifier: verificationID)
+        } catch {
+            throw acceleratorAdmissionError("保存された検証 receipt を読み込めません。再検証してください")
+        }
+        guard let receipt = loaded else {
+            throw acceleratorAdmissionError("保存された verification_id の検証 receipt がありません。再検証してください")
+        }
+        guard receipt.passed,
+              receipt.observedOutput.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText.utf8) else {
+            throw acceleratorAdmissionError("保存された検証 receipt は合格していません。再検証してください")
+        }
+        let key: EngineVerificationKey
+        do {
+            key = try acceleratorVerificationKey(descriptor: binding.descriptor, device: device, threads: settings.threads)
+        } catch {
+            throw acceleratorAdmissionError("検証 receipt の identity が現在の環境と一致しません。再検証して明示的に選択してください")
+        }
+        guard receipt.key == key else {
+            throw acceleratorAdmissionError("検証 receipt の identity が現在の環境と一致しません。再検証して明示的に選択してください")
+        }
+        return EngineValidatedAcceleratorSelection(
+            descriptor: binding.descriptor, device: device, receipt: receipt, verificationID: verificationID
+        )
     }
 
     func decide(_ payload: EngineProfilesDecidePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation {
@@ -119,12 +165,11 @@ extension EngineApplicationCore {
         processingCoordinator.startDrainIfIdle()
     }
 
-    private func runAcceleratorVerification(
+    private func acceleratorVerificationKey(
         descriptor: EngineAcceleratorDescriptor,
         device: any EngineAcceleratorDevice,
         threads: Int
-    ) async throws -> EngineAcceleratorsVerifyResult {
-        try checkAcceleratorSetupCanContinue()
+    ) throws -> EngineVerificationKey {
         let ortVersion = device.ortVersion
         guard ortVersion == "1.31.0" else {
             throw EngineAdapterError(
@@ -139,69 +184,91 @@ extension EngineApplicationCore {
                 recoveryAction: .none, details: []
             )
         }
-        let key = EngineVerificationKey(
+        return EngineVerificationKey(
             providerName: descriptor.providerName, packageFullName: descriptor.packageFullName,
             libraryHash: descriptor.libraryHash, packageArchitecture: descriptor.packageArchitecture,
             deviceKey: device.info.deviceKey, description: device.info.description,
-            driverVersion: device.info.driverVersion, ortVersion: ortVersion, modelRevision: modelRevision,
-            modelSize: EngineASRSize.small.rawValue,
+            driverVersion: device.info.driverVersion, ortVersion: ortVersion,
+            adapterIdentity: device.adapterIdentity, dependencyHashes: descriptor.dependencies.map(\.hash).sorted(),
+            modelRevision: modelRevision, modelSize: EngineASRSize.small.rawValue,
             decodingSettings: EngineAcceleratorVerificationFixture.decodingSettings,
             fixtureHash: EngineAcceleratorVerificationFixture.fixtureHash,
             verificationPolicyVersion: EngineAcceleratorVerificationFixture.policyVersion, threads: threads
         )
-        let engine = try await device.makeASREngine(
-            size: .small, threads: threads, language: "ja", maxNewTokens: 448, noRepeatNgramSize: nil
-        )
-        let verification: (output: String, inferenceError: (any Error)?, rtf: Double)
+    }
+
+    private func runAcceleratorVerification(
+        descriptor: EngineAcceleratorDescriptor,
+        device: any EngineAcceleratorDevice,
+        threads: Int
+    ) async throws -> EngineAcceleratorsVerifyResult {
+        try checkAcceleratorSetupCanContinue()
+        let key = try acceleratorVerificationKey(descriptor: descriptor, device: device, threads: threads)
         do {
-            try await engine.prepare()
-            let fixture = try EngineAcceleratorVerificationFixture.load()
-            let clock = ContinuousClock()
-            let started = clock.now
-            var output = ""
-            var failedInference: (any Error)?
+            let engine = try await device.makeASREngine(
+                size: .small, threads: threads, language: "ja", maxNewTokens: 448, noRepeatNgramSize: nil
+            )
+            let verification: (output: String, inferenceError: (any Error)?, rtf: Double)
             do {
-                output = try await engine.transcribe(fixture).text
+                try await engine.prepare()
+                let fixture = try EngineAcceleratorVerificationFixture.load()
+                let clock = ContinuousClock()
+                let started = clock.now
+                var output = ""
+                var failedInference: (any Error)?
+                do {
+                    output = try await engine.transcribe(fixture).text
+                } catch {
+                    if isAcceleratorCancellation(error) { throw CancellationError() }
+                    failedInference = error
+                }
+                let elapsed = started.duration(to: clock.now).components
+                try checkAcceleratorSetupCanContinue()
+                let inferenceSeconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1_000_000_000_000_000_000
+                let audioSeconds = Double(fixture.samples.count) / Double(fixture.sampleRate)
+                let measuredRTF = inferenceSeconds / audioSeconds
+                guard measuredRTF.isFinite, measuredRTF > 0 else {
+                    throw EngineAdapterError(
+                        code: .modelFailure, message: "アクセラレーター検証の実時間係数を測定できませんでした",
+                        recoveryAction: .none, details: []
+                    )
+                }
+                verification = (output, failedInference, measuredRTF)
             } catch {
-                if isAcceleratorCancellation(error) { throw CancellationError() }
-                failedInference = error
+                await engine.unload()
+                withExtendedLifetime(device) {}
+                throw error
             }
-            let elapsed = started.duration(to: clock.now).components
-            try checkAcceleratorSetupCanContinue()
-            let inferenceSeconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1_000_000_000_000_000_000
-            let audioSeconds = Double(fixture.samples.count) / Double(fixture.sampleRate)
-            let measuredRTF = inferenceSeconds / audioSeconds
-            guard measuredRTF.isFinite, measuredRTF > 0 else {
-                throw EngineAdapterError(
-                    code: .modelFailure, message: "アクセラレーター検証の実時間係数を測定できませんでした",
-                    recoveryAction: .none, details: []
-                )
-            }
-            verification = (output, failedInference, measuredRTF)
-        } catch {
             await engine.unload()
             withExtendedLifetime(device) {}
+
+            let passed = verification.inferenceError == nil
+                && verification.output.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText.utf8)
+            let receipt = EngineVerificationReceipt(key: key,
+                observedOutput: verification.output, passed: passed, rtf: verification.rtf, timestamp: Date())
+            try checkAcceleratorSetupCanContinue()
+            let verificationID = try verificationStore.publish(receipt)
+            if passed { return .pass(verificationID: verificationID, rtf: verification.rtf) }
+            if let error = verification.inferenceError {
+                return .fail(
+                    verificationID: verificationID, reason: "アクセラレーターの検証推論に失敗しました: \(error.localizedDescription)",
+                    observedOutput: ""
+                )
+            }
+            return .fail(
+                verificationID: verificationID, reason: "アクセラレーターの検証出力が固定テキストと一致しません",
+                observedOutput: verification.output
+            )
+        } catch {
+            if isAcceleratorCancellation(error) || Task.isCancelled || isShuttingDown { throw error }
+            try verificationStore.revoke(for: key)
             throw error
         }
-        await engine.unload()
-        withExtendedLifetime(device) {}
+    }
 
-        let passed = verification.inferenceError == nil
-            && verification.output.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText.utf8)
-        let receipt = EngineVerificationReceipt(key: key,
-            observedOutput: verification.output, passed: passed, rtf: verification.rtf, timestamp: Date())
-        try checkAcceleratorSetupCanContinue()
-        let verificationID = try verificationStore.publish(receipt)
-        if passed { return .pass(verificationID: verificationID, rtf: verification.rtf) }
-        if let error = verification.inferenceError {
-            return .fail(
-                verificationID: verificationID, reason: "アクセラレーターの検証推論に失敗しました: \(error.localizedDescription)",
-                observedOutput: ""
-            )
-        }
-        return .fail(
-            verificationID: verificationID, reason: "アクセラレーターの検証出力が固定テキストと一致しません",
-            observedOutput: verification.output
+    private func acceleratorAdmissionError(_ message: String) -> EngineCommandError {
+        EngineFailures.commandError(
+            .invalidSettings, message, stage: .validatingModels, recoveryAction: .replaceSettings
         )
     }
 

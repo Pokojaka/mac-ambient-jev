@@ -12,6 +12,7 @@ private struct Fixture {
         let fields: [String: Any] = [
             "providerName": "provider", "packageFullName": "package", "libraryHash": "library", "packageArchitecture": "x64",
             "deviceKey": "gpu:0000:0000", "description": "GPU", "driverVersion": "driver", "ortVersion": "1.31.0",
+            "adapterIdentity": "adapter", "dependencyHashes": [String](),
             "modelRevision": "revision", "modelSize": "small", "decodingSettings": "settings", "fixtureHash": "fixture",
             "verificationPolicyVersion": "policy", "threads": 2]
         key = try JSONDecoder().decode(EngineVerificationKey.self, from: JSONSerialization.data(withJSONObject: fields))
@@ -32,10 +33,14 @@ struct EngineVerificationStoreTests {
         let fields = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(f.key)) as? [String: Any])
         for field in fields.keys {
             var changed = fields
-            if field == "threads" { changed[field] = 3 } else { changed[field] = "other" }
+            if field == "threads" { changed[field] = 3 } else if field == "dependencyHashes" { changed[field] = ["other"] } else { changed[field] = "other" }
             let key = try JSONDecoder().decode(EngineVerificationKey.self,
                 from: JSONSerialization.data(withJSONObject: changed))
             #expect(try f.store.load(for: key) == nil)
+        }
+        for field in ["adapterIdentity", "dependencyHashes"] {
+            var missing = fields; missing.removeValue(forKey: field)
+            #expect(throws: (any Error).self) { _ = try JSONDecoder().decode(EngineVerificationKey.self, from: JSONSerialization.data(withJSONObject: missing)) }
         }
         let url = f.paths.root.appending(path: "accelerators/\(id).json")
         try Data([0xFF, 0x00]).write(to: url)

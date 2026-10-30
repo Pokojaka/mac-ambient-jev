@@ -2,11 +2,12 @@
 #include <dxcore.h>
 #include <wrl/client.h>
 #include <cstring>
+#include <cstdio>
 
-int32_t mja_dxcore_identity(uint64_t luid, uint64_t *driver_version, uint64_t *dedicated_memory, int32_t *memory_available)
+int32_t mja_dxcore_identity(uint64_t luid, uint64_t *driver_version, uint64_t *dedicated_memory, int32_t *memory_available, char adapter_identity[45])
 {
     if (driver_version == nullptr || dedicated_memory == nullptr ||
-        memory_available == nullptr) {
+        memory_available == nullptr || adapter_identity == nullptr) {
         return static_cast<int32_t>(E_POINTER);
     }
     *memory_available = 0;
@@ -20,6 +21,11 @@ int32_t mja_dxcore_identity(uint64_t luid, uint64_t *driver_version, uint64_t *d
     Microsoft::WRL::ComPtr<IDXCoreAdapter> adapter;
     hr = factory->GetAdapterByLuid(adapter_luid, IID_PPV_ARGS(&adapter));
     if (FAILED(hr)) return static_cast<int32_t>(hr);
+    if (!adapter->IsPropertySupported(DXCoreAdapterProperty::HardwareIDParts)) return static_cast<int32_t>(E_NOTIMPL);
+    DXCoreHardwareIDParts parts{};
+    hr = adapter->GetProperty(DXCoreAdapterProperty::HardwareIDParts, sizeof(parts), &parts);
+    if (FAILED(hr)) return static_cast<int32_t>(hr);
+    std::snprintf(adapter_identity, 45, "%08x:%08x:%08x:%08x:%08x", parts.vendorID, parts.deviceID, parts.subSystemID, parts.subVendorID, parts.revisionID);
     if (!adapter->IsPropertySupported(DXCoreAdapterProperty::DriverVersion)) return static_cast<int32_t>(E_NOTIMPL);
     uint64_t version;
     hr = adapter->GetProperty(DXCoreAdapterProperty::DriverVersion, sizeof(version), &version);

@@ -15,6 +15,7 @@ public protocol EngineAcceleratorRegistry: Sendable {
 /// An accelerator device exposing its actual runtime, model, and hardware identities.
 public protocol EngineAcceleratorDevice: Sendable {
     var info: EngineAcceleratorDeviceInfo { get }
+    var adapterIdentity: String { get }
     var ortVersion: String { get }
     var modelRevision: String { get }
 

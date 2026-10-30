@@ -37,7 +37,7 @@ AppPaths.root/
     └── profile-decision.json
 ```
 
-`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` の全 field を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。`accelerators.verify` の `verification_id` はこの file name（`.json` 拡張子を除く digest）と同じ値で、pass / fail receipt をこの名前で公開します。key は次の14個の camelCase field を全て必須で持ち、完全な key digest の一致だけが同じ receipt identity になります。
+`EngineVerificationStore` は SHA-256 file name の verification receipt を保存します。file name は `EngineVerificationKey` の全 field を JSON encoder の `.sortedKeys` で encode した bytes の SHA-256（小文字 hex）です。`accelerators.verify` の `verification_id` はこの file name（`.json` 拡張子を除く digest）と同じ値で、pass / fail receipt をこの名前で公開します。key は次の16個の camelCase field を全て必須で持ち、完全な key digest の一致だけが同じ receipt identity になります。
 
 | key field | 型 | 意味 |
 | --- | --- | --- |
@@ -49,6 +49,8 @@ AppPaths.root/
 | `description` | String | bound engine device の description |
 | `driverVersion` | String | bound engine device の driver version |
 | `ortVersion` | String | device が返す ONNX Runtime version |
+| `adapterIdentity` | String | native shim が `DXCoreAdapterProperty::HardwareIDParts` を読み取り、DXCoreHardwareIDParts の5つの UInt32 値を `vendorID`, `deviceID`, `subSystemID`, `subVendorID`, `revisionID` の順に各8桁の小文字ゼロ埋め 16 進数とし、コロンで連結した文字列を返します |
+| `dependencyHashes` | [String] | 検証済み dependency closure 全体の SHA-256 hash を sort した配列 |
 | `modelRevision` | String | device が返す model revision |
 | `modelSize` | String | 検証する ASR model size |
 | `decodingSettings` | String | decoding 設定 identity |
@@ -56,7 +58,7 @@ AppPaths.root/
 | `verificationPolicyVersion` | String | verification policy version |
 | `threads` | Int | 実際の推論 threads 数 |
 
-key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。dependency hash の集約は key に含めず、library / dependency path と process-local `binding_id` も保存しません。どれかの key value が変われば別 digest/file となり、以前の receipt を流用しません。receipt JSON は camelCase schema のまま、次の5 key を全て持ちます。
+key の String は opaque な identity 値であり、この store は空文字を含め内容を検証しません。`threads` の 1...4 制約は command/settings 境界で検証します。`adapterIdentity` は native shim が `DXCoreAdapterProperty::HardwareIDParts` から読み取って返す DXCoreHardwareIDParts の hardware identity string です。`subSystemID` と `subVendorID` は共同で subsystem を識別します。LUID は adapter の lookup にだけ使い、保存しません。reboot 単独ではこの hardware identity は変わりません。property が unsupported または unreadable なら device 名を含む error を返し、fallback しません。`dependencyHashes` は検証済み dependency closure 全体の hash を sort した配列です。path と process-local `binding_id` は保存しません。どれかの key value が変われば別 digest/file となり、receipt を流用しません。receipt JSON は camelCase schema のまま、次の5 key を全て持ちます。
 
 | receipt key | 型 | 検証 |
 | --- | --- | --- |
@@ -66,7 +68,7 @@ key の String は opaque な identity 値であり、この store は空文字�
 | `rtf` | Double | 有限かつ正 |
 | `timestamp` | Date | default Codable 表現の reference-date seconds（2001-01-01 起点）。ISO 8601 文字列ではない |
 
-要求 key の receipt がない場合は未検証です。key が変わると異なる digest/file になり、以前の receipt を流用しません。埋め込み key は要求 key との Swift equality ではなく、埋め込み key 自身を sortedKeys JSON に encode した UTF-8 bytes の SHA-256 が要求された file identifier に一致することを検証します。存在する receipt の JSON・型・値または埋め込み key が不正・不一致なら、欠損扱いにせず corruption error です。verification の pass / output mismatch と、model 作成・prepare 後の inference error は receipt を publish し、fail は `passed: false` として approval になりません。registry / selection / preparation / fixture setup failure と cancellation は receipt を作りません。実行は [`EngineApplication+Accelerators.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Accelerators.swift) が行い、この store は receipt の保存・読込を担います。
+要求 key の receipt がない場合は未検証です。`load(for:)` は要求 key の digest を算出し、保存 ID を使う `load(identifier:)` は正確に64桁の lowercase hex を要求します。どちらも embedded key 自体を sortedKeys JSON に encode した UTF-8 bytes の SHA-256 が要求 ID と一致することを検証します。`adapterIdentity` / `dependencyHashes` を含む必須 field の欠落、JSON・型・値・embedded key の不正や不一致は欠損扱いにせず corruption error です。pass / fail は同じ key の receipt を置き換え、出力不一致または load 後の非 cancellation 推論失敗は `passed: false` を公開します。key 構築後に非 cancellation の make / prepare / fixture / RTF / publication error が throw された場合は、その key の receipt を削除して error を返します。cancellation は既存 pass を取り消しません。key 構築前の無効 request、bind / device 選択、key 構築失敗は他の receipt に影響しません。再検証は保存済み EP / size / settings を変更しません。`models.prepare` gate は現 binding / device / settings threads から key を再構成し、receipt pass と固定 expected output への UTF-8 byte-exact 一致を検証します。gate success は通常 inference の接続を意味しません（詳細は [windows.md](windows.md#swift-onnx-provider-registry)）。実行は [`EngineApplication+Accelerators.swift`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Accelerators.swift) が行い、この store は receipt の保存・読込を担います。
 
 `EngineProfileDecisionStore` は上記の app-root file に `EngineProfileEvaluation` を保存します。これは全9 key 必須の strict snake_case JSON です。ファイルがなければ評価なし、破損していれば明示 error であり、未評価とは扱いません。
 

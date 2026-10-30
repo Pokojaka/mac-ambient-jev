@@ -214,7 +214,7 @@ import MacAmbientJevTestSupport
             Issue.record("Windows ML preparation unexpectedly succeeded")
         } catch let error as CommandFailure {
             #expect(error.failure.code == .invalidSettings)
-            #expect(error.failure.message == "Windows ML 実行プロバイダーの登録は未実装のため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください")
+            #expect(error.failure.message == "保存された実行プロバイダーの現在の binding がありません。再接続してください")
             #expect(error.failure.recoveryAction == .replaceSettings)
         }
         #expect(try await h.state().setup == .modelsRequired)

@@ -6,19 +6,22 @@ public struct EngineVerificationKey: Codable, Equatable, Sendable {
     public let providerName, packageFullName, libraryHash, packageArchitecture: String
     public let deviceKey, description, driverVersion, ortVersion: String
     public let modelRevision, modelSize, decodingSettings, fixtureHash: String
+    public let adapterIdentity: String
+    public let dependencyHashes: [String]
     public let verificationPolicyVersion: String
     public let threads: Int
 
     public init(
         providerName: String, packageFullName: String, libraryHash: String, packageArchitecture: String,
         deviceKey: String, description: String, driverVersion: String, ortVersion: String,
-        modelRevision: String, modelSize: String, decodingSettings: String, fixtureHash: String,
-        verificationPolicyVersion: String, threads: Int
+        adapterIdentity: String, dependencyHashes: [String], modelRevision: String, modelSize: String,
+        decodingSettings: String, fixtureHash: String, verificationPolicyVersion: String, threads: Int
     ) {
         self.providerName = providerName; self.packageFullName = packageFullName
         self.libraryHash = libraryHash; self.packageArchitecture = packageArchitecture
         self.deviceKey = deviceKey; self.description = description
         self.driverVersion = driverVersion; self.ortVersion = ortVersion
+        self.adapterIdentity = adapterIdentity; self.dependencyHashes = dependencyHashes.sorted()
         self.modelRevision = modelRevision; self.modelSize = modelSize
         self.decodingSettings = decodingSettings; self.fixtureHash = fixtureHash
         self.verificationPolicyVersion = verificationPolicyVersion
@@ -50,7 +53,16 @@ public struct EngineVerificationStore: Sendable {
     public init(paths: AppPaths) { self.root = paths.root }
 
     public func load(for key: EngineVerificationKey) throws -> EngineVerificationReceipt? {
-        let identifier = try Self.identifier(for: key), url = receiptURL(identifier)
+        try load(identifier: Self.identifier(for: key))
+    }
+
+    public func load(identifier: String) throws -> EngineVerificationReceipt? {
+        let bytes = identifier.utf8
+        guard bytes.count == 64,
+              bytes.allSatisfy({ (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }) else {
+            throw EngineVerificationStoreError.invalid("verification identifier must be a lowercase SHA-256 digest")
+        }
+        let url = receiptURL(identifier)
         guard let data = try SessionFileAccess.readIfPresent(url, relativeTo: root) else { return nil }
 
         let receipt: EngineVerificationReceipt
@@ -65,6 +77,11 @@ public struct EngineVerificationStore: Sendable {
             throw EngineVerificationStoreError.corrupt(path: url.path, reason: "embedded key does not match the requested key")
         }
         return receipt
+    }
+
+    public func revoke(for key: EngineVerificationKey) throws {
+        let url = receiptURL(try Self.identifier(for: key))
+        try SessionFileAccess.removeIfPresent(url, relativeTo: root)
     }
 
     @discardableResult

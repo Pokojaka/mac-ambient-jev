@@ -815,10 +815,10 @@ extension EngineApplicationCore: EngineModelsHandling {
             )
         }
         let settings = try requireSettings(stage: .validatingModels)
-        if case .windowsML = settings.executionProvider {
+        if let _ = try admitAccelerator(settings) {
             throw EngineFailures.commandError(
                 .invalidSettings,
-                "Windows ML 実行プロバイダーの登録は未実装のため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください",
+                "アクセラレーターの検証は確認できましたが、高速推論はまだ接続されていないため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください",
                 stage: .validatingModels,
                 recoveryAction: .replaceSettings
             )
