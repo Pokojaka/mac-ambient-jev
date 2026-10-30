@@ -15,11 +15,11 @@ public sealed class EngineTypedCodecTests
         Assert.Equal("{\"command\":\"hello\",\"payload\":{},\"request_id\":\"1\",\"version\":1}\n",
             Encoding.UTF8.GetString(EngineCodec.EncodeRequest(hello)));
 
-        var settings = new EngineSettings(1, EngineSource.SystemAudio, new EngineDevice.Id("wasapi-loopback-42"),
-            EngineASRSize.Large, EngineExecutionProvider.Cpu, 3, true, true, true, "D:/Ambient Exports");
+        var settings = new EngineSettings(2, EngineSource.SystemAudio, new EngineDevice.Id("wasapi-loopback-42"),
+            EngineASRSize.Large, new EngineExecutionProvider.Cpu(), 3, true, true, true, "D:/Ambient Exports");
         var settingsRequest = new EngineRequest(1, ID(303),
             new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(ID(9), settings)));
-        const string settingsGolden = "{\"command\":\"settings.replace\",\"payload\":{\"expected_revision\":\"9\",\"settings\":{\"asr_size\":\"1.7b\",\"automatic_export\":true,\"decisions_enabled\":true,\"device\":{\"id\":\"wasapi-loopback-42\",\"kind\":\"id\"},\"execution_provider\":\"cpu\",\"export_destination_path\":\"D:/Ambient Exports\",\"low_heat\":true,\"schema_version\":1,\"source\":\"system_audio\",\"threads\":3}},\"request_id\":\"303\",\"version\":1}\n";
+        const string settingsGolden = "{\"command\":\"settings.replace\",\"payload\":{\"expected_revision\":\"9\",\"settings\":{\"asr_size\":\"1.7b\",\"automatic_export\":true,\"decisions_enabled\":true,\"device\":{\"id\":\"wasapi-loopback-42\",\"kind\":\"id\"},\"execution_provider\":{\"kind\":\"cpu\"},\"export_destination_path\":\"D:/Ambient Exports\",\"low_heat\":true,\"schema_version\":2,\"source\":\"system_audio\",\"threads\":3}},\"request_id\":\"303\",\"version\":1}\n";
         Assert.Equal(settingsGolden, Encoding.UTF8.GetString(EngineCodec.EncodeRequest(settingsRequest)));
 
         const string path = "D:/資料/😀/line\nbreak.wav";

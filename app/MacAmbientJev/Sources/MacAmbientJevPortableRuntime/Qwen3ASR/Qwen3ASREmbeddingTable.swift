@@ -1,4 +1,12 @@
 import Foundation
+#if os(macOS)
+import Darwin
+#elseif os(Linux)
+import Glibc
+#elseif os(Windows)
+import CWindowsSession
+import WinSDK
+#endif
 
 enum Qwen3ASREmbeddingError: Error, Equatable, CustomStringConvertible {
     case invalidDimensions(vocabSize: Int, hiddenSize: Int)
@@ -23,11 +31,120 @@ enum Qwen3ASREmbeddingError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+private final class ReadOnlyEmbeddingMapping {
+    let count: Int
+    let pointer: UnsafeMutableRawPointer
+    #if os(Windows)
+    private let file: UnsafeMutableRawPointer
+    private let mapping: UnsafeMutableRawPointer
+    #else
+    private let descriptor: Int32
+    #endif
+
+    init(contentsOf url: URL, expectedByteCount: Int) throws {
+        guard url.isFileURL else { throw Qwen3ASREmbeddingError.fileUnreadable("URL is not a file URL") }
+        #if os(macOS) || os(Linux)
+        var descriptor: Int32 = -1
+        var mappedPointer: UnsafeMutableRawPointer?
+        var transferred = false
+        defer {
+            if !transferred {
+                if let mappedPointer { _ = munmap(mappedPointer, expectedByteCount) }
+                if descriptor >= 0 { _ = close(descriptor) }
+            }
+        }
+        try url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { throw Qwen3ASREmbeddingError.fileUnreadable("filesystem path is unavailable") }
+            descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard descriptor >= 0 else { throw Qwen3ASREmbeddingError.fileUnreadable("open failed (errno \(errno))") }
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else { throw Qwen3ASREmbeddingError.fileUnreadable("fstat failed (errno \(errno))") }
+        guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_size >= 0 else {
+            throw Qwen3ASREmbeddingError.fileUnreadable("opened path is not a regular file with a valid size")
+        }
+        let actualSize = UInt64(info.st_size)
+        guard actualSize == UInt64(expectedByteCount) else { throw Qwen3ASREmbeddingError.sizeMismatch(expected: expectedByteCount, actual: actualSize) }
+        let rawMapping = mmap(nil, expectedByteCount, PROT_READ, MAP_PRIVATE, descriptor, 0)
+        guard rawMapping != MAP_FAILED else { throw Qwen3ASREmbeddingError.fileUnreadable("mmap failed (errno \(errno))") }
+        guard let rawMapping else { throw Qwen3ASREmbeddingError.fileUnreadable("mmap returned a null pointer") }
+        mappedPointer = rawMapping
+        self.count = expectedByteCount
+        pointer = rawMapping
+        self.descriptor = descriptor
+        transferred = true
+        #elseif os(Windows)
+        var openedFile: UnsafeMutableRawPointer?
+        var openedMapping: UnsafeMutableRawPointer?
+        var mappedPointer: UnsafeMutableRawPointer?
+        var transferred = false
+        defer {
+            if !transferred {
+                if let mappedPointer { _ = UnmapViewOfFile(mappedPointer) }
+                if let openedMapping { _ = CloseHandle(openedMapping) }
+                if let openedFile { msj_close(openedFile) }
+            }
+        }
+        try url.withUnsafeFileSystemRepresentation { nativePath in
+            guard let nativePath else { throw Qwen3ASREmbeddingError.fileUnreadable("filesystem path is unavailable") }
+            try String(cString: nativePath).withCString(encodedAs: UTF16.self) { path in
+                let status = msj_open_readonly_file(path, &openedFile)
+                guard status == 0 else { throw Qwen3ASREmbeddingError.fileUnreadable("msj_open_readonly_file failed (Windows \(status))") }
+            }
+        }
+        guard let file = openedFile else { throw Qwen3ASREmbeddingError.fileUnreadable("msj_open_readonly_file returned no handle") }
+        var fileSize: Int64 = 0
+        let sizeStatus = msj_size(file, &fileSize)
+        guard sizeStatus == 0 else { throw Qwen3ASREmbeddingError.fileUnreadable("msj_size failed (Windows \(sizeStatus))") }
+        guard fileSize >= 0 else { throw Qwen3ASREmbeddingError.fileUnreadable("msj_size returned a negative file size") }
+        let actualSize = UInt64(fileSize)
+        guard actualSize == UInt64(expectedByteCount) else { throw Qwen3ASREmbeddingError.sizeMismatch(expected: expectedByteCount, actual: actualSize) }
+        guard let mapping = CreateFileMappingW(file, nil, DWORD(PAGE_READONLY), 0, 0, nil) else {
+            throw Qwen3ASREmbeddingError.fileUnreadable("CreateFileMappingW failed (Windows \(GetLastError()))")
+        }
+        openedMapping = mapping
+        guard let view = MapViewOfFile(mapping, DWORD(FILE_MAP_READ), 0, 0, SIZE_T(expectedByteCount)) else {
+            throw Qwen3ASREmbeddingError.fileUnreadable("MapViewOfFile failed (Windows \(GetLastError()))")
+        }
+        mappedPointer = view
+        self.count = expectedByteCount
+        pointer = view
+        self.file = file
+        self.mapping = mapping
+        transferred = true
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    deinit {
+        #if os(macOS) || os(Linux)
+        _ = munmap(pointer, count)
+        _ = close(descriptor)
+        #elseif os(Windows)
+        _ = UnmapViewOfFile(pointer)
+        _ = CloseHandle(mapping)
+        msj_close(file)
+        #endif
+    }
+
+    #if os(Windows)
+    func copyRow(at offset: Int, to destination: UnsafeMutableRawPointer, byteCount: Int) throws {
+        let status = withExtendedLifetime(self) {
+            msj_copy_mapped(pointer.advanced(by: offset), destination, byteCount)
+        }
+        guard status == 0 else {
+            throw Qwen3ASREmbeddingError.fileUnreadable("mapped row copy failed (Windows \(status))")
+        }
+    }
+    #endif
+}
+
 struct Qwen3ASREmbeddingTable {
     let vocabSize: Int
     let hiddenSize: Int
 
-    private let storage: Data
+    private let storage: ReadOnlyEmbeddingMapping
 
     init(contentsOf url: URL, vocabSize: Int, hiddenSize: Int) throws {
         guard vocabSize > 0, hiddenSize > 0 else {
@@ -39,51 +156,49 @@ struct Qwen3ASREmbeddingTable {
             throw Qwen3ASREmbeddingError.sizeOverflow
         }
 
-        let resourceValues: URLResourceValues
-        do {
-            resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
-        } catch {
-            throw Qwen3ASREmbeddingError.fileUnreadable(String(describing: error))
-        }
-        guard let fileSize = resourceValues.fileSize, fileSize >= 0 else {
-            throw Qwen3ASREmbeddingError.fileUnreadable("file size metadata is unavailable")
-        }
-        let actualFileSize = UInt64(fileSize)
-        guard actualFileSize == UInt64(expectedByteCount) else {
-            throw Qwen3ASREmbeddingError.sizeMismatch(expected: expectedByteCount, actual: actualFileSize)
-        }
-
-        let mappedData: Data
-        do {
-            mappedData = try Data(contentsOf: url, options: .alwaysMapped)
-        } catch {
-            throw Qwen3ASREmbeddingError.fileUnreadable(String(describing: error))
-        }
-        guard mappedData.count == expectedByteCount else {
-            throw Qwen3ASREmbeddingError.sizeMismatch(expected: expectedByteCount, actual: UInt64(mappedData.count))
-        }
-
         self.vocabSize = vocabSize
         self.hiddenSize = hiddenSize
-        storage = mappedData
+        storage = try ReadOnlyEmbeddingMapping(contentsOf: url, expectedByteCount: expectedByteCount)
     }
 
     func row(_ id: Int64) throws -> [Float] {
         guard id >= 0, UInt64(id) < UInt64(vocabSize) else {
             throw Qwen3ASREmbeddingError.invalidTokenID(id)
         }
-
-        let byteOffset = Int(id) * hiddenSize * 2
-        return storage.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
-            var result: [Float] = []
-            result.reserveCapacity(hiddenSize)
-            for column in 0..<hiddenSize {
-                let offset = byteOffset + column * 2
-                let halfBits = UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
-                result.append(Self.float(fromFloat16Bits: halfBits))
-            }
-            return result
+        let (rowByteCount, rowSizeOverflow) = hiddenSize.multipliedReportingOverflow(by: 2)
+        guard !rowSizeOverflow else { throw Qwen3ASREmbeddingError.sizeOverflow }
+        let rowID = Int(id)
+        let (byteOffset, offsetOverflow) = rowID.multipliedReportingOverflow(by: rowByteCount)
+        let (endOffset, endOverflow) = byteOffset.addingReportingOverflow(rowByteCount)
+        guard !offsetOverflow, !endOverflow else { throw Qwen3ASREmbeddingError.sizeOverflow }
+        guard endOffset <= storage.count else {
+            throw Qwen3ASREmbeddingError.fileUnreadable("mapped row exceeds the file")
         }
+
+        #if os(Windows)
+        let rowBytes = UnsafeMutableRawPointer.allocate(byteCount: rowByteCount, alignment: 1)
+        defer { rowBytes.deallocate() }
+        try storage.copyRow(at: byteOffset, to: rowBytes, byteCount: rowByteCount)
+        return Self.decode(UnsafeRawBufferPointer(start: rowBytes, count: rowByteCount), hiddenSize: hiddenSize)
+        #else
+        return withExtendedLifetime(storage) {
+            let rowBytes = UnsafeRawBufferPointer(
+                start: storage.pointer.advanced(by: byteOffset), count: rowByteCount
+            )
+            return Self.decode(rowBytes, hiddenSize: hiddenSize)
+        }
+        #endif
+    }
+
+    private static func decode(_ bytes: UnsafeRawBufferPointer, hiddenSize: Int) -> [Float] {
+        var result: [Float] = []
+        result.reserveCapacity(hiddenSize)
+        for column in 0..<hiddenSize {
+            let offset = column * 2
+            let halfBits = UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
+            result.append(float(fromFloat16Bits: halfBits))
+        }
+        return result
     }
 
     private static func float(fromFloat16Bits bits: UInt16) -> Float {

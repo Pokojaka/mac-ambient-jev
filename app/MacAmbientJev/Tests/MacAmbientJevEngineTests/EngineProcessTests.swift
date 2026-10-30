@@ -195,8 +195,8 @@ private func makeRoot() throws -> URL {
 }
 
 private let settingsPayload = """
-{"expected_revision":null,"settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},\
-"asr_size":"0.6b","execution_provider":"cpu","threads":1,"low_heat":false,"decisions_enabled":false,\
+{"expected_revision":null,"settings":{"schema_version":2,"source":"microphone","device":{"kind":"default"},\
+"asr_size":"0.6b","execution_provider":{"kind":"cpu"},"threads":1,"low_heat":false,"decisions_enabled":false,\
 "automatic_export":false,"export_destination_path":null}}
 """
 
@@ -253,6 +253,16 @@ private let settingsPayload = """
         }
         #expect(recordingRefused.code == .modelMissing)
         #expect(recordingRefused.recoveryAction == .prepareModels)
+
+        // Envelopes are unmeasured, so loading needs an explicit acknowledgement before models are checked.
+        guard case let .completed(.resourcesPreflight(assessment)) = try await child.call(
+            "resources.preflight", payload: "{\"workload\":\"load\"}"
+        ), case .completed(.resourcesAcknowledge) = try await child.call(
+            "resources.acknowledge", payload: "{\"assessment_id\":\"\(assessment.assessmentID)\"}"
+        ) else {
+            Issue.record("resources.preflight / resources.acknowledge did not complete")
+            return
+        }
 
         guard case let .error(modelsMissing) = try await child.call("models.prepare") else {
             Issue.record("models.prepare should fail without installed models")

@@ -106,10 +106,13 @@ enum EngineProcess {
                 sink: WindowsPipeByteSink(handle: stdout),
                 limits: .production
             )
+            let resourceMonitor = WindowsInferenceResourceMonitor()
             let application = EngineApplication(
                 configuration: EngineApplicationConfiguration(
                     paths: paths,
                     logicalCPUCount: logicalCPUCount,
+                    resourceMonitor: resourceMonitor,
+                    memoryProber: resourceMonitor,
                     sleep: { try await Task.sleep(for: $0) },
                     shutdownPauseTimeout: shutdownPauseTimeout
                 ),
@@ -122,7 +125,10 @@ enum EngineProcess {
                 inference: PortableEngineInference(
                     layout: PortableInstalledModelLayout(modelsRoot: paths.modelsRoot), logicalCPUCount: logicalCPUCount
                 ),
-                events: EngineEventEmitter(transport: transport)
+                events: EngineEventEmitter(transport: transport),
+                acceleratorRegistry: WindowsEngineAcceleratorRegistry(
+                    layout: PortableInstalledModelLayout(modelsRoot: paths.modelsRoot)
+                )
             )
             application.start()
             let controller = EngineController(transport: transport, handlers: application.handlers, admission: .production)

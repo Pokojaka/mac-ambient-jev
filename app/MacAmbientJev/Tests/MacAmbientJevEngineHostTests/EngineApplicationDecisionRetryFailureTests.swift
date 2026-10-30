@@ -241,10 +241,11 @@ private final class DecisionRetryFailureApplicationHarness {
         paths = engineTestPaths(root: root)
         self.inference = inference
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
+        let resources = FakeResourceMonitor()
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20)
+                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,
             inference: inference,
@@ -277,6 +278,15 @@ private final class DecisionRetryFailureApplicationHarness {
             }
         }
         preconditionFailure("terminal reply vanished")
+    }
+
+    @discardableResult
+    func prepareModels() async throws -> EngineResult {
+        let context = EngineRequestContext(
+            requestID: try EngineID(1), events: EngineEventEmitter(transport: transport)
+        )
+        try await acknowledgeResourceWarning(app, workload: .load, context: context)
+        return try await call("models.prepare")
     }
 
     var outputs: [EngineOutput] {
@@ -336,7 +346,7 @@ private final class DecisionRetryFailureApplicationHarness {
         do {
             _ = try await harness.call("hello")
             _ = try await harness.call("settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true)))
-            _ = try await harness.call("models.prepare")
+            _ = try await harness.prepareModels()
 
             let audio = root.appending(path: "pending-decisions.wav")
             try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)
@@ -460,7 +470,7 @@ private final class DecisionRetryFailureApplicationHarness {
         do {
             _ = try await harness.call("hello")
             _ = try await harness.call("settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true)))
-            _ = try await harness.call("models.prepare")
+            _ = try await harness.prepareModels()
 
             let audio = root.appending(path: "pending-decisions.wav")
             try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)
@@ -503,7 +513,7 @@ private final class DecisionRetryFailureApplicationHarness {
             await harness.app.core.failureEventTask?.value
             let state = try #require(harness.app.core.publishedState)
             let hasSessionFailure = state.failures.contains { $0.sessionID == imported.sessionID }
-            let isHeld = harness.app.core.processingQueue.thermallyHeld.contains { $0.sessionID == importedSessionID }
+            let isHeld = harness.app.core.processingQueue.held.contains { $0.request.sessionID == importedSessionID }
             let backgroundProcessingFailures = try Self.backgroundFailures(
                 in: harness.outputs, sessionID: imported.sessionID
             ).filter { $0.code == .processingFailure }
@@ -629,7 +639,7 @@ private final class DecisionRetryFailureApplicationHarness {
             #expect(backgroundProcessingFailures == [expectedFailure])
             let cancelledEvents = try Self.cancelledFailures(in: harness.outputs, sessionID: prepared.sessionID)
             #expect(cancelledEvents.isEmpty)
-            #expect(harness.app.core.processingQueue.thermallyHeld.isEmpty)
+            #expect(harness.app.core.processingQueue.held.isEmpty)
             #expect(harness.app.core.processingQueue.pending.isEmpty)
             #expect(harness.app.core.processingQueue.currentSessionID == nil)
             let unchangedMetadata = try #require(
@@ -745,7 +755,7 @@ private final class DecisionRetryFailureApplicationHarness {
             #expect(backgroundProcessingFailures == [expectedStateFailure])
             let cancelledEvents = try Self.cancelledFailures(in: harness.outputs, sessionID: prepared.sessionID)
             #expect(cancelledEvents.isEmpty)
-            #expect(harness.app.core.processingQueue.thermallyHeld.isEmpty)
+            #expect(harness.app.core.processingQueue.held.isEmpty)
             #expect(harness.app.core.processingQueue.pending.isEmpty)
             #expect(harness.app.core.processingQueue.currentSessionID == nil)
             let unchangedMetadata = try #require(
@@ -799,7 +809,7 @@ private final class DecisionRetryFailureApplicationHarness {
         _ = try await harness.call(
             "settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true))
         )
-        _ = try await harness.call("models.prepare")
+        _ = try await harness.prepareModels()
 
         let audio = root.appending(path: "pending-decisions.wav")
         try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)

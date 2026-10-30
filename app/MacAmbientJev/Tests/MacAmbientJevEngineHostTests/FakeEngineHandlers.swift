@@ -193,6 +193,27 @@ final class FakeEngineHandlers:
         return EngineSettingsResult(revision: try EngineID(2), settings: payload.settings)
     }
 
+    func preflight(
+        _ payload: EngineResourcesPreflightPayload,
+        context: EngineRequestContext
+    ) async throws -> EngineResourceAssessment {
+        try await enter("resources.preflight")
+        return try EngineResourceAssessment(
+            assessmentID: "resource-assessment-1",
+            result: .warning,
+            reason: .envelopeUnmeasured,
+            explanation: "推論のメモリ使用量が未計測です。"
+        )
+    }
+
+    func acknowledge(
+        _ payload: EngineResourcesAcknowledgePayload,
+        context: EngineRequestContext
+    ) async throws -> EngineResourcesAcknowledgePayload {
+        try await enter("resources.acknowledge")
+        return payload
+    }
+
     func prepare(context: EngineRequestContext) async throws {
         try await enter("models.prepare")
         if progressOnPrepare {
@@ -201,6 +222,16 @@ final class FakeEngineHandlers:
                 requestID: context.requestID
             )
         }
+    }
+
+    func bind(_ payload: EngineAcceleratorsBindPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsBindResult {
+        try await enter("accelerators.bind")
+        preconditionFailure("not configured")
+    }
+
+    func verify(_ payload: EngineAcceleratorsVerifyPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsVerifyResult {
+        try await enter("accelerators.verify")
+        preconditionFailure("not configured")
     }
 
     func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection {
@@ -218,6 +249,26 @@ final class FakeEngineHandlers:
         )))
     }
 
+    func evaluate(_ payload: EngineProfilesEvaluatePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation {
+        try await enter("profiles.evaluate")
+        return try EngineProfileEvaluation(
+            initialSize: .small,
+            recommendLarge: false,
+            reason: .noGPU,
+            explanation: "GPU がないため、0.6B を使用します。",
+            measuredRTF: nil,
+            predictedRTF: nil,
+            decisionState: .complete,
+            requestedChoice: nil,
+            calibrationID: nil
+        )
+    }
+
+    func decide(_ payload: EngineProfilesDecidePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation {
+        try await enter("profiles.decide")
+        preconditionFailure("not configured")
+    }
+
     func shutdown(reason: EngineShutdownReason) async throws {
         calls.append("shutdown")
         shutdownReasons.append(reason)
@@ -228,7 +279,7 @@ final class FakeEngineHandlers:
 
 func sampleSettings() throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
         threads: 2, lowHeat: false, decisionsEnabled: true, automaticExport: false, exportDestinationPath: nil
     )
 }

@@ -301,7 +301,7 @@ private func processFinal(
     return await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { false },
+        shouldPause: { nil },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
         onStatus: { await statuses.append($0.text) },
@@ -319,7 +319,7 @@ private func cancelProcessingWhenGateStarts(
         await processor.processSession(
             sessionID: sessionID,
             pacingMode: pacingMode,
-            shouldPause: { false },
+            shouldPause: { nil },
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { _ in },
@@ -363,6 +363,56 @@ private func recoveryProcessor(
 private func eventObjects(_ sessionURL: URL) throws -> [[String: Any]] {
     try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
         .lines.compactMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+}
+
+@Test(arguments: [InferenceHoldReason.thermal, .resourcePressure, .monitorFailed])
+func nativeProcessorPauseReasonForSessionProcessingCoordinator(reason: InferenceHoldReason) async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(frames: 16_000, sessionID: sessionID)
+    let temporaryDirectory = FileManager.default.temporaryDirectory.standardizedFileURL
+    let fixtureRoot = paths.applicationSupportURL.deletingLastPathComponent().standardizedFileURL
+    let cleanupRoot = try #require(
+        fixtureRoot.deletingLastPathComponent().standardizedFileURL == temporaryDirectory
+            && UUID(uuidString: fixtureRoot.lastPathComponent) != nil
+            ? fixtureRoot
+            : nil
+    )
+    defer { try? FileManager.default.removeItem(at: cleanupRoot) }
+
+    let log = FinalizationCallLog()
+    let typedStatusLog = FinalizationCallLog()
+    let statuses = FinalizationStatusRecorder()
+    let processor = recoveryProcessor(paths: paths, log: log)
+
+    let result = await processor.processSession(
+        sessionID: sessionID,
+        pacingMode: .normal,
+        shouldPause: { reason },
+        onPhase: { _ in },
+        metadataPolicy: .reject,
+        onStatus: { status in
+            await statuses.append(status.text)
+            if status == .paused(reason) {
+                await typedStatusLog.append("selected-pause-reason")
+            }
+        },
+        onUpdate: { _, _ in }
+    )
+
+    #expect(result.disposition == .paused)
+    let message = try #require(result.message)
+    #expect(message.contains(reason.finalizationExplanation))
+    let statusTexts = await statuses.snapshot()
+    #expect(statusTexts.contains { $0.contains(reason.finalizationExplanation) })
+    for otherReason in [InferenceHoldReason.thermal, .resourcePressure, .monitorFailed]
+    where otherReason != reason {
+        #expect(!message.contains(otherReason.finalizationExplanation))
+        #expect(statusTexts.allSatisfy { !$0.contains(otherReason.finalizationExplanation) })
+    }
+    #expect(await typedStatusLog.snapshot() == ["selected-pause-reason"])
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(!(await log.snapshot()).contains { $0.hasPrefix("asr:") })
+    #expect(InferenceHoldReason.thermal.finalizationExplanation == UserFacingStatus.finalizationPausedForHeat.text)
 }
 
 @Test(.timeLimit(.minutes(10)))
@@ -808,7 +858,7 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
         checkpoint: checkpoint,
         finalSegments: [],
         pacingMode: .normal,
-        shouldPause: { false },
+        shouldPause: { nil },
         onPhase: { _ in },
         onStatus: { await statuses.append($0.text) },
         onUpdate: { _, _ in }
@@ -1117,7 +1167,7 @@ func finalTranscriptPipelineRejectsPersistedLogMissingVADSegment() async throws 
 
     await #expect {
         _ = try await pipeline.process(
-            onStatus: { _ in }, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in }
+            onStatus: { _ in }, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in }
         )
     } throws: { error in
         guard let failure = error as? FinalTranscriptPipelineFailure else { return false }
@@ -1616,7 +1666,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     await gate.wait()
     let result = await processor.finishLiveTranscription(
         sessionID: sessionID, checkpoint: checkpoint, finalSegments: [], pacingMode: .normal,
-        shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
+        shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(result.disposition == .completed)
     // Finalization can cancel the terminal request before it is sent.
@@ -1854,7 +1904,7 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     #expect(result.metrics == nil)
     let imported = await processor.processSession(
         sessionID: absent,
-        pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(imported.disposition == .failed)

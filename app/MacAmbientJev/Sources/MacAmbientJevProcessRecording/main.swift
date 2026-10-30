@@ -75,8 +75,8 @@ struct ProcessRecordingCommand {
         let callbacks = makeCallbacks(
             eventRenderer: eventRenderer,
             shouldPause: {
-                if let monitor { return await monitor.shouldPause() }
-                return MacThermalMonitor().isCritical
+                if let monitor { return await monitor.shouldPause() ? .thermal : nil }
+                return MacThermalMonitor().isCritical ? .thermal : nil
             },
             onPhase: { phase in await monitor?.setPhase(phase) }
         )
@@ -103,7 +103,7 @@ struct ProcessRecordingCommand {
         #else
         let callbacks = makeCallbacks(
             eventRenderer: eventRenderer,
-            shouldPause: { false },
+            shouldPause: { nil },
             onPhase: { _ in }
         )
         result = try await execute(

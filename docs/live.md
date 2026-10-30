@@ -85,6 +85,16 @@ ASR drain は判定に関係なく動作します。CLI の `ContentPriorityAcce
 
 このライブ熱判定は録音中に適用します。録音停止後の残存ライブキューはこの判定では待たずに処理します。続く確定処理は実際の `critical` の間だけ一時停止し、状態不明では一時停止しません。一時停止中は公開済み結果を保持し、冷却後は新しい run で全量を再実行します。CLI は明示的な再開操作を必要とします。[確定処理](final.md#発熱による一時停止と再開)
 
+## リソース保護によるライブ認識の停止
+
+`LiveTranscriptionCoordinator` の `resourceMonitor` は optional seam で、`nil` は未設定であり `.healthy` を観測した意味ではありません。Mac GUI の [`AppState`](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift) は明示的に `nil` を渡します。Windows Engine の [`EngineProcess`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) は本番の [`WindowsInferenceResourceMonitor`](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsInferenceResourceMonitor.swift) を生成し、live / final coordinators に注入します。EngineHost の macOS tests ([test support](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationSupport.swift)) は monitor を注入し、test-only [harness entry point](../app/MacAmbientJev/Tests/MacAmbientJevEngineHarness/HarnessMain.swift) は healthy 固定の monitor / prober を使います。production Linux engine / prober はありません。
+
+Windows Engine の `models.prepare(load)` と `recording.start(live)` は実行直前にリソースを再評価します。warning には `resources.preflight` と `resources.acknowledge` による明示確認が必要で、応答は settings revision・workload・memory facts の同一 snapshot にだけ有効です。snapshot が変われば再確認します。未計測の envelope / RTF は「推論のメモリ使用量が未計測です。」「リアルタイム係数が未計測です。」という warning になります。
+
+resource 状態の変化を観測したとき、VAD 開始時、VAD が checkpoint を処理する直前、ASR batch を dequeue する直前に gate を確認します。`pressure` / `monitorFailed` はその録音のライブ認識停止を failure としてラッチし（「メモリ不足のためライブ認識を停止しました。録音は継続しています」「リソース監視に失敗したためライブ認識を停止しました。録音は継続しています」）、新しい VAD 処理を止めて未処理の in-memory inference queue を破棄します。進行中の native call は完了することがありますが、capture・audio drain・durable writer は継続し、既に保存済みの events と audio は保持して書き換えません。同じ録音中に healthy へ戻っても再開しません。
+
+failure は cleanup までその録音にラッチされます。停止時は放棄した live drain を待たずに省き、固定済み profile のまま録音全体の finalization を enqueue します。`resource_protection.hold_reasons` は既存 field のまま live latch・実行中の一時停止・held queue の理由を示し、空配列は健全性を意味しません。熱制御の backlog 保持と冷却後の再開は変更ありません。[monitoring protocol](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/InferenceResourceMonitoring.swift)、[live coordinator](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveTranscriptionCoordinator.swift)、[resource admission](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Resources.swift)、[recording admission](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Recording.swift)、[resource-protection state](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication.swift)、[resource protection schema](windows.md#プロファイル評価とリソース保護) を参照してください。
+
 ## ライブ処理の失敗
 
 VAD の失敗時は「録音は継続しています。発話検出を停止しました: …」と表示し、マイクの発話音量監視も利用不能にします。ASR の開始失敗、区間登録失敗、認識結果や失敗イベントの保存失敗は、それぞれ理由を表示します。ライブ ASR が継続できなくても録音保存は継続し、停止後に保存音声を確定処理します。録音保存自体が失敗した場合は[キャプチャの保存障害](capture.md#保存障害と健全範囲の確定処理)の扱いになります。

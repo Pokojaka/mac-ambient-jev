@@ -34,7 +34,7 @@ struct PortableEngineInference: EngineInferenceProviding {
     }
 
     func configuration(for settings: EngineSettings) throws -> PortableProcessingConfiguration {
-        guard let size = Qwen3ASRModelSize(rawValue: settings.asrSize.rawValue) else {
+        guard let size = ASRModelSize(rawValue: settings.asrSize.rawValue) else {
             throw EngineAdapterError(
                 code: .invalidSettings, message: "ASR サイズ \(settings.asrSize.rawValue) はインストール済みモデルにありません",
                 recoveryAction: .replaceSettings, details: []

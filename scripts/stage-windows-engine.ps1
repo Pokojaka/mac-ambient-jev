@@ -231,12 +231,14 @@ try {
     $resourcePaths = @(
         'MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/clause_tagger_model.json',
         'MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/qwen3_asr_models.json',
-        'MacAmbientJev_MacAmbientJevDiarization.resources/Resources/community1_diarization_models.json'
+        'MacAmbientJev_MacAmbientJevDiarization.resources/Resources/community1_diarization_models.json',
+        'MacAmbientJev_MacAmbientJevEngineHost.resources/Resources/qwen3_asr_voicevox_short.wav',
+        'MacAmbientJev_MacAmbientJevEngineHost.resources/Resources/qwen3_asr_voicevox.LICENSE.txt'
     )
     foreach ($resourcePath in $resourcePaths) {
         $resourceSource = Join-Path -Path $releaseBinDirectory -ChildPath $resourcePath
         if (-not (Test-Path -LiteralPath $resourceSource -PathType Leaf)) {
-            throw "Required SwiftPM resource manifest is missing from the release bin directory: $resourceSource"
+            throw "Required SwiftPM resource is missing from the release bin directory: $resourceSource"
         }
     }
 
@@ -315,7 +317,7 @@ try {
         $stagedDllLookup[$dllName.ToLowerInvariant()] = $true
     }
     $windowsDllAllowlist = @(
-        'advapi32.dll', 'bcrypt.dll', 'dbghelp.dll', 'dxgi.dll', 'iphlpapi.dll', 'kernel32.dll',
+        'advapi32.dll', 'bcrypt.dll', 'dbghelp.dll', 'dxcore.dll', 'dxgi.dll', 'iphlpapi.dll', 'kernel32.dll',
         'mfplat.dll', 'mfreadwrite.dll', 'ole32.dll', 'oleaut32.dll', 'secur32.dll', 'setupapi.dll',
         'shell32.dll', 'shlwapi.dll', 'user32.dll', 'userenv.dll', 'winmm.dll', 'ws2_32.dll',
         'ntdll.dll', 'crypt32.dll', 'normaliz.dll'

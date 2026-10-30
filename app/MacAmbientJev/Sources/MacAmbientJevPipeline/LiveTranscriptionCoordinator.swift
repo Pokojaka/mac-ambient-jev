@@ -55,6 +55,9 @@ public final class LiveTranscriptionCoordinator {
     private let processor: any LiveTranscriptionExecuting
     private let thermalMonitor: any ThermalMonitoring
     private let sleep: @MainActor (Duration) async throws -> Void
+    private let resourceMonitor: (any InferenceResourceMonitoring)?
+    private var resourceObservation: (any InferenceResourceObservation)? = nil
+    private var resourceSuspensions: Set<UUID> = []
     private var vadSession: (sessionID: UUID, session: any LiveVADProcessing)?
     private var vadTask: Task<Void, Never>?
     private var vadTaskID: UUID?
@@ -70,13 +73,19 @@ public final class LiveTranscriptionCoordinator {
         effects: any LiveTranscriptionEffects,
         processor: any LiveTranscriptionExecuting,
         thermalMonitor: any ThermalMonitoring,
+        resourceMonitor: (any InferenceResourceMonitoring)? = nil,
         sleep: @escaping @MainActor (Duration) async throws -> Void
     ) {
         self.state = state
         self.effects = effects
         self.processor = processor
         self.thermalMonitor = thermalMonitor
+        self.resourceMonitor = resourceMonitor
         self.sleep = sleep
+        self.resourceObservation = resourceMonitor?.observeChanges { [weak self] in
+            guard let self, let sessionID = self.effects?.recordingSessionID else { return }
+            _ = self.suspendForResources(sessionID: sessionID)
+        }
     }
 
     public var isASRIdle: Bool {
@@ -92,6 +101,7 @@ public final class LiveTranscriptionCoordinator {
         session: any LiveVADProcessing,
         checkpoint: AudioCheckpoint
     ) async {
+        guard !suspendForResources(sessionID: sessionID) else { return }
         let effects = requiredEffects
         state.vadFailureText = nil
         state.vadSegmentCount = 0
@@ -125,6 +135,7 @@ public final class LiveTranscriptionCoordinator {
             await processor.cancelLiveTranscription(sessionID: sessionID)
             return
         }
+        guard !resourceSuspensions.contains(sessionID) else { return }
 
         vadStopRequested = false
         let taskID = UUID()
@@ -146,7 +157,8 @@ public final class LiveTranscriptionCoordinator {
     }
 
     public func finishVAD(sessionID: UUID, checkpoint: AudioCheckpoint) async {
-        guard let active = vadSession, active.sessionID == sessionID else { return }
+        guard !resourceSuspensions.contains(sessionID),
+              let active = vadSession, active.sessionID == sessionID else { return }
         do {
             let progress = try await active.session.finish(checkpoint: checkpoint)
             state.vadSegmentCount = progress.totalSegmentCount
@@ -210,7 +222,7 @@ public final class LiveTranscriptionCoordinator {
                 )
             )
 
-            if state.vadFailureText == nil {
+            if state.vadFailureText == nil && !resourceSuspensions.contains(sessionID) {
                 processing.enqueue(
                     .finishLive(sessionID: sessionID, checkpoint: checkpoint)
                 )
@@ -326,6 +338,7 @@ public final class LiveTranscriptionCoordinator {
         }
         asrTasks.removeValue(forKey: sessionID)
         asrTaskIDs.removeValue(forKey: sessionID)
+        resourceSuspensions.remove(sessionID)
         state.cleanup(sessionID: sessionID)
     }
 
@@ -346,6 +359,19 @@ public final class LiveTranscriptionCoordinator {
         return effects
     }
 
+    private func suspendForResources(sessionID: UUID) -> Bool {
+        if resourceSuspensions.contains(sessionID) { return true }
+        guard let reason = resourceMonitor?.signal.holdReason else { return false }
+        resourceSuspensions.insert(sessionID)
+        state.recordFailure(
+            sessionID: sessionID, message: reason.liveExplanation, discardQueued: true
+        )
+        vadStopRequested = true
+        vadSleepTask?.cancel()
+        requiredEffects.liveDidChange(.recognitionFailed(sessionID, reason.liveExplanation))
+        return true
+    }
+
     private func runVADLoop(sessionID: UUID) async {
         while !vadStopRequested,
               let pollingEffects = effects,
@@ -362,6 +388,7 @@ public final class LiveTranscriptionCoordinator {
 
             do {
                 let checkpoint = try await effects.committedLiveCheckpoint()
+                guard !suspendForResources(sessionID: sessionID) else { return }
                 let progress = try await active.session.processAvailable(checkpoint: checkpoint)
                 state.vadSegmentCount = progress.totalSegmentCount
                 effects.liveDidChange(.vadProgress(sessionID, progress))
@@ -415,11 +442,12 @@ public final class LiveTranscriptionCoordinator {
 
         while state.failure(sessionID: sessionID) == nil && state.hasQueued(sessionID: sessionID) {
             do {
-                try await waitForThermalHeadroom(sessionID: sessionID)
+                try await waitForInferenceHeadroom(sessionID: sessionID)
             } catch {
                 break
             }
 
+            guard !suspendForResources(sessionID: sessionID) else { break }
             guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }
             guard let batch = state.dequeue(sessionID: sessionID) else { break }
             do {
@@ -453,9 +481,10 @@ public final class LiveTranscriptionCoordinator {
     }
 
     /// Thermal pressure only throttles live transcription during recording; the queue retains its oldest segments.
-    private func waitForThermalHeadroom(sessionID: UUID) async throws {
+    private func waitForInferenceHeadroom(sessionID: UUID) async throws {
         let effects = requiredEffects
-        while effects.isCurrentRecording(sessionID) {
+        while effects.isCurrentRecording(sessionID),
+              state.failure(sessionID: sessionID) == nil {
             switch thermalMonitor.liveASRDecision {
             case .processNow:
                 return

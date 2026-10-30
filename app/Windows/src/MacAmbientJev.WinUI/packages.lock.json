@@ -2,6 +2,15 @@
   "version": 2,
   "dependencies": {
     "net10.0-windows10.0.26100": {
+      "Microsoft.Windows.AI.MachineLearning": {
+        "type": "Direct",
+        "requested": "[2.5.96, )",
+        "resolved": "2.5.96",
+        "contentHash": "nEigqZy0jJu0G0qTcqjOXJ1LtooPJvHt+w3NxrSInAmIYHiMqtUX9oRIVBllqZWR2omOYrwYRfMmvaYpgP3U0A==",
+        "dependencies": {
+          "System.Numerics.Tensors": "9.0.0"
+        }
+      },
       "Microsoft.WindowsAppSDK.Foundation": {
         "type": "Direct",
         "requested": "[2.3.12, )",
@@ -56,6 +65,11 @@
           "Microsoft.WindowsAppSDK.Base": "2.0.4"
         }
       },
+      "System.Numerics.Tensors": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
+      },
       "macambientjev.engineclient": {
         "type": "Project",
         "dependencies": {
@@ -74,6 +88,15 @@
       }
     },
     "net10.0-windows10.0.26100/win-arm64": {
+      "Microsoft.Windows.AI.MachineLearning": {
+        "type": "Direct",
+        "requested": "[2.5.96, )",
+        "resolved": "2.5.96",
+        "contentHash": "nEigqZy0jJu0G0qTcqjOXJ1LtooPJvHt+w3NxrSInAmIYHiMqtUX9oRIVBllqZWR2omOYrwYRfMmvaYpgP3U0A==",
+        "dependencies": {
+          "System.Numerics.Tensors": "9.0.0"
+        }
+      },
       "Microsoft.WindowsAppSDK.Foundation": {
         "type": "Direct",
         "requested": "[2.3.12, )",
@@ -91,6 +114,15 @@
       }
     },
     "net10.0-windows10.0.26100/win-x64": {
+      "Microsoft.Windows.AI.MachineLearning": {
+        "type": "Direct",
+        "requested": "[2.5.96, )",
+        "resolved": "2.5.96",
+        "contentHash": "nEigqZy0jJu0G0qTcqjOXJ1LtooPJvHt+w3NxrSInAmIYHiMqtUX9oRIVBllqZWR2omOYrwYRfMmvaYpgP3U0A==",
+        "dependencies": {
+          "System.Numerics.Tensors": "9.0.0"
+        }
+      },
       "Microsoft.WindowsAppSDK.Foundation": {
         "type": "Direct",
         "requested": "[2.3.12, )",

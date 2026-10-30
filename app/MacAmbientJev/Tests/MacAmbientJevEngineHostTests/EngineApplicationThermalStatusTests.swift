@@ -30,6 +30,20 @@ func processorPresentationTextPreservesDynamicMessages() {
     #expect(EngineApplicationCore.processorPresentationText(.message(message)) == message)
 }
 
+@Test(arguments: [InferenceHoldReason.resourcePressure, .monitorFailed])
+func processorPresentationTextForSessionProcessingCoordinatorHoldReason(_ reason: InferenceHoldReason) {
+    #expect(
+        EngineApplicationCore.processorPresentationText(.paused(reason)) == reason.finalizationExplanation
+    )
+}
+
+@Test
+func processorPresentationTextForSessionProcessingCoordinatorRejectsThermalPause() async {
+    await #expect(processExitsWith: .failure) {
+        _ = EngineApplicationCore.processorPresentationText(.paused(.thermal))
+    }
+}
+
 @Test
 func processorPresentationTextRejectsFinalizationPausedForHeat() async {
     await #expect(processExitsWith: .failure) {

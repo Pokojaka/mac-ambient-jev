@@ -19,6 +19,31 @@ public abstract record EngineDevice
     }
 }
 
+[WireUnion("kind", typeof(EngineExecutionProviderKind))]
+public abstract record EngineExecutionProvider
+{
+    private EngineExecutionProvider() { }
+
+    public EngineExecutionProviderKind Kind => StrictWireCodec.CaseValue<EngineExecutionProviderKind>(this);
+
+    [WireCase("cpu")]
+    public sealed record Cpu() : EngineExecutionProvider;
+
+    [WireCase("windows_ml")]
+    public sealed record WindowsML(
+        [property: WireMember("provider_name")] string ProviderName,
+        [property: WireMember("device_key")] string DeviceKey,
+        [property: WireMember("verification_id")] string VerificationID) : EngineExecutionProvider, IWireValidatable
+    {
+        public void Validate(string path)
+        {
+            WireCheck.Nonempty(ProviderName, path + ".provider_name");
+            WireCheck.Nonempty(DeviceKey, path + ".device_key");
+            WireCheck.Nonempty(VerificationID, path + ".verification_id");
+        }
+    }
+}
+
 [WireObject]
 public sealed record EngineSettings(
     [property: WireMember("schema_version")] long SchemaVersion,
@@ -34,7 +59,7 @@ public sealed record EngineSettings(
 {
     public void Validate(string path)
     {
-        WireCheck.Require(SchemaVersion == 1, path + ".schema_version", "schema_version must be 1.");
+        WireCheck.Require(SchemaVersion == 2, path + ".schema_version", "schema_version must be 2.");
         WireCheck.Range(Threads, 1, 4, path + ".threads");
         WireCheck.OptionalNonempty(ExportDestinationPath, path + ".export_destination_path");
     }
@@ -203,6 +228,24 @@ public abstract record EngineCommand
 
     [WireCase("models.inspect")]
     public sealed record ModelsInspect([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;
+
+    [WireCase("accelerators.bind")]
+    public sealed record AcceleratorsBind([property: WireMember("payload")] EngineAcceleratorsBindPayload Payload) : EngineCommand;
+
+    [WireCase("accelerators.verify")]
+    public sealed record AcceleratorsVerify([property: WireMember("payload")] EngineAcceleratorsVerifyPayload Payload) : EngineCommand;
+
+    [WireCase("profiles.decide")]
+    public sealed record ProfilesDecide([property: WireMember("payload")] EngineProfilesDecidePayload Payload) : EngineCommand;
+
+    [WireCase("profiles.evaluate")]
+    public sealed record ProfilesEvaluate([property: WireMember("payload")] EngineProfilesEvaluatePayload Payload) : EngineCommand;
+
+    [WireCase("resources.preflight")]
+    public sealed record ResourcesPreflight([property: WireMember("payload")] EngineResourcesPreflightPayload Payload) : EngineCommand;
+
+    [WireCase("resources.acknowledge")]
+    public sealed record ResourcesAcknowledge([property: WireMember("payload")] EngineResourcesAcknowledgePayload Payload) : EngineCommand;
 
     [WireCase("shutdown")]
     public sealed record Shutdown([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;

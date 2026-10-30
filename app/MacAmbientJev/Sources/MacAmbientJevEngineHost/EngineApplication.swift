@@ -6,6 +6,8 @@ import MacAmbientJevPipeline
 public struct EngineApplicationConfiguration: Sendable {
     public let paths: AppPaths
     public let logicalCPUCount: Int
+    public let resourceMonitor: any InferenceResourceMonitoring
+    public let memoryProber: any InferenceMemoryProbing
     /// The pacing sleep of live transcription.
     public let sleep: @MainActor @Sendable (Duration) async throws -> Void
     /// How long shutdown waits for running finalization to stop at its next boundary before it fails.
@@ -14,11 +16,15 @@ public struct EngineApplicationConfiguration: Sendable {
     public init(
         paths: AppPaths,
         logicalCPUCount: Int,
+        resourceMonitor: any InferenceResourceMonitoring,
+        memoryProber: any InferenceMemoryProbing,
         sleep: @escaping @MainActor @Sendable (Duration) async throws -> Void,
         shutdownPauseTimeout: Duration
     ) {
         self.paths = paths
         self.logicalCPUCount = logicalCPUCount
+        self.resourceMonitor = resourceMonitor
+        self.memoryProber = memoryProber
         self.sleep = sleep
         self.shutdownPauseTimeout = shutdownPauseTimeout
     }
@@ -35,9 +41,13 @@ public final class EngineApplication {
         configuration: EngineApplicationConfiguration,
         capture: any EngineCaptureProviding,
         inference: any EngineInferenceProviding,
-        events: EngineEventEmitter
+        events: EngineEventEmitter,
+        acceleratorRegistry: any EngineAcceleratorRegistry = EngineUnavailableAcceleratorRegistry()
     ) {
-        core = EngineApplicationCore(configuration: configuration, capture: capture, inference: inference, events: events)
+        core = EngineApplicationCore(
+            configuration: configuration, capture: capture, inference: inference, events: events,
+            acceleratorRegistry: acceleratorRegistry
+        )
     }
 
     public var handlers: EngineHandlers {
@@ -66,7 +76,12 @@ final class EngineApplicationCore {
 
     let paths: AppPaths
     let logicalCPUCount: Int
+    let resourceMonitor: any InferenceResourceMonitoring
+    let memoryProber: any InferenceMemoryProbing
     let settingsStore: EngineSettingsStore
+    let profileDecisionStore: EngineProfileDecisionStore
+    let verificationStore: EngineVerificationStore
+    let acceleratorRegistry: any EngineAcceleratorRegistry
     let capture: any EngineCaptureProviding
     let inferenceProvider: any EngineInferenceProviding
     let events: EngineEventEmitter
@@ -78,9 +93,19 @@ final class EngineApplicationCore {
 
     // Settings and models
     var settingsResult: EngineSettingsResult?
+    var resourceAssessments: [EngineResourceAssessmentEntry] = []
     var inference: EngineInference?
+    var profileEvaluation: EngineProfileEvaluation? = nil
+    var profileSetupOperation: EngineProfileSetupOperation? = nil
+    var acceleratorBindings: [String: (descriptor: EngineAcceleratorDescriptor, devices: [any EngineAcceleratorDevice])] = [:]
+    var acceleratorBindingTask: Task<[any EngineAcceleratorDevice], Error>? = nil
+    var acceleratorSetupTask: Task<EngineAcceleratorsVerifyResult, Error>? = nil
     var isPreparingModels = false
     var presentation = EnginePresentation()
+    var liveResourceHoldReason: InferenceHoldReason? = nil
+    var finalizationResourceHoldReason: InferenceHoldReason? = nil
+    var resourceFinalizingSessionID: UUID? = nil
+    var resourceObservation: (any InferenceResourceObservation)? = nil
     var isShuttingDown = false
     private(set) var mutationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -127,10 +152,12 @@ final class EngineApplicationCore {
     var onBackgroundEventStateChange: (@MainActor () -> Void)?
 
     lazy var processingCoordinator = SessionProcessingCoordinator(
-        effects: self, processor: gateway, thermalMonitor: thermalMonitor
+        effects: self, processor: gateway, thermalMonitor: thermalMonitor, resourceMonitor: resourceMonitor,
+        releaseResources: { [gateway] in await gateway.releaseIdleResources() }
     )
     lazy var liveCoordinator = LiveTranscriptionCoordinator(
-        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor, sleep: sleep
+        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor,
+        resourceMonitor: resourceMonitor, sleep: sleep
     )
 
     struct StartAttempt {
@@ -144,17 +171,44 @@ final class EngineApplicationCore {
         configuration: EngineApplicationConfiguration,
         capture: any EngineCaptureProviding,
         inference: any EngineInferenceProviding,
-        events: EngineEventEmitter
+        events: EngineEventEmitter,
+        acceleratorRegistry: any EngineAcceleratorRegistry
     ) {
         paths = configuration.paths
         logicalCPUCount = configuration.logicalCPUCount
+        resourceMonitor = configuration.resourceMonitor
+        memoryProber = configuration.memoryProber
         settingsStore = EngineSettingsStore(paths: configuration.paths, logicalCPUCount: configuration.logicalCPUCount)
+        profileDecisionStore = EngineProfileDecisionStore(paths: configuration.paths)
+        verificationStore = EngineVerificationStore(paths: configuration.paths)
+        self.acceleratorRegistry = acceleratorRegistry
         self.capture = capture
         inferenceProvider = inference
         self.events = events
         sleep = configuration.sleep
         shutdownPauseTimeout = configuration.shutdownPauseTimeout
         loadSettings()
+        do { profileEvaluation = try profileDecisionStore.load() }
+        catch {
+            report(EngineFailures.failure(
+                code: .filesystem, message: error.localizedDescription, stage: .settings, sessionID: nil,
+                severity: .error, recoveryAction: .retry, details: [EngineFailures.detail(for: error)]
+            ))
+        }
+        resourceObservation = resourceMonitor.observeChanges { [weak self] in
+            self?.resourceMonitorDidChange()
+        }
+    }
+
+    private func resourceMonitorDidChange() {
+        guard !isShuttingDown else { return }
+        if let currentSessionID = processingQueue.currentSessionID,
+           currentSessionID == resourceFinalizingSessionID,
+           let reason = resourceMonitor.signal.holdReason {
+            finalizationResourceHoldReason = reason
+            presentation.processingStatusText = reason.finalizationExplanation + "（実行中の処理の終了待ち）"
+        }
+        stateDidChange()
     }
 
     func performMutation<T: Sendable>(
@@ -177,6 +231,24 @@ final class EngineApplicationCore {
     // MARK: Settings
 
     var settings: EngineSettings? { settingsResult?.settings }
+
+    func profileDecisionCommandError(_ error: any Error) -> EngineCommandError {
+        EngineFailures.commandError(
+            .filesystem, "プロファイル判定を読み書きできません: \(error.localizedDescription)", stage: .settings,
+            recoveryAction: .retry, details: [EngineFailures.detail(for: error)]
+        )
+    }
+
+    func completingProfileDecision(
+        _ evaluation: EngineProfileEvaluation,
+        requestedChoice: EngineProfileChoice
+    ) throws -> EngineProfileEvaluation {
+        try EngineProfileEvaluation(
+            initialSize: evaluation.initialSize, recommendLarge: evaluation.recommendLarge, reason: evaluation.reason,
+            explanation: evaluation.explanation, measuredRTF: evaluation.measuredRTF, predictedRTF: evaluation.predictedRTF,
+            decisionState: .complete, requestedChoice: requestedChoice, calibrationID: evaluation.calibrationID
+        )
+    }
 
     /// Reads settings.json. A missing or corrupt file leaves the engine in `settings_required`; the specific
     /// problem is reported by `settings.get`.
@@ -251,6 +323,8 @@ final class EngineApplicationCore {
                 revision: try EngineID(revision),
                 screen: screen,
                 setup: setupStatus,
+                profileSetup: EngineProfileSetup(evaluation: profileEvaluation, operation: profileSetupOperation),
+                resourceProtection: try resourceProtectionState(),
                 recovery: recoveryStatus,
                 recording: try recordingState(),
                 queue: try queueState(),
@@ -260,6 +334,35 @@ final class EngineApplicationCore {
         } catch {
             preconditionFailure("engine state fields are valid by construction: \(error)")
         }
+    }
+
+    /// Projects current queue holds, live suspension and finalization pausing reasons; empty does not imply healthy memory.
+    private func resourceProtectionState() throws -> EngineResourceProtection {
+        var heldReasons = Set(processingQueue.held.map { held -> EngineResourceHoldReason in
+            switch held.reason {
+            case .thermal: .thermal
+            case .resourcePressure: .resourcePressure
+            case .monitorFailed: .monitorFailed
+            }
+        })
+        func include(_ reason: InferenceHoldReason) {
+            switch reason {
+            case .thermal: heldReasons.insert(.thermal)
+            case .resourcePressure: heldReasons.insert(.resourcePressure)
+            case .monitorFailed: heldReasons.insert(.monitorFailed)
+            }
+        }
+        if (recording.phase == .recording || recording.phase == .stopping), let liveResourceHoldReason {
+            include(liveResourceHoldReason)
+        }
+        if let currentSessionID = processingQueue.currentSessionID,
+           currentSessionID == resourceFinalizingSessionID,
+           let finalizationResourceHoldReason {
+            include(finalizationResourceHoldReason)
+        }
+        return try EngineResourceProtection(
+            holdReasons: EngineResourceHoldReason.allCases.filter { heldReasons.contains($0) }
+        )
     }
 
     private var screen: EngineScreen {
@@ -298,7 +401,7 @@ final class EngineApplicationCore {
             operations.append(try EngineQueuedOperation(sessionID: EngineFailures.wireID(current), stage: .finalization))
         }
         for request in processingQueue.pending { try add(request) }
-        for request in processingQueue.thermallyHeld { try add(request) }
+        for entry in processingQueue.held { try add(entry.request) }
         return Array(operations.prefix(Self.queueLimit))
     }
 
@@ -359,6 +462,11 @@ final class EngineApplicationCore {
     }
 
     func requireModelsPrepared(stage: EngineStage) throws -> EngineInference {
+        guard profileSetupOperation == nil else {
+            throw EngineFailures.commandError(
+                .busy, "アクセラレーター設定中のため操作を開始できません", stage: stage, recoveryAction: .retry
+            )
+        }
         guard !isPreparingModels else {
             throw EngineFailures.commandError(
                 .busy, "モデルの準備が実行中です", stage: stage, recoveryAction: .retry
@@ -374,15 +482,15 @@ final class EngineApplicationCore {
     }
 
     /// Nothing uses the models, so settings may change and the models may be released:
-    /// no recording, no queued, held or running processing or live transcription, no model preparation.
+    /// no recording, queued, held or running processing, live transcription, model preparation or accelerator setup.
     var isIdle: Bool {
-        recording.phase == .idle && isProcessingIdle && !isPreparingModels
+        recording.phase == .idle && isProcessingIdle && !isPreparingModels && profileSetupOperation == nil
     }
 
     /// No finalization, decision retry or live transcription is queued or running.
     var isProcessingIdle: Bool {
         processingQueue.pending.isEmpty
-            && processingQueue.thermallyHeld.isEmpty
+            && processingQueue.held.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty
@@ -519,7 +627,7 @@ extension EngineApplicationCore: EngineStateHandling {
 extension EngineApplicationCore: EngineSettingsHandling {
     private var settingsHandler: EngineSettingsStoreHandler {
         EngineSettingsStoreHandler(store: settingsStore) { [self] current, proposed in
-            guard !isPreparingModels, !isShuttingDown else { return true }
+            guard !isPreparingModels, profileSetupOperation == nil, !isShuttingDown else { return true }
             guard let current else { return false }
             return !isIdle && profileDiffers(current, proposed)
         }
@@ -532,6 +640,17 @@ extension EngineApplicationCore: EngineSettingsHandling {
     func replace(_ payload: EngineSettingsReplacePayload, context: EngineRequestContext) async throws -> EngineSettingsResult {
         let previous = settings
         let result = try await settingsHandler.replace(payload, context: context)
+        var completedEvaluation: EngineProfileEvaluation?
+        var decisionWriteError: Error?
+        if previous?.asrSize != result.settings.asrSize,
+           let evaluation = profileEvaluation, evaluation.decisionState != .complete {
+            do {
+                let choice: EngineProfileChoice = result.settings.asrSize == .small ? .small : .large
+                let completed = try completingProfileDecision(evaluation, requestedChoice: choice)
+                try profileDecisionStore.save(completed)
+                completedEvaluation = completed
+            } catch { decisionWriteError = error }
+        }
         if previous?.exportDestinationPath != result.settings.exportDestinationPath {
             savedSessionOperations.resetExportDestination()
         }
@@ -544,7 +663,9 @@ extension EngineApplicationCore: EngineSettingsHandling {
             presentation.preparationStatusText = nil
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
         }
+        if let completedEvaluation { profileEvaluation = completedEvaluation }
         stateDidChange()
+        if let decisionWriteError { throw profileDecisionCommandError(decisionWriteError) }
         return result
     }
 }
@@ -552,6 +673,130 @@ extension EngineApplicationCore: EngineSettingsHandling {
 // MARK: EngineModelsHandling
 
 extension EngineApplicationCore: EngineModelsHandling {
+    private func coreHardware(_ hardware: EngineProfileHardware) -> ASRHardware {
+        switch hardware {
+        case .noGPU:
+            .noGPU
+        case let .queryFailed(message):
+            .queryFailed(message)
+        case let .gpu(name, adapterID, deviceID, driverVersion, dedicatedVRAMBytes):
+            .gpu(
+                name: name,
+                adapterID: adapterID,
+                deviceID: deviceID,
+                driverVersion: driverVersion,
+                dedicatedVRAMBytes: dedicatedVRAMBytes
+            )
+        }
+    }
+
+    private func coreProvider(_ provider: EngineProfileProvider) -> ASRExecutionProvider {
+        switch provider {
+        case .cpu: .cpu
+        case .nvTensorRtRtx: .nvTensorRtRtx
+        case .openVINO: .openVINO
+        case .miGraphX: .miGraphX
+        case .vitisAI: .vitisAI
+        case .qnn: .qnn
+        }
+    }
+
+    private func coreAcquisition(_ acquisition: EngineProfileAcquisition) -> ASRAcquisition {
+        switch acquisition {
+        case .unavailable:
+            .unavailable
+        case let .failed(message):
+            .failed(message)
+        case let .acquired(provider):
+            .acquired(coreProvider(provider))
+        }
+    }
+
+    private func profileReason(_ reason: ASRSizeSelectionReason) -> EngineProfileSelectionReason {
+        switch reason {
+        case .noGPU: .noGPU
+        case .hardwareQueryFailed: .hardwareQueryFailed
+        case .providerUnavailable: .providerUnavailable
+        case .providerAcquisitionFailed: .providerAcquisitionFailed
+        case .unknownDedicatedVRAM: .unknownDedicatedVRAM
+        case .insufficientDedicatedVRAM: .insufficientDedicatedVRAM
+        case .insufficientMemory: .insufficientMemory
+        case .awaitingAssets: .awaitingAssets
+        case .eligible: .eligible
+        case .verificationRequired: .verificationRequired
+        case .verificationFailed: .verificationFailed
+        case .uncalibrated: .uncalibrated
+        case .unmeasured: .unmeasured
+        case .recommendLarge: .recommendLarge
+        case .tooSlow: .tooSlow
+        }
+    }
+
+    func evaluate(
+        _ payload: EngineProfilesEvaluatePayload,
+        context: EngineRequestContext
+    ) async throws -> EngineProfileEvaluation {
+        let persisted: EngineProfileEvaluation?
+        do { persisted = try profileDecisionStore.load() }
+        catch { throw profileDecisionCommandError(error) }
+        if let persisted,
+           (persisted.decisionState == .complete || persisted.decisionState == .offered || persisted.requestedChoice != nil) {
+            profileEvaluation = persisted
+            stateDidChange()
+            return persisted
+        }
+        guard !isShuttingDown else {
+            throw EngineFailures.commandError(.cancelled, "終了処理中のためプロファイル判定を変更できません", stage: .settings)
+        }
+        guard isIdle else {
+            throw EngineFailures.commandError(.busy, "録音または処理の実行中はプロファイル判定を変更できません", stage: .settings, recoveryAction: .retry)
+        }
+        guard logicalCPUCount > 0, payload.threads <= min(PortableThreadLimit.maximum, logicalCPUCount) else {
+            throw EngineFailures.commandError(
+                .invalidRequest,
+                "スレッド数が論理 CPU 数の上限を超えています",
+                stage: .settings
+            )
+        }
+
+        // This path has no engine-side verification or RTF measurement; keep both explicitly absent.
+        let gate = initialSizeGate(
+            hardware: coreHardware(payload.hardware),
+            acquisition: coreAcquisition(payload.acquisition),
+            memoryEnvelope: .unmeasured,
+            assetsAvailable: inference != nil
+        )
+        let selection = try recommendLarge(
+            gate: gate,
+            verification: .unverified,
+            measuredRTF: nil,
+            calibration: nil
+        )
+        let decisionState: EngineProfileDecisionState
+        if settings?.asrSize == .large {
+            decisionState = .complete
+        } else {
+            decisionState = selection.reason == .awaitingAssets
+                ? .awaitingAssets : selection.recommendLarge ? .offered : .complete
+        }
+        let evaluation = try EngineProfileEvaluation(
+            initialSize: .small,
+            recommendLarge: selection.recommendLarge,
+            reason: profileReason(selection.reason),
+            explanation: selection.explanation,
+            measuredRTF: selection.measuredRTF,
+            predictedRTF: selection.predictedRTF,
+            decisionState: decisionState,
+            requestedChoice: nil,
+            calibrationID: nil
+        )
+        do { try profileDecisionStore.save(evaluation) }
+        catch { throw profileDecisionCommandError(error) }
+        profileEvaluation = evaluation
+        stateDidChange()
+        return evaluation
+    }
+
     private func checkModelPreparationCanContinue() throws {
         do {
             try Task.checkCancellation()
@@ -564,7 +809,20 @@ extension EngineApplicationCore: EngineModelsHandling {
     }
 
     func prepare(context: EngineRequestContext) async throws {
+        guard profileSetupOperation == nil else {
+            throw EngineFailures.commandError(
+                .busy, "アクセラレーター設定中のためモデルを準備できません", stage: .validatingModels, recoveryAction: .retry
+            )
+        }
         let settings = try requireSettings(stage: .validatingModels)
+        if let _ = try admitAccelerator(settings) {
+            throw EngineFailures.commandError(
+                .invalidSettings,
+                "アクセラレーターの検証は確認できましたが、高速推論はまだ接続されていないため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください",
+                stage: .validatingModels,
+                recoveryAction: .replaceSettings
+            )
+        }
         guard !isPreparingModels else {
             throw EngineFailures.commandError(
                 .busy, "モデルの準備が実行中です", stage: .validatingModels, recoveryAction: .retry
@@ -575,6 +833,7 @@ extension EngineApplicationCore: EngineModelsHandling {
         }
         // Prepared models stay prepared while work uses them; verifying again would compete with that work.
         if inference != nil, !isIdle { return }
+        try admitResources(.load)
         isPreparingModels = true
         presentation.preparationPhase = .preparing
         presentation.preparationStatusText = UserFacingStatus.preparingASR.text
@@ -711,13 +970,23 @@ extension EngineApplicationCore: EngineShutdownHandling {
     /// Stops capture durably, pauses inference at its next boundary and waits for it. Sessions left unfinished are
     /// recovered on the next launch. Fails when running work does not pause within `shutdownPauseTimeout`.
     func shutdown(reason: EngineShutdownReason) async throws {
+        isShuttingDown = true
+        let acceleratorBindingTaskAtShutdown = acceleratorBindingTask
+        let acceleratorSetupTaskAtShutdown = acceleratorSetupTask
+        acceleratorBindingTaskAtShutdown?.cancel()
+        acceleratorSetupTaskAtShutdown?.cancel()
+        _ = await acceleratorBindingTaskAtShutdown?.result
+        _ = await acceleratorSetupTaskAtShutdown?.result
+        acceleratorBindingTask = nil
+        acceleratorSetupTask = nil
+        profileSetupOperation = nil
+
         eventsClosed = true
         eventsEnabled = false
         pendingFailureEvents.removeAll()
         onBackgroundEventStateChange?()
         let failureEventTaskAtShutdown = failureEventTask
 
-        isShuttingDown = true
         processingCoordinator.requestPause()
         var sessionIDs = processingQueue.sessionIDs
         if let recordingSessionID = recording.sessionID {

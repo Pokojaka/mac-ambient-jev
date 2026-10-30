@@ -45,7 +45,10 @@ private actor PresentationDecisionProvider: DecisionProvider {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(try engineTestSettings(decisions: decisions), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        try await harness.callAcknowledgingResources("models.prepare")
+        try await acknowledgeResourceWarning(
+            harness.app, workload: .live, context: try requestContext(for: harness)
+        )
         return harness
     }
 
@@ -797,12 +800,12 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(!(try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
         core.processingQueue.releaseReprocessing(sessionID)
 
-        core.processingQueue.holdForHeat(.finalize(sessionID: sessionID, metadataPolicy: .reject))
-        let thermallyHeld = try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)
-        #expect(!thermallyHeld.canReprocess)
-        #expect(!thermallyHeld.canRetryDecisions)
-        #expect(!thermallyHeld.canExport)
-        let didResumeHeld = core.processingQueue.resumeHeld(isCritical: false, pausesProcessing: false)
+        core.processingQueue.hold(.finalize(sessionID: sessionID, metadataPolicy: .reject), reason: .thermal)
+        let held = try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)
+        #expect(!held.canReprocess)
+        #expect(!held.canRetryDecisions)
+        #expect(!held.canExport)
+        let didResumeHeld = core.processingQueue.resumeHeld(holdReason: nil, pausesProcessing: false)
         #expect(didResumeHeld)
         let dequeued = core.processingQueue.dequeue()
         let resumed = try #require(dequeued)

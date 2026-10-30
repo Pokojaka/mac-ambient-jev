@@ -135,10 +135,13 @@ private final class PausedSessionFinalizationHarness {
         paths = engineTestPaths(root: root)
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let resourceMonitor = FakeResourceMonitor()
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(30)
             ),
@@ -161,9 +164,11 @@ private final class PausedSessionFinalizationHarness {
         _ = try await first.app.core.replace(
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: first.context
         )
+        try await acknowledgeResourceWarning(first.app, workload: .load, context: first.context)
         try await first.app.core.prepare(context: first.context)
         await first.app.core.processingCoordinator.waitUntilIdle()
 
+        try await acknowledgeResourceWarning(first.app, workload: .live, context: first.context)
         let recording = try await first.app.core.start(
             EngineRecordingStartPayload(source: .microphone, device: .default), context: first.context
         )

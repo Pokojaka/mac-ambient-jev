@@ -213,6 +213,8 @@ import MacAmbientJevTestSupport
             ("session.export", "{\"session_id\":\"s\",\"destination_path\":\"/out\"}", "session.export"),
             ("settings.get", "{}", "settings.get"),
             ("models.prepare", "{}", "models.prepare"),
+            ("resources.preflight", "{\"workload\":\"live\"}", "resources.preflight"),
+            ("resources.acknowledge", "{\"assessment_id\":\"resource-assessment-1\"}", "resources.acknowledge"),
         ]
         for (index, entry) in table.enumerated() {
             h.send(UInt64(index + 2), entry.0, payload: entry.1)

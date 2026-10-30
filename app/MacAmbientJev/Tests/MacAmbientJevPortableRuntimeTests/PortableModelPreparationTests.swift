@@ -169,7 +169,7 @@ struct PortableModelPreparationTests {
         let root = URL(fileURLWithPath: "/models", isDirectory: true)
         let layout = PortableInstalledModelLayout(modelsRoot: root)
         #expect(layout.sileroModelURL.path == "/models/silero/\(SileroVADModel.revision)/silero_vad_16k_op15.onnx")
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             #expect(layout.qwen3Directory(size: size).path == "/models/qwen3-asr-\(size.rawValue)-int4-\(size.commit)")
         }
         let diarization = try layout.diarizationDirectory()

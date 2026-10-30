@@ -528,7 +528,7 @@ func nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDura
     let finalUpdates = LiveUpdateRecorder()
     let result = await fixture.processor.finishLiveTranscription(
         sessionID: fixture.sessionID, checkpoint: fixture.checkpoint, finalSegments: [], pacingMode: .normal,
-        shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in },
+        shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in },
         onUpdate: { rows, _ in await finalUpdates.record(rows) }
     )
     // The provider is still suspended here: finalization did not drain its HTTP request.
@@ -595,7 +595,7 @@ func failedAtomicDecisionPublicationLeavesTheDurableLocalDisplayAndPendingKeys()
     }
     let updates = LiveUpdateRecorder()
     let result = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { rows, _ in await updates.record(rows) }
     )
     #expect(result.disposition == .failed)
@@ -737,7 +737,7 @@ private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: Published
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let initialResult = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(initialResult.disposition == .completed)
@@ -805,7 +805,7 @@ private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: Published
     // A successful retry is reported as .finished(request, nil), not as a completed result.
     #expect(finishedAtCompletion.disposition == nil)
     #expect(effects.heldCount == 0)
-    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.held.isEmpty)
     #expect(effects.processingQueue.pending.isEmpty)
     #expect(effects.processingQueue.currentSessionID == nil)
     #expect(effects.exportCount == 0)
@@ -828,11 +828,11 @@ private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: Published
     // If a regression leaves a stale held retry here, resuming it is finite and must not
     // re-send a provider request or overwrite the already published snapshot.
     effects.pausesProcessing = false
-    coordinator.resumeThermallyHeldProcessing()
+    coordinator.resumeHeldProcessing()
     await coordinator.waitUntilIdle()
 
     #expect(effects.heldCount == 0)
-    #expect(effects.processingQueue.thermallyHeld.isEmpty)
+    #expect(effects.processingQueue.held.isEmpty)
     #expect(effects.processingQueue.pending.isEmpty)
     #expect(effects.processingQueue.currentSessionID == nil)
     #expect(effects.finishedEvents.count == 1)
@@ -854,7 +854,7 @@ func targetedRetryAfterSaveFailureUsesANewWorkerAndRetainsThePublishedSnapshotUn
     let fixture = try await NativeDecisionFixture(texts: ["再試行する本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -940,7 +940,7 @@ func nativeRetryRejectsMetadataMismatchOrIncompleteLogBeforeSending(incompleteTa
     let fixture = try await NativeDecisionFixture(texts: ["保留本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -993,7 +993,7 @@ func corruptedDurableLiveDecisionFailsExplicitlyWithoutReplacingThePublishedLoca
     ))
     let updates = LiveUpdateRecorder()
     let result = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { rows, _ in await updates.record(rows) }
     )
     #expect(result.disposition == .failed)
@@ -1015,7 +1015,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     let fixture = try await NativeDecisionFixture(texts: ["保存済み本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let result = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(result.disposition == .completed)
@@ -1077,7 +1077,7 @@ func nativeRetryWithoutTargetsOrUnpublishedRunFailsAndRetainsPublishedSnapshot()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let finalized = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(finalized.disposition == .completed)
@@ -1123,7 +1123,7 @@ func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async t
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -1172,7 +1172,7 @@ func nativeRetryCoordinatorInitializationFailurePreservesDeferredEngineStatusAnd
     let statuses = ProcessingStatusRecorder()
 
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { false }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { await statuses.record($0) }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)

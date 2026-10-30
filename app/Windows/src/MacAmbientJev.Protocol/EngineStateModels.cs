@@ -66,7 +66,16 @@ public sealed record EngineCapabilities(
         if (ExecutionProviders is not null)
         {
             WireCheck.Require(ExecutionProviders.Length > 0, path + ".execution_providers", "execution_providers must not be empty.");
-            WireCheck.Unique(ExecutionProviders, path + ".execution_providers");
+            EngineExecutionProvider[] uniqueProviders = ExecutionProviders.Select<EngineExecutionProvider, EngineExecutionProvider>(provider => provider switch
+            {
+                EngineExecutionProvider.Cpu cpu => cpu,
+                EngineExecutionProvider.WindowsML windowsML => new EngineExecutionProvider.WindowsML(
+                    WireCheck.CanonicalString(windowsML.ProviderName),
+                    WireCheck.CanonicalString(windowsML.DeviceKey),
+                    WireCheck.CanonicalString(windowsML.VerificationID)),
+                _ => throw new InvalidOperationException("Unknown execution provider type."),
+            }).ToArray();
+            WireCheck.Unique(uniqueProviders, path + ".execution_providers");
         }
         WireCheck.Range(MaximumThreads, 1, 4, path + ".maximum_threads");
     }
@@ -102,6 +111,8 @@ public sealed record EngineState(
     [property: WireMember("revision")] EngineID Revision,
     [property: WireMember("screen")] EngineScreen Screen,
     [property: WireMember("setup")] EngineSetupStatus Setup,
+    [property: WireMember("profile_setup")] EngineProfileSetup ProfileSetup,
+    [property: WireMember("resource_protection")] EngineResourceProtection ResourceProtection,
     [property: WireMember("recovery")] EngineRecoveryStatus Recovery,
     [property: WireMember("recording", IsNullable = true)] EngineRecordingState? Recording,
     [property: WireMember("queue")] EngineQueuedOperation[] Queue,

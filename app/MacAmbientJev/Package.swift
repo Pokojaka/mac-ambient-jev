@@ -53,7 +53,8 @@ var targets: [Target] = [
     .target(name: "MacAmbientJevEngineProtocol"),
     .target(
         name: "MacAmbientJevEngineHost",
-        dependencies: ["MacAmbientJevEngineProtocol", "MacAmbientJevCore", "MacAmbientJevPipeline"]
+        dependencies: ["MacAmbientJevEngineProtocol", "MacAmbientJevCore", "MacAmbientJevPipeline"],
+        resources: [.copy("Resources")]
     ),
     .target(
         name: "MacAmbientJevDiarization",
@@ -151,6 +152,7 @@ targets.append(.target(
 #endif
 
 #if os(Windows)
+targets.append(.target(name: "CWindowsAccelerator", linkerSettings: [.linkedLibrary("dxcore")]))
 targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
 targets.append(.target(
     name: "CWindowsAudio",
@@ -266,7 +268,9 @@ targets.append(.executableTarget(
         "MacAmbientJevEngineProtocol",
         "MacAmbientJevEngineHost",
         "MacAmbientJevPortableRuntime",
-        "MacAmbientJevWindowsSupport"
+        "MacAmbientJevWindowsSupport",
+        "CWindowsAccelerator",
+        "MacAmbientJevONNX"
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -277,7 +281,8 @@ targets.append(.testTarget(
         "MacAmbientJevCore",
         "MacAmbientJevEngineProtocol",
         "MacAmbientJevEngineHost",
-        "MacAmbientJevTestSupport"
+        "MacAmbientJevTestSupport",
+        "MacAmbientJevONNX"
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -315,6 +320,7 @@ var portableRuntimeDependencies: [Target.Dependency] = [
     "MacAmbientJevDiarization"
 ]
 #if os(Windows)
+portableRuntimeDependencies.append("CWindowsSession")
 portableRuntimeDependencies.append("MacAmbientJevWindowsSupport")
 #elseif os(Linux)
 portableRuntimeDependencies.append("CMiniaudio")
@@ -322,7 +328,7 @@ portableRuntimeDependencies.append("CMiniaudio")
 targets.append(.systemLibrary(name: "CONNXRuntime"))
 targets.append(.target(
     name: "MacAmbientJevONNX",
-    dependencies: ["CONNXRuntime"],
+    dependencies: ["CONNXRuntime", "MacAmbientJevCore"],
     // A local pinned SDK cannot use SwiftPM's binaryTarget format on Linux or Windows.
     swiftSettings: onnxRuntimeIncludeSwiftSettings,
     linkerSettings: [.unsafeFlags(onnxRuntimeLinkerFlags)]

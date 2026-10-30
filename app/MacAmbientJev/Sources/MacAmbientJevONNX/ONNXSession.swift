@@ -43,8 +43,8 @@ func checkStatus(
     throw ONNXRuntimeError(message: "\(context): \(detail)")
 }
 
-/// ONNX Runtime documents `OrtEnv` as safe to share across threads, and this wrapper never mutates it.
 /// The shared environment lives for the process lifetime; its initialization result, including failure, is cached.
+/// Provider registration mutations on it are serialized by `providers`.
 public final class ONNXEnvironment: @unchecked Sendable {
     public static let runtimeVersion = "1.31.0"
 
@@ -52,6 +52,7 @@ public final class ONNXEnvironment: @unchecked Sendable {
 
     let api: UnsafePointer<OrtApi>
     let handle: OpaquePointer
+    public let providers: ONNXProviderRegistry
 
     /// Returns the process-wide ONNX Runtime environment.
     /// Initialization is attempted once; any failure is cached for the process lifetime.
@@ -97,6 +98,7 @@ public final class ONNXEnvironment: @unchecked Sendable {
 
         self.api = runtimeAPI
         self.handle = environmentHandle
+        self.providers = ONNXProviderRegistry(api: runtimeAPI, environment: environmentHandle)
     }
 }
 
@@ -105,13 +107,38 @@ public final class ONNXSession {
 
     private let environment: ONNXEnvironment
     private let session: OpaquePointer
+    private let providerLease: ONNXProviderLease?
 
     /// Explicitly selects ONNX Runtime's CPU allocator arena without changing memory patterns or other session tuning.
-    public init(
+    public convenience init(
         environment: ONNXEnvironment,
         modelURL: URL,
         intraOpThreads: Int,
         cpuMemoryArenaEnabled: Bool
+    ) throws {
+        try self.init(
+            environment: environment, modelURL: modelURL, intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: cpuMemoryArenaEnabled, providerDevice: nil)
+    }
+
+    public convenience init(
+        environment: ONNXEnvironment,
+        modelURL: URL,
+        intraOpThreads: Int,
+        cpuMemoryArenaEnabled: Bool,
+        device: ONNXProviderDevice
+    ) throws {
+        try self.init(
+            environment: environment, modelURL: modelURL, intraOpThreads: intraOpThreads,
+            cpuMemoryArenaEnabled: cpuMemoryArenaEnabled, providerDevice: device)
+    }
+
+    private init(
+        environment: ONNXEnvironment,
+        modelURL: URL,
+        intraOpThreads: Int,
+        cpuMemoryArenaEnabled: Bool,
+        providerDevice: ONNXProviderDevice?
     ) throws {
         guard intraOpThreads > 0, let nativeThreadCount = Int32(exactly: intraOpThreads) else {
             throw ONNXRuntimeError(message: "ONNX Runtimeの演算スレッド数はInt32の正数である必要があります。")
@@ -151,6 +178,11 @@ public final class ONNXSession {
             api: runtimeAPI,
             context: "ONNX RuntimeのCPUメモリアリーナ設定に失敗しました"
         )
+        if let providerDevice {
+            self.providerLease = try environment.providers.acquire(device: providerDevice, options: options)
+        } else {
+            self.providerLease = nil
+        }
 
         var createdSession: OpaquePointer?
         defer {
@@ -438,7 +470,9 @@ public final class ONNXSession {
             guard let outputValue = outputValues[index] else {
                 throw ONNXRuntimeError(message: "ONNX Runtime出力が返されませんでした: \(outputNames[index])")
             }
-            results.append(try ONNXValue(adopting: outputValue, environment: environment))
+            let value = try ONNXValue(adopting: outputValue, environment: environment)
+            value.providerLease = providerLease
+            results.append(value)
             outputValues[index] = nil
         }
         return results

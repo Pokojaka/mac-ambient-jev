@@ -245,6 +245,18 @@ public final class EngineController {
             return .modelsPrepare
         case .modelsInspect:
             return .modelsInspect(try await handlers.models.inspect(context: context))
+        case let .acceleratorsBind(payload):
+            return .acceleratorsBind(try await handlers.models.bind(payload, context: context))
+        case let .acceleratorsVerify(payload):
+            return .acceleratorsVerify(try await handlers.models.verify(payload, context: context))
+        case let .profilesEvaluate(payload):
+            return .profilesEvaluate(try await handlers.models.evaluate(payload, context: context))
+        case let .profilesDecide(payload):
+            return .profilesDecide(try await handlers.models.decide(payload, context: context))
+        case let .resourcesPreflight(payload):
+            return .resourcesPreflight(try await handlers.models.preflight(payload, context: context))
+        case let .resourcesAcknowledge(payload):
+            return .resourcesAcknowledge(try await handlers.models.acknowledge(payload, context: context))
         case .shutdown:
             preconditionFailure("shutdown is handled inline by the dispatcher")
         }

@@ -7,8 +7,8 @@ import Testing
 @Suite(.timeLimit(.minutes(10)))
 struct ONNXQwen3ASREngineTests {
     @Test
-    func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() {
-        for size in Qwen3ASRModelSize.allCases {
+    func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() throws {
+        for size in ASRModelSize.allCases {
             for intraOpThreads in [2, 7] {
                 let engine = ONNXQwen3ASREngine(
                     modelDirectory: URL(fileURLWithPath: "/not-loaded/\(size.rawValue)"),
@@ -19,7 +19,15 @@ struct ONNXQwen3ASREngineTests {
                 #expect(provenance.engine == "onnxruntime-qwen3-asr")
                 #expect(provenance.model == "\(size.repository)@\(size.commit)")
                 #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
-                #expect(provenance.configuration == expectedConfiguration(intraOpThreads: intraOpThreads))
+                #expect(provenance.configuration == expectedConfiguration(size: size, intraOpThreads: intraOpThreads))
+                let encoded = try JSONEncoder().encode(provenance)
+                let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+                let configuration = try #require(object["configuration"] as? [String: Any])
+                for field in ["gpu_name", "driver_version", "adapter_id", "device_id", "ep_package_hash", "ep_library_hash", "verification_id", "calibration_id"] {
+                    #expect(configuration[field] is NSNull)
+                }
+                #expect(configuration["execution_provider"] as? String == "cpu")
+                #expect(configuration["asr_size"] as? String == size.rawValue)
             }
         }
     }
@@ -35,13 +43,25 @@ struct ONNXQwen3ASREngineTests {
 
         let provenance = engine.provenance
         #expect(provenance.engine == "onnxruntime-qwen3-asr")
-        #expect(provenance.model == "\(Qwen3ASRModelSize.large.repository)@\(Qwen3ASRModelSize.large.commit)")
+        #expect(provenance.model == "\(ASRModelSize.large.repository)@\(ASRModelSize.large.commit)")
         #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
-        #expect(provenance.configuration == expectedConfiguration(intraOpThreads: 7))
+        #expect(provenance.configuration == expectedConfiguration(size: .large, intraOpThreads: 7))
     }
 
-    private func expectedConfiguration(intraOpThreads: Int) -> [String: String] {
+    private func expectedConfiguration(size: ASRModelSize, intraOpThreads: Int) -> [String: String?] {
         [
+            "asr_size": size.rawValue,
+            "execution_provider": "cpu",
+            "device": "cpu",
+            "gpu_name": nil,
+            "driver_version": nil,
+            "adapter_id": nil,
+            "device_id": nil,
+            "ep_package_hash": nil,
+            "ep_library_hash": nil,
+            "verification_id": nil,
+            "calibration_id": nil,
+            "memory_policy": "cpu_arena_disabled",
             "language": "ja",
             "minimum_input_seconds": String(ASRAudioInput.minimumDurationSeconds),
             "quantization": "int4",
@@ -403,7 +423,7 @@ struct ONNXQwen3ASREngineTests {
         let emptyDirectory = directory.appendingPathComponent("empty", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyDirectory, withIntermediateDirectories: false)
         verifyResolvedTemporaryPath(emptyDirectory)
-        let emptyFilePath = emptyDirectory.appendingPathComponent(Qwen3ASRModelSize.small.files[0].name).path
+        let emptyFilePath = emptyDirectory.appendingPathComponent(ASRModelSize.small.files[0].name).path
         let emptyMessage = await preparationError(
             for: ONNXQwen3ASREngine(modelDirectory: emptyDirectory, size: .small, intraOpThreads: 1)
         )
@@ -412,7 +432,7 @@ struct ONNXQwen3ASREngineTests {
         let truncatedDirectory = directory.appendingPathComponent("truncated", isDirectory: true)
         try FileManager.default.createDirectory(at: truncatedDirectory, withIntermediateDirectories: false)
         verifyResolvedTemporaryPath(truncatedDirectory)
-        let encoder = Qwen3ASRModelSize.small.files[0]
+        let encoder = ASRModelSize.small.files[0]
         let encoderURL = truncatedDirectory.appendingPathComponent(encoder.name)
         try Data([0]).write(to: encoderURL)
         let truncatedMessage = await preparationError(
@@ -459,7 +479,7 @@ struct ONNXQwen3ASREngineTests {
 
 private struct ModelLoadArguments: Sendable, Equatable {
     let directory: URL
-    let size: Qwen3ASRModelSize
+    let size: ASRModelSize
     let intraOpThreads: Int
 }
 

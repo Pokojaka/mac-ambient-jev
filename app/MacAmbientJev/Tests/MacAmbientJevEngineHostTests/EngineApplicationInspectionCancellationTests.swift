@@ -38,9 +38,11 @@ import MacAmbientJevPipeline
         let sink = ScriptedSink()
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let resourceMonitor = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor, memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: FakeCapture(), inference: CancellingInspectionInferenceProvider(), events: events

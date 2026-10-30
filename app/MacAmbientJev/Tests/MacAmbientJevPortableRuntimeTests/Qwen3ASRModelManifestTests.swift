@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 import Testing
 @testable import MacAmbientJevPortableRuntime
 
@@ -6,17 +7,17 @@ struct Qwen3ASRModelManifestTests {
     @Test
     func fileLookupIsIndependentOfManifestArrayOrder() throws {
         let source = manifestObject()
-        let original = try Qwen3ASRModelSize.decodeManifests(encode(source))
+        let original = try ASRModelSize.decodeManifests(encode(source))
         var reversedObject = source
 
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             var files = fileRecords(for: size, in: reversedObject)
             files.reverse()
             setFileRecords(files, for: size, in: &reversedObject)
         }
 
-        let reversed = try Qwen3ASRModelSize.decodeManifests(encode(reversedObject))
-        for size in Qwen3ASRModelSize.allCases {
+        let reversed = try ASRModelSize.decodeManifests(encode(reversedObject))
+        for size in ASRModelSize.allCases {
             let originalEntry = original[size.rawValue]!
             let reversedEntry = reversed[size.rawValue]!
             for role in Qwen3ASRModelFileRole.allCases {
@@ -27,7 +28,7 @@ struct Qwen3ASRModelManifestTests {
 
     @Test
     func missingRoleEntriesFailWithTheMissingRole() throws {
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             for role in Qwen3ASRModelFileRole.allCases {
                 var manifest = manifestObject()
                 var files = fileRecords(for: size, in: manifest)
@@ -42,7 +43,7 @@ struct Qwen3ASRModelManifestTests {
 
     @Test
     func duplicateRoleEntriesFailWithTheDuplicatedRole() throws {
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             for role in Qwen3ASRModelFileRole.allCases {
                 var manifest = manifestObject()
                 var files = fileRecords(for: size, in: manifest)
@@ -62,7 +63,7 @@ struct Qwen3ASRModelManifestTests {
 
     @Test
     func absentAndUnknownRoleFieldsAreRejected() throws {
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             for role in Qwen3ASRModelFileRole.allCases {
                 var absentRoleManifest = manifestObject()
                 var absentRoleFiles = fileRecords(for: size, in: absentRoleManifest)
@@ -82,7 +83,7 @@ struct Qwen3ASRModelManifestTests {
     }
 
     private func manifestObject() -> [String: Any] {
-        Dictionary(uniqueKeysWithValues: Qwen3ASRModelSize.allCases.map { size in
+        Dictionary(uniqueKeysWithValues: ASRModelSize.allCases.map { size in
             let files = size.files.map { file in
                 [
                     "name": file.name,
@@ -107,14 +108,14 @@ struct Qwen3ASRModelManifestTests {
         try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
     }
 
-    private func fileRecords(for size: Qwen3ASRModelSize, in manifest: [String: Any]) -> [[String: Any]] {
+    private func fileRecords(for size: ASRModelSize, in manifest: [String: Any]) -> [[String: Any]] {
         let entry = manifest[size.rawValue]! as! [String: Any]
         return entry["files"] as! [[String: Any]]
     }
 
     private func setFileRecords(
         _ files: [[String: Any]],
-        for size: Qwen3ASRModelSize,
+        for size: ASRModelSize,
         in manifest: inout [String: Any]
     ) {
         var entry = manifest[size.rawValue]! as! [String: Any]
@@ -124,7 +125,7 @@ struct Qwen3ASRModelManifestTests {
 
     private func decodeFailure(_ data: Data) -> String? {
         do {
-            _ = try Qwen3ASRModelSize.decodeManifests(data)
+            _ = try ASRModelSize.decodeManifests(data)
             return nil
         } catch {
             return String(describing: error)

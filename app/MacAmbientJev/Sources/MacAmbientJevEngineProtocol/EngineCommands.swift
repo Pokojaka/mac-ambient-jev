@@ -46,18 +46,82 @@ public enum EngineASRSize: String, Codable, CaseIterable, Equatable, Sendable {
 
 }
 
-public enum EngineExecutionProvider: String, Codable, CaseIterable, Equatable, Sendable {
+public enum EngineExecutionProvider: Codable, Equatable, Sendable {
     case cpu
+    case windowsML(providerName: String, deviceKey: String, verificationID: String)
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let rawValue = try container.decode(String.self)
-        guard let value = Self(rawValue: rawValue) else {
-            throw EngineProtocolError.invalidJSON("unknown execution provider")
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case cpu
+        case windowsML = "windows_ml"
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            guard let value = Self(rawValue: rawValue) else {
+                throw EngineProtocolError.invalidJSON("unknown execution provider kind")
+            }
+            self = value
         }
-        self = value
     }
 
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind
+        case providerName = "provider_name"
+        case deviceKey = "device_key"
+        case verificationID = "verification_id"
+    }
+
+    var kind: Kind {
+        switch self {
+        case .cpu: .cpu
+        case .windowsML: .windowsML
+        }
+    }
+
+    private func validate() throws {
+        if case let .windowsML(providerName, deviceKey, verificationID) = self {
+            try engineRequireNonempty(providerName, "provider_name")
+            try engineRequireNonempty(deviceKey, "device_key")
+            try engineRequireNonempty(verificationID, "verification_id")
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
+        let kind = try container.decode(Kind.self, forKey: .kind)
+        switch kind {
+        case .cpu:
+            try engineRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "cpu execution provider must not include variant fields")
+            self = .cpu
+        case .windowsML:
+            try engineRequire(
+                Set(dynamic.allKeys.map(\.stringValue)) == ["kind", "provider_name", "device_key", "verification_id"],
+                "windows_ml execution provider has invalid fields"
+            )
+            let providerName = try container.decode(String.self, forKey: .providerName)
+            let deviceKey = try container.decode(String.self, forKey: .deviceKey)
+            let verificationID = try container.decode(String.self, forKey: .verificationID)
+            try engineRequireNonempty(providerName, "provider_name")
+            try engineRequireNonempty(deviceKey, "device_key")
+            try engineRequireNonempty(verificationID, "verification_id")
+            self = .windowsML(providerName: providerName, deviceKey: deviceKey, verificationID: verificationID)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try validate()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        switch self {
+        case .cpu:
+            break
+        case let .windowsML(providerName, deviceKey, verificationID):
+            try container.encode(providerName, forKey: .providerName)
+            try container.encode(deviceKey, forKey: .deviceKey)
+            try container.encode(verificationID, forKey: .verificationID)
+        }
+    }
 }
 
 public enum EngineDevice: Codable, Equatable, Sendable {
@@ -154,7 +218,7 @@ public struct EngineSettings: Codable, Equatable, Sendable {
         automaticExport: Bool,
         exportDestinationPath: String?
     ) throws {
-        try engineRequire(schemaVersion == 1, "schema_version must be 1")
+        try engineRequire(schemaVersion == 2, "schema_version must be 2")
         try engineRequire((1...4).contains(threads), "threads must be between 1 and 4")
         try engineValidateDevice(device)
         if let exportDestinationPath {
@@ -204,6 +268,7 @@ public struct EngineSettings: Codable, Equatable, Sendable {
     }
 
     public func encode(to encoder: Encoder) throws {
+        try engineRequire(schemaVersion == 2, "schema_version must be 2")
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(source, forKey: .source)
@@ -520,6 +585,12 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case settingsReplace = "settings.replace"
     case modelsPrepare = "models.prepare"
     case modelsInspect = "models.inspect"
+    case acceleratorsBind = "accelerators.bind"
+    case acceleratorsVerify = "accelerators.verify"
+    case profilesEvaluate = "profiles.evaluate"
+    case profilesDecide = "profiles.decide"
+    case resourcesPreflight = "resources.preflight"
+    case resourcesAcknowledge = "resources.acknowledge"
     case shutdown
 
     public init(from decoder: Decoder) throws {
@@ -553,6 +624,12 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case settingsReplace(EngineSettingsReplacePayload)
     case modelsPrepare
     case modelsInspect
+    case acceleratorsBind(EngineAcceleratorsBindPayload)
+    case acceleratorsVerify(EngineAcceleratorsVerifyPayload)
+    case profilesEvaluate(EngineProfilesEvaluatePayload)
+    case profilesDecide(EngineProfilesDecidePayload)
+    case resourcesPreflight(EngineResourcesPreflightPayload)
+    case resourcesAcknowledge(EngineResourcesAcknowledgePayload)
     case shutdown
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -581,6 +658,12 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
         case .modelsInspect: .modelsInspect
+        case .acceleratorsBind: .acceleratorsBind
+        case .acceleratorsVerify: .acceleratorsVerify
+        case .profilesEvaluate: .profilesEvaluate
+        case .profilesDecide: .profilesDecide
+        case .resourcesPreflight: .resourcesPreflight
+        case .resourcesAcknowledge: .resourcesAcknowledge
         case .shutdown: .shutdown
         }
     }
@@ -643,6 +726,18 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .modelsInspect:
             _ = try EngineEmptyPayload(from: payload)
             return .modelsInspect
+        case .acceleratorsBind:
+            return .acceleratorsBind(try EngineAcceleratorsBindPayload(from: payload))
+        case .acceleratorsVerify:
+            return .acceleratorsVerify(try EngineAcceleratorsVerifyPayload(from: payload))
+        case .profilesEvaluate:
+            return .profilesEvaluate(try EngineProfilesEvaluatePayload(from: payload))
+        case .profilesDecide:
+            return .profilesDecide(try EngineProfilesDecidePayload(from: payload))
+        case .resourcesPreflight:
+            return .resourcesPreflight(try EngineResourcesPreflightPayload(from: payload))
+        case .resourcesAcknowledge:
+            return .resourcesAcknowledge(try EngineResourcesAcknowledgePayload(from: payload))
         case .shutdown:
             _ = try EngineEmptyPayload(from: payload)
             return .shutdown
@@ -672,6 +767,18 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case let .sessionExport(payload):
             try payload.encode(to: encoder)
         case let .settingsReplace(payload):
+            try payload.encode(to: encoder)
+        case let .acceleratorsBind(payload):
+            try payload.encode(to: encoder)
+        case let .acceleratorsVerify(payload):
+            try payload.encode(to: encoder)
+        case let .profilesEvaluate(payload):
+            try payload.encode(to: encoder)
+        case let .profilesDecide(payload):
+            try payload.encode(to: encoder)
+        case let .resourcesPreflight(payload):
+            try payload.encode(to: encoder)
+        case let .resourcesAcknowledge(payload):
             try payload.encode(to: encoder)
         }
     }

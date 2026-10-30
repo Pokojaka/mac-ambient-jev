@@ -269,11 +269,14 @@ final class EngineApplicationPresentationLifecycleFixture {
         )
         let pollingSleep = LifecyclePollingSleepGate()
         livePollingSleep = pollingSleep
+        let resourceMonitor = FakeResourceMonitor()
         let events = EngineEventEmitter(transport: transport)
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { duration in try await pollingSleep.sleep(duration) },
                 shutdownPauseTimeout: .seconds(20)
             ),
@@ -304,11 +307,13 @@ final class EngineApplicationPresentationLifecycleFixture {
     }
 
     func prepareModels() async throws {
+        try await acknowledgeResourceWarning(app, workload: .load, context: context)
         try await app.handlers.models.prepare(context: context)
         await app.core.processingCoordinator.waitUntilIdle()
     }
 
     func startRecording(source recordingSource: EngineSource) async throws -> EngineSessionPayload {
+        try await acknowledgeResourceWarning(app, workload: .live, context: context)
         let payload = try EngineRecordingStartPayload(source: recordingSource, device: .default)
         return try await app.handlers.recording.start(payload, context: context)
     }

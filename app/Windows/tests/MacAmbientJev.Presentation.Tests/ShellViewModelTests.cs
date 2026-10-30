@@ -48,7 +48,7 @@ public sealed partial class ShellStoreTests
         Assert.Equal("既定のデバイス", Assert.Single(live.Devices).Label);
 
         var capabilities = new EngineCapabilities([EngineSource.Microphone, EngineSource.SystemAudio], [EngineASRSize.Small],
-            [EngineExecutionProvider.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None);
+            [new EngineExecutionProvider.Cpu()], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None);
         var capabilitiesChanged = ChangedAfter(store, state => ReferenceEquals(state.Capabilities, capabilities));
         engine.EmitBatch(new EngineOutput(1, new EngineID(1), null,
             new EngineEvent.Ready(new EngineReadyPayload(capabilities, State(EngineSetupStatus.Ready, 2)))));
@@ -181,14 +181,14 @@ public sealed partial class ShellStoreTests
     [Fact]
     public async Task CreateDraftRequiresEveryExplicitChoice()
     {
-        var complete = SettingsViewModel.CreateDraft(1, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Large,
-            EngineExecutionProvider.Cpu, 1, false, false, false, true, null);
-        Assert.Equal(new EngineSettings(1, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Large,
-            EngineExecutionProvider.Cpu, 1, false, false, false, null), complete);
+        var complete = SettingsViewModel.CreateDraft(2, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Large,
+            new EngineExecutionProvider.Cpu(), 1, false, false, false, true, null);
+        Assert.Equal(new EngineSettings(2, EngineSource.Microphone, new EngineDevice.Default(), EngineASRSize.Large,
+            new EngineExecutionProvider.Cpu(), 1, false, false, false, null), complete);
         EngineSettings? Draft(int missing) => SettingsViewModel.CreateDraft(
-            missing == 0 ? null : 1, missing == 1 ? null : EngineSource.Microphone,
+            missing == 0 ? null : 2, missing == 1 ? null : EngineSource.Microphone,
             missing == 2 ? null : new EngineDevice.Default(), missing == 3 ? null : EngineASRSize.Large,
-            missing == 4 ? null : EngineExecutionProvider.Cpu, missing == 5 ? null : 1,
+            missing == 4 ? null : new EngineExecutionProvider.Cpu(), missing == 5 ? null : 1,
             missing == 6 ? null : false, missing == 7 ? null : false, missing == 8 ? null : false,
             missing != 9, null);
         for (var missing = 0; missing < 10; missing++) Assert.Null(Draft(missing));

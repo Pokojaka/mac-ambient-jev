@@ -20,6 +20,7 @@ public sealed partial class MainWindow : Window
     private bool _closeStarted, _allowFinalClose;
     private bool _toastRegistered, _deviceLostDialogInFlight, _focusDeviceSelector;
     private DeviceLostNotice? _toastedDeviceLostNotice; private ContentDialog? _deviceLostDialog;
+    internal IExecutionProviderCatalog ExecutionProviderCatalog { get; } = new WindowsMLExecutionProviderCatalog();
 
     public MainWindow()
     {

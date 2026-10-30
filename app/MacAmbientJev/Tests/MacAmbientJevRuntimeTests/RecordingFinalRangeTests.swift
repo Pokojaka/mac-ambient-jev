@@ -165,7 +165,7 @@ func micCaptureStopFinalizesSpeechThroughTheLastPartialDiarizationWindow(sampleR
     let result = await processor.finishLiveTranscription(sessionID: sessionID, checkpoint: checkpoint,
         finalSegments: [SegmentReference(segmentationRunID: liveRun, segmentID: "live_tail",
             startFrame: 104 * 16_000, endFrame: checkpoint.committedFrames)], pacingMode: .normal,
-        shouldPause: { false }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in })
+        shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in })
     #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
     let metadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
     #expect(metadata.finalizationAttempt?.state == .complete)

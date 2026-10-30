@@ -71,11 +71,11 @@ func heldRequestsResumeAtTheFrontInOriginalOrder() {
     let firstHeldSessionID = UUID()
     let secondHeldSessionID = UUID()
     queue.enqueue(request(pendingSessionID))
-    queue.holdForHeat(request(firstHeldSessionID))
-    queue.holdForHeat(request(secondHeldSessionID))
+    queue.hold(request(firstHeldSessionID), reason: .resourcePressure)
+    queue.hold(request(secondHeldSessionID), reason: .resourcePressure)
 
     let resumed = queue.resumeHeld(
-        isCritical: false,
+        holdReason: nil,
         pausesProcessing: false
     )
     #expect(resumed)
@@ -84,27 +84,27 @@ func heldRequestsResumeAtTheFrontInOriginalOrder() {
         secondHeldSessionID,
         pendingSessionID
     ])
-    #expect(queue.thermallyHeld.isEmpty)
+    #expect(queue.held.isEmpty)
 }
 
 @Test
 func criticalThermalPressureOrProcessingPauseKeepsRequestsHeld() {
     var queue = SessionProcessingQueue()
     let heldSessionID = UUID()
-    queue.holdForHeat(request(heldSessionID))
+    queue.hold(request(heldSessionID), reason: .thermal)
 
     let blockedByCriticalPressure = queue.resumeHeld(
-        isCritical: true,
+        holdReason: .thermal,
         pausesProcessing: false
     )
     #expect(!blockedByCriticalPressure)
     let blockedByPause = queue.resumeHeld(
-        isCritical: false,
+        holdReason: nil,
         pausesProcessing: true
     )
     #expect(!blockedByPause)
     #expect(queue.pending.isEmpty)
-    #expect(queue.thermallyHeld.map(\.sessionID) == [heldSessionID])
+    #expect(queue.held.map { $0.request.sessionID } == [heldSessionID])
 }
 
 @Test
@@ -112,12 +112,12 @@ func windowsThermalMonitoringResumesHeldRequestsWithoutPressure() {
     var queue = SessionProcessingQueue()
     let heldSessionID = UUID()
     let monitor = WindowsNoThermalMonitoring()
-    queue.holdForHeat(request(heldSessionID))
+    queue.hold(request(heldSessionID), reason: .thermal)
 
     #expect(!monitor.isCritical)
     #expect(monitor.liveASRDecision == .processNow)
-    let resumed = queue.resumeHeld(isCritical: monitor.isCritical, pausesProcessing: false)
+    let resumed = queue.resumeHeld(holdReason: monitor.isCritical ? .thermal : nil, pausesProcessing: false)
     #expect(resumed)
     #expect(queue.pending.map(\.sessionID) == [heldSessionID])
-    #expect(queue.thermallyHeld.isEmpty)
+    #expect(queue.held.isEmpty)
 }

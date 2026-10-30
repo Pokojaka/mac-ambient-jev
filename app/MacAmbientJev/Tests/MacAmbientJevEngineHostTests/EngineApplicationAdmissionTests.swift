@@ -46,9 +46,11 @@ import MacAmbientJevPipeline
         let root = try ApplicationHarness.makeRoot()
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: FakeCapture(), inference: FakeInferenceProvider(), events: events
@@ -76,11 +78,11 @@ import MacAmbientJevPipeline
         var queue = SessionProcessingQueue()
         queue.enqueue(.finalize(sessionID: pendingID, metadataPolicy: .reject))
         queue.begin(.finalize(sessionID: currentID, metadataPolicy: .reject))
-        queue.holdForHeat(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []))
+        queue.hold(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []), reason: .thermal)
         fixture.app.core.processingQueue = queue
         return QueueSnapshot(
             pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,
-            heldIDs: queue.thermallyHeld.map(\.sessionID), claimedIDs: queue.claimedSessionIDs
+            heldIDs: queue.held.map { $0.request.sessionID }, claimedIDs: queue.claimedSessionIDs
         )
     }
 
@@ -88,7 +90,7 @@ import MacAmbientJevPipeline
         let queue = fixture.app.core.processingQueue
         return QueueSnapshot(
             pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,
-            heldIDs: queue.thermallyHeld.map(\.sessionID), claimedIDs: queue.claimedSessionIDs
+            heldIDs: queue.held.map { $0.request.sessionID }, claimedIDs: queue.claimedSessionIDs
         )
     }
 
@@ -228,6 +230,7 @@ import MacAmbientJevPipeline
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
         try await setDecisionsEnabled(fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         try await fixture.app.core.prepare(context: fixture.context)
         #expect(fixture.app.core.settings?.decisionsEnabled == true)
 
@@ -250,6 +253,7 @@ import MacAmbientJevPipeline
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
         try await setDecisionsEnabled(fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         try await fixture.app.core.prepare(context: fixture.context)
 
         let sessionID = UUID()

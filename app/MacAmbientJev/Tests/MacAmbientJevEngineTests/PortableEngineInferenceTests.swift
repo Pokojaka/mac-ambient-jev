@@ -56,7 +56,7 @@ private actor InspectionStartGate {
 
     private func settings() throws -> EngineSettings {
         try EngineSettings(
-            schemaVersion: 1,
+            schemaVersion: 2,
             source: .microphone,
             device: .default,
             asrSize: .small,

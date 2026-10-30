@@ -104,6 +104,36 @@ public enum EngineSetupStatus: String, Codable, CaseIterable, Equatable, Sendabl
     case ready
 }
 
+public enum EngineResourceHoldReason: String, Codable, CaseIterable, Equatable, Sendable {
+    case thermal
+    case resourcePressure = "resource_pressure"
+    case monitorFailed = "monitor_failed"
+}
+
+public struct EngineResourceProtection: Codable, Equatable, Sendable {
+    public let holdReasons: [EngineResourceHoldReason]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case holdReasons = "hold_reasons"
+    }
+
+    public init(holdReasons: [EngineResourceHoldReason]) throws {
+        try enginePayloadRequireUnique(holdReasons, "hold_reasons")
+        self.holdReasons = holdReasons
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(holdReasons: container.decode([EngineResourceHoldReason].self, forKey: .holdReasons))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try enginePayloadRequireUnique(holdReasons, "hold_reasons")
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(holdReasons, forKey: .holdReasons)
+    }
+}
+
 public enum EngineRecoveryStatus: String, Codable, CaseIterable, Equatable, Sendable {
     case pending
     case running
@@ -311,7 +341,9 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
         try enginePayloadRequire(!executionProviders.isEmpty, "execution_providers must not be empty")
         try enginePayloadRequireUnique(sources.map(\.rawValue), "sources")
         try enginePayloadRequireUnique(asrSizes.map(\.rawValue), "asr_sizes")
-        try enginePayloadRequireUnique(executionProviders.map(\.rawValue), "execution_providers")
+        for (index, provider) in executionProviders.enumerated() {
+            try enginePayloadRequire(!executionProviders[..<index].contains(provider), "execution_providers must be unique")
+        }
         try enginePayloadRequire((1...4).contains(maximumThreads), "maximum_threads must be between 1 and 4")
         self.sources = sources
         self.asrSizes = asrSizes
@@ -417,6 +449,8 @@ public struct EngineState: Codable, Equatable, Sendable {
     public let revision: EngineID
     public let screen: EngineScreen
     public let setup: EngineSetupStatus
+    public let profileSetup: EngineProfileSetup
+    public let resourceProtection: EngineResourceProtection
     public let recovery: EngineRecoveryStatus
     @EngineNullable public private(set) var recording: EngineRecordingState?
     public let queue: [EngineQueuedOperation]
@@ -427,6 +461,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         case revision
         case screen
         case setup
+        case profileSetup = "profile_setup"
+        case resourceProtection = "resource_protection"
         case recovery
         case recording
         case queue
@@ -438,6 +474,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         revision: EngineID,
         screen: EngineScreen,
         setup: EngineSetupStatus,
+        profileSetup: EngineProfileSetup,
+        resourceProtection: EngineResourceProtection,
         recovery: EngineRecoveryStatus,
         recording: EngineRecordingState?,
         queue: [EngineQueuedOperation],
@@ -448,6 +486,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         self.revision = revision
         self.screen = screen
         self.setup = setup
+        self.profileSetup = profileSetup
+        self.resourceProtection = resourceProtection
         self.recovery = recovery
         _recording = EngineNullable(wrappedValue: recording)
         self.queue = queue
@@ -461,6 +501,8 @@ public struct EngineState: Codable, Equatable, Sendable {
             revision: container.decode(EngineID.self, forKey: .revision),
             screen: container.decode(EngineScreen.self, forKey: .screen),
             setup: container.decode(EngineSetupStatus.self, forKey: .setup),
+            profileSetup: container.decode(EngineProfileSetup.self, forKey: .profileSetup),
+            resourceProtection: container.decode(EngineResourceProtection.self, forKey: .resourceProtection),
             recovery: container.decode(EngineRecoveryStatus.self, forKey: .recovery),
             recording: container.decode(EngineNullable<EngineRecordingState>.self, forKey: .recording).wrappedValue,
             queue: container.decode([EngineQueuedOperation].self, forKey: .queue),
@@ -474,6 +516,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         try container.encode(revision, forKey: .revision)
         try container.encode(screen, forKey: .screen)
         try container.encode(setup, forKey: .setup)
+        try container.encode(profileSetup, forKey: .profileSetup)
+        try container.encode(resourceProtection, forKey: .resourceProtection)
         try container.encode(recovery, forKey: .recovery)
         try container.encode(_recording, forKey: .recording)
         try container.encode(queue, forKey: .queue)

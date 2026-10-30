@@ -38,12 +38,12 @@ private struct AmplePresentationCaptureDiskSpace: CaptureDiskSpaceProviding {
         h.start()
         try await h.hello()
         try await h.replaceSettings(try engineTestSettings(), expectedRevision: nil)
-        try await h.call("models.prepare")
+        try await h.callAcknowledgingResources("models.prepare")
         return h
     }
 
     private func startRecording(in h: ApplicationHarness, source: EngineSource) async throws -> (id: String, uuid: UUID) {
-        guard case let .recordingStart(started) = try await h.call(
+        guard case let .recordingStart(started) = try await h.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"\(source.rawValue)\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")

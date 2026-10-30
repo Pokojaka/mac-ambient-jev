@@ -98,7 +98,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
     var isIdleForRelease: Bool {
         recordingPhase == .idle
             && processingQueue.pending.isEmpty
-            && processingQueue.thermallyHeld.isEmpty
+            && processingQueue.held.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty
@@ -173,10 +173,6 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
 
     func enqueueProcessing(_ request: PendingProcessing) {
         processingCoordinator.enqueue(request)
-    }
-
-    func resumeThermallyHeldProcessing() {
-        processingCoordinator.resumeThermallyHeldProcessing()
     }
 
     func awaitIdleRelease() async {
@@ -257,7 +253,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             processingStatusText = "次の文字起こし処理を開始します"
             transcriptViewModel.setStatus("次の文字起こし処理を開始します")
         case .willFinishDrain:
-            if processingQueue.thermallyHeld.isEmpty,
+            if processingQueue.held.isEmpty,
                processingState == .running || processingState == .backlogged {
                 processingState = .complete
             }

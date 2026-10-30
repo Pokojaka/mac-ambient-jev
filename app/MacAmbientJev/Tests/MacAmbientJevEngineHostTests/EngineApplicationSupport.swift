@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Synchronization
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
@@ -42,6 +43,39 @@ final class LockedBox<Value: Sendable>: @unchecked Sendable {
         value = newValue
         lock.unlock()
     }
+}
+
+final class FakeResourceMonitor: InferenceResourceMonitoring, InferenceMemoryProbing, Sendable {
+    private let signalStorage = Mutex<InferenceResourceSignal>(.healthy)
+    private let factsStorage = Mutex(InferenceMemoryFacts(
+        physicalMemoryBytes: 16 * 1024 * 1024 * 1024, freePhysicalMemoryBytes: 8 * 1024 * 1024 * 1024,
+        commitHeadroomBytes: 8 * 1024 * 1024 * 1024, lowMemorySignal: false
+    ))
+    private let callbacks = Mutex<[UUID: @MainActor @Sendable () -> Void]>([:])
+    var signal: InferenceResourceSignal { signalStorage.withLock { $0 } }
+    var facts: InferenceMemoryFacts {
+        get { factsStorage.withLock { $0 } }
+        set { factsStorage.withLock { $0 = newValue } }
+    }
+    func memoryFacts() throws -> InferenceMemoryFacts { facts }
+
+    @MainActor func setSignal(_ signal: InferenceResourceSignal) {
+        signalStorage.withLock { $0 = signal }
+        callbacks.withLock { Array($0.values) }.forEach { $0() }
+    }
+
+    @MainActor
+    func observeChanges(_ onChange: @escaping @MainActor @Sendable () -> Void) -> any InferenceResourceObservation {
+        let id = UUID()
+        callbacks.withLock { $0[id] = onChange }
+        return FakeResourceObservation { [weak self] in _ = self?.callbacks.withLock { $0.removeValue(forKey: id) } }
+    }
+}
+
+private final class FakeResourceObservation: InferenceResourceObservation {
+    private let cancel: @Sendable () -> Void
+    init(cancel: @escaping @Sendable () -> Void) { self.cancel = cancel }
+    deinit { cancel() }
 }
 
 struct FakeASR: ASREngine {
@@ -306,9 +340,18 @@ func engineTestPaths(root: URL) -> AppPaths {
 
 func engineTestSettings(decisions: Bool = false, automaticExport: Bool = false, exportPath: String? = nil) throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
         threads: 1, lowHeat: false, decisionsEnabled: decisions, automaticExport: automaticExport, exportDestinationPath: exportPath
     )
+}
+
+@MainActor
+func acknowledgeResourceWarning(
+    _ app: EngineApplication, workload: EngineResourceWorkload, context: EngineRequestContext
+) async throws {
+    let models = app.handlers.models
+    let assessment = try await models.preflight(.init(workload: workload), context: context)
+    _ = try await models.acknowledge(try EngineResourcesAcknowledgePayload(assessmentID: assessment.assessmentID), context: context)
 }
 
 /// The composed engine behind a real controller and transport, driven by NDJSON lines.
@@ -320,6 +363,7 @@ final class ApplicationHarness {
     let sink = ScriptedSink()
     let capture = FakeCapture()
     let inference = FakeInferenceProvider()
+    let resources = FakeResourceMonitor()
     let transport: EngineTransport
     let app: EngineApplication
     let controller: EngineController
@@ -332,8 +376,8 @@ final class ApplicationHarness {
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20)
+                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,
             inference: inference,
@@ -379,6 +423,22 @@ final class ApplicationHarness {
             }
         }
         preconditionFailure("terminal reply vanished")
+    }
+
+    @discardableResult
+    func callAcknowledgingResources(_ command: String, payload: String = "{}") async throws -> EngineResult {
+        let workload: EngineResourceWorkload
+        switch command {
+        case "models.prepare": workload = .load
+        case "recording.start": workload = .live
+        default: preconditionFailure("resource acknowledgement is only for model preparation or recording start")
+        }
+        try await acknowledgeResourceWarning(
+            app,
+            workload: workload,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: transport))
+        )
+        return try await call(command, payload: payload)
     }
 
     nonisolated private static func isTerminal(_ event: EngineEvent) -> Bool {

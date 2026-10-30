@@ -13,8 +13,213 @@ import MacAmbientJevTestSupport
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        try await harness.callAcknowledgingResources("models.prepare")
         return harness
+    }
+
+    @Test func profilesEvaluateUsesCoreAndPublishesRevisionedState() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+
+        let before = try await h.state()
+        #expect(before.profileSetup.evaluation == nil)
+        guard case let .profilesEvaluate(evaluation) = try await h.call(
+            "profiles.evaluate",
+            payload: #"{"hardware":{"kind":"no_gpu"},"acquisition":{"kind":"unavailable"},"threads":1}"#
+        ) else {
+            Issue.record("profiles.evaluate did not return an evaluation")
+            return
+        }
+        let expected = try EngineProfileEvaluation(
+            initialSize: .small,
+            recommendLarge: false,
+            reason: .noGPU,
+            explanation: "GPU がないため、0.6B を使用します。",
+            measuredRTF: nil,
+            predictedRTF: nil,
+            decisionState: .complete,
+            requestedChoice: nil,
+            calibrationID: nil
+        )
+        #expect(evaluation == expected)
+
+        let evaluated = try await h.state()
+        #expect(evaluated.profileSetup.evaluation == evaluation)
+        #expect(evaluated.revision.value > before.revision.value)
+        #expect(evaluated.resourceProtection.holdReasons.isEmpty)
+
+        guard case let .profilesEvaluate(gpuEvaluation) = try await h.call(
+            "profiles.evaluate",
+            payload: #"{"hardware":{"kind":"gpu","name":"test GPU","adapter_id":"adapter0","device_id":"gpu0","driver_version":"driver0","dedicated_vram_bytes":0},"acquisition":{"kind":"acquired","provider":"qnn"},"threads":1}"#
+        ) else {
+            Issue.record("GPU profiles.evaluate did not return an evaluation")
+            return
+        }
+        #expect(gpuEvaluation == evaluation)
+        #expect(gpuEvaluation.reason == .noGPU)
+        #expect(gpuEvaluation.decisionState == .complete)
+        #expect(try await h.state().profileSetup.evaluation == evaluation)
+        #expect(try await h.shutdown() == .shutdownRequested)
+        let persistedSettings = try EngineSettingsStore(
+            paths: engineTestPaths(root: root), logicalCPUCount: 4
+        ).load()
+        #expect(persistedSettings.settings.asrSize == .small)
+        #expect(persistedSettings.revision.value == 1)
+        let restarted = ApplicationHarness(root: root)
+        restarted.start()
+        try await restarted.hello()
+        #expect(try await restarted.state().profileSetup.evaluation == evaluation)
+        #expect(try await restarted.shutdown() == .shutdownRequested)
+    }
+
+    @Test func profileEvaluationWaitsForAssetsAndExplicitSettingsAcrossRestarts() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = #"{"hardware":{"kind":"gpu","name":"test GPU","adapter_id":"adapter0","device_id":"gpu0","driver_version":"driver0","dedicated_vram_bytes":8589934592},"acquisition":{"kind":"acquired","provider":"qnn"},"threads":1}"#
+        let first = ApplicationHarness(root: root)
+        first.start()
+        try await first.hello()
+        try await first.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        guard case let .profilesEvaluate(pending) = try await first.call("profiles.evaluate", payload: payload) else {
+            Issue.record("profiles.evaluate did not return an evaluation")
+            return
+        }
+        #expect(pending.reason == .awaitingAssets && pending.decisionState == .awaitingAssets)
+        #expect(try await first.shutdown() == .shutdownRequested)
+
+        let second = ApplicationHarness(root: root)
+        second.start()
+        try await second.hello()
+        #expect(try await second.state().profileSetup.evaluation == pending)
+        try await second.callAcknowledgingResources("models.prepare")
+        guard case let .profilesEvaluate(uncalibrated) = try await second.call("profiles.evaluate", payload: payload) else {
+            Issue.record("profiles.evaluate did not return a completed evaluation")
+            return
+        }
+        #expect(uncalibrated.reason == .uncalibrated && uncalibrated.decisionState == .complete)
+        #expect(uncalibrated.measuredRTF == nil && uncalibrated.predictedRTF == nil)
+        #expect(try await second.shutdown() == .shutdownRequested)
+
+        let offered = try EngineProfileEvaluation(
+            initialSize: .small, recommendLarge: true, reason: .recommendLarge, explanation: "計測結果から 1.7B を推奨します。",
+            measuredRTF: 0.25, predictedRTF: 0.5, decisionState: .offered, requestedChoice: nil, calibrationID: "calibration-1"
+        )
+        try EngineProfileDecisionStore(paths: engineTestPaths(root: root)).save(offered)
+        let third = ApplicationHarness(root: root)
+        third.start()
+        try await third.hello()
+        #expect(try await third.state().profileSetup.evaluation == offered)
+        guard case let .profilesEvaluate(returned) = try await third.call("profiles.evaluate", payload: payload) else {
+            Issue.record("profiles.evaluate did not return the saved offer")
+            return
+        }
+        #expect(returned == offered)
+        try await third.replaceSettings(engineTestSettings(), expectedRevision: 1)
+        let afterReplacement = try await third.state()
+        let stillOffered = try #require(afterReplacement.profileSetup.evaluation)
+        #expect(stillOffered == offered)
+        #expect(stillOffered.decisionState == .offered)
+
+        let decideRequest = try EngineProfilesDecidePayload(expectedRevision: afterReplacement.revision, choice: .small)
+        let decidePayload = String(decoding: try JSONEncoder().encode(decideRequest), as: UTF8.self)
+        guard case let .profilesDecide(decided) = try await third.call("profiles.decide", payload: decidePayload) else {
+            Issue.record("profiles.decide did not return an evaluation")
+            return
+        }
+        let completed = try #require(try await third.state().profileSetup.evaluation)
+        #expect(decided == completed)
+        #expect(completed.decisionState == .complete)
+        #expect(completed.requestedChoice == .small)
+        #expect(completed.reason == .eligible)
+        #expect(completed.measuredRTF == 0.25 && completed.predictedRTF == 0.5 && completed.calibrationID == "calibration-1")
+        #expect(try await third.shutdown() == .shutdownRequested)
+
+        let fourth = ApplicationHarness(root: root)
+        fourth.start()
+        try await fourth.hello()
+        #expect(try await fourth.state().profileSetup.evaluation == completed)
+        #expect(try await fourth.shutdown() == .shutdownRequested)
+    }
+
+    @Test func corruptProfileDecisionIsVisibleAndNotOverwritten() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = engineTestPaths(root: root).root.appending(path: "accelerators/profile-decision.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corrupt = Data("{invalid".utf8)
+        try corrupt.write(to: file)
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        #expect(try await h.state().failures.contains { $0.code == .filesystem })
+        #expect(try await h.failureCode(
+            of: "profiles.evaluate",
+            payload: #"{"hardware":{"kind":"no_gpu"},"acquisition":{"kind":"unavailable"},"threads":1}"#
+        ) == .filesystem)
+        #expect(try Data(contentsOf: file) == corrupt)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func schemaOneRequiresReplacementAndWindowsMLPrepareFailsExplicitly() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = engineTestPaths(root: root)
+        let settingsStore = EngineSettingsStore(paths: paths, logicalCPUCount: 4)
+        let schemaOne = Data(#"{"revision":"1","settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":"cpu","threads":1,"low_heat":false,"decisions_enabled":false,"automatic_export":false,"export_destination_path":null}}"#.utf8)
+        try FileManager.default.createDirectory(at: settingsStore.root, withIntermediateDirectories: true)
+        try schemaOne.write(to: settingsStore.fileURL)
+
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        do {
+            _ = try await h.call("settings.get")
+            Issue.record("schema version 1 settings unexpectedly loaded")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .invalidSettings)
+            #expect(error.failure.recoveryAction == .replaceSettings)
+        }
+        #expect(try await h.state().setup == .settingsRequired)
+        #expect(try Data(contentsOf: settingsStore.fileURL) == schemaOne)
+
+        let windowsML = try EngineSettings(
+            schemaVersion: 2,
+            source: .microphone,
+            device: .default,
+            asrSize: .small,
+            executionProvider: .windowsML(
+                providerName: "NvTensorRtRtxExecutionProvider", deviceKey: "gpu:10de:2684", verificationID: "receipt0"
+            ),
+            threads: 1,
+            lowHeat: false,
+            decisionsEnabled: false,
+            automaticExport: false,
+            exportDestinationPath: nil
+        )
+        try await h.replaceSettings(windowsML, expectedRevision: nil)
+        guard case let .settingsGet(persisted) = try await h.call("settings.get") else {
+            Issue.record("settings.get did not return persisted settings")
+            return
+        }
+        #expect(persisted.revision.value == 1)
+        #expect(persisted.settings.schemaVersion == 2)
+        #expect(persisted.settings.executionProvider == windowsML.executionProvider)
+
+        do {
+            try await h.callAcknowledgingResources("models.prepare")
+            Issue.record("Windows ML preparation unexpectedly succeeded")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .invalidSettings)
+            #expect(error.failure.message == "保存された実行プロバイダーの現在の binding がありません。再接続してください")
+            #expect(error.failure.recoveryAction == .replaceSettings)
+        }
+        #expect(try await h.state().setup == .modelsRequired)
+        #expect(h.inference.calls.count("prepare") == 0)
+        #expect(try await h.shutdown() == .shutdownRequested)
     }
 
     @Test func recordStopFinalizeAndExportThroughTheComposedController() async throws {
@@ -31,7 +236,7 @@ import MacAmbientJevTestSupport
         #expect(try await h.state().setup == .modelsRequired)
         #expect(try await h.failureCode(of: "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}") == .modelMissing)
 
-        try await h.call("models.prepare")
+        try await h.callAcknowledgingResources("models.prepare")
         #expect(try await h.state().setup == .ready)
         let progress = try h.outputs.compactMap { output -> EngineProgressPayload? in
             if case let .progress(payload) = output.event { payload } else { nil }
@@ -46,7 +251,7 @@ import MacAmbientJevTestSupport
         #expect(devices.defaultDeviceID == "fake-endpoint")
 
         // Record two seconds, watching the session as the live screen does.
-        guard case let .recordingStart(started) = try await h.call(
+        guard case let .recordingStart(started) = try await h.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")
@@ -140,6 +345,11 @@ import MacAmbientJevTestSupport
         h.capture.startError = EngineAdapterError(
             code: .deviceNotFound, message: "録音デバイスが見つかりません", recoveryAction: .selectDevice, details: []
         )
+        try await acknowledgeResourceWarning(
+            h.app,
+            workload: .live,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: h.transport))
+        )
         let code = try await h.failureCode(of: "recording.start", payload: "{\"source\":\"system_audio\",\"device\":{\"kind\":\"id\",\"id\":\"gone\"}}")
         #expect(code == .captureFailure || code == .deviceNotFound)
         #expect(try await h.state().recording == nil)
@@ -158,7 +368,7 @@ import MacAmbientJevTestSupport
             code: .modelMissing, message: "モデルがありません: D:\\models", recoveryAction: .prepareModels, details: []
         ))
         do {
-            try await h.call("models.prepare")
+            try await h.callAcknowledgingResources("models.prepare")
             Issue.record("prepare should fail")
         } catch let error as CommandFailure {
             #expect(error.failure.code == .modelMissing)
@@ -173,9 +383,9 @@ import MacAmbientJevTestSupport
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let h = try await prepared(root)
-        try await h.call("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
+        try await h.callAcknowledgingResources("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
         let larger = try EngineSettings(
-            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            schemaVersion: 2, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
             threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
         )
         let payload = String(decoding: try JSONEncoder().encode(EngineSettingsReplacePayload(expectedRevision: try EngineID(1), settings: larger)), as: UTF8.self)
@@ -197,7 +407,7 @@ import MacAmbientJevTestSupport
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let first = try await prepared(root)
-        try await first.call("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
+        try await first.callAcknowledgingResources("recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}")
         try await first.capture.session?.appendSpeech(seconds: 2)
         #expect(try await first.shutdown() == .shutdownRequested)
         #expect(first.capture.session?.isStopped == true)
@@ -210,7 +420,7 @@ import MacAmbientJevTestSupport
         #expect(try await second.state().setup == .modelsRequired)
         #expect(try await second.waitForSession(status: .queued).sessionID != nil)
         #expect(try await second.state().recovery == .pending)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         _ = try await second.waitForSession(status: .finalized)
         let state = try await second.state()
         #expect(state.recovery == .completed)
@@ -226,8 +436,18 @@ import MacAmbientJevTestSupport
         first.start()
         try await first.hello()
         try await first.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        try await acknowledgeResourceWarning(
+            first.app,
+            workload: .load,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: first.transport))
+        )
         try await first.call("models.prepare")
 
+        try await acknowledgeResourceWarning(
+            first.app,
+            workload: .live,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: first.transport))
+        )
         guard case let .recordingStart(started) = try await first.call(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
@@ -257,7 +477,7 @@ import MacAmbientJevTestSupport
         try await second.hello()
         await second.app.waitForStartupRecovery()
         #expect(try await second.state().setup == .modelsRequired)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         let completed = try await second.waitForSession(status: .finalized)
         #expect(completed.sessionID == started.sessionID)
         #expect(try await second.state().recovery == .completed)
@@ -278,7 +498,7 @@ import MacAmbientJevTestSupport
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let first = try await prepared(root)
-        guard case let .recordingStart(started) = try await first.call(
+        guard case let .recordingStart(started) = try await first.callAcknowledgingResources(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
             Issue.record("recording.start did not return a session")
@@ -309,7 +529,7 @@ import MacAmbientJevTestSupport
         await second.app.waitForStartupRecovery()
         #expect(try await second.state().setup == .modelsRequired)
         #expect(try await second.waitForSession(status: .queued).sessionID == started.sessionID)
-        try await second.call("models.prepare")
+        try await second.callAcknowledgingResources("models.prepare")
         let recovered = try await second.waitForSession(status: .finalized)
         #expect(recovered.sessionID == started.sessionID)
         guard case let .transcriptRead(page) = try await second.call(
@@ -344,7 +564,7 @@ import MacAmbientJevTestSupport
         h.start()
         try await h.hello()
         await h.app.waitForStartupRecovery()
-        try await h.call("models.prepare")
+        try await h.callAcknowledgingResources("models.prepare")
         let recovered = try await h.waitForSession(status: .finalized)
         #expect(recovered.sessionID == EngineFailures_wireID(sessionID))
         guard case let .transcriptRead(page) = try await h.call(
@@ -510,9 +730,11 @@ private final class FinalizationShutdownHarness {
         paths = engineTestPaths(root: root)
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         self.transport = transport
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
+                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
+                sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,

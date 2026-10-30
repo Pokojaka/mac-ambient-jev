@@ -69,21 +69,37 @@ public final class SessionProcessingCoordinator {
     private weak var effects: (any SessionProcessingEffects)?
     private let processor: any SessionProcessingExecuting
     private let thermalMonitor: any ThermalMonitoring
+    private let resourceMonitor: (any InferenceResourceMonitoring)?
+    private var resourceObservation: (any InferenceResourceObservation)?
+    private let releaseResources: (@Sendable () async -> Void)?
+    private var activeResourceHoldReason: InferenceHoldReason?
+    private var resourceRecoveryEnabled = true
     private var task: Task<Void, Never>?
 
     public init(
         effects: any SessionProcessingEffects,
         processor: any SessionProcessingExecuting,
-        thermalMonitor: any ThermalMonitoring
+        thermalMonitor: any ThermalMonitoring,
+        resourceMonitor: (any InferenceResourceMonitoring)? = nil,
+        releaseResources: (@Sendable () async -> Void)? = nil
     ) {
         self.effects = effects
         self.processor = processor
         self.thermalMonitor = thermalMonitor
+        self.resourceMonitor = resourceMonitor
+        self.releaseResources = releaseResources
+        if let resourceMonitor {
+            resourceObservation = resourceMonitor.observeChanges { [weak self] in
+                self?.resourceMonitorDidChange()
+            }
+            resourceMonitorDidChange()
+        }
     }
 
     public var isDraining: Bool { task != nil }
 
     public func requestPause() {
+        resourceRecoveryEnabled = false
         task?.cancel()
     }
 
@@ -99,7 +115,10 @@ public final class SessionProcessingCoordinator {
 
     public func enqueue(_ request: PendingProcessing) {
         let effects = requiredEffects
-        if !effects.pausesProcessing, request.finalizesTranscript {
+        let holdReason = currentHoldReason
+        if !effects.pausesProcessing,
+           request.finalizesTranscript,
+           holdReason == nil || holdReason == .thermal {
             effects.prepareASRModel()
         }
 
@@ -121,22 +140,43 @@ public final class SessionProcessingCoordinator {
               !effects.processingQueue.isMaintainingStorage else {
             return
         }
+        resourceRecoveryEnabled = true
         task = Task { [weak self] in
             await self?.drainProcessingQueue()
         }
     }
 
-    private func holdForHeat(_ request: PendingProcessing) {
+    private func resourceMonitorDidChange() {
         let effects = requiredEffects
-        effects.processingQueue.holdForHeat(request)
+        if effects.processingQueue.currentSessionID != nil {
+            _ = holdReasonForAttempt()
+        } else if resourceRecoveryEnabled, task == nil {
+            resumeHeldProcessing()
+        }
+    }
+
+    private var currentHoldReason: InferenceHoldReason? {
+        resourceMonitor?.signal.holdReason ?? (thermalMonitor.isCritical ? .thermal : nil)
+    }
+
+    private func holdReasonForAttempt() -> InferenceHoldReason? {
+        let reason = currentHoldReason
+        if let reason, reason != .thermal {
+            activeResourceHoldReason = reason
+        }
+        return activeResourceHoldReason ?? reason
+    }
+
+    private func hold(_ request: PendingProcessing) {
+        let effects = requiredEffects
+        effects.processingQueue.hold(request, reason: holdReasonForAttempt() ?? .thermal)
         effects.processingDidChange(.held(request))
     }
 
-    public func resumeThermallyHeldProcessing() {
+    public func resumeHeldProcessing() {
         let effects = requiredEffects
         guard effects.processingQueue.resumeHeld(
-            isCritical: thermalMonitor.isCritical,
-            pausesProcessing: effects.pausesProcessing
+            holdReason: currentHoldReason, pausesProcessing: effects.pausesProcessing
         ) else {
             return
         }
@@ -258,8 +298,21 @@ public final class SessionProcessingCoordinator {
         while !effects.pausesProcessing,
               !Task.isCancelled,
               let request = effects.processingQueue.dequeue() {
-            if request.finalizesTranscript, thermalMonitor.isCritical {
-                holdForHeat(request)
+            activeResourceHoldReason = nil
+            if request.finalizesTranscript, let reason = holdReasonForAttempt() {
+                let heldRequest: PendingProcessing
+                if case .finishLive(let sessionID, _) = request, reason != .thermal {
+                    await processor.cancelLiveTranscription(sessionID: sessionID)
+                    effects.cleanupLiveASRState(sessionID: sessionID)
+                    heldRequest = .finalize(sessionID: sessionID, metadataPolicy: .reject)
+                } else {
+                    heldRequest = request
+                }
+                hold(heldRequest)
+                if reason != .thermal {
+                    let statusHandler = effects.processingStatusHandler(sessionID: request.sessionID)
+                    await statusHandler(.paused(reason))
+                }
                 continue
             }
 
@@ -269,11 +322,11 @@ public final class SessionProcessingCoordinator {
 
             let statusHandler = effects.processingStatusHandler(sessionID: requestSessionID)
             let updateHandler = effects.processingUpdateHandler(sessionID: requestSessionID)
-            let shouldPause: NativeSessionProcessor.PauseCheck = { [thermalMonitor] in
-                thermalMonitor.isCritical
+            let shouldPause: NativeSessionProcessor.PauseCheck = { [self] in
+                await MainActor.run { holdReasonForAttempt() }
             }
 
-            let finalization: SessionProcessingResult?
+            var finalization: SessionProcessingResult?
             switch request {
             case .finalize(let sessionID, let metadataPolicy):
                 let result = await processor.processSession(
@@ -286,7 +339,7 @@ public final class SessionProcessingCoordinator {
                     onUpdate: updateHandler
                 )
                 if result.disposition == .paused {
-                    holdForHeat(request)
+                    hold(request)
                 } else {
                     effects.processingQueue.releaseReprocessing(sessionID)
                 }
@@ -295,20 +348,25 @@ public final class SessionProcessingCoordinator {
             case .finishLive(let sessionID, let checkpoint):
                 await effects.waitForLiveASRDrain(sessionID: sessionID)
 
-                if Task.isCancelled || effects.pausesProcessing {
+                let reason = holdReasonForAttempt()
+                let resourceReason = reason == .thermal ? nil : reason
+                if Task.isCancelled || effects.pausesProcessing || resourceReason != nil {
                     await processor.cancelLiveTranscription(sessionID: sessionID)
                     effects.cleanupLiveASRState(sessionID: sessionID)
-                    holdForHeat(.finalize(
+                    hold(.finalize(
                         sessionID: sessionID,
                         metadataPolicy: .reject
                     ))
                     finalization = SessionProcessingResult(
                         disposition: .paused,
                         metrics: nil,
-                        message: nil,
+                        message: resourceReason?.finalizationExplanation,
                         noSpeech: false,
                         retainedTranscript: nil
                     )
+                    if let resourceReason {
+                        await statusHandler(.paused(resourceReason))
+                    }
                 } else {
                     if let failure = effects.liveASRFailure(sessionID: sessionID) {
                         await processor.cancelLiveTranscription(sessionID: sessionID)
@@ -326,7 +384,7 @@ public final class SessionProcessingCoordinator {
                     )
                     effects.cleanupLiveASRState(sessionID: sessionID)
                     if result.disposition == .paused {
-                        holdForHeat(.finalize(
+                        hold(.finalize(
                             sessionID: sessionID,
                             metadataPolicy: .reject
                         ))
@@ -335,7 +393,7 @@ public final class SessionProcessingCoordinator {
                 }
             case .retryContentPriority(let sessionID, let boundarySegments, let clauses):
                 if Task.isCancelled || effects.pausesProcessing {
-                    holdForHeat(request)
+                    hold(request)
                     finalization = SessionProcessingResult(
                         disposition: .paused,
                         metrics: nil,
@@ -359,11 +417,19 @@ public final class SessionProcessingCoordinator {
                         // A successful retry has no finalization, so it cannot trigger auto-export.
                         finalization = nil
                     case .paused:
-                        holdForHeat(request)
+                        hold(request)
                         finalization = result
                     }
                     effects.refreshSavedSessions()
                 }
+            }
+
+            if request.finalizesTranscript, finalization?.disposition == .paused,
+               let reason = holdReasonForAttempt(), reason != .thermal {
+                guard let releaseResources else {
+                    preconditionFailure("リソース監視中の一時停止に解放処理が設定されていません")
+                }
+                await releaseResources()
             }
 
             effects.processingDidChange(.finished(request, finalization))
@@ -381,5 +447,11 @@ public final class SessionProcessingCoordinator {
         effects.processingDidChange(.willFinishDrain)
         task = nil
         effects.processingDidChange(.drained)
+        if !Task.isCancelled,
+           !effects.pausesProcessing,
+           currentHoldReason == nil,
+           effects.processingQueue.held.contains(where: { $0.reason != .thermal }) {
+            resumeHeldProcessing()
+        }
     }
 }

@@ -86,6 +86,16 @@ ASR の計測 phase は推論完了時に終了します。その後の `postpro
 
 CLI は開始時の熱状態が nominal / fair 以外なら開始を拒否します。処理中の critical では `paused` を保存して非 0 終了します。冷却後、`--resume-session` で再開できます。CLI のプロセスが冷却を待って自動再開するわけではありません。
 
+## リソース監視による確定処理の保留
+
+Windows Engine の [`EngineProcess`](../app/MacAmbientJev/Sources/MacAmbientJevEngine/EngineProcess.swift) は [`WindowsInferenceResourceMonitor`](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsInferenceResourceMonitor.swift) を生成し、[`SessionProcessingCoordinator`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingCoordinator.swift) に渡します。[`EngineApplication`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication.swift) はリソース保護による一時停止後、`releaseResources` から gateway の `releaseIdleResources()` を呼びます。Mac GUI の [`AppState`](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift) は `resourceMonitor: nil` を明示し、`.healthy` を観測した意味ではありません。
+
+resourcePressure / monitorFailed のとき、coordinator は確定要求を開始前に held queue へ保留し、実行中なら「メモリ不足のため確定処理を一時停止中」「リソース監視に失敗したため確定処理を一時停止中」と表示します。実行中の処理は安全な ASR 区間境界まで進み、native execution を途中で中断しません。境界で一時停止した後は `paused` metadata を保存し、公開済み結果を保持して `releaseResources` を実行し、表示から「（実行中の処理の終了待ち）」を外します。
+
+monitor が healthy に戻ると held 要求を FIFO 順でキュー先頭へ戻し、cursor 続行ではなく保存音声全体を新しい attempt / run で処理します。`resources.preflight(finalization)` は表示用 assessment だけで、確定処理の preflight / acknowledge は不要です。shutdown cancellation は別経路で、shutdown 後に healthy へ戻っても自動再開しません。
+
+`resource_protection.hold_reasons` は既存 schema のまま、live の latch・実行中の一時停止・held queue の理由を示します。空配列は健全性を意味しません。熱状態・熱制御は変更ありません。詳細は [processing queue](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingQueue.swift)、[processing status presentation](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Processing.swift)、[resource admission](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/EngineApplication+Resources.swift)、[Windows のリソース保護 schema](windows.md#プロファイル評価とリソース保護) を参照してください。
+
 ## 復旧と明示的な再処理
 
 復旧判定は保存音声と処理 metadata を基準にします。
