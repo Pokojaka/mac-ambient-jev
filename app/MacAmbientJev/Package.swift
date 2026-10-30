@@ -324,7 +324,7 @@ portableRuntimeDependencies.append("CMiniaudio")
 targets.append(.systemLibrary(name: "CONNXRuntime"))
 targets.append(.target(
     name: "MacAmbientJevONNX",
-    dependencies: ["CONNXRuntime"],
+    dependencies: ["CONNXRuntime", "MacAmbientJevCore"],
     // A local pinned SDK cannot use SwiftPM's binaryTarget format on Linux or Windows.
     swiftSettings: onnxRuntimeIncludeSwiftSettings,
     linkerSettings: [.unsafeFlags(onnxRuntimeLinkerFlags)]
