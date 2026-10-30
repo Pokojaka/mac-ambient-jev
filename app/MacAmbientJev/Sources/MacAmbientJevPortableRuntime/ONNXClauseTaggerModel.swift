@@ -24,8 +24,7 @@ final class ONNXClauseTaggerModel {
             environment: environment,
             modelURL: assets.modelURL,
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled,
-            configEntries: [:]
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
         )
         try Self.validate(
             direction: "入力",

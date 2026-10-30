@@ -111,27 +111,8 @@ public final class ONNXSession {
         environment: ONNXEnvironment,
         modelURL: URL,
         intraOpThreads: Int,
-        cpuMemoryArenaEnabled: Bool,
-        configEntries: [String: String]
+        cpuMemoryArenaEnabled: Bool
     ) throws {
-        let sortedConfigEntries = configEntries.sorted { $0.key < $1.key }
-        for (key, value) in sortedConfigEntries {
-            guard !key.isEmpty else {
-                throw ONNXRuntimeError(message: "ONNX Runtimeセッション設定キーを空にすることはできません。")
-            }
-            guard key.utf8.count <= 1024 else {
-                throw ONNXRuntimeError(message: "ONNX Runtimeセッション設定キーはUTF-8で1024バイト以下である必要があります。")
-            }
-            guard !key.utf8.contains(0) else {
-                throw ONNXRuntimeError(message: "ONNX Runtimeセッション設定キーにNUL文字は使用できません。")
-            }
-            guard value.utf8.count <= 8192 else {
-                throw ONNXRuntimeError(message: "ONNX Runtimeセッション設定値はUTF-8で8192バイト以下である必要があります。")
-            }
-            guard !value.utf8.contains(0) else {
-                throw ONNXRuntimeError(message: "ONNX Runtimeセッション設定値にNUL文字は使用できません。")
-            }
-        }
         guard intraOpThreads > 0, let nativeThreadCount = Int32(exactly: intraOpThreads) else {
             throw ONNXRuntimeError(message: "ONNX Runtimeの演算スレッド数はInt32の正数である必要があります。")
         }
@@ -170,18 +151,6 @@ public final class ONNXSession {
             api: runtimeAPI,
             context: "ONNX RuntimeのCPUメモリアリーナ設定に失敗しました"
         )
-        for (key, value) in sortedConfigEntries {
-            let configStatus = key.withCString { keyPointer in
-                value.withCString { valuePointer in
-                    runtimeAPI.pointee.AddSessionConfigEntry!(options, keyPointer, valuePointer)
-                }
-            }
-            try checkStatus(
-                configStatus,
-                api: runtimeAPI,
-                context: "ONNX Runtimeセッション設定エントリーの追加に失敗しました: \(key)"
-            )
-        }
 
         var createdSession: OpaquePointer?
         defer {

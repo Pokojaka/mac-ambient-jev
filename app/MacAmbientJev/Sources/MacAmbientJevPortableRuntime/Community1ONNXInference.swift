@@ -48,8 +48,7 @@ final class Community1ONNXInference: Community1Inference {
             environment: environment,
             modelURL: assets.segmentationURL,
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled,
-            configEntries: [:]
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
         )
         try Self.validate(
             model: "segmentation",
@@ -63,8 +62,7 @@ final class Community1ONNXInference: Community1Inference {
             environment: environment,
             modelURL: assets.embeddingURL,
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled,
-            configEntries: [:]
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
         )
         try Self.validate(
             model: "embedding",

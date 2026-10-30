@@ -42,8 +42,7 @@ struct ONNXSessionTests {
             environment: environment,
             modelURL: fixtureURL(named: "affine"),
             intraOpThreads: 1,
-            cpuMemoryArenaEnabled: cpuMemoryArenaEnabled,
-            configEntries: [:]
+            cpuMemoryArenaEnabled: cpuMemoryArenaEnabled
         )
         #expect(try session.inputMetadata() == [
             ONNXTensorMetadata(name: "x", elementType: .float32, shape: [1, 4]),
@@ -334,8 +333,7 @@ struct ONNXSessionTests {
             environment: environment,
             modelURL: modelURL,
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: true,
-            configEntries: [:]
+            cpuMemoryArenaEnabled: true
         )
     }
 }
@@ -384,15 +382,13 @@ private func makeSessionPair(modelURL: URL) throws -> SessionPair {
         environment: environment,
         modelURL: modelURL,
         intraOpThreads: 1,
-        cpuMemoryArenaEnabled: true,
-        configEntries: [:]
+        cpuMemoryArenaEnabled: true
     )
     let second = try ONNXSession(
         environment: environment,
         modelURL: modelURL,
         intraOpThreads: 2,
-        cpuMemoryArenaEnabled: true,
-        configEntries: [:]
+        cpuMemoryArenaEnabled: true
     )
     return SessionPair(
         first: first,

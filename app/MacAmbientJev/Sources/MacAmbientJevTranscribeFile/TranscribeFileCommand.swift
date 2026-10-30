@@ -161,30 +161,9 @@ internal enum TranscribeFileCommand {
       MacAmbientJevTranscribeFile <audio-file> --silero-model <path> --asr-model-directory <dir> --asr-model-size <0.6b|1.7b> --threads <n> --output <file.json> --artifact-output <artifact.json>
     """
 
-    #if os(Windows)
-    private static let measurementUsage = PrepackMeasurement.usage
-    #endif
-
     static func run(arguments: [String]) async throws -> TranscribeFileCommandResult? {
-        #if os(Windows)
-        if arguments.first == "measure-prepack" {
-            let measurementArguments = Array(arguments.dropFirst())
-            if measurementArguments == ["--help"] {
-                FileHandle.standardOutput.write(Data((measurementUsage + "\n").utf8))
-                return nil
-            }
-            try await PrepackMeasurement.run(measurementArguments)
-            return nil
-        }
-        #endif
-
         if arguments == ["--help"] {
-            #if os(Windows)
-            let help = usage + "\n\n" + measurementUsage
-            #else
-            let help = usage
-            #endif
-            FileHandle.standardOutput.write(Data((help + "\n").utf8))
+            FileHandle.standardOutput.write(Data((usage + "\n").utf8))
             return nil
         }
         let options = try TranscribeFileArguments.parse(arguments)

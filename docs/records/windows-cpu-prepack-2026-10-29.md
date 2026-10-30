@@ -1,6 +1,6 @@
-# Windows CPU prepack 計測記録（2026-10-29、未完了）
+# Windows CPU prepack 計測記録（2026-10-29）
 
-この測定記録と [転写単位の CSV](windows-cpu-prepack-2026-10-29.csv) は、Windows 11 ARM64 VMware Fusion VM 上の短い固定音声による CPU 比較である。**6つの model-size/mode セルすべては完了していない。** 0.6b の3 mode と1.7b の `current` / `external-mapped` は各3 fresh processで測定したが、1.7b `saved-prepacked` は保存容量不足で生成・reload できず、数値は未測定である。したがって、この記録は P6-7 の計測完了、製品採用承認、または独立した1.7b EP 検証を意味しない。
+この測定記録と [転写単位の CSV](windows-cpu-prepack-2026-10-29.csv) は、Windows 11 ARM64 VMware Fusion VM 上の短い固定音声による CPU 比較である。**6つの model-size/mode セルすべては完了していない。** 0.6b の3 mode と1.7b の `current` / `external-mapped` は各3 fresh processで測定したが、1.7b `saved-prepacked` は保存容量不足で生成・reload できず、数値は未測定である。0.6b の結果だけで採用規則（warm RTF 回帰10%以内）を満たさないため、1.7b `saved-prepacked` は追加容量を用意して測定し直さない。この記録は独立した1.7b EP 検証を意味しない。
 
 ## 結果概要と範囲
 
@@ -13,9 +13,7 @@
 | 0.6b | 完了（3 trials） | 完了（3 trials） | 完了（3 trials） |
 | 1.7b | 完了（3 trials） | 完了（3 trials） | **BLOCKED / 未測定**（save が失敗、reload/measure なし） |
 
-production の通常の ASR 挙動と定数は変更していない一方、測定専用の CLI / factory plumbing を追加した。本記録は測定専用の変更と結果を記録するもので、production 採用を意味しない。結論は **KEEP CURRENT**。将来の明示的な「省メモリ」option は未実装の案であり、この記録で実装・承認したものではない。
-
-> Fix-loop round 1: controller-reviewed corrections to scope, invocation details, and completed checks are incorporated. Raw timings, memory, parity, calibration, and the disk-capacity blocker are unchanged.
+production の ASR 挙動と定数は変更していない。測定専用の CLI（`measure-prepack`）、PowerShell runner、ONNX session config entry の受け口は commit [`a864b4f`](https://github.com/Pokojaka/mac-ambient-jev/commit/a864b4f16e130e7c807a1498bc263489643846cd) にだけ存在し、KEEP CURRENT の判断に伴い次の commit で削除した。再現にはその commit を checkout する。結論は **KEEP CURRENT**。将来の明示的な「省メモリ」option は未実装の案であり、この記録で実装・承認したものではない。
 
 ## 環境、入力、設定
 
@@ -173,7 +171,7 @@ Full PowerShell runner は1.7b save error で停止した。以後の1.7b `curre
 - 採用判断は **KEEP CURRENT**。production behavior、threshold/constants、x64 / GPU ratio を変更・承認しない。
 - 0.6b warm mean RTF は current `0.4782738659156634`、external-mapped `0.4967389832473335`、saved-prepacked `0.5409647741634692`。saved の平均は current より約13.11%遅く、暫定10% tolerance を超える。対応 trial の最悪回帰は31.401624%。
 - saved-prepacked の真の peak commit (`PeakPagefileUsage`) は current 比で90.888–91.268%減少した一方、warm current working set は saved より大きく離れておらず、warm WS だけから同等の省メモリを主張できない。メモリ改善単独では速度回帰を受け入れる根拠にならない。
-- 1.7b saved-prepacked は blocked なので採用可否の比較材料がない。これがこの時点での全体測定 blocker。
+- 1.7b saved-prepacked は未測定だが、0.6b で速度規則を満たさない以上、1.7b の結果によらず採用しない。
 - 暫定 `0.70 RTF`、`x1.20` margin、`10%` tolerance は変更しない。短 clip・3 trials の ARM64 VM 比較からの calibration は evidence のみ：current large/small warm mean ratio は `0.6446255025106948 / 0.4782738659156634 = 1.347816697608071`、paired ratios `[1.2155251986696856, 1.4132365125032558, 1.4279081500269064]`。illustrative に `ceil(max(ratio)*10)/10 = 1.5`、さらに `x1.20 = 1.8` と置くと、small mean ×1.8 = `0.860892958648194` で0.70を上回る。
 - external-mapped control の large/small warm mean ratio は `0.6656678999754286 / 0.4967389832473335 = 1.3400758193443074`、paired ratios `[1.440437167734697, 1.2031228007810617, 1.3898723113262563]`。同じ illustrative rounding は1.8となる。どちらの比率も release constant / production scale ではない。
 - 校正は3.3067秒の固定短 clip と noisy ARM64 VM に限られる。14秒までの代表的 live segments、x64、bare-metal、backend/vendor coverage、1.7b saved pair がない。従って x64 数値、一般化した throughput、採用比率は推定しない。
@@ -199,7 +197,7 @@ $binDir=Join-Path (Get-Location) 'app/MacAmbientJev/.build/aarch64-unknown-windo
 Copy-Item -LiteralPath '.build/onnxruntime/1.31.0/onnxruntime-win-arm64-1.31.0/lib/onnxruntime.dll' -Destination (Join-Path $binDir 'onnxruntime.dll') -Force
 ```
 
-0.6b / 1.7b の model paths はそれぞれ `C:\Models\qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4`、`C:\Models\qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd`。source fixture は `app/MacAmbientJev/Sources/MacAmbientJevEngineHost/Resources/qwen3_asr_voicevox_short.wav`。runner [`scripts/measure-windows-cpu-prepack.ps1`](../../scripts/measure-windows-cpu-prepack.ps1) の必須 parameters は `-Executable`, `-SmallModelDirectory`, `-LargeModelDirectory`, `-Fixture`, `-ResultsDirectory`。結果先は新規 `C:\Users\codextest\p6-7-results-20261029`。runner は各 model で save を先に行い、その後 mode order を trial ごとに rotate する。0.6b の実行順は trial 1 `current, external-mapped, saved-prepacked`、trial 2 `external-mapped, saved-prepacked, current`、trial 3 `saved-prepacked, current, external-mapped`。0.6b の9件は成功したが、1.7b save error で full runner は停止したため、runner 全体が成功したとは扱わない。実行時の引数形は次のとおり。
+0.6b / 1.7b の model paths はそれぞれ `C:\Models\qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4`、`C:\Models\qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd`。source fixture は `app/MacAmbientJev/Sources/MacAmbientJevEngineHost/Resources/qwen3_asr_voicevox_short.wav`。runner `scripts/measure-windows-cpu-prepack.ps1`（commit `a864b4f`）の必須 parameters は `-Executable`, `-SmallModelDirectory`, `-LargeModelDirectory`, `-Fixture`, `-ResultsDirectory`。結果先は新規 `C:\Users\codextest\p6-7-results-20261029`。runner は各 model で save を先に行い、その後 mode order を trial ごとに rotate する。0.6b の実行順は trial 1 `current, external-mapped, saved-prepacked`、trial 2 `external-mapped, saved-prepacked, current`、trial 3 `saved-prepacked, current, external-mapped`。0.6b の9件は成功したが、1.7b save error で full runner は停止したため、runner 全体が成功したとは扱わない。実行時の引数形は次のとおり。
 
 ```powershell
 & .\scripts\measure-windows-cpu-prepack.ps1 `

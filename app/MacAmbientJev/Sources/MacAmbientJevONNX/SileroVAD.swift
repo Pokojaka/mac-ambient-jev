@@ -22,8 +22,7 @@ public final class SileroVAD {
             environment: environment,
             modelURL: modelURL,
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: true,
-            configEntries: [:]
+            cpuMemoryArenaEnabled: true
         )
     }
 
