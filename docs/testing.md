@@ -513,6 +513,37 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
 
 `verify_v1.sh` は integration test の検出と Runtime test bundle の存在も確認し、指定時だけその bundle を xctest で実行する。`RUN_MODEL_TESTS=1` だけで fixture を指定しない手順は使えない。
 
+### Windows CPU prepack 計測
+
+Windows 専用の `MacAmbientJevTranscribeFile measure-prepack` は、[計測実装](../app/MacAmbientJev/Sources/MacAmbientJevTranscribeFile/PrepackMeasurement.swift) と [PowerShell runner](../scripts/measure-windows-cpu-prepack.ps1) が定める CPU 比較手順です。
+必須引数は `--fixture`、`--asr-model-directory`、`--asr-model-size`（`0.6b` / `1.7b`）、`--threads`（正の Int32）、`--prepack`（`current` / `external-mapped` / `saved-prepacked`）、`--action`（`save` / `measure`）、`--calls`（50 以上の整数）、`--output`（未作成の JSON file。親 directory は既存であること）です。fixture は production resource [`qwen3_asr_voicevox_short.wav`](../app/MacAmbientJev/Sources/MacAmbientJevEngineHost/Resources/qwen3_asr_voicevox_short.wav) そのもので、16 kHz mono PCM16 WAV、52,907 samples、105,858 bytes、SHA-256 `2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9` を固定検証します。通常の `MacAmbientJevTranscribeFile <audio-file> ...` の既存 interface は変わりません。
+
+`save` は `saved-prepacked` の場合だけ許され、別 process で新しい `--prepack-directory` を生成します。生成は destination の sibling staging directory で行い、完成後に sibling から atomic directory move で公開します。`--prepack-directory` は `saved-prepacked` の場合だけ指定でき、`save` 時は未作成、`measure` 時は既存 directory を指定します。保存物には pinned model repository / commit・model file hashes、ONNX Runtime version、architecture / ISA、thread 数と session options、および生成ファイルの byte 数・SHA-256 を記録し、読込時に identity と全ファイルを検証します。不一致・破損は明示的な error です。自動生成・再生成や暗黙の mode / default はなく、再生成は明示的な `--action save` だけです。`--calls` は両 action で必須ですが、save は prepack 生成だけを行います。
+
+`current` は通常の engine initializer、明示的な session config entry なしです。`external-mapped` は ONNX Runtime 1.31.0 の既定値 `session.use_device_allocator_for_initializers=0` と `session.disable_prepacking=0` を明示する control で、eligible CPU external data は既に mapped です。これは新しい optimization を主張しません（[ONNX Runtime session option keys](https://raw.githubusercontent.com/microsoft/onnxruntime/v1.31.0/include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h)）。`saved-prepacked` の measure は保存済み graph を reload するだけで save option を渡しません。fixture、pinned source model、存在する場合は derived file の hashes を timer 開始前に検証するため `cold_process_load_seconds` は新 process の `engine.prepare()` 時間であって cold-storage read ではなく、OS file cache は hash 検証で暖まっています。最初の transcription は別に計測し、その後の `--calls` 件（最低50件）の warm call は最初の出力と UTF-8 bytes・generated token IDs の完全一致を要求します。warm p95 は nearest-rank です。
+
+各 memory snapshot では **PrivateUsage** は現在の private commit、**PeakPagefileUsage** は process lifetime の peak private commit、**WorkingSetSize** は現在の resident working set、**PeakWorkingSetSize** は resident working set の peak です（[PROCESS_MEMORY_COUNTERS_EX](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex)）。runner は VMMap / ETW evidence を収集しないため、zero-copy は立証しません。
+
+Windows PowerShell 5.1 runner の必須引数は `-Executable`、`-SmallModelDirectory`、`-LargeModelDirectory`、`-Fixture`、`-ResultsDirectory` です。results directory は新規（親は既存）、`C:\Models` は既存、`C:\Models\prepack-0.6b` / `C:\Models\prepack-1.7b` は未作成である必要があります。runner は各 model size で save を別 process で行い、固定3 threads、各 mode を3つの fresh process で測定します（2 sizes × 3 modes × 3 trials、measure process ごとに first call 1回と warm 50回）。mode 順序は trial ごとに rotation し、全9 measurement の text bytes / token IDs を trial 1 の `current` と照合します。環境、JSON、個別 process log、parity report を新規 results directory に出力し、各 size の後にその prepack directory を削除します。native Swift の stderr は Windows PowerShell 5.1 から `cmd /c` で log に redirect します。runner 自身は process log を管理するため、別途 redirect しません。
+
+```powershell
+$runtimeRoot = python scripts/fetch_onnxruntime.py
+if ($LASTEXITCODE -ne 0) { throw 'ONNX Runtime fetch failed' }
+cmd /c "swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevTranscribeFile > C:\Users\codextest\prepack-build.log 2>&1"
+if ($LASTEXITCODE -ne 0) { throw 'Release CLI build failed; see prepack-build.log' }
+cmd /c "swift build --package-path app/MacAmbientJev -c release --show-bin-path > C:\Users\codextest\prepack-bin-path.log 2>&1"
+if ($LASTEXITCODE -ne 0) { throw 'Could not resolve release binary path' }
+$binDir = (Get-Content -LiteralPath C:\Users\codextest\prepack-bin-path.log -Raw).Trim()
+Copy-Item -LiteralPath (Join-Path $runtimeRoot 'lib/onnxruntime.dll') -Destination (Join-Path $binDir 'onnxruntime.dll') -Force
+$fixture = Join-Path (Get-Location) 'app/MacAmbientJev/Sources/MacAmbientJevEngineHost/Resources/qwen3_asr_voicevox_short.wav'
+& .\scripts\measure-windows-cpu-prepack.ps1 `
+  -Executable (Join-Path $binDir 'MacAmbientJevTranscribeFile.exe') `
+  -SmallModelDirectory 'C:\Models\qwen3-asr-0.6b-int4-4fc24a1402e74db89c4d2ef256875e71680128c4' `
+  -LargeModelDirectory 'C:\Models\qwen3-asr-1.7b-int4-df916193ac67e59347769891a21e10d81d12acdd' `
+  -Fixture $fixture `
+  -ResultsDirectory 'C:\Users\codextest\prepack-results-001'
+```
+
 ## 共通 Swift の検証
 
 ### 話者分離の parity fixtures

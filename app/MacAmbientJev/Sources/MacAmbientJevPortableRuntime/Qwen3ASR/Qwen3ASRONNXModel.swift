@@ -2,9 +2,9 @@ import Foundation
 import MacAmbientJevCore
 import MacAmbientJevONNX
 
-internal struct Qwen3ASRTranscription: Sendable, Equatable {
-    let text: String
-    let generatedIDs: [Int64]
+public struct Qwen3ASRTranscription: Sendable, Equatable {
+    public let text: String
+    public let generatedIDs: [Int64]
 }
 
 protocol Qwen3ASRTranscribingModel: Sendable {
@@ -29,7 +29,23 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
     private let tokenizer: Qwen3ASRTokenDecoder
     private let frontend: Qwen3ASRMelFrontend
 
-    init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int) throws {
+    init(
+        modelDirectory: URL,
+        size: ASRModelSize,
+        intraOpThreads: Int,
+        graphDirectory: URL,
+        configEntriesByGraph: [String: [String: String]]
+    ) throws {
+        let expectedGraphNames: Set<String> = ["encoder", "decoder_init", "decoder_step"]
+        guard Set(configEntriesByGraph.keys) == expectedGraphNames,
+              let encoderConfigEntries = configEntriesByGraph["encoder"],
+              let decoderInitConfigEntries = configEntriesByGraph["decoder_init"],
+              let decoderStepConfigEntries = configEntriesByGraph["decoder_step"]
+        else {
+            throw Qwen3ASRModelError.invalid(
+                "ONNX Runtime config entries must have exactly graph keys \(expectedGraphNames.sorted()), actual \(configEntriesByGraph.keys.sorted())"
+            )
+        }
         guard intraOpThreads > 0, Int32(exactly: intraOpThreads) != nil else {
             throw Qwen3ASRModelError.invalid(
                 "ONNX Runtime intra-op thread count must be a positive Int32: \(intraOpThreads)"
@@ -40,9 +56,10 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         let environment = try ONNXEnvironment.shared()
         let encoderSession = try ONNXSession(
             environment: environment,
-            modelURL: modelDirectory.appendingPathComponent(size.encoderFilename),
+            modelURL: graphDirectory.appendingPathComponent(size.encoderFilename),
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled,
+            configEntries: encoderConfigEntries
         )
         try Self.validateMetadata(
             graph: .encoder,
@@ -53,9 +70,10 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
 
         let decoderInitSession = try ONNXSession(
             environment: environment,
-            modelURL: modelDirectory.appendingPathComponent(size.decoderInitFilename),
+            modelURL: graphDirectory.appendingPathComponent(size.decoderInitFilename),
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled,
+            configEntries: decoderInitConfigEntries
         )
         try Self.validateMetadata(
             graph: .decoderInit,
@@ -66,9 +84,10 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
 
         let decoderStepSession = try ONNXSession(
             environment: environment,
-            modelURL: modelDirectory.appendingPathComponent(size.decoderStepFilename),
+            modelURL: graphDirectory.appendingPathComponent(size.decoderStepFilename),
             intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
+            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled,
+            configEntries: decoderStepConfigEntries
         )
         try Self.validateMetadata(
             graph: .decoderStep,

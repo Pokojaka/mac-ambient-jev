@@ -40,11 +40,42 @@ public actor ONNXQwen3ASREngine: ASREngine {
                 try Qwen3ASRONNXModel(
                     modelDirectory: directory,
                     size: modelSize,
-                    intraOpThreads: threadCount
+                    intraOpThreads: threadCount,
+                    graphDirectory: directory,
+                    configEntriesByGraph: [
+                        "encoder": [:],
+                        "decoder_init": [:],
+                        "decoder_step": [:],
+                    ]
                 )
             }.value
         }
         self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
+    }
+
+    public static func forCPUMeasurement(
+        modelDirectory: URL,
+        size: ASRModelSize,
+        intraOpThreads: Int,
+        graphDirectory: URL,
+        configEntriesByGraph: [String: [String: String]]
+    ) -> ONNXQwen3ASREngine {
+        ONNXQwen3ASREngine(
+            modelDirectory: modelDirectory,
+            size: size,
+            intraOpThreads: intraOpThreads,
+            loadModel: { directory, modelSize, threadCount in
+                try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+                    try Qwen3ASRONNXModel(
+                        modelDirectory: directory,
+                        size: modelSize,
+                        intraOpThreads: threadCount,
+                        graphDirectory: graphDirectory,
+                        configEntriesByGraph: configEntriesByGraph
+                    )
+                }.value
+            }
+        )
     }
 
     internal init(
@@ -110,7 +141,8 @@ public actor ONNXQwen3ASREngine: ASREngine {
         return ASRResult(text: output.text, detectedLanguage: nil)
     }
 
-    internal func transcribeWithTokens(_ input: ASRAudioInput) async throws -> Qwen3ASRTranscription {
+    /// Exposes generated token IDs with the transcript for diagnostics and measurement parity checks.
+    public func transcribeWithTokens(_ input: ASRAudioInput) async throws -> Qwen3ASRTranscription {
         guard input.sampleRate == Int(CanonicalAudio.sampleRate) else {
             throw CanonicalAudioError.noncanonicalFormat
         }

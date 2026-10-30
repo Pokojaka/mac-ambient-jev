@@ -152,7 +152,8 @@ struct ONNXValueTests {
             environment: environment,
             modelURL: try fixtureURL(named: "cache"),
             intraOpThreads: 1,
-            cpuMemoryArenaEnabled: true
+            cpuMemoryArenaEnabled: true,
+            configEntries: [:]
         )
     }
 }
