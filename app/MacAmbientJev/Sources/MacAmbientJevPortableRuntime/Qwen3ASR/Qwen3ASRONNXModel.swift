@@ -29,7 +29,20 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
     private let tokenizer: Qwen3ASRTokenDecoder
     private let frontend: Qwen3ASRMelFrontend
 
-    init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int) throws {
+    convenience init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int) throws {
+        try self.init(modelDirectory: modelDirectory, size: size, intraOpThreads: intraOpThreads, createSession: {
+            try ONNXSession(environment: $0, modelURL: $1, intraOpThreads: $2, cpuMemoryArenaEnabled: $3)
+        })
+    }
+
+    convenience init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int, device: ONNXProviderDevice) throws {
+        try self.init(modelDirectory: modelDirectory, size: size, intraOpThreads: intraOpThreads, createSession: {
+            try ONNXSession(environment: $0, modelURL: $1, intraOpThreads: $2, cpuMemoryArenaEnabled: $3, device: device)
+        })
+    }
+
+    private init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int,
+                 createSession: (ONNXEnvironment, URL, Int, Bool) throws -> ONNXSession) throws {
         guard intraOpThreads > 0, Int32(exactly: intraOpThreads) != nil else {
             throw Qwen3ASRModelError.invalid(
                 "ONNX Runtime intra-op thread count must be a positive Int32: \(intraOpThreads)"
@@ -38,12 +51,8 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
         try size.validateModelDirectory(modelDirectory)
 
         let environment = try ONNXEnvironment.shared()
-        let encoderSession = try ONNXSession(
-            environment: environment,
-            modelURL: modelDirectory.appendingPathComponent(size.encoderFilename),
-            intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
-        )
+        let encoderSession = try createSession(environment, modelDirectory.appendingPathComponent(size.encoderFilename),
+                                               intraOpThreads, Self.cpuMemoryArenaEnabled)
         try Self.validateMetadata(
             graph: .encoder,
             inputs: encoderSession.inputMetadata(),
@@ -51,12 +60,8 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
             size: size
         )
 
-        let decoderInitSession = try ONNXSession(
-            environment: environment,
-            modelURL: modelDirectory.appendingPathComponent(size.decoderInitFilename),
-            intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
-        )
+        let decoderInitSession = try createSession(environment, modelDirectory.appendingPathComponent(size.decoderInitFilename),
+                                                   intraOpThreads, Self.cpuMemoryArenaEnabled)
         try Self.validateMetadata(
             graph: .decoderInit,
             inputs: decoderInitSession.inputMetadata(),
@@ -64,12 +69,8 @@ final class Qwen3ASRONNXModel: Qwen3ASRTranscribingModel, @unchecked Sendable {
             size: size
         )
 
-        let decoderStepSession = try ONNXSession(
-            environment: environment,
-            modelURL: modelDirectory.appendingPathComponent(size.decoderStepFilename),
-            intraOpThreads: intraOpThreads,
-            cpuMemoryArenaEnabled: Self.cpuMemoryArenaEnabled
-        )
+        let decoderStepSession = try createSession(environment, modelDirectory.appendingPathComponent(size.decoderStepFilename),
+                                                   intraOpThreads, Self.cpuMemoryArenaEnabled)
         try Self.validateMetadata(
             graph: .decoderStep,
             inputs: decoderStepSession.inputMetadata(),

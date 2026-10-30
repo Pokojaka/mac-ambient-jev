@@ -92,8 +92,8 @@ public struct EngineAcceleratorDeviceInfo: Codable, Equatable, Sendable {
     ) throws {
         try engineAcceleratorRequire(type == "gpu" || type == "npu", "type must be gpu or npu")
         try engineAcceleratorRequire(
-            deviceKey.range(of: "^\(type):[0-9a-f]{4}:[0-9a-f]{4}\\z", options: .regularExpression) != nil,
-            "device_key must match type:xxxx:xxxx using lowercase hexadecimal"
+            deviceKey.range(of: "^\(type):(?:[0-9a-f]{4}|[0-9a-f]{8}):(?:[0-9a-f]{4}|[0-9a-f]{8})\\z", options: .regularExpression) != nil,
+            "device_key must match type:<4 or 8 hex>:<4 or 8 hex> using lowercase hexadecimal"
         )
         try engineAcceleratorRequireNonempty(description, "description")
         try engineAcceleratorRequireNonempty(driverVersion, "driver_version")

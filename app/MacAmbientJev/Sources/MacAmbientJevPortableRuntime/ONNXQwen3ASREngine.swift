@@ -18,6 +18,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
     private let modelDirectory: URL
     private let size: ASRModelSize
     private let intraOpThreads: Int
+    private let fixedDecoding: (maxNewTokens: Int, noRepeatNgramSize: Int?)?
     private let loadModel: @Sendable (URL, ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
 
     private var model: (any Qwen3ASRTranscribingModel)?
@@ -35,6 +36,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
         self.modelDirectory = modelDirectory
         self.size = size
         self.intraOpThreads = intraOpThreads
+        self.fixedDecoding = nil
         self.loadModel = { directory, modelSize, threadCount in
             try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
                 try Qwen3ASRONNXModel(
@@ -47,6 +49,34 @@ public actor ONNXQwen3ASREngine: ASREngine {
         self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
     }
 
+    public init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int,
+                device: ONNXProviderDevice, language: String, maxNewTokens: Int,
+                noRepeatNgramSize: Int?) throws {
+        guard language == "ja" else { throw Qwen3ASRModelError.invalid("Unsupported Qwen3-ASR language '\(language)'; the pinned prompt supports only 'ja'.") }
+        guard maxNewTokens > 0 else { throw Qwen3ASRModelError.invalid("maxNewTokens must be positive: \(maxNewTokens)") }
+        if let noRepeatNgramSize, noRepeatNgramSize <= 0 {
+            throw Qwen3ASRModelError.invalid("noRepeatNgramSize must be positive when specified: \(noRepeatNgramSize)")
+        }
+        self.modelDirectory = modelDirectory
+        self.size = size
+        self.intraOpThreads = intraOpThreads
+        self.fixedDecoding = (maxNewTokens, noRepeatNgramSize)
+        self.loadModel = { directory, modelSize, threadCount in
+            try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+                try Qwen3ASRONNXModel(modelDirectory: directory, size: modelSize, intraOpThreads: threadCount, device: device)
+            }.value
+        }
+        let base = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
+        var configuration = base.configuration
+        configuration.updateValue(device.epName, forKey: "execution_provider")
+        configuration.updateValue(device.deviceKey, forKey: "device")
+        configuration.updateValue("cpu_arena_disabled_strict_ep", forKey: "memory_policy")
+        configuration.updateValue(language, forKey: "language")
+        configuration.updateValue(String(maxNewTokens), forKey: "max_new_tokens")
+        configuration.updateValue(noRepeatNgramSize.map { String($0) } ?? "disabled", forKey: "no_repeat_ngram")
+        self.provenanceValue = RunProvenance(engine: base.engine, model: base.model, version: base.version, configuration: configuration)
+    }
+
     internal init(
         modelDirectory: URL,
         size: ASRModelSize,
@@ -56,6 +86,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
         self.modelDirectory = modelDirectory
         self.size = size
         self.intraOpThreads = intraOpThreads
+        self.fixedDecoding = nil
         self.loadModel = loadModel
         self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
     }
@@ -123,10 +154,19 @@ public actor ONNXQwen3ASREngine: ASREngine {
 
         state = .transcribing(segmentID: "")
         do {
+            let maxNewTokens: Int
+            let noRepeatNgramSize: Int?
+            if let fixedDecoding {
+                maxNewTokens = fixedDecoding.maxNewTokens
+                noRepeatNgramSize = fixedDecoding.noRepeatNgramSize
+            } else {
+                maxNewTokens = 448
+                noRepeatNgramSize = input.samples.count > 15 * Int(CanonicalAudio.sampleRate) ? 3 : nil
+            }
             let output = try model.transcribe(
                 samples: input.samples,
-                maxNewTokens: 448,
-                noRepeatNgramSize: input.samples.count > 15 * Int(CanonicalAudio.sampleRate) ? 3 : nil
+                maxNewTokens: maxNewTokens,
+                noRepeatNgramSize: noRepeatNgramSize
             )
             state = .ready
             return output

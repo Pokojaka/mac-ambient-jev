@@ -152,6 +152,7 @@ targets.append(.target(
 #endif
 
 #if os(Windows)
+targets.append(.target(name: "CWindowsAccelerator", linkerSettings: [.linkedLibrary("dxcore")]))
 targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
 targets.append(.target(
     name: "CWindowsAudio",
@@ -267,7 +268,9 @@ targets.append(.executableTarget(
         "MacAmbientJevEngineProtocol",
         "MacAmbientJevEngineHost",
         "MacAmbientJevPortableRuntime",
-        "MacAmbientJevWindowsSupport"
+        "MacAmbientJevWindowsSupport",
+        "CWindowsAccelerator",
+        "MacAmbientJevONNX"
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -278,7 +281,8 @@ targets.append(.testTarget(
         "MacAmbientJevCore",
         "MacAmbientJevEngineProtocol",
         "MacAmbientJevEngineHost",
-        "MacAmbientJevTestSupport"
+        "MacAmbientJevTestSupport",
+        "MacAmbientJevONNX"
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))

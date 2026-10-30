@@ -11,6 +11,16 @@ public struct ONNXProviderDevice: @unchecked Sendable {
     public let hardwareType: ONNXHardwareType; public let vendorID: UInt32; public let deviceID: UInt32
     public let metadata: [String: String]
     let handle: OpaquePointer; let registrationID: Foundation.UUID
+
+    public var deviceKey: String { Self.deviceKey(hardwareType: hardwareType, vendorID: vendorID, deviceID: deviceID) }
+
+    public static func deviceKey(hardwareType: ONNXHardwareType, vendorID: UInt32, deviceID: UInt32) -> String {
+        func hex(_ value: UInt32) -> String {
+            let digits = String(value, radix: 16)
+            return String(repeating: "0", count: (value <= 0xffff ? 4 : 8) - digits.count) + digits
+        }
+        return "\(hardwareType.rawValue):\(hex(vendorID)):\(hex(deviceID))"
+    }
 }
 
 final class ONNXProviderLease {}

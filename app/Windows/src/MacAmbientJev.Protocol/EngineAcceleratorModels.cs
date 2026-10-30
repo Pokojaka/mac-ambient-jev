@@ -25,8 +25,8 @@ internal static class EngineAcceleratorValidation
 
     public static void DeviceKey(string? value, string type, string path) => WireCheck.Require(
         value?.Split(':') is { Length: 3 } parts && parts[0] == type &&
-        parts[1] is { Length: 4 } && IsLowerHex(parts[1]) && parts[2] is { Length: 4 } && IsLowerHex(parts[2]),
-        path, "device_key must match type:xxxx:xxxx using lowercase hexadecimal.");
+        parts[1] is { Length: 4 or 8 } && IsLowerHex(parts[1]) && parts[2] is { Length: 4 or 8 } && IsLowerHex(parts[2]),
+        path, "device_key must match type:<4 or 8 hex>:<4 or 8 hex> using lowercase hexadecimal.");
 }
 
 [WireObject]

@@ -23,7 +23,7 @@ struct EngineProtocolCorpusTests {
         let bytes = try Data(contentsOf: url)
         guard bytes.last == 0x0A else { throw CorpusFixtureError.missingFinalLineFeed }
         let records = bytes.split(separator: 0x0A)
-        #expect(records.count == 180)
+        #expect(records.count == 182)
 
         for rawRecord in records {
             let record = Data(rawRecord)
