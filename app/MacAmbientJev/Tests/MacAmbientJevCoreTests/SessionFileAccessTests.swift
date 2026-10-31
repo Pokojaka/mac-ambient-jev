@@ -196,3 +196,19 @@ func processingRecoveryRefusesLinkedCheckpointAndJournals(filename: String) asyn
     #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.layout.audioStorageURL.path) == destination)
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
 }
+
+@Test func outputWriteFollowsSymlinkedParentButRejectsSymlinkedOutput() throws {
+    let fixture = try SecureSessionFixture()
+    defer { fixture.cleanup() }
+    let linkedParent = fixture.root.appending(path: "linked")
+    try fixture.link(linkedParent, to: fixture.outside)
+    let bytes = Data("report".utf8)
+    try SessionFileAccess.writeOutputAtomically(bytes, to: linkedParent.appending(path: "report.json"))
+    #expect(try Data(contentsOf: fixture.outside.appending(path: "report.json")) == bytes)
+
+    try fixture.link(fixture.outside.appending(path: "alias.json"))
+    #expect(throws: CocoaError.self) {
+        try SessionFileAccess.writeOutputAtomically(bytes, to: linkedParent.appending(path: "alias.json"))
+    }
+    #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
+}

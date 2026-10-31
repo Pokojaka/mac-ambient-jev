@@ -1171,10 +1171,11 @@ root の Win32 パスは明示的な長いパス形式で開き、MAX_PATH を�
 CWindowsSession が開く handle は継承不可です（CreateFileW に SECURITY_ATTRIBUTES を渡さず、NtCreateFile に OBJ_INHERIT を付けません）。
 子プロセスが一時ファイルの handle を持ち続けて公開の改名を妨げることはありません。
 
-Windows で実行するテストは、fixture の書き込みに Foundation の `Data.write(to:options: .atomic)` を使いません。
+Windows で実行するテストと、Windows で到達する本番コード（Pipeline の transcript 書き出し、`MacAmbientJevTranscribeFile`、`MacAmbientJevEvaluateASR`、`MacAmbientJevEvaluateDiarization`）は、書き込みに Foundation の `Data.write(to:options: .atomic)` を使いません。本番コードの書き込みは `SessionFileAccess.writeAtomically` を使い、ユーザーが指定した出力パスは `SessionFileAccess.writeOutputAtomically` で書きます。後者は親ディレクトリの symlink を解決し、解決後の親を root に固定します。出力先自体が symlink のときはエラーになります。
 Swift 6.2 の Foundation は `.atomic` の一時ファイルを MSVC 170 UCRT の継承可能な CRT handle（[`_wsopen_s`](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/sopen-wsopen?view=msvc-170)、`FILE_SHARE_DELETE` なし）で開き、閉じた直後に MoveFileExW で改名します（[Data+Writing.swift](https://github.com/swiftlang/swift-foundation/blob/swift-6.2-RELEASE/Sources/FoundationEssentials/Data/Data%2BWriting.swift)）。
 同じテストプロセスで `Process.run()` が並行すると、CreateProcessW の `bInheritHandles` が TRUE のため子プロセスがその handle を継承し（[Process.swift](https://github.com/swiftlang/swift-corelibs-foundation/blob/swift-6.2-RELEASE/Sources/Foundation/Process.swift)）、改名が ERROR_SHARING_VIOLATION（32）になり、NSCocoaErrorDomain Code=513 で失敗します。
 `.atomic` を付けない `Data.write(to:)` は継承不可の CreateFileW handle を使うため、この競合は起きません。
+[scripts/check_portable_core.py](../scripts/check_portable_core.py) は `MacAmbientJevCaptureSystemAudio`（macOS 専用）を除く `app/MacAmbientJev/Sources` の `.atomic` と `atomically: true` を禁止し、エラーで `SessionFileAccess.writeAtomically` を示します。
 
 イベントログの追記と durable read は LockFileEx で全範囲を排他ロックし、
 handle を閉じるまで保持します。復旧の途中で破損した末尾を読むことを防ぎ、

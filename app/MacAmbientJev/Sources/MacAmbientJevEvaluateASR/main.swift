@@ -57,7 +57,7 @@ struct EvaluateASRCommand {
                 at: outputURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try data.write(to: outputURL, options: .atomic)
+            try SessionFileAccess.writeOutputAtomically(data, to: outputURL)
             FileHandle.standardOutput.write(
                 Data("\(outputURL.path)\n".utf8)
             )

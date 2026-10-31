@@ -82,6 +82,21 @@ def scan_test_imports(root: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
     return violations
 
 
+FOUNDATION_ATOMIC_RE = re.compile(r"\.atomic\b|\batomically\s*:\s*true\b")
+MAC_ONLY_SOURCES = {"MacAmbientJevCaptureSystemAudio"}
+
+
+def scan_atomic_writes(sources_root: pathlib.Path) -> list[tuple[pathlib.Path, int]]:
+    violations: list[tuple[pathlib.Path, int]] = []
+    for path in sorted(sources_root.rglob("*.swift")):
+        if path.relative_to(sources_root).parts[0] in MAC_ONLY_SOURCES:
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if FOUNDATION_ATOMIC_RE.search(line.split("//", 1)[0]):
+                violations.append((path, number))
+    return violations
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -101,7 +116,8 @@ def main() -> int:
     args = parser.parse_args()
     roots = [pathlib.Path(root) for root in args.roots]
     tests_root = pathlib.Path("app/MacAmbientJev/Tests")
-    missing_roots = [root for root in [*roots, tests_root] if not root.is_dir()]
+    sources_root = pathlib.Path("app/MacAmbientJev/Sources")
+    missing_roots = [root for root in [*roots, tests_root, sources_root] if not root.is_dir()]
     if missing_roots:
         for root in missing_roots:
             print(f"portable Core/Pipeline/EngineProtocol/EngineHost/Diarization/ONNX/PortableRuntime directory not found: {root}", file=sys.stderr)
@@ -109,7 +125,15 @@ def main() -> int:
 
     violations = [violation for root in roots for violation in scan(root)]
     test_violations = scan_test_imports(tests_root)
-    if violations or test_violations:
+    atomic_violations = scan_atomic_writes(sources_root)
+    if violations or test_violations or atomic_violations:
+        for path, number in atomic_violations:
+            print(
+                f"{path}:{number}: Foundation atomic write is forbidden in Windows-reachable sources; "
+                "use SessionFileAccess.writeAtomically (Foundation's .atomic temp file is inheritable on Windows "
+                "and the final rename fails with Win32 error 32 when a child process starts)",
+                file=sys.stderr,
+            )
         for path, module in violations:
             print(f"{path}: forbidden or unguarded platform import: {module}", file=sys.stderr)
         for path, module in test_violations:
