@@ -41,7 +41,7 @@ extension ModelPreparationStatus {
 extension MacModelState {
     var text: String {
         switch self {
-        case .idle: "未確認"
+        case .idle: "録音開始時に準備します"
         case .downloading: "ダウンロード待ち・中"
         case .verifying: "確認・読み込み中"
         case .ready: "準備完了"

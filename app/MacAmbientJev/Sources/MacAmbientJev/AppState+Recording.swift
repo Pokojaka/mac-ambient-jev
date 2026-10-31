@@ -151,7 +151,7 @@ extension AppState: RecordingFinishEffects, RecordingStartEffects {
 
     func liveSessionStartDidFail(sessionID: UUID, error: any Error) {
         if error is LiveModelsNotFetched {
-            liveTranscription.vadFailureText = ModelPreparationStatus.waitingForModelsText
+            liveTranscription.vadFailureText = "発話検出モデルが未取得でした"
             processingStatusText = modelPreparation.waitingText
             reportMicSpeechMonitoringUnavailable(sessionID: sessionID)
             return
