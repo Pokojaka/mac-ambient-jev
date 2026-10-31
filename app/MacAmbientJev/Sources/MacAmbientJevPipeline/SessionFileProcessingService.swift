@@ -489,7 +489,7 @@ public struct SessionFileProcessingService: Sendable {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(segments).write(to: outputURL, options: .atomic)
+            try SessionFileAccess.writeOutputAtomically(try encoder.encode(segments), to: outputURL)
         } catch let error as SessionFileProcessingError {
             throw error
         } catch {
