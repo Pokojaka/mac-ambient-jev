@@ -429,7 +429,8 @@ targets += [
             .product(name: "FluidAudio", package: "FluidAudio"),
             .product(name: "Qwen3ASR", package: "speech-swift"),
             .product(name: "MLX", package: "mlx-swift")
-        ]
+        ],
+        resources: [.copy("Resources")]
     ),
     .executableTarget(
         name: "MacAmbientJev",

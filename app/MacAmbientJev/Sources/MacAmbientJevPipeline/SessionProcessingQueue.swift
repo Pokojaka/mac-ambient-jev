@@ -32,6 +32,8 @@ public enum PendingProcessing: Sendable {
 public struct SessionProcessingQueue: Sendable {
     public private(set) var pending: [PendingProcessing] = []
     public private(set) var thermallyHeld: [PendingProcessing] = []
+    /// Finalizing work that waits for the models to be fetched, verified and loaded.
+    public private(set) var modelHeld: [PendingProcessing] = []
     public private(set) var currentSessionID: UUID?
     public private(set) var isMaintainingStorage = false
     private var finalizationGate = SavedSessionReprocessGate()
@@ -44,6 +46,7 @@ public struct SessionProcessingQueue: Sendable {
         finalizationGate.sessionIDs
             .union(pending.map(\.sessionID))
             .union(thermallyHeld.map(\.sessionID))
+            .union(modelHeld.map(\.sessionID))
             .union(currentSessionID.map { [$0] } ?? [])
     }
 
@@ -67,6 +70,11 @@ public struct SessionProcessingQueue: Sendable {
         pending.append(request)
     }
 
+    /// Puts a request back at the front, as if it had not been taken out.
+    public mutating func prepend(_ request: PendingProcessing) {
+        pending.insert(request, at: 0)
+    }
+
     public mutating func dequeue() -> PendingProcessing? {
         precondition(currentSessionID == nil, "処理中のセッションがある間はキューから取り出せません")
         guard !pending.isEmpty else { return nil }
@@ -85,6 +93,21 @@ public struct SessionProcessingQueue: Sendable {
 
     public mutating func holdForHeat(_ request: PendingProcessing) {
         thermallyHeld.append(request)
+    }
+
+    public mutating func holdForModels(_ request: PendingProcessing) {
+        modelHeld.append(request)
+    }
+
+    /// Moves the model-held work to the front of `pending` in its original order.
+    @discardableResult
+    public mutating func resumeModelHeld(modelsReady: Bool, pausesProcessing: Bool) -> Bool {
+        guard modelsReady, !modelHeld.isEmpty, !pausesProcessing else {
+            return false
+        }
+        pending.insert(contentsOf: modelHeld, at: 0)
+        modelHeld = []
+        return true
     }
 
     @discardableResult

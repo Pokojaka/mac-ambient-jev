@@ -26,6 +26,14 @@ for artifact in ClauseTagger.mlpackage tokenizer.json LICENSE.md; do
     exit 1
   fi
 done
+# Bundle.module finds MacAmbientJevRuntime's resources in Contents/Resources of the app; the model
+# manifest the app loads at launch must be there and equal to the source.
+APP_MODEL_MANIFEST="$APP_CONTENTS/Resources/MacAmbientJev_MacAmbientJevRuntime.bundle/Contents/Resources/Resources/mac_models.json"
+SOURCE_MODEL_MANIFEST="$ROOT/app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json"
+if ! cmp -s "$APP_MODEL_MANIFEST" "$SOURCE_MODEL_MANIFEST"; then
+  echo "Built app is missing the pinned model manifest or it differs from the source: $APP_MODEL_MANIFEST" >&2
+  exit 1
+fi
 codesign --verify --deep "$ROOT/.build/MacAmbientJev.app"
 
 SIGNED_ENTITLEMENTS="$(mktemp)"

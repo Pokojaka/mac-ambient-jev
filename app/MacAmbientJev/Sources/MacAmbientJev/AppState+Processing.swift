@@ -70,52 +70,73 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
         enqueueProcessing(.finalize(sessionID: sessionID, metadataPolicy: .replace))
     }
 
-    func prepareASRModel() {
-        guard modelPreparationTask == nil, modelPreparation != .ready else { return }
-        modelPreparation = .preparing(0)
-        // A release requested after this point waits for this load, so only an earlier release is awaited here.
-        let earlierRelease = idleReleaseTask
-        modelPreparationTask = Task { [weak self] in
-            await earlierRelease?.value
-            guard let self else { return }
-            do {
-                try await sessionProcessor.prepareASR { [weak self] progress, _ in
-                    Task { @MainActor in
-                        guard let self,
-                              case .preparing(let current) = self.modelPreparation else { return }
-                        self.modelPreparation = .preparing(max(current, min(1, progress)))
-                    }
-                }
-                modelPreparation = .ready
-            } catch {
-                modelPreparation = .failed(error.localizedDescription)
+    func prepareModels() {
+        modelPreparer.ensurePrepared(after: idleReleaseTask)
+    }
+
+    /// The Settings button: starts a run, and after a failure it is the only way to start another.
+    func retryModelPreparation() {
+        modelPreparer.retry(after: idleReleaseTask)
+    }
+
+    var modelsReady: Bool { modelPreparer.status.phase == .ready }
+
+    var modelPhase: ModelPreparationStatus.Phase { modelPreparer.status.phase }
+
+    func awaitModelPreparation() async {
+        await modelPreparer.runTask?.value
+    }
+
+    func modelPreparationDidChange(_ status: ModelPreparationStatus) {
+        modelPreparation = status
+        switch status.phase {
+        case .ready:
+            processingCoordinator.resumeModelHeldProcessing()
+        case .failed:
+            if let held = processingQueue.modelHeld.first {
+                showWaitingForModels(sessionID: held.sessionID)
             }
-            modelPreparationTask = nil
+        case .downloading, .loading:
+            if !processingQueue.modelHeld.isEmpty, processingStatusText != status.waitingText,
+               let held = processingQueue.modelHeld.first {
+                showWaitingForModels(sessionID: held.sessionID)
+            }
+        case .idle:
+            break
         }
     }
 
-    /// True when nothing uses the models: no recording, live transcription, queued, held, or running processing.
+    func showWaitingForModels(sessionID: UUID) {
+        let text = modelPreparation.waitingText
+        processingState = .backlogged
+        processingStatusText = text
+        if displayedSessionID == sessionID {
+            transcriptViewModel.setStatus(text)
+        }
+    }
+
+    /// True when nothing uses the models: no recording, live transcription, queued, held, or running processing,
+    /// and no model preparation. A download keeps running across recordings and thermal holds.
     var isIdleForRelease: Bool {
         recordingPhase == .idle
             && processingQueue.pending.isEmpty
             && processingQueue.thermallyHeld.isEmpty
+            && processingQueue.modelHeld.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty
             && liveCoordinator.isASRIdle
+            && !modelPreparer.isRunning
     }
 
     /// Releases the ASR and diarization models and the MLX cache once the app is idle. Model loads, live recognition,
     /// and finalization wait for a release in progress; the engines load their models again when next used.
     func releaseIdleResourcesIfIdle() {
         guard isIdleForRelease, idleReleaseTask == nil else { return }
-        // A load requested after this point waits for the release, so only an earlier load is awaited here.
-        let earlierPreparation = modelPreparationTask
         idleReleaseTask = Task { [weak self] in
-            await earlierPreparation?.value
             guard let self else { return }
             if isIdleForRelease {
-                modelPreparation = .idle
+                modelPreparer.didUnload()
                 await sessionProcessor.releaseIdleResources()
             }
             idleReleaseTask = nil
@@ -232,6 +253,8 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             if displayedSessionID == request.sessionID {
                 transcriptViewModel.setStatus(UserFacingStatus.finalizationPausedForHeat.text)
             }
+        case .heldForModels(let request):
+            showWaitingForModels(sessionID: request.sessionID)
         case .began(let request):
             processingState = .running
             if displayedSessionID == request.sessionID, request.finalizesTranscript {
@@ -258,6 +281,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             transcriptViewModel.setStatus("次の文字起こし処理を開始します")
         case .willFinishDrain:
             if processingQueue.thermallyHeld.isEmpty,
+               processingQueue.modelHeld.isEmpty,
                processingState == .running || processingState == .backlogged {
                 processingState = .complete
             }

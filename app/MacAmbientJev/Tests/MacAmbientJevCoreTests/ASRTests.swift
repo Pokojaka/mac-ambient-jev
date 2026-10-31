@@ -23,22 +23,6 @@ func asrInputFlagsPersistedFourMillisecondSegmentButNotTwentyMilliseconds() {
 }
 
 @Test
-func modelStoreUsesManagedModelsDirectory() {
-    let paths = AppPaths(
-        applicationSupportURL: URL(fileURLWithPath: "/tmp/support"),
-        cacheURL: URL(fileURLWithPath: "/tmp/cache"),
-        sessionsRootOverride: nil
-    )
-    let store = ModelStore(paths: paths)
-
-    #expect(
-        store.qwen3ASRCacheRoot.path
-            == paths.modelsRoot.appending(path: "qwen3-asr-1.7b-mlx-8bit").path
-    )
-    #expect(!store.qwen3ASRCacheRoot.path.contains("/sessions/"))
-}
-
-@Test
 func asrAudioLoaderReadsCanonicalSegmentWithoutChangingSamples() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

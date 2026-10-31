@@ -441,6 +441,10 @@ private final class FakeLiveTranscriptionEffects: LiveTranscriptionEffects {
         idleReleaseGate = gate
     }
 
+    var modelPhase = ModelPreparationStatus.Phase.ready
+    var modelPreparationGate: OneShotAsyncGate?
+    func awaitModelPreparation() async { await modelPreparationGate?.wait() }
+
     func awaitIdleRelease() async {
         guard let gate = idleReleaseGate else { return }
         idleReleaseGate = nil
@@ -469,7 +473,7 @@ private final class FakeLiveTranscriptionEffects: LiveTranscriptionEffects {
             }
         case .started:
             orderLog.append("started")
-        case .startFailed, .registrationFailed, .recognitionFailed, .thermal, .vadFailed:
+        case .startFailed, .registrationFailed, .recognitionFailed, .thermal, .vadFailed, .waitingForModels:
             orderLog.append("otherEvent")
         }
 
@@ -1460,4 +1464,95 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
     #expect(state.failure(sessionID: sessionID) == missingSessionMessage)
     #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
     #expect(effects.events.contains(.recognitionFailed(sessionID, missingSessionMessage)))
+}
+
+@MainActor
+private struct ModelGateFixture {
+    let sessionID = UUID()
+    let state = LiveTranscriptionState()
+    let effects: FakeLiveTranscriptionEffects
+    let processor: FakeLiveTranscriptionExecutor
+    let coordinator: LiveTranscriptionCoordinator
+
+    init(phase: ModelPreparationStatus.Phase) {
+        let orderLog = SharedCoordinatorOrderLog()
+        effects = FakeLiveTranscriptionEffects(
+            recordingSessionID: sessionID,
+            checkpoint: makeCheckpoint(100),
+            orderLog: orderLog,
+            stopsRecordingOnVADEnqueue: false
+        )
+        effects.modelPhase = phase
+        processor = FakeLiveTranscriptionExecutor(
+            startRunID: "asr_model_gate_test",
+            registrationScript: [.succeed],
+            processingScript: [.succeed],
+            orderLog: orderLog
+        )
+        coordinator = LiveTranscriptionCoordinator(
+            state: state,
+            effects: effects,
+            processor: processor,
+            thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+            sleep: { _ in }
+        )
+    }
+}
+
+@MainActor
+@Test(arguments: [
+    ModelPreparationStatus.Phase.idle, .downloading, .failed("通信に失敗しました")
+])
+func noLiveRecognitionRunsWhileTheModelsAreNotReady(phase: ModelPreparationStatus.Phase) async {
+    let fixture = ModelGateFixture(phase: phase)
+
+    await fixture.coordinator.enqueue(
+        sessionID: fixture.sessionID, segments: [makeSegment("seg_gate_1", at: 0)], checkpoint: makeCheckpoint(100)
+    )
+    await fixture.coordinator.waitForDrain(sessionID: fixture.sessionID)
+
+    #expect(await fixture.processor.processingRecords().isEmpty)
+    #expect(!fixture.state.hasQueued(sessionID: fixture.sessionID))
+    #expect(fixture.effects.events.contains(.waitingForModels(fixture.sessionID)))
+    #expect(fixture.coordinator.isASRIdle)
+}
+
+@MainActor
+@Test
+func liveBatchesWaitWhileTheModelsLoadAndThenRun() async {
+    let fixture = ModelGateFixture(phase: .loading)
+    let gate = OneShotAsyncGate()
+    fixture.effects.modelPreparationGate = gate
+    let batch = [makeSegment("seg_gate_2", at: 0)]
+
+    await fixture.coordinator.enqueue(sessionID: fixture.sessionID, segments: batch, checkpoint: makeCheckpoint(100))
+    await gate.waitUntilEntered()
+    #expect(await fixture.processor.processingRecords().isEmpty)
+    #expect(fixture.state.hasQueued(sessionID: fixture.sessionID))
+
+    fixture.effects.modelPhase = .ready
+    await gate.release()
+    await fixture.coordinator.waitForDrain(sessionID: fixture.sessionID)
+
+    #expect(await fixture.processor.processingRecords().map { $0.segments } == [batch])
+}
+
+@MainActor
+@Test
+func liveBatchesAreDroppedWhenLoadingEndsInFailure() async {
+    let fixture = ModelGateFixture(phase: .loading)
+    let gate = OneShotAsyncGate()
+    fixture.effects.modelPreparationGate = gate
+
+    await fixture.coordinator.enqueue(
+        sessionID: fixture.sessionID, segments: [makeSegment("seg_gate_3", at: 0)], checkpoint: makeCheckpoint(100)
+    )
+    await gate.waitUntilEntered()
+    fixture.effects.modelPhase = .failed("確認に失敗しました")
+    await gate.release()
+    await fixture.coordinator.waitForDrain(sessionID: fixture.sessionID)
+
+    #expect(await fixture.processor.processingRecords().isEmpty)
+    #expect(!fixture.state.hasQueued(sessionID: fixture.sessionID))
+    #expect(fixture.state.failure(sessionID: fixture.sessionID) == nil)
 }

@@ -65,7 +65,7 @@ extension MicInputWarning {
 
 extension MicInputStatus {
     public static let speechMonitoringUnavailableText =
-        "発話検出が止まったため、声の大きさを確認できません。マイクの位置と入力音量を確認してください。"
+        "発話検出が使えないため、声の大きさを確認できません。マイクの位置と入力音量を確認してください。"
 }
 
 extension MicInputAdjustment {

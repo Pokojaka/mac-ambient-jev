@@ -23,9 +23,11 @@ fi
 
 swift package --package-path "$PACKAGE" resolve
 swift build --package-path "$PACKAGE" --build-tests
+# The VAD parity test reads the pinned VAD model from this root; the other model tests stay off.
+VAD_TEST_ROOT="$(python3 -B "$ROOT/scripts/fetch_mac_vad_model.py")"
 EVENT_PATH="$ROOT/.build/test-events/macos-$(python3 -c 'import uuid; print(uuid.uuid4())').jsonl"
 printf 'Swift test event stream: %s\n' "$EVENT_PATH"
-env -u RUN_MODEL_TESTS python3 -B "$ROOT/scripts/run_swift_tests.py" \
+env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT="$VAD_TEST_ROOT" python3 -B "$ROOT/scripts/run_swift_tests.py" \
   --package-path "$PACKAGE" \
   --skip-build \
   --event-stream-output-path "$EVENT_PATH"

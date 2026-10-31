@@ -39,6 +39,7 @@ extension NativeSessionProcessor: SessionProcessingExecuting {}
 public enum SessionProcessingEvent {
     case backlogged
     case held(PendingProcessing)
+    case heldForModels(PendingProcessing)
     case began(PendingProcessing)
     case liveFailed(String)
     case finished(PendingProcessing, SessionProcessingResult?)
@@ -52,7 +53,10 @@ public protocol SessionProcessingEffects: AnyObject {
     var processingQueue: SessionProcessingQueue { get set }
     var pausesProcessing: Bool { get }
 
-    func prepareASRModel()
+    /// True once the models are fetched, verified and loaded.
+    var modelsReady: Bool { get }
+    /// Starts fetching, verifying and loading the models unless that is running or has failed.
+    func prepareModels()
     func awaitIdleRelease() async
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler
@@ -100,7 +104,7 @@ public final class SessionProcessingCoordinator {
     public func enqueue(_ request: PendingProcessing) {
         let effects = requiredEffects
         if !effects.pausesProcessing, request.finalizesTranscript {
-            effects.prepareASRModel()
+            effects.prepareModels()
         }
 
         effects.processingQueue.enqueue(request)
@@ -140,7 +144,25 @@ public final class SessionProcessingCoordinator {
         ) else {
             return
         }
-        effects.prepareASRModel()
+        effects.prepareModels()
+        startDrainIfIdle()
+    }
+
+    private func holdForModels(_ request: PendingProcessing) {
+        let effects = requiredEffects
+        effects.processingQueue.holdForModels(request)
+        effects.processingDidChange(.heldForModels(request))
+    }
+
+    /// Called when the models become ready. The held work runs in its original order.
+    public func resumeModelHeldProcessing() {
+        let effects = requiredEffects
+        guard effects.processingQueue.resumeModelHeld(
+            modelsReady: effects.modelsReady,
+            pausesProcessing: effects.pausesProcessing
+        ) else {
+            return
+        }
         startDrainIfIdle()
     }
 
@@ -258,6 +280,27 @@ public final class SessionProcessingCoordinator {
         while !effects.pausesProcessing,
               !Task.isCancelled,
               let request = effects.processingQueue.dequeue() {
+            if request.finalizesTranscript, !effects.modelsReady {
+                switch request {
+                case .finishLive(let sessionID, _):
+                    // Live recognition waits only while the models load, so it is over when they are not ready.
+                    // The request is in no list while it waits, so it is the current session.
+                    effects.processingQueue.begin(request)
+                    await effects.waitForLiveASRDrain(sessionID: sessionID)
+                    if effects.modelsReady {
+                        effects.processingQueue.completeCurrent()
+                        effects.processingQueue.prepend(request)
+                    } else {
+                        await processor.cancelLiveTranscription(sessionID: sessionID)
+                        effects.cleanupLiveASRState(sessionID: sessionID)
+                        effects.processingQueue.completeCurrent()
+                        holdForModels(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+                    }
+                default:
+                    holdForModels(request)
+                }
+                continue
+            }
             if request.finalizesTranscript, thermalMonitor.isCritical {
                 holdForHeat(request)
                 continue

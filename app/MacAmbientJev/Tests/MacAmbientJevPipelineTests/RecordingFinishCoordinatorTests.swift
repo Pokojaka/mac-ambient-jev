@@ -106,6 +106,8 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
     func awaitIdleRelease() async {
         preconditionFailure("No live queue drain is expected in a recording-finish test")
     }
+    var modelPhase: ModelPreparationStatus.Phase { .ready }
+    func awaitModelPreparation() async {}
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { preconditionFailure("Unexpected live processing status handler") }
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler { preconditionFailure("Unexpected live processing update handler") }
     func liveDidChange(_ event: LiveTranscriptionEvent) {
@@ -114,7 +116,8 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
         }
         orderLog.append("live.started")
     }
-    func prepareASRModel() { preconditionFailure("Paused processing must not prepare an ASR model") }
+    var modelsReady: Bool { true }
+    func prepareModels() { preconditionFailure("Paused processing must not prepare an ASR model") }
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
         preconditionFailure("Paused processing must not request a status handler")
     }

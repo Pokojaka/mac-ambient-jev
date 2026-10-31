@@ -85,7 +85,7 @@ func fluidDiarizationProductionConfigurationOverridesOnlyMinimumSegmentDuration(
 }
 
 @Test
-func fluidDiarizationProvenanceRecordsProductionConfiguration() {
+func fluidDiarizationProvenanceRecordsProductionConfiguration() throws {
     let temporaryRoot = FileManager.default.temporaryDirectory.appending(
         path: UUID().uuidString,
         directoryHint: .isDirectory
@@ -95,7 +95,7 @@ func fluidDiarizationProvenanceRecordsProductionConfiguration() {
         cacheURL: temporaryRoot.appending(path: "cache", directoryHint: .isDirectory),
         sessionsRootOverride: temporaryRoot.appending(path: "sessions", directoryHint: .isDirectory)
     )
-    let provenance = FluidOfflineDiarizationEngine(paths: paths).provenance
+    let provenance = FluidOfflineDiarizationEngine(models: try MacModelStore(paths: paths)).provenance
 
     #expect(provenance.version == "FluidAudio@0.15.8")
     #expect(provenance.configuration == [

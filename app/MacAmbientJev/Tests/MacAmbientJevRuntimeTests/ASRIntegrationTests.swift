@@ -8,7 +8,7 @@ import Testing
 struct ASRIntegrationTests {
     @Test(
         .enabled(
-            if: ProcessInfo.processInfo.environment["RUN_MODEL_TESTS"] == "1",
+            if: realModelTestsEnabled,
             "Set RUN_MODEL_TESTS=1 to run the real-model ASR smoke test."
         )
     )
@@ -44,19 +44,8 @@ struct ASRIntegrationTests {
             )
         )
 
-        let modelStore = ModelStore(paths: try .systemDefault(fileManager: .default))
-        let engine = NativeQwen3ASREngine(modelStore: modelStore)
+        let engine = NativeQwen3ASREngine(models: try realModelStore())
         try await engine.prepare()
-        struct ModelConfiguration: Decodable {
-            let support_languages: [String]
-        }
-        let configuration = try JSONDecoder().decode(
-            ModelConfiguration.self,
-            from: Data(contentsOf: modelStore.qwen3ASRCacheRoot.appending(path: "config.json"))
-        )
-        let promptLanguage = try #require(engine.provenance.configuration["language"])
-        try #require(configuration.support_languages.contains(promptLanguage),
-                     "The decoder prompt must use a language name supported by the loaded model.")
         let result = try await engine.transcribe(
             ASRAudioInput(samples: samples, sampleRate: Int(format.sampleRate))
         )

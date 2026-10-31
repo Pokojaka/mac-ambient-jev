@@ -1,0 +1,200 @@
+{
+  "asr": {
+    "repository": "aufklarer/Qwen3-ASR-1.7B-MLX-8bit",
+    "commit": "e5450a26d1fd417c45fc9c405651ddc3180a27a6",
+    "files": [
+      {
+        "name": "model.safetensors",
+        "role": "weights",
+        "byteCount": 2463307541,
+        "sha256": "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c"
+      },
+      {
+        "name": "vocab.json",
+        "role": "vocab",
+        "byteCount": 2776833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      {
+        "name": "merges.txt",
+        "role": "merges",
+        "byteCount": 1671853,
+        "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+      },
+      {
+        "name": "tokenizer_config.json",
+        "role": "tokenizer_config",
+        "byteCount": 12487,
+        "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+      }
+    ]
+  },
+  "diarization": {
+    "repository": "FluidInference/speaker-diarization-coreml",
+    "commit": "df2625ac79a7ac6b65ad868fee6d80f320da4232",
+    "files": [
+      {
+        "name": "Segmentation.mlmodelc/analytics/coremldata.bin",
+        "role": "segmentation_analytics",
+        "byteCount": 243,
+        "sha256": "64265f8e7ad41a5f68d630c15288c2499cca5892ad49e20096819cdeac004cdb"
+      },
+      {
+        "name": "Segmentation.mlmodelc/coremldata.bin",
+        "role": "segmentation_coremldata",
+        "byteCount": 812,
+        "sha256": "ea51481b8bd3e496ad3cf16f066ddaa37f20e8772eaac76b3393c28de20e06bc"
+      },
+      {
+        "name": "Segmentation.mlmodelc/metadata.json",
+        "role": "segmentation_metadata",
+        "byteCount": 3410,
+        "sha256": "88dbf0b07208fe142e1729c2b4c974ad3599fcb2ae5d5f18fce782b225384124"
+      },
+      {
+        "name": "Segmentation.mlmodelc/model.mil",
+        "role": "segmentation_model",
+        "byteCount": 43063,
+        "sha256": "d37e4ce30b406a6b34f765f769b9baed3178cc0c2b2e299c641daa43a052dd3f"
+      },
+      {
+        "name": "Segmentation.mlmodelc/weights/weight.bin",
+        "role": "segmentation_weights",
+        "byteCount": 5959360,
+        "sha256": "c3189a64946c75bc24fcb98afe89ad78c52bdbadfdf65e857fb1b81e2cc9fbb2"
+      },
+      {
+        "name": "FBank.mlmodelc/analytics/coremldata.bin",
+        "role": "fbank_analytics",
+        "byteCount": 243,
+        "sha256": "0e8bd3a8b82ac123580989f490e4d9245127c535857630b543311268accc3f0a"
+      },
+      {
+        "name": "FBank.mlmodelc/coremldata.bin",
+        "role": "fbank_coremldata",
+        "byteCount": 853,
+        "sha256": "57ac436bb0671cbb5527a339134d695f752eb77f7a18966b93c6835335595759"
+      },
+      {
+        "name": "FBank.mlmodelc/metadata.json",
+        "role": "fbank_metadata",
+        "byteCount": 3409,
+        "sha256": "2623785f5d186893b82d01e84aa33a7704ef763c3309e02055f22dc9d871ce9a"
+      },
+      {
+        "name": "FBank.mlmodelc/model.mil",
+        "role": "fbank_model",
+        "byteCount": 15667,
+        "sha256": "27aaeb21569e81bdbe2eef87789f50a37cfea800039bd134448a9417de2f30ed"
+      },
+      {
+        "name": "FBank.mlmodelc/weights/weight.bin",
+        "role": "fbank_weights",
+        "byteCount": 1776896,
+        "sha256": "9e83fdd3ea78064b078069e4d9141603c61c47a27fd19e7e3142ff7476f8db36"
+      },
+      {
+        "name": "Embedding.mlmodelc/analytics/coremldata.bin",
+        "role": "embedding_analytics",
+        "byteCount": 243,
+        "sha256": "8d6706436639b53830b4dbe8aaf9c9a843f7f582d63e16f3cb8bb7c6ccd58682"
+      },
+      {
+        "name": "Embedding.mlmodelc/coremldata.bin",
+        "role": "embedding_coremldata",
+        "byteCount": 704,
+        "sha256": "4a705bac27d151d9642f37609296042a15602a42253039e0921dc9e75da7e004"
+      },
+      {
+        "name": "Embedding.mlmodelc/metadata.json",
+        "role": "embedding_metadata",
+        "byteCount": 2818,
+        "sha256": "1854371eb6b438fb8aeac96afb45c999af7902581c06afdfcd7ff3cb1ce66be5"
+      },
+      {
+        "name": "Embedding.mlmodelc/model.mil",
+        "role": "embedding_model",
+        "byteCount": 78432,
+        "sha256": "22fa958aef72a561c21f874a07cbdcd30fdf40ee961c0bc2fb67c119273b46d3"
+      },
+      {
+        "name": "Embedding.mlmodelc/weights/weight.bin",
+        "role": "embedding_weights",
+        "byteCount": 13412288,
+        "sha256": "99356b2985b8d43880a657024d941d450b38820451ccff903f76ed4e52d1868b"
+      },
+      {
+        "name": "PldaRho.mlmodelc/analytics/coremldata.bin",
+        "role": "plda_rho_analytics",
+        "byteCount": 243,
+        "sha256": "8940ea6044dbcbefa22da8cc41e0b485e1fb5ed89aecaf37c6e0c483a97ddcd7"
+      },
+      {
+        "name": "PldaRho.mlmodelc/coremldata.bin",
+        "role": "plda_rho_coremldata",
+        "byteCount": 763,
+        "sha256": "4d9741477f721c79b09fcdfe455110c4b7d4272e2de3496bf1729d966d3ee418"
+      },
+      {
+        "name": "PldaRho.mlmodelc/metadata.json",
+        "role": "plda_rho_metadata",
+        "byteCount": 2749,
+        "sha256": "b314cf25a93e46b4076883a6f5a2f8848b73c3851bd9d36074d067f35a1c7945"
+      },
+      {
+        "name": "PldaRho.mlmodelc/model.mil",
+        "role": "plda_rho_model",
+        "byteCount": 7613,
+        "sha256": "83aee2e5310d19b5f202aea97d07a0e12102556d1b32ef3ed08b36f7f9725041"
+      },
+      {
+        "name": "PldaRho.mlmodelc/weights/weight.bin",
+        "role": "plda_rho_weights",
+        "byteCount": 200192,
+        "sha256": "80f7d229202636d372428c90596f11a91545f07da77259f07153aaf225914a36"
+      },
+      {
+        "name": "plda-parameters.json",
+        "role": "plda_parameters",
+        "byteCount": 89416,
+        "sha256": "38ee28d4269c076cef254ee760bbd811f0738a92e0f01f9699ad372828c5de8f"
+      }
+    ]
+  },
+  "vad": {
+    "repository": "FluidInference/silero-vad-coreml",
+    "commit": "b419383c55c110e2c9271fa6ee0ea83d03c70d96",
+    "files": [
+      {
+        "name": "silero-vad-unified-256ms-v6.2.1.mlmodelc/analytics/coremldata.bin",
+        "role": "vad_analytics",
+        "byteCount": 243,
+        "sha256": "8067594eb3126ab8318af507f0c00cabfed40d5fedb8a0ee5075dd02e903d909"
+      },
+      {
+        "name": "silero-vad-unified-256ms-v6.2.1.mlmodelc/coremldata.bin",
+        "role": "vad_coremldata",
+        "byteCount": 625,
+        "sha256": "7db35a4fd995222a7fb0129713473b15d1462572ab4a2e5e4d56bcaad9e40f41"
+      },
+      {
+        "name": "silero-vad-unified-256ms-v6.2.1.mlmodelc/metadata.json",
+        "role": "vad_metadata",
+        "byteCount": 3335,
+        "sha256": "2740be542c611e1ba358e1849b4e265c65cdf0b17192767e1e5de86a31ac94d6"
+      },
+      {
+        "name": "silero-vad-unified-256ms-v6.2.1.mlmodelc/model.mil",
+        "role": "vad_model",
+        "byteCount": 176918,
+        "sha256": "c6a9d1bf22d413265da0a07a1d14151c3ea2fad296b3aa5859275b33ef1c3270"
+      },
+      {
+        "name": "silero-vad-unified-256ms-v6.2.1.mlmodelc/weights/weight.bin",
+        "role": "vad_weights",
+        "byteCount": 882304,
+        "sha256": "53ecc8b5081146140ab654c89109cf001f2183abddd7a2411c5081feeffff063"
+      }
+    ]
+  }
+}

@@ -139,15 +139,23 @@ extension AppState: RecordingFinishEffects, RecordingStartEffects {
         showNewSession(sessionID)
         setCaptureStatus(captureSource == .systemAudio ? "システム音声を録音中" : "マイクを録音中", tone: .recording)
         if !pausesProcessing {
-            prepareASRModel()
+            prepareModels()
         }
     }
 
+    /// A recording that starts without the VAD model runs without live detection for its whole length.
     func startLiveSession(sessionID: UUID) async throws {
+        guard modelProvisioning.isFetched(.vad) else { throw LiveModelsNotFetched() }
         try await startLiveVAD(sessionID: sessionID)
     }
 
     func liveSessionStartDidFail(sessionID: UUID, error: any Error) {
+        if error is LiveModelsNotFetched {
+            liveTranscription.vadFailureText = "発話検出モデルが未取得でした"
+            processingStatusText = modelPreparation.waitingText
+            reportMicSpeechMonitoringUnavailable(sessionID: sessionID)
+            return
+        }
         liveTranscription.vadFailureText = error.localizedDescription
         processingStatusText =
             "録音は継続しています。発話検出を開始できませんでした: \(error.localizedDescription)"
