@@ -26,14 +26,6 @@ public enum MacModelError: Error, Equatable, LocalizedError, Sendable {
 }
 
 extension MacModel {
-    var displayName: String {
-        switch self {
-        case .asr: "音声認識"
-        case .diarization: "話者分離"
-        case .vad: "発話区間検出"
-        }
-    }
-
     /// The model directory relative to `modelsRoot`. The diarization models sit one level down
     /// because the repository folder is part of the layout FluidAudio's own cache used.
     var relativeDirectory: String {
@@ -89,6 +81,18 @@ public final class MacModelStore: Sendable {
 
     public func directory(_ model: MacModel) -> URL {
         directories[model] ?? modelsRoot.appending(path: model.relativeDirectory, directoryHint: .isDirectory)
+    }
+
+    /// A cheap check without hashing: every manifest file is a regular file of the pinned byte count.
+    public func isFetched(_ model: MacModel) -> Bool {
+        let directory = directory(model)
+        return entry(model).files.allSatisfy { file in
+            guard let attributes = try? FileManager.default.attributesOfItem(
+                atPath: directory.appending(path: file.name).path
+            ) else { return false }
+            return attributes[.type] as? FileAttributeType == .typeRegular
+                && (attributes[.size] as? NSNumber)?.int64Value == file.byteCount
+        }
     }
 
     /// Verifies every manifest file of `model` once per process on `BlockingIOExecutor`. Callers

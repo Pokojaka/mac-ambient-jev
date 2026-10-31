@@ -196,7 +196,7 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, engines: productionEngines(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        userDefaults: defaults, engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
@@ -260,7 +260,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            engines: productionEngines(paths: paths), makeLiveVADSession: { _, _, _, _ in vad },
+            engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: { _, _, _, _ in vad },
             thermalMonitor: TestThermalMonitor(.nominal),
             liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
@@ -309,7 +309,7 @@ func duplicateCaptureFailuresDoNotStopOrFinalizeTwice() async throws {
     engine.stopResult = cleanStopResult(testCheckpoint())
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, engines: productionEngines(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        userDefaults: defaults, engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
@@ -366,7 +366,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            engines: productionEngines(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+            engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: idleLiveVADFactory(),
             thermalMonitor: TestThermalMonitor(.nominal),
             liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
@@ -408,6 +408,7 @@ func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
     let state = AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
         userDefaults: defaults, engines: productionEngines(paths: paths),
+        modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }

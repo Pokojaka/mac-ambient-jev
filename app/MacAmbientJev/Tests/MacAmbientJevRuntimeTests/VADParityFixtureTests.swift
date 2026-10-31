@@ -50,7 +50,10 @@ struct VADParityFixtureTests {
     }
 
     @Test(
-        .enabled(if: realModelTestsEnabled, "RUN_MODEL_TESTS=1 でピン留めしたモデルを使うときだけ実行する"),
+        .enabled(
+            if: realModelTestsEnabled || testApplicationSupportIsSet,
+            "RUN_MODEL_TESTS=1 か MAC_AMBIENT_JEV_TEST_APP_SUPPORT があるときだけ実行する（CI は後者でピン留めの VAD モデルを渡す）"
+        ),
         arguments: VADParityCase.all
     )
     func committedFixtureMatchesFluidAudio(parityCase: VADParityCase) async throws {

@@ -27,8 +27,10 @@ extension EngineApplicationCore: SessionProcessingEffects {
         isShuttingDown || setupStatus != .ready
     }
 
-    /// Models load on first use, so there is nothing to warm up when work is queued.
-    func prepareASRModel() {}
+    /// The engine's models are prepared in setup, so queued work never waits for them here.
+    var modelsReady: Bool { true }
+
+    func prepareModels() {}
 
     func awaitIdleRelease() async {
         await idleReleaseTask?.value
@@ -106,6 +108,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
             presentation.processingState = .idle
             presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
+        case .heldForModels:
+            preconditionFailure("The engine's models are prepared in setup, so no work is held for them")
         case let .began(request):
             presentation.processingState = .running
             if request.finalizesTranscript, request.sessionID == watchedSessionID { watchedSessionIsFinal = false }

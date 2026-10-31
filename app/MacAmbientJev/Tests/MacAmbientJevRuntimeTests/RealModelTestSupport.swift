@@ -7,6 +7,10 @@ import MacAmbientJevCore
 /// `mac-ambient-jev/models`), or from the system one when the variable is unset.
 let realModelTestsEnabled = ProcessInfo.processInfo.environment["RUN_MODEL_TESTS"] == "1"
 
+/// True when the test run names its own application-support root. A test that needs only a model
+/// that root holds (CI fetches the VAD model there) runs on this alone.
+let testApplicationSupportIsSet = ProcessInfo.processInfo.environment["MAC_AMBIENT_JEV_TEST_APP_SUPPORT"] != nil
+
 func realModelStore() throws -> MacModelStore {
     let applicationSupport: URL
     if let path = ProcessInfo.processInfo.environment["MAC_AMBIENT_JEV_TEST_APP_SUPPORT"] {

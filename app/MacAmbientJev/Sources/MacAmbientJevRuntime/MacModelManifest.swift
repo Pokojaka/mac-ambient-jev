@@ -1,13 +1,6 @@
 import Foundation
 import MacAmbientJevCore
 
-/// The models the Mac app downloads, pinned in `Resources/mac_models.json`.
-public enum MacModel: String, CaseIterable, Sendable {
-    case asr
-    case diarization
-    case vad
-}
-
 public enum MacModelManifest {
     /// Decodes the bundled manifest. It must define exactly the cases of `MacModel`.
     public static func bundled() throws -> [MacModel: ModelManifestEntry] {

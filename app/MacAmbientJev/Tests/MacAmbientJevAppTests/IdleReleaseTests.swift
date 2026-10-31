@@ -41,7 +41,10 @@ private struct NoopVAD: FinalTranscriptVADSegmenter {
 }
 
 @MainActor
-private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> AppState {
+private func makeState(
+    asr: CountingASR, defaults: UserDefaults, root: URL,
+    provisioning: any ModelProvisioning = ReadyModelProvisioning()
+) -> AppState {
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
         cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
@@ -51,6 +54,7 @@ private func makeState(asr: CountingASR, defaults: UserDefaults, root: URL) -> A
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(asr: asr, diarization: NoopDiarizer(), finalTranscriptVAD: NoopVAD()),
+        modelProvisioning: provisioning,
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
@@ -76,11 +80,11 @@ func releasesWhenQueueDrains() async throws {
         metadataPolicy: .reject
     ))
     await state.processingCoordinator.waitUntilIdle()
-    await state.modelPreparationTask?.value
+    await state.modelPreparer.runTask?.value
     await state.idleReleaseTask?.value
 
     #expect(await asr.unloadCount == 1)
-    #expect(state.modelPreparation == .idle)
+    #expect(state.modelPreparation == .initial)
     #expect(!state.processingCoordinator.isDraining)
 }
 
@@ -123,7 +127,7 @@ func noReleaseWhileBusy() async throws {
 }
 
 @MainActor
-@Test("a model load requested while a release waits for an earlier load does not deadlock, and loads again afterwards", .timeLimit(.minutes(10)))
+@Test("a running model preparation is not idle, and the models load again after a release", .timeLimit(.minutes(10)))
 func reloadAfterRelease() async throws {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -133,17 +137,88 @@ func reloadAfterRelease() async throws {
     let asr = CountingASR()
     let state = makeState(asr: asr, defaults: defaults, root: root)
 
-    state.prepareASRModel()
+    state.prepareModels()
+    #expect(!state.isIdleForRelease)
+    state.releaseIdleResourcesIfIdle()
+    #expect(state.idleReleaseTask == nil)
+    await state.modelPreparer.runTask?.value
     state.releaseIdleResourcesIfIdle()
     let release = try #require(state.idleReleaseTask)
     await release.value
     #expect(await asr.loadCount == 1)
     #expect(await asr.unloadCount == 1)
-    #expect(state.modelPreparation == .idle)
+    #expect(state.modelPreparation == .initial)
 
-    state.prepareASRModel()
-    let preparation = try #require(state.modelPreparationTask)
+    state.prepareModels()
+    let preparation = try #require(state.modelPreparer.runTask)
     await preparation.value
     #expect(await asr.loadCount == 2)
-    #expect(state.modelPreparation == .ready)
+    #expect(state.modelPreparation.phase == .ready)
+}
+
+/// Models that are missing until `fetch` runs, which waits for the test to let it finish.
+private final class MissingModels: ModelProvisioning, @unchecked Sendable {
+    private let fetched = OneShotFlag()
+    let gate = ModelFetchGate()
+    func byteCount(_ model: MacModel) -> Int64 { 10 }
+    func isFetched(_ model: MacModel) -> Bool { fetched.isSet }
+    func fetch(_ model: MacModel, progress: @escaping @Sendable (ModelDownloadProgress) -> Void) async throws {
+        await gate.wait()
+        fetched.set()
+    }
+    func verify(_ model: MacModel) async throws {}
+}
+
+private final class OneShotFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
+private actor ModelFetchGate {
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        guard !open else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() {
+        open = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+@MainActor
+@Test("finalization queued without models waits, then runs by itself once the models arrive", .timeLimit(.minutes(10)))
+func finalizationWaitsForModelsAndStartsOnReady() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let provisioning = MissingModels()
+    let asr = CountingASR()
+    let state = makeState(asr: asr, defaults: defaults, root: root, provisioning: provisioning)
+    await state.startupMaintenanceTask?.value
+    let sessionID = UUID()
+
+    state.enqueueProcessing(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await state.processingCoordinator.waitUntilIdle()
+
+    #expect(state.modelPreparation.phase == .downloading)
+    #expect(state.processingQueue.modelHeld.map(\.sessionID) == [sessionID])
+    #expect(state.processingStatusText == ModelPreparationStatus.waitingForModelsText)
+    #expect(!state.isIdleForRelease)
+    #expect(await asr.loadCount == 0)
+
+    await provisioning.gate.release()
+    await state.modelPreparer.runTask?.value
+    await state.processingCoordinator.waitUntilIdle()
+
+    #expect(state.modelPreparation.phase == .ready || state.modelPreparation == .initial)
+    #expect(state.processingQueue.modelHeld.isEmpty)
+    #expect(state.processingQueue.pending.isEmpty)
+    #expect(await asr.loadCount == 1)
 }

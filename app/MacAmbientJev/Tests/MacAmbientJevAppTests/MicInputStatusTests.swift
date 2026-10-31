@@ -351,7 +351,7 @@ private func makeState(
 ) -> AppState {
     AppState(
         paths: paths, captureEngine: engine, microphoneAccess: { true }, pausesProcessing: true,
-        userDefaults: defaults, engines: productionEngines(paths: paths), makeLiveVADSession: makeLiveVADSession,
+        userDefaults: defaults, engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: makeLiveVADSession,
         thermalMonitor: TestThermalMonitor(.nominal), liveTranscriptionSleep: poll.sleep
     )
 }

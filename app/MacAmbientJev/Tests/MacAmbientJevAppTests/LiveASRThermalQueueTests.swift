@@ -43,6 +43,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
             asr: asr, diarization: UnusedThermalQueueDiarizer(),
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
+        modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: { _, _, _, _ in liveVAD },
         thermalMonitor: pressure,
         liveTranscriptionSleep: { duration in
@@ -84,7 +85,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
 
         await state.stopRecording()
         await state.processingCoordinator.waitUntilIdle()
-        await state.modelPreparationTask?.value
+        await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
         #expect(state.recordingPhase == .idle)
         #expect(state.liveCoordinator.isASRIdle)
@@ -95,7 +96,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         pressure.pressure = .fair
         await state.stopRecording()
         await state.processingCoordinator.waitUntilIdle()
-        await state.modelPreparationTask?.value
+        await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
         throw error
     }
@@ -132,6 +133,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
             asr: asr, diarization: UnusedThermalQueueDiarizer(),
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
+        modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: pressure,
         liveTranscriptionSleep: poll.sleep
@@ -149,7 +151,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
 
         await state.stopRecording()
         await state.processingCoordinator.waitUntilIdle()
-        await state.modelPreparationTask?.value
+        await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
 
         #expect(state.processingQueue.thermallyHeld.contains { $0.sessionID == sessionID })
@@ -159,7 +161,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
 
         pressure.pressure = .fair
         await state.processingCoordinator.waitUntilIdle()
-        await state.modelPreparationTask?.value
+        await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
 
         #expect(state.processingQueue.thermallyHeld.isEmpty)
@@ -174,7 +176,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
         pressure.pressure = .fair
         await state.stopRecording()
         await state.processingCoordinator.waitUntilIdle()
-        await state.modelPreparationTask?.value
+        await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
         throw error
     }

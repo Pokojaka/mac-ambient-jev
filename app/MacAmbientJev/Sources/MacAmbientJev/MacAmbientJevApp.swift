@@ -29,6 +29,7 @@ struct MacAmbientJevApp: App {
             pausesProcessing: false,
             userDefaults: .standard,
             engines: .production(models: models),
+            modelProvisioning: MacModelProvisioning(store: models, transport: URLSessionModelTransport()),
             makeLiveVADSession: AppState.fluidLiveVADFactory(models: models),
             thermalMonitor: MacThermalMonitor(),
             liveTranscriptionSleep: { try await Task.sleep(for: $0) }
@@ -221,20 +222,23 @@ private struct ContentView: View {
                 }
             }
 
-            if case .preparing = appState.modelPreparation {
+            switch appState.modelPreparation.phase {
+            case .downloading, .loading:
                 HStack(spacing: AppSpacing.sm) {
                     ProgressView()
                         .controlSize(.mini)
-                    Text(appState.modelPreparation.statusText)
+                    Text(appState.modelPreparation.summaryText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-            } else if case .failed = appState.modelPreparation {
-                Text(appState.modelPreparation.statusText)
+            case .failed:
+                Text(appState.modelPreparation.summaryText)
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            case .idle, .ready:
+                EmptyView()
             }
         }
         .padding(.horizontal, AppSpacing.lg)

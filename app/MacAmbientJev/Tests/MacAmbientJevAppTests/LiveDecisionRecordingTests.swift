@@ -154,6 +154,7 @@ private func withLiveDecisionRecording(
         engines: SessionProcessingEngines(asr: RecordingASR(),
             diarization: FluidOfflineDiarizationEngine(models: try MacModelStore(paths: paths)),
             finalTranscriptVAD: RecordingFinalVAD()),
+        modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: { _, _, _, _ in RecordingVAD() },
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: poll.sleep,
@@ -172,14 +173,14 @@ private func withLiveDecisionRecording(
         await beforeStop()
         await state.stopRecording()
         await state.processingCoordinator.waitUntilIdle()
-        await state.modelPreparationTask?.value
+        await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
         throw error
     }
     await beforeStop()
     await state.stopRecording()
     await state.processingCoordinator.waitUntilIdle()
-    await state.modelPreparationTask?.value
+    await state.modelPreparer.runTask?.value
     await state.idleReleaseTask?.value
 }
 

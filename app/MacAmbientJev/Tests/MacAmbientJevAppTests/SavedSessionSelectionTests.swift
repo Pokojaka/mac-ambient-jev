@@ -20,6 +20,7 @@ import MacAmbientJevRuntime
     let state = AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults, engines: productionEngines(paths: paths),
+        modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }

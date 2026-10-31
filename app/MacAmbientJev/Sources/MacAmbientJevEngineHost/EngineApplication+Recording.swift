@@ -459,6 +459,10 @@ extension EngineApplicationCore: RecordingFinishEffects {
 extension EngineApplicationCore: LiveTranscriptionEffects {
     var recordingSessionID: UUID? { recording.sessionID }
 
+    var modelPhase: ModelPreparationStatus.Phase { .ready }
+
+    func awaitModelPreparation() async {}
+
     func isCurrentRecording(_ sessionID: UUID) -> Bool {
         recording.isCurrentRecording(sessionID)
     }
@@ -505,7 +509,7 @@ extension EngineApplicationCore: LiveTranscriptionEffects {
 
     func liveDidChange(_ event: LiveTranscriptionEvent) {
         switch event {
-        case .started, .vadProgress, .thermal:
+        case .started, .vadProgress, .thermal, .waitingForModels:
             break
         case let .vadSegmentsEnqueued(sessionID, segmentCount):
             guard recording.sessionID == sessionID else { return }

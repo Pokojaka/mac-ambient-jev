@@ -78,6 +78,7 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
             queueSnapshots.append(CoordinatorQueueSnapshot(queue: processingQueue))
         }
     }
+    var modelsReady = true
     var pausesProcessing: Bool
     private let liveFailure: String?
     private let eventLog: CoordinatorTestEventLog
@@ -86,7 +87,7 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
 
     private(set) var queueSnapshots: [CoordinatorQueueSnapshot] = []
     private(set) var eventOrder: [String] = []
-    private(set) var prepareASRModelCount = 0
+    private(set) var prepareModelsCount = 0
     private(set) var idleReleaseCount = 0
     private(set) var liveASRDrainWaitCount = 0
     private(set) var liveASRCleanupCount = 0
@@ -106,8 +107,8 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
         self.eventLog = eventLog
     }
 
-    func prepareASRModel() {
-        prepareASRModelCount += 1
+    func prepareModels() {
+        prepareModelsCount += 1
     }
 
     func awaitIdleRelease() async {
@@ -156,6 +157,8 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
             description = "backlogged"
         case .held(let request):
             description = "held:\(request.sessionID.uuidString)"
+        case .heldForModels(let request):
+            description = "heldForModels:\(request.sessionID.uuidString)"
         case .began(let request):
             description = "began:\(request.sessionID.uuidString)"
         case .liveFailed(let message):
@@ -944,7 +947,7 @@ func processingCompletionPublishesBeforeTaskReleaseThenAllowsIdleRelease() async
         switch event {
         case .willFinishDrain, .drained:
             drainingObservations.append(coordinator.isDraining)
-        case .backlogged, .held, .began, .liveFailed, .finished, .next:
+        case .backlogged, .held, .heldForModels, .began, .liveFailed, .finished, .next:
             break
         }
     }
@@ -978,4 +981,139 @@ func retainedFinalizeRequestRunsExactlyOneFinalization() async {
 
     #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
     #expect(effects.exportedSessionIDs == [sessionID])
+}
+
+@MainActor
+@Test
+func modelHoldKeepsFIFOOrderAndClaimsUntilTheModelsAreReady() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    effects.modelsReady = false
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [
+            makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()
+        ],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal)
+    )
+    let first = UUID(), second = UUID(), retry = UUID()
+    var queue = effects.processingQueue
+    let claimedFirst = queue.claimReprocessing(first)
+    let claimedSecond = queue.claimReprocessing(second)
+    #expect(claimedFirst && claimedSecond)
+    effects.processingQueue = queue
+
+    coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))
+    coordinator.enqueue(.finalize(sessionID: second, metadataPolicy: .reject))
+    coordinator.enqueue(.retryContentPriority(sessionID: retry, boundarySegments: [], clauses: []))
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.processingQueue.modelHeld.map(\.sessionID) == [first, second])
+    #expect(effects.processingQueue.claimedSessionIDs == Set([first, second]))
+    #expect(effects.processingQueue.sessionIDs.isSuperset(of: [first, second]))
+    #expect(await processor.operations() == ["retryContentPriority:\(retry.uuidString)"])
+
+    coordinator.resumeModelHeldProcessing()
+    #expect(effects.processingQueue.modelHeld.count == 2)
+
+    effects.modelsReady = true
+    coordinator.resumeModelHeldProcessing()
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == [
+        "retryContentPriority:\(retry.uuidString)",
+        "processSession:\(first.uuidString)",
+        "processSession:\(second.uuidString)"
+    ])
+    #expect(effects.processingQueue.modelHeld.isEmpty)
+    #expect(effects.processingQueue.claimedSessionIDs.isEmpty)
+}
+
+@MainActor
+@Test
+func finishLiveHeldForModelsBecomesRejectingFinalize() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    effects.modelsReady = false
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal)
+    )
+    let sessionID = UUID()
+    var sessionIDsDuringWait: [Set<UUID>] = []
+    effects.onLiveASRDrainWait = { sessionIDsDuringWait.append(effects.processingQueue.sessionIDs) }
+
+    coordinator.enqueue(.finishLive(sessionID: sessionID, checkpoint: makeCoordinatorTestCheckpoint()))
+    await coordinator.waitUntilIdle()
+
+    #expect(sessionIDsDuringWait == [[sessionID]])
+    #expect(effects.processingQueue.currentSessionID == nil)
+    #expect(effects.processingQueue.modelHeld.count == 1)
+    if case .finalize(sessionID, .reject) = effects.processingQueue.modelHeld[0] {} else {
+        Issue.record("the held finishLive must become finalize(.reject)")
+    }
+    #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
+    #expect(effects.liveASRCleanupCount == 1)
+
+    effects.modelsReady = true
+    coordinator.resumeModelHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(await processor.operations().last == "processSession:\(sessionID.uuidString)")
+}
+
+@MainActor
+@Test
+func modelHoldAndThermalHoldResumeOnlyWhenBothAllow() async {
+    let thermal = CoordinatorTestThermalMonitor(pressure: .critical)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    effects.modelsReady = false
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal)
+    let first = UUID(), second = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))
+    coordinator.enqueue(.finalize(sessionID: second, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.modelHeld.map(\.sessionID) == [first, second])
+
+    thermal.setPressure(.fair)
+    coordinator.resumeThermallyHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.modelHeld.map(\.sessionID) == [first, second])
+    #expect(await processor.operations().isEmpty)
+
+    thermal.setPressure(.critical)
+    effects.modelsReady = true
+    coordinator.resumeModelHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.thermallyHeld.map(\.sessionID) == [first, second])
+    #expect(effects.processingQueue.modelHeld.isEmpty)
+    #expect(await processor.operations().isEmpty)
+
+    thermal.setPressure(.fair)
+    coordinator.resumeThermallyHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(await processor.operations() == [
+        "processSession:\(first.uuidString)", "processSession:\(second.uuidString)"
+    ])
+}
+
+private func makeCoordinatorTestCheckpoint() -> AudioCheckpoint {
+    AudioCheckpoint(
+        committedFrames: 0,
+        sampleRate: 16_000,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: [],
+        chunkFrameCounts: [],
+        gapEvents: []
+    )
 }

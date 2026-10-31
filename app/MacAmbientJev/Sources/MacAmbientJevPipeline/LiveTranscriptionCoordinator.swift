@@ -35,6 +35,8 @@ public enum LiveTranscriptionEvent: Sendable, Equatable {
     case vadProgress(UUID, LiveVADProgress)
     case vadSegmentsEnqueued(UUID, Int)
     case vadFailed(UUID, String)
+    /// Live recognition is off because the models are not ready; finalization covers the session.
+    case waitingForModels(UUID)
 }
 
 @MainActor
@@ -43,6 +45,9 @@ public protocol LiveTranscriptionEffects: AnyObject {
     func isCurrentRecording(_ sessionID: UUID) -> Bool
     func committedLiveCheckpoint() async throws -> AudioCheckpoint
     func awaitIdleRelease() async
+    var modelPhase: ModelPreparationStatus.Phase { get }
+    /// Returns when the running model preparation has finished.
+    func awaitModelPreparation() async
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler
     func liveDidChange(_ event: LiveTranscriptionEvent)
@@ -265,6 +270,15 @@ public final class LiveTranscriptionCoordinator {
         // Do not restore the queue when an ASR failure discards it during registration.
         guard state.failure(sessionID: sessionID) == nil else { return }
 
+        // Batches are not kept for later: they wait only while the models verify and load.
+        switch requiredEffects.modelPhase {
+        case .ready, .loading:
+            break
+        case .idle, .downloading, .failed:
+            requiredEffects.liveDidChange(.waitingForModels(sessionID))
+            return
+        }
+
         state.enqueue(
             sessionID: sessionID,
             segments: segments,
@@ -414,6 +428,15 @@ public final class LiveTranscriptionCoordinator {
         guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }
 
         while state.failure(sessionID: sessionID) == nil && state.hasQueued(sessionID: sessionID) {
+            if effects.modelPhase == .loading {
+                await effects.awaitModelPreparation()
+            }
+            guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }
+            guard effects.modelPhase == .ready else {
+                state.discardQueued(sessionID: sessionID)
+                effects.liveDidChange(.waitingForModels(sessionID))
+                break
+            }
             do {
                 try await waitForThermalHeadroom(sessionID: sessionID)
             } catch {

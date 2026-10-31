@@ -1,4 +1,5 @@
 import Testing
+import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
 @Test
