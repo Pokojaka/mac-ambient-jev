@@ -503,7 +503,8 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevCAFFixtures",
             "MacAmbientJevClauseTaggerFixtures"
-        ]
+        ],
+        resources: [.copy("Resources")]
     ),
     .testTarget(
         name: "MacAmbientJevRuntimeTests",

@@ -23,8 +23,8 @@ public actor AudioFileTimelineBuilder: ImportedAudioTimelineBuilding {
             converter: converter
         )
 
-        // The canonical half-open boundary is computed over decoded frames. Media Foundation
-        // AAC output may include platform codec padding, which remains part of those frames.
+        // The canonical half-open boundary is computed over the frames the decoder returns,
+        // which already exclude M4A priming and end padding named by the file's metadata.
         while true {
             let mono = try decoder.readMono(frameCount: Int(readFrameCount))
             guard !mono.isEmpty else { break }
