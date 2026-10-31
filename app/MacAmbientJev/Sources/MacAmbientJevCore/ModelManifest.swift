@@ -100,7 +100,8 @@ public enum ModelVerifier {
         }
     }
 
-    private static func verify(_ file: ModelManifestFile, in directory: URL) throws {
+    /// Verifies one manifest file the same way, for callers that fetch file by file.
+    public static func verify(_ file: ModelManifestFile, in directory: URL) throws {
         let fileManager = FileManager.default
         var current = directory
         let components = file.name.split(separator: "/").map(String.init)
