@@ -49,28 +49,6 @@ public extension ASREngine {
     }
 }
 
-public struct ModelStore: Sendable {
-    public static let qwen3ASRModelID = "aufklarer/Qwen3-ASR-1.7B-MLX-8bit"
-    public let paths: AppPaths
-
-    public init(paths: AppPaths) {
-        self.paths = paths
-    }
-
-    public var qwen3ASRCacheRoot: URL {
-        paths.modelsRoot.appending(
-            path: "qwen3-asr-1.7b-mlx-8bit",
-            directoryHint: .isDirectory
-        )
-    }
-
-    public func prepareQwen3ASRDirectory() throws -> URL {
-        let url = qwen3ASRCacheRoot
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
-}
-
 public struct ASRAudioLoader: Sendable {
     public let reader: any TimelineAudioReading
 

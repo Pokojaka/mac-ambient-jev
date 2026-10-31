@@ -104,8 +104,12 @@ public enum ModelFetcher {
                 throw networkFailure(error, file: file.name)
             }
             if offset > 0 {
-                guard response.statusCode == 206, contentRangeStart(response.contentRange).map({ $0 == offset }) ?? true else {
+                let misaligned = response.statusCode == 206
+                    && !(contentRangeStart(response.contentRange).map { $0 == offset } ?? true)
+                if response.statusCode == 200 || response.statusCode == 416 || misaligned {
                     try discard(partial, directory: directory, file: file.name)
+                }
+                guard response.statusCode == 206, !misaligned else {
                     throw ModelDownloadError.httpStatus(file: file.name, status: response.statusCode)
                 }
             } else {

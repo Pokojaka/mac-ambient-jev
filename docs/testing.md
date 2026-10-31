@@ -509,7 +509,7 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
   bash scripts/verify_v1.sh
 ```
 
-`ASR_SMOKE_AUDIO` は絶対パスの読み取り可能なファイルが必須。Runtime の ASRIntegrationTests はさらに 16 kHz、mono、0 秒超〜60 秒以下を要求する。日本語音声を使う。モデルをロードして認識し、trim 後の本文が非空で日本語文字を含むことを確認するが、参照文との一致率は測らない。初回にはモデルの取得が必要。
+`ASR_SMOKE_AUDIO` は絶対パスの読み取り可能なファイルが必須。Runtime の ASRIntegrationTests はさらに 16 kHz、mono、0 秒超〜60 秒以下を要求する。日本語音声を使う。モデルをロードして認識し、trim 後の本文が非空で日本語文字を含むことを確認するが、参照文との一致率は測らない。実モデルを使う Runtime のテスト（ASRIntegrationTests、MacModelLoadingIntegrationTests、VADParityFixtureTests の FluidAudio 一致検査）は `RUN_MODEL_TESTS=1` のときだけ動き、アプリが使うモデル directory（`~/Library/Application Support/mac-ambient-jev/models`）にピン留めした ASR・話者分離・VAD のモデルが取得済みで検証に通ることが前提です。エンジンはダウンロードしないため、未取得なら型付きエラーで失敗します。別の場所のモデルを使うときは、絶対パスの Application Support 相当 directory を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` に指定します（その下の mac-ambient-jev の models フォルダーを読みます）。テスト用 directory には manifest のファイルだけを hard link かコピーで置けば足ります。
 
 `verify_v1.sh` は integration test の検出と Runtime test bundle の存在も確認し、指定時だけその bundle を xctest で実行する。`RUN_MODEL_TESTS=1` だけで fixture を指定しない手順は使えない。
 

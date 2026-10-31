@@ -16,14 +16,20 @@ struct MacAmbientJevApp: App {
         } catch {
             preconditionFailure("保存先を決められないため起動できません: \(error.localizedDescription)")
         }
+        let models: MacModelStore
+        do {
+            models = try MacModelStore(paths: paths)
+        } catch {
+            preconditionFailure("同梱モデルマニフェストを読めないため起動できません: \(error.localizedDescription)")
+        }
         _appState = StateObject(wrappedValue: AppState(
             paths: paths,
             captureEngine: AudioCaptureEngine(paths: paths),
             microphoneAccess: AppState.requestSystemMicrophoneAccess,
             pausesProcessing: false,
             userDefaults: .standard,
-            engines: .production(paths: paths),
-            makeLiveVADSession: AppState.makeFluidLiveVADSession,
+            engines: .production(models: models),
+            makeLiveVADSession: AppState.fluidLiveVADFactory(models: models),
             thermalMonitor: MacThermalMonitor(),
             liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         ))

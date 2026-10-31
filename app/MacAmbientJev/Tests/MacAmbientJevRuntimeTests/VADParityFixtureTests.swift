@@ -13,9 +13,12 @@ private func fluidExpectation(
     for parityCase: VADParityCase, clip: [Float]
 ) async throws -> VADParityExpectation {
     let samples = parityCase.samples(clip: clip)
-    let manager = try await VadManager(config: FluidVADSegmentationEngine.vadConfig)
+    let models = try realModelStore()
+    let manager = try await FluidModelLoading.vadManager(
+        from: models.verifiedDirectory(.vad), config: FluidVADSegmentationEngine.vadConfig
+    )
     let probabilities = try await manager.process(samples).map(\.probability)
-    let segments = try await FluidFinalTranscriptVADSegmenter().segment(
+    let segments = try await FluidFinalTranscriptVADSegmenter(models: models).segment(
         reader: VADParityTimeline(samples: samples), runID: "parity"
     )
     return VADParityExpectation(
@@ -46,7 +49,10 @@ struct VADParityFixtureTests {
         ).write()
     }
 
-    @Test(arguments: VADParityCase.all)
+    @Test(
+        .enabled(if: realModelTestsEnabled, "RUN_MODEL_TESTS=1 でピン留めしたモデルを使うときだけ実行する"),
+        arguments: VADParityCase.all
+    )
     func committedFixtureMatchesFluidAudio(parityCase: VADParityCase) async throws {
         let committed = try VADParityFile.load().expectation(named: parityCase.name)
         let actual = try await fluidExpectation(

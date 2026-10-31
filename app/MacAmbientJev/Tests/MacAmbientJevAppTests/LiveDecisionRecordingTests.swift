@@ -152,7 +152,7 @@ private func withLiveDecisionRecording(
         paths: paths, captureEngine: capture, microphoneAccess: { true }, pausesProcessing: false,
         userDefaults: defaults,
         engines: SessionProcessingEngines(asr: RecordingASR(),
-            diarization: FluidOfflineDiarizationEngine(paths: paths),
+            diarization: FluidOfflineDiarizationEngine(models: try MacModelStore(paths: paths)),
             finalTranscriptVAD: RecordingFinalVAD()),
         makeLiveVADSession: { _, _, _, _ in RecordingVAD() },
         thermalMonitor: TestThermalMonitor(.nominal),

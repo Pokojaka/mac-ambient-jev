@@ -92,6 +92,18 @@ func rangeAnsweredWith200Or416DeletesPartial() async throws {
 }
 
 @Test
+func transientServerErrorsKeepThePartial() async throws {
+    for status in [429, 502, 503] {
+        let dir = tempDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+        await #expect(throws: ModelDownloadError.self) { try await run(dir, Fake(cutAt: 300, seen: .init())) }
+        await #expect(throws: ModelDownloadError.httpStatus(file: file.name, status: status)) {
+            try await run(dir, Fake(status: { $0 == nil ? 200 : status }, seen: .init()))
+        }
+        #expect(try Data(contentsOf: partialURL(dir)).count == 300)
+    }
+}
+
+@Test
 func wrongSizeAndWrongHashDeleteTheFile() async throws {
     let dir = tempDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
     await #expect(throws: ModelDownloadError.sizeMismatch(file: file.name, expected: 1000, actual: 1001)) {

@@ -15,7 +15,7 @@ func revealTargetsComeFromTheCatalogAndFailWhenMissing() throws {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let state = AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
-        pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
+        pausesProcessing: true, userDefaults: defaults, engines: productionEngines(paths: paths),
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
@@ -25,7 +25,7 @@ func revealTargetsComeFromTheCatalogAndFailWhenMissing() throws {
         paths: AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: missingRoot),
         captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
         pausesProcessing: true, userDefaults: defaults,
-        engines: .production(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
+        engines: productionEngines(paths: paths), makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )

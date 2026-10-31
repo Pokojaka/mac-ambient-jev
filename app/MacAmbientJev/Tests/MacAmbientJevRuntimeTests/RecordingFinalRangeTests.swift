@@ -10,8 +10,10 @@ private let tailProbeProvenance = RunProvenance(engine: "tail-probe", model: nil
 private let speechStart: Int64 = 90 * 16_000
 
 @Test
-func finalTranscriptVADProvenanceRecordsSegmentationConfiguration() {
-    let provenance = FluidFinalTranscriptVADSegmenter().provenance
+func finalTranscriptVADProvenanceRecordsSegmentationConfiguration() throws {
+    let paths = AppPaths(applicationSupportURL: URL(fileURLWithPath: "/tmp/unused-support"),
+        cacheURL: URL(fileURLWithPath: "/tmp/unused-cache"), sessionsRootOverride: nil)
+    let provenance = FluidFinalTranscriptVADSegmenter(models: try MacModelStore(paths: paths)).provenance
     #expect(provenance.engine == "fluidaudio-silero-vad")
     #expect(provenance.version == "FluidAudio@0.15.8")
     #expect(provenance.configuration == [

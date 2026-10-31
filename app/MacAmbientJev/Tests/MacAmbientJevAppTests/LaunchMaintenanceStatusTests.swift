@@ -54,7 +54,7 @@ private func launchMaintenanceRecording(
 private func launchMaintenanceState(paths: AppPaths, defaults: UserDefaults) -> AppState {
     AppState(
         paths: paths, captureEngine: FakeAppCaptureEngine(), microphoneAccess: { false },
-        pausesProcessing: true, userDefaults: defaults, engines: .production(paths: paths),
+        pausesProcessing: true, userDefaults: defaults, engines: productionEngines(paths: paths),
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
