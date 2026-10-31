@@ -333,6 +333,7 @@ public final class SessionProcessingCoordinator {
                     }
                     finalization = result
                 }
+                effects.refreshSavedSessions()
             case .retryContentPriority(let sessionID, let boundarySegments, let clauses):
                 if Task.isCancelled || effects.pausesProcessing {
                     holdForHeat(request)

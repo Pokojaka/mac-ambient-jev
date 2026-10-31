@@ -124,7 +124,7 @@ func startRunsStepsInOrder() async {
 
     await coordinator.start(sessionID: sessionID, effects: effects)
 
-    #expect(effects.events == ["begin", "capture", "started", "live-ready", "live-session"])
+    #expect(effects.events == ["begin", "capture", "started", "live-ready", "refresh", "live-session"])
     #expect(effects.recording.isCurrentRecording(sessionID))
     #expect(effects.failure == nil)
 }

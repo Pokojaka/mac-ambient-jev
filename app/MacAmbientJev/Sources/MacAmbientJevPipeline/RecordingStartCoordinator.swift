@@ -67,6 +67,7 @@ public struct RecordingStartCoordinator {
                 return
             }
             effects.recordingDidStart(sessionID: sessionID)
+            effects.refreshSavedSessions()
             do {
                 try await effects.startLiveSession(sessionID: sessionID)
             } catch {
