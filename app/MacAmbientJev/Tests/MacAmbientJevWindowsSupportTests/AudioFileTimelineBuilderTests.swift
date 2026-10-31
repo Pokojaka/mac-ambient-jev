@@ -841,11 +841,13 @@ func compressedFixturesBuildToTheirDecodedFrameBoundary(fileExtension: String) a
         #expect(nativeExtent.sampleRate == 48_000)
         #expect(nativeExtent.frameCount == 12_288)
     }
+    // The m4a fixture carries an edit list that removes its 1,024 priming frames; ADTS has no such metadata.
+    let primingFrames: Int64 = fileExtension == "m4a" ? 1_024 : 0
     if fileExtension == "m4a" || fileExtension == "aac" {
         #expect(nativeExtent.sampleRate == 48_000)
-        #expect(nativeExtent.frameCount == 13_312)
+        #expect(nativeExtent.frameCount == 13_312 - primingFrames)
         let nativeSignalOnset = try #require(nativeExtent.signalOnset)
-        #expect(abs(nativeSignalOnset - 4_098) <= 4)
+        #expect(abs(nativeSignalOnset - (4_098 - primingFrames)) <= 4)
     }
 
     let processing = processingDirectory(for: directories)
@@ -860,6 +862,8 @@ func compressedFixturesBuildToTheirDecodedFrameBoundary(fileExtension: String) a
     )
     #expect(checkpoint.committedFrames == nativeBoundary)
     if fileExtension == "flac" || fileExtension == "mp3" {
+        #expect(checkpoint.committedFrames == 4_096)
+    } else if fileExtension == "m4a" {
         #expect(checkpoint.committedFrames == 4_096)
     } else {
         #expect(checkpoint.committedFrames == 4_437)
@@ -880,12 +884,12 @@ func compressedFixturesBuildToTheirDecodedFrameBoundary(fileExtension: String) a
     if fileExtension == "m4a" || fileExtension == "aac" {
         let nativeSignalOnset = try #require(nativeExtent.signalOnset)
         let canonicalSignalOnset = try #require(samples.firstIndex(where: { abs($0) > 0.05 }))
-        #expect(abs(canonicalSignalOnset - 1_366) <= 2)
+        #expect(abs(canonicalSignalOnset - Int((4_098 - primingFrames) / 3)) <= 2)
         print(
             "Measured .\(fileExtension) signal onsets: native=\(nativeSignalOnset), canonical=\(canonicalSignalOnset)"
         )
         let maximumSineError = (2_560..<4_096).reduce(Float.zero) { largest, frame in
-            let sourceFrame = Double(frame) * 3 - 1_024
+            let sourceFrame = Double(frame) * 3 - Double(1_024 - primingFrames)
             let expected = Float(0.375 * sin(2 * Double.pi * 375 * sourceFrame / 48_000))
             return max(largest, abs(samples[frame] - expected))
         }
@@ -902,6 +906,23 @@ func compressedFixturesBuildToTheirDecodedFrameBoundary(fileExtension: String) a
     #expect(try Data(contentsOf: fixtureURL) == fixtureBytes)
     #expect(try Data(contentsOf: imported.originalURL) == fixtureBytes)
     #expect(try storageStore(for: directories).load() == .importedOriginal(nil))
+}
+
+/// macOS gives 12,288 frames with the signal at 3,074 for the first two. The third has no
+/// metadata, so Windows imports every decoded frame.
+@Test(arguments: [
+    ("windows_audio_fixture_itunsmpb", Int64(12_288), Int64(3_074)),
+    ("windows_audio_fixture", Int64(12_288), Int64(3_074)),
+    ("windows_audio_fixture_no_edit_metadata", Int64(13_312), Int64(4_098)),
+])
+func m4aPrimingFollowsItsMetadata(name: String, frameCount: Int64, signalOnset: Int64) throws {
+    let directories = try ImportTestDirectories()
+    defer { directories.cleanUp() }
+    let fixtureURL = try #require(Bundle.module.url(forResource: name, withExtension: "m4a", subdirectory: "Resources"))
+    let imported = try importFile(fixtureURL, into: directories)
+    let extent = try decodedNativeFrameExtent(from: imported.originalURL, sessionURL: directories.sessionURL)
+    #expect(extent.frameCount == frameCount)
+    #expect(abs(try #require(extent.signalOnset) - signalOnset) <= 4)
 }
 
 @Test(arguments: ["ogg", ""])

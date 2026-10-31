@@ -19,6 +19,7 @@ Windows の共通 Core / Pipeline、評価 CLI、ProcessRecording CLI、保存�
 - 「最新へ戻る」は末尾へ移動する。自動追従は利用者のスクロール操作でのみ解除する。非同期操作には実行中表示と重複防止を設ける。[ライブ](live.md)
 - 録音も確定処理もない待機中の releaseIdleResources は ASR・話者分離のモデルと MLX キャッシュを解放する。発話文 tagger は provider factory の寿命中 cache され、idle release では解放しない。失敗したロードもアプリ再起動まで cache される。[アーキテクチャ](architecture.md)
 - 内部音声は録音・import とも **16 kHz mono float32 PCM**。確定処理が終わった録音は **16 kHz mono 16-bit FLAC**（`recording.flac`）として保存し、PCM は削除する。全入力 channel の平均後、保存前の ingress で一度だけ連続 SRC を行う。VAD・ASR・話者分離は同じ canonical 音声を直接読む。必要容量は実保存形式で計算し、開始時に空き容量を取得できなければ録音しない。[音声入力](capture.md)・[保存形式](storage.md)
+- M4A の import は Mac と Windows で同じ規則で AAC の priming と末尾 padding を除く: `elst` を優先し、なければ `iTunSMPB`（brand 不問）、どちらもなければ何も除かない。複数エントリの `elst`・不正または decode 長を超える値はエラーで、推測で補わない。[M4A の priming](architecture.md#m4a-の-priming-と末尾-padding)
 - 録音の書き出しは保存済みの 16-bit FLAC `recording.flac` の無変換コピー。FLAC 化前の録音は書き出せない。書き出しは内部の音声を削除せず、書き出し後に内部音声を消す機能もない。読み込み音声は保存済み original の無再圧縮コピー。書き出しフォルダーは保存済みセッションの実フォルダー名をそのまま使い、日時・stem・ID から再計算しない。[書き出し](export.md)
 - Mac app の入力音量調整は既定入力デバイスが変わったら ownership を放棄し、停止時に旧デバイスの音量を戻さない。[音声入力](capture.md)
 - Mac app では入力音量を変更できない機器は橙色の非致命な注意とする。音量の注意と VAD による監視不能は別状態・別表示とする。[音声入力](capture.md)

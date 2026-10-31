@@ -51,6 +51,8 @@ final class AudioImportDecoder {
     private var decodedFrameCount: Int64 = 0
     private var reachedEOF = false
     private var terminalError: (any Error)?
+    /// Keeps the decoded-frame range named by an M4A's edit list or `iTunSMPB`; without a window it keeps every frame.
+    private var trimCursor: AACTrimCursor
 
     init(url: URL, sessionURL: URL) throws {
         let fileExtension = url.pathExtension.lowercased()
@@ -62,6 +64,20 @@ final class AudioImportDecoder {
         case "m4a": format = .mediaFoundation(isADTS: 0)
         case "aac": format = .mediaFoundation(isADTS: 1)
         default: throw AudioImportError.unsupportedExtension(fileExtension)
+        }
+
+        let priming: MP4Priming
+        if case .mediaFoundation(isADTS: 0) = format {
+            // A separate handle: the decoder's stream and this parser must not share a file position.
+            let primingHandle = try SessionFileAccess.openHandle(url, relativeTo: sessionURL)
+            defer { try? primingHandle.close() }
+            do {
+                priming = try MP4PrimingParser.parse(MP4FileHandleSource(handle: primingHandle))
+            } catch let error as MP4PrimingError {
+                throw AudioImportError.decoderFailed(error.localizedDescription)
+            }
+        } else {
+            priming = .none
         }
 
         let openedHandle = try SessionFileAccess.openHandle(url, relativeTo: sessionURL)
@@ -131,6 +147,7 @@ final class AudioImportDecoder {
                 throw AudioImportError.decoderFailed("miniaudio が不正なサンプルレート、チャンネル数、または宣言フレーム数を返しました。")
             }
 
+            self.trimCursor = AACTrimCursor(window: nil)
             self.sampleRate = Double(rate)
             self.channelCount = Int(channels)
             self.backend = .miniaudio(createdDecoder, frameCount: Int64(length))
@@ -155,6 +172,12 @@ final class AudioImportDecoder {
                 throw AudioImportError.decoderFailed("Media Foundation が不正なサンプルレートまたはチャンネル数を返しました。")
             }
 
+            do {
+                self.trimCursor = AACTrimCursor(window: try priming.window(sampleRate: rate))
+            } catch let error as MP4PrimingError {
+                mja_mf_decoder_destroy(createdDecoder)
+                throw AudioImportError.decoderFailed(error.localizedDescription)
+            }
             self.sampleRate = Double(rate)
             self.channelCount = Int(channels)
             self.backend = .mediaFoundation(createdDecoder)
@@ -259,33 +282,52 @@ final class AudioImportDecoder {
         into interleaved: inout [Float],
         requestedFrameCount: Int
     ) throws -> [Float] {
-        var framesRead: UInt32 = 0
-        let result = interleaved.withUnsafeMutableBufferPointer { output in
-            mja_mf_decoder_read(
-                decoder,
-                output.baseAddress,
-                UInt32(requestedFrameCount),
-                &framesRead
-            )
-        }
-        guard result == 0 else {
-            throw AudioImportError.decoderFailed("Media Foundation の読み込みに失敗しました（HRESULT: \(result)）。")
-        }
-        guard framesRead <= UInt32(requestedFrameCount) else {
-            throw AudioImportError.decoderFailed("Media Foundation が要求数を超えるフレームを返しました。")
-        }
+        while true {
+            var framesRead: UInt32 = 0
+            let result = interleaved.withUnsafeMutableBufferPointer { output in
+                mja_mf_decoder_read(
+                    decoder,
+                    output.baseAddress,
+                    UInt32(requestedFrameCount),
+                    &framesRead
+                )
+            }
+            guard result == 0 else {
+                throw AudioImportError.decoderFailed("Media Foundation の読み込みに失敗しました（HRESULT: \(result)）。")
+            }
+            guard framesRead <= UInt32(requestedFrameCount) else {
+                throw AudioImportError.decoderFailed("Media Foundation が要求数を超えるフレームを返しました。")
+            }
 
-        guard framesRead > 0 else {
-            guard decodedFrameCount > 0 else { throw AudioImportError.emptyAudio }
-            reachedEOF = true
-            return []
+            guard framesRead > 0 else {
+                if trimCursor.window != nil {
+                    do {
+                        try trimCursor.finish()
+                    } catch let error as MP4PrimingError {
+                        throw AudioImportError.decoderFailed(error.localizedDescription)
+                    }
+                } else {
+                    guard decodedFrameCount > 0 else { throw AudioImportError.emptyAudio }
+                }
+                reachedEOF = true
+                return []
+            }
+            let kept: Range<Int>
+            do {
+                kept = try trimCursor.accept(frameCount: Int(framesRead))
+            } catch let error as MP4PrimingError {
+                throw AudioImportError.decoderFailed(error.localizedDescription)
+            }
+            decodedFrameCount = trimCursor.decodedFrames
+            if trimCursor.isComplete { reachedEOF = true }
+            if !kept.isEmpty {
+                return try downmix(
+                    Array(interleaved[kept.lowerBound * channelCount..<kept.upperBound * channelCount]),
+                    frameCount: kept.count
+                )
+            }
+            if reachedEOF { return [] }
         }
-        let (nextDecodedFrameCount, overflow) = decodedFrameCount.addingReportingOverflow(Int64(framesRead))
-        guard !overflow else {
-            throw AudioImportError.decoderFailed("デコードした累積フレーム数が上限を超えました。")
-        }
-        decodedFrameCount = nextDecodedFrameCount
-        return try downmix(interleaved, frameCount: Int(framesRead))
     }
 
     private func downmix(_ interleaved: [Float], frameCount: Int) throws -> [Float] {
