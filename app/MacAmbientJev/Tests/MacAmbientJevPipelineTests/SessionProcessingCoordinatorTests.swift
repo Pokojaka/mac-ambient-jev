@@ -461,6 +461,40 @@ func failedFinalizationReleasesClaimWithoutExport() async {
 
 @MainActor
 @Test
+func completedFinishLiveRefreshesSavedSessions() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(
+        pausesProcessing: false,
+        liveFailure: nil,
+        eventLog: eventLog
+    )
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult()],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects,
+        processor: processor,
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+    )
+    let checkpoint = AudioCheckpoint(
+        committedFrames: 0,
+        sampleRate: 16_000,
+        channelCount: 1,
+        sampleFormat: .float32LE,
+        chunkFiles: [],
+        chunkFrameCounts: [],
+        gapEvents: []
+    )
+
+    coordinator.enqueue(.finishLive(sessionID: UUID(), checkpoint: checkpoint))
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.refreshSavedSessionsCount == 1)
+}
+
+@MainActor
+@Test
 func pausedFinishLiveResumesAsStoredFinalization() async throws {
     let thermalMonitor = CoordinatorTestThermalMonitor(pressure: .fair)
     let eventLog = CoordinatorTestEventLog()
@@ -495,6 +529,7 @@ func pausedFinishLiveResumesAsStoredFinalization() async throws {
 
     #expect(effects.liveASRDrainWaitCount == 1)
     #expect(effects.liveASRCleanupCount == 1)
+    #expect(effects.refreshSavedSessionsCount == 1)
     #expect(effects.processingQueue.thermallyHeld.map(\.sessionID) == [sessionID])
     if let heldRequest = effects.processingQueue.thermallyHeld.first {
         if case .finalize(let heldSessionID, let metadataPolicy) = heldRequest {
@@ -559,6 +594,7 @@ func pauseDuringLiveDrainSkipsFinishAndHoldsStoredFinalization() async {
 
     #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
     #expect(effects.liveASRCleanupCount == 1)
+    #expect(effects.refreshSavedSessionsCount == 1)
     #expect(effects.processingQueue.currentSessionID == nil)
     #expect(effects.processingQueue.thermallyHeld.count == 1)
     if let heldRequest = effects.processingQueue.thermallyHeld.first {
