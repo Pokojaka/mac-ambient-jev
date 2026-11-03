@@ -82,7 +82,7 @@ private struct WindowsEngineAcceleratorDevice: EngineAcceleratorDevice {
     let layout: PortableInstalledModelLayout
     let adapterIdentity: String
     var ortVersion: String { ONNXEnvironment.runtimeVersion }
-    var modelRevision: String { "\(ASRModelSize.small.repository)@\(ASRModelSize.small.commit)" }
+    func modelRevision(size: ASRModelSize) -> String { "\(size.repository)@\(size.commit)" }
 
     func makeASREngine(size: ASRModelSize, threads: Int, language: String,
         decoding: ASRDecodingPolicy, identity: ASRAcceleratorIdentity) async throws -> any ASREngine {

@@ -19,7 +19,8 @@ public protocol EngineAcceleratorDevice: Sendable {
     var info: EngineAcceleratorDeviceInfo { get }
     var adapterIdentity: String { get }
     var ortVersion: String { get }
-    var modelRevision: String { get }
+    /// The pinned `repository@commit` of the model this device runs for `size`.
+    func modelRevision(size: ASRModelSize) -> String
 
     /// Creates an accelerated ASR engine using every supplied setting without CPU fallback.
     /// `.audioLength` is the real-work policy; `.fixed` is for verification.

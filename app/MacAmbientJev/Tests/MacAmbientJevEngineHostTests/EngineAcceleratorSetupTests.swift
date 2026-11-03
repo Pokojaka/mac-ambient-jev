@@ -9,7 +9,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
     nonisolated let info: EngineAcceleratorDeviceInfo
     nonisolated let adapterIdentity: String
     nonisolated let ortVersion = "1.31.0"
-    nonisolated let modelRevision = "fake-model-revision"
+    nonisolated func modelRevision(size: ASRModelSize) -> String { "fake-model-revision-\(size.rawValue)" }
     nonisolated let provenance = RunProvenance(engine: "fake-accelerator", model: nil, version: "test", configuration: [:])
     private var output: String
     private var preparationFails = false
@@ -58,7 +58,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         let context: EngineRequestContext
     }
 
-    private func fixture(root existingRoot: URL? = nil, output: String = EngineAcceleratorVerificationFixture.expectedText,
+    private func fixture(root existingRoot: URL? = nil, output: String = EngineAcceleratorVerificationFixture.expectedText(for: .small),
                          adapterIdentity: String = "test-adapter", duplicateDevices: Bool = false) throws -> Fixture {
         let root = try existingRoot ?? ApplicationHarness.makeRoot()
         let paths = engineTestPaths(root: root)
@@ -78,8 +78,8 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
 
     @Test(arguments: [true, false])
     func verifiesFixedOutputAndPersistsReceipt(passes: Bool) async throws {
-        let output = passes ? EngineAcceleratorVerificationFixture.expectedText
-            : String(EngineAcceleratorVerificationFixture.expectedText.dropLast()) + "?"
+        let output = passes ? EngineAcceleratorVerificationFixture.expectedText(for: .small)
+            : String(EngineAcceleratorVerificationFixture.expectedText(for: .small).dropLast()) + "?"
         let f = try fixture(output: output)
         defer { try? FileManager.default.removeItem(at: f.root) }
         let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", packageFullName: "catalog-package",
@@ -106,7 +106,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         #expect(key.driverVersion == f.accelerator.info.driverVersion && key.adapterIdentity == f.accelerator.adapterIdentity)
         #expect(key.dependencyHashes.isEmpty)
         #expect(key.modelSize == EngineASRSize.small.rawValue && key.threads == 2)
-        #expect(key.modelRevision == f.accelerator.modelRevision && key.ortVersion == f.accelerator.ortVersion && key.ortVersion == "1.31.0")
+        #expect(key.modelRevision == f.accelerator.modelRevision(size: .small) && key.ortVersion == f.accelerator.ortVersion && key.ortVersion == "1.31.0")
         #expect(key.decodingSettings == EngineAcceleratorVerificationFixture.decodingSettings)
         #expect(key.fixtureHash == EngineAcceleratorVerificationFixture.fixtureHash && key.verificationPolicyVersion == EngineAcceleratorVerificationFixture.policyVersion)
         #expect(try EngineVerificationStore(paths: f.paths).load(for: key) == receipt)
@@ -117,7 +117,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         #expect(await f.accelerator.history() == ["bind:catalog-provider", "make:small:2:ja", "prepare", "transcribe", "unload"])
     }
 
-    @Test func rejectsUnknownAndUnsupportedBindingsAndBusyRecording() async throws {
+    @Test func rejectsUnknownBindingsAndBusyRecording() async throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
         let descriptor = try EngineAcceleratorDescriptor(providerName: "catalog-provider", packageFullName: "catalog-package",
@@ -125,8 +125,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
             libraryHash: String(repeating: "b", count: 64), dependencies: [])
         let binding = try await f.app.core.bind(EngineAcceleratorsBindPayload(descriptor: descriptor), context: f.context)
         for payload in [try EngineAcceleratorsVerifyPayload(bindingID: "unknown", deviceKey: binding.devices[0].deviceKey, asrSize: .small, threads: 2),
-                        try EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, deviceKey: "gpu:0000:0000", asrSize: .small, threads: 2),
-                        try EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, deviceKey: binding.devices[0].deviceKey, asrSize: .large, threads: 2)] {
+                        try EngineAcceleratorsVerifyPayload(bindingID: binding.bindingID, deviceKey: "gpu:0000:0000", asrSize: .small, threads: 2)] {
             do { _ = try await f.app.core.verify(payload, context: f.context); Issue.record("invalid verification was accepted") }
             catch let error as EngineCommandError { #expect(error.code == .invalidRequest) }
         }
@@ -192,9 +191,9 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
     private func save(_ f: Fixture, _ settings: EngineSettings, revision: UInt64? = nil) async throws {
         _ = try await f.app.core.replace(.init(expectedRevision: try revision.map { try EngineID($0) }, settings: settings), context: f.context)
     }
-    private func verified(_ f: Fixture, _ descriptor: EngineAcceleratorDescriptor) async throws -> (EngineAcceleratorsBindResult, String) {
+    private func verified(_ f: Fixture, _ descriptor: EngineAcceleratorDescriptor, size: EngineASRSize = .small) async throws -> (EngineAcceleratorsBindResult, String) {
         let binding = try await f.app.core.bind(.init(descriptor: descriptor), context: f.context)
-        let result = try await f.app.core.verify(.init(bindingID: binding.bindingID, deviceKey: binding.devices[0].deviceKey, asrSize: .small, threads: 2), context: f.context)
+        let result = try await f.app.core.verify(.init(bindingID: binding.bindingID, deviceKey: binding.devices[0].deviceKey, asrSize: size, threads: 2), context: f.context)
         guard case let .pass(id, _) = result else { throw EngineAdapterError(code: .modelFailure, message: "baseline verification failed", recoveryAction: .none, details: []) }
         let receipt = try #require(try EngineVerificationStore(paths: f.paths).load(identifier: id))
         #expect(receipt.key.adapterIdentity == f.accelerator.adapterIdentity && receipt.key.dependencyHashes == descriptor.dependencies.map(\.hash))
@@ -210,7 +209,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         #expect(f.inference.calls.count("prepare") == 0 && f.app.core.inference == nil)
     }
 
-    @Test(arguments: ["missingBinding", "missingDevice", "missingReceipt", "invalidID", "corruptJSON", "failedReceipt", "wrongOutput", "changedAdapter", "changedDependency", "large"])
+    @Test(arguments: ["missingBinding", "missingDevice", "missingReceipt", "invalidID", "corruptJSON", "failedReceipt", "wrongOutput", "changedAdapter", "changedDependency"])
     func rejectsUnverifiedAcceleratorSettings(scenario: String) async throws {
         var f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let d = try descriptor(), seeded = try await verified(f, d), id = seeded.1
@@ -228,10 +227,48 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
             reason = "合格していません"
         case "changedAdapter": f = try fixture(root: f.root, adapterIdentity: "changed-adapter"); _ = try await f.app.core.bind(.init(descriptor: d), context: f.context); reason = "identity が現在の環境と一致しません"
         case "changedDependency": f = try fixture(root: f.root); _ = try await f.app.core.bind(.init(descriptor: try descriptor(hash: String(repeating: "c", count: 64))), context: f.context); reason = "identity が現在の環境と一致しません"
-        case "large": settings = try windowsSettings(id, size: .large); try await save(f, settings, revision: 1); reason = "1.7B のアクセラレーター検証には対応していない"
         default: Issue.record("unknown scenario: \(scenario)"); return
         }
         try await reject(f, reason: reason)
+    }
+
+    @Test(arguments: [EngineASRSize.small, .large])
+    func receiptOfOneSizeNeverAdmitsTheOther(verifiedSize: EngineASRSize) async throws {
+        let other: EngineASRSize = verifiedSize == .small ? .large : .small
+        let f = try fixture(output: EngineAcceleratorVerificationFixture.expectedText(for: verifiedSize))
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let seeded = try await verified(f, try descriptor(), size: verifiedSize)
+        let otherSettings = try windowsSettings(seeded.1, size: other)
+        try await save(f, otherSettings)
+        #expect(throws: EngineCommandError.self) { try f.app.core.admitAccelerator(otherSettings) }
+        #expect(try f.app.core.admitAccelerator(windowsSettings(seeded.1, size: verifiedSize)) != nil)
+    }
+
+    @Test func largeVerificationPassesOnlyOnItsOwnExpectedText() async throws {
+        let expected = EngineAcceleratorVerificationFixture.expectedText(for: .large)
+        let f = try fixture(output: expected)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let binding = try await f.app.core.bind(.init(descriptor: try descriptor()), context: f.context)
+        func verify(_ size: EngineASRSize) async throws -> EngineAcceleratorsVerifyResult {
+            try await f.app.core.verify(.init(bindingID: binding.bindingID, deviceKey: binding.devices[0].deviceKey, asrSize: size, threads: 2), context: f.context)
+        }
+        guard case let .pass(id, _) = try await verify(.large) else { Issue.record("1.7B verification failed on its expected text"); return }
+        let key = try #require(try EngineVerificationStore(paths: f.paths).load(identifier: id)).key
+        #expect(key.modelSize == "1.7b" && key.modelRevision == f.accelerator.modelRevision(size: .large))
+        #expect(await f.accelerator.made().decodings == [.fixed(maxNewTokens: 448, noRepeatNgramSize: nil)])
+        await f.accelerator.configureRetest(output: expected + "?", preparationFails: false)
+        guard case .fail = try await verify(.large) else { Issue.record("1.7B verification passed on a different text"); return }
+        #expect(await f.accelerator.history().contains("make:large:2:ja"))
+    }
+
+    @Test func admittedLargeSettingBuildsTheDeviceEngineAtLargeSize() async throws {
+        let f = try fixture(output: EngineAcceleratorVerificationFixture.expectedText(for: .large))
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let seeded = try await verified(f, try descriptor(), size: .large)
+        let settings = try windowsSettings(seeded.1, size: .large)
+        try await save(f, settings)
+        _ = try await #require(try f.app.core.admitAccelerator(settings)).makeASREngine(settings: settings)
+        #expect(await f.accelerator.history().last == "make:large:2:ja")
     }
 
     @Test func admittedSettingsPrepareAndInferThroughTheDevice() async throws {
@@ -300,7 +337,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         let d = try descriptor(), seeded = try await verified(f, d), settings = try windowsSettings(seeded.1)
         try await save(f, settings)
         let url = f.paths.root.appending(path: "settings.json"), bytes = try Data(contentsOf: url)
-        await f.accelerator.configureRetest(output: scenario == "outputMismatch" ? "wrong" : EngineAcceleratorVerificationFixture.expectedText, preparationFails: scenario == "preparationFailure")
+        await f.accelerator.configureRetest(output: scenario == "outputMismatch" ? "wrong" : EngineAcceleratorVerificationFixture.expectedText(for: .small), preparationFails: scenario == "preparationFailure")
         do {
             let result = try await f.app.core.verify(.init(bindingID: seeded.0.bindingID, deviceKey: seeded.0.devices[0].deviceKey, asrSize: .small, threads: 2), context: f.context)
             if case let .fail(id, _, observed) = result { #expect(scenario == "outputMismatch" && id == seeded.1 && observed == "wrong") }

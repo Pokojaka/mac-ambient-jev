@@ -51,7 +51,7 @@ AppPaths.root/
 | `ortVersion` | String | device が返す ONNX Runtime version |
 | `adapterIdentity` | String | native shim が `DXCoreAdapterProperty::HardwareIDParts` を読み取り、DXCoreHardwareIDParts の5つの UInt32 値を `vendorID`, `deviceID`, `subSystemID`, `subVendorID`, `revisionID` の順に各8桁の小文字ゼロ埋め 16 進数とし、コロンで連結した文字列を返します |
 | `dependencyHashes` | [String] | 検証済み dependency closure 全体の SHA-256 hash を sort した配列 |
-| `modelRevision` | String | device が返す model revision |
+| `modelRevision` | String | device が返す、検証する size の model repository@commit |
 | `modelSize` | String | 検証する ASR model size |
 | `decodingSettings` | String | decoding 設定 identity |
 | `fixtureHash` | String | verification fixture の SHA-256 hash |

@@ -1,10 +1,16 @@
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevEngineProtocol
 
 /// Pinned production audio and expected transcript for accelerator verification.
 enum EngineAcceleratorVerificationFixture {
     static let fixtureHash = "2dc561b78aed55815183f51ad66e1733909bdcefccd7f745e7cf0c64eecbb0e9"
-    static let expectedText = "今日は音声認識の動作を確認します。"
+    static func expectedText(for size: EngineASRSize) -> String {
+        switch size {
+        case .small: "今日は音声認識の動作を確認します。"
+        case .large: "今日は音声認識の動作を確認します。"
+        }
+    }
     static let policyVersion = "1"
     static let decodingSettings = "language=ja;greedy;max_new_tokens=448;no_repeat_ngram_size=null"
 

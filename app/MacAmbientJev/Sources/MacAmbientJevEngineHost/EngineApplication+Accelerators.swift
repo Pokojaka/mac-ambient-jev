@@ -11,9 +11,18 @@ struct EngineValidatedAcceleratorSelection {
     /// The ASR engine that runs real work (live and final) through the admitted device with the audio-length decoding rule.
     func makeASREngine(settings: EngineSettings) async throws -> any ASREngine {
         try await device.makeASREngine(
-            size: .small, threads: settings.threads, language: "ja", decoding: .audioLength,
+            size: settings.asrSize.modelSize, threads: settings.threads, language: "ja", decoding: .audioLength,
             identity: acceleratorIdentity(descriptor: descriptor, device: device, verificationID: verificationID)
         )
+    }
+}
+
+extension EngineASRSize {
+    var modelSize: ASRModelSize {
+        switch self {
+        case .small: .small
+        case .large: .large
+        }
     }
 }
 
@@ -59,9 +68,6 @@ extension EngineApplicationCore {
     func verify(_ payload: EngineAcceleratorsVerifyPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsVerifyResult {
         try acquireAcceleratorSetup(.verifying)
         defer { finishAcceleratorSetup() }
-        guard payload.asrSize == .small else {
-            throw EngineFailures.commandError(.invalidRequest, "検証は固定出力の 0.6B のみ対応しています", stage: .loadingModels)
-        }
         guard logicalCPUCount > 0, payload.threads <= min(PortableThreadLimit.maximum, logicalCPUCount) else {
             throw EngineFailures.commandError(.invalidRequest, "スレッド数が論理 CPU 数の上限を超えています", stage: .loadingModels)
         }
@@ -72,7 +78,9 @@ extension EngineApplicationCore {
             throw EngineFailures.commandError(.invalidRequest, "アクセラレーターの device_key が binding に見つかりません", stage: .loadingModels)
         }
         let task = Task { @MainActor [self] in
-            try await runAcceleratorVerification(descriptor: binding.descriptor, device: device, threads: payload.threads)
+            try await runAcceleratorVerification(
+                descriptor: binding.descriptor, device: device, size: payload.asrSize, threads: payload.threads
+            )
         }
         acceleratorSetupTask = task
         do {
@@ -87,9 +95,6 @@ extension EngineApplicationCore {
 
     func admitAccelerator(_ settings: EngineSettings) throws -> EngineValidatedAcceleratorSelection? {
         guard case let .windowsML(providerName, deviceKey, verificationID) = settings.executionProvider else { return nil }
-        guard settings.asrSize == .small else {
-            throw acceleratorAdmissionError("1.7B のアクセラレーター検証には対応していないため、モデルを準備できません")
-        }
         guard let binding = acceleratorBindings.values.first(where: { $0.descriptor.providerName == providerName }) else {
             throw acceleratorAdmissionError("保存された実行プロバイダーの現在の binding がありません。再接続してください")
         }
@@ -106,12 +111,14 @@ extension EngineApplicationCore {
             throw acceleratorAdmissionError("保存された verification_id の検証 receipt がありません。再検証してください")
         }
         guard receipt.passed,
-              receipt.observedOutput.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText.utf8) else {
+              receipt.observedOutput.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText(for: settings.asrSize).utf8) else {
             throw acceleratorAdmissionError("保存された検証 receipt は合格していません。再検証してください")
         }
         let key: EngineVerificationKey
         do {
-            key = try acceleratorVerificationKey(descriptor: binding.descriptor, device: device, threads: settings.threads)
+            key = try acceleratorVerificationKey(
+                descriptor: binding.descriptor, device: device, size: settings.asrSize, threads: settings.threads
+            )
         } catch {
             throw acceleratorAdmissionError("検証 receipt の identity が現在の環境と一致しません。再検証して明示的に選択してください")
         }
@@ -186,6 +193,7 @@ extension EngineApplicationCore {
     private func acceleratorVerificationKey(
         descriptor: EngineAcceleratorDescriptor,
         device: any EngineAcceleratorDevice,
+        size: EngineASRSize,
         threads: Int
     ) throws -> EngineVerificationKey {
         let ortVersion = device.ortVersion
@@ -195,7 +203,7 @@ extension EngineApplicationCore {
                 recoveryAction: .none, details: []
             )
         }
-        let modelRevision = device.modelRevision
+        let modelRevision = device.modelRevision(size: size.modelSize)
         guard !modelRevision.isEmpty else {
             throw EngineAdapterError(
                 code: .modelFailure, message: "アクセラレーターがモデル revision を返しませんでした",
@@ -208,7 +216,7 @@ extension EngineApplicationCore {
             deviceKey: device.info.deviceKey, description: device.info.description,
             driverVersion: device.info.driverVersion, ortVersion: ortVersion,
             adapterIdentity: device.adapterIdentity, dependencyHashes: descriptor.dependencies.map(\.hash).sorted(),
-            modelRevision: modelRevision, modelSize: EngineASRSize.small.rawValue,
+            modelRevision: modelRevision, modelSize: size.rawValue,
             decodingSettings: EngineAcceleratorVerificationFixture.decodingSettings,
             fixtureHash: EngineAcceleratorVerificationFixture.fixtureHash,
             verificationPolicyVersion: EngineAcceleratorVerificationFixture.policyVersion, threads: threads
@@ -218,13 +226,14 @@ extension EngineApplicationCore {
     private func runAcceleratorVerification(
         descriptor: EngineAcceleratorDescriptor,
         device: any EngineAcceleratorDevice,
+        size: EngineASRSize,
         threads: Int
     ) async throws -> EngineAcceleratorsVerifyResult {
         try checkAcceleratorSetupCanContinue()
-        let key = try acceleratorVerificationKey(descriptor: descriptor, device: device, threads: threads)
+        let key = try acceleratorVerificationKey(descriptor: descriptor, device: device, size: size, threads: threads)
         do {
             let engine = try await device.makeASREngine(
-                size: .small, threads: threads, language: "ja",
+                size: size.modelSize, threads: threads, language: "ja",
                 decoding: .fixed(maxNewTokens: 448, noRepeatNgramSize: nil),
                 identity: acceleratorIdentity(descriptor: descriptor, device: device, verificationID: nil)
             )
@@ -263,7 +272,7 @@ extension EngineApplicationCore {
             withExtendedLifetime(device) {}
 
             let passed = verification.inferenceError == nil
-                && verification.output.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText.utf8)
+                && verification.output.utf8.elementsEqual(EngineAcceleratorVerificationFixture.expectedText(for: size).utf8)
             let receipt = EngineVerificationReceipt(key: key,
                 observedOutput: verification.output, passed: passed, rtf: verification.rtf, timestamp: Date())
             try checkAcceleratorSetupCanContinue()
