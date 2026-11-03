@@ -10,30 +10,9 @@ import MacAmbientJevWindowsSupport
 
 @Suite(.timeLimit(.minutes(10))) @MainActor struct WindowsEngineCaptureTests {
     @Test func forwardsIngressDropoutsWhileCaptureIsActive() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appending(path: "WindowsEngineCapture-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        defer {
-            let temporaryDirectory = FileManager.default.temporaryDirectory.standardizedFileURL.resolvingSymlinksInPath()
-            let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
-            precondition(resolvedRoot.deletingLastPathComponent() == temporaryDirectory)
-            precondition(resolvedRoot.lastPathComponent.hasPrefix("WindowsEngineCapture-"))
-            try? FileManager.default.removeItem(at: resolvedRoot)
-        }
+        let (root, sessionID, sessionURL) = try makeSession()
+        defer { removeSessionRoot(root) }
 
-        let paths = AppPaths(
-            applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
-            cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
-            sessionsRootOverride: root.appending(path: "sessions", directoryHint: .isDirectory)
-        )
-        let sessionID = UUID()
-        let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
-            paths: paths,
-            sessionID: sessionID,
-            source: .recording(.microphone),
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
         let device = WindowsEngineCaptureTestDevice()
         let factory = WindowsEngineCaptureTestFactory(device: device)
         let engine = WindowsEngineCapture(
@@ -76,6 +55,42 @@ import MacAmbientJevWindowsSupport
         let result = try await capture.stop()
         #expect(result.dropoutCount > 0)
         #expect(!result.checkpoint.gapEvents.isEmpty)
+    }
+
+    @Test func microphoneAccessDeniedFailsStartWithSettingsGuidance() async throws {
+        let (root, sessionID, sessionURL) = try makeSession()
+        defer { removeSessionRoot(root) }
+
+        let engine = WindowsEngineCapture(
+            factory: WindowsEngineCaptureDeniedFactory(),
+            clock: WindowsEngineCaptureTestClock(),
+            qpc100ns: { 10_000_000 },
+            automaticPolling: false
+        )
+        let callbacks = EngineCaptureCallbacks(
+            onFailure: { _ in },
+            onWarning: { _ in },
+            onDropouts: { _ in },
+            onSilenceChanged: { _ in },
+            onDeviceWaitingChanged: { _ in },
+            onDeviceLost: { _ in }
+        )
+        do {
+            _ = try await engine.startCapture(
+                sessionID: sessionID,
+                sessionURL: sessionURL,
+                source: .microphone,
+                device: .default,
+                callbacks: callbacks
+            )
+            Issue.record("Expected a denied microphone to fail the start")
+        } catch let error as EngineAdapterError {
+            #expect(error.code == .captureFailure)
+            #expect(error.recoveryAction == .retry)
+            #expect(error.message == "マイクへのアクセスが許可されていません。Windows の［設定］→［プライバシーとセキュリティ］→［マイク］で「マイク アクセス」と「デスクトップ アプリにマイクへのアクセスを許可する」をオンにしてから、もう一度録音を開始してください。")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     @Test func didOverflowReflectsAnyCheckpointGap() throws {
@@ -177,6 +192,34 @@ import MacAmbientJevWindowsSupport
         #expect(result.writerFailure == nil)
         #expect(result.systemAudioReleaseFailure == "capture device release failed")
     }
+}
+
+private func makeSession() throws -> (root: URL, sessionID: UUID, sessionURL: URL) {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: "WindowsEngineCapture-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory),
+        sessionsRootOverride: root.appending(path: "sessions", directoryHint: .isDirectory)
+    )
+    let sessionID = UUID()
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths,
+        sessionID: sessionID,
+        source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    return (root, sessionID, sessionURL)
+}
+
+private func removeSessionRoot(_ root: URL) {
+    let temporaryDirectory = FileManager.default.temporaryDirectory.standardizedFileURL.resolvingSymlinksInPath()
+    let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+    precondition(resolvedRoot.deletingLastPathComponent() == temporaryDirectory)
+    precondition(resolvedRoot.lastPathComponent.hasPrefix("WindowsEngineCapture-"))
+    try? FileManager.default.removeItem(at: resolvedRoot)
 }
 
 private func checkpoint(gaps: [AudioGapEvent]) -> AudioCheckpoint {
@@ -288,5 +331,16 @@ private final class WindowsEngineCaptureTestFactory: WindowsCaptureSourceFactory
 
     func devices(source _: CaptureSource) throws -> [WindowsCaptureEndpoint] {
         [WindowsCaptureEndpoint(id: device.endpointID, name: "Engine test endpoint", isDefault: true)]
+    }
+}
+
+@MainActor
+private final class WindowsEngineCaptureDeniedFactory: WindowsCaptureSourceFactory {
+    func open(source _: CaptureSource, device _: WindowsCaptureDeviceSelection) throws -> any WindowsCaptureDevice {
+        throw WindowsCaptureAdapterError.microphoneAccessDenied
+    }
+
+    func devices(source _: CaptureSource) throws -> [WindowsCaptureEndpoint] {
+        [WindowsCaptureEndpoint(id: "engine-test-endpoint", name: "Engine test endpoint", isDefault: true)]
     }
 }

@@ -6,6 +6,7 @@ import MacAmbientJevPipeline
 
 public enum WindowsCaptureAdapterError: Error, LocalizedError, Sendable, Equatable {
     case native(operation: String, code: Int32)
+    case microphoneAccessDenied
     case invalidConfiguration(String)
     case diskOverflow
     case timestamp(String)
@@ -16,6 +17,8 @@ public enum WindowsCaptureAdapterError: Error, LocalizedError, Sendable, Equatab
         switch self {
         case .native(let operation, let code):
             "Native operation \(operation) failed with code \(code)"
+        case .microphoneAccessDenied:
+            "Windows denied access to the microphone (E_ACCESSDENIED)"
         case .invalidConfiguration(let details):
             "Invalid capture configuration: \(details)"
         case .diskOverflow:

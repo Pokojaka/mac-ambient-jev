@@ -158,6 +158,10 @@ void mja_capture_destroy(mja_capture *capture);
 /* Recognizes only raw device-invalidated HRESULT, endpoint-disconnected/not-found Win32 errors,
  * and MJA_CAPTURE_DEFAULT_CHANGED; interruption notifications are not device-loss errors. */
 int32_t mja_capture_is_device_lost_error(int32_t error);
+/* miniaudio's WASAPI backend maps E_ACCESSDENIED (0x80070005) from IMMDevice::Activate and
+ * IAudioClient::Initialize to MA_ACCESS_DENIED, so this is the code mja_capture_open returns when
+ * Windows denies access to the endpoint. */
+int32_t mja_capture_is_access_denied_error(int32_t error);
 
 /* endpoint_id must be nonempty. If capacity is insufficient, return nonzero
  * and set *count to the required count without returning a truncated list.

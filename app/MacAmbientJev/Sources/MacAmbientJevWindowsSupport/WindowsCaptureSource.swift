@@ -1374,6 +1374,9 @@ public final class WindowsCaptureSource {
             appendError(originalMessage)
             let result = await beginCleanup().value
             let combined = uniqueCaptureFailureMessages([originalMessage] + result.errors)
+            if case WindowsCaptureAdapterError.microphoneAccessDenied = error, combined == [originalMessage] {
+                throw error
+            }
             throw WindowsCaptureAdapterError.combined(combined)
         }
 
