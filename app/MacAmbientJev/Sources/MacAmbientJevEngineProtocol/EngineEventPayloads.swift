@@ -31,6 +31,7 @@ public enum EngineStage: String, Codable, CaseIterable, Equatable, Sendable {
     case importing = "import"
     case recovery
     case maintenance
+    case downloadingModels = "downloading_models"
     case validatingModels = "validating_models"
     case loadingModels = "loading_models"
     case vad
@@ -65,6 +66,7 @@ public enum EngineErrorCode: String, Codable, CaseIterable, Equatable, Sendable 
     case modelMissing = "model_missing"
     case modelCorrupt = "model_corrupt"
     case modelFailure = "model_failure"
+    case modelDownload = "model_download"
     case processingFailure = "processing_failure"
     case exportFailure = "export_failure"
     case rowTooLarge = "row_too_large"

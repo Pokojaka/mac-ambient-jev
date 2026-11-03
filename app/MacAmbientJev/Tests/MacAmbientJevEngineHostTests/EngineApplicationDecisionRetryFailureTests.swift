@@ -283,6 +283,10 @@ private final class DecisionRetryFailureApplicationHarness {
         get throws { try sink.outputs() }
     }
 
+    func awaitModels() async {
+        await app.core.awaitModelPreparation()
+    }
+
     func sessions() async throws -> [EngineSessionSummary] {
         guard case let .sessionList(result) = try await call("session.list", payload: "{\"cursor\":null,\"limit\":100}") else {
             preconditionFailure("session.list returned another result")
@@ -336,7 +340,7 @@ private final class DecisionRetryFailureApplicationHarness {
         do {
             _ = try await harness.call("hello")
             _ = try await harness.call("settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true)))
-            _ = try await harness.call("models.prepare")
+            await harness.awaitModels()
 
             let audio = root.appending(path: "pending-decisions.wav")
             try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)
@@ -460,7 +464,7 @@ private final class DecisionRetryFailureApplicationHarness {
         do {
             _ = try await harness.call("hello")
             _ = try await harness.call("settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true)))
-            _ = try await harness.call("models.prepare")
+            await harness.awaitModels()
 
             let audio = root.appending(path: "pending-decisions.wav")
             try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)
@@ -799,7 +803,7 @@ private final class DecisionRetryFailureApplicationHarness {
         _ = try await harness.call(
             "settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true))
         )
-        _ = try await harness.call("models.prepare")
+        await harness.awaitModels()
 
         let audio = root.appending(path: "pending-decisions.wav")
         try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)

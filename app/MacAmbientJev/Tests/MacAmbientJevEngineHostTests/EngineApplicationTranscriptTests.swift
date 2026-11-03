@@ -1140,7 +1140,7 @@ import MacAmbientJevTestSupport
         h.start()
         try await h.hello()
         try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await h.call("models.prepare")
+        await h.awaitModels()
         return h
     }
 

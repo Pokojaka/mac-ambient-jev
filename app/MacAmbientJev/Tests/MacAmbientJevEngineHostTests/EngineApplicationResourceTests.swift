@@ -32,8 +32,8 @@ private enum Pressure: CaseIterable, Equatable, Sendable {
         app.start(); await app.waitForStartupRecovery()
         _ = try await app.core.replace(.init(expectedRevision: nil, settings: settings), context: context)
     }
-    func prepare() async throws {
-        try await app.core.prepare(context: context); await app.core.processingCoordinator.waitUntilIdle()
+    func prepare() async {
+        await app.core.awaitModelPreparation(); await app.core.processingCoordinator.waitUntilIdle()
     }
     func shutdown() async throws { try await app.core.shutdown(reason: .requested) }
 }
@@ -81,7 +81,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
     fileprivate func liveResourceHoldKeepsRecordingAndDurableAudio(_ pressure: Pressure) async throws {
         let f = try ResourceFixture(inference: FakeInferenceProvider(), resources: FakeResourceMonitor())
         defer { try? FileManager.default.removeItem(at: f.root) }
-        try await f.start(); try await f.prepare()
+        try await f.start(); await f.prepare()
         let recording = try await f.app.core.start(.init(source: .microphone, device: .default), context: f.context)
         let id = try #require(UUID(uuidString: recording.sessionID)), capture = try #require(f.capture.session)
         try await capture.appendSpeech(seconds: 1); let before = try await capture.committedCheckpoint()
@@ -101,7 +101,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         let gate = LifecycleContinuationGate(), resources = FakeResourceMonitor()
         let provider = ResourceGatedProvider(gate: gate), f = try ResourceFixture(inference: provider, resources: resources)
         defer { try? FileManager.default.removeItem(at: f.root) }
-        try await f.start(); try await f.prepare()
+        try await f.start(); await f.prepare()
         let input = f.root.appending(path: "import.wav"), bytes = Data("fake wav".utf8)
         try bytes.write(to: input)
         let imported = try await f.app.core.importSession(try EngineImportPayload(inputPath: input.path), context: f.context)
@@ -139,7 +139,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         let provider = FakeInferenceProvider(), resources = FakeResourceMonitor()
         let f = try ResourceFixture(inference: provider, resources: resources)
         defer { try? FileManager.default.removeItem(at: f.root) }
-        try await f.start(); try await f.prepare()
+        try await f.start(); await f.prepare()
         let recording = try await f.app.core.start(.init(source: .microphone, device: .default), context: f.context)
         let id = try #require(UUID(uuidString: recording.sessionID))
         try await #require(f.capture.session).appendSpeech(seconds: 2)

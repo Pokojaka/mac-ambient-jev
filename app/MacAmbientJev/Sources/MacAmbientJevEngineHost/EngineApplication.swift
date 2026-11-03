@@ -82,8 +82,18 @@ final class EngineApplicationCore {
 
     // Settings and models
     var settingsResult: EngineSettingsResult?
+    /// The engines of the current settings' profile, built when settings are loaded or the profile changes.
+    /// Building reads only the bundled Silero VAD; ASR and diarization load on first use.
     var inference: EngineInference?
+    /// `models.prepare` (requested or automatic) succeeded for the current profile.
+    var modelsPrepared = false
     var isPreparingModels = false
+    /// The running automatic preparation. `awaitModelPreparation()` awaits it.
+    var preparationTask: Task<Void, Never>?
+    /// Stage of the running preparation, for `modelPhase`.
+    var preparationStage: EngineModelProgress.Stage?
+    /// An automatic preparation failed; automatic attempts stop until `models.prepare` or a profile change.
+    var automaticPreparationFailed = false
     var presentation = EnginePresentation()
     /// The finalizing request that is running and the resource hold it will pause for at its next boundary.
     var resourceFinalizingSessionID: UUID?
@@ -245,6 +255,10 @@ final class EngineApplicationCore {
 
     func start() {
         precondition(startupTask == nil, "startup recovery already started")
+        if settings != nil {
+            configureInference()
+            prepareModels()
+        }
         recoveryStatus = .running
         processingQueue.beginStorageMaintenance()
         stateDidChange()
@@ -335,6 +349,7 @@ final class EngineApplicationCore {
         }
         for request in processingQueue.pending { try add(request) }
         for entry in processingQueue.held { try add(entry.request) }
+        for request in processingQueue.modelHeld { try add(request) }
         return Array(operations.prefix(Self.queueLimit))
     }
 
@@ -394,19 +409,29 @@ final class EngineApplicationCore {
         return settings
     }
 
-    func requireModelsPrepared(stage: EngineStage) throws -> EngineInference {
-        guard !isPreparingModels else {
-            throw EngineFailures.commandError(
-                .busy, "モデルの準備が実行中です", stage: stage, recoveryAction: .retry
-            )
-        }
+    func requireConfiguredInference(stage: EngineStage) throws -> EngineInference {
         guard let inference else {
             throw EngineFailures.commandError(
-                .modelMissing, "モデルが準備されていません。models.prepare を実行してください",
-                stage: stage, recoveryAction: .prepareModels
+                .modelFailure, "モデルを構成できません", stage: stage, recoveryAction: .prepareModels
             )
         }
         return inference
+    }
+
+    /// Builds the engines and the processor of the current settings. A failure is shown as the preparation failure
+    /// and leaves the engine in `models_required`.
+    func configureInference() {
+        guard let settings else { preconditionFailure("inference is configured from saved settings") }
+        do {
+            let configured = try inferenceProvider.makeInference(settings: settings)
+            inference = configured
+            installProcessor(for: configured, settings: settings)
+        } catch {
+            inference = nil
+            presentation.preparationPhase = .failed
+            presentation.preparationStatusText = "準備できませんでした: \(error.localizedDescription)"
+            EngineLog.write("inference not configured: \(error)")
+        }
     }
 
     /// Nothing uses the models, so settings may change and the models may be released:
@@ -419,6 +444,7 @@ final class EngineApplicationCore {
     var isProcessingIdle: Bool {
         processingQueue.pending.isEmpty
             && processingQueue.held.isEmpty
+            && processingQueue.modelHeld.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty
@@ -573,12 +599,18 @@ extension EngineApplicationCore: EngineSettingsHandling {
         }
         settingsResult = result
         gateway.setPacing(result.settings.lowHeat ? .lowHeat : .normal)
-        if let previous, profileDiffers(previous, result.settings) {
+        let profileChanged: Bool
+        if let previous { profileChanged = profileDiffers(previous, result.settings) } else { profileChanged = true }
+        if profileChanged {
             // A changed model profile invalidates the prepared state; no work is running (the handler refused otherwise).
             inference = nil
+            if let removed = gateway.remove() { await removed.releaseIdleResources() }
+            modelsPrepared = false
+            automaticPreparationFailed = false
             presentation.preparationPhase = .idle
             presentation.preparationStatusText = nil
-            if let removed = gateway.remove() { await removed.releaseIdleResources() }
+            configureInference()
+            prepareModels()
         }
         stateDidChange()
         return result
@@ -601,6 +633,15 @@ extension EngineApplicationCore: EngineModelsHandling {
 
     func prepare(context: EngineRequestContext) async throws {
         let settings = try requireSettings(stage: .validatingModels)
+        if inference == nil { configureInference() }
+        guard inference != nil else {
+            guard let message = presentation.preparationStatusText else {
+                preconditionFailure("a failed configuration sets the preparation status text")
+            }
+            throw EngineFailures.commandError(
+                .modelFailure, message, stage: .loadingModels, recoveryAction: .prepareModels
+            )
+        }
         guard !isPreparingModels else {
             throw EngineFailures.commandError(
                 .busy, "モデルの準備が実行中です", stage: .validatingModels, recoveryAction: .retry
@@ -609,26 +650,51 @@ extension EngineApplicationCore: EngineModelsHandling {
         guard !isShuttingDown else {
             throw EngineFailures.commandError(.cancelled, "終了処理中のためモデルを準備できません", stage: .shutdown)
         }
-        // Prepared models stay prepared while work uses them; verifying again would compete with that work.
-        if inference != nil, !isIdle { return }
+        if modelsPrepared { return }
+        automaticPreparationFailed = false
         isPreparingModels = true
+        try await runPreparation(settings: settings, requestID: context.requestID)
+    }
+
+    /// Starts an automatic preparation when there is something to prepare and nothing has stopped trying.
+    func prepareModels() {
+        guard let settings, inference != nil, !modelsPrepared, !isPreparingModels,
+              !automaticPreparationFailed, !isShuttingDown else { return }
+        isPreparingModels = true
+        preparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.runPreparation(settings: settings, requestID: nil)
+            } catch {
+                if Task.isCancelled || (error as? EngineCommandError)?.code == .cancelled { return }
+                self.automaticPreparationFailed = true
+                EngineLog.write("automatic model preparation failed: \(error)")
+            }
+        }
+    }
+
+    /// Downloads, verifies and loads the models of the current settings. The caller has set `isPreparingModels`.
+    /// `requestID` is nil for an automatic run; progress events then carry no request ID.
+    private func runPreparation(settings: EngineSettings, requestID: EngineID?) async throws {
         presentation.preparationPhase = .preparing
         presentation.preparationStatusText = UserFacingStatus.preparingASR.text
         let preparationID = UUID()
         presentation.preparationID = preparationID
         stateDidChange()
         defer {
+            preparationStage = nil
             isPreparingModels = false
+            preparationTask = nil
             presentation.preparationID = nil
             stateDidChange()
         }
 
-        let requestID = context.requestID
-        let events = context.events
         let (progressStream, progressContinuation) = AsyncStream<EngineModelProgress>.makeStream()
         let progressConsumer = Task { @MainActor [weak self] in
+            var downloadingHighWater = 0
             var validatingHighWater = 0
             var loadingHighWater = 0
+            var hasStartedValidating = false
             var hasStartedLoading = false
 
             for await progress in progressStream {
@@ -640,8 +706,18 @@ extension EngineApplicationCore: EngineModelsHandling {
                 let percentage: Int
                 let preparationStatusText: String
                 switch progress.stage {
+                case .downloading:
+                    guard !hasStartedValidating, !hasStartedLoading else { continue }
+                    let current = Int(
+                        (Double(progress.completed) / Double(progress.total) * 100).rounded(.down)
+                    )
+                    downloadingHighWater = max(downloadingHighWater, current)
+                    percentage = downloadingHighWater
+                    stage = .downloadingModels
+                    preparationStatusText = "モデルをダウンロード中（\(percentage)%）"
                 case .validating:
                     guard !hasStartedLoading else { continue }
+                    hasStartedValidating = true
                     let current = Int(
                         (Double(progress.completed) / Double(progress.total) * 100).rounded(.down)
                     )
@@ -660,15 +736,18 @@ extension EngineApplicationCore: EngineModelsHandling {
                     preparationStatusText = "音声認識モデルを読み込み中（\(percentage)%）"
                 }
 
-                do {
-                    try events.progress(
-                        EngineProgressPayload(
-                            stage: stage, completedUnits: UInt64(percentage), totalUnits: 100, sessionID: nil
-                        ),
-                        requestID: requestID
-                    )
-                } catch {
-                    EngineLog.write("model progress not sent: \(error)")
+                self.preparationStage = progress.stage
+                if requestID != nil || self.eventsEnabled {
+                    do {
+                        try self.events.progress(
+                            EngineProgressPayload(
+                                stage: stage, completedUnits: UInt64(percentage), totalUnits: 100, sessionID: nil
+                            ),
+                            requestID: requestID
+                        )
+                    } catch {
+                        EngineLog.write("model progress not sent: \(error)")
+                    }
                 }
                 self.presentation.preparationStatusText = preparationStatusText
                 self.stateDidChange()
@@ -692,19 +771,15 @@ extension EngineApplicationCore: EngineModelsHandling {
             await progressConsumer.value
 
             try checkModelPreparationCanContinue()
-            let prepared = try inferenceProvider.makeInference(settings: settings)
-            if let removed = gateway.remove() { await removed.releaseIdleResources() }
-            try checkModelPreparationCanContinue()
-            inference = prepared
-            installProcessor(for: prepared, settings: settings)
+            modelsPrepared = true
+            automaticPreparationFailed = false
             presentation.preparationPhase = .ready
             presentation.preparationStatusText = nil
         } catch {
-            inference = nil
+            modelsPrepared = false
             presentation.preparationID = nil
             presentation.preparationPhase = .failed
             presentation.preparationStatusText = "準備できませんでした: \(error.localizedDescription)"
-            if let removed = gateway.remove() { await removed.releaseIdleResources() }
             if error is CancellationError {
                 throw EngineFailures.commandError(.cancelled, "モデルの準備が中止されました", stage: .loadingModels)
             }
@@ -714,6 +789,7 @@ extension EngineApplicationCore: EngineModelsHandling {
         }
         updateRecoveryStatus()
         // Finalizations queued while models were missing, such as launch recovery, can run now.
+        processingCoordinator.resumeModelHeldProcessing()
         processingCoordinator.startDrainIfIdle()
     }
 
@@ -762,6 +838,8 @@ extension EngineApplicationCore: EngineShutdownHandling {
 
         startupTask?.cancel()
         await startupTask?.value
+        preparationTask?.cancel()
+        await preparationTask?.value
         startTask?.cancel()
         await startTask?.value
         await stopTask?.value

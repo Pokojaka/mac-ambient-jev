@@ -303,8 +303,9 @@ final class EngineApplicationPresentationLifecycleFixture {
         )
     }
 
+    /// Waits for the preparation the saved settings started, then for processing to go idle.
     func prepareModels() async throws {
-        try await app.handlers.models.prepare(context: context)
+        await app.core.awaitModelPreparation()
         await app.core.processingCoordinator.waitUntilIdle()
     }
 

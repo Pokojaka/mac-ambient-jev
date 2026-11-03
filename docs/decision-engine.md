@@ -70,7 +70,7 @@ Windows・Linux 向けの ONNX モデルは [export_clause_tagger_onnx.py](../sc
 
 ## ポータブル ONNX の配布
 
-ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt、LICENSE.md の5ファイルです。最初の4ファイルは onnx/ 以下に置き、LICENSE.md は repository root から取得します。LICENSE.txt は base model の MIT license、LICENSE.md は学習済みモデルの CC BY-NC-ND 4.0 license です。取得先は `.build/clause-tagger-onnx/<commit>/clause-tagger-onnx` です。Swift の `ClauseTaggerAssets` は `PortableClauseTaggerInspection.validateAssets`（`PortableAssetVerifier`）で manifest の byte 数と SHA-256 を用いてこの directory の5ファイルを全て検証してから推論用 asset を返します。モデルの探索や自動取得は runtime にありません。
+ONNX の manifest entry は ClauseTagger.onnx、tokenizer.json、export.json、LICENSE.txt、LICENSE.md の5ファイルです。最初の4ファイルは onnx/ 以下に置き、LICENSE.md は repository root から取得します。LICENSE.txt は base model の MIT license、LICENSE.md は学習済みモデルの CC BY-NC-ND 4.0 license です。取得先は `.build/clause-tagger-onnx/<commit>/clause-tagger-onnx` です。Swift の `ClauseTaggerAssets` は `PortableClauseTaggerInspection.validateAssets`（`PortableModelPreparationService.verify`）で manifest の byte 数と SHA-256 を用いてこの directory の5ファイルを全て検証してから推論用 asset を返します。モデルの探索や自動取得は runtime にありません。
 
 ## モデルの検証と推論
 

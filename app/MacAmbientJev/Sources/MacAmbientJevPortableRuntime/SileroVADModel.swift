@@ -7,6 +7,10 @@ public enum SileroVADModel {
     static let revision = "5cd7945676eb32225748052e2e6a0580e4686a08"
     static let filename = "silero_vad_16k_op15.onnx"
     static let sha256 = "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
+    static let byteCount: Int64 = 1_289_603
+    static var manifestFile: ModelManifestFile {
+        ModelManifestFile(name: filename, role: "vad", byteCount: byteCount, sha256: sha256)
+    }
 
     public static func validate(at modelURL: URL) throws {
         let actual: String

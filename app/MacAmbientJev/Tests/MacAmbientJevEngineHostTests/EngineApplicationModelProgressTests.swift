@@ -19,12 +19,17 @@ private final class OutOfOrderModelProgressProvider: EngineInferenceProviding, @
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         let updates: [EngineModelProgress] = [
+            EngineModelProgress(stage: .downloading, completed: 0, total: 1000),
+            EngineModelProgress(stage: .downloading, completed: 500, total: 1000),
+            EngineModelProgress(stage: .downloading, completed: 300, total: 1000),
+            EngineModelProgress(stage: .downloading, completed: 1000, total: 1000),
             EngineModelProgress(stage: .validating, completed: 0, total: 10),
             EngineModelProgress(stage: .loading, completed: 8, total: 10),
             EngineModelProgress(stage: .loading, completed: 2, total: 10),
             EngineModelProgress(stage: .validating, completed: 9, total: 10),
             EngineModelProgress(stage: .loading, completed: 10, total: 10),
-            EngineModelProgress(stage: .loading, completed: 9, total: 10)
+            EngineModelProgress(stage: .loading, completed: 9, total: 10),
+            EngineModelProgress(stage: .downloading, completed: 1000, total: 1000)
         ]
         for update in updates { onProgress(update) }
         try await completionGate.suspend()
@@ -107,7 +112,7 @@ private final class ModelProgressFixture {
 
     func progressEvents() throws -> [EngineProgressPayload] {
         try sink.outputs().compactMap { output in
-            guard output.requestID?.value == 1, case let .progress(progress) = output.event else { return nil }
+            guard output.requestID == nil, case let .progress(progress) = output.event else { return nil }
             return progress
         }
     }
@@ -166,12 +171,9 @@ private final class ModelProgressFixture {
         try await fixture.start()
         try await fixture.replaceSettings()
         let initial = try await fixture.currentState()
-        #expect(initial.setup == .modelsRequired)
+        #expect(initial.setup == .ready)
 
-        let preparationTask = Task { @MainActor in
-            try await fixture.app.handlers.models.prepare(context: fixture.context)
-        }
-        defer { preparationTask.cancel() }
+        // Saving the settings started the preparation by itself.
         try await completionGate.waitUntilEntered()
         let completeProgress = try await fixture.waitForState(after: initial.revision.value) { state in
             state.presentation.preparationPhase == .preparing
@@ -180,12 +182,11 @@ private final class ModelProgressFixture {
 
         #expect(fixture.app.core.isPreparingModels)
         #expect(fixture.app.core.presentation.preparationID != nil)
-        #expect(fixture.app.core.setupStatus == .modelsRequired)
-        #expect(fixture.app.core.inference == nil)
-        #expect(completeProgress.setup == .modelsRequired)
+        #expect(!fixture.app.core.modelsPrepared)
+        #expect(completeProgress.setup == .ready)
 
         await completionGate.release()
-        try await preparationTask.value
+        await fixture.app.core.awaitModelPreparation()
         let ready = try await fixture.waitForState(after: completeProgress.revision.value) { state in
             state.setup == .ready
                 && state.presentation.preparationPhase == .ready
@@ -193,8 +194,7 @@ private final class ModelProgressFixture {
         }
         await fixture.transport.drain()
         #expect(!fixture.app.core.isPreparingModels)
-        #expect(fixture.app.core.setupStatus == .ready)
-        #expect(fixture.app.core.inference != nil)
+        #expect(fixture.app.core.modelsPrepared)
         #expect(ready.setup == .ready)
         #expect(ready.presentation.preparationPhase == .ready)
         #expect(ready.presentation.preparationStatusText == nil)
@@ -212,6 +212,10 @@ private final class ModelProgressFixture {
         #expect(observedLoadingPercentages.last == 100)
 
         let progress = try fixture.progressEvents()
+        let downloadingPercentages = progress.filter { $0.stage == .downloadingModels }.map(\.completedUnits)
+        #expect(downloadingPercentages.last == 100)
+        #expect(zip(downloadingPercentages, downloadingPercentages.dropFirst()).allSatisfy(<=))
+        #expect(progress.prefix(downloadingPercentages.count).allSatisfy { $0.stage == .downloadingModels })
         let loadingProgress = progress.filter { $0.stage == .loadingModels }
         let loadingPercentages = loadingProgress.map(\.completedUnits)
         #expect(progress.allSatisfy { $0.totalUnits == 100 })

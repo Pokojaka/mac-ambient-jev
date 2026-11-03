@@ -11,6 +11,7 @@ import MacAmbientJevPipeline
     private struct Fixture {
         let root: URL
         let app: EngineApplication
+        let inference: FakeInferenceProvider
         let context: EngineRequestContext
     }
 
@@ -46,15 +47,16 @@ import MacAmbientJevPipeline
         let root = try ApplicationHarness.makeRoot()
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let inference = FakeInferenceProvider()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
-            capture: FakeCapture(), inference: FakeInferenceProvider(), events: events
+            capture: FakeCapture(), inference: inference, events: events
         )
         let context = EngineRequestContext(requestID: try EngineID(1), events: events)
-        return Fixture(root: root, app: app, context: context)
+        return Fixture(root: root, app: app, inference: inference, context: context)
     }
 
     private func start(_ fixture: Fixture) async {
@@ -150,11 +152,16 @@ import MacAmbientJevPipeline
         #expect(fixture.app.core.processingQueue.pending.last?.sessionID == UUID(uuidString: imported.sessionID))
     }
 
-    @Test func sessionProcessingRequiresPreparedModelsBeforeInspectingSessions() async throws {
+    @Test func sessionProcessingInspectsSessionsWithoutPreparedModels() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
+        fixture.inference.failPrepare(with: EngineAdapterError(
+            code: .modelMissing, message: "モデルがありません", recoveryAction: .prepareModels, details: []
+        ))
         try await setDecisionsEnabled(fixture)
+        await fixture.app.core.awaitModelPreparation()
+        #expect(!fixture.app.core.modelsPrepared)
 
         let queueBefore = seedQueue(in: fixture)
         let sessionID = UUID()
@@ -164,11 +171,9 @@ import MacAmbientJevPipeline
         for operation in SessionOperation.allCases {
             do {
                 _ = try await operation.call(in: fixture, payload: payload)
-                Issue.record("\(operation) should require prepared models")
+                Issue.record("\(operation) should inspect the unknown session")
             } catch let error as EngineCommandError {
-                #expect(error.code == .modelMissing)
-                #expect(error.stage == operation.stage)
-                #expect(error.recoveryAction == .prepareModels)
+                #expect(error.code == .sessionNotFound)
             } catch {
                 Issue.record("unexpected \(operation) error: \(error)")
             }
@@ -200,23 +205,22 @@ import MacAmbientJevPipeline
         }
     }
 
-    @Test func sessionProcessingRemainsBusyDuringModelPreparation() async throws {
+    @Test func sessionProcessingInspectsSessionsDuringModelPreparation() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
+        fixture.inference.holdPrepare()
+        defer { fixture.inference.releasePrepare() }
         try await setDecisionsEnabled(fixture)
-        fixture.app.core.isPreparingModels = true
-        defer { fixture.app.core.isPreparingModels = false }
+        #expect(fixture.app.core.isPreparingModels)
         let payload = try EngineSessionPayload(sessionID: UUID().uuidString.lowercased())
 
         for operation in SessionOperation.allCases {
             do {
                 _ = try await operation.call(in: fixture, payload: payload)
-                Issue.record("\(operation) should remain busy during model preparation")
+                Issue.record("\(operation) should inspect the unknown session")
             } catch let error as EngineCommandError {
-                #expect(error.code == .busy)
-                #expect(error.stage == operation.stage)
-                #expect(error.recoveryAction == .retry)
+                #expect(error.code == .sessionNotFound)
             } catch {
                 Issue.record("unexpected \(operation) error: \(error)")
             }
@@ -228,7 +232,7 @@ import MacAmbientJevPipeline
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
         try await setDecisionsEnabled(fixture)
-        try await fixture.app.core.prepare(context: fixture.context)
+        await fixture.app.core.awaitModelPreparation()
         #expect(fixture.app.core.settings?.decisionsEnabled == true)
 
         let sessionID = UUID()
@@ -250,7 +254,7 @@ import MacAmbientJevPipeline
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
         try await setDecisionsEnabled(fixture)
-        try await fixture.app.core.prepare(context: fixture.context)
+        await fixture.app.core.awaitModelPreparation()
 
         let sessionID = UUID()
         fixture.app.core.processingQueue.enqueue(

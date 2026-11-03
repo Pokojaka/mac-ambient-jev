@@ -151,6 +151,7 @@ targets.append(.target(
 #endif
 
 #if os(Windows)
+targets.append(.target(name: "CWindowsHTTP", linkerSettings: [.linkedLibrary("winhttp")]))
 targets.append(.target(name: "CWindowsSession", linkerSettings: [.linkedLibrary("ole32"), .linkedLibrary("shell32"), .linkedLibrary("uuid")]))
 targets.append(.target(
     name: "CWindowsAudio",
@@ -164,7 +165,7 @@ targets.append(.target(
 ))
 targets.append(.target(
     name: "MacAmbientJevWindowsSupport",
-    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "CMiniaudio", "CWindowsAudio"]
+    dependencies: ["MacAmbientJevCore", "MacAmbientJevPipeline", "CMiniaudio", "CWindowsAudio", "CWindowsHTTP"]
 ))
 targets.append(.testTarget(
     name: "MacAmbientJevWindowsSupportTests",

@@ -88,7 +88,6 @@ public sealed class EngineHarnessTests
         var result = Assert.IsType<EngineResult.SettingsReplace>(await SendAsync(client,
             new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(null, ExpectedSettings())), token));
         Assert.Equal(ExpectedSettings(), result.Result.Settings);
-        _ = Assert.IsType<EngineResult.ModelsPrepare>(await SendAsync(client, new EngineCommand.ModelsPrepare(new EngineEmptyPayload()), token));
         await WaitRecoveryAsync(client, token);
     }
     private static async Task RecoverAsync(TestWorkspace test, string harness, string session, CancellationToken token)
@@ -97,7 +96,6 @@ public sealed class EngineHarnessTests
         _ = Assert.IsType<EngineResult.Hello>(await AwaitEventsAsync(client, client.Hello, token));
         var settings = Assert.IsType<EngineResult.SettingsGet>(await SendAsync(client, new EngineCommand.SettingsGet(new EngineEmptyPayload()), token));
         Assert.Equal(ExpectedSettings(), settings.Result.Settings);
-        _ = Assert.IsType<EngineResult.ModelsPrepare>(await SendAsync(client, new EngineCommand.ModelsPrepare(new EngineEmptyPayload()), token));
         await WaitRecoveryAsync(client, token);
         await WaitFinalizedAsync(client, session, token);
         var catalog = await CatalogAsync(client, token);
@@ -110,6 +108,7 @@ public sealed class EngineHarnessTests
     {
         var state = await StateAsync(client, cancellationToken);
         if (state.Recovery == EngineRecoveryStatus.Failed) Assert.Fail("Engine recovery failed.");
+        Assert.NotEqual(EnginePreparationPhase.Failed, state.Presentation.PreparationPhase);
         return state.Recovery == EngineRecoveryStatus.Completed && state.Queue.Length == 0;
     }, token);
     private static Task WaitFinalizedAsync(EngineProcessClient client, string session, CancellationToken token) => PollUntilAsync(async cancellationToken =>

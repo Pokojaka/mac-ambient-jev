@@ -11,12 +11,14 @@ struct PortableEngineInference: EngineInferenceProviding {
     let layout: PortableInstalledModelLayout
     let logicalCPUCount: Int
     let clauseTaggerInspection: PortableClauseTaggerInspection
+    let transport: any ModelDownloadTransport
     let usageCounter = DecisionUsageCounter()
 
-    init(layout: PortableInstalledModelLayout, logicalCPUCount: Int) {
+    init(layout: PortableInstalledModelLayout, logicalCPUCount: Int, transport: any ModelDownloadTransport) {
         self.init(
             layout: layout,
             logicalCPUCount: logicalCPUCount,
+            transport: transport,
             clauseTaggerInspection: PortableClauseTaggerInspection(
                 modelDirectory: { try layout.clauseTaggerDirectory() }
             )
@@ -26,10 +28,12 @@ struct PortableEngineInference: EngineInferenceProviding {
     init(
         layout: PortableInstalledModelLayout,
         logicalCPUCount: Int,
+        transport: any ModelDownloadTransport,
         clauseTaggerInspection: PortableClauseTaggerInspection
     ) {
         self.layout = layout
         self.logicalCPUCount = logicalCPUCount
+        self.transport = transport
         self.clauseTaggerInspection = clauseTaggerInspection
     }
 
@@ -56,6 +60,13 @@ struct PortableEngineInference: EngineInferenceProviding {
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         let configuration = try configuration(for: settings)
         do {
+            try await PortableModelDownloads.fetchMissing(configuration: configuration, transport: transport) {
+                onProgress(EngineModelProgress(stage: .downloading, completed: Int($0.bytesDone), total: Int($0.bytesTotal)))
+            }
+        } catch let error as ModelDownloadError {
+            throw Self.downloadError(error)
+        }
+        do {
             try await PortableModelPreparationService().prepare(configuration: configuration) { progress in
                 let stage: EngineModelProgress.Stage = progress.stage == .validating ? .validating : .loading
                 onProgress(EngineModelProgress(stage: stage, completed: progress.completed, total: progress.total))
@@ -63,6 +74,21 @@ struct PortableEngineInference: EngineInferenceProviding {
         } catch let error as PortableModelPreparationError {
             throw Self.modelError(error)
         }
+    }
+
+    static func downloadError(_ error: ModelDownloadError) -> EngineAdapterError {
+        let code: EngineErrorCode
+        let file: String
+        switch error {
+        case let .network(name, _), let .httpStatus(name, _): code = .modelDownload; file = name
+        case let .sizeMismatch(name, _, _): code = .modelCorrupt; file = name
+        case let .hashMismatch(name): code = .modelCorrupt; file = name
+        case let .diskWrite(name, _): code = .filesystem; file = name
+        }
+        return EngineAdapterError(
+            code: code, message: error.localizedDescription, recoveryAction: .prepareModels,
+            details: [EngineAdapterError.detail(domain: "models", code: file, message: error.localizedDescription)]
+        )
     }
 
     static func modelError(_ error: PortableModelPreparationError) -> EngineAdapterError {

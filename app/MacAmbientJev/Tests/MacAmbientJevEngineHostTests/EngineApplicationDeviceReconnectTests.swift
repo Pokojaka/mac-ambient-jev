@@ -48,7 +48,7 @@ struct EngineApplicationDeviceReconnectTests {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        await harness.awaitModels()
         guard case let .recordingStart(started) = try await harness.call(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {
@@ -130,7 +130,7 @@ struct EngineApplicationDeviceReconnectTests {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        await harness.awaitModels()
         guard case let .recordingStart(started) = try await harness.call(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
         ) else {

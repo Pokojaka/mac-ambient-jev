@@ -129,7 +129,7 @@ struct EngineApplicationDiagnosticsTests {
         try await withDiagnosticsHarness(inference: inference) { harness in
             try await harness.hello()
             try await harness.replaceSettings(try diagnosticsEngineSettings(), expectedRevision: nil)
-            try await harness.call("models.prepare")
+            await harness.awaitModels()
 
             let request = try diagnosticsBoundaryRequest()
             let targets = diagnosticsPriorityTargets()
@@ -190,20 +190,19 @@ struct EngineApplicationDiagnosticsTests {
                 prioritySend: 2, priorityTokens: 17, prioritySuccesses: 1, priorityFailures: 1
             )
 
-            // A profile change and repeated preparation replace inference without replacing process usage.
+            // A profile change and its preparation replace inference without replacing process usage.
             try await harness.replaceSettings(
                 try diagnosticsEngineSettings(asrSize: .large), expectedRevision: 1
             )
-            try await harness.call("models.prepare")
-            try await harness.call("models.prepare")
+            await harness.awaitModels()
             let afterPreparation = try availableUsage(try await harness.diagnostics())
             expectUsage(
                 afterPreparation, send: 4, tokens: 28, successes: 2, failures: 2,
                 boundarySend: 2, boundaryTokens: 11, boundarySuccesses: 1, boundaryFailures: 1,
                 prioritySend: 2, priorityTokens: 17, prioritySuccesses: 1, priorityFailures: 1
             )
-            #expect(inference.calls.count("prepare") == 3)
-            #expect(inference.calls.count("makeInference") == 3)
+            #expect(inference.calls.count("prepare") == 2)
+            #expect(inference.calls.count("makeInference") == 2)
 
             let secondCoordinator = try inference.makeDecisionCoordinator()
             let finalBoundary = await secondCoordinator.assessBoundaries(request)
@@ -343,7 +342,7 @@ struct EngineApplicationDiagnosticsTests {
         try await withDiagnosticsHarness(inference: inference) { harness in
             try await harness.hello()
             try await harness.replaceSettings(try diagnosticsEngineSettings(decisions: true), expectedRevision: nil)
-            try await harness.call("models.prepare")
+            await harness.awaitModels()
 
             let fixture = harness.root.appending(path: "tiny-import.wav")
             #expect(FileManager.default.createFile(
@@ -394,7 +393,7 @@ struct EngineApplicationDiagnosticsTests {
         try await withDiagnosticsHarness(inference: inference) { harness in
             try await harness.hello()
             try await harness.replaceSettings(try diagnosticsEngineSettings(decisions: true), expectedRevision: nil)
-            try await harness.call("models.prepare")
+            await harness.awaitModels()
 
             let fixture = harness.root.appending(path: "tiny-boundary-import.wav")
             #expect(FileManager.default.createFile(

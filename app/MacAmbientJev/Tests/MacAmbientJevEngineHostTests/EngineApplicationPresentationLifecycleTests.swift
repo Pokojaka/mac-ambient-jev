@@ -54,7 +54,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
 
         try await fixture.start()
         try await fixture.replaceSettings()
-        try await fixture.app.handlers.models.prepare(context: fixture.context)
+        await fixture.app.core.awaitModelPreparation()
         #expect(fixture.app.core.setupStatus == .ready)
         #expect(fixture.app.core.presentation.preparationPhase == .ready)
         #expect(fixture.app.core.presentation.preparationStatusText == nil)
@@ -92,18 +92,12 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         }
 
         try await fixture.start()
+        fixture.app.core.processingDidChange(.drained)
+        let scheduledIdleReleaseTask = try #require(fixture.app.core.idleReleaseTask)
         try await fixture.replaceSettings()
         let beforePreparation = try await fixture.currentState()
-        var idleReleaseTask: Task<Void, Never>?
-        let preparationTask = Task { @MainActor in
-            fixture.app.core.processingDidChange(.drained)
-            idleReleaseTask = try #require(fixture.app.core.idleReleaseTask)
-            try await fixture.app.core.prepare(context: fixture.context)
-        }
-        defer { preparationTask.cancel() }
 
         try await preparationGate.waitUntilEntered()
-        let scheduledIdleReleaseTask = try #require(idleReleaseTask)
         await scheduledIdleReleaseTask.value
 
         #expect(fixture.app.core.isPreparingModels)
@@ -129,7 +123,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         #expect(phaseBeforeRepeatedRelease == .preparing)
 
         await preparationGate.release()
-        try await preparationTask.value
+        await fixture.app.core.awaitModelPreparation()
         let ready = try await fixture.waitForState(after: preparing.revision.value) { state in
             state.presentation.preparationPhase == .ready
                 && state.presentation.preparationStatusText == nil
@@ -190,25 +184,19 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         try await fixture.start()
         try await fixture.replaceSettings()
         let initial = try await fixture.currentState()
-        #expect(initial.setup == .modelsRequired)
+        #expect(initial.setup == .ready)
         #expect(initial.presentation.recordingStatusText == UserFacingStatus.idle.text)
-        #expect(initial.presentation.preparationPhase == .idle)
-        #expect(initial.presentation.preparationStatusText == nil)
-        #expect(fixture.app.core.presentation.preparationStatusText == nil)
         #expect(try fixture.stateEvents().contains { state in
             state.presentation.recordingStatusText == UserFacingStatus.idle.text
         })
 
-        let preparationTask = Task { @MainActor in
-            try await fixture.prepareModels()
-        }
-        defer { preparationTask.cancel() }
+        // Saving the settings started the preparation by itself.
         try await validatingGate.waitUntilEntered()
-        let validating = try await fixture.waitForState(after: initial.revision.value) { state in
+        let validating = try await fixture.waitForState(after: 0) { state in
             state.presentation.preparationPhase == .preparing
                 && state.presentation.preparationStatusText == UserFacingStatus.preparingASR.text
         }
-        #expect(validating.setup == .modelsRequired)
+        #expect(validating.setup == .ready)
         #expect(validating.presentation.preparationPhase == .preparing)
         #expect(validating.presentation.preparationStatusText == UserFacingStatus.preparingASR.text)
         #expect(validating.presentation.recordingStatusText == UserFacingStatus.idle.text)
@@ -219,12 +207,12 @@ private struct LifecycleScanFailure: Error, LocalizedError {
             state.presentation.preparationPhase == .preparing
                 && state.presentation.preparationStatusText == "音声認識モデルを読み込み中（100%）"
         }
-        #expect(loading.setup == .modelsRequired)
+        #expect(loading.setup == .ready)
         #expect(loading.presentation.preparationPhase == .preparing)
         #expect(loading.presentation.preparationStatusText == "音声認識モデルを読み込み中（100%）")
 
         await preparationGate.release()
-        let preparationResult = await preparationTask.result
+        await fixture.app.core.awaitModelPreparation()
         let finished = try await fixture.waitForState(after: loading.revision.value) { state in
             if failsAfterLoading {
                 return state.presentation.preparationPhase == .failed
@@ -233,22 +221,11 @@ private struct LifecycleScanFailure: Error, LocalizedError {
             return state.presentation.preparationPhase == .ready
                 && state.presentation.preparationStatusText == nil
         }
+        #expect(finished.setup == .ready)
         if failsAfterLoading {
-            guard case let .failure(error) = preparationResult else {
-                Issue.record("model preparation succeeded after its configured adapter failure")
-                return
-            }
-            let commandError = try #require(error as? EngineCommandError)
-            #expect(commandError.message == reason)
-            #expect(finished.setup == .modelsRequired)
             #expect(finished.presentation.preparationPhase == .failed)
             #expect(finished.presentation.preparationStatusText != nil)
         } else {
-            guard case .success = preparationResult else {
-                Issue.record("model preparation failed without a configured adapter failure")
-                return
-            }
-            #expect(finished.setup == .ready)
             #expect(finished.presentation.preparationPhase == .ready)
             #expect(finished.presentation.preparationStatusText == nil)
         }
@@ -410,7 +387,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
     }
 
     @Test
-    func interruptedRecordingWaitsForModelsThenCompletesThroughStartupRecovery() async throws {
+    func interruptedRecordingWaitsForTheAutomaticPreparationThenCompletesThroughStartupRecovery() async throws {
         let root = try EngineApplicationPresentationLifecycleFixture.makeRoot()
         let first = try EngineApplicationPresentationLifecycleFixture(
             root: root,
@@ -438,10 +415,11 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         let stopped = try await first.currentState()
         #expect(stopped.presentation.processingStatusText != UserFacingStatus.finalizationPausedForHeat.text)
 
+        let modelGate = LifecycleContinuationGate()
         let second = try EngineApplicationPresentationLifecycleFixture(
             root: root,
             validatingGate: nil,
-            preparationGate: nil,
+            preparationGate: modelGate,
             preparationFailure: nil,
             captureStartGate: nil,
             captureStopGate: nil,
@@ -453,11 +431,13 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         try await second.start()
         let recoveryText = "未完了の文字起こしを復旧しています（1件）"
         let pending = try await second.waitForState(after: 0) { state in
-            state.setup == .modelsRequired
-                && state.recovery == .pending
+            state.setup == .ready
+                && state.recovery == .running
                 && state.presentation.recoveryStatusText == recoveryText
+                && state.presentation.processingStatusText == ModelPreparationStatus.waitingForModelsText
         }
         #expect(pending.presentation.recoveryStatusText == recoveryText)
+        await modelGate.release()
         try await second.prepareModels()
         let completedText = "文字起こしと話者分離が完了しました（1区間）"
         let completed = try await second.waitForState(after: pending.revision.value) { state in

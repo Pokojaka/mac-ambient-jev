@@ -242,24 +242,17 @@ private let settingsPayload = """
             Issue.record("state.get did not complete")
             return
         }
+        // The child has no bundled Silero VAD, so the processor cannot be configured: setup stays
+        // `models_required`, the failure is shown as the preparation failure, and `models.prepare` names it.
         #expect(state.setup == .modelsRequired)
+        #expect(state.presentation.preparationPhase == .failed)
 
-        // Recording needs prepared models; with none installed the refusal names the recovery.
-        guard case let .error(recordingRefused) = try await child.call(
-            "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
-        ) else {
-            Issue.record("recording.start should be refused")
+        guard case let .error(modelsFailure) = try await child.call("models.prepare") else {
+            Issue.record("models.prepare should fail without a configured processor")
             return
         }
-        #expect(recordingRefused.code == .modelMissing)
-        #expect(recordingRefused.recoveryAction == .prepareModels)
-
-        guard case let .error(modelsMissing) = try await child.call("models.prepare") else {
-            Issue.record("models.prepare should fail without installed models")
-            return
-        }
-        #expect(modelsMissing.code == .modelMissing)
-        #expect(modelsMissing.message.contains(root.appending(path: "mac-ambient-jev").path))
+        #expect(modelsFailure.code == .modelFailure)
+        #expect(modelsFailure.recoveryAction == .prepareModels)
 
         guard case let .completed(.sessionList(list)) = try await child.call("session.list", payload: "{\"cursor\":null,\"limit\":10}") else {
             Issue.record("session.list did not complete")

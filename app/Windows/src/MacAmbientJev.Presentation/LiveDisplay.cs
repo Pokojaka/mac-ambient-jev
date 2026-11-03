@@ -79,7 +79,6 @@ public sealed partial class LiveViewModel
             if (state.Capabilities is { } capabilities && !capabilities.Sources.Contains(source)) return "この音声ソースは利用できません";
             if (StartRecording.Execution is { IsCompleted: false } || state.IsPending(EngineCommandName.RecordingStart))
                 return "録音を開始しています";
-            if (state.IsPending(EngineCommandName.ModelsPrepare)) return "処理中です";
             if (state.IsPending(EngineCommandName.RecordingStop) || state.IsPending(EngineCommandName.DevicesList) ||
                 state.IsPending(EngineCommandName.SettingsReplace)) return "処理中です";
             if (state.Capabilities is null) return "音声ソースを確認できません";

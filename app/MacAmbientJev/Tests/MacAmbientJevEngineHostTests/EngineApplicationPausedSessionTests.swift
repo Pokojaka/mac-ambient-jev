@@ -161,7 +161,7 @@ private final class PausedSessionFinalizationHarness {
         _ = try await first.app.core.replace(
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: first.context
         )
-        try await first.app.core.prepare(context: first.context)
+        await first.app.core.awaitModelPreparation()
         await first.app.core.processingCoordinator.waitUntilIdle()
 
         let recording = try await first.app.core.start(
@@ -186,10 +186,10 @@ private final class PausedSessionFinalizationHarness {
         #expect(pausedMetadata.finalizationAttempt?.state == .paused)
 
         let second = ApplicationHarness(root: root)
+        second.inference.holdPrepare()
         second.start()
         try await second.hello()
         await second.app.waitForStartupRecovery()
-        #expect(try await second.state().setup == .modelsRequired)
         guard case let .sessionList(page) = try await second.call(
             "session.list", payload: "{\"cursor\":null,\"limit\":100}"
         ) else {

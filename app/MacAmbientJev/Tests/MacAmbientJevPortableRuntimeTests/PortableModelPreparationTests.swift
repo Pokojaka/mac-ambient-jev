@@ -36,82 +36,7 @@ private func temporaryDirectory() throws -> URL {
     return url
 }
 
-private func asset(_ name: String, _ contents: String, in directory: URL, byteCount: Bool = true) throws -> PortableAssetFile {
-    let data = Data(contents.utf8)
-    try data.write(to: directory.appending(path: name))
-    return PortableAssetFile(
-        name: name,
-        byteCount: byteCount ? Int64(data.count) : nil,
-        sha256: FileSHA256.hexDigest(of: data)
-    )
-}
-
 struct PortableModelPreparationTests {
-    @Test func verifierAcceptsMatchingFiles() throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let files = [try asset("a.bin", "alpha", in: directory), try asset("b.bin", "beta", in: directory, byteCount: false)]
-        try PortableAssetVerifier.verify(model: .asr, files: files, directory: directory, installCommand: "fetch")
-    }
-
-    @Test func verifierReportsAMissingDirectoryByItsExactPath() throws {
-        let directory = try temporaryDirectory().appending(path: "absent")
-        #expect(throws: PortableModelPreparationError.missing(model: .diarization, path: directory.path, installCommand: "fetch it")) {
-            try PortableAssetVerifier.verify(
-                model: .diarization,
-                files: [PortableAssetFile(name: "x", byteCount: nil, sha256: "00")],
-                directory: directory,
-                installCommand: "fetch it"
-            )
-        }
-    }
-
-    @Test func verifierReportsAMissingFileByItsExactPath() throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let present = try asset("a.bin", "alpha", in: directory)
-        let absent = PortableAssetFile(name: "b.bin", byteCount: 1, sha256: "00")
-        let expected = PortableModelPreparationError.missing(
-            model: .asr, path: directory.appending(path: "b.bin").path, installCommand: "fetch it"
-        )
-        #expect(throws: expected) {
-            try PortableAssetVerifier.verify(model: .asr, files: [present, absent], directory: directory, installCommand: "fetch it")
-        }
-        #expect(expected.errorDescription?.contains("fetch it") == true)
-    }
-
-    @Test func verifierRejectsWrongSizeCorruptBytesAndNonRegularFiles() throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let good = try asset("a.bin", "alpha", in: directory)
-
-        let wrongSize = PortableAssetFile(name: good.name, byteCount: good.byteCount! + 1, sha256: good.sha256)
-        let corrupt = PortableAssetFile(name: good.name, byteCount: good.byteCount, sha256: String(repeating: "0", count: 64))
-        try FileManager.default.createDirectory(at: directory.appending(path: "dir.bin"), withIntermediateDirectories: false)
-        try FileManager.default.createSymbolicLink(
-            at: directory.appending(path: "link.bin"), withDestinationURL: directory.appending(path: "a.bin")
-        )
-        let notRegular = [
-            PortableAssetFile(name: "dir.bin", byteCount: nil, sha256: good.sha256),
-            PortableAssetFile(name: "link.bin", byteCount: nil, sha256: good.sha256),
-        ]
-
-        for (file, fragment) in [(wrongSize, "サイズ"), (corrupt, "SHA-256")] + notRegular.map({ ($0, "通常ファイル") }) {
-            do {
-                try PortableAssetVerifier.verify(model: .vad, files: [file], directory: directory, installCommand: "fetch")
-                Issue.record("accepted \(file.name)")
-            } catch let error as PortableModelPreparationError {
-                guard case let .invalid(model, path, detail, command) = error else {
-                    Issue.record("not invalid: \(error)"); continue
-                }
-                #expect(model == .vad)
-                #expect(path == directory.appending(path: file.name).path)
-                #expect(detail.contains(fragment))
-                #expect(command == "fetch")
-            }
-        }
-    }
-
     @Test func everyModelIsValidatedBeforeAnyIsLoadedAndProgressIsReported() async throws {
         let log = ProgressLog()
         let steps = PortableModelKind.allCases.map { model in
@@ -140,7 +65,7 @@ struct PortableModelPreparationTests {
 
     @Test func aValidationFailureLoadsNothingAndStopsTheRun() async throws {
         let log = ProgressLog()
-        let failure = PortableModelPreparationError.missing(model: .asr, path: "/p", installCommand: "c")
+        let failure = PortableModelPreparationError.missing(model: .asr, path: "/p", guidance: "c")
         let steps = [
             PortableModelPreparationService.Step(model: .vad, validate: {}, load: { log.record("load vad") }),
             PortableModelPreparationService.Step(model: .asr, validate: { throw failure }, load: { log.record("load asr") }),
@@ -234,7 +159,7 @@ struct PortableModelPreparationTests {
                 return
             }
             #expect(model == .clauseTagger)
-            #expect(path == tagger.path)
+            #expect(path == tagger.appending(path: "ClauseTagger.onnx").path)
             #expect(command.contains("--format onnx"))
             #expect(command.contains(tagger.path))
         }
@@ -253,7 +178,7 @@ struct PortableModelPreparationTests {
         } catch let error as PortableModelPreparationError {
             guard case let .missing(model, path, command) = error else { Issue.record("not missing: \(error)"); return }
             #expect(model == .vad)
-            #expect(path == layout.sileroModelURL.deletingLastPathComponent().path)
+            #expect(path == layout.sileroModelURL.path)
             #expect(command.contains("scripts/fetch_silero_vad.py"))
             #expect(command.contains(layout.sileroModelURL.path))
         }
@@ -267,7 +192,7 @@ struct PortableModelPreparationTests {
         try FileManager.default.createDirectory(
             at: layout.sileroModelURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
-        try Data("not a model".utf8).write(to: layout.sileroModelURL)
+        try Data(repeating: 0x41, count: Int(SileroVADModel.manifestFile.byteCount)).write(to: layout.sileroModelURL)
         let configuration = try PortableProcessingConfiguration.installed(
             layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 4, withDecisions: false
         )

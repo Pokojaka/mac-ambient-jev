@@ -158,6 +158,20 @@ public struct Community1Assets {
         FileSHA256.hexDigest(of: try Community1Manifest.bundledData())
     }
 
+    /// One entry per pinned source, in the manifest's source-key order (sorted), each with that source's files.
+    public static func manifestEntries() throws -> [ModelManifestEntry] {
+        let manifest = try Community1Manifest.bundled()
+        return manifest.sources.keys.sorted().map { key in
+            let source = manifest.sources[key]!
+            return ModelManifestEntry(
+                repository: source.repository, commit: source.revision,
+                files: manifest.files.filter { $0.source == key }.map {
+                    ModelManifestFile(name: $0.name, role: $0.role.rawValue, byteCount: Int64($0.byteCount), sha256: $0.sha256)
+                }
+            )
+        }
+    }
+
     public static func pinnedIdentity() throws -> Community1ModelIdentity {
         let manifest = try Community1Manifest.bundled()
         let model = manifest.sources

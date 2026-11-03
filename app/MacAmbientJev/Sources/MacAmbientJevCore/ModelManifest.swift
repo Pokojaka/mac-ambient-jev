@@ -103,6 +103,19 @@ public enum ModelVerifier {
     /// Verifies one manifest file the same way, for callers that fetch file by file.
     public static func verify(_ file: ModelManifestFile, in directory: URL) throws {
         let fileManager = FileManager.default
+        let directoryAttributes: [FileAttributeKey: Any]
+        do {
+            directoryAttributes = try fileManager.attributesOfItem(atPath: directory.path)
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileReadNoSuchFileError {
+                throw ModelVerificationError.missing(file: file.name)
+            }
+            throw ModelVerificationError.unreadable(file: file.name, reason: error.localizedDescription)
+        }
+        guard directoryAttributes[.type] as? FileAttributeType == .typeDirectory else {
+            throw ModelVerificationError.notRegularFile(file: file.name)
+        }
         var current = directory
         let components = file.name.split(separator: "/").map(String.init)
         for (index, component) in components.enumerated() {

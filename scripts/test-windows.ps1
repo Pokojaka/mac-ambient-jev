@@ -120,6 +120,12 @@ Write-Host "Swift test event stream: $testEventPath"
 Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' {
     python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-stream-output-path $testEventPath
 }
+# Alone, because a CDN drops a download that the full parallel suite starves of CPU.
+Invoke-Step 'Swift WinHTTP network tests' {
+    $env:MAC_AMBIENT_JEV_NETWORK_TESTS = '1'
+    swift test --package-path app/MacAmbientJev --skip-build --filter WinHTTPModelTransportTests
+    Remove-Item Env:MAC_AMBIENT_JEV_NETWORK_TESTS
+}
 
 Invoke-Step 'engine acceptance driver self-test' { python -B scripts/test_engine_acceptance.py }
 Invoke-Step 'engine acceptance FLAC validator self-test' { python -B scripts/test_engine_acceptance_flac.py }

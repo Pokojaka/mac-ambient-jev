@@ -280,7 +280,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         _ = try await fixture.app.core.replace(
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: fixture.context
         )
-        try await fixture.app.core.prepare(context: fixture.context)
+        await fixture.app.core.awaitModelPreparation()
         while fixture.app.core.processingCoordinator.isDraining { await Task.yield() }
     }
 
@@ -296,7 +296,6 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let original = try await configureSettings(for: fixture)
-        let prepareTask = Task { @MainActor in try await fixture.app.core.prepare(context: fixture.context) }
         await fixture.gate.waitUntilEntered()
 
         let proposed = try EngineSettings(
@@ -318,31 +317,24 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         #expect(saved.settings == original)
 
         await fixture.gate.release()
-        try await prepareTask.value
+        await fixture.app.core.awaitModelPreparation()
+        #expect(fixture.app.core.modelsPrepared)
     }
 
-    @Test func preparationResumedAfterShutdownIsCancelledWithoutInstallingProcessor() async throws {
+    @Test func preparationResumedAfterShutdownIsCancelledWithoutMarkingModelsPrepared() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try await configureSettings(for: fixture)
-        let prepareTask = Task { @MainActor in try await fixture.app.core.prepare(context: fixture.context) }
         await fixture.gate.waitUntilEntered()
 
-        try await fixture.app.core.shutdown(reason: .requested)
-        #expect(fixture.app.core.isShuttingDown)
+        let shutdownTask = Task { @MainActor in try await fixture.app.core.shutdown(reason: .requested) }
+        while !fixture.app.core.isShuttingDown { await Task.yield() }
         await fixture.gate.release()
+        try await shutdownTask.value
 
-        do {
-            try await prepareTask.value
-            Issue.record("model preparation should be cancelled after shutdown")
-        } catch let error as EngineCommandError {
-            #expect(error.code == .cancelled)
-        } catch {
-            Issue.record("unexpected model preparation error: \(error)")
-        }
-
-        #expect(fixture.app.core.currentState().setup == .modelsRequired)
-        #expect(!fixture.app.core.gateway.isInstalled)
+        #expect(!fixture.app.core.modelsPrepared)
+        #expect(!fixture.app.core.automaticPreparationFailed)
+        #expect(fixture.app.core.preparationTask == nil)
     }
 
     @Test func shutdownWaitsForStartupRecoveryBeforeReleasingRootLock() async throws {
@@ -680,6 +672,8 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: fixture.context
         )
 
+        await fixture.gate.release()
+        try await fixture.app.core.shutdown(reason: .requested)
         #expect(fixture.app.core.pausesProcessing)
         #expect(fixture.app.core.failures.isEmpty)
         #expect(fixture.app.core.mutationTasks.isEmpty)
