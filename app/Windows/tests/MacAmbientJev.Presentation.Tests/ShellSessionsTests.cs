@@ -105,7 +105,7 @@ public sealed partial class ShellStoreTests
 
     private static async Task<ShellStore> Start(SessionInspectClient engine, TimeProvider clock)
     {
-        var store = new ShellStore(engine, clock);
+        var store = new ShellStore(engine, NoProviders(engine), clock);
         await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         return store;
     }

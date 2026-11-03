@@ -37,7 +37,7 @@ public sealed partial class MainWindow : Window
             _appWindow = AppWindow.GetFromWindowId(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(handle));
             _appWindow.Closing += OnAppWindowClosing;
             _client = EngineProcessClient.Start();
-            _store = new ShellStore(_client);
+            _store = new ShellStore(_client, new ExecutionProviderSetupCoordinator(ExecutionProviderCatalog, _client));
             _context = new ShellUiContext(_store, new DispatcherQueueUiDispatcher(
                 DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("The UI dispatcher is unavailable.")), TimeProvider.System);
             _settings = new SettingsViewModel(_context); _diagnostics = new DiagnosticsViewModel(_context);

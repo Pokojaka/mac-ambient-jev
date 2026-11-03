@@ -48,10 +48,10 @@ public sealed partial class EngineProcessClientTests
         Assert.Equal(bindingResult.BindingID, bound.Result.BindingID);
         Assert.Equal(devices, bound.Result.Devices);
 
-        var verificationTask = coordinator.VerifyAsync(bound.Result.BindingID, bound.Result.Devices[1].DeviceKey, 3,
+        var verificationTask = coordinator.VerifyAsync(bound.Result.BindingID, bound.Result.Devices[1].DeviceKey, EngineASRSize.Large, 3,
             TestContext.Current.CancellationToken);
         var verify = await session.ReadRequestAsync(3, EngineCommandName.AcceleratorsVerify);
-        Assert.Equal(new EngineAcceleratorsVerifyPayload("binding-chosen", "npu:8086:1234", EngineASRSize.Small, 3),
+        Assert.Equal(new EngineAcceleratorsVerifyPayload("binding-chosen", "npu:8086:1234", EngineASRSize.Large, 3),
             Assert.IsType<EngineCommand.AcceleratorsVerify>(verify.Command).Payload);
         EngineAcceleratorsVerifyResult verification = passes
             ? new EngineAcceleratorsVerifyResult.Pass("verification-pass", 0.25)
@@ -79,6 +79,68 @@ public sealed partial class EngineProcessClientTests
         Assert.Equal("HRESULT 0x80070005: acquisition denied", acquired.Failure.DiagnosticText);
         Assert.Equal(1, catalog.Calls);
         await session.CloseAndCompleteAsync(2);
+    }
+
+    [Fact]
+    public async Task RebindSavedBindsExactNamedProviderAmongSeveralAndConfirmsDevice()
+    {
+        await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
+        await session.CompleteHelloAsync();
+        var other = Provider("OtherProvider", "package-other");
+        var saved = Provider("SavedProvider", "package-saved");
+        var catalog = new ListCatalog([other, saved], new ExecutionProviderReadyResult.Ready(@"C:\p\saved.dll", new string('a', 64), []));
+        var coordinator = new ExecutionProviderSetupCoordinator(catalog, session.Client);
+        var rebind = coordinator.RebindSavedAsync("SavedProvider", "npu:8086:1234", new Progress<ExecutionProviderProgress>(), TestContext.Current.CancellationToken);
+
+        var bind = await session.ReadRequestAsync(2, EngineCommandName.AcceleratorsBind);
+        Assert.Equal("package-saved", Assert.IsType<EngineCommand.AcceleratorsBind>(bind.Command).Payload.Descriptor.PackageFullName);
+        Assert.Same(saved, Assert.Single(catalog.Acquired));
+        var devices = new[] { new EngineAcceleratorDeviceInfo("gpu:10de:2684", "gpu", "GPU", "d1", 1UL), new EngineAcceleratorDeviceInfo("npu:8086:1234", "npu", "NPU", "d2", null) };
+        var result = new EngineAcceleratorsBindResult("binding-1", devices);
+        await session.AcceptAndCompleteAsync(bind, new EngineResult.AcceleratorsBind(result));
+        var bound = Assert.IsType<ExecutionProviderRebindResult.Bound>(await rebind.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        Assert.Equal("binding-1", bound.Result.BindingID); Assert.Equal(devices, bound.Result.Devices);
+
+        var missing = coordinator.RebindSavedAsync("SavedProvider", "gpu:dead:beef", new Progress<ExecutionProviderProgress>(), TestContext.Current.CancellationToken);
+        var second = await session.ReadRequestAsync(3, EngineCommandName.AcceleratorsBind);
+        await session.AcceptAndCompleteAsync(second, new EngineResult.AcceleratorsBind(result));
+        var absent = Assert.IsType<ExecutionProviderRebindResult.DeviceMissing>(await missing.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        Assert.Equal("gpu:dead:beef", absent.DeviceKey);
+        Assert.Equal(new[] { "gpu:10de:2684", "npu:8086:1234" }, absent.AvailableDeviceKeys);
+        await session.CloseAndCompleteAsync(4);
+    }
+
+    [Fact]
+    public async Task RebindSavedReturnsTypedFailuresWithoutBindCommands()
+    {
+        await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
+        await session.CompleteHelloAsync();
+        var ready = new ExecutionProviderReadyResult.Ready(@"C:\p\saved.dll", new string('a', 64), []);
+        var progress = new Progress<ExecutionProviderProgress>();
+        var token = TestContext.Current.CancellationToken;
+
+        var none = new ExecutionProviderSetupCoordinator(new ListCatalog([Provider("Other", "p1")], ready), session.Client);
+        Assert.Equal(new ExecutionProviderRebindResult.ProviderMissing("Saved"), await none.RebindSavedAsync("Saved", "k", progress, token));
+        var twice = new ExecutionProviderSetupCoordinator(new ListCatalog([Provider("Saved", "p1"), Provider("Saved", "p2")], ready), session.Client);
+        Assert.Equal(new ExecutionProviderRebindResult.ProviderAmbiguous("Saved", 2), await twice.RebindSavedAsync("Saved", "k", progress, token));
+        var failure = new ExecutionProviderReadyResult.Failure(unchecked((int)0x80070005), "denied");
+        var failing = new ExecutionProviderSetupCoordinator(new ListCatalog([Provider("Saved", "p1")], failure), session.Client);
+        Assert.Same(failure, Assert.IsType<ExecutionProviderRebindResult.AcquisitionFailed>(await failing.RebindSavedAsync("Saved", "k", progress, token)).Failure);
+        await session.CloseAndCompleteAsync(2);
+    }
+
+    private static ExecutionProviderInfo Provider(string name, string package) =>
+        new(name, package, "arm64", ExecutionProviderReadyState.NotPresent, ExecutionProviderCertification.Uncertified);
+
+    private sealed class ListCatalog(IReadOnlyList<ExecutionProviderInfo> providers, ExecutionProviderReadyResult readiness) : IExecutionProviderCatalog
+    {
+        internal List<ExecutionProviderInfo> Acquired { get; } = [];
+        public Task<IReadOnlyList<ExecutionProviderInfo>> FindAllProvidersAsync(CancellationToken cancellationToken) => Task.FromResult(providers);
+        public Task<ExecutionProviderReadyResult> EnsureReadyAsync(ExecutionProviderInfo provider, IProgress<ExecutionProviderProgress> progress, CancellationToken cancellationToken)
+        {
+            Acquired.Add(provider);
+            return Task.FromResult(readiness);
+        }
     }
 
     private sealed class FakeExecutionProviderCatalog : IExecutionProviderCatalog, IProgress<ExecutionProviderProgress>

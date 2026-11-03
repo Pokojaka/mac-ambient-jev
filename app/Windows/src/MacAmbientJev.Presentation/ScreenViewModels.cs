@@ -231,7 +231,7 @@ public sealed class SettingsViewModel : ScreenViewModel
     {
         Commit = Command(CanCommit, _ => Context.Store.CommitSettingsAsync());
         Reload = Command(_ => !HasSettingsRequest(Context.Store.State), _ => Context.Store.ReloadSettingsAsync());
-        PrepareModels = Command(CanPrepareModels, _ => Context.Store.ExecuteAsync(new EngineCommand.ModelsPrepare(new EngineEmptyPayload())));
+        PrepareModels = Command(_ => Context.Store.State.CanPrepareModels, _ => Context.Store.PrepareModelsAsync());
     }
 
     public EngineSettings? Draft => Snapshot.SettingsDraft; public EngineSettingsResult? Confirmed => Snapshot.ConfirmedSettings;
@@ -267,12 +267,6 @@ public sealed class SettingsViewModel : ScreenViewModel
     {
         var state = Context.Store.State;
         return state.SettingsDraft is not null && !HasSettingsRequest(state) && CanRunWithoutRecording(state);
-    }
-    private bool CanPrepareModels(object? parameter)
-    {
-        var state = Context.Store.State;
-        return state.ConfirmedSettings is not null && !state.IsPending(EngineCommandName.ModelsPrepare) &&
-            !state.IsPending(EngineCommandName.SettingsReplace) && CanRunWithoutRecording(state);
     }
     private static bool HasSettingsRequest(ShellState state) =>
         state.IsPending(EngineCommandName.SettingsGet) || state.IsPending(EngineCommandName.SettingsReplace);

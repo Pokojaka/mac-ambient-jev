@@ -169,7 +169,7 @@ public sealed partial class ShellStoreTests
     {
         var engine = new Fake(State(EngineSetupStatus.Ready, 1), Response(SettingsResult(1, Settings(2, false, false, false, null))));
         await using var store = await Start(engine);
-        var execution = store.ExecuteAsync(new EngineCommand.ModelsPrepare(new EngineEmptyPayload())); var request = await engine.NextRequestAsync();
+        var execution = store.PrepareModelsAsync(); var request = await engine.NextRequestAsync();
         request.Complete(new EngineResult.RecordingStart(new EngineSessionPayload("wrong")));
         Assert.False(await execution); Assert.Equal(ShellPhase.EngineFailed, store.State.Phase);
         Assert.NotNull(store.State.StoreFailure); Assert.False(store.State.IsPending(EngineCommandName.ModelsPrepare));
@@ -193,7 +193,80 @@ public sealed partial class ShellStoreTests
         Assert.Equal(draft, store.State.SettingsDraft); Assert.Equal(ShellSettingsStatus.Available, store.State.SettingsStatus);
     }
 
-    private static async Task<ShellStore> Start(Fake engine) { var store = new ShellStore(engine); await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); return store; }
+    [Fact]
+    public async Task CpuPrepareSendsModelsPrepareWithoutTouchingCatalog()
+    {
+        var catalog = new FakeCatalog([]);
+        var engine = new Fake(State(EngineSetupStatus.Ready, 1), Response(SettingsResult(1, Settings(2, false, false, false, null))));
+        await using var store = await Start(engine, catalog);
+        var prepare = store.PrepareModelsAsync(); var request = await engine.NextRequestAsync();
+        Assert.IsType<EngineCommand.ModelsPrepare>(request.Command);
+        request.Complete(new EngineResult.ModelsPrepare(new EngineEmptyPayload()));
+        Assert.True(await prepare); Assert.Equal(0, catalog.Calls);
+    }
+
+    [Fact]
+    public async Task WindowsMLPrepareRebindsThenSendsModelsPrepare()
+    {
+        var provider = new ExecutionProviderInfo("Saved", "pkg", "arm64", ExecutionProviderReadyState.NotPresent, ExecutionProviderCertification.Uncertified);
+        var catalog = new FakeCatalog([provider]);
+        var sent = new List<EngineCommandName>();
+        var engine = new Fake(State(EngineSetupStatus.Ready, 1), Response(SettingsResult(1, WindowsMLSettings())))
+        {
+            AutoResponse = command =>
+            {
+                sent.Add(command.Name);
+                return command switch
+                {
+                    EngineCommand.AcceleratorsBind => new EngineResult.AcceleratorsBind(new EngineAcceleratorsBindResult("b", [new EngineAcceleratorDeviceInfo("npu:8086:1234", "npu", "NPU", "d", null)])),
+                    EngineCommand.ModelsPrepare => new EngineResult.ModelsPrepare(new EngineEmptyPayload()),
+                    _ => throw new NotSupportedException(command.Name.ToString()),
+                };
+            }
+        };
+        await using var store = await Start(engine, catalog);
+        Assert.True(await store.PrepareModelsAsync());
+        Assert.Equal([EngineCommandName.AcceleratorsBind, EngineCommandName.ModelsPrepare], sent);
+        Assert.Null(store.State.ProviderBindingFailure);
+    }
+
+    [Fact]
+    public async Task WindowsMLPrepareWithMissingProviderReportsFailureAndSendsNothing()
+    {
+        var catalog = new FakeCatalog([]);
+        var engine = new Fake(State(EngineSetupStatus.Ready, 1), Response(SettingsResult(1, WindowsMLSettings())));
+        await using var store = await Start(engine, catalog);
+        var sentBefore = engine.SentCount;
+        Assert.False(await store.PrepareModelsAsync());
+        Assert.Equal(new ExecutionProviderRebindResult.ProviderMissing("Saved"), store.State.ProviderBindingFailure);
+        Assert.False(store.State.IsPending(EngineCommandName.ModelsPrepare)); Assert.Equal(sentBefore, engine.SentCount);
+    }
+
+    [Fact]
+    public async Task PrepareWhileRecordingSendsNothingAndTouchesNoCatalog()
+    {
+        var catalog = new FakeCatalog([]);
+        var recording = State(EngineSetupStatus.Ready, 1) with { Recording = new EngineRecordingState("s", EngineSource.Microphone, new EngineDevice.Default(), EngineRecordingPhase.Recording) };
+        var engine = new Fake(recording, Response(SettingsResult(1, WindowsMLSettings())));
+        await using var store = await Start(engine, catalog);
+        var sentBefore = engine.SentCount;
+        Assert.False(await store.PrepareModelsAsync());
+        Assert.Equal(sentBefore, engine.SentCount); Assert.Equal(0, catalog.Calls);
+    }
+
+    private static EngineSettings WindowsMLSettings() => Settings(2, false, false, false, null) with { ExecutionProvider = new EngineExecutionProvider.WindowsML("Saved", "npu:8086:1234", "v") };
+    private static ExecutionProviderSetupCoordinator NoProviders(IEngineClient engine) => new(new FakeCatalog([]), engine);
+    private static async Task<ShellStore> Start(Fake engine, FakeCatalog catalog) { var store = new ShellStore(engine, new ExecutionProviderSetupCoordinator(catalog, engine)); await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); return store; }
+
+    private sealed class FakeCatalog(IReadOnlyList<ExecutionProviderInfo> providers) : IExecutionProviderCatalog
+    {
+        internal int Calls { get; private set; }
+        public Task<IReadOnlyList<ExecutionProviderInfo>> FindAllProvidersAsync(CancellationToken cancellationToken) { Calls++; return Task.FromResult(providers); }
+        public Task<ExecutionProviderReadyResult> EnsureReadyAsync(ExecutionProviderInfo provider, IProgress<ExecutionProviderProgress> progress, CancellationToken cancellationToken)
+        { Calls++; return Task.FromResult<ExecutionProviderReadyResult>(new ExecutionProviderReadyResult.Ready("C:\\p.dll", new string('a', 64), [])); }
+    }
+
+    private static async Task<ShellStore> Start(Fake engine) { var store = new ShellStore(engine, NoProviders(engine)); await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); return store; }
     private static async Task<ShellState> ChangedTo(ShellStore store, Func<ShellState, bool> predicate)
     {
         if (predicate(store.State)) return store.State;
