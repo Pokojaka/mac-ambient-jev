@@ -165,7 +165,7 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         self.calls = calls
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 1, total: 1))
     }
 
@@ -177,7 +177,7 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         try await inspectionProvider.inspectClauseTagger()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: GatedASREngine(gate: gate, calls: calls),
@@ -199,9 +199,9 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         self.gate = gate
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         await gate.suspend()
-        try await base.prepare(settings: settings, onProgress: onProgress)
+        try await base.prepare(settings: settings, acceleratedASR: acceleratedASR, onProgress: onProgress)
     }
 
     func decisionUsage() async throws -> DecisionUsageSnapshot {
@@ -212,8 +212,8 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         try await base.inspectClauseTagger()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        try base.makeInference(settings: settings)
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        try base.makeInference(settings: settings, acceleratedASR: acceleratedASR)
     }
 }
 

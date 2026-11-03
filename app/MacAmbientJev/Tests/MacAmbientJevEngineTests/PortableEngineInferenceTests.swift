@@ -222,7 +222,7 @@ private actor InspectionStartGate {
         let settings = try settings()
 
         do {
-            try await inference.prepare(settings: settings) { _ in }
+            try await inference.prepare(settings: settings, acceleratedASR: nil) { _ in }
             Issue.record("preparation unexpectedly succeeded without installed models")
         } catch let error as EngineAdapterError {
             #expect(error.code == .modelMissing)

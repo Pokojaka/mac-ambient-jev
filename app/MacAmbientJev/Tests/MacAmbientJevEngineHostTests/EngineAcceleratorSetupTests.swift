@@ -13,7 +13,10 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
     private var output: String
     private var preparationFails = false
     private let duplicateDevices: Bool
+    private var makeFails = false
     private(set) var calls: [String] = []
+    private(set) var madeDecodings: [ASRDecodingPolicy] = []
+    private(set) var madeIdentities: [ASRAcceleratorIdentity] = []
 
     init(output: String, adapterIdentity: String = "test-adapter", duplicateDevices: Bool = false) throws {
         self.output = output; self.adapterIdentity = adapterIdentity; self.duplicateDevices = duplicateDevices
@@ -23,9 +26,14 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
     func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice] {
         calls.append("bind:\(descriptor.providerName)"); return duplicateDevices ? [self, self] : [self]
     }
-    func makeASREngine(size: ASRModelSize, threads: Int, language: String, maxNewTokens: Int, noRepeatNgramSize: Int?) async throws -> any ASREngine {
-        calls.append("make:\(size):\(threads):\(language):\(maxNewTokens):\(String(describing: noRepeatNgramSize))"); return self
+    func makeASREngine(size: ASRModelSize, threads: Int, language: String, decoding: ASRDecodingPolicy,
+                       identity: ASRAcceleratorIdentity) async throws -> any ASREngine {
+        calls.append("make:\(size):\(threads):\(language)"); madeDecodings.append(decoding); madeIdentities.append(identity)
+        if makeFails { throw EngineAdapterError(code: .modelFailure, message: "fake device failure", recoveryAction: .none, details: []) }
+        return self
     }
+    func failMake() { makeFails = true }
+    func made() -> (decodings: [ASRDecodingPolicy], identities: [ASRAcceleratorIdentity]) { (madeDecodings, madeIdentities) }
     func configureRetest(output: String, preparationFails: Bool) { self.output = output; self.preparationFails = preparationFails }
     func prepare() async throws {
         calls.append("prepare")
@@ -103,7 +111,9 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         #expect(try EngineVerificationStore(paths: f.paths).load(for: key) == receipt)
         let receiptText = String(decoding: bytes, as: UTF8.self)
         #expect(!receiptText.contains(descriptor.libraryPath) && !receiptText.contains(binding.bindingID))
-        #expect(await f.accelerator.history() == ["bind:catalog-provider", "make:small:2:ja:448:nil", "prepare", "transcribe", "unload"])
+        #expect(await f.accelerator.made().decodings == [.fixed(maxNewTokens: 448, noRepeatNgramSize: nil)])
+        #expect(await f.accelerator.made().identities.first?.verificationID == nil)
+        #expect(await f.accelerator.history() == ["bind:catalog-provider", "make:small:2:ja", "prepare", "transcribe", "unload"])
     }
 
     @Test func rejectsUnknownAndUnsupportedBindingsAndBusyRecording() async throws {
@@ -191,7 +201,7 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         return (binding, id)
     }
     private func reject(_ f: Fixture, reason: String) async throws {
-        do { try await f.app.core.prepare(context: f.context); Issue.record("invalid accelerator settings were admitted") }
+        do { try await acknowledgeResourceWarning(f.app, workload: .load, context: f.context); try await f.app.core.prepare(context: f.context); Issue.record("invalid accelerator settings were admitted") }
         catch let error as EngineCommandError {
             #expect(error.code == .invalidSettings && error.stage == .validatingModels && error.recoveryAction == .replaceSettings)
             #expect(error.message.contains(reason))
@@ -223,15 +233,39 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         try await reject(f, reason: reason)
     }
 
-    @Test func admitsVerifiedAcceleratorButDoesNotPrepareCPU() async throws {
+    @Test func admittedSettingsPrepareAndInferThroughTheDevice() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let d = try descriptor(), seeded = try await verified(f, d), settings = try windowsSettings(seeded.1)
         try await save(f, settings)
         let selected = try #require(try f.app.core.admitAccelerator(settings))
         #expect(selected.verificationID == seeded.1 && selected.descriptor == d && selected.device.info.deviceKey == f.accelerator.info.deviceKey)
-        do { try await f.app.core.prepare(context: f.context); Issue.record("accelerated preparation unexpectedly succeeded") }
-        catch let error as EngineCommandError { #expect(error.code == .invalidSettings && error.stage == .validatingModels && error.recoveryAction == .replaceSettings && error.message.contains("高速推論はまだ接続されていない")) }
-        #expect(f.inference.calls.count("prepare") == 0)
+        try await acknowledgeResourceWarning(f.app, workload: .load, context: f.context); try await f.app.core.prepare(context: f.context)
+        #expect(f.inference.preparedASR.get() == ["fake-accelerator"] && f.inference.inferredASR.get() == ["fake-accelerator"])
+        let made = await f.accelerator.made()
+        #expect(made.decodings.last == .audioLength)
+        #expect(made.identities.last == ASRAcceleratorIdentity(
+            gpuName: "Engine GPU", driverVersion: "engine-driver", adapterID: "test-adapter", deviceID: "gpu:10de:2684",
+            epPackageFullName: d.packageFullName, epLibraryHash: d.libraryHash, verificationID: seeded.1))
+    }
+
+    @Test func deviceFailureSurfacesWithoutCPUPreparation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let d = try descriptor(), seeded = try await verified(f, d)
+        try await save(f, try windowsSettings(seeded.1))
+        await f.accelerator.failMake()
+        do { try await acknowledgeResourceWarning(f.app, workload: .load, context: f.context); try await f.app.core.prepare(context: f.context); Issue.record("device failure was swallowed") }
+        catch let error as EngineCommandError { #expect(error.message.contains("fake device failure")) }
+        #expect(f.inference.calls.count("prepare") == 0 && f.inference.inferredASR.get().isEmpty)
+    }
+
+    @Test func cpuSettingsNeverTouchTheDevice() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        _ = try await verified(f, try descriptor())
+        let before = await f.accelerator.history()
+        try await save(f, try engineTestSettings())
+        try await acknowledgeResourceWarning(f.app, workload: .load, context: f.context); try await f.app.core.prepare(context: f.context)
+        #expect(f.inference.preparedASR.get() == [nil] && f.inference.inferredASR.get() == [nil])
+        #expect(await f.accelerator.history() == before)
     }
 
     @Test func rebindReplacesOnlyCurrentProviderBinding() async throws {
@@ -255,9 +289,8 @@ private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevic
         if case .pass = try await f.app.core.verify(.init(bindingID: otherBinding.bindingID, deviceKey: otherBinding.devices[0].deviceKey, asrSize: .small, threads: 2), context: f.context) {} else { Issue.record("other provider binding was invalidated") }
         let selected = try #require(try f.app.core.admitAccelerator(settings))
         #expect(selected.verificationID == seeded.1)
-        do { try await f.app.core.prepare(context: f.context); Issue.record("accelerated preparation unexpectedly succeeded") }
-        catch let error as EngineCommandError { #expect(error.message.contains("高速推論はまだ接続されていない")) }
-        #expect(f.inference.calls.count("prepare") == 0)
+        try await acknowledgeResourceWarning(f.app, workload: .load, context: f.context); try await f.app.core.prepare(context: f.context)
+        #expect(f.inference.preparedASR.get() == ["fake-accelerator"])
     }
 
     @Test(arguments: ["outputMismatch", "preparationFailure"])

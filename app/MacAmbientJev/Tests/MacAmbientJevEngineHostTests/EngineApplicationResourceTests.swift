@@ -76,13 +76,13 @@ private struct ResourceFinalVAD: FinalTranscriptVADSegmenter {
 private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked Sendable {
     let base = FakeInferenceProvider(), gate: LifecycleContinuationGate
     init(gate: LifecycleContinuationGate) { self.gate = gate }
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
-        try await base.prepare(settings: settings, onProgress: onProgress)
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+        try await base.prepare(settings: settings, acceleratedASR: acceleratedASR, onProgress: onProgress)
     }
     func decisionUsage() async throws -> DecisionUsageSnapshot { try await base.decisionUsage() }
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity { try await base.inspectClauseTagger() }
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        let standard = try base.makeInference(settings: settings)
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        let standard = try base.makeInference(settings: settings, acceleratedASR: acceleratedASR)
         return EngineInference(engines: SessionProcessingEngines(
             asr: ResourceGatedASR(gate: gate, calls: base.calls),
             diarization: FakeDiarizer(calls: base.calls), finalTranscriptVAD: ResourceFinalVAD()),

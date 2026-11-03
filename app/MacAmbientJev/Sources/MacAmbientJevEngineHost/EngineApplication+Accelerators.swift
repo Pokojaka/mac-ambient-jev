@@ -7,6 +7,24 @@ struct EngineValidatedAcceleratorSelection {
     let device: any EngineAcceleratorDevice
     let receipt: EngineVerificationReceipt
     let verificationID: String
+
+    /// The ASR engine that runs real work (live and final) through the admitted device with the audio-length decoding rule.
+    func makeASREngine(settings: EngineSettings) async throws -> any ASREngine {
+        try await device.makeASREngine(
+            size: .small, threads: settings.threads, language: "ja", decoding: .audioLength,
+            identity: acceleratorIdentity(descriptor: descriptor, device: device, verificationID: verificationID)
+        )
+    }
+}
+
+func acceleratorIdentity(
+    descriptor: EngineAcceleratorDescriptor, device: any EngineAcceleratorDevice, verificationID: String?
+) -> ASRAcceleratorIdentity {
+    ASRAcceleratorIdentity(
+        gpuName: device.info.description, driverVersion: device.info.driverVersion, adapterID: device.adapterIdentity,
+        deviceID: device.info.deviceKey, epPackageFullName: descriptor.packageFullName,
+        epLibraryHash: descriptor.libraryHash, verificationID: verificationID
+    )
 }
 
 @MainActor
@@ -206,7 +224,9 @@ extension EngineApplicationCore {
         let key = try acceleratorVerificationKey(descriptor: descriptor, device: device, threads: threads)
         do {
             let engine = try await device.makeASREngine(
-                size: .small, threads: threads, language: "ja", maxNewTokens: 448, noRepeatNgramSize: nil
+                size: .small, threads: threads, language: "ja",
+                decoding: .fixed(maxNewTokens: 448, noRepeatNgramSize: nil),
+                identity: acceleratorIdentity(descriptor: descriptor, device: device, verificationID: nil)
             )
             let verification: (output: String, inferenceError: (any Error)?, rtf: Double)
             do {

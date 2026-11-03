@@ -13,6 +13,7 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
 
     public func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
@@ -33,7 +34,7 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
         )
     }
 
-    public func makeInference(settings: EngineSettings) throws -> EngineInference {
+    public func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         try Self.validate(settings: settings)
         return EngineInference(
             engines: SessionProcessingEngines(

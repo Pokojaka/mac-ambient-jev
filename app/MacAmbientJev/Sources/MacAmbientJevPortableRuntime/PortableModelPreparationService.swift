@@ -108,7 +108,8 @@ enum PortableAssetVerifier {
 
 /// Verifies the pinned installed models of one configuration, then loads each, in order VAD, ASR, diarization and,
 /// only when the configuration has a clause tagger directory, the tagger. It never downloads, never substitutes a
-/// model and creates no recognition or decision request. Each model is released after it loads.
+/// model and creates no recognition or decision request. Each model is released after it loads. A non-nil `acceleratedASR`
+/// is loaded in place of the CPU ASR and its failure is reported as the ASR load failure.
 public struct PortableModelPreparationService: Sendable {
     struct Step: Sendable {
         let model: PortableModelKind
@@ -120,9 +121,10 @@ public struct PortableModelPreparationService: Sendable {
 
     public func prepare(
         configuration: PortableProcessingConfiguration,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (PortableModelPreparationProgress) -> Void
     ) async throws {
-        try await Self.run(steps: try Self.steps(for: configuration), onProgress: onProgress)
+        try await Self.run(steps: try Self.steps(for: configuration, acceleratedASR: acceleratedASR), onProgress: onProgress)
     }
 
     static func run(
@@ -145,7 +147,7 @@ public struct PortableModelPreparationService: Sendable {
         }
     }
 
-    static func steps(for configuration: PortableProcessingConfiguration) throws -> [Step] {
+    static func steps(for configuration: PortableProcessingConfiguration, acceleratedASR: (any ASREngine)?) throws -> [Step] {
         let threads = configuration.threads
         let silero = configuration.sileroModelURL
         let qwen = configuration.qwen3ModelDirectory
@@ -185,7 +187,7 @@ public struct PortableModelPreparationService: Sendable {
                 },
                 load: {
                     try await Self.load(.asr, path: qwen.path) {
-                        let engine = ONNXQwen3ASREngine(modelDirectory: qwen, size: qwenSize, intraOpThreads: threads)
+                        let engine = acceleratedASR ?? ONNXQwen3ASREngine(modelDirectory: qwen, size: qwenSize, intraOpThreads: threads)
                         try await engine.prepare()
                         await engine.unload()
                     }

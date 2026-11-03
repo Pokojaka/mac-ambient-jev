@@ -273,11 +273,12 @@ struct HarnessPortableInferenceProvider: EngineInferenceProviding {
 
     func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         try validate(settings: settings)
         do {
-            try await PortableModelPreparationService().prepare(configuration: configuration) { progress in
+            try await PortableModelPreparationService().prepare(configuration: configuration, acceleratedASR: nil) { progress in
                 let stage: EngineModelProgress.Stage = progress.stage == .validating ? .validating : .loading
                 onProgress(EngineModelProgress(stage: stage, completed: progress.completed, total: progress.total))
             }
@@ -316,11 +317,11 @@ struct HarnessPortableInferenceProvider: EngineInferenceProviding {
         }
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         try validate(settings: settings)
         let bundle: PortableSessionEngineBundle
         do {
-            bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter)
+            bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter, acceleratedASR: nil)
         } catch {
             throw EngineAdapterError(
                 code: .modelFailure,

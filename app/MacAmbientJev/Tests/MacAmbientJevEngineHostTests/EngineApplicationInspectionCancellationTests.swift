@@ -12,13 +12,14 @@ import MacAmbientJevPipeline
 
         func prepare(
             settings: EngineSettings,
+            acceleratedASR: (any ASREngine)?,
             onProgress: @escaping @Sendable (EngineModelProgress) -> Void
         ) async throws {
-            try await base.prepare(settings: settings, onProgress: onProgress)
+            try await base.prepare(settings: settings, acceleratedASR: acceleratedASR, onProgress: onProgress)
         }
 
-        func makeInference(settings: EngineSettings) throws -> EngineInference {
-            try base.makeInference(settings: settings)
+        func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+            try base.makeInference(settings: settings, acceleratedASR: acceleratedASR)
         }
 
         func decisionUsage() async throws -> DecisionUsageSnapshot {

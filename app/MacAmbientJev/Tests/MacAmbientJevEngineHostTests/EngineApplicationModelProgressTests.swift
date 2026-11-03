@@ -16,6 +16,7 @@ private final class OutOfOrderModelProgressProvider: EngineInferenceProviding, @
 
     func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         let updates: [EngineModelProgress] = [
@@ -30,8 +31,8 @@ private final class OutOfOrderModelProgressProvider: EngineInferenceProviding, @
         try await completionGate.suspend()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        try engineProvider.makeInference(settings: settings)
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        try engineProvider.makeInference(settings: settings, acceleratedASR: acceleratedASR)
     }
 
     func decisionUsage() async throws -> DecisionUsageSnapshot {

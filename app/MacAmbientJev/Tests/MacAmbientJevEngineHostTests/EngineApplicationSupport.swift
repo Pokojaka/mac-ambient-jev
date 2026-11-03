@@ -146,13 +146,17 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
     let calls = CallCounter()
     let usageCounter = DecisionUsageCounter()
     private let failure = LockedBox<EngineAdapterError?>(nil)
+    /// The engine name of the accelerated ASR each `prepare` and `makeInference` received; nil entries are CPU.
+    let preparedASR = LockedBox<[String?]>([])
+    let inferredASR = LockedBox<[String?]>([])
 
     func failPrepare(with error: EngineAdapterError?) {
         failure.set(error)
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         calls.increment("prepare")
+        preparedASR.set(preparedASR.get() + [acceleratedASR?.provenance.engine])
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         if let failure = failure.get() { throw failure }
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
@@ -171,9 +175,10 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
         )
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        EngineInference(
-            engines: SessionProcessingEngines(asr: FakeASR(calls: calls), diarization: FakeDiarizer(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        inferredASR.set(inferredASR.get() + [acceleratedASR?.provenance.engine])
+        return EngineInference(
+            engines: SessionProcessingEngines(asr: acceleratedASR ?? FakeASR(calls: calls), diarization: FakeDiarizer(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
             makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }

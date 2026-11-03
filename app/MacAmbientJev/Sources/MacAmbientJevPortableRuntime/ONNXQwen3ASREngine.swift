@@ -18,7 +18,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
     private let modelDirectory: URL
     private let size: ASRModelSize
     private let intraOpThreads: Int
-    private let fixedDecoding: (maxNewTokens: Int, noRepeatNgramSize: Int?)?
+    private let decoding: ASRDecodingPolicy
     private let loadModel: @Sendable (URL, ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
 
     private var model: (any Qwen3ASRTranscribingModel)?
@@ -36,7 +36,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
         self.modelDirectory = modelDirectory
         self.size = size
         self.intraOpThreads = intraOpThreads
-        self.fixedDecoding = nil
+        self.decoding = .audioLength
         self.loadModel = { directory, modelSize, threadCount in
             try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
                 try Qwen3ASRONNXModel(
@@ -50,17 +50,19 @@ public actor ONNXQwen3ASREngine: ASREngine {
     }
 
     public init(modelDirectory: URL, size: ASRModelSize, intraOpThreads: Int,
-                device: ONNXProviderDevice, language: String, maxNewTokens: Int,
-                noRepeatNgramSize: Int?) throws {
+                device: ONNXProviderDevice, identity: ASRAcceleratorIdentity, language: String,
+                decoding: ASRDecodingPolicy) throws {
         guard language == "ja" else { throw Qwen3ASRModelError.invalid("Unsupported Qwen3-ASR language '\(language)'; the pinned prompt supports only 'ja'.") }
-        guard maxNewTokens > 0 else { throw Qwen3ASRModelError.invalid("maxNewTokens must be positive: \(maxNewTokens)") }
-        if let noRepeatNgramSize, noRepeatNgramSize <= 0 {
-            throw Qwen3ASRModelError.invalid("noRepeatNgramSize must be positive when specified: \(noRepeatNgramSize)")
+        if case let .fixed(maxNewTokens, noRepeatNgramSize) = decoding {
+            guard maxNewTokens > 0 else { throw Qwen3ASRModelError.invalid("maxNewTokens must be positive: \(maxNewTokens)") }
+            if let noRepeatNgramSize, noRepeatNgramSize <= 0 {
+                throw Qwen3ASRModelError.invalid("noRepeatNgramSize must be positive when specified: \(noRepeatNgramSize)")
+            }
         }
         self.modelDirectory = modelDirectory
         self.size = size
         self.intraOpThreads = intraOpThreads
-        self.fixedDecoding = (maxNewTokens, noRepeatNgramSize)
+        self.decoding = decoding
         self.loadModel = { directory, modelSize, threadCount in
             try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
                 try Qwen3ASRONNXModel(modelDirectory: directory, size: modelSize, intraOpThreads: threadCount, device: device)
@@ -71,9 +73,18 @@ public actor ONNXQwen3ASREngine: ASREngine {
         configuration.updateValue(device.epName, forKey: "execution_provider")
         configuration.updateValue(device.deviceKey, forKey: "device")
         configuration.updateValue("cpu_arena_disabled_strict_ep", forKey: "memory_policy")
+        configuration.updateValue(identity.gpuName, forKey: "gpu_name")
+        configuration.updateValue(identity.driverVersion, forKey: "driver_version")
+        configuration.updateValue(identity.adapterID, forKey: "adapter_id")
+        configuration.updateValue(identity.deviceID, forKey: "device_id")
+        configuration.updateValue(identity.epPackageFullName, forKey: "ep_package_full_name")
+        configuration.updateValue(identity.epLibraryHash, forKey: "ep_library_hash")
+        configuration.updateValue(identity.verificationID, forKey: "verification_id")
         configuration.updateValue(language, forKey: "language")
-        configuration.updateValue(String(maxNewTokens), forKey: "max_new_tokens")
-        configuration.updateValue(noRepeatNgramSize.map { String($0) } ?? "disabled", forKey: "no_repeat_ngram")
+        if case let .fixed(maxNewTokens, noRepeatNgramSize) = decoding {
+            configuration.updateValue(String(maxNewTokens), forKey: "max_new_tokens")
+            configuration.updateValue(noRepeatNgramSize.map { String($0) } ?? "disabled", forKey: "no_repeat_ngram")
+        }
         self.provenanceValue = RunProvenance(engine: base.engine, model: base.model, version: base.version, configuration: configuration)
     }
 
@@ -81,12 +92,13 @@ public actor ONNXQwen3ASREngine: ASREngine {
         modelDirectory: URL,
         size: ASRModelSize,
         intraOpThreads: Int,
+        decoding: ASRDecodingPolicy,
         loadModel: @escaping @Sendable (URL, ASRModelSize, Int) async throws -> any Qwen3ASRTranscribingModel
     ) {
         self.modelDirectory = modelDirectory
         self.size = size
         self.intraOpThreads = intraOpThreads
-        self.fixedDecoding = nil
+        self.decoding = decoding
         self.loadModel = loadModel
         self.provenanceValue = Self.makeProvenance(size: size, intraOpThreads: intraOpThreads)
     }
@@ -156,12 +168,13 @@ public actor ONNXQwen3ASREngine: ASREngine {
         do {
             let maxNewTokens: Int
             let noRepeatNgramSize: Int?
-            if let fixedDecoding {
-                maxNewTokens = fixedDecoding.maxNewTokens
-                noRepeatNgramSize = fixedDecoding.noRepeatNgramSize
-            } else {
+            switch decoding {
+            case .audioLength:
                 maxNewTokens = 448
                 noRepeatNgramSize = input.samples.count > 15 * Int(CanonicalAudio.sampleRate) ? 3 : nil
+            case let .fixed(tokens, ngramSize):
+                maxNewTokens = tokens
+                noRepeatNgramSize = ngramSize
             }
             let output = try model.transcribe(
                 samples: input.samples,
@@ -211,7 +224,7 @@ public actor ONNXQwen3ASREngine: ASREngine {
                 "driver_version": nil,
                 "adapter_id": nil,
                 "device_id": nil,
-                "ep_package_hash": nil,
+                "ep_package_full_name": nil,
                 "ep_library_hash": nil,
                 "verification_id": nil,
                 "calibration_id": nil,

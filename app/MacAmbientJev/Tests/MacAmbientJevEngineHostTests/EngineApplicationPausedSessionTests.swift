@@ -95,7 +95,7 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
         self.gate = gate
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 1, total: 1))
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
     }
@@ -108,7 +108,7 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
         try await inspectionProvider.inspectClauseTagger()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         EngineInference(
             engines: SessionProcessingEngines(
                 asr: PausedSessionGatedASR(gate: gate, calls: calls),

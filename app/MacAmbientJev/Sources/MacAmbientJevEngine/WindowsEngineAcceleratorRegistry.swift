@@ -83,10 +83,9 @@ private struct WindowsEngineAcceleratorDevice: EngineAcceleratorDevice {
     var ortVersion: String { ONNXEnvironment.runtimeVersion }
     var modelRevision: String { "\(ASRModelSize.small.repository)@\(ASRModelSize.small.commit)" }
 
-    func makeASREngine(size: ASRModelSize, threads: Int, language: String, maxNewTokens: Int,
-        noRepeatNgramSize: Int?) async throws -> any ASREngine {
+    func makeASREngine(size: ASRModelSize, threads: Int, language: String,
+        decoding: ASRDecodingPolicy, identity: ASRAcceleratorIdentity) async throws -> any ASREngine {
         try ONNXQwen3ASREngine(modelDirectory: layout.qwen3Directory(size: size), size: size,
-            intraOpThreads: threads, device: raw, language: language, maxNewTokens: maxNewTokens,
-            noRepeatNgramSize: noRepeatNgramSize)
+            intraOpThreads: threads, device: raw, identity: identity, language: language, decoding: decoding)
     }
 }

@@ -106,6 +106,7 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
 
     func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         calls.increment("prepare")
@@ -113,7 +114,7 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         calls.increment("makeInference")
         let factory = decisionProviderFactory
         return EngineInference(

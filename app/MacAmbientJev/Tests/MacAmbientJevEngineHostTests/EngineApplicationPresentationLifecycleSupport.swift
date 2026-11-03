@@ -108,6 +108,7 @@ final class LifecycleInferenceProvider: EngineInferenceProviding, @unchecked Sen
 
     func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
@@ -123,8 +124,8 @@ final class LifecycleInferenceProvider: EngineInferenceProviding, @unchecked Sen
         }
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        let engineInference = try engineProvider.makeInference(settings: settings)
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        let engineInference = try engineProvider.makeInference(settings: settings, acceleratedASR: acceleratedASR)
         let liveVADFactoryFailure = self.liveVADFactoryFailure
         return EngineInference(
             engines: engineInference.engines,

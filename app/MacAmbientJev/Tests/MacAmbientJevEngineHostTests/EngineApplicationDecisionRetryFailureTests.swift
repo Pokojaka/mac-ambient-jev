@@ -191,12 +191,12 @@ private final class DecisionRetryFailureInference: EngineInferenceProviding, @un
         }
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         let factory = self.factory
         return EngineInference(
             engines: SessionProcessingEngines(
@@ -830,7 +830,7 @@ private final class DecisionRetryFailureApplicationHarness {
         #expect(metadata.pendingClauseBoundarySegments.isEmpty)
         #expect(metadata.pendingContentPriorityClauses.count == 1)
 
-        let bundle = try inference.makeInference(settings: try engineTestSettings(decisions: true))
+        let bundle = try inference.makeInference(settings: try engineTestSettings(decisions: true), acceleratedASR: nil)
         let processor = NativeSessionProcessor(
             paths: harness.paths,
             engines: bundle.engines,

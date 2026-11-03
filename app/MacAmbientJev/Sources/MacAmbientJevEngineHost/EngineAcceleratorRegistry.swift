@@ -20,12 +20,13 @@ public protocol EngineAcceleratorDevice: Sendable {
     var modelRevision: String { get }
 
     /// Creates an accelerated ASR engine using every supplied setting without CPU fallback.
+    /// `.audioLength` is the real-work policy; `.fixed` is for verification.
     func makeASREngine(
         size: ASRModelSize,
         threads: Int,
         language: String,
-        maxNewTokens: Int,
-        noRepeatNgramSize: Int?
+        decoding: ASRDecodingPolicy,
+        identity: ASRAcceleratorIdentity
     ) async throws -> any ASREngine
 }
 

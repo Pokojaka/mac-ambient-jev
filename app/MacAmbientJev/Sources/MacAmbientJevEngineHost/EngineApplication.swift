@@ -815,14 +815,7 @@ extension EngineApplicationCore: EngineModelsHandling {
             )
         }
         let settings = try requireSettings(stage: .validatingModels)
-        if let _ = try admitAccelerator(settings) {
-            throw EngineFailures.commandError(
-                .invalidSettings,
-                "アクセラレーターの検証は確認できましたが、高速推論はまだ接続されていないため、モデルを準備できません。CPU を使用する場合は設定で明示的に選択してください",
-                stage: .validatingModels,
-                recoveryAction: .replaceSettings
-            )
-        }
+        let admitted = try admitAccelerator(settings)
         guard !isPreparingModels else {
             throw EngineFailures.commandError(
                 .busy, "モデルの準備が実行中です", stage: .validatingModels, recoveryAction: .retry
@@ -898,8 +891,10 @@ extension EngineApplicationCore: EngineModelsHandling {
             }
         }
         do {
+            let acceleratedASR: (any ASREngine)?
             do {
-                try await inferenceProvider.prepare(settings: settings) { progress in
+                acceleratedASR = try await admitted?.makeASREngine(settings: settings)
+                try await inferenceProvider.prepare(settings: settings, acceleratedASR: acceleratedASR) { progress in
                     precondition(
                         progress.total > 0 && progress.completed >= 0 && progress.completed <= progress.total,
                         "model preparation progress must have a positive total and a completed count within range"
@@ -915,7 +910,7 @@ extension EngineApplicationCore: EngineModelsHandling {
             await progressConsumer.value
 
             try checkModelPreparationCanContinue()
-            let prepared = try inferenceProvider.makeInference(settings: settings)
+            let prepared = try inferenceProvider.makeInference(settings: settings, acceleratedASR: acceleratedASR)
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
             try checkModelPreparationCanContinue()
             inference = prepared
