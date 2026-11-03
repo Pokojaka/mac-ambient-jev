@@ -38,7 +38,7 @@ private struct AmplePresentationCaptureDiskSpace: CaptureDiskSpaceProviding {
         h.start()
         try await h.hello()
         try await h.replaceSettings(try engineTestSettings(), expectedRevision: nil)
-        try await h.call("models.prepare")
+        await h.awaitModels()
         return h
     }
 

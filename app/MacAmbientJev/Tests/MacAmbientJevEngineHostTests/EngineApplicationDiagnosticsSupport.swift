@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import MacAmbientJevCore
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
@@ -265,6 +265,10 @@ final class DiagnosticsApplicationHarness {
             preconditionFailure("models.inspect returned another result")
         }
         return result
+    }
+
+    func awaitModels() async {
+        await app.core.awaitModelPreparation()
     }
 
     func replaceSettings(_ settings: EngineSettings, expectedRevision: UInt64?) async throws {

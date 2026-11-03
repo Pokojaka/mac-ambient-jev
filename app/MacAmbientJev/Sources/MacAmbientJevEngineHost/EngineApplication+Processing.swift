@@ -29,15 +29,13 @@ extension EngineApplicationCore: SessionProcessingEffects {
         }
     }
 
-    /// Queued work waits for settings and prepared models, and stops for good once shutdown begins.
+    /// Queued work waits for settings and a configured processor, and stops for good once shutdown begins.
     var pausesProcessing: Bool {
         isShuttingDown || setupStatus != .ready
     }
 
-    /// The engine's models are prepared in setup, so queued work never waits for them here.
-    var modelsReady: Bool { true }
-
-    func prepareModels() {}
+    /// Finalizing work waits in the queue's model hold until the models are prepared.
+    var modelsReady: Bool { modelsPrepared }
 
     func awaitIdleRelease() async {
         await idleReleaseTask?.value
@@ -119,8 +117,10 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 presentation.processingStatusText = held.reason.finalizationExplanation
             }
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
-        case .heldForModels:
-            preconditionFailure("The engine's models are prepared in setup, so no work is held for them")
+        case let .heldForModels(request):
+            presentation.processingState = .idle
+            presentation.processingStatusText = ModelPreparationStatus.waitingForModelsText
+            if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .began(request):
             presentation.processingState = .running
             resourceFinalizingSessionID = request.finalizesTranscript ? request.sessionID : nil
@@ -141,6 +141,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
         case .willFinishDrain:
             if presentation.processingState == .running || presentation.processingState == .backlogged,
                processingQueue.held.isEmpty,
+               processingQueue.modelHeld.isEmpty,
                processingQueue.pending.isEmpty,
                !pausesProcessing {
                 presentation.processingState = .complete

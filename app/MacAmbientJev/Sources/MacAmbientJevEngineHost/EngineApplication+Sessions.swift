@@ -134,9 +134,9 @@ extension EngineApplicationCore: EngineSessionHandling {
             let busySession = processingQueue.sessionIDs.contains(sessionID)
             let processingCount = processingQueue.pending.count
                 + processingQueue.held.count
+                + processingQueue.modelHeld.count
                 + (processingQueue.currentSessionID == nil ? 0 : 1)
             let processingAdmissible = !isShuttingDown
-                && !isPreparingModels
                 && !processingQueue.isMaintainingStorage
                 && recording.phase == .idle
                 && settings != nil
@@ -368,7 +368,7 @@ extension EngineApplicationCore: EngineSessionHandling {
         let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
         try requireAcceptingProcessing(stage: .finalization)
         _ = try requireSettings(stage: .finalization)
-        _ = try requireModelsPrepared(stage: .finalization)
+        _ = try requireConfiguredInference(stage: .finalization)
         guard recording.phase == .idle else {
             throw EngineFailures.commandError(
                 .busy, "録音中は再処理できません", stage: .finalization, sessionID: sessionID, recoveryAction: .retry
@@ -395,7 +395,7 @@ extension EngineApplicationCore: EngineSessionHandling {
         let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .decisions)
         try requireAcceptingProcessing(stage: .decisions)
         let settings = try requireSettings(stage: .decisions)
-        _ = try requireModelsPrepared(stage: .decisions)
+        _ = try requireConfiguredInference(stage: .decisions)
         guard recording.phase == .idle else {
             throw EngineFailures.commandError(
                 .busy, "録音中は判定を再試行できません", stage: .decisions, sessionID: sessionID, recoveryAction: .retry
@@ -439,13 +439,9 @@ extension EngineApplicationCore: EngineSessionHandling {
                 .busy, "起動時の保存データの整理が終わるまで処理を開始できません", stage: stage, recoveryAction: .retry
             )
         }
-        guard !isPreparingModels else {
-            throw EngineFailures.commandError(
-                .busy, "モデルの準備が実行中のため処理を開始できません", stage: stage, recoveryAction: .retry
-            )
-        }
         let processingCount = processingQueue.pending.count
             + processingQueue.held.count
+            + processingQueue.modelHeld.count
             + (processingQueue.currentSessionID == nil ? 0 : 1)
         guard processingCount < EngineApplicationCore.queueLimit else {
             throw EngineFailures.commandError(

@@ -141,8 +141,8 @@ struct PortableClauseTaggerInspectionTests {
         let directoryError = try #require(preparationFailure {
             try PortableClauseTaggerInspection.validateAssets(modelDirectory: regularFile, manifest: fixture.manifest)
         })
-        guard case let .missing(model, path, _) = directoryError else {
-            Issue.record("expected a missing model file under a regular file, got \(directoryError)")
+        guard case let .invalid(model, path, _, _) = directoryError else {
+            Issue.record("expected an invalid model directory that is a regular file, got \(directoryError)")
             return
         }
         #expect(model == .clauseTagger)

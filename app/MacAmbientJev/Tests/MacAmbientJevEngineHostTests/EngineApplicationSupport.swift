@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import Synchronization
 import MacAmbientJevCore
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
@@ -137,6 +137,13 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
     let calls = CallCounter()
     let usageCounter = DecisionUsageCounter()
     private let failure = LockedBox<EngineAdapterError?>(nil)
+    private let isPrepareHeld = LockedBox(false)
+    /// The settings of every `prepare` call, in order.
+    let preparedSettings = LockedBox<[EngineSettings]>([])
+
+    /// Holds every `prepare` open before any progress until `releasePrepare()`.
+    func holdPrepare() { isPrepareHeld.set(true) }
+    func releasePrepare() { isPrepareHeld.set(false) }
 
     func failPrepare(with error: EngineAdapterError?) {
         failure.set(error)
@@ -144,6 +151,8 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
 
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         calls.increment("prepare")
+        preparedSettings.set(preparedSettings.get() + [settings])
+        while isPrepareHeld.get() { try await Task.sleep(for: .milliseconds(5)) }
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         if let failure = failure.get() { throw failure }
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
@@ -430,6 +439,11 @@ final class ApplicationHarness {
 
     func hello() async throws {
         try await call("hello")
+    }
+
+    /// Waits for the automatic model preparation that saved settings start.
+    func awaitModels() async {
+        await app.core.awaitModelPreparation()
     }
 
     func replaceSettings(_ settings: EngineSettings, expectedRevision: UInt64?) async throws {

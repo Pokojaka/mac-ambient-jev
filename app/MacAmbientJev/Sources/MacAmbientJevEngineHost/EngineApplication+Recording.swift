@@ -16,7 +16,7 @@ extension EngineApplicationCore: EngineRecordingHandling {
 
     func start(_ payload: EngineRecordingStartPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
         _ = try requireSettings(stage: .capture)
-        _ = try requireModelsPrepared(stage: .capture)
+        _ = try requireConfiguredInference(stage: .capture)
         guard !isShuttingDown else {
             throw EngineFailures.commandError(.cancelled, "終了処理中のため録音を開始できません", stage: .capture)
         }
@@ -459,9 +459,26 @@ extension EngineApplicationCore: RecordingFinishEffects {
 extension EngineApplicationCore: LiveTranscriptionEffects {
     var recordingSessionID: UUID? { recording.sessionID }
 
-    var modelPhase: ModelPreparationStatus.Phase { .ready }
+    var modelPhase: ModelPreparationStatus.Phase {
+        if modelsPrepared { return .ready }
+        if isPreparingModels {
+            switch preparationStage {
+            case nil, .downloading?: return .downloading
+            case .validating?, .loading?: return .loading
+            }
+        }
+        if presentation.preparationPhase == .failed {
+            guard let text = presentation.preparationStatusText else {
+                preconditionFailure("a failed preparation has a status text")
+            }
+            return .failed(text)
+        }
+        return .idle
+    }
 
-    func awaitModelPreparation() async {}
+    func awaitModelPreparation() async {
+        await preparationTask?.value
+    }
 
     func isCurrentRecording(_ sessionID: UUID) -> Bool {
         recording.isCurrentRecording(sessionID)
@@ -509,8 +526,12 @@ extension EngineApplicationCore: LiveTranscriptionEffects {
 
     func liveDidChange(_ event: LiveTranscriptionEvent) {
         switch event {
-        case .started, .vadProgress, .thermal, .waitingForModels:
+        case .started, .vadProgress, .thermal:
             break
+        case let .waitingForModels(sessionID):
+            guard recording.sessionID == sessionID else { return }
+            presentation.processingStatusText = ModelPreparationStatus.waitingForModelsText
+            stateDidChange()
         case let .vadSegmentsEnqueued(sessionID, segmentCount):
             guard recording.sessionID == sessionID else { return }
             if presentation.processingState != .backlogged,

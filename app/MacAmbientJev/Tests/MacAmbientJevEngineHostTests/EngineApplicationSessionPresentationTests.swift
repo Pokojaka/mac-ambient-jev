@@ -45,7 +45,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(try engineTestSettings(decisions: decisions), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        await harness.awaitModels()
         return harness
     }
 
@@ -775,7 +775,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         core.recording.finish()
 
         core.isPreparingModels = true
-        #expect(!(try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
+        #expect((try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
         core.isPreparingModels = false
 
         core.processingQueue.beginStorageMaintenance()

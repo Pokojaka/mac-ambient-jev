@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import MacAmbientJevCore
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
@@ -13,7 +13,7 @@ import MacAmbientJevTestSupport
         harness.start()
         try await harness.hello()
         try await harness.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await harness.call("models.prepare")
+        await harness.awaitModels()
         return harness
     }
 
@@ -24,14 +24,11 @@ import MacAmbientJevTestSupport
         h.start()
         try await h.hello()
 
-        // Nothing works before settings and models exist, and the refusals say what to do.
+        // Nothing works before settings exist, and the refusal says what to do. Saving them prepares the models.
         #expect(try await h.failureCode(of: "settings.get") == .settingsRequired)
         #expect(try await h.failureCode(of: "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}") == .settingsRequired)
         try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        #expect(try await h.state().setup == .modelsRequired)
-        #expect(try await h.failureCode(of: "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}") == .modelMissing)
-
-        try await h.call("models.prepare")
+        await h.awaitModels()
         #expect(try await h.state().setup == .ready)
         let progress = try h.outputs.compactMap { output -> EngineProgressPayload? in
             if case let .progress(payload) = output.event { payload } else { nil }
@@ -147,16 +144,20 @@ import MacAmbientJevTestSupport
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
-    @Test func aModelPreparationFailureKeepsSetupBlockedAndNamesTheRecovery() async throws {
+    @Test func aModelPreparationFailureLeavesSetupReadyAndTheUserRetriesFromSettings() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let h = ApplicationHarness(root: root)
         h.start()
         try await h.hello()
-        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
         h.inference.failPrepare(with: EngineAdapterError(
             code: .modelMissing, message: "モデルがありません: D:\\models", recoveryAction: .prepareModels, details: []
         ))
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+        let failed = try await h.state()
+        #expect(failed.setup == .ready)
+        #expect(failed.presentation.preparationPhase == .failed)
         do {
             try await h.call("models.prepare")
             Issue.record("prepare should fail")
@@ -165,11 +166,13 @@ import MacAmbientJevTestSupport
             #expect(error.failure.recoveryAction == .prepareModels)
             #expect(error.failure.message.contains("D:\\models"))
         }
-        #expect(try await h.state().setup == .modelsRequired)
+        h.inference.failPrepare(with: nil)
+        try await h.call("models.prepare")
+        #expect(h.app.core.modelsPrepared)
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
-    @Test func settingsChangesThatInvalidateModelsAreRefusedWhileBusyAndResetPreparedState() async throws {
+    @Test func settingsChangesThatInvalidateModelsAreRefusedWhileBusyAndPrepareAgain() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let h = try await prepared(root)
@@ -189,7 +192,8 @@ import MacAmbientJevTestSupport
         _ = try await h.waitForSession(status: .finalized)
 
         try await h.replaceSettings(larger, expectedRevision: 2)
-        #expect(try await h.state().setup == .modelsRequired)
+        await h.awaitModels()
+        #expect(h.app.core.modelsPrepared)
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
@@ -206,11 +210,8 @@ import MacAmbientJevTestSupport
         second.start()
         try await second.hello()
         await second.app.waitForStartupRecovery()
-        // Settings persisted, models are not prepared yet: the interrupted session waits.
-        #expect(try await second.state().setup == .modelsRequired)
-        #expect(try await second.waitForSession(status: .queued).sessionID != nil)
-        #expect(try await second.state().recovery == .pending)
-        try await second.call("models.prepare")
+        // Saved settings start the preparation by themselves, and the interrupted session finalizes after it.
+        #expect(try await second.state().setup == .ready)
         _ = try await second.waitForSession(status: .finalized)
         let state = try await second.state()
         #expect(state.recovery == .completed)
@@ -226,7 +227,7 @@ import MacAmbientJevTestSupport
         first.start()
         try await first.hello()
         try await first.replaceSettings(engineTestSettings(), expectedRevision: nil)
-        try await first.call("models.prepare")
+        await first.awaitModels()
 
         guard case let .recordingStart(started) = try await first.call(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
@@ -256,8 +257,6 @@ import MacAmbientJevTestSupport
         second.start()
         try await second.hello()
         await second.app.waitForStartupRecovery()
-        #expect(try await second.state().setup == .modelsRequired)
-        try await second.call("models.prepare")
         let completed = try await second.waitForSession(status: .finalized)
         #expect(completed.sessionID == started.sessionID)
         #expect(try await second.state().recovery == .completed)
@@ -307,9 +306,6 @@ import MacAmbientJevTestSupport
         second.start()
         try await second.hello()
         await second.app.waitForStartupRecovery()
-        #expect(try await second.state().setup == .modelsRequired)
-        #expect(try await second.waitForSession(status: .queued).sessionID == started.sessionID)
-        try await second.call("models.prepare")
         let recovered = try await second.waitForSession(status: .finalized)
         #expect(recovered.sessionID == started.sessionID)
         guard case let .transcriptRead(page) = try await second.call(
@@ -344,7 +340,7 @@ import MacAmbientJevTestSupport
         h.start()
         try await h.hello()
         await h.app.waitForStartupRecovery()
-        try await h.call("models.prepare")
+        await h.awaitModels()
         let recovered = try await h.waitForSession(status: .finalized)
         #expect(recovered.sessionID == EngineFailures_wireID(sessionID))
         guard case let .transcriptRead(page) = try await h.call(
@@ -549,6 +545,10 @@ private final class FinalizationShutdownHarness {
 
     func hello() async throws {
         try await call("hello")
+    }
+
+    func awaitModels() async {
+        await app.core.awaitModelPreparation()
     }
 
     func replaceSettings(_ settings: EngineSettings, expectedRevision: UInt64?) async throws {
