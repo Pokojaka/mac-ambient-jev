@@ -718,6 +718,19 @@ python scripts/fetch_qwen3_asr_model.py 1.7b D:\Models\qwen3-asr-onnx
 
 成功時の stdout は取得したモデル directory の絶対パス1行だけです。終了コードは成功が `0`、引数・サイズ・保存先の不正が `2`、Python version、取得、integrity、OS の失敗が `1` です。[`test_fetch_qwen3_asr_model.py`](../scripts/test_fetch_qwen3_asr_model.py) はネットワーク上のモデル重みに依存しない offline self-test で、[`verify_portable.sh`](../scripts/verify_portable.sh) と [`test-windows.ps1`](../scripts/test-windows.ps1) から実行されます。両 runner は [`test_generate_qwen3_asr_token_reference.py`](../scripts/test_generate_qwen3_asr_token_reference.py) の依存 package・model weights 不要な Python self-test も実行します。full model weights は自動取得せず、full model inference は既定では実行しません。
 
+### モデルのダウンロード transport
+
+Windows engine は WinHTTP でモデルファイルをダウンロードします。C target `CWindowsHTTP`（`winhttp.lib` にリンク）が blocking な HTTPS GET を包み、Swift の [`WinHTTPModelTransport`](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WinHTTPModelTransport.swift) が Core の `ModelDownloadTransport` を実装します。
+
+- https だけを受け付けます。それ以外の scheme は `WinHTTPError`（`call == "https required"`）で失敗します。
+- 開始位置を指定すると Range header（bytes=offset-）を送ります。redirect の先でも Range は維持され、`206` と `Content-Range` が返ります。
+- 本文は consumer が引く方式です。256 KiB ずつ WinHttpReadData を `BlockingIOExecutor` 上で呼び、chunk 1 つ分より多くは buffer しません。
+- timeout は resolve 無制限、connect 30 秒、send 30 秒、receive 60 秒です。proxy は自動検出（`WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`）で、自動 retry と圧縮の指定はありません。
+- 失敗した WinHTTP 関数名と Win32 エラーコードは `WinHTTPError` で返ります。cancel は実行中の read が戻った時点で効きます。
+- URLSession を使わない理由: swift-corelibs-foundation（Swift 6.2、Windows ARM64）では、`dataTask.suspend()` / `resume()` で遅い consumer に back-pressure をかけると data が再配信されました。11,429,377 byte のファイルで 42 MB 超の chunk が届きました。suspend なしでは buffer が無制限に増えます。
+
+実ネットワークの test は `MAC_AMBIENT_JEV_NETWORK_TESTS=1` のときだけ動き、[`test-windows.ps1`](../scripts/test-windows.ps1) が Swift test の step で設定します。pin された Qwen3-ASR 0.6B の tokenizer.json（redirect 経由）で、全体の取得と検証、Range header による再開、遅い consumer でも byte 数が一致することを確認します。
+
 ### Qwen3-ASR の embedding と greedy 生成
 
 PortableRuntime の embedding・greedy 生成・text helper は、重みなしの unit test が可能で、下記 ONNX Qwen3-ASR engine からも使われます。`Qwen3ASREmbeddingTable(contentsOf:vocabSize:hiddenSize:)` は `embed_tokens.bin` を FP16 little-endian、row-major として読み、語彙数 `151936` と hidden size を呼び出し側が指定します。寸法は正数として検証し、`vocabSize * hiddenSize * 2` を checked arithmetic で計算します。開いたファイルが通常ファイルであり、byte 数がこの値と完全一致することを mapping 前に検証します。macOS / Linux では POSIX `open(O_RDONLY | O_NOFOLLOW | O_CLOEXEC)`、`fstat`、`mmap(PROT_READ, MAP_PRIVATE)` の順で読み取り専用 mapping を作ります。Windows では既存の CWindowsSession 共通 path/reparse check を通して CreateFileW で開き、CreateFileMappingW(PAGE_READONLY)、MapViewOfFile(FILE_MAP_READ) の順で mapping します。mapping は table の最後の copy が解放されるまで POSIX file descriptor、または Windows file / mapping handle を所有し、最後に POSIX では `munmap` と `close`、Windows では UnmapViewOfFile と CloseHandle で解放します。[`row(_ id: Int64) throws -> [Float]`](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Qwen3ASR/Qwen3ASREmbeddingTable.swift) は範囲を検証して要求された行だけを Float32 に変換します。Windows では native shim 経由で行を copy し、SEH で `EXCEPTION_IN_PAGE_ERROR` を捕捉した場合は Swift error を返します。寸法・offset の overflow、範囲外 token ID、open / mapping / row copy の失敗は throw し、ファイル全体を copy する代替経路はありません（[MapViewOfFile](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile)、[mmap(2)](https://man7.org/linux/man-pages/man2/mmap.2.html)）。

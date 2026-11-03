@@ -118,6 +118,7 @@ Invoke-Step 'Run Windows capture safety injected C tests' { & $injectedTestExecu
 $testEventPath = New-TestEventStreamPath
 Write-Host "Swift test event stream: $testEventPath"
 Invoke-Step 'Swift test EngineProtocol/EngineHost/WindowsSupport/PortableRuntime/Core/Pipeline/ONNX targets' {
+    $env:MAC_AMBIENT_JEV_NETWORK_TESTS = '1'
     python -B scripts/run_swift_tests.py --package-path app/MacAmbientJev --event-stream-output-path $testEventPath
 }
 
