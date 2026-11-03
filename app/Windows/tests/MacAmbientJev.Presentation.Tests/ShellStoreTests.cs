@@ -216,7 +216,7 @@ public sealed partial class ShellStoreTests
         private readonly object _gate = new(); private readonly List<EngineOutput> _events = [];
         private readonly TaskCompletionSource<EngineClientState> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _sentCount;
-        public Task<EngineResult> Hello { get; } = Task.FromResult<EngineResult>(new EngineResult.Hello(new EngineReadyPayload(new EngineCapabilities([EngineSource.Microphone], [EngineASRSize.Small], [new EngineExecutionProvider.Cpu()], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None), initial)));
+        public Task<EngineResult> Hello { get; } = Task.FromResult<EngineResult>(new EngineResult.Hello(new EngineReadyPayload(new EngineCapabilities([EngineSource.Microphone], [EngineASRSize.Small], [EngineExecutionProviderKind.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None), initial)));
         public Task<EngineResult> SettingsGetResponse { get; set; } = settingsGet;
         public Func<EngineCommand, EngineResult>? AutoResponse { get; set; }
         public int SentCount => Volatile.Read(ref _sentCount); public Task<EngineClientState> Completion => _completion.Task;

@@ -166,6 +166,18 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
         await usageCounter.snapshot()
     }
 
+    /// The status `models.status` reports per size; sizes without an entry are installed.
+    let sizeStatuses = LockedBox<[EngineASRSize: EngineASRProfileStatus]>([:])
+    let taggerStatus = LockedBox<EngineClauseTaggerStatus?>(nil)
+
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        let sizes = sizeStatuses.get()
+        return try EngineModelsStatus(
+            asrProfiles: asrSizes.map { try sizes[$0] ?? EngineASRProfileStatus(asrSize: $0, state: .installed, message: nil) },
+            clauseTagger: taggerStatus.get() ?? EngineClauseTaggerStatus(state: .installed, message: nil)
+        )
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         throw EngineAdapterError(
             code: .modelMissing,
@@ -375,7 +387,7 @@ final class ApplicationHarness {
     private var runTask: Task<EngineExit, Never>?
     private var nextRequestID: UInt64 = 1
 
-    init(root: URL) {
+    init(root: URL, acceleratorRegistry: any EngineAcceleratorRegistry = EngineUnavailableAcceleratorRegistry()) {
         self.root = root
         paths = engineTestPaths(root: root)
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
@@ -386,7 +398,8 @@ final class ApplicationHarness {
             ),
             capture: capture,
             inference: inference,
-            events: EngineEventEmitter(transport: transport)
+            events: EngineEventEmitter(transport: transport),
+            acceleratorRegistry: acceleratorRegistry
         )
         controller = EngineController(transport: transport, handlers: app.handlers, admission: .production)
     }
@@ -502,5 +515,14 @@ final class ApplicationHarness {
     func shutdown() async throws -> EngineExit {
         try await call("shutdown")
         return await exit()
+    }
+}
+
+/// A host that supports Windows ML selections but has no device to bind.
+struct WindowsMLCapableRegistry: EngineAcceleratorRegistry {
+    let executionProviderKinds: [EngineExecutionProviderKind] = [.cpu, .windowsML]
+
+    func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice] {
+        throw EngineAdapterError(code: .modelFailure, message: "テスト用の registry は bind できません", recoveryAction: .none, details: [])
     }
 }

@@ -173,6 +173,10 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         await usageCounter.snapshot()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         try await inspectionProvider.inspectClauseTagger()
     }
@@ -206,6 +210,10 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
 
     func decisionUsage() async throws -> DecisionUsageSnapshot {
         try await base.decisionUsage()
+    }
+
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
     }
 
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {

@@ -298,7 +298,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
     let capabilities = try EngineCapabilities(
         sources: EngineSource.allCases,
         asrSizes: EngineASRSize.allCases,
-        executionProviders: [.cpu, .windowsML(providerName: "Windows ML", deviceKey: "gpu:10de:2684", verificationID: "verification-200")],
+        executionProviderKinds: [.cpu, .windowsML],
         maximumThreads: 1,
         automaticInputVolume: .none,
         thermalMonitoring: .none
@@ -452,6 +452,10 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         backend: "coverage", modelID: "coverage", revision: sha256, tokenizerSHA256: sha256
     )
     let inspection = EngineModelsInspection(clauseTagger: .validated(identity))
+    let modelsStatus = try EngineModelsStatus(asrProfiles: [
+        EngineASRProfileStatus(asrSize: .small, state: .installed, message: nil),
+        EngineASRProfileStatus(asrSize: .large, state: .missing, message: "coverage"),
+    ], clauseTagger: EngineClauseTaggerStatus(state: .corrupt, message: "coverage"))
     let settingsResult = EngineSettingsResult(revision: id, settings: settings)
     let request = try EngineRequest(version: 1, requestID: id, command: .hello)
     let output = try EngineOutput(version: 1, sequence: id, requestID: nil, event: .state(state))
@@ -534,6 +538,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         identity,
         EngineClauseTaggerInspection.validated(identity),
         inspection,
+        modelsStatus,
         presentation,
     ]
 }

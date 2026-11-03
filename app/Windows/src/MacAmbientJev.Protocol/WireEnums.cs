@@ -18,6 +18,13 @@ public enum EngineExecutionProviderKind
     [WireValue("windows_ml")] WindowsML,
 }
 
+public enum EngineModelState
+{
+    [WireValue("installed")] Installed,
+    [WireValue("missing")] Missing,
+    [WireValue("corrupt")] Corrupt,
+}
+
 public enum EngineDeviceKind
 {
     [WireValue("default")] Default,
@@ -45,6 +52,7 @@ public enum EngineCommandName
     [WireValue("settings.replace")] SettingsReplace,
     [WireValue("models.prepare")] ModelsPrepare,
     [WireValue("models.inspect")] ModelsInspect,
+    [WireValue("models.status")] ModelsStatus,
     [WireValue("accelerators.bind")] AcceleratorsBind,
     [WireValue("accelerators.verify")] AcceleratorsVerify,
     [WireValue("profiles.evaluate")] ProfilesEvaluate,

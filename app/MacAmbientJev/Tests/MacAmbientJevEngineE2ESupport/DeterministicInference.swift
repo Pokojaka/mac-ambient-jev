@@ -25,6 +25,10 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
         await usageCounter.snapshot()
     }
 
+    public func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     public func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         throw EngineAdapterError(
             code: .modelMissing,

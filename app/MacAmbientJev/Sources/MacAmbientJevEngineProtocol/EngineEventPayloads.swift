@@ -314,7 +314,7 @@ public struct EngineFailure: Codable, Equatable, Sendable {
 public struct EngineCapabilities: Codable, Equatable, Sendable {
     public let sources: [EngineSource]
     public let asrSizes: [EngineASRSize]
-    public let executionProviders: [EngineExecutionProvider]
+    public let executionProviderKinds: [EngineExecutionProviderKind]
     public let maximumThreads: Int
     public let automaticInputVolume: EngineUnavailableCapability
     public let thermalMonitoring: EngineUnavailableCapability
@@ -322,7 +322,7 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case sources
         case asrSizes = "asr_sizes"
-        case executionProviders = "execution_providers"
+        case executionProviderKinds = "execution_provider_kinds"
         case maximumThreads = "maximum_threads"
         case automaticInputVolume = "automatic_input_volume"
         case thermalMonitoring = "thermal_monitoring"
@@ -331,23 +331,21 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
     public init(
         sources: [EngineSource],
         asrSizes: [EngineASRSize],
-        executionProviders: [EngineExecutionProvider],
+        executionProviderKinds: [EngineExecutionProviderKind],
         maximumThreads: Int,
         automaticInputVolume: EngineUnavailableCapability,
         thermalMonitoring: EngineUnavailableCapability
     ) throws {
         try enginePayloadRequire(!sources.isEmpty, "sources must not be empty")
         try enginePayloadRequire(!asrSizes.isEmpty, "asr_sizes must not be empty")
-        try enginePayloadRequire(!executionProviders.isEmpty, "execution_providers must not be empty")
+        try enginePayloadRequire(!executionProviderKinds.isEmpty, "execution_provider_kinds must not be empty")
         try enginePayloadRequireUnique(sources.map(\.rawValue), "sources")
         try enginePayloadRequireUnique(asrSizes.map(\.rawValue), "asr_sizes")
-        for (index, provider) in executionProviders.enumerated() {
-            try enginePayloadRequire(!executionProviders[..<index].contains(provider), "execution_providers must be unique")
-        }
+        try enginePayloadRequireUnique(executionProviderKinds.map(\.rawValue), "execution_provider_kinds")
         try enginePayloadRequire((1...4).contains(maximumThreads), "maximum_threads must be between 1 and 4")
         self.sources = sources
         self.asrSizes = asrSizes
-        self.executionProviders = executionProviders
+        self.executionProviderKinds = executionProviderKinds
         self.maximumThreads = maximumThreads
         self.automaticInputVolume = automaticInputVolume
         self.thermalMonitoring = thermalMonitoring
@@ -358,7 +356,7 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
         try self.init(
             sources: container.decode([EngineSource].self, forKey: .sources),
             asrSizes: container.decode([EngineASRSize].self, forKey: .asrSizes),
-            executionProviders: container.decode([EngineExecutionProvider].self, forKey: .executionProviders),
+            executionProviderKinds: container.decode([EngineExecutionProviderKind].self, forKey: .executionProviderKinds),
             maximumThreads: container.decode(Int.self, forKey: .maximumThreads),
             automaticInputVolume: container.decode(EngineUnavailableCapability.self, forKey: .automaticInputVolume),
             thermalMonitoring: container.decode(EngineUnavailableCapability.self, forKey: .thermalMonitoring)
@@ -369,7 +367,7 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sources, forKey: .sources)
         try container.encode(asrSizes, forKey: .asrSizes)
-        try container.encode(executionProviders, forKey: .executionProviders)
+        try container.encode(executionProviderKinds, forKey: .executionProviderKinds)
         try container.encode(maximumThreads, forKey: .maximumThreads)
         try container.encode(automaticInputVolume, forKey: .automaticInputVolume)
         try container.encode(thermalMonitoring, forKey: .thermalMonitoring)

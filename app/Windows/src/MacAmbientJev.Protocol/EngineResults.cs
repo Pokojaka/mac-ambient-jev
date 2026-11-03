@@ -64,6 +64,9 @@ public abstract record EngineResult
     [WireCase("models.inspect")]
     public sealed record ModelsInspect([property: WireMember("result")] EngineModelsInspection Result) : EngineResult;
 
+    [WireCase("models.status")]
+    public sealed record ModelsStatus([property: WireMember("result")] EngineModelsStatus Result) : EngineResult;
+
     [WireCase("accelerators.bind")]
     public sealed record AcceleratorsBind([property: WireMember("result")] EngineAcceleratorsBindResult Result) : EngineResult;
 

@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolCorpusTests {
     @Test func everyCorpusRecordRoundTripsByteIdentically() throws {
         let records = try wireCorpusRecords()
-        #expect(records.count == 180)
+        #expect(records.count == 184)
         for record in records {
             let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
             if root["event"] != nil {
@@ -23,7 +23,7 @@ struct EngineProtocolCorpusTests {
         let bytes = try Data(contentsOf: url)
         guard bytes.last == 0x0A else { throw CorpusFixtureError.missingFinalLineFeed }
         let records = bytes.split(separator: 0x0A)
-        #expect(records.count == 182)
+        #expect(records.count == 192)
 
         for rawRecord in records {
             let record = Data(rawRecord)

@@ -48,7 +48,7 @@ public sealed partial class ShellStoreTests
         Assert.Equal("既定のデバイス", Assert.Single(live.Devices).Label);
 
         var capabilities = new EngineCapabilities([EngineSource.Microphone, EngineSource.SystemAudio], [EngineASRSize.Small],
-            [new EngineExecutionProvider.Cpu()], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None);
+            [EngineExecutionProviderKind.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None);
         var capabilitiesChanged = ChangedAfter(store, state => ReferenceEquals(state.Capabilities, capabilities));
         engine.EmitBatch(new EngineOutput(1, new EngineID(1), null,
             new EngineEvent.Ready(new EngineReadyPayload(capabilities, State(EngineSetupStatus.Ready, 2)))));

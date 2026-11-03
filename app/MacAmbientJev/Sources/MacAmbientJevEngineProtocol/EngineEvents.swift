@@ -66,6 +66,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
     case settingsReplace(EngineSettingsResult)
     case modelsPrepare
     case modelsInspect(EngineModelsInspection)
+    case modelsStatus(EngineModelsStatus)
     case acceleratorsBind(EngineAcceleratorsBindResult)
     case acceleratorsVerify(EngineAcceleratorsVerifyResult)
     case profilesEvaluate(EngineProfileEvaluation)
@@ -100,6 +101,7 @@ public enum EngineResult: Codable, Equatable, Sendable {
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
         case .modelsInspect: .modelsInspect
+        case .modelsStatus: .modelsStatus
         case .acceleratorsBind: .acceleratorsBind
         case .acceleratorsVerify: .acceleratorsVerify
         case .profilesEvaluate: .profilesEvaluate
@@ -163,6 +165,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             return .modelsPrepare
         case .modelsInspect:
             return .modelsInspect(try EngineModelsInspection(from: result))
+        case .modelsStatus:
+            return .modelsStatus(try EngineModelsStatus(from: result))
         case .acceleratorsBind:
             return .acceleratorsBind(try EngineAcceleratorsBindResult(from: result))
         case .acceleratorsVerify:
@@ -210,6 +214,8 @@ public enum EngineResult: Codable, Equatable, Sendable {
             try EngineEmptyPayload().encode(to: encoder)
         case let .modelsInspect(inspection):
             try inspection.encode(to: encoder)
+        case let .modelsStatus(status):
+            try status.encode(to: encoder)
         case let .acceleratorsBind(result):
             try result.encode(to: encoder)
         case let .acceleratorsVerify(result):

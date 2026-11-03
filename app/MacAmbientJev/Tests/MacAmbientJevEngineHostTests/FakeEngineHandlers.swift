@@ -249,6 +249,11 @@ final class FakeEngineHandlers:
         )))
     }
 
+    func status(context: EngineRequestContext) async throws -> EngineModelsStatus {
+        try await enter("models.status")
+        preconditionFailure("not configured")
+    }
+
     func evaluate(_ payload: EngineProfilesEvaluatePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation {
         try await enter("profiles.evaluate")
         return try EngineProfileEvaluation(

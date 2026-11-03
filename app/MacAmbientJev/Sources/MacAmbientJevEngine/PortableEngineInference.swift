@@ -103,6 +103,45 @@ struct PortableEngineInference: EngineInferenceProviding {
         }
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        var profiles: [EngineASRProfileStatus] = []
+        for asrSize in asrSizes {
+            guard let size = ASRModelSize(rawValue: asrSize.rawValue) else {
+                throw EngineAdapterError(
+                    code: .invalidSettings, message: "ASR サイズ \(asrSize.rawValue) はインストール済みモデルにありません",
+                    recoveryAction: .none, details: []
+                )
+            }
+            let configuration = try PortableProcessingConfiguration.installed(
+                layout: layout, qwen3Size: size, threads: 1, logicalCPUCount: logicalCPUCount, withDecisions: false
+            )
+            let (state, message) = try await Self.verification {
+                try await PortableModelPreparationService().verifyInstalled(configuration: configuration)
+            }
+            profiles.append(try EngineASRProfileStatus(asrSize: asrSize, state: state, message: message))
+        }
+        let tagger = try layout.clauseTaggerDirectory()
+        let (state, message) = try await Self.verification {
+            try await PortableModelPreparationService().verifyInstalledClauseTagger(modelDirectory: tagger)
+        }
+        return try EngineModelsStatus(asrProfiles: profiles, clauseTagger: EngineClauseTaggerStatus(state: state, message: message))
+    }
+
+    private static func verification(
+        _ verify: () async throws -> Void
+    ) async throws -> (state: EngineModelState, message: String?) {
+        do {
+            try await verify()
+            return (.installed, nil)
+        } catch let error as PortableModelPreparationError {
+            switch error {
+            case .missing: return (.missing, error.localizedDescription)
+            case .invalid: return (.corrupt, error.localizedDescription)
+            case .loadFailed: preconditionFailure("verification never loads a model: \(error)")
+            }
+        }
+    }
+
     func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         let configuration = try configuration(for: settings)
         let bundle: PortableSessionEngineBundle

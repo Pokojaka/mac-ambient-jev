@@ -289,7 +289,8 @@ final class EngineApplicationCore {
 
     func capabilities() throws -> EngineCapabilities {
         try EngineCapabilities(
-            sources: [.microphone, .systemAudio], asrSizes: [.small, .large], executionProviders: [.cpu],
+            sources: [.microphone, .systemAudio], asrSizes: [.small, .large],
+            executionProviderKinds: acceleratorRegistry.executionProviderKinds,
             maximumThreads: min(PortableThreadLimit.maximum, logicalCPUCount),
             automaticInputVolume: .none, thermalMonitoring: .none
         )
@@ -638,6 +639,12 @@ extension EngineApplicationCore: EngineSettingsHandling {
     }
 
     func replace(_ payload: EngineSettingsReplacePayload, context: EngineRequestContext) async throws -> EngineSettingsResult {
+        guard acceleratorRegistry.executionProviderKinds.contains(payload.settings.executionProvider.kind) else {
+            throw EngineFailures.commandError(
+                .invalidSettings, "この環境は実行プロバイダー \(payload.settings.executionProvider.kind.rawValue) に対応していません",
+                stage: .settings, recoveryAction: .replaceSettings
+            )
+        }
         let previous = settings
         let result = try await settingsHandler.replace(payload, context: context)
         var completedEvaluation: EngineProfileEvaluation?
@@ -933,6 +940,18 @@ extension EngineApplicationCore: EngineModelsHandling {
         updateRecoveryStatus()
         // Finalizations queued while models were missing, such as launch recovery, can run now.
         processingCoordinator.startDrainIfIdle()
+    }
+
+    func status(context: EngineRequestContext) async throws -> EngineModelsStatus {
+        do {
+            return try await inferenceProvider.installedModelStatus(asrSizes: capabilities().asrSizes)
+        } catch is CancellationError {
+            throw EngineFailures.commandError(.cancelled, "モデルの確認が中止されました", stage: .validatingModels)
+        } catch {
+            throw EngineFailures.commandError(
+                from: error, fallback: .modelFailure, stage: .validatingModels, recoveryAction: .prepareModels
+            )
+        }
     }
 
     func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection {

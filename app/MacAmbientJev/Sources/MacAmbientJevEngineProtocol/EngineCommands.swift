@@ -46,23 +46,23 @@ public enum EngineASRSize: String, Codable, CaseIterable, Equatable, Sendable {
 
 }
 
+public enum EngineExecutionProviderKind: String, Codable, CaseIterable, Equatable, Sendable {
+    case cpu
+    case windowsML = "windows_ml"
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        guard let value = Self(rawValue: rawValue) else {
+            throw EngineProtocolError.invalidJSON("unknown execution provider kind")
+        }
+        self = value
+    }
+}
+
 public enum EngineExecutionProvider: Codable, Equatable, Sendable {
     case cpu
     case windowsML(providerName: String, deviceKey: String, verificationID: String)
-
-    enum Kind: String, Codable, CaseIterable, Sendable {
-        case cpu
-        case windowsML = "windows_ml"
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            let rawValue = try container.decode(String.self)
-            guard let value = Self(rawValue: rawValue) else {
-                throw EngineProtocolError.invalidJSON("unknown execution provider kind")
-            }
-            self = value
-        }
-    }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case kind
@@ -71,7 +71,7 @@ public enum EngineExecutionProvider: Codable, Equatable, Sendable {
         case verificationID = "verification_id"
     }
 
-    var kind: Kind {
+    public var kind: EngineExecutionProviderKind {
         switch self {
         case .cpu: .cpu
         case .windowsML: .windowsML
@@ -89,7 +89,7 @@ public enum EngineExecutionProvider: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
         let dynamic = try decoder.container(keyedBy: EngineCodingKey.self)
-        let kind = try container.decode(Kind.self, forKey: .kind)
+        let kind = try container.decode(EngineExecutionProviderKind.self, forKey: .kind)
         switch kind {
         case .cpu:
             try engineRequire(Set(dynamic.allKeys.map(\.stringValue)) == ["kind"], "cpu execution provider must not include variant fields")
@@ -585,6 +585,7 @@ public enum EngineCommandName: String, Codable, CaseIterable, Equatable, Sendabl
     case settingsReplace = "settings.replace"
     case modelsPrepare = "models.prepare"
     case modelsInspect = "models.inspect"
+    case modelsStatus = "models.status"
     case acceleratorsBind = "accelerators.bind"
     case acceleratorsVerify = "accelerators.verify"
     case profilesEvaluate = "profiles.evaluate"
@@ -624,6 +625,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
     case settingsReplace(EngineSettingsReplacePayload)
     case modelsPrepare
     case modelsInspect
+    case modelsStatus
     case acceleratorsBind(EngineAcceleratorsBindPayload)
     case acceleratorsVerify(EngineAcceleratorsVerifyPayload)
     case profilesEvaluate(EngineProfilesEvaluatePayload)
@@ -658,6 +660,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .settingsReplace: .settingsReplace
         case .modelsPrepare: .modelsPrepare
         case .modelsInspect: .modelsInspect
+        case .modelsStatus: .modelsStatus
         case .acceleratorsBind: .acceleratorsBind
         case .acceleratorsVerify: .acceleratorsVerify
         case .profilesEvaluate: .profilesEvaluate
@@ -726,6 +729,9 @@ public enum EngineCommand: Codable, Equatable, Sendable {
         case .modelsInspect:
             _ = try EngineEmptyPayload(from: payload)
             return .modelsInspect
+        case .modelsStatus:
+            _ = try EngineEmptyPayload(from: payload)
+            return .modelsStatus
         case .acceleratorsBind:
             return .acceleratorsBind(try EngineAcceleratorsBindPayload(from: payload))
         case .acceleratorsVerify:
@@ -746,7 +752,7 @@ public enum EngineCommand: Codable, Equatable, Sendable {
 
     func encodePayload(to encoder: Encoder) throws {
         switch self {
-        case .hello, .stateGet, .diagnosticsGet, .settingsGet, .modelsPrepare, .modelsInspect, .shutdown:
+        case .hello, .stateGet, .diagnosticsGet, .settingsGet, .modelsPrepare, .modelsInspect, .modelsStatus, .shutdown:
             try EngineEmptyPayload().encode(to: encoder)
         case let .devicesList(payload):
             try payload.encode(to: encoder)

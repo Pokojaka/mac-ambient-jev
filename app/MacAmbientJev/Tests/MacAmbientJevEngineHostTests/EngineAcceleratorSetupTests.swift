@@ -5,6 +5,7 @@ import Testing
 @testable import MacAmbientJevEngineProtocol
 
 private actor FakeAccelerator: EngineAcceleratorRegistry, EngineAcceleratorDevice, ASREngine {
+    nonisolated let executionProviderKinds: [EngineExecutionProviderKind] = [.cpu, .windowsML]
     nonisolated let info: EngineAcceleratorDeviceInfo
     nonisolated let adapterIdentity: String
     nonisolated let ortVersion = "1.31.0"

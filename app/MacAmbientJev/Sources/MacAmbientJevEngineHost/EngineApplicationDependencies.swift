@@ -143,4 +143,7 @@ public protocol EngineInferenceProviding: Sendable {
     /// Returns the installed, validated clause-tagger identity after metadata validation and loading.
     /// This performs no inference or accounting and is independent of settings and preparation.
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity
+    /// Verifies, without loading or writing, the pinned files of each size's VAD, ASR and diarization, and of the clause tagger.
+    /// Each entry is `installed`, or `missing` / `corrupt` with a message naming the first failing file.
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus
 }

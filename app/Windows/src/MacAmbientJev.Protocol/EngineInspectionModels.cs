@@ -1,3 +1,5 @@
+using System.Linq;
+
 namespace MacAmbientJev.Protocol;
 
 [WireObject]
@@ -154,3 +156,48 @@ public abstract record EngineClauseTaggerInspection
 [WireObject]
 public sealed record EngineModelsInspection(
     [property: WireMember("clause_tagger")] EngineClauseTaggerInspection ClauseTagger);
+
+[WireObject]
+public sealed record EngineASRProfileStatus(
+    [property: WireMember("asr_size")] EngineASRSize AsrSize,
+    [property: WireMember("state")] EngineModelState State,
+    [property: WireMember("message", IsNullable = true)] string? Message) : IWireValidatable
+{
+    public void Validate(string path) => EngineModelStatusRules.Validate(State, Message, path);
+}
+
+[WireObject]
+public sealed record EngineClauseTaggerStatus(
+    [property: WireMember("state")] EngineModelState State,
+    [property: WireMember("message", IsNullable = true)] string? Message) : IWireValidatable
+{
+    public void Validate(string path) => EngineModelStatusRules.Validate(State, Message, path);
+}
+
+internal static class EngineModelStatusRules
+{
+    internal static void Validate(EngineModelState state, string? message, string path)
+    {
+        if (state == EngineModelState.Installed)
+        {
+            WireCheck.Require(message is null, path + ".message", "An installed model status must not have a message.");
+        }
+        else
+        {
+            WireCheck.Nonempty(message, path + ".message");
+        }
+    }
+}
+
+[WireObject]
+public sealed record EngineModelsStatus(
+    [property: WireMember("asr_profiles")] EngineASRProfileStatus[] AsrProfiles,
+    [property: WireMember("clause_tagger")] EngineClauseTaggerStatus ClauseTagger) : IWireValidatable
+{
+    public void Validate(string path)
+    {
+        if (AsrProfiles is null) return;
+        WireCheck.Require(AsrProfiles.Length > 0, path + ".asr_profiles", "asr_profiles must not be empty.");
+        WireCheck.Unique(AsrProfiles.Where(profile => profile is not null).Select(profile => profile.AsrSize), path + ".asr_profiles");
+    }
+}

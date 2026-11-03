@@ -245,6 +245,8 @@ public final class EngineController {
             return .modelsPrepare
         case .modelsInspect:
             return .modelsInspect(try await handlers.models.inspect(context: context))
+        case .modelsStatus:
+            return .modelsStatus(try await handlers.models.status(context: context))
         case let .acceleratorsBind(payload):
             return .acceleratorsBind(try await handlers.models.bind(payload, context: context))
         case let .acceleratorsVerify(payload):

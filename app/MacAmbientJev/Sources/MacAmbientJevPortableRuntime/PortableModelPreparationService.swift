@@ -127,6 +127,22 @@ public struct PortableModelPreparationService: Sendable {
         try await Self.run(steps: try Self.steps(for: configuration, acceleratedASR: acceleratedASR), onProgress: onProgress)
     }
 
+    /// The same verification as the clause tagger preparation step.
+    public func verifyInstalledClauseTagger(modelDirectory: URL) async throws {
+        try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+            _ = try PortableClauseTaggerInspection.validateAssets(modelDirectory: modelDirectory)
+        }.value
+    }
+
+    /// Runs only the verification of every model, in preparation order, and throws the first failure.
+    /// Loads nothing, downloads nothing and writes nothing.
+    public func verifyInstalled(configuration: PortableProcessingConfiguration) async throws {
+        for step in try Self.steps(for: configuration, acceleratedASR: nil) {
+            try Task.checkCancellation()
+            try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try step.validate() }.value
+        }
+    }
+
     static func run(
         steps: [Step],
         onProgress: @escaping @Sendable (PortableModelPreparationProgress) -> Void

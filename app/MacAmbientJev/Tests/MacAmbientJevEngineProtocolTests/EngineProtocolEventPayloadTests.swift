@@ -19,16 +19,45 @@ struct EngineProtocolEventPayloadTests {
         #expect(throws: (any Error).self) { try EngineRecordingState(sessionID: "s", source: .microphone, device: .id(""), phase: .recording) }
 
         #expect(throws: (any Error).self) {
-            try EngineCapabilities(sources: [], asrSizes: [.small], executionProviders: [.cpu], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
+            try EngineCapabilities(sources: [], asrSizes: [.small], executionProviderKinds: [.cpu], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
         }
         #expect(throws: (any Error).self) {
-            try EngineCapabilities(sources: [.microphone, .microphone], asrSizes: [.small], executionProviders: [.cpu], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
+            try EngineCapabilities(sources: [.microphone, .microphone], asrSizes: [.small], executionProviderKinds: [.cpu], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
         }
         #expect(throws: (any Error).self) {
-            try EngineCapabilities(sources: [.microphone], asrSizes: [.small], executionProviders: [.cpu], maximumThreads: 5, automaticInputVolume: .none, thermalMonitoring: .none)
+            try EngineCapabilities(sources: [.microphone], asrSizes: [.small], executionProviderKinds: [.cpu], maximumThreads: 5, automaticInputVolume: .none, thermalMonitoring: .none)
         }
 
         #expect(throws: (any Error).self) { _ = try encoder().encode(EngineDevice.id("")) }
+    }
+
+    @Test func executionProviderKindsAreNonemptyUniqueAndKnown() throws {
+        #expect(throws: (any Error).self) {
+            try EngineCapabilities(sources: [.microphone], asrSizes: [.small], executionProviderKinds: [], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
+        }
+        #expect(throws: (any Error).self) {
+            try EngineCapabilities(sources: [.microphone], asrSizes: [.small], executionProviderKinds: [.cpu, .cpu], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
+        }
+        let both = try EngineCapabilities(sources: [.microphone], asrSizes: [.small], executionProviderKinds: [.cpu, .windowsML], maximumThreads: 1, automaticInputVolume: .none, thermalMonitoring: .none)
+        let json = try String(decoding: encoder().encode(both), as: UTF8.self)
+        #expect(json.contains(#""execution_provider_kinds":["cpu","windows_ml"]"#))
+        #expect(try JSONDecoder().decode(EngineCapabilities.self, from: Data(json.utf8)) == both)
+        #expect(decodingFails(EngineExecutionProviderKind.self, from: #""future""#))
+    }
+
+    @Test func modelsStatusMessageMatchesState() throws {
+        #expect(throws: (any Error).self) { try EngineASRProfileStatus(asrSize: .small, state: .installed, message: "x") }
+        #expect(throws: (any Error).self) { try EngineASRProfileStatus(asrSize: .small, state: .missing, message: nil) }
+        #expect(throws: (any Error).self) { try EngineASRProfileStatus(asrSize: .small, state: .corrupt, message: "") }
+        let installed = try EngineASRProfileStatus(asrSize: .small, state: .installed, message: nil)
+        let missing = try EngineASRProfileStatus(asrSize: .large, state: .missing, message: "なし")
+        let tagger = try EngineClauseTaggerStatus(state: .installed, message: nil)
+        #expect(throws: (any Error).self) { try EngineClauseTaggerStatus(state: .installed, message: "x") }
+        #expect(throws: (any Error).self) { try EngineClauseTaggerStatus(state: .missing, message: nil) }
+        #expect(throws: (any Error).self) { try EngineModelsStatus(asrProfiles: [], clauseTagger: tagger) }
+        #expect(throws: (any Error).self) { try EngineModelsStatus(asrProfiles: [installed, installed], clauseTagger: tagger) }
+        let status = try EngineModelsStatus(asrProfiles: [installed, missing], clauseTagger: tagger)
+        #expect(try JSONDecoder().decode(EngineModelsStatus.self, from: encoder().encode(status)) == status)
     }
 
     @Test func largeDeviceCollectionsRejectDuplicateLastID() throws {

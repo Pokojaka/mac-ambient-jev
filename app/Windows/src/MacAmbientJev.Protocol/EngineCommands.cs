@@ -229,6 +229,9 @@ public abstract record EngineCommand
     [WireCase("models.inspect")]
     public sealed record ModelsInspect([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;
 
+    [WireCase("models.status")]
+    public sealed record ModelsStatus([property: WireMember("payload")] EngineEmptyPayload Payload) : EngineCommand;
+
     [WireCase("accelerators.bind")]
     public sealed record AcceleratorsBind([property: WireMember("payload")] EngineAcceleratorsBindPayload Payload) : EngineCommand;
 

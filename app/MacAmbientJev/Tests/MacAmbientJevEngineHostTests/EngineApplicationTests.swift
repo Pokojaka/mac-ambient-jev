@@ -173,7 +173,7 @@ import MacAmbientJevTestSupport
         try FileManager.default.createDirectory(at: settingsStore.root, withIntermediateDirectories: true)
         try schemaOne.write(to: settingsStore.fileURL)
 
-        let h = ApplicationHarness(root: root)
+        let h = ApplicationHarness(root: root, acceleratorRegistry: WindowsMLCapableRegistry())
         h.start()
         try await h.hello()
         do {
@@ -690,6 +690,10 @@ private final class GatedFinalizationInferenceProvider: EngineInferenceProviding
 
     func decisionUsage() async throws -> DecisionUsageSnapshot {
         try await inspectionProvider.decisionUsage()
+    }
+
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
     }
 
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {

@@ -34,6 +34,7 @@ func windowsAcceleratorIdentity(luid: String?, deviceName: String, type: String)
 }
 
 internal actor WindowsEngineAcceleratorRegistry: EngineAcceleratorRegistry {
+    nonisolated let executionProviderKinds: [EngineExecutionProviderKind] = [.cpu, .windowsML]
     private let layout: PortableInstalledModelLayout
     private(set) var registrations: [(descriptor: EngineAcceleratorDescriptor, name: String)] = []
 

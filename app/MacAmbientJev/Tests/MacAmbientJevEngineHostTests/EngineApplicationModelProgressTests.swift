@@ -39,6 +39,10 @@ private final class OutOfOrderModelProgressProvider: EngineInferenceProviding, @
         try await engineProvider.decisionUsage()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         try await engineProvider.inspectClauseTagger()
     }

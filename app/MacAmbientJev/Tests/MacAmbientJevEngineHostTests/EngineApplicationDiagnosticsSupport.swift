@@ -140,6 +140,10 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
         }
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         if let error = inspectionFailure.get() { throw error }
         return try decisionProviderFactory.localModelIdentity()

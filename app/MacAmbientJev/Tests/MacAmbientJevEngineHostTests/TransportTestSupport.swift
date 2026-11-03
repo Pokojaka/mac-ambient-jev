@@ -239,7 +239,7 @@ func sampleState(revision: UInt64) throws -> EngineState {
 func sampleReady() throws -> EngineReadyPayload {
     EngineReadyPayload(
         capabilities: try EngineCapabilities(
-            sources: [.microphone, .systemAudio], asrSizes: [.small, .large], executionProviders: [.cpu],
+            sources: [.microphone, .systemAudio], asrSizes: [.small, .large], executionProviderKinds: [.cpu],
             maximumThreads: 4, automaticInputVolume: .none, thermalMonitoring: .none
         ),
         state: try sampleState(revision: 1)

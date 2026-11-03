@@ -64,7 +64,8 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private void BuildChoices() {
         Add(_schema, 2L, "2"); foreach (var value in _capabilities.Sources) Add(_source, value, value switch { EngineSource.Microphone => "マイク", EngineSource.SystemAudio => "システム音声", _ => throw new InvalidOperationException($"Unknown source: {value}.") });
         foreach (var value in _capabilities.AsrSizes) Add(_asr, value, value switch { EngineASRSize.Large => "1.7B", EngineASRSize.Small => "0.6B", _ => throw new InvalidOperationException($"Unknown ASR size: {value}.") });
-        foreach (var value in _capabilities.ExecutionProviders) Add(_provider, value, value switch { EngineExecutionProvider.Cpu => "CPU", _ => throw new InvalidOperationException($"Unknown provider: {value}.") });
+        // A windows_ml setting needs a provider, device and verification from the accelerator setup flow, so this list offers CPU only.
+        foreach (var kind in _capabilities.ExecutionProviderKinds) if (kind == EngineExecutionProviderKind.Cpu) Add(_provider, new EngineExecutionProvider.Cpu(), "CPU");
         if (_capabilities.MaximumThreads is < 1 or > 4) throw new InvalidOperationException("Engine maximum thread capability is invalid.");
         for (long i = 1; i <= _capabilities.MaximumThreads; i++) Add(_threads, i, i.ToString(CultureInfo.InvariantCulture));
         foreach (var box in new[] { _lowHeat, _decisions, _autoExport }) { Add(box, true, "オン"); Add(box, false, "オフ"); }

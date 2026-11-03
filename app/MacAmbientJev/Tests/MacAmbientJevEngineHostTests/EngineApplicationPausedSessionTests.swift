@@ -104,6 +104,10 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
         await usageCounter.snapshot()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         try await inspectionProvider.inspectClauseTagger()
     }

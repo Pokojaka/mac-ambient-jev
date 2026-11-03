@@ -153,6 +153,7 @@ public protocol EngineSettingsHandling {
 public protocol EngineModelsHandling {
     func prepare(context: EngineRequestContext) async throws
     func inspect(context: EngineRequestContext) async throws -> EngineModelsInspection
+    func status(context: EngineRequestContext) async throws -> EngineModelsStatus
     func bind(_ payload: EngineAcceleratorsBindPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsBindResult
     func verify(_ payload: EngineAcceleratorsVerifyPayload, context: EngineRequestContext) async throws -> EngineAcceleratorsVerifyResult
     func evaluate(_ payload: EngineProfilesEvaluatePayload, context: EngineRequestContext) async throws -> EngineProfileEvaluation

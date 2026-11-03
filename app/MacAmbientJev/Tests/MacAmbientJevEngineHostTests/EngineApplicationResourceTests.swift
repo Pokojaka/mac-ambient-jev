@@ -81,6 +81,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
     }
     func decisionUsage() async throws -> DecisionUsageSnapshot { try await base.decisionUsage() }
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity { try await base.inspectClauseTagger() }
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus { try await base.installedModelStatus(asrSizes: asrSizes) }
     func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         let standard = try base.makeInference(settings: settings, acceleratedASR: acceleratedASR)
         return EngineInference(engines: SessionProcessingEngines(

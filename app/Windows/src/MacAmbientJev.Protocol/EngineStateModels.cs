@@ -44,7 +44,7 @@ public sealed record EngineFailure(
 public sealed record EngineCapabilities(
     [property: WireMember("sources")] EngineSource[] Sources,
     [property: WireMember("asr_sizes")] EngineASRSize[] AsrSizes,
-    [property: WireMember("execution_providers")] EngineExecutionProvider[] ExecutionProviders,
+    [property: WireMember("execution_provider_kinds")] EngineExecutionProviderKind[] ExecutionProviderKinds,
     [property: WireMember("maximum_threads")] long MaximumThreads,
     [property: WireMember("automatic_input_volume")] EngineUnavailableCapability AutomaticInputVolume,
     [property: WireMember("thermal_monitoring")] EngineUnavailableCapability ThermalMonitoring) : IWireValidatable
@@ -63,19 +63,10 @@ public sealed record EngineCapabilities(
             WireCheck.Unique(AsrSizes, path + ".asr_sizes");
         }
 
-        if (ExecutionProviders is not null)
+        if (ExecutionProviderKinds is not null)
         {
-            WireCheck.Require(ExecutionProviders.Length > 0, path + ".execution_providers", "execution_providers must not be empty.");
-            EngineExecutionProvider[] uniqueProviders = ExecutionProviders.Select<EngineExecutionProvider, EngineExecutionProvider>(provider => provider switch
-            {
-                EngineExecutionProvider.Cpu cpu => cpu,
-                EngineExecutionProvider.WindowsML windowsML => new EngineExecutionProvider.WindowsML(
-                    WireCheck.CanonicalString(windowsML.ProviderName),
-                    WireCheck.CanonicalString(windowsML.DeviceKey),
-                    WireCheck.CanonicalString(windowsML.VerificationID)),
-                _ => throw new InvalidOperationException("Unknown execution provider type."),
-            }).ToArray();
-            WireCheck.Unique(uniqueProviders, path + ".execution_providers");
+            WireCheck.Require(ExecutionProviderKinds.Length > 0, path + ".execution_provider_kinds", "execution_provider_kinds must not be empty.");
+            WireCheck.Unique(ExecutionProviderKinds, path + ".execution_provider_kinds");
         }
         WireCheck.Range(MaximumThreads, 1, 4, path + ".maximum_threads");
     }

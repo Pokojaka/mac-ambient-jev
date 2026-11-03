@@ -9,6 +9,8 @@ import MacAmbientJevEngineProtocol
 /// driver and memory identities. Binding must never substitute CPU and must remain registered for
 /// every returned device and its ASR engines/sessions.
 public protocol EngineAcceleratorRegistry: Sendable {
+    /// The execution provider kinds this host supports; always contains `.cpu`.
+    var executionProviderKinds: [EngineExecutionProviderKind] { get }
     func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice]
 }
 
@@ -33,6 +35,8 @@ public protocol EngineAcceleratorDevice: Sendable {
 /// Explicit production failure for builds without an accelerator implementation.
 public struct EngineUnavailableAcceleratorRegistry: EngineAcceleratorRegistry {
     public init() {}
+
+    public let executionProviderKinds: [EngineExecutionProviderKind] = [.cpu]
 
     public func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice] {
         throw unavailableError
