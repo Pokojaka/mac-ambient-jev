@@ -20,7 +20,8 @@ struct PortableEngineInference: EngineInferenceProviding {
             logicalCPUCount: logicalCPUCount,
             transport: transport,
             clauseTaggerInspection: PortableClauseTaggerInspection(
-                modelDirectory: { try layout.clauseTaggerDirectory() }
+                modelDirectory: { try layout.clauseTaggerDirectory() },
+                guidance: PortableInstalledModelLayout.bundledModelGuidance
             )
         )
     }

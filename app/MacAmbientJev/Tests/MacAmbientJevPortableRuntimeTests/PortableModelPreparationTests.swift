@@ -91,22 +91,27 @@ struct PortableModelPreparationTests {
     }
 
     @Test func installedLayoutFollowsThePinnedIdentities() throws {
-        let root = URL(fileURLWithPath: "/models", isDirectory: true)
-        let layout = PortableInstalledModelLayout(modelsRoot: root)
-        #expect(layout.sileroModelURL.path == "/models/silero/\(SileroVADModel.revision)/silero_vad_16k_op15.onnx")
+        let layout = PortableInstalledModelLayout(
+            bundledRoot: URL(fileURLWithPath: "/bundled", isDirectory: true),
+            downloadedRoot: URL(fileURLWithPath: "/downloaded", isDirectory: true)
+        )
+        #expect(layout.sileroModelURL.path == "/bundled/silero/\(SileroVADModel.revision)/silero_vad_16k_op15.onnx")
         for size in Qwen3ASRModelSize.allCases {
-            #expect(layout.qwen3Directory(size: size).path == "/models/qwen3-asr-\(size.rawValue)-int4-\(size.commit)")
+            #expect(layout.qwen3Directory(size: size).path == "/downloaded/qwen3-asr-\(size.rawValue)-int4-\(size.commit)")
         }
         let diarization = try layout.diarizationDirectory()
-        #expect(diarization.deletingLastPathComponent().path == "/models/community1")
+        #expect(diarization.deletingLastPathComponent().path == "/downloaded/community1")
         #expect(diarization.lastPathComponent.count == 64)
         let source = try ClauseTaggerManifest.bundled().source
         #expect(source.commit == "5c0213592cf8d59fc0b665183ab7536ddde05d1f")
-        #expect(try layout.clauseTaggerDirectory().path == "/models/clause-tagger/\(source.commit)/clause-tagger-onnx")
+        #expect(try layout.clauseTaggerDirectory().path == "/bundled/clause-tagger/\(source.commit)/clause-tagger-onnx")
     }
 
     @Test func installedConfigurationSharesThreadValidationAndDecisionSelection() throws {
-        let layout = PortableInstalledModelLayout(modelsRoot: URL(fileURLWithPath: "/models", isDirectory: true))
+        let layout = PortableInstalledModelLayout(
+            bundledRoot: URL(fileURLWithPath: "/models", isDirectory: true),
+            downloadedRoot: URL(fileURLWithPath: "/models", isDirectory: true)
+        )
         let withDecisions = try PortableProcessingConfiguration.installed(
             layout: layout, qwen3Size: .large, threads: 2, logicalCPUCount: 8, withDecisions: true
         )
@@ -145,7 +150,9 @@ struct PortableModelPreparationTests {
             qwen3Size: .small,
             diarizationModelDirectory: root.appending(path: "diarization", directoryHint: .isDirectory),
             clauseTaggerModelDirectory: tagger,
-            threads: 1
+            threads: 1,
+            sileroGuidance: "s",
+            clauseTaggerGuidance: "g"
         )
         let steps = try PortableModelPreparationService.steps(for: configuration)
         let step = try #require(steps.first { $0.model == .clauseTagger })
@@ -160,15 +167,14 @@ struct PortableModelPreparationTests {
             }
             #expect(model == .clauseTagger)
             #expect(path == tagger.appending(path: "ClauseTagger.onnx").path)
-            #expect(command.contains("--format onnx"))
-            #expect(command.contains(tagger.path))
+            #expect(command == "g")
         }
     }
 
     @Test func prepareOnAnEmptyModelsDirectoryFailsWithTheExpectedPathAndCreatesNothing() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let layout = PortableInstalledModelLayout(modelsRoot: root)
+        let layout = PortableInstalledModelLayout(bundledRoot: root, downloadedRoot: root)
         let configuration = try PortableProcessingConfiguration.installed(
             layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 4, withDecisions: true
         )
@@ -179,8 +185,7 @@ struct PortableModelPreparationTests {
             guard case let .missing(model, path, command) = error else { Issue.record("not missing: \(error)"); return }
             #expect(model == .vad)
             #expect(path == layout.sileroModelURL.path)
-            #expect(command.contains("scripts/fetch_silero_vad.py"))
-            #expect(command.contains(layout.sileroModelURL.path))
+            #expect(command == PortableInstalledModelLayout.bundledModelGuidance)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
@@ -188,7 +193,7 @@ struct PortableModelPreparationTests {
     @Test func aCorruptSileroFileFailsPreparationWithItsPath() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let layout = PortableInstalledModelLayout(modelsRoot: root)
+        let layout = PortableInstalledModelLayout(bundledRoot: root, downloadedRoot: root)
         try FileManager.default.createDirectory(
             at: layout.sileroModelURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )

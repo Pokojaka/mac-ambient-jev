@@ -31,6 +31,10 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
     public let clauseTaggerModelDirectory: URL?
     /// Threads for ASR, diarization and the clause tagger. The VAD always uses one.
     public let threads: Int
+    /// What a missing or invalid Silero file tells the user to do.
+    public let sileroGuidance: String
+    /// What a missing or invalid clause tagger asset tells the user to do.
+    public let clauseTaggerGuidance: String
 
     public init(
         sileroModelURL: URL,
@@ -38,7 +42,9 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         qwen3Size: Qwen3ASRModelSize,
         diarizationModelDirectory: URL,
         clauseTaggerModelDirectory: URL?,
-        threads: Int
+        threads: Int,
+        sileroGuidance: String,
+        clauseTaggerGuidance: String
     ) {
         self.sileroModelURL = sileroModelURL
         self.qwen3ModelDirectory = qwen3ModelDirectory
@@ -46,6 +52,8 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         self.diarizationModelDirectory = diarizationModelDirectory
         self.clauseTaggerModelDirectory = clauseTaggerModelDirectory
         self.threads = threads
+        self.sileroGuidance = sileroGuidance
+        self.clauseTaggerGuidance = clauseTaggerGuidance
     }
 
     /// `threads` is the `--threads` value; `nil` means the flag was absent. The clause tagger variable is read only when
@@ -70,7 +78,9 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
             qwen3Size: qwen3Size,
             diarizationModelDirectory: diarizationModelDirectory,
             clauseTaggerModelDirectory: clauseTaggerModelDirectory,
-            threads: threads
+            threads: threads,
+            sileroGuidance: "python3 scripts/fetch_silero_vad.py を実行し、出力されたファイルを \(sileroModelKey) の指す場所に置く",
+            clauseTaggerGuidance: "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(clauseTaggerDirectoryKey) の指す場所に置く"
         )
     }
 

@@ -57,6 +57,13 @@ private struct DroppedConnectionTransport: ModelDownloadTransport {
         }
     }
 
+    private func layout(modelsRoot: URL) -> PortableInstalledModelLayout {
+        PortableInstalledModelLayout(
+            bundledRoot: modelsRoot.appending(path: "bundled", directoryHint: .isDirectory),
+            downloadedRoot: modelsRoot.appending(path: "downloaded", directoryHint: .isDirectory)
+        )
+    }
+
     private func temporaryModelsRoot() -> URL {
         FileManager.default.temporaryDirectory.appending(
             path: "portable-engine-inference-\(UUID().uuidString)",
@@ -69,7 +76,7 @@ private struct DroppedConnectionTransport: ModelDownloadTransport {
         transport: any ModelDownloadTransport = UnexpectedTransport()
     ) -> PortableEngineInference {
         PortableEngineInference(
-            layout: PortableInstalledModelLayout(modelsRoot: modelsRoot),
+            layout: layout(modelsRoot: modelsRoot),
             logicalCPUCount: 1,
             transport: transport
         )
@@ -80,7 +87,7 @@ private struct DroppedConnectionTransport: ModelDownloadTransport {
         clauseTaggerInspection: PortableClauseTaggerInspection
     ) -> PortableEngineInference {
         PortableEngineInference(
-            layout: PortableInstalledModelLayout(modelsRoot: modelsRoot),
+            layout: layout(modelsRoot: modelsRoot),
             logicalCPUCount: 1,
             transport: UnexpectedTransport(),
             clauseTaggerInspection: clauseTaggerInspection
@@ -105,8 +112,7 @@ private struct DroppedConnectionTransport: ModelDownloadTransport {
     @Test func malformedClauseTaggerIsReportedAsModelCorrupt() async throws {
         let modelsRoot = temporaryModelsRoot()
         defer { try? FileManager.default.removeItem(at: modelsRoot) }
-        let layout = PortableInstalledModelLayout(modelsRoot: modelsRoot)
-        let taggerDirectory = try layout.clauseTaggerDirectory()
+        let taggerDirectory = try layout(modelsRoot: modelsRoot).clauseTaggerDirectory()
         try FileManager.default.createDirectory(at: taggerDirectory, withIntermediateDirectories: true)
         try Data([0x01]).write(to: taggerDirectory.appending(path: "ClauseTagger.onnx"), options: [])
 
@@ -303,7 +309,7 @@ private struct DroppedConnectionTransport: ModelDownloadTransport {
     @Test func injectedResolverCancellationPropagatesWithoutAdapterConversion() async throws {
         let modelsRoot = temporaryModelsRoot()
         defer { try? FileManager.default.removeItem(at: modelsRoot) }
-        let inspection = PortableClauseTaggerInspection(modelDirectory: { throw CancellationError() })
+        let inspection = PortableClauseTaggerInspection(modelDirectory: { throw CancellationError() }, guidance: "g")
         let inference = inference(modelsRoot: modelsRoot, clauseTaggerInspection: inspection)
 
         do {
@@ -320,7 +326,7 @@ private struct DroppedConnectionTransport: ModelDownloadTransport {
     @Test func inspectionDoesNotChangeZeroDecisionUsage() async throws {
         let modelsRoot = temporaryModelsRoot()
         defer { try? FileManager.default.removeItem(at: modelsRoot) }
-        let inspection = PortableClauseTaggerInspection(modelDirectory: { throw InspectionFailure() })
+        let inspection = PortableClauseTaggerInspection(modelDirectory: { throw InspectionFailure() }, guidance: "g")
         let inference = inference(modelsRoot: modelsRoot, clauseTaggerInspection: inspection)
         let before = try await inference.decisionUsage()
 
@@ -428,6 +434,6 @@ private struct TinyFixtureValidator: @unchecked Sendable {
     let manifest: ClauseTaggerManifest
 
     func validate() throws -> ClauseTaggerModelIdentity {
-        try PortableClauseTaggerInspection.validateAssets(modelDirectory: modelDirectory, manifest: manifest)
+        try PortableClauseTaggerInspection.validateAssets(modelDirectory: modelDirectory, manifest: manifest, guidance: "g")
     }
 }

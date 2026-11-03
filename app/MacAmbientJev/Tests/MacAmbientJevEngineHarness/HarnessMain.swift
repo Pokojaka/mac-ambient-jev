@@ -252,13 +252,17 @@ struct HarnessPortableInferenceProvider: EngineInferenceProviding {
         }
         self.configuration = configuration
         self.threads = threads
-        self.clauseTaggerInspection = PortableClauseTaggerInspection(modelDirectory: clauseTaggerModelDirectory)
+        self.clauseTaggerInspection = PortableClauseTaggerInspection(
+            modelDirectory: clauseTaggerModelDirectory, guidance: configuration.clauseTaggerGuidance
+        )
     }
 
     init(configuration: PortableProcessingConfiguration, clauseTaggerModelDirectory: URL, threads: Int) {
         self.configuration = configuration
         self.threads = threads
-        self.clauseTaggerInspection = PortableClauseTaggerInspection(modelDirectory: clauseTaggerModelDirectory)
+        self.clauseTaggerInspection = PortableClauseTaggerInspection(
+            modelDirectory: clauseTaggerModelDirectory, guidance: configuration.clauseTaggerGuidance
+        )
     }
 
     func prepare(

@@ -8,7 +8,7 @@ struct ClauseTaggerAssetsTests {
         let directory = try makeModelDirectory()
         defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
 
-        let assets = try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest)
+        let assets = try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest, guidance: "g")
 
         #expect(assets.modelURL.lastPathComponent == "ClauseTagger.onnx")
         #expect(assets.tokenizerURL.lastPathComponent == "tokenizer.json")
@@ -20,7 +20,7 @@ struct ClauseTaggerAssetsTests {
         let directory = try makeModelDirectory(folderName: "モデル 置き場 ü")
         defer { try? FileManager.default.removeItem(at: directory.root.deletingLastPathComponent()) }
 
-        _ = try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest)
+        _ = try ClauseTaggerAssets(modelDirectory: directory.root, manifest: directory.manifest, guidance: "g")
     }
 
     @Test func invalidManifestsAreRejected() throws {

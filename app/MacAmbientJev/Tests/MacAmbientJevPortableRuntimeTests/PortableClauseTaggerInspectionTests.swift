@@ -10,7 +10,7 @@ struct PortableClauseTaggerInspectionTests {
         let missing = fixture.root.appendingPathComponent("not-installed", isDirectory: true)
 
         let error = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: missing, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: missing, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .missing(model, path, guidance) = error else {
             Issue.record("expected missing, got \(error)")
@@ -18,7 +18,7 @@ struct PortableClauseTaggerInspectionTests {
         }
         #expect(model == .clauseTagger)
         #expect(path == missing.appendingPathComponent("ClauseTagger.onnx").path)
-        #expect(guidance == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
+        #expect(guidance == "g")
     }
 
     @Test func publicValidationLoadsBundledManifestAndReportsMissingDirectory() throws {
@@ -26,7 +26,7 @@ struct PortableClauseTaggerInspectionTests {
             .appendingPathComponent("PortableClauseTaggerInspection-missing-\(UUID().uuidString)", isDirectory: true)
 
         let error = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: missing)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: missing, guidance: "g")
         })
         guard case let .missing(model, path, command) = error else {
             Issue.record("expected missing, got \(error)")
@@ -34,7 +34,7 @@ struct PortableClauseTaggerInspectionTests {
         }
         #expect(model == .clauseTagger)
         #expect(path.hasPrefix(missing.path))
-        #expect(command == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
+        #expect(command == "g")
     }
 
     @Test func sameSizeHashMismatchIsPortableInvalidWithSHA256Detail() throws {
@@ -44,7 +44,7 @@ struct PortableClauseTaggerInspectionTests {
         try Data(original.map { $0 ^ 0xFF }).write(to: fixture.root.appendingPathComponent("ClauseTagger.onnx"))
 
         let error = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .invalid(model, path, detail, command) = error else {
             Issue.record("expected invalid, got \(error)")
@@ -53,7 +53,7 @@ struct PortableClauseTaggerInspectionTests {
         #expect(model == .clauseTagger)
         #expect(path.hasSuffix("ClauseTagger.onnx"))
         #expect(detail.contains("SHA-256"))
-        #expect(command == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(fixture.root.path) に置く")
+        #expect(command == "g")
     }
 
     @Test func modelLicenseIsRequiredAndHashValidated() throws {
@@ -64,7 +64,7 @@ struct PortableClauseTaggerInspectionTests {
         try Data(original.map { $0 ^ 0xFF }).write(to: licenseURL)
 
         let hashError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .invalid(model, path, detail, command) = hashError else {
             Issue.record("expected invalid model license hash, got \(hashError)")
@@ -73,11 +73,11 @@ struct PortableClauseTaggerInspectionTests {
         #expect(model == .clauseTagger)
         #expect(path.hasSuffix("LICENSE.md"))
         #expect(detail.contains("SHA-256"))
-        #expect(command.contains("--format onnx"))
+        #expect(command == "g")
 
         try FileManager.default.removeItem(at: licenseURL)
         let missingError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .missing(missingModel, missingPath, missingCommand) = missingError else {
             Issue.record("expected missing model license, got \(missingError)")
@@ -85,7 +85,7 @@ struct PortableClauseTaggerInspectionTests {
         }
         #expect(missingModel == .clauseTagger)
         #expect(missingPath.hasSuffix("LICENSE.md"))
-        #expect(missingCommand.contains("--format onnx"))
+        #expect(missingCommand == "g")
     }
 
     @Test func wrongSizeAndMissingMemberAreReportedAsPortableErrors() throws {
@@ -94,7 +94,7 @@ struct PortableClauseTaggerInspectionTests {
         try Data("wrong size".utf8).write(to: fixture.root.appendingPathComponent("tokenizer.json"))
 
         let sizeError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .invalid(_, path, detail, _) = sizeError else {
             Issue.record("expected invalid size, got \(sizeError)")
@@ -106,7 +106,7 @@ struct PortableClauseTaggerInspectionTests {
         try Data(fixture.payloads["tokenizer.json"]!).write(to: fixture.root.appendingPathComponent("tokenizer.json"))
         try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("export.json"))
         let missingError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .missing(model, path, _) = missingError else {
             Issue.record("expected missing member, got \(missingError)")
@@ -128,7 +128,7 @@ struct PortableClauseTaggerInspectionTests {
         )
 
         let manifestError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: badManifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: fixture.root, manifest: badManifest, guidance: "g")
         })
         guard case let .invalid(_, _, detail, _) = manifestError else {
             Issue.record("expected invalid manifest, got \(manifestError)")
@@ -139,7 +139,7 @@ struct PortableClauseTaggerInspectionTests {
         let regularFile = fixture.root.appendingPathComponent("not-a-directory")
         try Data("file".utf8).write(to: regularFile)
         let directoryError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: regularFile, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: regularFile, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .invalid(model, path, _, _) = directoryError else {
             Issue.record("expected an invalid model directory that is a regular file, got \(directoryError)")
@@ -150,7 +150,7 @@ struct PortableClauseTaggerInspectionTests {
 
         let relative = try #require(URL(string: "relative/models"))
         let relativeError = try #require(preparationFailure {
-            try PortableClauseTaggerInspection.validateAssets(modelDirectory: relative, manifest: fixture.manifest)
+            try PortableClauseTaggerInspection.validateAssets(modelDirectory: relative, manifest: fixture.manifest, guidance: "g")
         })
         guard case let .invalid(relativeModel, relativePath, _, _) = relativeError else {
             Issue.record("expected invalid relative URL, got \(relativeError)")
@@ -397,7 +397,7 @@ private final class FixtureValidator: @unchecked Sendable {
     }
 
     func validate() throws -> ClauseTaggerModelIdentity {
-        try PortableClauseTaggerInspection.validateAssets(modelDirectory: root, manifest: manifest)
+        try PortableClauseTaggerInspection.validateAssets(modelDirectory: root, manifest: manifest, guidance: "g")
     }
 }
 

@@ -134,6 +134,9 @@ public final class WindowsWASAPICaptureFactory: WindowsCaptureSourceFactory {
             if openCleanupErrors.stop == 0,
                openCleanupErrors.environment == 0,
                openCleanupErrors.context == 0 {
+                if source == .microphone, mja_capture_is_access_denied_error(result) != 0 {
+                    throw WindowsCaptureAdapterError.microphoneAccessDenied
+                }
                 throw WindowsCaptureAdapterError.native(
                     operation: "mja_capture_open",
                     code: result

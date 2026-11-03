@@ -262,6 +262,11 @@ int32_t mja_capture_is_device_lost_error(int32_t error)
            error == MJA_CAPTURE_DEFAULT_CHANGED;
 }
 
+int32_t mja_capture_is_access_denied_error(int32_t error)
+{
+    return error == (int32_t)MA_ACCESS_DENIED;
+}
+
 static int32_t mja_capture_fail(
     mja_capture *capture,
     int32_t error,

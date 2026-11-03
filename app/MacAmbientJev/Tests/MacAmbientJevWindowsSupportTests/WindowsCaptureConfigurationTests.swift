@@ -107,5 +107,13 @@ struct WindowsCaptureConfigurationTests {
 
         #expect(mja_capture_is_device_lost_error(0) == 0)
     }
+
+    @Test("only the miniaudio access-denied code is classified as access denied")
+    func classifiesAccessDenied() {
+        #expect(mja_capture_is_access_denied_error(-6) != 0)
+        #expect(mja_capture_is_access_denied_error(-204) == 0)
+        #expect(mja_capture_is_access_denied_error(Int32(bitPattern: 0x88890004)) == 0)
+        #expect(mja_capture_is_access_denied_error(0) == 0)
+    }
 }
 #endif

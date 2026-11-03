@@ -80,9 +80,20 @@ final class WindowsEngineCapture: EngineCaptureProviding {
             onDeviceWaitingChanged: callbacks.onDeviceWaitingChanged,
             onDeviceLost: callbacks.onDeviceLost
         )
-        try await capture.start()
+        do {
+            try await capture.start()
+        } catch WindowsCaptureAdapterError.microphoneAccessDenied {
+            throw Self.microphoneAccessDeniedError
+        }
         return WindowsEngineCaptureSession(capture: capture)
     }
+
+    static let microphoneAccessDeniedError = EngineAdapterError(
+        code: .captureFailure,
+        message: "マイクへのアクセスが許可されていません。Windows の［設定］→［プライバシーとセキュリティ］→［マイク］で「マイク アクセス」と「デスクトップ アプリにマイクへのアクセスを許可する」をオンにしてから、もう一度録音を開始してください。",
+        recoveryAction: .retry,
+        details: [EngineAdapterError.detail(for: WindowsCaptureAdapterError.microphoneAccessDenied)]
+    )
 
     static func captureSource(_ source: EngineSource) -> CaptureSource {
         switch source {
