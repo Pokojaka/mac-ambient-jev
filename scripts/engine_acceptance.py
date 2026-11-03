@@ -1241,7 +1241,6 @@ def _setup_new_session(child: EngineChild) -> None:
     result = child.call("settings.replace", {"expected_revision": None, "settings": EXPECTED_SETTINGS})
     if not isinstance(result, dict) or result.get("settings") != EXPECTED_SETTINGS:
         raise AcceptanceError(f"settings.replace did not persist all ten required settings: {result!r}")
-    child.call_empty("models.prepare")
     _wait_for_recovery(child)
 
 
@@ -1333,7 +1332,6 @@ def run_forced_kill_recovery(
         if not isinstance(hello, dict) or not isinstance(hello.get("state"), dict):
             raise AcceptanceError(f"recovery hello returned an invalid state: {hello!r}")
         _read_settings(child)
-        child.call_empty("models.prepare")
         _wait_for_recovery(child)
         finalized = _wait_finalized(child, session_id, FINALIZATION_TIMEOUT_SECONDS)
         catalog = _list_sessions(child)
@@ -1959,9 +1957,6 @@ def run_full_model_scenario(
         replaced = child.call("settings.replace", {"expected_revision": None, "settings": settings})
         if not isinstance(replaced, dict) or replaced.get("settings") != settings:
             raise AcceptanceError(f"{label}: settings.replace did not echo every required setting: {replaced!r}")
-        prepared = child.call_empty("models.prepare")
-        if not isinstance(prepared, dict):
-            raise AcceptanceError(f"{label}: models.prepare returned an invalid result: {prepared!r}")
         _wait_for_recovery(child)
         session_id = _start_recording(child)
         recording_rows = _list_sessions(child)

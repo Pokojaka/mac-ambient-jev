@@ -10,6 +10,22 @@ namespace MacAmbientJev.Presentation.Tests;
 public sealed partial class ShellStoreTests
 {
     [Fact]
+    public async Task RecordingStaysAvailableWhileModelsArePrepared()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var live = new LiveViewModel(context); var settings = new SettingsViewModel(context);
+        Assert.True(settings.PrepareModels.CanExecute(null));
+        var pending = store.ExecuteAsync(new EngineCommand.ModelsPrepare(new EngineEmptyPayload())); var request = await engine.NextRequestAsync();
+        await ChangedTo(store, s => s.IsPending(EngineCommandName.ModelsPrepare));
+        Assert.True(live.StartRecording.CanExecute(null)); Assert.False(settings.PrepareModels.CanExecute(null));
+        request.Reject(Failure(EngineErrorCode.Busy, "busy", EngineRecoveryAction.Retry)); Assert.False(await pending);
+        var preparing = State(EngineSetupStatus.Ready, 2) with { Presentation = new EnginePresentationState("待機中", EngineRecordingTone.Neutral, EnginePreparationPhase.Preparing, "モデルを準備しています", null, null, [], false, null, 0, null, EngineProcessingIndicator.Idle) };
+        engine.EmitBatch(new EngineOutput(1, new EngineID(2), null, new EngineEvent.State(preparing)));
+        await ChangedTo(store, s => s.Engine?.Presentation.PreparationPhase == EnginePreparationPhase.Preparing);
+        Assert.True(live.StartRecording.CanExecute(null)); Assert.False(settings.PrepareModels.CanExecute(null));
+    }
+    [Fact]
     public async Task CanExecuteTracksPendingAndPhase()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);

@@ -160,10 +160,8 @@ public sealed partial class LiveViewModel : ScreenViewModel
                 !listedDevices.Devices.Any(endpoint => endpoint.ID == id.ID))) return false;
         var engine = state.Engine;
         return engine is { Setup: EngineSetupStatus.Ready, Recovery: EngineRecoveryStatus.Completed, Recording: null } &&
-            engine.Presentation.PreparationPhase != EnginePreparationPhase.Preparing &&
             !state.IsPending(EngineCommandName.RecordingStart) && !state.IsPending(EngineCommandName.RecordingStop) &&
-            !state.IsPending(EngineCommandName.DevicesList) && !state.IsPending(EngineCommandName.ModelsPrepare) &&
-            !state.IsPending(EngineCommandName.SettingsReplace);
+            !state.IsPending(EngineCommandName.DevicesList) && !state.IsPending(EngineCommandName.SettingsReplace);
     }
 
     private bool CanRefreshDevices(object? parameter)
