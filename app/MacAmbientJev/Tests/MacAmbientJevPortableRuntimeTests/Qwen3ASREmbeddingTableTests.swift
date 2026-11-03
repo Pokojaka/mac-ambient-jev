@@ -98,6 +98,39 @@ struct Qwen3ASREmbeddingTableTests {
         }
     }
 
+    @Test
+    func mappingRejectsSymbolicLinks() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let target = try write([0x3C00], named: "target.bin", to: directory)
+        let link = directory.appendingPathComponent("link.bin")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        #expect(throws: Qwen3ASREmbeddingError.self) {
+            try Qwen3ASREmbeddingTable(contentsOf: link, vocabSize: 1, hiddenSize: 1)
+        }
+    }
+
+    @Test
+    func copiedTableKeepsOpenedFileMappingAfterPathReplacement() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = try write([0x3C00, 0x4000], named: "embeddings.bin", to: directory)
+        let copiedTable = try {
+            let original = try Qwen3ASREmbeddingTable(contentsOf: url, vocabSize: 2, hiddenSize: 1)
+            return original
+        }()
+        try FileManager.default.moveItem(at: url, to: directory.appendingPathComponent("opened.bin"))
+        _ = try write([0x4200, 0x4400], named: "embeddings.bin", to: directory)
+
+        #expect(try copiedTable.row(0) == [1])
+        #expect(try copiedTable.row(1) == [2])
+        let replacement = try Qwen3ASREmbeddingTable(contentsOf: url, vocabSize: 2, hiddenSize: 1)
+        #expect(try replacement.row(0) == [3])
+        #expect(try replacement.row(1) == [4])
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("Qwen3ASREmbeddingTableTests-\(UUID().uuidString)", isDirectory: true)
