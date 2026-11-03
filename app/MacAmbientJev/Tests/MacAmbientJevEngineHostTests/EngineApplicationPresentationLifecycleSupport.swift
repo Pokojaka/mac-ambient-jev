@@ -273,7 +273,7 @@ final class EngineApplicationPresentationLifecycleFixture {
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
-                logicalCPUCount: 4,
+                logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { duration in try await pollingSleep.sleep(duration) },
                 shutdownPauseTimeout: .seconds(20)
             ),

@@ -6,6 +6,7 @@ import MacAmbientJevPipeline
 public struct EngineApplicationConfiguration: Sendable {
     public let paths: AppPaths
     public let logicalCPUCount: Int
+    public let resourceMonitor: any InferenceResourceMonitoring
     /// The pacing sleep of live transcription.
     public let sleep: @MainActor @Sendable (Duration) async throws -> Void
     /// How long shutdown waits for running finalization to stop at its next boundary before it fails.
@@ -14,11 +15,13 @@ public struct EngineApplicationConfiguration: Sendable {
     public init(
         paths: AppPaths,
         logicalCPUCount: Int,
+        resourceMonitor: any InferenceResourceMonitoring,
         sleep: @escaping @MainActor @Sendable (Duration) async throws -> Void,
         shutdownPauseTimeout: Duration
     ) {
         self.paths = paths
         self.logicalCPUCount = logicalCPUCount
+        self.resourceMonitor = resourceMonitor
         self.sleep = sleep
         self.shutdownPauseTimeout = shutdownPauseTimeout
     }
@@ -66,6 +69,7 @@ final class EngineApplicationCore {
 
     let paths: AppPaths
     let logicalCPUCount: Int
+    let resourceMonitor: any InferenceResourceMonitoring
     let settingsStore: EngineSettingsStore
     let capture: any EngineCaptureProviding
     let inferenceProvider: any EngineInferenceProviding
@@ -81,6 +85,11 @@ final class EngineApplicationCore {
     var inference: EngineInference?
     var isPreparingModels = false
     var presentation = EnginePresentation()
+    /// The finalizing request that is running and the resource hold it will pause for at its next boundary.
+    var resourceFinalizingSessionID: UUID?
+    var finalizationResourceHoldReason: InferenceHoldReason?
+    private var resourceObservation: (any InferenceResourceObservation)?
+    private var loggedResourceMonitorFailure: String?
     var isShuttingDown = false
     private(set) var mutationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -127,10 +136,13 @@ final class EngineApplicationCore {
     var onBackgroundEventStateChange: (@MainActor () -> Void)?
 
     lazy var processingCoordinator = SessionProcessingCoordinator(
-        effects: self, processor: gateway, thermalMonitor: thermalMonitor
+        effects: self, processor: gateway, thermalMonitor: thermalMonitor,
+        resourceHolds: InferenceResourceHolds(
+            monitor: resourceMonitor, release: { [gateway] in await gateway.releaseIdleResources() })
     )
     lazy var liveCoordinator = LiveTranscriptionCoordinator(
-        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor, sleep: sleep
+        state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor,
+        resourceMonitor: resourceMonitor, sleep: sleep
     )
 
     struct StartAttempt {
@@ -148,6 +160,7 @@ final class EngineApplicationCore {
     ) {
         paths = configuration.paths
         logicalCPUCount = configuration.logicalCPUCount
+        resourceMonitor = configuration.resourceMonitor
         settingsStore = EngineSettingsStore(paths: configuration.paths, logicalCPUCount: configuration.logicalCPUCount)
         self.capture = capture
         inferenceProvider = inference
@@ -155,6 +168,29 @@ final class EngineApplicationCore {
         sleep = configuration.sleep
         shutdownPauseTimeout = configuration.shutdownPauseTimeout
         loadSettings()
+        resourceObservation = resourceMonitor.observeChanges { [weak self] in
+            self?.resourceMonitorDidChange()
+        }
+        logResourceMonitorFailureIfNew()
+    }
+
+    private func logResourceMonitorFailureIfNew() {
+        guard case .monitorFailed(let detail) = resourceMonitor.signal,
+              detail != loggedResourceMonitorFailure else { return }
+        loggedResourceMonitorFailure = detail
+        EngineLog.write("resource monitor failed: \(detail)")
+    }
+
+    private func resourceMonitorDidChange() {
+        guard !isShuttingDown else { return }
+        logResourceMonitorFailureIfNew()
+        if let currentSessionID = processingQueue.currentSessionID,
+           currentSessionID == resourceFinalizingSessionID,
+           let reason = resourceMonitor.signal.holdReason {
+            finalizationResourceHoldReason = reason
+            presentation.processingStatusText = reason.finalizationExplanation + "（実行中の処理の終了待ち）"
+        }
+        stateDidChange()
     }
 
     func performMutation<T: Sendable>(
@@ -298,7 +334,7 @@ final class EngineApplicationCore {
             operations.append(try EngineQueuedOperation(sessionID: EngineFailures.wireID(current), stage: .finalization))
         }
         for request in processingQueue.pending { try add(request) }
-        for request in processingQueue.thermallyHeld { try add(request) }
+        for entry in processingQueue.held { try add(entry.request) }
         return Array(operations.prefix(Self.queueLimit))
     }
 
@@ -382,7 +418,7 @@ final class EngineApplicationCore {
     /// No finalization, decision retry or live transcription is queued or running.
     var isProcessingIdle: Bool {
         processingQueue.pending.isEmpty
-            && processingQueue.thermallyHeld.isEmpty
+            && processingQueue.held.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty

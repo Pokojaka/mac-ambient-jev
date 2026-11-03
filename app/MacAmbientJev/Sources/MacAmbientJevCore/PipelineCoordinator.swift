@@ -116,9 +116,13 @@ private extension ASRFailureKind {
     }
 }
 
+public enum InferenceHoldReason: Sendable, Equatable {
+    case thermal, resourcePressure, monitorFailed
+}
+
 public enum ASRRunDisposition: Sendable, Equatable {
     case completed
-    case paused
+    case paused(InferenceHoldReason)
     case failed(ASRRunFailure)
 }
 
@@ -162,7 +166,7 @@ public actor PipelineCoordinator {
     private let loader: ASRAudioLoader
     private let pacingMode: ASRPacingMode
     private let sleep: @Sendable (Duration) async throws -> Void
-    private let shouldPause: @Sendable () async -> Bool
+    private let shouldPause: @Sendable () async -> InferenceHoldReason?
 
     public init(
         sessionID: UUID,
@@ -173,7 +177,7 @@ public actor PipelineCoordinator {
         loader: ASRAudioLoader,
         pacingMode: ASRPacingMode,
         sleep: @escaping @Sendable (Duration) async throws -> Void,
-        shouldPause: @escaping @Sendable () async -> Bool
+        shouldPause: @escaping @Sendable () async -> InferenceHoldReason?
     ) {
         self.sessionID = sessionID
         self.segmentationRunID = segmentationRunID
@@ -228,14 +232,14 @@ public actor PipelineCoordinator {
                 }
             }
 
-            var paused = false
+            var pauseReason: InferenceHoldReason?
             if prepared {
                 for (index, segment) in segments.enumerated() {
                     try Task.checkCancellation()
-                    let pauseRequested = await shouldPause()
+                    let requestedPauseReason = await shouldPause()
                     try Task.checkCancellation()
-                    if pauseRequested {
-                        paused = true
+                    if let requestedPauseReason {
+                        pauseReason = requestedPauseReason
                         break
                     }
                     if let oldest = pendingDates[index...].min() {
@@ -333,13 +337,13 @@ public actor PipelineCoordinator {
                 }
             }
 
-            if paused {
+            if let pauseReason {
                 try Task.checkCancellation()
                 return ASRRunResult(
                     events: transcriptEvents,
                     completedCount: completedCount,
                     metrics: metrics,
-                    disposition: .paused
+                    disposition: .paused(pauseReason)
                 )
             }
 

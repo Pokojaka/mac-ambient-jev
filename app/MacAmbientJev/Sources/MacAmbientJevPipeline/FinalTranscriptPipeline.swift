@@ -33,7 +33,7 @@ struct FinalTranscriptPipelineResult: Sendable {
 enum FinalTranscriptPipelineOutcome: Sendable {
     case completed(FinalTranscriptPipelineResult)
     /// ASR stopped before every segment was transcribed; nothing was published.
-    case paused(metrics: ASRBatchMetrics)
+    case paused(metrics: ASRBatchMetrics, reason: InferenceHoldReason)
 }
 
 /// Cancellation with the ASR metrics gathered before it (nil when ASR never started).
@@ -86,7 +86,7 @@ struct FinalTranscriptPipeline: Sendable {
     func process(
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         pacingMode: ASRPacingMode,
-        shouldPause: @escaping @Sendable () async -> Bool,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping @Sendable (RunPhase) async -> Void
     ) async throws -> FinalTranscriptPipelineOutcome {
         var asrMetrics: ASRBatchMetrics?
@@ -119,7 +119,7 @@ struct FinalTranscriptPipeline: Sendable {
     private func run(
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
         pacingMode: ASRPacingMode,
-        shouldPause: @escaping @Sendable () async -> Bool,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping @Sendable (RunPhase) async -> Void,
         asrMetrics: inout ASRBatchMetrics?
     ) async throws -> FinalTranscriptPipelineOutcome {
@@ -273,8 +273,8 @@ struct FinalTranscriptPipeline: Sendable {
         switch asrResult.disposition {
         case .completed:
             break
-        case .paused:
-            return .paused(metrics: asrResult.metrics)
+        case .paused(let reason):
+            return .paused(metrics: asrResult.metrics, reason: reason)
         case .failed(let failure):
             throw failure
         }

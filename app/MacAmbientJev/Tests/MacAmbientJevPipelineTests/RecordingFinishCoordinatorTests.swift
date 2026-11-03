@@ -255,13 +255,13 @@ private struct RecordingFinishFixture {
         let pollStarted = PollStartedSignal(), thermal = NominalFinishThermalMonitor()
         self.state = state; self.effects = effects; self.executor = executor
         self.vad = vad; self.orderLog = orderLog; self.pollStarted = pollStarted
-        coordinator = LiveTranscriptionCoordinator(state: state, effects: effects, processor: executor, thermalMonitor: thermal) { _ in
+        coordinator = LiveTranscriptionCoordinator(state: state, effects: effects, processor: executor, thermalMonitor: thermal, resourceMonitor: nil) { _ in
             orderLog.append("poll.entered")
             pollStarted.signal()
             do { try await Task.sleep(for: .seconds(3_600)) }
             catch { orderLog.append("poll.cancelled"); throw error }
         }
-        processing = SessionProcessingCoordinator(effects: effects, processor: executor, thermalMonitor: thermal)
+        processing = SessionProcessingCoordinator(effects: effects, processor: executor, thermalMonitor: thermal, resourceHolds: nil)
     }
     func startVAD() async {
         await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)

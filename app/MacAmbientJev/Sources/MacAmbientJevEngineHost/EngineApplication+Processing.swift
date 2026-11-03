@@ -19,6 +19,13 @@ extension EngineApplicationCore: SessionProcessingEffects {
                  .diarizing, .classifyingContent, .decisionDeferred:
                 return activity.text
             }
+        case let .paused(reason):
+            switch reason {
+            case .thermal:
+                preconditionFailure("Windows engine cannot present a thermal processor status")
+            case .resourcePressure, .monitorFailed:
+                return reason.finalizationExplanation
+            }
         }
     }
 
@@ -107,11 +114,17 @@ extension EngineApplicationCore: SessionProcessingEffects {
         case let .held(request):
             presentation.processingState = .idle
             presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
+            if let held = processingQueue.held.first(where: { $0.request.sessionID == request.sessionID }),
+               held.reason == .resourcePressure || held.reason == .monitorFailed {
+                presentation.processingStatusText = held.reason.finalizationExplanation
+            }
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case .heldForModels:
             preconditionFailure("The engine's models are prepared in setup, so no work is held for them")
         case let .began(request):
             presentation.processingState = .running
+            resourceFinalizingSessionID = request.finalizesTranscript ? request.sessionID : nil
+            finalizationResourceHoldReason = nil
             if request.finalizesTranscript, request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .liveFailed(message):
             let notice = "ライブ文字起こしは停止しました。録音全体を確定処理します: \(message)"
@@ -127,18 +140,22 @@ extension EngineApplicationCore: SessionProcessingEffects {
             presentation.processingStatusText = "次の文字起こし処理を開始します"
         case .willFinishDrain:
             if presentation.processingState == .running || presentation.processingState == .backlogged,
-               processingQueue.thermallyHeld.isEmpty,
+               processingQueue.held.isEmpty,
                processingQueue.pending.isEmpty,
                !pausesProcessing {
                 presentation.processingState = .complete
             }
         case .drained:
+            resourceFinalizingSessionID = nil
+            finalizationResourceHoldReason = nil
             releaseIdleResourcesIfIdle()
         }
         stateDidChange()
     }
 
     private func finished(_ request: PendingProcessing, result: SessionProcessingResult?) {
+        resourceFinalizingSessionID = nil
+        finalizationResourceHoldReason = nil
         let sessionID = request.sessionID
         recoveryOutstanding.remove(sessionID)
         updateRecoveryStatus()
@@ -167,13 +184,23 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 severity: .error, recoveryAction: request.finalizesTranscript ? .reprocess : .retryDecisions
             ))
         case .paused?, nil:
-            break
+            guard result?.disposition == .paused,
+                  let held = processingQueue.held.first(where: { $0.request.sessionID == sessionID }),
+                  held.reason == .resourcePressure || held.reason == .monitorFailed else { break }
+            presentation.processingState = .idle
+            presentation.processingStatusText = held.reason.finalizationExplanation
         }
         completions.finished(request, result: result)
     }
 
     private func processingStatusDidChange(_ text: String, sessionID: UUID) {
-        presentation.processingStatusText = text
+        if resourceFinalizingSessionID == sessionID, let reason = finalizationResourceHoldReason {
+            // The coordinator's own paused status means the run has already stopped.
+            presentation.processingStatusText = text == reason.finalizationExplanation
+                ? text : reason.finalizationExplanation + "（実行中の処理の終了待ち）"
+        } else {
+            presentation.processingStatusText = text
+        }
         stateDidChange()
         let stage: EngineStage
         switch text {

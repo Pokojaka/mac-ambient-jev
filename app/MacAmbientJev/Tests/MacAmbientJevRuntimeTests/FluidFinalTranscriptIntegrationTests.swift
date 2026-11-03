@@ -204,7 +204,7 @@ private func processFinal(
     return await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { false },
+        shouldPause: { nil },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
         onStatus: { await statuses.append($0.text) },
@@ -349,7 +349,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         pacingMode: .lowHeat,
         shouldPause: {
             await log.append("pause")
-            return false
+            return nil
         },
         onPhase: { _ in },
         metadataPolicy: .reject,

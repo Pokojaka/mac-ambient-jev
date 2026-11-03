@@ -133,7 +133,7 @@ extension EngineApplicationCore: EngineSessionHandling {
             let sessionID = session.sessionID
             let busySession = processingQueue.sessionIDs.contains(sessionID)
             let processingCount = processingQueue.pending.count
-                + processingQueue.thermallyHeld.count
+                + processingQueue.held.count
                 + (processingQueue.currentSessionID == nil ? 0 : 1)
             let processingAdmissible = !isShuttingDown
                 && !isPreparingModels
@@ -445,7 +445,7 @@ extension EngineApplicationCore: EngineSessionHandling {
             )
         }
         let processingCount = processingQueue.pending.count
-            + processingQueue.thermallyHeld.count
+            + processingQueue.held.count
             + (processingQueue.currentSessionID == nil ? 0 : 1)
         guard processingCount < EngineApplicationCore.queueLimit else {
             throw EngineFailures.commandError(

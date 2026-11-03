@@ -317,7 +317,7 @@ struct MeasureLiveLatencyCommand {
             checkpoint: checkpoint,
             finalSegments: [],
             pacingMode: .normal,
-            shouldPause: { MacThermalMonitor().isCritical },
+            shouldPause: { MacThermalMonitor().isCritical ? .thermal : nil },
             onPhase: { _ in },
             onStatus: { _ in },
             onUpdate: { segments, state in

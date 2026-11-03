@@ -174,7 +174,7 @@ final class DiagnosticsApplicationHarness {
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
-                logicalCPUCount: 4,
+                logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { _ in },
                 shutdownPauseTimeout: .seconds(20)
             ),
