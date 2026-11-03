@@ -19,12 +19,17 @@ private final class OutOfOrderModelProgressProvider: EngineInferenceProviding, @
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         let updates: [EngineModelProgress] = [
+            EngineModelProgress(stage: .downloading, completed: 0, total: 1000),
+            EngineModelProgress(stage: .downloading, completed: 500, total: 1000),
+            EngineModelProgress(stage: .downloading, completed: 300, total: 1000),
+            EngineModelProgress(stage: .downloading, completed: 1000, total: 1000),
             EngineModelProgress(stage: .validating, completed: 0, total: 10),
             EngineModelProgress(stage: .loading, completed: 8, total: 10),
             EngineModelProgress(stage: .loading, completed: 2, total: 10),
             EngineModelProgress(stage: .validating, completed: 9, total: 10),
             EngineModelProgress(stage: .loading, completed: 10, total: 10),
-            EngineModelProgress(stage: .loading, completed: 9, total: 10)
+            EngineModelProgress(stage: .loading, completed: 9, total: 10),
+            EngineModelProgress(stage: .downloading, completed: 1000, total: 1000)
         ]
         for update in updates { onProgress(update) }
         try await completionGate.suspend()
@@ -212,6 +217,10 @@ private final class ModelProgressFixture {
         #expect(observedLoadingPercentages.last == 100)
 
         let progress = try fixture.progressEvents()
+        let downloadingPercentages = progress.filter { $0.stage == .downloadingModels }.map(\.completedUnits)
+        #expect(downloadingPercentages.last == 100)
+        #expect(zip(downloadingPercentages, downloadingPercentages.dropFirst()).allSatisfy(<=))
+        #expect(progress.prefix(downloadingPercentages.count).allSatisfy { $0.stage == .downloadingModels })
         let loadingProgress = progress.filter { $0.stage == .loadingModels }
         let loadingPercentages = loadingProgress.map(\.completedUnits)
         #expect(progress.allSatisfy { $0.totalUnits == 100 })

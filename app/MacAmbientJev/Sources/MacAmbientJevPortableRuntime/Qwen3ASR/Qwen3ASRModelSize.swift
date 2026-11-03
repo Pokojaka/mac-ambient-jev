@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 
 public enum Qwen3ASRModelSize: String, CaseIterable, Sendable {
     case small = "0.6b"
@@ -8,6 +9,16 @@ public enum Qwen3ASRModelSize: String, CaseIterable, Sendable {
     public var repository: String { manifest.repository }
     public var commit: String { manifest.commit }
     public var files: [Qwen3ASRModelFile] { manifest.files }
+
+    /// The pinned files as a download/verification entry.
+    public var manifestEntry: ModelManifestEntry {
+        ModelManifestEntry(
+            repository: repository, commit: commit,
+            files: files.map {
+                ModelManifestFile(name: $0.name, role: $0.role.rawValue, byteCount: $0.byteCount, sha256: $0.sha256)
+            }
+        )
+    }
 
     var encoderFilename: String { manifest.file(for: .encoder).name }
     var decoderInitFilename: String { manifest.file(for: .decoderInit).name }

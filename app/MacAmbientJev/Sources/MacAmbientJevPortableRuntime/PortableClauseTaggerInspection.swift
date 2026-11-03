@@ -68,7 +68,7 @@ public actor PortableClauseTaggerInspection {
                 model: .clauseTagger,
                 path: modelDirectory.path,
                 detail: error.localizedDescription,
-                installCommand: installCommand(for: modelDirectory)
+                guidance: installCommand(for: modelDirectory)
             )
         }
     }
@@ -84,16 +84,16 @@ public actor PortableClauseTaggerInspection {
                     model: .clauseTagger,
                     path: modelDirectory.path,
                     detail: "モデルディレクトリは絶対パスの file URL である必要があります",
-                    installCommand: installCommand(for: modelDirectory)
+                    guidance: installCommand(for: modelDirectory)
                 )
             }
-            try PortableAssetVerifier.verify(
-                model: .clauseTagger,
-                files: manifest.members.map {
-                    PortableAssetFile(name: $0.name, byteCount: Int64($0.byteCount), sha256: $0.sha256)
-                },
+            try PortableModelPreparationService.verify(
+                .clauseTagger,
                 directory: modelDirectory,
-                installCommand: installCommand(for: modelDirectory)
+                files: manifest.members.map {
+                    ModelManifestFile(name: $0.name, role: $0.role.rawValue, byteCount: Int64($0.byteCount), sha256: $0.sha256)
+                },
+                guidance: installCommand(for: modelDirectory)
             )
             return try manifest.identity()
         } catch is CancellationError {
@@ -105,7 +105,7 @@ public actor PortableClauseTaggerInspection {
                 model: .clauseTagger,
                 path: modelDirectory.path,
                 detail: error.localizedDescription,
-                installCommand: installCommand(for: modelDirectory)
+                guidance: installCommand(for: modelDirectory)
             )
         }
     }

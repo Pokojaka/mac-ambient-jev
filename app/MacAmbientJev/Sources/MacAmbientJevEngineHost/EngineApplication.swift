@@ -627,8 +627,10 @@ extension EngineApplicationCore: EngineModelsHandling {
         let events = context.events
         let (progressStream, progressContinuation) = AsyncStream<EngineModelProgress>.makeStream()
         let progressConsumer = Task { @MainActor [weak self] in
+            var downloadingHighWater = 0
             var validatingHighWater = 0
             var loadingHighWater = 0
+            var hasStartedValidating = false
             var hasStartedLoading = false
 
             for await progress in progressStream {
@@ -640,8 +642,18 @@ extension EngineApplicationCore: EngineModelsHandling {
                 let percentage: Int
                 let preparationStatusText: String
                 switch progress.stage {
+                case .downloading:
+                    guard !hasStartedValidating, !hasStartedLoading else { continue }
+                    let current = Int(
+                        (Double(progress.completed) / Double(progress.total) * 100).rounded(.down)
+                    )
+                    downloadingHighWater = max(downloadingHighWater, current)
+                    percentage = downloadingHighWater
+                    stage = .downloadingModels
+                    preparationStatusText = "モデルをダウンロード中（\(percentage)%）"
                 case .validating:
                     guard !hasStartedLoading else { continue }
+                    hasStartedValidating = true
                     let current = Int(
                         (Double(progress.completed) / Double(progress.total) * 100).rounded(.down)
                     )

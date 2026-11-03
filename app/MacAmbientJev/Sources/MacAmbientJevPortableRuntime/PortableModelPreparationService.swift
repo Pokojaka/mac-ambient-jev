@@ -25,8 +25,8 @@ public struct PortableModelPreparationProgress: Sendable, Equatable {
 }
 
 public enum PortableModelPreparationError: Error, LocalizedError, Equatable {
-    case missing(model: PortableModelKind, path: String, installCommand: String)
-    case invalid(model: PortableModelKind, path: String, detail: String, installCommand: String)
+    case missing(model: PortableModelKind, path: String, guidance: String)
+    case invalid(model: PortableModelKind, path: String, detail: String, guidance: String)
     case loadFailed(model: PortableModelKind, path: String, detail: String)
 
     public var model: PortableModelKind {
@@ -37,77 +37,19 @@ public enum PortableModelPreparationError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case let .missing(model, path, command):
-            "モデル(\(model.rawValue))がありません: \(path)。次の手順で配置してください: \(command)"
-        case let .invalid(model, path, detail, command):
-            "モデル(\(model.rawValue))が不正です: \(path) (\(detail))。次の手順で配置し直してください: \(command)"
+        case let .missing(model, path, guidance):
+            "モデル(\(model.rawValue))がありません: \(path)。\(guidance)"
+        case let .invalid(model, path, detail, guidance):
+            "モデル(\(model.rawValue))が不正です: \(path) (\(detail))。\(guidance)"
         case let .loadFailed(model, path, detail):
             "モデル(\(model.rawValue))を読み込めません: \(path) (\(detail))"
         }
     }
 }
 
-struct PortableAssetFile: Equatable {
-    let name: String
-    let byteCount: Int64?
-    let sha256: String
-}
-
-/// Existence, regular-file type, size and streamed SHA-256 of pinned files in one directory.
-enum PortableAssetVerifier {
-    static func verify(
-        model: PortableModelKind,
-        files: [PortableAssetFile],
-        directory: URL,
-        installCommand: String
-    ) throws {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
-            throw PortableModelPreparationError.missing(model: model, path: directory.path, installCommand: installCommand)
-        }
-        guard isDirectory.boolValue else {
-            throw invalid(model, directory, "ディレクトリではありません", installCommand)
-        }
-        for file in files {
-            let url = directory.appending(path: file.name, directoryHint: .notDirectory)
-            let attributes: [FileAttributeKey: Any]
-            do {
-                attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
-                throw PortableModelPreparationError.missing(model: model, path: url.path, installCommand: installCommand)
-            } catch {
-                throw invalid(model, url, "ファイル情報を取得できません: \(error.localizedDescription)", installCommand)
-            }
-            guard attributes[.type] as? FileAttributeType == .typeRegular else {
-                throw invalid(model, url, "通常ファイルではありません", installCommand)
-            }
-            if let expected = file.byteCount {
-                let actual = (attributes[.size] as? NSNumber)?.int64Value ?? -1
-                guard actual == expected else {
-                    throw invalid(model, url, "サイズが一致しません (期待: \(expected), 実際: \(actual))", installCommand)
-                }
-            }
-            let digest: String
-            do {
-                digest = try FileSHA256.hexDigest(ofFileAt: url)
-            } catch {
-                throw invalid(model, url, "読み込めません: \(error.localizedDescription)", installCommand)
-            }
-            guard digest == file.sha256 else {
-                throw invalid(model, url, "SHA-256 が一致しません (期待: \(file.sha256), 実際: \(digest))", installCommand)
-            }
-        }
-    }
-
-    private static func invalid(
-        _ model: PortableModelKind, _ url: URL, _ detail: String, _ installCommand: String
-    ) -> PortableModelPreparationError {
-        .invalid(model: model, path: url.path, detail: detail, installCommand: installCommand)
-    }
-}
-
 /// Verifies the pinned installed models of one configuration, then loads each, in order VAD, ASR, diarization and,
-/// only when the configuration has a clause tagger directory, the tagger. It never downloads, never substitutes a
+/// only when the configuration has a clause tagger directory, the tagger. It never downloads (see
+/// `PortableModelDownloads`), never substitutes a
 /// model and creates no recognition or decision request. Each model is released after it loads.
 public struct PortableModelPreparationService: Sendable {
     struct Step: Sendable {
@@ -151,19 +93,17 @@ public struct PortableModelPreparationService: Sendable {
         let qwen = configuration.qwen3ModelDirectory
         let qwenSize = configuration.qwen3Size
         let diarization = configuration.diarizationModelDirectory
-        let diarizationFiles = try Community1Assets.pinnedIdentity().fileSHA256
-            .sorted { $0.key < $1.key }
-            .map { PortableAssetFile(name: $0.key, byteCount: nil, sha256: $0.value) }
+        let diarizationFiles = try Community1Assets.manifestEntries().flatMap(\.files)
 
         var steps = [
             Step(
                 model: .vad,
                 validate: {
-                    try PortableAssetVerifier.verify(
-                        model: .vad,
-                        files: [PortableAssetFile(name: silero.lastPathComponent, byteCount: nil, sha256: SileroVADModel.sha256)],
+                    try Self.verify(
+                        .vad,
                         directory: silero.deletingLastPathComponent(),
-                        installCommand: "python3 scripts/fetch_silero_vad.py を実行し、出力されたファイルを \(silero.path) に置く"
+                        files: [SileroVADModel.manifestFile],
+                        guidance: "python3 scripts/fetch_silero_vad.py を実行し、出力されたファイルを \(silero.path) に置く"
                     )
                 },
                 load: {
@@ -176,12 +116,7 @@ public struct PortableModelPreparationService: Sendable {
             Step(
                 model: .asr,
                 validate: {
-                    try PortableAssetVerifier.verify(
-                        model: .asr,
-                        files: qwenSize.files.map { PortableAssetFile(name: $0.name, byteCount: $0.byteCount, sha256: $0.sha256) },
-                        directory: qwen,
-                        installCommand: "python3 scripts/fetch_qwen3_asr_model.py \(qwenSize.rawValue) \(qwen.deletingLastPathComponent().path)"
-                    )
+                    try Self.verify(.asr, directory: qwen, files: qwenSize.manifestEntry.files, guidance: Self.downloadGuidance)
                 },
                 load: {
                     try await Self.load(.asr, path: qwen.path) {
@@ -194,12 +129,7 @@ public struct PortableModelPreparationService: Sendable {
             Step(
                 model: .diarization,
                 validate: {
-                    try PortableAssetVerifier.verify(
-                        model: .diarization,
-                        files: diarizationFiles,
-                        directory: diarization,
-                        installCommand: "python3 scripts/fetch_community1_diarization.py を実行し、出力されたディレクトリの内容を \(diarization.path) に置く"
-                    )
+                    try Self.verify(.diarization, directory: diarization, files: diarizationFiles, guidance: Self.downloadGuidance)
                 },
                 load: {
                     try await Self.load(.diarization, path: diarization.path) {
@@ -225,6 +155,47 @@ public struct PortableModelPreparationService: Sendable {
             ))
         }
         return steps
+    }
+
+    static let downloadGuidance = "設定画面の「モデルを準備」を押すと、もう一度ダウンロードします"
+
+    /// Verifies every file with `ModelVerifier`. A downloaded file (ASR, diarization) that fails the size or
+    /// hash check is deleted so the next preparation downloads it again.
+    static func verify(
+        _ model: PortableModelKind, directory: URL, files: [ModelManifestFile], guidance: String
+    ) throws {
+        for file in files {
+            let url = directory.appending(path: file.name, directoryHint: .notDirectory)
+            do {
+                try ModelVerifier.verify(file, in: directory)
+            } catch let error as ModelVerificationError {
+                let detail: String
+                switch error {
+                case .missing:
+                    throw PortableModelPreparationError.missing(model: model, path: url.path, guidance: guidance)
+                case let .wrongSize(_, expected, actual):
+                    detail = "サイズが一致しません (期待: \(expected), 実際: \(actual))"
+                case let .wrongHash(_, expected, actual):
+                    detail = "SHA-256 が一致しません (期待: \(expected), 実際: \(actual))"
+                case .notRegularFile:
+                    throw PortableModelPreparationError.invalid(
+                        model: model, path: url.path, detail: "通常ファイルではありません", guidance: guidance
+                    )
+                case let .unreadable(_, reason):
+                    throw PortableModelPreparationError.invalid(
+                        model: model, path: url.path, detail: "読み込めません: \(reason)", guidance: guidance
+                    )
+                }
+                var deleted = ""
+                if model == .asr || model == .diarization {
+                    try SessionFileAccess.removeIfPresent(url, relativeTo: directory)
+                    deleted = "。ファイルを削除しました"
+                }
+                throw PortableModelPreparationError.invalid(
+                    model: model, path: url.path, detail: detail + deleted, guidance: guidance
+                )
+            }
+        }
     }
 
     private static func load(

@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolCorpusTests {
     @Test func everyCorpusRecordRoundTripsByteIdentically() throws {
         let records = try wireCorpusRecords()
-        #expect(records.count == 102)
+        #expect(records.count == 103)
         for record in records {
             let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
             if root["event"] != nil {

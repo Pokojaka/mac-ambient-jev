@@ -12,13 +12,13 @@ struct PortableClauseTaggerInspectionTests {
         let error = try #require(preparationFailure {
             try PortableClauseTaggerInspection.validateAssets(modelDirectory: missing, manifest: fixture.manifest)
         })
-        guard case let .missing(model, path, installCommand) = error else {
+        guard case let .missing(model, path, guidance) = error else {
             Issue.record("expected missing, got \(error)")
             return
         }
         #expect(model == .clauseTagger)
-        #expect(path == missing.path)
-        #expect(installCommand == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
+        #expect(path == missing.appendingPathComponent("ClauseTagger.onnx").path)
+        #expect(guidance == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
     }
 
     @Test func publicValidationLoadsBundledManifestAndReportsMissingDirectory() throws {
@@ -33,7 +33,7 @@ struct PortableClauseTaggerInspectionTests {
             return
         }
         #expect(model == .clauseTagger)
-        #expect(path == missing.path)
+        #expect(path.hasPrefix(missing.path))
         #expect(command == "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(missing.path) に置く")
     }
 
@@ -116,7 +116,7 @@ struct PortableClauseTaggerInspectionTests {
         #expect(path.hasSuffix("export.json"))
     }
 
-    @Test func invalidManifestAndNonFileDirectoryArePortableInvalid() throws {
+    @Test func invalidManifestAndFileInsteadOfDirectoryArePortableFailures() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root.deletingLastPathComponent()) }
         let badManifest = ClauseTaggerManifest(
@@ -141,12 +141,12 @@ struct PortableClauseTaggerInspectionTests {
         let directoryError = try #require(preparationFailure {
             try PortableClauseTaggerInspection.validateAssets(modelDirectory: regularFile, manifest: fixture.manifest)
         })
-        guard case let .invalid(model, path, _, _) = directoryError else {
-            Issue.record("expected invalid directory, got \(directoryError)")
+        guard case let .missing(model, path, _) = directoryError else {
+            Issue.record("expected a missing model file under a regular file, got \(directoryError)")
             return
         }
         #expect(model == .clauseTagger)
-        #expect(path == regularFile.path)
+        #expect(path.hasPrefix(regularFile.path))
 
         let relative = try #require(URL(string: "relative/models"))
         let relativeError = try #require(preparationFailure {

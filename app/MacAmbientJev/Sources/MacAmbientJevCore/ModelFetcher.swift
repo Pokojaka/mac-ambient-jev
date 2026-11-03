@@ -31,6 +31,11 @@ public protocol ModelDownloadTransport: Sendable {
 public struct ModelDownloadProgress: Equatable, Sendable {
     public let bytesDone: Int64
     public let bytesTotal: Int64
+
+    public init(bytesDone: Int64, bytesTotal: Int64) {
+        self.bytesDone = bytesDone
+        self.bytesTotal = bytesTotal
+    }
 }
 
 public enum ModelDownloadError: Error, Equatable, LocalizedError, Sendable {

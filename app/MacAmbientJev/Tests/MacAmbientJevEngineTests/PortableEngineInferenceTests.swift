@@ -28,7 +28,35 @@ private actor InspectionStartGate {
     }
 }
 
+private struct UnexpectedTransport: ModelDownloadTransport {
+    func open(_ request: ModelDownloadRequest) async throws -> ModelDownloadResponse {
+        Issue.record("download opened: \(request.url)")
+        throw CancellationError()
+    }
+}
+
+private struct DroppedConnectionTransport: ModelDownloadTransport {
+    func open(_ request: ModelDownloadRequest) async throws -> ModelDownloadResponse {
+        throw URLError(.networkConnectionLost)
+    }
+}
+
 @Suite struct PortableEngineInferenceTests {
+    @Test func downloadFailuresMapToTheirErrorCodesAndAskToPrepareModels() {
+        let cases: [(ModelDownloadError, EngineErrorCode)] = [
+            (.network(file: "a", reason: "r"), .modelDownload),
+            (.httpStatus(file: "a", status: 503), .modelDownload),
+            (.hashMismatch(file: "a"), .modelCorrupt),
+            (.sizeMismatch(file: "a", expected: 1, actual: 2), .modelCorrupt),
+            (.diskWrite(file: "a", reason: "r"), .filesystem),
+        ]
+        for (error, code) in cases {
+            let mapped = PortableEngineInference.downloadError(error)
+            #expect(mapped.code == code)
+            #expect(mapped.recoveryAction == .prepareModels)
+        }
+    }
+
     private func temporaryModelsRoot() -> URL {
         FileManager.default.temporaryDirectory.appending(
             path: "portable-engine-inference-\(UUID().uuidString)",
@@ -36,10 +64,14 @@ private actor InspectionStartGate {
         )
     }
 
-    private func inference(modelsRoot: URL) -> PortableEngineInference {
+    private func inference(
+        modelsRoot: URL,
+        transport: any ModelDownloadTransport = UnexpectedTransport()
+    ) -> PortableEngineInference {
         PortableEngineInference(
             layout: PortableInstalledModelLayout(modelsRoot: modelsRoot),
-            logicalCPUCount: 1
+            logicalCPUCount: 1,
+            transport: transport
         )
     }
 
@@ -50,6 +82,7 @@ private actor InspectionStartGate {
         PortableEngineInference(
             layout: PortableInstalledModelLayout(modelsRoot: modelsRoot),
             logicalCPUCount: 1,
+            transport: UnexpectedTransport(),
             clauseTaggerInspection: clauseTaggerInspection
         )
     }
@@ -184,7 +217,7 @@ private actor InspectionStartGate {
             model: .clauseTagger,
             path: "\(modelDirectory)/ClauseTagger.onnx",
             detail: "サイズが一致しません (期待: 146889562, 実際: 1)",
-            installCommand: "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
+            guidance: "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory) に置く"
         )
         let mappedError = PortableEngineInference.modelError(preparationError)
 
@@ -215,23 +248,26 @@ private actor InspectionStartGate {
         }
     }
 
-    @Test func preparationAndInspectionMapMissingModelsConsistently() async throws {
+    @Test func preparationReportsADroppedDownloadAndInspectionReportsMissingAssets() async throws {
         let modelsRoot = temporaryModelsRoot()
         defer { try? FileManager.default.removeItem(at: modelsRoot) }
-        let inference = inference(modelsRoot: modelsRoot)
         let settings = try settings()
 
         do {
-            try await inference.prepare(settings: settings) { _ in }
-            Issue.record("preparation unexpectedly succeeded without installed models")
+            try await inference(modelsRoot: modelsRoot, transport: DroppedConnectionTransport())
+                .prepare(settings: settings) { _ in }
+            Issue.record("preparation unexpectedly succeeded without a connection")
         } catch let error as EngineAdapterError {
-            #expect(error.code == .modelMissing)
+            #expect(error.code == .modelDownload)
             #expect(error.recoveryAction == .prepareModels)
             #expect(error.details.contains { $0.domain == "models" })
         } catch {
             Issue.record("preparation threw an unexpected error: \(error)")
         }
 
+        let inspectionRoot = temporaryModelsRoot()
+        defer { try? FileManager.default.removeItem(at: inspectionRoot) }
+        let inference = inference(modelsRoot: inspectionRoot)
         do {
             _ = try await inference.inspectClauseTagger()
             Issue.record("inspection unexpectedly succeeded without installed assets")
@@ -242,13 +278,13 @@ private actor InspectionStartGate {
         } catch {
             Issue.record("inspection threw an unexpected error: \(error)")
         }
-        #expect(!FileManager.default.fileExists(atPath: modelsRoot.path))
+        #expect(!FileManager.default.fileExists(atPath: inspectionRoot.path))
     }
 
     @Test func modelErrorMapsEveryPreparationFailureKind() {
         let preparationErrors: [(PortableModelPreparationError, EngineErrorCode)] = [
-            (.missing(model: .clauseTagger, path: "/models/missing", installCommand: "install"), .modelMissing),
-            (.invalid(model: .clauseTagger, path: "/models/invalid", detail: "corrupt", installCommand: "install"), .modelCorrupt),
+            (.missing(model: .clauseTagger, path: "/models/missing", guidance: "install"), .modelMissing),
+            (.invalid(model: .clauseTagger, path: "/models/invalid", detail: "corrupt", guidance: "install"), .modelCorrupt),
             (.loadFailed(model: .clauseTagger, path: "/models/load", detail: "load failure"), .modelFailure)
         ]
 
