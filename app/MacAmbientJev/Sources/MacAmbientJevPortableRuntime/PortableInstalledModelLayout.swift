@@ -1,31 +1,38 @@
 import Foundation
 import MacAmbientJevDiarization
 
-/// Where `models.prepare` expects the pinned model assets, derived from the bundled manifests and pins
-/// under the application models directory. Nothing here reads the environment or the disk.
+/// Where `models.prepare` expects the pinned model assets, derived from the bundled manifests and pins.
+/// Nothing here reads the environment or the disk.
 public struct PortableInstalledModelLayout: Sendable, Equatable {
-    public let modelsRoot: URL
+    /// What a missing or corrupt bundled model tells the user: the installation is broken.
+    public static let bundledModelGuidance = "アプリの zip を展開し直してください"
 
-    public init(modelsRoot: URL) {
-        self.modelsRoot = modelsRoot
+    /// Read-only models shipped with the app: Silero VAD and the clause tagger.
+    public let bundledRoot: URL
+    /// Models `models.prepare` downloads: Qwen3-ASR and community-1.
+    public let downloadedRoot: URL
+
+    public init(bundledRoot: URL, downloadedRoot: URL) {
+        self.bundledRoot = bundledRoot
+        self.downloadedRoot = downloadedRoot
     }
 
     /// `silero/<commit>/silero_vad_16k_op15.onnx`
     public var sileroModelURL: URL {
-        modelsRoot
+        bundledRoot
             .appending(path: "silero", directoryHint: .isDirectory)
             .appending(path: SileroVADModel.revision, directoryHint: .isDirectory)
             .appending(path: SileroVADModel.filename, directoryHint: .notDirectory)
     }
 
-    /// `qwen3-asr-<size>-int4-<commit>`, the directory `scripts/fetch_qwen3_asr_model.py` creates under `modelsRoot`.
+    /// `qwen3-asr-<size>-int4-<commit>`, the directory `scripts/fetch_qwen3_asr_model.py` creates under `downloadedRoot`.
     public func qwen3Directory(size: Qwen3ASRModelSize) -> URL {
-        modelsRoot.appending(path: "qwen3-asr-\(size.rawValue)-int4-\(size.commit)", directoryHint: .isDirectory)
+        downloadedRoot.appending(path: "qwen3-asr-\(size.rawValue)-int4-\(size.commit)", directoryHint: .isDirectory)
     }
 
     /// `community1/<SHA-256 of the bundled manifest>`
     public func diarizationDirectory() throws -> URL {
-        modelsRoot
+        downloadedRoot
             .appending(path: "community1", directoryHint: .isDirectory)
             .appending(path: try Community1Assets.pinnedManifestSHA256(), directoryHint: .isDirectory)
     }
@@ -33,7 +40,7 @@ public struct PortableInstalledModelLayout: Sendable, Equatable {
     /// `clause-tagger/<Hugging Face commit>/clause-tagger-onnx`
     public func clauseTaggerDirectory() throws -> URL {
         let source = try ClauseTaggerManifest.bundled().source
-        return modelsRoot
+        return bundledRoot
             .appending(path: "clause-tagger", directoryHint: .isDirectory)
             .appending(path: source.commit, directoryHint: .isDirectory)
             .appending(path: "clause-tagger-onnx", directoryHint: .isDirectory)
@@ -56,7 +63,9 @@ extension PortableProcessingConfiguration {
             qwen3Size: qwen3Size,
             diarizationModelDirectory: try layout.diarizationDirectory(),
             clauseTaggerModelDirectory: withDecisions ? try layout.clauseTaggerDirectory() : nil,
-            threads: try validatedThreads(threads, logicalCPUCount: logicalCPUCount)
+            threads: try validatedThreads(threads, logicalCPUCount: logicalCPUCount),
+            sileroGuidance: PortableInstalledModelLayout.bundledModelGuidance,
+            clauseTaggerGuidance: PortableInstalledModelLayout.bundledModelGuidance
         )
     }
 }

@@ -121,7 +121,10 @@ enum EngineProcess {
                     automaticPolling: true
                 ),
                 inference: PortableEngineInference(
-                    layout: PortableInstalledModelLayout(modelsRoot: paths.modelsRoot), logicalCPUCount: logicalCPUCount,
+                    layout: PortableInstalledModelLayout(
+                        bundledRoot: try EngineExecutableLocation.bundledModelsRoot(), downloadedRoot: paths.modelsRoot
+                    ),
+                    logicalCPUCount: logicalCPUCount,
                     transport: WinHTTPModelTransport()
                 ),
                 events: EngineEventEmitter(transport: transport)

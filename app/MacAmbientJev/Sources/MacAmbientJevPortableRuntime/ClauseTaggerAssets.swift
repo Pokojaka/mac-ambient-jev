@@ -211,12 +211,14 @@ public struct ClauseTaggerAssets: Sendable {
 
     /// Verifies every member the bundled manifest pins in `modelDirectory` with `PortableClauseTaggerInspection.validateAssets`.
     /// Any missing, wrong-size or corrupt file throws `PortableModelPreparationError`; nothing is repaired or downloaded.
-    public init(modelDirectory: URL) throws {
-        try self.init(modelDirectory: modelDirectory, manifest: ClauseTaggerManifest.bundled())
+    public init(modelDirectory: URL, guidance: String) throws {
+        try self.init(modelDirectory: modelDirectory, manifest: ClauseTaggerManifest.bundled(), guidance: guidance)
     }
 
-    init(modelDirectory: URL, manifest: ClauseTaggerManifest) throws {
-        self.identity = try PortableClauseTaggerInspection.validateAssets(modelDirectory: modelDirectory, manifest: manifest)
+    init(modelDirectory: URL, manifest: ClauseTaggerManifest, guidance: String) throws {
+        self.identity = try PortableClauseTaggerInspection.validateAssets(
+            modelDirectory: modelDirectory, manifest: manifest, guidance: guidance
+        )
         self.modelURL = modelDirectory.appendingPathComponent(try manifest.member(.model).name, isDirectory: false)
         self.tokenizerURL = modelDirectory.appendingPathComponent(try manifest.member(.tokenizer).name, isDirectory: false)
     }

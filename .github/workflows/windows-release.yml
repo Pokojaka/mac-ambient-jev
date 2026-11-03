@@ -1,0 +1,194 @@
+name: Windows Release
+
+on:
+  push:
+    tags: ['windows-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version used in the zip names (for example 0.1.0)
+        type: string
+        required: true
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: windows-2022
+            build_arch: amd64
+            python_architecture: x64
+          - architecture: ARM64
+            runner: windows-11-arm
+            build_arch: arm64
+            python_architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
+      DISPATCH_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve version
+        id: version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -ceq 'push') {
+            $prefix = 'windows-v'
+            if (-not $env:REF_NAME.StartsWith($prefix, [System.StringComparison]::Ordinal)) { throw "Tag must start with ${prefix}: $env:REF_NAME" }
+            $version = $env:REF_NAME.Substring($prefix.Length)
+          } else {
+            $version = $env:DISPATCH_VERSION
+          }
+          if ($version -cnotmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') { throw "Invalid version: '$version'" }
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+          architecture: ${{ matrix.python_architecture }}
+      # VS 2026 ARM64 component ID and mapping: https://raw.githubusercontent.com/MicrosoftDocs/visualstudio-docs/main/docs/install/includes/vs-2026/workload-component-id-vs-enterprise.md
+      # Installer command-line options and reboot exit code 3010: https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022
+      - name: Install MSVC 14.44 component on ARM64
+        if: matrix.architecture == 'ARM64'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installerDirectory = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'
+          $vswhere = Join-Path $installerDirectory 'vswhere.exe'
+          $setup = Join-Path $installerDirectory 'setup.exe'
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw "Required vswhere.exe was not found at $vswhere" }
+          if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "Required Visual Studio setup.exe was not found at $setup" }
+
+          $installationJson = (& $vswhere -latest -products '*' -version '[18.0,19.0)' -format json -utf8) -join [Environment]::NewLine
+          $vswhereExitCode = $LASTEXITCODE
+          if ($vswhereExitCode -ne 0) { throw "vswhere installation discovery failed with exit code $vswhereExitCode" }
+          $installationData = $installationJson | ConvertFrom-Json
+          if ($null -eq $installationData) { $installations = @() } else { $installations = @($installationData) }
+          if ($installations.Count -ne 1) { throw "Expected exactly one Visual Studio 2026 installation, found $($installations.Count)" }
+          $installation = $installations[0]
+          $installationPath = [string]$installation.installationPath
+          $channelId = [string]$installation.channelId
+          if ([string]::IsNullOrWhiteSpace($installationPath)) { throw 'Visual Studio installationPath must be nonempty' }
+          if ([string]::IsNullOrWhiteSpace($channelId)) { throw 'Visual Studio channelId must be nonempty' }
+          if (-not (Test-Path -LiteralPath $installationPath -PathType Container)) { throw "Visual Studio installation directory does not exist: $installationPath" }
+
+          $component = 'Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64'
+          $arguments = 'modify --installPath "{0}" --channelId "{1}" --add {2} --quiet --norestart --nocache' -f $installationPath, $channelId, $component
+          $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -eq 3010) { throw 'Installing MSVC 14.44 requires a reboot (exit code 3010); the hosted job cannot continue.' }
+          if ($process.ExitCode -ne 0) { throw "Visual Studio component installation failed with exit code $($process.ExitCode)" }
+
+          $verifiedPathOutput = & $vswhere -latest -products '*' -version '[18.0,19.0)' -requires $component -property installationPath
+          $vswhereExitCode = $LASTEXITCODE
+          if ($vswhereExitCode -ne 0) { throw "vswhere component verification failed with exit code $vswhereExitCode" }
+          $verifiedPath = ($verifiedPathOutput -join [Environment]::NewLine).Trim()
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($verifiedPath, $installationPath)) {
+            throw "MSVC 14.44 component verification did not return the selected installation path. Expected '$installationPath', found '$verifiedPath'."
+          }
+      # Pinned action inputs and environment exports: https://raw.githubusercontent.com/compnerd/gha-setup-vsdevenv/452f99effa381b81c025ccfbdccaca509bff1b29/action.yml
+      - name: Select MSVC 14.44 environment on ARM64
+        if: matrix.architecture == 'ARM64'
+        uses: compnerd/gha-setup-vsdevenv@452f99effa381b81c025ccfbdccaca509bff1b29
+        with:
+          arch: arm64
+          host_arch: arm64
+          toolset_version: '14.44'
+          components: Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64
+      # Its internal cache switch controls restore and save together with no save-only condition, so it can still save on PRs.
+      # Pinned Swift 6.2 action environment behavior: https://raw.githubusercontent.com/compnerd/gha-setup-swift/775d3f4111c5be58a0f62f2efdd353bb8fac15c7/action.yml
+      - uses: compnerd/gha-setup-swift@775d3f4111c5be58a0f62f2efdd353bb8fac15c7
+        with:
+          swift-version: swift-6.2-release
+          swift-build: 6.2-RELEASE
+          build_arch: ${{ matrix.build_arch }}
+          cache: true
+      - name: Verify active ARM64 MSVC 14.44 toolchain
+        if: matrix.architecture == 'ARM64'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:VCToolsInstallDir)) { throw 'VCToolsInstallDir must be set by the ARM64 Visual Studio environment.' }
+          $toolsDirectory = $env:VCToolsInstallDir.TrimEnd([char[]]@('\', '/'))
+          if ($toolsDirectory -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') { throw "VCToolsInstallDir must be an absolute Windows path; found '$toolsDirectory'." }
+          if (-not (Test-Path -LiteralPath $toolsDirectory -PathType Container)) { throw "VCToolsInstallDir is not an existing directory: '$toolsDirectory'." }
+          $normalizedToolsDirectory = [System.IO.Path]::GetFullPath($toolsDirectory).TrimEnd([char[]]@('\', '/'))
+          if ($normalizedToolsDirectory -notmatch '\\VC\\Tools\\MSVC\\14\.44\.[0-9.]+$') { throw "VCToolsInstallDir must resolve to a VC\Tools\MSVC\14.44.<version> directory; found '$normalizedToolsDirectory'." }
+          if ($env:VCToolsVersion -notmatch '^14\.44\.') { throw "VCToolsVersion must begin with 14.44.; found '$env:VCToolsVersion'." }
+          $directoryVersion = Split-Path -Leaf $normalizedToolsDirectory
+          if ($env:VCToolsVersion -cne $directoryVersion) { throw "VCToolsVersion '$env:VCToolsVersion' does not match VCToolsInstallDir leaf '$directoryVersion'." }
+          Write-Host "VCToolsInstallDir=$normalizedToolsDirectory"
+          Write-Host "VCToolsVersion=$env:VCToolsVersion"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python_architecture }}
+      - name: Stage the application
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-app.ps1 -Architecture '${{ matrix.architecture }}' -Destination (Join-Path $env:RUNNER_TEMP 'stage/MacAmbientJev')
+          if ($LASTEXITCODE -ne 0) { throw "Windows ${{ matrix.architecture }} application staging failed" }
+      - name: Zip and checksum
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipName = 'MacAmbientJev-Windows-${{ matrix.architecture }}-${{ steps.version.outputs.value }}.zip'
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'release'
+          New-Item -ItemType Directory -Path $outputDirectory | Out-Null
+          $zipPath = Join-Path $outputDirectory $zipName
+          [System.IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $env:RUNNER_TEMP 'stage/MacAmbientJev'), $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+          $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$zipPath.sha256", "$hash  $zipName`n", (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "$hash  $zipName"
+      - name: Upload zip and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/*.sha256
+          if-no-files-found: error
+
+  draft-release:
+    name: Draft GitHub release
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-release-*
+          path: release
+          merge-multiple: true
+      - name: Create the draft release
+        run: |
+          set -euo pipefail
+          cd release
+          test "$(ls -1 *.zip | wc -l)" -eq 2
+          {
+            echo "SHA-256:"
+            echo
+            echo '```'
+            cat -- *.sha256
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes-file notes.md -- *.zip *.sha256

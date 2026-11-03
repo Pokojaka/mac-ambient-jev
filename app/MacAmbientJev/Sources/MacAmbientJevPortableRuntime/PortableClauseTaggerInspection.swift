@@ -7,15 +7,15 @@ public actor PortableClauseTaggerInspection {
     private let validate: @Sendable () async throws -> ClauseTaggerModelIdentity
     private var inFlight: Task<ClauseTaggerModelIdentity, any Error>?
 
-    public init(modelDirectory: URL) {
-        self.init(modelDirectory: { modelDirectory })
+    public init(modelDirectory: URL, guidance: String) {
+        self.init(modelDirectory: { modelDirectory }, guidance: guidance)
     }
 
-    public init(modelDirectory: @escaping @Sendable () throws -> URL) {
+    public init(modelDirectory: @escaping @Sendable () throws -> URL, guidance: String) {
         self.validate = {
             try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
                 let directory = try modelDirectory()
-                return try Self.validateAssets(modelDirectory: directory)
+                return try Self.validateAssets(modelDirectory: directory, guidance: guidance)
             }.value
         }
     }
@@ -55,10 +55,10 @@ public actor PortableClauseTaggerInspection {
         }
     }
 
-    public nonisolated static func validateAssets(modelDirectory: URL) throws -> ClauseTaggerModelIdentity {
+    public nonisolated static func validateAssets(modelDirectory: URL, guidance: String) throws -> ClauseTaggerModelIdentity {
         do {
             let manifest = try ClauseTaggerManifest.bundled()
-            return try validateAssets(modelDirectory: modelDirectory, manifest: manifest)
+            return try validateAssets(modelDirectory: modelDirectory, manifest: manifest, guidance: guidance)
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as PortableModelPreparationError {
@@ -68,14 +68,15 @@ public actor PortableClauseTaggerInspection {
                 model: .clauseTagger,
                 path: modelDirectory.path,
                 detail: error.localizedDescription,
-                guidance: installCommand(for: modelDirectory)
+                guidance: guidance
             )
         }
     }
 
     nonisolated static func validateAssets(
         modelDirectory: URL,
-        manifest: ClauseTaggerManifest
+        manifest: ClauseTaggerManifest,
+        guidance: String
     ) throws -> ClauseTaggerModelIdentity {
         do {
             try manifest.validate()
@@ -84,7 +85,7 @@ public actor PortableClauseTaggerInspection {
                     model: .clauseTagger,
                     path: modelDirectory.path,
                     detail: "モデルディレクトリは絶対パスの file URL である必要があります",
-                    guidance: installCommand(for: modelDirectory)
+                    guidance: guidance
                 )
             }
             try PortableModelPreparationService.verify(
@@ -93,7 +94,7 @@ public actor PortableClauseTaggerInspection {
                 files: manifest.members.map {
                     ModelManifestFile(name: $0.name, role: $0.role.rawValue, byteCount: Int64($0.byteCount), sha256: $0.sha256)
                 },
-                guidance: installCommand(for: modelDirectory)
+                guidance: guidance
             )
             return try manifest.identity()
         } catch is CancellationError {
@@ -105,12 +106,8 @@ public actor PortableClauseTaggerInspection {
                 model: .clauseTagger,
                 path: modelDirectory.path,
                 detail: error.localizedDescription,
-                guidance: installCommand(for: modelDirectory)
+                guidance: guidance
             )
         }
-    }
-
-    private nonisolated static func installCommand(for modelDirectory: URL) -> String {
-        "python3 scripts/fetch_clause_tagger.py --format onnx を実行し、出力されたディレクトリの内容を \(modelDirectory.path) に置く"
     }
 }

@@ -38,13 +38,13 @@ private enum ClauseTaggerTestInputs {
 
     nonisolated(unsafe) static let model: Result<ONNXClauseTaggerModel, any Error> = Result {
         try ONNXClauseTaggerModel(
-            assets: ClauseTaggerAssets(modelDirectory: modelDirectory()),
+            assets: ClauseTaggerAssets(modelDirectory: modelDirectory(), guidance: "g"),
             intraOpThreads: intraOpThreads
         )
     }
 
     static let tagger: Result<ONNXClauseTagger, any Error> = Result {
-        try ONNXClauseTagger(modelDirectory: modelDirectory(), intraOpThreads: intraOpThreads)
+        try ONNXClauseTagger(modelDirectory: modelDirectory(), guidance: "g", intraOpThreads: intraOpThreads)
     }
 }
 
@@ -143,7 +143,7 @@ struct ONNXClauseTaggerTests {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("onnx-clause-tagger-missing-\(UUID().uuidString)", isDirectory: true)
         for threads in [0, -1] {
-            let error = try #require(throwing { try ONNXClauseTagger(modelDirectory: missing, intraOpThreads: threads) })
+            let error = try #require(throwing { try ONNXClauseTagger(modelDirectory: missing, guidance: "g", intraOpThreads: threads) })
             guard case ClauseTaggerModelError.unavailable = error else {
                 Issue.record("threads=\(threads): expected unavailable, got \(error)")
                 continue

@@ -181,7 +181,7 @@ host が request admission を最大 16 件に制限する場合、それは hos
 | `session.export` | `EngineExportPayload` `{session_id: String, destination_path: String}` | `EngineExportResult`。明示 destination へ `transcript.txt` と audio（recording は `audio.flac`、import は retained original）を含む bundle を publication した後に完了。 |
 | `settings.get` | `EngineEmptyPayload` `{}` | `EngineSettingsResult`。settings と revision。未設定時は `settings_required` / validation error。 |
 | `settings.replace` | `EngineSettingsReplacePayload` `{expected_revision: EngineID|null, settings: EngineSettings}` | `EngineSettingsResult`。10 field 全体の strict replacement。`expected_revision: null` は first setup のみ。busy 中に recording/model/state と競合する replacement は host が `busy` error で拒否する。 |
-| `models.prepare` | `EngineEmptyPayload` `{}` | `{}`。選択サイズの ASR と diarization の不足ファイルを pin した Hugging Face commit から WinHTTP でダウンロードし（途中ファイルは再開）、installed model profile を検証・load する。progress は `downloading_models`（byte 単位を percent にして通知）、続いて `validating_models` / `loading_models`。Silero VAD と発話文タガーはダウンロードしない。engine は設定の保存時と起動時に同じ準備を自動で始めるため（下記「主な規則」）、通常この command はユーザーが「モデルを準備」を押したときの再試行に使う。準備済みなら直ちに戻り、準備が実行中なら `busy`。 |
+| `models.prepare` | `EngineEmptyPayload` `{}` | `{}`。選択サイズの ASR と diarization の不足ファイルを pin した Hugging Face commit から WinHTTP でダウンロードし（途中ファイルは再開）、installed model profile を検証・load する。progress は `downloading_models`（byte 単位を percent にして通知）、続いて `validating_models` / `loading_models`。Silero VAD と発話文タガーはアプリに同梱されていてダウンロードしない。engine は設定の保存時と起動時に同じ準備を自動で始めるため（下記「主な規則」）、通常この command はユーザーが「モデルを準備」を押したときの再試行に使う。準備済みなら直ちに戻り、準備が実行中なら `busy`。 |
 | `models.inspect` | `EngineEmptyPayload` `{}` | `EngineModelsInspection`。installed clause tagger の read-only inspection。 |
 | `shutdown` | `EngineEmptyPayload` `{}` | `{}`。host が capture を安全に停止し resource を release した後に terminal completion して終了する。 |
 
@@ -1149,7 +1149,20 @@ if ($LASTEXITCODE -ne 0) { throw "ARM64 engine staging failed with exit code $LA
 
 Staged directory は flat な明示 inventory で、glob、PATH や System32 から runtime を探しません。含む executable は `MacAmbientJevEngine.exe` と、matching architecture の SHA-256 検証済み公式 ONNX Runtime 1.31.0 zip の正確な `onnxruntime-win-{x64|arm64}-1.31.0/lib/onnxruntime.dll` entry です。fetcher が展開した DLL、System32、別版（例: ONNX Runtime 1.17.1）からの代替はしません。共通 Swift / MSVC runtime DLL は BlocksRuntime.dll、dispatch.dll、Foundation.dll、FoundationEssentials.dll、FoundationInternationalization.dll、_FoundationICU.dll、swiftCore.dll、swiftCRT.dll、swiftDispatch.dll、swiftWinSDK.dll、swift_Concurrency.dll、swift_RegexParser.dll、swift_StringProcessing.dll、msvcp140.dll、msvcp140_1.dll、vcruntime140.dll の16個で、x64 だけ vcruntime140_1.dll も含みます。engine、各 DLL、ONNX Runtime DLL はすべて指定 architecture に一致する PE machine `0x8664`（x64）または `0xaa64`（ARM64）でなければなりません（[Microsoft PE format](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)）。同じ Swift toolchain の `llvm-readobj` で全 payload PE の transitive imports を検査し、明示 payload DLL・Windows OS DLL・API-set allowlist 以外の import、欠落・不一致は失敗します。
 
-SwiftPM resource manifest は元の相対 directory を保って正確に3つコピーします: MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/clause_tagger_model.json、MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/qwen3_asr_models.json、MacAmbientJev_MacAmbientJevDiarization.resources/Resources/community1_diarization_models.json。これらは model manifest であり、model weights ではありません。engine executable と DLL に加え、3 manifest files を収めた2つの SwiftPM resource directory を含む folder が payload 全体です。model weights、model download、model cache は staged payload に含めず、destination に書かれるのは固定 inventory だけです。staging script は build と配置のみを行い、engine を起動しません。
+SwiftPM resource manifest は元の相対 directory を保って正確に3つコピーします: MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/clause_tagger_model.json、MacAmbientJev_MacAmbientJevPortableRuntime.resources/Resources/qwen3_asr_models.json、MacAmbientJev_MacAmbientJevDiarization.resources/Resources/community1_diarization_models.json。これらは model manifest であり、model weights ではありません。
+
+同梱モデルは Destination の `models` directory 以下に置きます。script は `scripts/fetch_silero_vad.py` と `scripts/fetch_clause_tagger.py --format onnx` を実行します（どちらも pin の SHA-256 を cache hit 時も検証し、検証済み path を stdout に1行だけ出します）。出力 path の directory 名が pin の commit です。
+
+- `models/silero/<commit>/silero_vad_16k_op15.onnx`
+- `models/clause-tagger/<commit>/clause-tagger-onnx/` 以下の発話文タガー5ファイル
+
+Qwen3-ASR と Community-1 は含めません（`models.prepare` がダウンロードします）。fetch 結果の path が1行でない、ファイルがない場合は失敗し、固定 inventory にも同梱モデルのファイルが含まれます。engine executable と DLL、3 manifest files を収めた2つの SwiftPM resource directory、同梱モデルが payload 全体で、destination に書かれるのは固定 inventory だけです。staging script は build と配置のみを行い、engine を起動しません。
+
+### Windows release workflow
+
+[`windows-release.yml`](../.github/workflows/windows-release.yml) は tag `windows-v*` の push と、必須入力 `version` 付きの `workflow_dispatch` で起動します。version は tag から `windows-v` を除いた文字列、または入力値で、英数字で始まり英数字と `.` `_` `-` だけを含む必要があります。matrix は `x64`（`windows-2022`）と `ARM64`（`windows-11-arm`）で、`portable-core.yml` の `windows` job と同じ toolchain（.NET SDK、ARM64 の MSVC 14.44、Swift 6.2、Python 3.12）を準備し、[`stage-windows-app.ps1`](../scripts/stage-windows-app.ps1) で shell・engine・同梱モデルを stage します。stage 結果を最上位 folder `MacAmbientJev` として `MacAmbientJev-Windows-<arch>-<version>.zip` に固めて、`<zip>.sha256`（`<hex>  <zip 名>`）を書き、`windows-release-x64` / `windows-release-arm64` artifact として upload します。
+
+tag push の場合だけ、`contents: write` を持つ最後の job が両 artifact を取得し、SHA-256 を列挙した notes と共に `gh release create <tag> --draft` で draft release を作ります。`workflow_dispatch` は artifact を upload するだけで release を作りません。
 
 ### Windows production-engine smoke test
 
@@ -1230,22 +1243,25 @@ PCM chunk 一覧は大文字に変換した名前でも一意である必要が�
 ## インストール済みモデルの検証と読み込み
 
 `models.prepare` は `PortableModelPreparationService.prepare(configuration:onProgress:)` で実装します。ダウンロード、代替モデル、モデルや decisions の自動無効化はありません。
-モデルはアプリ root の models 配下に次の配置で置きます。名前は同梱の pin とマニフェストから `PortableInstalledModelLayout` が作ります。
+モデルは二つの root に分けて置きます。名前は同梱の pin とマニフェストから `PortableInstalledModelLayout` が作ります。
 
-| モデル | 配置 |
-|---|---|
-| Silero VAD | `silero/<commit>/silero_vad_16k_op15.onnx` |
-| Qwen3-ASR | `qwen3-asr-<0.6b\|1.7b>-int4-<commit>/`（`fetch_qwen3_asr_model.py <size> <models root>` が作るディレクトリ） |
-| Community-1 | `community1/<同梱マニフェスト bytes の SHA-256>/` |
-| 発話文タガー | clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx/（`models.prepare` は decisions 有効時のみ検証・load。`models.inspect` は decisions 設定にかかわらず常に検証） |
+- `bundledRoot`: アプリに同梱する読み取り専用のモデル（Silero VAD と発話文タガー）。engine は実行ファイルのある directory の `models` を使います（Win32 の GetModuleFileNameW で実行ファイルの場所を取得し、取得できなければ起動に失敗します。環境変数、フラグ、LocalAppData への代替はありません）。staging が配置します（上記）。
+- `downloadedRoot`: `models.prepare` がダウンロードするモデル（Qwen3-ASR と Community-1）。アプリ root の `models`（`LocalAppData\mac-ambient-jev\models`）です。
 
-`PortableProcessingConfiguration.installed(layout:qwen3Size:threads:logicalCPUCount:withDecisions:)` は設定から型付きの configuration を作ります。threads の検証は `resolve` と同じ関数を使い、パスの存在は確認しません。
+| モデル | root | 配置 |
+|---|---|---|
+| Silero VAD | `bundledRoot` | `silero/<commit>/silero_vad_16k_op15.onnx` |
+| Qwen3-ASR | `downloadedRoot` | `qwen3-asr-<0.6b\|1.7b>-int4-<commit>/`（`fetch_qwen3_asr_model.py <size> <models root>` が作るディレクトリ） |
+| Community-1 | `downloadedRoot` | `community1/<同梱マニフェスト bytes の SHA-256>/` |
+| 発話文タガー | `bundledRoot` | clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger-onnx/（`models.prepare` は decisions 有効時のみ検証・load。`models.inspect` は decisions 設定にかかわらず常に検証） |
 
-`prepare` は（engine では）先に `PortableModelDownloads.fetchMissing` で、選択サイズの ASR と diarization のうち、ファイルが無いかサイズが pin と違う entry をダウンロードします。ダウンロードは `ModelFetcher`（WinHTTP、`.partial` を Range で再開、SHA-256 検証）で、pin したサイズのファイルはこの時点では hash を計算せず、次の検証で見ます。ダウンロードしたファイルのサイズ・hash 不一致は、そのファイルを削除します。Silero VAD と発話文タガーはダウンロードせず、これまでどおりスクリプトで配置します。
+`PortableProcessingConfiguration.installed(layout:qwen3Size:threads:logicalCPUCount:withDecisions:)` は設定から型付きの configuration を作ります。threads の検証は `resolve` と同じ関数を使い、パスの存在は確認しません。configuration は同梱モデルの案内文 `sileroGuidance` と `clauseTaggerGuidance` を持ち、`installed` は両方に「アプリの zip を展開し直してください」を設定します（同梱ファイルの欠落や破損はインストールの破損です）。`resolve`（環境変数で path を渡す CLI）は fetch スクリプトを実行して環境変数の場所へ置く案内文を設定します。
+
+`prepare` は（engine では）先に `PortableModelDownloads.fetchMissing` で、選択サイズの ASR と diarization のうち、ファイルが無いかサイズが pin と違う entry をダウンロードします。ダウンロードは `ModelFetcher`（WinHTTP、`.partial` を Range で再開、SHA-256 検証）で、pin したサイズのファイルはこの時点では hash を計算せず、次の検証で見ます。ダウンロードしたファイルのサイズ・hash 不一致は、そのファイルを削除します。Silero VAD と発話文タガーはダウンロードしません。
 
 続いて全モデルを検証してから、全モデルを読み込みます。VAD、ASR、diarization、（decisions 有効時）タガーの順です。検証は `ModelVerifier` で、存在、通常ファイル、サイズ、streaming SHA-256 を見ます。ファイルが無いときの `missing` は最初に無かったファイルのパス（`<ディレクトリ>/<ファイル名>`）を返します。ASR と diarization のサイズ・hash 不一致は、そのファイルを削除してから `invalid` にします（VAD とタガーは削除しません）。読み込みは Silero の ONNX session、`ONNXQwen3ASREngine.prepare()`、`ONNXCommunity1DiarizationEngine.prepare()`、`ONNXClauseTagger` の生成で、認識や decisions のリクエストは作りません。読み込んだモデルは次のモデルの前に解放するため、`prepare` は後続の処理が使う engine を温めず、読み込めることの確認だけを行います。
 進捗は `PortableModelPreparationProgress`（`stage` は `validating` / `loading`、`model`、`completed`、`total`）です。各モデルの開始時に `completed` = 完了済みの数で通知し、各 stage の最後に `model == nil`、`completed == total` を通知します。単位はモデル数で、1 ファイル内の byte 進捗はありません。
-失敗は `PortableModelPreparationError` です。`missing` と `invalid` は対象ファイルのパスと案内（ASR と diarization は「設定画面の「モデルを準備」を押すと、もう一度ダウンロードします」、VAD とタガーは fetch コマンド）を含み、`loadFailed` はモデルとパスを含みます。ホストは `missing` を `model_missing`、`invalid` を `model_corrupt`、`loadFailed` を `model_failure` に対応させ、復旧は `prepare_models` です。`ModelDownloadError` は `network` / `httpStatus` を `model_download`、`sizeMismatch` / `hashMismatch` を `model_corrupt`、`diskWrite` を `filesystem` に対応させ、復旧は `prepare_models` です。
+失敗は `PortableModelPreparationError` です。`missing` と `invalid` は対象ファイルのパスと案内（ASR と diarization は「設定画面の「モデルを準備」を押すと、もう一度ダウンロードします」、VAD とタガーは configuration の `sileroGuidance` / `clauseTaggerGuidance`）を含み、`loadFailed` はモデルとパスを含みます。ホストは `missing` を `model_missing`、`invalid` を `model_corrupt`、`loadFailed` を `model_failure` に対応させ、復旧は `prepare_models` です。`ModelDownloadError` は `network` / `httpStatus` を `model_download`、`sizeMismatch` / `hashMismatch` を `model_corrupt`、`diskWrite` を `filesystem` に対応させ、復旧は `prepare_models` です。
 
 ## エンジンの NDJSON transport とコマンド dispatcher
 

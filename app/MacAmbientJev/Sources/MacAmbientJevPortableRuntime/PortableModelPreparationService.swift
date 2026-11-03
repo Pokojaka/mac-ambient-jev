@@ -90,6 +90,8 @@ public struct PortableModelPreparationService: Sendable {
     static func steps(for configuration: PortableProcessingConfiguration) throws -> [Step] {
         let threads = configuration.threads
         let silero = configuration.sileroModelURL
+        let sileroGuidance = configuration.sileroGuidance
+        let clauseTaggerGuidance = configuration.clauseTaggerGuidance
         let qwen = configuration.qwen3ModelDirectory
         let qwenSize = configuration.qwen3Size
         let diarization = configuration.diarizationModelDirectory
@@ -103,7 +105,7 @@ public struct PortableModelPreparationService: Sendable {
                         .vad,
                         directory: silero.deletingLastPathComponent(),
                         files: [SileroVADModel.manifestFile],
-                        guidance: "python3 scripts/fetch_silero_vad.py を実行し、出力されたファイルを \(silero.path) に置く"
+                        guidance: sileroGuidance
                     )
                 },
                 load: {
@@ -145,11 +147,11 @@ public struct PortableModelPreparationService: Sendable {
             steps.append(Step(
                 model: .clauseTagger,
                 validate: {
-                    _ = try PortableClauseTaggerInspection.validateAssets(modelDirectory: tagger)
+                    _ = try PortableClauseTaggerInspection.validateAssets(modelDirectory: tagger, guidance: clauseTaggerGuidance)
                 },
                 load: {
                     try await Self.load(.clauseTagger, path: tagger.path) {
-                        try await Task.detached(executorPreference: BlockingIOExecutor.shared) { _ = try ONNXClauseTagger(modelDirectory: tagger, intraOpThreads: threads) }.value
+                        try await Task.detached(executorPreference: BlockingIOExecutor.shared) { _ = try ONNXClauseTagger(modelDirectory: tagger, guidance: clauseTaggerGuidance, intraOpThreads: threads) }.value
                     }
                 }
             ))

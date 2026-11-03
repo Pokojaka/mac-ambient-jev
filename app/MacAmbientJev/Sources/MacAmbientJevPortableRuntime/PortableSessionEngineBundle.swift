@@ -39,10 +39,11 @@ public struct PortableSessionEngineBundle: Sendable {
         self.vadEnvironment = vadEnvironment
         if let taggerDirectory = configuration.clauseTaggerModelDirectory {
             let threads = configuration.threads
+            let guidance = configuration.clauseTaggerGuidance
             let factory = DecisionProviderFactory(
                 usageCounter: usageCounter,
                 loadProvider: {
-                    let tagger = try ONNXClauseTagger(modelDirectory: taggerDirectory, intraOpThreads: threads)
+                    let tagger = try ONNXClauseTagger(modelDirectory: taggerDirectory, guidance: guidance, intraOpThreads: threads)
                     return LoadedDecisionProvider(provider: tagger, identity: tagger.identity)
                 }
             )

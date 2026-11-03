@@ -177,6 +177,37 @@ try {
         throw "ONNX Runtime fetch returned an unexpected directory. Expected '$expectedOnnxRoot', found '$fetchedOnnxRoot'."
     }
 
+    # The fetchers verify every pinned SHA-256 (also on cache hits) and print the verified path; the pinned commit is the directory name.
+    $sileroFetch = Invoke-NativeCapture -Name 'Fetch pinned Silero VAD' -Executable 'python' -ArgumentList @('scripts/fetch_silero_vad.py') -DisplayOutput $true
+    if ($sileroFetch.Lines.Count -ne 1) {
+        throw "Silero VAD fetch returned $($sileroFetch.Lines.Count) paths; expected exactly one."
+    }
+    $sileroModelSource = Resolve-FullyQualifiedWindowsPath -Path ([string]$sileroFetch.Lines[0]).Trim() -Name 'Silero VAD fetch result'
+    if (-not (Test-Path -LiteralPath $sileroModelSource -PathType Leaf)) {
+        throw "Silero VAD fetch file does not exist: $sileroModelSource"
+    }
+    $sileroModelPath = 'models/silero/{0}/{1}' -f (Split-Path -Leaf (Split-Path -Parent $sileroModelSource)), (Split-Path -Leaf $sileroModelSource)
+
+    $taggerFetch = Invoke-NativeCapture -Name 'Fetch pinned clause tagger' -Executable 'python' -ArgumentList @('scripts/fetch_clause_tagger.py', '--format', 'onnx') -DisplayOutput $true
+    if ($taggerFetch.Lines.Count -ne 1) {
+        throw "Clause tagger fetch returned $($taggerFetch.Lines.Count) paths; expected exactly one."
+    }
+    $taggerSource = Resolve-FullyQualifiedWindowsPath -Path ([string]$taggerFetch.Lines[0]).Trim() -Name 'Clause tagger fetch result'
+    if (-not (Test-Path -LiteralPath $taggerSource -PathType Container)) {
+        throw "Clause tagger fetch directory does not exist: $taggerSource"
+    }
+    $taggerCommit = Split-Path -Leaf (Split-Path -Parent $taggerSource)
+    $taggerFiles = @(Get-ChildItem -LiteralPath $taggerSource -File -Recurse)
+    if ($taggerFiles.Count -eq 0) {
+        throw "Clause tagger fetch directory has no files: $taggerSource"
+    }
+    $taggerSourceByPath = @{}
+    foreach ($taggerFile in $taggerFiles) {
+        $taggerRelative = $taggerFile.FullName.Substring($taggerSource.TrimEnd('\').Length + 1).Replace('\', '/')
+        $taggerSourceByPath["models/clause-tagger/$taggerCommit/clause-tagger-onnx/$taggerRelative"] = $taggerFile.FullName
+    }
+    $taggerPaths = @($taggerSourceByPath.Keys)
+
     $buildResult = Invoke-NativeCapture -Name 'Build release MacAmbientJevEngine' -Executable $swiftExecutable -ArgumentList @(
         'build', '--package-path', 'app/MacAmbientJev', '-c', 'release', '--product', 'MacAmbientJevEngine'
     ) -DisplayOutput $true
@@ -283,6 +314,16 @@ try {
         Copy-Item -LiteralPath $resourceSource -Destination $resourceDestination -ErrorAction Stop
     }
 
+    $bundledModels = @{ $sileroModelPath = $sileroModelSource }
+    foreach ($taggerPath in $taggerPaths) {
+        $bundledModels[$taggerPath] = $taggerSourceByPath[$taggerPath]
+    }
+    foreach ($bundledPath in $bundledModels.Keys) {
+        $bundledDestination = Join-Path -Path $destinationPath -ChildPath $bundledPath
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $bundledDestination)) | Out-Null
+        Copy-Item -LiteralPath $bundledModels[$bundledPath] -Destination $bundledDestination -ErrorAction Stop
+    }
+
     $peFileNames = @('MacAmbientJevEngine.exe') + $runtimeDllNames + @('onnxruntime.dll')
     foreach ($peFileName in $peFileNames) {
         $pePath = Join-Path -Path $destinationPath -ChildPath $peFileName
@@ -348,7 +389,7 @@ try {
         Write-Host "Validated imports for $peFileName ($($importedDllNames.Count) DLLs)."
     }
 
-    $expectedInventory = @('MacAmbientJevEngine.exe') + $runtimeDllNames + @('onnxruntime.dll') + $resourcePaths
+    $expectedInventory = @('MacAmbientJevEngine.exe') + $runtimeDllNames + @('onnxruntime.dll') + $resourcePaths + @($sileroModelPath) + $taggerPaths
     $stageRootPrefix = $destinationPath.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) + [System.IO.Path]::DirectorySeparatorChar
     $actualInventory = @(
         Get-ChildItem -LiteralPath $destinationPath -File -Recurse | ForEach-Object {
