@@ -165,7 +165,7 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         self.calls = calls
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 1, total: 1))
     }
 
@@ -173,11 +173,15 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         await usageCounter.snapshot()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         try await inspectionProvider.inspectClauseTagger()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: GatedASREngine(gate: gate, calls: calls),
@@ -199,21 +203,25 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         self.gate = gate
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         await gate.suspend()
-        try await base.prepare(settings: settings, onProgress: onProgress)
+        try await base.prepare(settings: settings, acceleratedASR: acceleratedASR, onProgress: onProgress)
     }
 
     func decisionUsage() async throws -> DecisionUsageSnapshot {
         try await base.decisionUsage()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         try await base.inspectClauseTagger()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        try base.makeInference(settings: settings)
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        try base.makeInference(settings: settings, acceleratedASR: acceleratedASR)
     }
 }
 
@@ -241,9 +249,10 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let source = ScriptedSource()
         let sink = ScriptedSink()
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: FakeCapture(), inference: GatedInferenceProvider(gate: gate),
@@ -262,9 +271,10 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         let capture = FakeCapture()
         let events = EngineEventEmitter(transport: transport)
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30)
             ),
             capture: capture,
@@ -280,6 +290,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         _ = try await fixture.app.core.replace(
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: fixture.context
         )
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         try await fixture.app.core.prepare(context: fixture.context)
         while fixture.app.core.processingCoordinator.isDraining { await Task.yield() }
     }
@@ -296,11 +307,12 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let original = try await configureSettings(for: fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         let prepareTask = Task { @MainActor in try await fixture.app.core.prepare(context: fixture.context) }
         await fixture.gate.waitUntilEntered()
 
         let proposed = try EngineSettings(
-            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            schemaVersion: 2, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
             threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
         )
         let replacement = EngineSettingsReplacePayload(expectedRevision: try EngineID(1), settings: proposed)
@@ -325,6 +337,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try await configureSettings(for: fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .load, context: fixture.context)
         let prepareTask = Task { @MainActor in try await fixture.app.core.prepare(context: fixture.context) }
         await fixture.gate.waitUntilEntered()
 
@@ -425,6 +438,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try gatedASRFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         try await prepareForRecording(fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .live, context: fixture.context)
 
         let recording = try await fixture.app.core.start(
             EngineRecordingStartPayload(source: .microphone, device: .default), context: fixture.context
@@ -463,6 +477,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let fixture = try gatedASRFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         try await prepareForRecording(fixture)
+        try await acknowledgeResourceWarning(fixture.app, workload: .live, context: fixture.context)
 
         let recording = try await fixture.app.core.start(
             EngineRecordingStartPayload(source: .microphone, device: .default), context: fixture.context

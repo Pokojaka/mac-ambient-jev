@@ -555,8 +555,8 @@ struct TranscribeFileTests {
         ]
         let expectedEngine: [String: Any] = [
             "name": "qwen3-asr",
-            "model": Qwen3ASRModelSize.small.repository,
-            "revision": Qwen3ASRModelSize.small.commit,
+            "model": ASRModelSize.small.repository,
+            "revision": ASRModelSize.small.commit,
             "backend": "onnxruntime",
             "device": "cpu",
             "package_versions": ["onnxruntime": ONNXEnvironment.runtimeVersion],

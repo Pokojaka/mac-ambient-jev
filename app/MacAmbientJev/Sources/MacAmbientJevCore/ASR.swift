@@ -1,5 +1,28 @@
 import Foundation
 
+public enum ASRDecodingPolicy: Sendable, Equatable {
+    case audioLength
+    case fixed(maxNewTokens: Int, noRepeatNgramSize: Int?)
+}
+
+/// Hardware and package identity of an admitted accelerator, recorded in run provenance. `verificationID` is nil only
+/// for the verification run itself, which has no receipt yet.
+public struct ASRAcceleratorIdentity: Sendable, Equatable {
+    public let gpuName, driverVersion, adapterID, deviceID, epPackageFullName, epLibraryHash: String
+    public let verificationID: String?
+
+    public init(gpuName: String, driverVersion: String, adapterID: String, deviceID: String,
+                epPackageFullName: String, epLibraryHash: String, verificationID: String?) {
+        self.gpuName = gpuName
+        self.driverVersion = driverVersion
+        self.adapterID = adapterID
+        self.deviceID = deviceID
+        self.epPackageFullName = epPackageFullName
+        self.epLibraryHash = epLibraryHash
+        self.verificationID = verificationID
+    }
+}
+
 public enum ASREngineState: Sendable, Equatable {
     case stopped
     case loadingModel

@@ -129,7 +129,7 @@ struct EngineApplicationDiagnosticsTests {
         try await withDiagnosticsHarness(inference: inference) { harness in
             try await harness.hello()
             try await harness.replaceSettings(try diagnosticsEngineSettings(), expectedRevision: nil)
-            try await harness.call("models.prepare")
+            try await harness.prepareModels()
 
             let request = try diagnosticsBoundaryRequest()
             let targets = diagnosticsPriorityTargets()
@@ -194,7 +194,7 @@ struct EngineApplicationDiagnosticsTests {
             try await harness.replaceSettings(
                 try diagnosticsEngineSettings(asrSize: .large), expectedRevision: 1
             )
-            try await harness.call("models.prepare")
+            try await harness.prepareModels()
             try await harness.call("models.prepare")
             let afterPreparation = try availableUsage(try await harness.diagnostics())
             expectUsage(
@@ -343,7 +343,7 @@ struct EngineApplicationDiagnosticsTests {
         try await withDiagnosticsHarness(inference: inference) { harness in
             try await harness.hello()
             try await harness.replaceSettings(try diagnosticsEngineSettings(decisions: true), expectedRevision: nil)
-            try await harness.call("models.prepare")
+            try await harness.prepareModels()
 
             let fixture = harness.root.appending(path: "tiny-import.wav")
             #expect(FileManager.default.createFile(
@@ -394,7 +394,7 @@ struct EngineApplicationDiagnosticsTests {
         try await withDiagnosticsHarness(inference: inference) { harness in
             try await harness.hello()
             try await harness.replaceSettings(try diagnosticsEngineSettings(decisions: true), expectedRevision: nil)
-            try await harness.call("models.prepare")
+            try await harness.prepareModels()
 
             let fixture = harness.root.appending(path: "tiny-boundary-import.wav")
             #expect(FileManager.default.createFile(

@@ -1,14 +1,14 @@
 import Foundation
 import MacAmbientJevCore
-import MacAmbientJevONNX
+@testable import MacAmbientJevONNX
 import Testing
 @testable import MacAmbientJevPortableRuntime
 
 @Suite(.timeLimit(.minutes(10)))
 struct ONNXQwen3ASREngineTests {
     @Test
-    func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() {
-        for size in Qwen3ASRModelSize.allCases {
+    func provenanceIsExactForEveryModelSizeAndThreadCountBeforePreparation() throws {
+        for size in ASRModelSize.allCases {
             for intraOpThreads in [2, 7] {
                 let engine = ONNXQwen3ASREngine(
                     modelDirectory: URL(fileURLWithPath: "/not-loaded/\(size.rawValue)"),
@@ -19,7 +19,15 @@ struct ONNXQwen3ASREngineTests {
                 #expect(provenance.engine == "onnxruntime-qwen3-asr")
                 #expect(provenance.model == "\(size.repository)@\(size.commit)")
                 #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
-                #expect(provenance.configuration == expectedConfiguration(intraOpThreads: intraOpThreads))
+                #expect(provenance.configuration == expectedConfiguration(size: size, intraOpThreads: intraOpThreads))
+                let encoded = try JSONEncoder().encode(provenance)
+                let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+                let configuration = try #require(object["configuration"] as? [String: Any])
+                for field in ["gpu_name", "driver_version", "adapter_id", "device_id", "ep_package_full_name", "ep_library_hash", "verification_id", "calibration_id"] {
+                    #expect(configuration[field] is NSNull)
+                }
+                #expect(configuration["execution_provider"] as? String == "cpu")
+                #expect(configuration["asr_size"] as? String == size.rawValue)
             }
         }
     }
@@ -30,18 +38,31 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .large,
             intraOpThreads: 7,
+            decoding: .audioLength,
             loadModel: { _, _, _ in FakeQwen3ASRModel(recorder: ModelCallRecorder(), text: "unused") }
         )
 
         let provenance = engine.provenance
         #expect(provenance.engine == "onnxruntime-qwen3-asr")
-        #expect(provenance.model == "\(Qwen3ASRModelSize.large.repository)@\(Qwen3ASRModelSize.large.commit)")
+        #expect(provenance.model == "\(ASRModelSize.large.repository)@\(ASRModelSize.large.commit)")
         #expect(provenance.version == "onnxruntime-\(ONNXEnvironment.runtimeVersion)")
-        #expect(provenance.configuration == expectedConfiguration(intraOpThreads: 7))
+        #expect(provenance.configuration == expectedConfiguration(size: .large, intraOpThreads: 7))
     }
 
-    private func expectedConfiguration(intraOpThreads: Int) -> [String: String] {
+    private func expectedConfiguration(size: ASRModelSize, intraOpThreads: Int) -> [String: String?] {
         [
+            "asr_size": size.rawValue,
+            "execution_provider": "cpu",
+            "device": "cpu",
+            "gpu_name": nil,
+            "driver_version": nil,
+            "adapter_id": nil,
+            "device_id": nil,
+            "ep_package_full_name": nil,
+            "ep_library_hash": nil,
+            "verification_id": nil,
+            "calibration_id": nil,
+            "memory_policy": "cpu_arena_disabled",
             "language": "ja",
             "minimum_input_seconds": String(ASRAudioInput.minimumDurationSeconds),
             "quantization": "int4",
@@ -141,6 +162,42 @@ struct ONNXQwen3ASREngineTests {
     }
 
     @Test
+    func fixedDecodingIgnoresAudioLengthWhileAudioLengthPolicyAppliesNgram() async throws {
+        let recorder = ModelCallRecorder()
+        let engine = ONNXQwen3ASREngine(
+            modelDirectory: URL(fileURLWithPath: "/injected-model"), size: .small, intraOpThreads: 2,
+            decoding: .fixed(maxNewTokens: 448, noRepeatNgramSize: nil),
+            loadModel: { _, _, _ in FakeQwen3ASRModel(recorder: recorder, text: "recognized") }
+        )
+        try await engine.prepare()
+        _ = try await engine.transcribe(ASRAudioInput(samples: Array(repeating: 0, count: 20 * 16_000), sampleRate: 16_000))
+        #expect(recorder.calls.map(\.noRepeatNgramSize) == [nil])
+    }
+
+    @Test
+    func acceleratedProvenanceCarriesTheAdmittedIdentity() throws {
+        let device = ONNXProviderDevice(
+            epName: "ep", epVendor: "vendor", hardwareType: .gpu, vendorID: 0x10de, deviceID: 0x2684, metadata: [:],
+            handle: try #require(OpaquePointer(bitPattern: 1)), registrationID: UUID()
+        )
+        let identity = ASRAcceleratorIdentity(
+            gpuName: "GPU", driverVersion: "1.2.3.4", adapterID: "adapter", deviceID: device.deviceKey,
+            epPackageFullName: "package_1.0_x64__abc", epLibraryHash: String(repeating: "a", count: 64), verificationID: "verification"
+        )
+        let configuration = try ONNXQwen3ASREngine(
+            modelDirectory: URL(fileURLWithPath: "/m"), size: .small, intraOpThreads: 2, device: device,
+            identity: identity, language: "ja", decoding: .audioLength
+        ).provenance.configuration
+        #expect(configuration["gpu_name"] == "GPU" && configuration["driver_version"] == "1.2.3.4")
+        #expect(configuration["adapter_id"] == "adapter" && configuration["device_id"] == "gpu:10de:2684")
+        #expect(configuration["ep_package_full_name"] == "package_1.0_x64__abc")
+        #expect(configuration["ep_library_hash"] == String(repeating: "a", count: 64))
+        #expect(configuration["verification_id"] == "verification" && configuration["execution_provider"] == "ep")
+        #expect(configuration["no_repeat_ngram"] == "3 when input_seconds > 15; disabled otherwise")
+        #expect(configuration["ep_package_hash"] == nil)
+    }
+
+    @Test
     func concurrentPreparationSharesOneLoad() async throws {
         let recorder = ModelCallRecorder()
         let model = FakeQwen3ASRModel(recorder: recorder, text: "ready")
@@ -149,6 +206,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .small,
             intraOpThreads: 3,
+            decoding: .audioLength,
             loadModel: { _, _, _ in try await gate.load() }
         )
 
@@ -173,6 +231,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: directory,
             size: .large,
             intraOpThreads: 7,
+            decoding: .audioLength,
             loadModel: { passedDirectory, passedSize, passedThreadCount in
                 await arguments.record(
                     ModelLoadArguments(
@@ -203,6 +262,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .large,
             intraOpThreads: 4,
+            decoding: .audioLength,
             loadModel: { _, _, _ in try await gate.load() }
         )
 
@@ -235,6 +295,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .large,
             intraOpThreads: 4,
+            decoding: .audioLength,
             loadModel: { _, _, _ in try await gate.load() }
         )
         let preparation = Task { try await engine.prepare() }
@@ -283,6 +344,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .small,
             intraOpThreads: 1,
+            decoding: .audioLength,
             loadModel: { _, _, _ in try await loader.load() }
         )
 
@@ -360,6 +422,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .small,
             intraOpThreads: 2,
+            decoding: .audioLength,
             loadModel: { _, _, _ in
                 guard let model = weakReference.model else {
                     throw WeakFakeQwen3ASRModelReference.Error.modelReleasedBeforeLoad
@@ -403,7 +466,7 @@ struct ONNXQwen3ASREngineTests {
         let emptyDirectory = directory.appendingPathComponent("empty", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyDirectory, withIntermediateDirectories: false)
         verifyResolvedTemporaryPath(emptyDirectory)
-        let emptyFilePath = emptyDirectory.appendingPathComponent(Qwen3ASRModelSize.small.files[0].name).path
+        let emptyFilePath = emptyDirectory.appendingPathComponent(ASRModelSize.small.files[0].name).path
         let emptyMessage = await preparationError(
             for: ONNXQwen3ASREngine(modelDirectory: emptyDirectory, size: .small, intraOpThreads: 1)
         )
@@ -412,7 +475,7 @@ struct ONNXQwen3ASREngineTests {
         let truncatedDirectory = directory.appendingPathComponent("truncated", isDirectory: true)
         try FileManager.default.createDirectory(at: truncatedDirectory, withIntermediateDirectories: false)
         verifyResolvedTemporaryPath(truncatedDirectory)
-        let encoder = Qwen3ASRModelSize.small.files[0]
+        let encoder = ASRModelSize.small.files[0]
         let encoderURL = truncatedDirectory.appendingPathComponent(encoder.name)
         try Data([0]).write(to: encoderURL)
         let truncatedMessage = await preparationError(
@@ -428,6 +491,7 @@ struct ONNXQwen3ASREngineTests {
             modelDirectory: URL(fileURLWithPath: "/injected-model"),
             size: .small,
             intraOpThreads: 2,
+            decoding: .audioLength,
             loadModel: { _, _, _ in model }
         )
     }
@@ -459,7 +523,7 @@ struct ONNXQwen3ASREngineTests {
 
 private struct ModelLoadArguments: Sendable, Equatable {
     let directory: URL
-    let size: Qwen3ASRModelSize
+    let size: ASRModelSize
     let intraOpThreads: Int
 }
 

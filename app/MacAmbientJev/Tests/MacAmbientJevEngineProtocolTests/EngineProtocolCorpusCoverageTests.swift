@@ -255,7 +255,7 @@ private struct CoverageSingleValueContainer: SingleValueEncodingContainer {
 private func coverageRepresentativeValues() throws -> [any Encodable] {
     let id = try EngineID(1)
     let settings = try EngineSettings(
-        schemaVersion: 1,
+        schemaVersion: 2,
         source: .microphone,
         device: .id("coverage-device"),
         asrSize: .small,
@@ -298,10 +298,45 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
     let capabilities = try EngineCapabilities(
         sources: EngineSource.allCases,
         asrSizes: EngineASRSize.allCases,
-        executionProviders: EngineExecutionProvider.allCases,
+        executionProviderKinds: [.cpu, .windowsML],
         maximumThreads: 1,
         automaticInputVolume: .none,
         thermalMonitoring: .none
+    )
+    let profileEvaluation = try EngineProfileEvaluation(
+        initialSize: .small,
+        recommendLarge: true,
+        reason: .recommendLarge,
+        explanation: "確認用",
+        measuredRTF: 0.25,
+        predictedRTF: 0.5,
+        decisionState: .offered,
+        requestedChoice: nil,
+        calibrationID: "calibration-1"
+    )
+    let completeEvaluation = try EngineProfileEvaluation(
+        initialSize: .small, recommendLarge: false, reason: .noGPU, explanation: "確認用",
+        measuredRTF: nil, predictedRTF: nil, decisionState: .complete, requestedChoice: nil, calibrationID: nil
+    )
+    let chosenEvaluation = try EngineProfileEvaluation(
+        initialSize: .small, recommendLarge: false, reason: .eligible, explanation: "確認用",
+        measuredRTF: nil, predictedRTF: nil, decisionState: .complete, requestedChoice: .small, calibrationID: nil
+    )
+    let profileSetup = EngineProfileSetup(evaluation: profileEvaluation, operation: .binding)
+    let profileEvaluatePayload = try EngineProfilesEvaluatePayload(
+        hardware: .gpu(
+            name: "Coverage GPU", adapterID: "coverage-adapter", deviceID: "coverage-device",
+            driverVersion: "1.0", dedicatedVRAMBytes: 24576
+        ),
+        acquisition: .acquired(.openVINO),
+        threads: 2
+    )
+    let resourceProtection = try EngineResourceProtection(holdReasons: EngineResourceHoldReason.allCases)
+    let resourcePreflight = EngineResourcesPreflightPayload(workload: .load)
+    let resourceAcknowledge = try EngineResourcesAcknowledgePayload(assessmentID: "resource-assessment-1")
+    let resourceAssessment = try EngineResourceAssessment(
+        assessmentID: "resource-assessment-1", result: .warning,
+        reason: .envelopeUnmeasured, explanation: "リソースの測定がありません"
     )
     let recording = try EngineRecordingState(
         sessionID: "coverage-session", source: .microphone,
@@ -312,6 +347,8 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         revision: id,
         screen: .idle,
         setup: .ready,
+        profileSetup: EngineProfileSetup(evaluation: nil, operation: nil),
+        resourceProtection: try EngineResourceProtection(holdReasons: []),
         recovery: .completed,
         recording: recording,
         queue: [queued],
@@ -388,10 +425,37 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         thermalMonitoring: .none
     )
     let sha256 = String(repeating: "a", count: 64)
+    let dependency = try EngineAcceleratorDependency(path: "C:/Coverage/dependency.dll", hash: sha256)
+    let acceleratorDescriptor = try EngineAcceleratorDescriptor(
+        providerName: "coverage-provider", packageFullName: "coverage-package", packageArchitecture: "x64",
+        libraryPath: "C:/Coverage/provider.dll", libraryHash: sha256, dependencies: [dependency]
+    )
+    let bindPayload = try EngineAcceleratorsBindPayload(descriptor: acceleratorDescriptor)
+    let gpuAccelerator = try EngineAcceleratorDeviceInfo(
+        deviceKey: "gpu:10de:2684", type: "gpu", description: "Coverage GPU",
+        driverVersion: "1.0", dedicatedMemoryBytes: 24576
+    )
+    let npuAccelerator = try EngineAcceleratorDeviceInfo(
+        deviceKey: "npu:8086:1234", type: "npu", description: "Coverage NPU",
+        driverVersion: "1.0", dedicatedMemoryBytes: nil
+    )
+    let bindResult = try EngineAcceleratorsBindResult(bindingID: "coverage-binding", devices: [gpuAccelerator, npuAccelerator])
+    let verifyPayload = try EngineAcceleratorsVerifyPayload(
+        bindingID: "coverage-binding", deviceKey: "gpu:10de:2684", asrSize: .small, threads: 1
+    )
+    let verifyPass = EngineAcceleratorsVerifyResult.pass(verificationID: "coverage-verification", rtf: 0.5)
+    let verifyFail = EngineAcceleratorsVerifyResult.fail(
+        verificationID: "coverage-verification", reason: "verification failed", observedOutput: "unexpected output"
+    )
+    let decidePayload = try EngineProfilesDecidePayload(expectedRevision: id, choice: .small)
     let identity = try EngineClauseTaggerIdentity(
         backend: "coverage", modelID: "coverage", revision: sha256, tokenizerSHA256: sha256
     )
     let inspection = EngineModelsInspection(clauseTagger: .validated(identity))
+    let modelsStatus = try EngineModelsStatus(asrProfiles: [
+        EngineASRProfileStatus(asrSize: .small, state: .installed, message: nil),
+        EngineASRProfileStatus(asrSize: .large, state: .missing, message: "coverage"),
+    ], clauseTagger: EngineClauseTaggerStatus(state: .corrupt, message: "coverage"))
     let settingsResult = EngineSettingsResult(revision: id, settings: settings)
     let request = try EngineRequest(version: 1, requestID: id, command: .hello)
     let output = try EngineOutput(version: 1, sequence: id, requestID: nil, event: .state(state))
@@ -415,6 +479,31 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         try EngineExportPayload(sessionID: "coverage-session", destinationPath: "D:/Coverage"),
         EngineSettingsReplacePayload(expectedRevision: nil, settings: settings),
         settings,
+        profileEvaluatePayload,
+        acceleratorDescriptor,
+        bindPayload,
+        bindResult,
+        verifyPayload,
+        verifyPass,
+        verifyFail,
+        decidePayload,
+        EngineProfileHardware.noGPU,
+        EngineProfileHardware.queryFailed("GPU query failed"),
+        EngineProfileHardware.gpu(
+            name: "Coverage GPU", adapterID: "coverage-adapter", deviceID: "coverage-device",
+            driverVersion: "1.0", dedicatedVRAMBytes: 24576
+        ),
+        EngineProfileAcquisition.unavailable,
+        EngineProfileAcquisition.failed("provider acquisition failed"),
+        EngineProfileAcquisition.acquired(.openVINO),
+        profileEvaluation,
+        completeEvaluation,
+        chosenEvaluation,
+        profileSetup,
+        resourceProtection,
+        resourcePreflight,
+        resourceAcknowledge,
+        resourceAssessment,
         EngineDevice.id("coverage-device"),
         EngineAcceptedPayload(command: .hello),
         try EngineExportResult(sessionID: "coverage-session", destinationPath: "D:/Coverage"),
@@ -449,6 +538,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         identity,
         EngineClauseTaggerInspection.validated(identity),
         inspection,
+        modelsStatus,
         presentation,
     ]
 }

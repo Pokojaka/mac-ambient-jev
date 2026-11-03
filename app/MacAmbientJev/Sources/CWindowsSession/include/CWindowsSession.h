@@ -1,10 +1,13 @@
 #ifndef MAC_AMBIENT_WINDOWS_SESSION_H
 #define MAC_AMBIENT_WINDOWS_SESSION_H
+#include <stddef.h>
 #include <stdint.h>
 #include <wchar.h>
 
 typedef void *MSJHandle;
 uint32_t msj_open_root(const wchar_t *path, int create, int writable, MSJHandle *result);
+uint32_t msj_open_readonly_file(const wchar_t *path, MSJHandle *result);
+uint32_t msj_copy_mapped(const void *source, void *destination, size_t count);
 /* kind: -1 either, 0 regular file, 1 directory. Never follows a reparse point. */
 uint32_t msj_open_at(MSJHandle parent, const wchar_t *name, int kind, int writable,
                      int create, int exclusive, int deletable, MSJHandle *result);

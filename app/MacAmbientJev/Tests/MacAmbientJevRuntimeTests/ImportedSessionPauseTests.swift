@@ -85,7 +85,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let paused = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { true },
+        shouldPause: { .thermal },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },
@@ -111,7 +111,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let resumed = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { false },
+        shouldPause: { nil },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },

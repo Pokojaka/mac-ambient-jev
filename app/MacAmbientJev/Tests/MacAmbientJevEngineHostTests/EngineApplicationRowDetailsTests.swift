@@ -1048,7 +1048,8 @@ private func prepared(_ root: URL) async throws -> ApplicationHarness {
     h.start()
     try await h.hello()
     try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
-    try await h.call("models.prepare")
+    try await h.callAcknowledgingResources("models.prepare")
+    try await acknowledgeResourceWarning(h.app, workload: .live, context: try requestContext(for: h))
     return h
 }
 

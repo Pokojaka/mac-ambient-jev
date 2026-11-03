@@ -30,7 +30,7 @@ private struct SettingsFixture {
 
     static func settings(threads: Int = 2, decisions: Bool = true) throws -> EngineSettings {
         try EngineSettings(
-            schemaVersion: 1,
+            schemaVersion: 2,
             source: .microphone,
             device: .default,
             asrSize: .small,
@@ -112,10 +112,10 @@ struct EngineSettingsStoreTests {
         let invalidFiles = [
             "not json",
             #"{"revision":"1"}"#,
-            #"{"revision":"1","settings":{"schema_version":2,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":"cpu","threads":2,"low_heat":false,"decisions_enabled":true,"automatic_export":false,"export_destination_path":null}}"#,
-            #"{"revision":"1","settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":"cpu","threads":2,"low_heat":false,"decisions_enabled":true,"automatic_export":false,"export_destination_path":null,"extra":1}}"#,
+            #"{"revision":"1","settings":{"schema_version":2,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":{"kind":"cpu"},"threads":"2","low_heat":false,"decisions_enabled":true,"automatic_export":false,"export_destination_path":null}}"#,
+            #"{"revision":"1","settings":{"schema_version":2,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":{"kind":"cpu"},"threads":2,"low_heat":false,"decisions_enabled":true,"automatic_export":false,"export_destination_path":null,"extra":1}}"#,
             #"{"revision":"1","revision":"2","settings":{}}"#,
-            #"{"revision":"1","settings":{"schema_version":1,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":"cpu","threads":2,"low_heat":false,"decisions_enabled":true}}"#,
+            #"{"revision":"1","settings":{"schema_version":2,"source":"microphone","device":{"kind":"default"},"asr_size":"0.6b","execution_provider":{"kind":"cpu"},"threads":2,"low_heat":false,"decisions_enabled":true}}"#,
         ]
         for text in invalidFiles {
             let fixture = try SettingsFixture()

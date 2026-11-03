@@ -8,7 +8,7 @@ internal struct TranscribeFileArguments: Sendable {
     let inputURL: URL
     let sileroModelURL: URL
     let asrModelDirectory: URL
-    let asrModelSize: Qwen3ASRModelSize
+    let asrModelSize: ASRModelSize
     let threads: Int
     let outputURL: URL
     let artifactOutputURL: URL
@@ -53,7 +53,7 @@ internal struct TranscribeFileArguments: Sendable {
         }
 
         guard let sizeValue = values["--asr-model-size"],
-              let size = Qwen3ASRModelSize(rawValue: sizeValue) else {
+              let size = ASRModelSize(rawValue: sizeValue) else {
             throw TranscribeFileCommandError.invalidArguments("ASRモデルサイズは 0.6b または 1.7b で指定してください。")
         }
         guard let threadValue = values["--threads"],
@@ -375,14 +375,14 @@ internal enum TranscribeFileCommand {
         return object
     }
 
-    private static func requiredConfiguration(_ key: String, from configuration: [String: String]) throws -> String {
-        guard let value = configuration[key] else {
+    private static func requiredConfiguration(_ key: String, from configuration: [String: String?]) throws -> String {
+        guard let storedValue = configuration[key], let value = storedValue else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定に \(key) がありません。")
         }
         return value
     }
 
-    private static func requiredDoubleConfiguration(_ key: String, from configuration: [String: String]) throws -> Double {
+    private static func requiredDoubleConfiguration(_ key: String, from configuration: [String: String?]) throws -> Double {
         let string = try requiredConfiguration(key, from: configuration)
         guard let value = Double(string), value.isFinite else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定 \(key) を数値に変換できません: \(string)")
@@ -390,7 +390,7 @@ internal enum TranscribeFileCommand {
         return value
     }
 
-    private static func requiredIntConfiguration(_ key: String, from configuration: [String: String]) throws -> Int {
+    private static func requiredIntConfiguration(_ key: String, from configuration: [String: String?]) throws -> Int {
         let string = try requiredConfiguration(key, from: configuration)
         guard let value = Int(string) else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定 \(key) を整数に変換できません: \(string)")
@@ -398,7 +398,7 @@ internal enum TranscribeFileCommand {
         return value
     }
 
-    private static func requiredBoolConfiguration(_ key: String, from configuration: [String: String]) throws -> Bool {
+    private static func requiredBoolConfiguration(_ key: String, from configuration: [String: String?]) throws -> Bool {
         let string = try requiredConfiguration(key, from: configuration)
         guard let value = Bool(string) else {
             throw TranscribeFileCommandError.invalidMetric("ASR設定 \(key) を真偽値に変換できません: \(string)")

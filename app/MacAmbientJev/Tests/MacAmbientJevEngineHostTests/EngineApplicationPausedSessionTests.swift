@@ -95,7 +95,7 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
         self.gate = gate
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         onProgress(EngineModelProgress(stage: .validating, completed: 1, total: 1))
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
     }
@@ -104,11 +104,15 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
         await usageCounter.snapshot()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         try await inspectionProvider.inspectClauseTagger()
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         EngineInference(
             engines: SessionProcessingEngines(
                 asr: PausedSessionGatedASR(gate: gate, calls: calls),
@@ -135,10 +139,13 @@ private final class PausedSessionFinalizationHarness {
         paths = engineTestPaths(root: root)
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let resourceMonitor = FakeResourceMonitor()
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(30)
             ),
@@ -161,9 +168,11 @@ private final class PausedSessionFinalizationHarness {
         _ = try await first.app.core.replace(
             EngineSettingsReplacePayload(expectedRevision: nil, settings: settings), context: first.context
         )
+        try await acknowledgeResourceWarning(first.app, workload: .load, context: first.context)
         try await first.app.core.prepare(context: first.context)
         await first.app.core.processingCoordinator.waitUntilIdle()
 
+        try await acknowledgeResourceWarning(first.app, workload: .live, context: first.context)
         let recording = try await first.app.core.start(
             EngineRecordingStartPayload(source: .microphone, device: .default), context: first.context
         )

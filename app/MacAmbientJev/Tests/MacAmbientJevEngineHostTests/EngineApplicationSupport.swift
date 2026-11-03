@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Synchronization
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
@@ -42,6 +43,39 @@ final class LockedBox<Value: Sendable>: @unchecked Sendable {
         value = newValue
         lock.unlock()
     }
+}
+
+final class FakeResourceMonitor: InferenceResourceMonitoring, InferenceMemoryProbing, Sendable {
+    private let signalStorage = Mutex<InferenceResourceSignal>(.healthy)
+    private let factsStorage = Mutex(InferenceMemoryFacts(
+        physicalMemoryBytes: 16 * 1024 * 1024 * 1024, freePhysicalMemoryBytes: 8 * 1024 * 1024 * 1024,
+        commitHeadroomBytes: 8 * 1024 * 1024 * 1024, lowMemorySignal: false
+    ))
+    private let callbacks = Mutex<[UUID: @MainActor @Sendable () -> Void]>([:])
+    var signal: InferenceResourceSignal { signalStorage.withLock { $0 } }
+    var facts: InferenceMemoryFacts {
+        get { factsStorage.withLock { $0 } }
+        set { factsStorage.withLock { $0 = newValue } }
+    }
+    func memoryFacts() throws -> InferenceMemoryFacts { facts }
+
+    @MainActor func setSignal(_ signal: InferenceResourceSignal) {
+        signalStorage.withLock { $0 = signal }
+        callbacks.withLock { Array($0.values) }.forEach { $0() }
+    }
+
+    @MainActor
+    func observeChanges(_ onChange: @escaping @MainActor @Sendable () -> Void) -> any InferenceResourceObservation {
+        let id = UUID()
+        callbacks.withLock { $0[id] = onChange }
+        return FakeResourceObservation { [weak self] in _ = self?.callbacks.withLock { $0.removeValue(forKey: id) } }
+    }
+}
+
+private final class FakeResourceObservation: InferenceResourceObservation {
+    private let cancel: @Sendable () -> Void
+    init(cancel: @escaping @Sendable () -> Void) { self.cancel = cancel }
+    deinit { cancel() }
 }
 
 struct FakeASR: ASREngine {
@@ -112,13 +146,17 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
     let calls = CallCounter()
     let usageCounter = DecisionUsageCounter()
     private let failure = LockedBox<EngineAdapterError?>(nil)
+    /// The engine name of the accelerated ASR each `prepare` and `makeInference` received; nil entries are CPU.
+    let preparedASR = LockedBox<[String?]>([])
+    let inferredASR = LockedBox<[String?]>([])
 
     func failPrepare(with error: EngineAdapterError?) {
         failure.set(error)
     }
 
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+    func prepare(settings: EngineSettings, acceleratedASR: (any ASREngine)?, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         calls.increment("prepare")
+        preparedASR.set(preparedASR.get() + [acceleratedASR?.provenance.engine])
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         if let failure = failure.get() { throw failure }
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
@@ -126,6 +164,18 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
 
     func decisionUsage() async throws -> DecisionUsageSnapshot {
         await usageCounter.snapshot()
+    }
+
+    /// The status `models.status` reports per size; sizes without an entry are installed.
+    let sizeStatuses = LockedBox<[EngineASRSize: EngineASRProfileStatus]>([:])
+    let taggerStatus = LockedBox<EngineClauseTaggerStatus?>(nil)
+
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        let sizes = sizeStatuses.get()
+        return try EngineModelsStatus(
+            asrProfiles: asrSizes.map { try sizes[$0] ?? EngineASRProfileStatus(asrSize: $0, state: .installed, message: nil) },
+            clauseTagger: taggerStatus.get() ?? EngineClauseTaggerStatus(state: .installed, message: nil)
+        )
     }
 
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
@@ -137,9 +187,10 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
         )
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
-        EngineInference(
-            engines: SessionProcessingEngines(asr: FakeASR(calls: calls), diarization: FakeDiarizer(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+        inferredASR.set(inferredASR.get() + [acceleratedASR?.provenance.engine])
+        return EngineInference(
+            engines: SessionProcessingEngines(asr: acceleratedASR ?? FakeASR(calls: calls), diarization: FakeDiarizer(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
             makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }
@@ -306,9 +357,18 @@ func engineTestPaths(root: URL) -> AppPaths {
 
 func engineTestSettings(decisions: Bool = false, automaticExport: Bool = false, exportPath: String? = nil) throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: .small, executionProvider: .cpu,
         threads: 1, lowHeat: false, decisionsEnabled: decisions, automaticExport: automaticExport, exportDestinationPath: exportPath
     )
+}
+
+@MainActor
+func acknowledgeResourceWarning(
+    _ app: EngineApplication, workload: EngineResourceWorkload, context: EngineRequestContext
+) async throws {
+    let models = app.handlers.models
+    let assessment = try await models.preflight(.init(workload: workload), context: context)
+    _ = try await models.acknowledge(try EngineResourcesAcknowledgePayload(assessmentID: assessment.assessmentID), context: context)
 }
 
 /// The composed engine behind a real controller and transport, driven by NDJSON lines.
@@ -320,24 +380,26 @@ final class ApplicationHarness {
     let sink = ScriptedSink()
     let capture = FakeCapture()
     let inference = FakeInferenceProvider()
+    let resources = FakeResourceMonitor()
     let transport: EngineTransport
     let app: EngineApplication
     let controller: EngineController
     private var runTask: Task<EngineExit, Never>?
     private var nextRequestID: UInt64 = 1
 
-    init(root: URL) {
+    init(root: URL, acceleratorRegistry: any EngineAcceleratorRegistry = EngineUnavailableAcceleratorRegistry()) {
         self.root = root
         paths = engineTestPaths(root: root)
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20)
+                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, memoryProber: resources,
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,
             inference: inference,
-            events: EngineEventEmitter(transport: transport)
+            events: EngineEventEmitter(transport: transport),
+            acceleratorRegistry: acceleratorRegistry
         )
         controller = EngineController(transport: transport, handlers: app.handlers, admission: .production)
     }
@@ -379,6 +441,22 @@ final class ApplicationHarness {
             }
         }
         preconditionFailure("terminal reply vanished")
+    }
+
+    @discardableResult
+    func callAcknowledgingResources(_ command: String, payload: String = "{}") async throws -> EngineResult {
+        let workload: EngineResourceWorkload
+        switch command {
+        case "models.prepare": workload = .load
+        case "recording.start": workload = .live
+        default: preconditionFailure("resource acknowledgement is only for model preparation or recording start")
+        }
+        try await acknowledgeResourceWarning(
+            app,
+            workload: workload,
+            context: EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: transport))
+        )
+        return try await call(command, payload: payload)
     }
 
     nonisolated private static func isTerminal(_ event: EngineEvent) -> Bool {
@@ -437,5 +515,14 @@ final class ApplicationHarness {
     func shutdown() async throws -> EngineExit {
         try await call("shutdown")
         return await exit()
+    }
+}
+
+/// A host that supports Windows ML selections but has no device to bind.
+struct WindowsMLCapableRegistry: EngineAcceleratorRegistry {
+    let executionProviderKinds: [EngineExecutionProviderKind] = [.cpu, .windowsML]
+
+    func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice] {
+        throw EngineAdapterError(code: .modelFailure, message: "テスト用の registry は bind できません", recoveryAction: .none, details: [])
     }
 }

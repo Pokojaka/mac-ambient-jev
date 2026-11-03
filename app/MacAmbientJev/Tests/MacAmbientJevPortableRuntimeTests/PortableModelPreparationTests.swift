@@ -169,7 +169,7 @@ struct PortableModelPreparationTests {
         let root = URL(fileURLWithPath: "/models", isDirectory: true)
         let layout = PortableInstalledModelLayout(modelsRoot: root)
         #expect(layout.sileroModelURL.path == "/models/silero/\(SileroVADModel.revision)/silero_vad_16k_op15.onnx")
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             #expect(layout.qwen3Directory(size: size).path == "/models/qwen3-asr-\(size.rawValue)-int4-\(size.commit)")
         }
         let diarization = try layout.diarizationDirectory()
@@ -188,13 +188,13 @@ struct PortableModelPreparationTests {
         #expect(withDecisions.clauseTaggerModelDirectory == (try layout.clauseTaggerDirectory()))
         #expect(withDecisions.qwen3Size == .large)
         #expect(withDecisions.threads == 2)
-        #expect(try PortableModelPreparationService.steps(for: withDecisions).map(\.model) == PortableModelKind.allCases)
+        #expect(try PortableModelPreparationService.steps(for: withDecisions, acceleratedASR: nil).map(\.model) == PortableModelKind.allCases)
 
         let without = try PortableProcessingConfiguration.installed(
             layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 8, withDecisions: false
         )
         #expect(without.clauseTaggerModelDirectory == nil)
-        #expect(try PortableModelPreparationService.steps(for: without).map(\.model) == [.vad, .asr, .diarization])
+        #expect(try PortableModelPreparationService.steps(for: without, acceleratedASR: nil).map(\.model) == [.vad, .asr, .diarization])
 
         for threads in [0, 5] {
             #expect(throws: PortableProcessingConfigurationError.self) {
@@ -222,7 +222,7 @@ struct PortableModelPreparationTests {
             clauseTaggerModelDirectory: tagger,
             threads: 1
         )
-        let steps = try PortableModelPreparationService.steps(for: configuration)
+        let steps = try PortableModelPreparationService.steps(for: configuration, acceleratedASR: nil)
         let step = try #require(steps.first { $0.model == .clauseTagger })
 
         do {
@@ -248,7 +248,7 @@ struct PortableModelPreparationTests {
             layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 4, withDecisions: true
         )
         do {
-            try await PortableModelPreparationService().prepare(configuration: configuration, onProgress: { _ in })
+            try await PortableModelPreparationService().prepare(configuration: configuration, acceleratedASR: nil, onProgress: { _ in })
             Issue.record("prepared without models")
         } catch let error as PortableModelPreparationError {
             guard case let .missing(model, path, command) = error else { Issue.record("not missing: \(error)"); return }
@@ -272,7 +272,7 @@ struct PortableModelPreparationTests {
             layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 4, withDecisions: false
         )
         do {
-            try await PortableModelPreparationService().prepare(configuration: configuration, onProgress: { _ in })
+            try await PortableModelPreparationService().prepare(configuration: configuration, acceleratedASR: nil, onProgress: { _ in })
             Issue.record("prepared with a corrupt model")
         } catch let error as PortableModelPreparationError {
             guard case let .invalid(model, path, detail, _) = error else { Issue.record("not invalid: \(error)"); return }
@@ -297,7 +297,7 @@ struct PortableModelPreparationTests {
             withDecisions: environment[PortableProcessingConfiguration.clauseTaggerDirectoryKey] != nil
         )
         let log = ProgressLog()
-        try await PortableModelPreparationService().prepare(configuration: configuration, onProgress: { log.progress($0) })
+        try await PortableModelPreparationService().prepare(configuration: configuration, acceleratedASR: nil, onProgress: { log.progress($0) })
         let progress = log.snapshot.progress
         let models = configuration.clauseTaggerModelDirectory == nil ? 3 : 4
         #expect(progress.count == 2 * (models + 1))

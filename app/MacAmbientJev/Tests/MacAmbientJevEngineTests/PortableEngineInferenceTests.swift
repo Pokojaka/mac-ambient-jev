@@ -56,7 +56,7 @@ private actor InspectionStartGate {
 
     private func settings() throws -> EngineSettings {
         try EngineSettings(
-            schemaVersion: 1,
+            schemaVersion: 2,
             source: .microphone,
             device: .default,
             asrSize: .small,
@@ -149,6 +149,31 @@ private actor InspectionStartGate {
         }
     }
 
+    @Test func installedModelStatusReportsMissingThenCorruptWithoutTouchingTheRoot() async throws {
+        let root = temporaryModelsRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inference = inference(modelsRoot: root)
+        let layout = PortableInstalledModelLayout(modelsRoot: root)
+
+        let missing = try await inference.installedModelStatus(asrSizes: EngineASRSize.allCases)
+        #expect(missing.asrProfiles.map(\.asrSize) == EngineASRSize.allCases)
+        for profile in missing.asrProfiles {
+            #expect(profile.state == .missing)
+            #expect(profile.message?.contains(layout.sileroModelURL.deletingLastPathComponent().path) == true)
+        }
+        #expect(missing.clauseTagger.state == .missing)
+        #expect(missing.clauseTagger.message?.contains(try layout.clauseTaggerDirectory().path) == true)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+
+        try FileManager.default.createDirectory(
+            at: layout.sileroModelURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data("not the pinned model".utf8).write(to: layout.sileroModelURL)
+        let status = try await inference.installedModelStatus(asrSizes: [.small])
+        #expect(status.asrProfiles.first?.state == .corrupt)
+        #expect(status.asrProfiles.first?.message?.contains(layout.sileroModelURL.path) == true)
+    }
+
     @Test func modelErrorMappingMatchesSequence38CorpusFailure() throws {
         let sourceDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -222,7 +247,7 @@ private actor InspectionStartGate {
         let settings = try settings()
 
         do {
-            try await inference.prepare(settings: settings) { _ in }
+            try await inference.prepare(settings: settings, acceleratedASR: nil) { _ in }
             Issue.record("preparation unexpectedly succeeded without installed models")
         } catch let error as EngineAdapterError {
             #expect(error.code == .modelMissing)

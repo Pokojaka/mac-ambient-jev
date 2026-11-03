@@ -1,0 +1,54 @@
+import Foundation
+import MacAmbientJevCore
+import MacAmbientJevEngineProtocol
+
+/// Binds a validated accelerator package and returns its available accelerator devices.
+/// Implementations validate the actual package full name, library and dependency hashes,
+/// package architecture, and the complete dependency closure (at most 64 files and 16 directories).
+/// Returned devices expose only GPU or NPU hardware, with engine-owned stable keys and actual
+/// driver and memory identities. Binding must never substitute CPU and must remain registered for
+/// every returned device and its ASR engines/sessions.
+public protocol EngineAcceleratorRegistry: Sendable {
+    /// The execution provider kinds this host supports; always contains `.cpu`.
+    var executionProviderKinds: [EngineExecutionProviderKind] { get }
+    func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice]
+}
+
+/// An accelerator device exposing its actual runtime, model, and hardware identities.
+public protocol EngineAcceleratorDevice: Sendable {
+    var info: EngineAcceleratorDeviceInfo { get }
+    var adapterIdentity: String { get }
+    var ortVersion: String { get }
+    /// The pinned `repository@commit` of the model this device runs for `size`.
+    func modelRevision(size: ASRModelSize) -> String
+
+    /// Creates an accelerated ASR engine using every supplied setting without CPU fallback.
+    /// `.audioLength` is the real-work policy; `.fixed` is for verification.
+    func makeASREngine(
+        size: ASRModelSize,
+        threads: Int,
+        language: String,
+        decoding: ASRDecodingPolicy,
+        identity: ASRAcceleratorIdentity
+    ) async throws -> any ASREngine
+}
+
+/// Explicit production failure for builds without an accelerator implementation.
+public struct EngineUnavailableAcceleratorRegistry: EngineAcceleratorRegistry {
+    public init() {}
+
+    public let executionProviderKinds: [EngineExecutionProviderKind] = [.cpu]
+
+    public func bind(_ descriptor: EngineAcceleratorDescriptor) async throws -> [any EngineAcceleratorDevice] {
+        throw unavailableError
+    }
+
+    private var unavailableError: EngineAdapterError {
+        EngineAdapterError(
+            code: .modelFailure,
+            message: "アクセラレーターはこのビルドでは利用できません",
+            recoveryAction: .none,
+            details: []
+        )
+    }
+}

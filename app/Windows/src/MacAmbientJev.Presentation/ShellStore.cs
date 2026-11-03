@@ -15,7 +15,17 @@ public sealed partial class ShellStore : IAsyncDisposable
         internal Exception? Error { get; set; }
     }
 
+    private sealed class PostedProgress(ShellStore store) : IProgress<ExecutionProviderProgress>
+    {
+        public void Report(ExecutionProviderProgress value)
+        {
+            try { _ = store.Post(() => store._working = store._working with { ProviderBindingProgress = value }); }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
     private readonly IEngineClient _client;
+    private readonly ExecutionProviderSetupCoordinator _providers;
     private readonly TimeProvider _timeProvider;
     private readonly Channel<Work> _work = Channel.CreateUnbounded<Work>(new UnboundedChannelOptions { SingleReader = true, AllowSynchronousContinuations = false });
     private readonly CancellationTokenSource _stop = new();
@@ -26,11 +36,12 @@ public sealed partial class ShellStore : IAsyncDisposable
     private Task? _disposeTask;
     private readonly Task _reducerTask, _watcherTask, _initialization;
 
-    public ShellStore(IEngineClient client) : this(client, TimeProvider.System) { }
+    public ShellStore(IEngineClient client, ExecutionProviderSetupCoordinator providers) : this(client, providers, TimeProvider.System) { }
 
-    public ShellStore(IEngineClient client, TimeProvider timeProvider)
+    public ShellStore(IEngineClient client, ExecutionProviderSetupCoordinator providers, TimeProvider timeProvider)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
+        _providers = providers ?? throw new ArgumentNullException(nameof(providers));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _reducerTask = Task.Run(ReduceAsync);
         _watcherTask = Task.Run(WatchEventsAsync);
@@ -90,9 +101,64 @@ public sealed partial class ShellStore : IAsyncDisposable
     public Task<bool> ExecuteAsync(EngineCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
-        if (command is not (EngineCommand.StateGet or EngineCommand.DiagnosticsGet or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect))
+        if (command is not (EngineCommand.StateGet or EngineCommand.DiagnosticsGet or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.ModelsInspect))
             throw new ArgumentException("ShellStore does not support this command.", nameof(command));
         return RunRequestAsync(() => command);
+    }
+
+    /// <summary>Rebinds the saved Windows ML provider when selected, then sends models.prepare.</summary>
+    public async Task<bool> PrepareModelsAsync()
+    {
+        EngineSettings? settings = null;
+        await Post(() =>
+        {
+            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
+            if (!_working.CanPrepareModels) { _working = _working with { CommandError = "Models cannot be prepared now." }; return; }
+            settings = _working.ConfirmedSettings!.Settings;
+            _working = _working with
+            {
+                Pending = _working.Pending.Add(EngineCommandName.ModelsPrepare),
+                CommandError = null, ProviderBindingFailure = null, ProviderBindingProgress = null
+            };
+        }).ConfigureAwait(false);
+        if (settings is null) return false;
+
+        var command = new EngineCommand.ModelsPrepare(new EngineEmptyPayload());
+        if (settings.ExecutionProvider is EngineExecutionProvider.WindowsML saved)
+        {
+            ExecutionProviderRebindResult rebind;
+            try { rebind = await _providers.RebindSavedAsync(saved.ProviderName, saved.DeviceKey, new PostedProgress(this), _stop.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                await Post(() =>
+                {
+                    _working = _working with { ProviderBindingProgress = null };
+                    HandleRequestFailure(command.Name, exception, true);
+                }).ConfigureAwait(false);
+                return false;
+            }
+            if (rebind is not ExecutionProviderRebindResult.Bound)
+            {
+                await Post(() =>
+                {
+                    RemovePending(command.Name);
+                    _working = _working with { ProviderBindingFailure = rebind, ProviderBindingProgress = null };
+                }).ConfigureAwait(false);
+                return false;
+            }
+        }
+
+        Task<EngineResult>? request = null;
+        await Post(() =>
+        {
+            _working = _working with { ProviderBindingProgress = null };
+            if (_working.Phase != ShellPhase.Running) { RemovePending(command.Name); return; }
+            try { request = _client.SendAsync(command); }
+            catch (Exception exception) { HandleRequestFailure(command.Name, exception, true); }
+        }).ConfigureAwait(false);
+        if (request is null) return false;
+        return await CompleteRequestAsync(command, request, ApplyResult, HandleRequestFailure).ConfigureAwait(false);
     }
 
     public Task ReportPresentationFailureAsync(Exception exception)
@@ -300,6 +366,11 @@ public sealed partial class ShellStore : IAsyncDisposable
             catch (Exception exception) { failure(command.Name, exception, true); }
         }).ConfigureAwait(false);
         if (command is null || request is null) return false;
+        return await CompleteRequestAsync(command, request, apply, failure).ConfigureAwait(false);
+    }
+
+    private async Task<bool> CompleteRequestAsync(EngineCommand command, Task<EngineResult> request, Action<EngineCommand, EngineResult> apply, Action<EngineCommandName, Exception, bool> failure)
+    {
         EngineResult result;
         try { result = await AwaitClientTask(request).ConfigureAwait(false); }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }

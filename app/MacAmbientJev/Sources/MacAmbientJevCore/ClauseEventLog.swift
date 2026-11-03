@@ -125,8 +125,8 @@ struct ClauseEventLog {
                     throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: runID, reason: "run の開始記録が重複しています")
                 }
                 runs[runID] = Run(
-                    stage: started.stage, mode: started.provenance.configuration["mode"],
-                    modelRevision: started.provenance.configuration["model_revision"],
+                    stage: started.stage, mode: started.provenance.configuration["mode"].flatMap { $0 },
+                    modelRevision: started.provenance.configuration["model_revision"].flatMap { $0 },
                     startedSeq: header.eventSeq, completionSeq: nil, completion: nil
                 )
             case "processing.run.completed":

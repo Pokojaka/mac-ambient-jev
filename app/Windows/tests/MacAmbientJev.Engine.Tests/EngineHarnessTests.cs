@@ -66,11 +66,21 @@ public sealed class EngineHarnessTests
         if (!Path.IsPathFullyQualified(path)) throw new InvalidOperationException($"Environment variable {variable} must contain an absolute path; received '{path}'.");
         return path;
     }
-    private static EngineSettings ExpectedSettings() => new(SchemaVersion: 1, Source: EngineSource.Microphone,
-        Device: new EngineDevice.Default(), AsrSize: EngineASRSize.Small, ExecutionProvider: EngineExecutionProvider.Cpu,
+    private static EngineSettings ExpectedSettings() => new(SchemaVersion: 2, Source: EngineSource.Microphone,
+        Device: new EngineDevice.Default(), AsrSize: EngineASRSize.Small, ExecutionProvider: new EngineExecutionProvider.Cpu(),
         Threads: 1, LowHeat: false, DecisionsEnabled: false, AutomaticExport: false, ExportDestinationPath: null);
+    private static async Task AcknowledgeResourcesAsync(EngineProcessClient client, EngineResourceWorkload workload, CancellationToken token)
+    {
+        var preflight = Assert.IsType<EngineResult.ResourcesPreflight>(await SendAsync(client,
+            new EngineCommand.ResourcesPreflight(new EngineResourcesPreflightPayload(workload)), token));
+        Assert.Equal(EngineResourceReadiness.Warning, preflight.Result.Result);
+        var acknowledgement = Assert.IsType<EngineResult.ResourcesAcknowledge>(await SendAsync(client,
+            new EngineCommand.ResourcesAcknowledge(new EngineResourcesAcknowledgePayload(preflight.Result.AssessmentID)), token));
+        Assert.Equal(preflight.Result.AssessmentID, acknowledgement.Result.AssessmentID);
+    }
     private static async Task<string> StartRecordingAsync(EngineProcessClient client, CancellationToken token)
     {
+        await AcknowledgeResourcesAsync(client, EngineResourceWorkload.Live, token);
         var start = Assert.IsType<EngineResult.RecordingStart>(await SendAsync(client,
             new EngineCommand.RecordingStart(new EngineRecordingStartPayload(
                 EngineSource.Microphone, new EngineDevice.Default())), token));
@@ -88,6 +98,7 @@ public sealed class EngineHarnessTests
         var result = Assert.IsType<EngineResult.SettingsReplace>(await SendAsync(client,
             new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(null, ExpectedSettings())), token));
         Assert.Equal(ExpectedSettings(), result.Result.Settings);
+        await AcknowledgeResourcesAsync(client, EngineResourceWorkload.Load, token);
         _ = Assert.IsType<EngineResult.ModelsPrepare>(await SendAsync(client, new EngineCommand.ModelsPrepare(new EngineEmptyPayload()), token));
         await WaitRecoveryAsync(client, token);
     }
@@ -97,6 +108,7 @@ public sealed class EngineHarnessTests
         _ = Assert.IsType<EngineResult.Hello>(await AwaitEventsAsync(client, client.Hello, token));
         var settings = Assert.IsType<EngineResult.SettingsGet>(await SendAsync(client, new EngineCommand.SettingsGet(new EngineEmptyPayload()), token));
         Assert.Equal(ExpectedSettings(), settings.Result.Settings);
+        await AcknowledgeResourcesAsync(client, EngineResourceWorkload.Load, token);
         _ = Assert.IsType<EngineResult.ModelsPrepare>(await SendAsync(client, new EngineCommand.ModelsPrepare(new EngineEmptyPayload()), token));
         await WaitRecoveryAsync(client, token);
         await WaitFinalizedAsync(client, session, token);

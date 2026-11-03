@@ -12,17 +12,22 @@ import MacAmbientJevPipeline
 
         func prepare(
             settings: EngineSettings,
+            acceleratedASR: (any ASREngine)?,
             onProgress: @escaping @Sendable (EngineModelProgress) -> Void
         ) async throws {
-            try await base.prepare(settings: settings, onProgress: onProgress)
+            try await base.prepare(settings: settings, acceleratedASR: acceleratedASR, onProgress: onProgress)
         }
 
-        func makeInference(settings: EngineSettings) throws -> EngineInference {
-            try base.makeInference(settings: settings)
+        func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
+            try base.makeInference(settings: settings, acceleratedASR: acceleratedASR)
         }
 
         func decisionUsage() async throws -> DecisionUsageSnapshot {
             try await base.decisionUsage()
+        }
+
+        func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+            preconditionFailure("models.status is not used by this test")
         }
 
         func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
@@ -38,9 +43,11 @@ import MacAmbientJevPipeline
         let sink = ScriptedSink()
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
+        let resourceMonitor = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor, memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
             ),
             capture: FakeCapture(), inference: CancellingInspectionInferenceProvider(), events: events

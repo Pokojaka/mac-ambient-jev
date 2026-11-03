@@ -1,3 +1,4 @@
+import MacAmbientJevCore
 import MacAmbientJevONNX
 import Testing
 @testable import MacAmbientJevPortableRuntime
@@ -5,7 +6,7 @@ import Testing
 struct Qwen3ASRONNXModelTests {
     @Test
     func metadataMatchesInspectedGraphsForBothSizesAndRuntimeBatches() throws {
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             for graph in [Qwen3ASRGraph.encoder, .decoderInit, .decoderStep] {
                 let dynamicBatch = metadata(for: graph, size: size, batch: -1)
                 try Qwen3ASRONNXModel.validateMetadata(
@@ -129,7 +130,7 @@ struct Qwen3ASRONNXModelTests {
 
     private func metadata(
         for graph: Qwen3ASRGraph,
-        size: Qwen3ASRModelSize,
+        size: ASRModelSize,
         batch: Int64
     ) -> (inputs: [ONNXTensorMetadata], outputs: [ONNXTensorMetadata]) {
         let float = ONNXTensorElementType.float32
@@ -176,7 +177,7 @@ struct Qwen3ASRONNXModelTests {
         graph: Qwen3ASRGraph,
         inputs: [ONNXTensorMetadata],
         outputs: [ONNXTensorMetadata],
-        size: Qwen3ASRModelSize
+        size: ASRModelSize
     ) -> String {
         do {
             try Qwen3ASRONNXModel.validateMetadata(graph: graph, inputs: inputs, outputs: outputs, size: size)

@@ -15,7 +15,7 @@ dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
 dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore
 ```
 
-Protocol は共有102-record corpus の typed decode / reencode と codec / framing validation を検証します。EngineClient は in-memory fake child を使う process-client tests、Presentation は fake engine による store / view-model / paging / guard tests と portable assembly check を行います（詳細は [Windows の C# portable libraries](windows.md#c-portable-libraries)）。Swift、model、音声 hardware は必要ありません。
+Protocol は共有 positive corpus（142 records）と shared negative corpus（123 records）を使い、positive の typed decode / reencode、negative の拒否、および codec / framing validation を検証します。EngineClient は in-memory fake child を使う process-client tests、Presentation は fake engine による store / view-model / paging / guard tests と portable assembly check を行います（詳細は [Windows の C# portable libraries](windows.md#c-portable-libraries)）。Swift、model、音声 hardware は必要ありません。
 
 CI の `dotnet-portable` job は `ubuntu-24.04`、`macos-15`、`windows-2025` matrix で実行し、`dotnet --info` を記録します。CI の test / report command は次のとおりです。
 
@@ -122,7 +122,7 @@ dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Te
   --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=C:\absolute\path\to\MacAmbientJevEngineHarness.exe"
 ```
 
-EngineHarnessTests.cs は実際の ProcessEngineChild と EngineProcessClient を通し、test-only harness に `--root`、`--fixture`、`--sample-rate 16000`、`--channels 1`、`--inference deterministic`、`--threads 1` の6 CLI arguments を明示して起動します。自身で headerless little-endian Float32 mono の33,000 sample fixture を作り、schema version 1、microphone / default device、ASR small、CPU、threads 1、low heat / decisions / automatic export false、export destination null の10 settings をすべて明示します。主シナリオは hello / setup / prepare / start / watch / stop / final publication を経て `transcript.read` limit 1 の一行が「エンジンの受け入れテストです。」・Speaker 1 であること、2回の export が同じ bytes を出すこと、shutdown exit 0 を検証します。EOF 後の durable stop は child exit 0 と client Failed state を確認し、kill 後は non-zero exit と client Failed state を確認して、どちらも test が起動する別 process で recovery します。個々の operation wait は30秒、recovery / publication polling は180秒、poll interval は250msです。production の auto-restart や API 変更を加えるものではありません。
+EngineHarnessTests.cs は実際の ProcessEngineChild と EngineProcessClient を通し、test-only harness に `--root`、`--fixture`、`--sample-rate 16000`、`--channels 1`、`--inference deterministic`、`--threads 1` の6 CLI arguments を明示して起動します。自身で headerless little-endian Float32 mono の33,000 sample fixture を作り、schema version 2、microphone / default device、ASR small、execution provider `{"kind":"cpu"}`、threads 1、low heat / decisions / automatic export false、export destination null の10 settings をすべて明示します。主シナリオは hello / setup / prepare / start / watch / stop / final publication を経て `transcript.read` limit 1 の一行が「エンジンの受け入れテストです。」・Speaker 1 であること、2回の export が同じ bytes を出すこと、shutdown exit 0 を検証します。EOF 後の durable stop は child exit 0 と client Failed state を確認し、kill 後は non-zero exit と client Failed state を確認して、どちらも test が起動する別 process で recovery します。個々の operation wait は30秒、recovery / publication polling は180秒、poll interval は250msです。production の auto-restart や API 変更を加えるものではありません。
 
 EngineHarnessTests の3 tests は実 process transport と storage を deterministic test harness で検証しますが、WASAPI / audio hardware、実モデルや認識品質は検証しません。出荷 Windows engine の startup は、この gate に含まれる別の production smoke test が検証します。既存 Python acceptance checks は変更せず、Linux CI / `verify_portable.sh` にもこの gate は配線していません。
 

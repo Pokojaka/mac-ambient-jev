@@ -224,7 +224,8 @@ func stateEvent(revision: UInt64) throws -> EngineEvent {
 
 func sampleState(revision: UInt64) throws -> EngineState {
     try EngineState(
-        revision: EngineID(revision), screen: .idle, setup: .ready, recovery: .completed,
+        revision: EngineID(revision), screen: .idle, setup: .ready,
+        profileSetup: .init(evaluation: nil, operation: nil), resourceProtection: try .init(holdReasons: []), recovery: .completed,
         recording: nil, queue: [], failures: [],
         presentation: try EnginePresentationState(
             recordingStatusText: "待機中", recordingTone: .neutral, preparationPhase: .ready,
@@ -238,7 +239,7 @@ func sampleState(revision: UInt64) throws -> EngineState {
 func sampleReady() throws -> EngineReadyPayload {
     EngineReadyPayload(
         capabilities: try EngineCapabilities(
-            sources: [.microphone, .systemAudio], asrSizes: [.small, .large], executionProviders: [.cpu],
+            sources: [.microphone, .systemAudio], asrSizes: [.small, .large], executionProviderKinds: [.cpu],
             maximumThreads: 4, automaticInputVolume: .none, thermalMonitoring: .none
         ),
         state: try sampleState(revision: 1)

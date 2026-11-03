@@ -15,11 +15,11 @@ public sealed class EngineTypedCodecTests
         Assert.Equal("{\"command\":\"hello\",\"payload\":{},\"request_id\":\"1\",\"version\":1}\n",
             Encoding.UTF8.GetString(EngineCodec.EncodeRequest(hello)));
 
-        var settings = new EngineSettings(1, EngineSource.SystemAudio, new EngineDevice.Id("wasapi-loopback-42"),
-            EngineASRSize.Large, EngineExecutionProvider.Cpu, 3, true, true, true, "D:/Ambient Exports");
+        var settings = new EngineSettings(2, EngineSource.SystemAudio, new EngineDevice.Id("wasapi-loopback-42"),
+            EngineASRSize.Large, new EngineExecutionProvider.Cpu(), 3, true, true, true, "D:/Ambient Exports");
         var settingsRequest = new EngineRequest(1, ID(303),
             new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(ID(9), settings)));
-        const string settingsGolden = "{\"command\":\"settings.replace\",\"payload\":{\"expected_revision\":\"9\",\"settings\":{\"asr_size\":\"1.7b\",\"automatic_export\":true,\"decisions_enabled\":true,\"device\":{\"id\":\"wasapi-loopback-42\",\"kind\":\"id\"},\"execution_provider\":\"cpu\",\"export_destination_path\":\"D:/Ambient Exports\",\"low_heat\":true,\"schema_version\":1,\"source\":\"system_audio\",\"threads\":3}},\"request_id\":\"303\",\"version\":1}\n";
+        const string settingsGolden = "{\"command\":\"settings.replace\",\"payload\":{\"expected_revision\":\"9\",\"settings\":{\"asr_size\":\"1.7b\",\"automatic_export\":true,\"decisions_enabled\":true,\"device\":{\"id\":\"wasapi-loopback-42\",\"kind\":\"id\"},\"execution_provider\":{\"kind\":\"cpu\"},\"export_destination_path\":\"D:/Ambient Exports\",\"low_heat\":true,\"schema_version\":2,\"source\":\"system_audio\",\"threads\":3}},\"request_id\":\"303\",\"version\":1}\n";
         Assert.Equal(settingsGolden, Encoding.UTF8.GetString(EngineCodec.EncodeRequest(settingsRequest)));
 
         const string path = "D:/資料/😀/line\nbreak.wav";
@@ -174,6 +174,23 @@ public sealed class EngineTypedCodecTests
         Set(emptySources, new JsonArray(), "sources");
         var duplicateSources = capabilities.DeepClone();
         Set(duplicateSources, At(duplicateSources, "sources", "#0").DeepClone(), "sources", "#1");
+        var emptyKinds = capabilities.DeepClone();
+        Set(emptyKinds, new JsonArray(), "execution_provider_kinds");
+        var duplicateKinds = capabilities.DeepClone();
+        Set(duplicateKinds, JsonNode.Parse("[\"cpu\",\"cpu\"]"), "execution_provider_kinds");
+        var unknownKind = capabilities.DeepClone();
+        Set(unknownKind, JsonNode.Parse("[\"future\"]"), "execution_provider_kinds");
+        var status = Part(182, "payload", "result");
+        var installedWithMessage = At(status, "asr_profiles", "#0").DeepClone();
+        Set(installedWithMessage, JsonValue.Create("x"), "message");
+        var missingWithoutMessage = At(status, "asr_profiles", "#1").DeepClone();
+        Set(missingWithoutMessage, null, "message");
+        var duplicateSizes = status.DeepClone();
+        Set(duplicateSizes, At(duplicateSizes, "asr_profiles", "#0").DeepClone(), "asr_profiles", "#1");
+        var installedTaggerWithMessage = At(status, "clause_tagger").DeepClone();
+        Set(installedTaggerWithMessage, JsonValue.Create("x"), "message");
+        var emptyProfiles = status.DeepClone();
+        Set(emptyProfiles, new JsonArray(), "asr_profiles");
 
         var invalid = new[]
         {
@@ -195,6 +212,14 @@ public sealed class EngineTypedCodecTests
             Case(typeof(EngineClauseTaggerIdentity), uppercaseHash, WireError.Constraint, "$.revision"),
             Case(typeof(EngineCapabilities), emptySources, WireError.Constraint, "$.sources"),
             Case(typeof(EngineCapabilities), duplicateSources, WireError.Constraint, "$.sources"),
+            Case(typeof(EngineCapabilities), emptyKinds, WireError.Constraint, "$.execution_provider_kinds"),
+            Case(typeof(EngineCapabilities), duplicateKinds, WireError.Constraint, "$.execution_provider_kinds"),
+            Case(typeof(EngineCapabilities), unknownKind, WireError.UnknownValue, "$.execution_provider_kinds[0]"),
+            Case(typeof(EngineASRProfileStatus), installedWithMessage, WireError.Constraint, "$.message"),
+            Case(typeof(EngineASRProfileStatus), missingWithoutMessage, WireError.Constraint, "$.message"),
+            Case(typeof(EngineClauseTaggerStatus), installedTaggerWithMessage, WireError.Constraint, "$.message"),
+            Case(typeof(EngineModelsStatus), duplicateSizes, WireError.Constraint, "$.asr_profiles"),
+            Case(typeof(EngineModelsStatus), emptyProfiles, WireError.Constraint, "$.asr_profiles"),
         };
         foreach (var item in invalid)
             AssertWireError(() => StrictWireCodec.Decode(item.Type, Encoding.UTF8.GetBytes(item.Json)), item.Error, item.Path);

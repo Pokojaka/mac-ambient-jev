@@ -44,7 +44,7 @@ public sealed record EngineFailure(
 public sealed record EngineCapabilities(
     [property: WireMember("sources")] EngineSource[] Sources,
     [property: WireMember("asr_sizes")] EngineASRSize[] AsrSizes,
-    [property: WireMember("execution_providers")] EngineExecutionProvider[] ExecutionProviders,
+    [property: WireMember("execution_provider_kinds")] EngineExecutionProviderKind[] ExecutionProviderKinds,
     [property: WireMember("maximum_threads")] long MaximumThreads,
     [property: WireMember("automatic_input_volume")] EngineUnavailableCapability AutomaticInputVolume,
     [property: WireMember("thermal_monitoring")] EngineUnavailableCapability ThermalMonitoring) : IWireValidatable
@@ -63,10 +63,10 @@ public sealed record EngineCapabilities(
             WireCheck.Unique(AsrSizes, path + ".asr_sizes");
         }
 
-        if (ExecutionProviders is not null)
+        if (ExecutionProviderKinds is not null)
         {
-            WireCheck.Require(ExecutionProviders.Length > 0, path + ".execution_providers", "execution_providers must not be empty.");
-            WireCheck.Unique(ExecutionProviders, path + ".execution_providers");
+            WireCheck.Require(ExecutionProviderKinds.Length > 0, path + ".execution_provider_kinds", "execution_provider_kinds must not be empty.");
+            WireCheck.Unique(ExecutionProviderKinds, path + ".execution_provider_kinds");
         }
         WireCheck.Range(MaximumThreads, 1, 4, path + ".maximum_threads");
     }
@@ -102,6 +102,8 @@ public sealed record EngineState(
     [property: WireMember("revision")] EngineID Revision,
     [property: WireMember("screen")] EngineScreen Screen,
     [property: WireMember("setup")] EngineSetupStatus Setup,
+    [property: WireMember("profile_setup")] EngineProfileSetup ProfileSetup,
+    [property: WireMember("resource_protection")] EngineResourceProtection ResourceProtection,
     [property: WireMember("recovery")] EngineRecoveryStatus Recovery,
     [property: WireMember("recording", IsNullable = true)] EngineRecordingState? Recording,
     [property: WireMember("queue")] EngineQueuedOperation[] Queue,

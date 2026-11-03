@@ -58,6 +58,7 @@ public final class ONNXValue: @unchecked Sendable {
 
     let environment: ONNXEnvironment
     let handle: OpaquePointer
+    var providerLease: ONNXProviderLease? = nil
     private let elementType: ONNXValueElementType
 
     public init(environment: ONNXEnvironment, tensor: ONNXTensor) throws {

@@ -108,7 +108,8 @@ enum PortableAssetVerifier {
 
 /// Verifies the pinned installed models of one configuration, then loads each, in order VAD, ASR, diarization and,
 /// only when the configuration has a clause tagger directory, the tagger. It never downloads, never substitutes a
-/// model and creates no recognition or decision request. Each model is released after it loads.
+/// model and creates no recognition or decision request. Each model is released after it loads. A non-nil `acceleratedASR`
+/// is loaded in place of the CPU ASR and its failure is reported as the ASR load failure.
 public struct PortableModelPreparationService: Sendable {
     struct Step: Sendable {
         let model: PortableModelKind
@@ -120,9 +121,26 @@ public struct PortableModelPreparationService: Sendable {
 
     public func prepare(
         configuration: PortableProcessingConfiguration,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (PortableModelPreparationProgress) -> Void
     ) async throws {
-        try await Self.run(steps: try Self.steps(for: configuration), onProgress: onProgress)
+        try await Self.run(steps: try Self.steps(for: configuration, acceleratedASR: acceleratedASR), onProgress: onProgress)
+    }
+
+    /// The same verification as the clause tagger preparation step.
+    public func verifyInstalledClauseTagger(modelDirectory: URL) async throws {
+        try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+            _ = try PortableClauseTaggerInspection.validateAssets(modelDirectory: modelDirectory)
+        }.value
+    }
+
+    /// Runs only the verification of every model, in preparation order, and throws the first failure.
+    /// Loads nothing, downloads nothing and writes nothing.
+    public func verifyInstalled(configuration: PortableProcessingConfiguration) async throws {
+        for step in try Self.steps(for: configuration, acceleratedASR: nil) {
+            try Task.checkCancellation()
+            try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try step.validate() }.value
+        }
     }
 
     static func run(
@@ -145,7 +163,7 @@ public struct PortableModelPreparationService: Sendable {
         }
     }
 
-    static func steps(for configuration: PortableProcessingConfiguration) throws -> [Step] {
+    static func steps(for configuration: PortableProcessingConfiguration, acceleratedASR: (any ASREngine)?) throws -> [Step] {
         let threads = configuration.threads
         let silero = configuration.sileroModelURL
         let qwen = configuration.qwen3ModelDirectory
@@ -185,7 +203,7 @@ public struct PortableModelPreparationService: Sendable {
                 },
                 load: {
                     try await Self.load(.asr, path: qwen.path) {
-                        let engine = ONNXQwen3ASREngine(modelDirectory: qwen, size: qwenSize, intraOpThreads: threads)
+                        let engine = acceleratedASR ?? ONNXQwen3ASREngine(modelDirectory: qwen, size: qwenSize, intraOpThreads: threads)
                         try await engine.prepare()
                         await engine.unload()
                     }

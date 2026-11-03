@@ -142,3 +142,127 @@ public struct EngineModelsInspection: Codable, Equatable, Sendable {
         try container.encode(clauseTagger, forKey: .clauseTagger)
     }
 }
+
+public enum EngineModelState: String, Codable, CaseIterable, Equatable, Sendable {
+    case installed
+    case missing
+    case corrupt
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        guard let value = Self(rawValue: rawValue) else {
+            throw EngineProtocolError.invalidJSON("unknown model state")
+        }
+        self = value
+    }
+}
+
+private func engineModelStateRequire(_ state: EngineModelState, _ message: String?) throws {
+    if state == .installed {
+        try engineModelInspectionRequire(message == nil, "installed model status must not have a message")
+    } else {
+        try engineModelInspectionRequire(message?.isEmpty == false, "\(state.rawValue) model status needs a message")
+    }
+}
+
+/// The installed state of the VAD, one ASR size and diarization. `message` is nil exactly when `state` is `installed`.
+public struct EngineASRProfileStatus: Codable, Equatable, Sendable {
+    public let asrSize: EngineASRSize
+    public let state: EngineModelState
+    @EngineNullable public private(set) var message: String?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case asrSize = "asr_size"
+        case state
+        case message
+    }
+
+    public init(asrSize: EngineASRSize, state: EngineModelState, message: String?) throws {
+        try engineModelStateRequire(state, message)
+        self.asrSize = asrSize
+        self.state = state
+        _message = EngineNullable(wrappedValue: message)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(
+            asrSize: container.decode(EngineASRSize.self, forKey: .asrSize),
+            state: container.decode(EngineModelState.self, forKey: .state),
+            message: container.decode(EngineNullable<String>.self, forKey: .message).wrappedValue
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(asrSize, forKey: .asrSize)
+        try container.encode(state, forKey: .state)
+        try container.encode(_message, forKey: .message)
+    }
+}
+
+/// The installed state of the clause tagger, with the same message rule as `EngineASRProfileStatus`.
+public struct EngineClauseTaggerStatus: Codable, Equatable, Sendable {
+    public let state: EngineModelState
+    @EngineNullable public private(set) var message: String?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case state
+        case message
+    }
+
+    public init(state: EngineModelState, message: String?) throws {
+        try engineModelStateRequire(state, message)
+        self.state = state
+        _message = EngineNullable(wrappedValue: message)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(
+            state: container.decode(EngineModelState.self, forKey: .state),
+            message: container.decode(EngineNullable<String>.self, forKey: .message).wrappedValue
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(state, forKey: .state)
+        try container.encode(_message, forKey: .message)
+    }
+}
+
+public struct EngineModelsStatus: Codable, Equatable, Sendable {
+    public let asrProfiles: [EngineASRProfileStatus]
+    public let clauseTagger: EngineClauseTaggerStatus
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case asrProfiles = "asr_profiles"
+        case clauseTagger = "clause_tagger"
+    }
+
+    public init(asrProfiles: [EngineASRProfileStatus], clauseTagger: EngineClauseTaggerStatus) throws {
+        try engineModelInspectionRequire(!asrProfiles.isEmpty, "asr_profiles must not be empty")
+        var seen = Set<EngineASRSize>()
+        for profile in asrProfiles {
+            try engineModelInspectionRequire(seen.insert(profile.asrSize).inserted, "asr_profiles must be unique")
+        }
+        self.asrProfiles = asrProfiles
+        self.clauseTagger = clauseTagger
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(
+            asrProfiles: container.decode([EngineASRProfileStatus].self, forKey: .asrProfiles),
+            clauseTagger: container.decode(EngineClauseTaggerStatus.self, forKey: .clauseTagger)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(asrProfiles, forKey: .asrProfiles)
+        try container.encode(clauseTagger, forKey: .clauseTagger)
+    }
+}

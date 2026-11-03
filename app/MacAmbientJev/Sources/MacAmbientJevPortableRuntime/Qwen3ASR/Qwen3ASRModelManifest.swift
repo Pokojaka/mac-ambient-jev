@@ -1,9 +1,7 @@
 import Foundation
+import MacAmbientJevCore
 
-public enum Qwen3ASRModelSize: String, CaseIterable, Sendable {
-    case small = "0.6b"
-    case large = "1.7b"
-
+extension ASRModelSize {
     public var hiddenSize: Int { manifest.hiddenSize }
     public var repository: String { manifest.repository }
     public var commit: String { manifest.commit }
@@ -44,12 +42,12 @@ public enum Qwen3ASRModelSize: String, CaseIterable, Sendable {
     }
 
     private static func validate(_ manifests: [String: Qwen3ASRModelManifestEntry]) throws {
-        let expectedSizes: Set<String> = [Qwen3ASRModelSize.small.rawValue, Qwen3ASRModelSize.large.rawValue]
+        let expectedSizes: Set<String> = [ASRModelSize.small.rawValue, ASRModelSize.large.rawValue]
         guard manifests.count == 2, Set(manifests.keys) == expectedSizes else {
             throw Qwen3ASRModelError.invalid("マニフェストには 0.6b と 1.7b のモデル情報だけを定義してください。")
         }
 
-        for size in Qwen3ASRModelSize.allCases {
+        for size in ASRModelSize.allCases {
             guard let entry = manifests[size.rawValue] else {
                 throw Qwen3ASRModelError.invalid("マニフェストに \(size.rawValue) のモデル情報がありません。")
             }

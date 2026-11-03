@@ -31,7 +31,7 @@ public enum PendingProcessing: Sendable {
 
 public struct SessionProcessingQueue: Sendable {
     public private(set) var pending: [PendingProcessing] = []
-    public private(set) var thermallyHeld: [PendingProcessing] = []
+    public private(set) var held: [(request: PendingProcessing, reason: InferenceHoldReason)] = []
     /// Finalizing work that waits for the models to be fetched, verified and loaded.
     public private(set) var modelHeld: [PendingProcessing] = []
     public private(set) var currentSessionID: UUID?
@@ -45,7 +45,7 @@ public struct SessionProcessingQueue: Sendable {
     public var sessionIDs: Set<UUID> {
         finalizationGate.sessionIDs
             .union(pending.map(\.sessionID))
-            .union(thermallyHeld.map(\.sessionID))
+            .union(held.map { $0.request.sessionID })
             .union(modelHeld.map(\.sessionID))
             .union(currentSessionID.map { [$0] } ?? [])
     }
@@ -54,6 +54,7 @@ public struct SessionProcessingQueue: Sendable {
         finalizationGate.sessionIDs.contains(id)
             || currentSessionID == id
             || pending.contains { $0.sessionID == id }
+            || held.contains { $0.request.sessionID == id }
     }
 
     @discardableResult
@@ -91,8 +92,8 @@ public struct SessionProcessingQueue: Sendable {
         currentSessionID = nil
     }
 
-    public mutating func holdForHeat(_ request: PendingProcessing) {
-        thermallyHeld.append(request)
+    public mutating func hold(_ request: PendingProcessing, reason: InferenceHoldReason) {
+        held.append((request: request, reason: reason))
     }
 
     public mutating func holdForModels(_ request: PendingProcessing) {
@@ -112,14 +113,12 @@ public struct SessionProcessingQueue: Sendable {
 
     @discardableResult
     public mutating func resumeHeld(
-        isCritical: Bool,
+        holdReason: InferenceHoldReason?,
         pausesProcessing: Bool
     ) -> Bool {
-        guard !isCritical, !thermallyHeld.isEmpty, !pausesProcessing else {
-            return false
-        }
-        pending.insert(contentsOf: thermallyHeld, at: 0)
-        thermallyHeld = []
+        guard holdReason == nil, !held.isEmpty, !pausesProcessing else { return false }
+        pending.insert(contentsOf: held.map { $0.request }, at: 0)
+        held = []
         return true
     }
 

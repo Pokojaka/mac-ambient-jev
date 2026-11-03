@@ -3,8 +3,8 @@ import MacAmbientJevCore
 import MacAmbientJevEngineE2ESupport
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
-#if os(Linux) || os(Windows)
 import MacAmbientJevPipeline
+#if os(Linux) || os(Windows)
 import MacAmbientJevPortableRuntime
 #endif
 
@@ -74,10 +74,13 @@ struct HarnessMain {
         }
 
         let transport = EngineTransport(source: source, sink: sink, limits: .production)
+        let resourceMonitor = HarnessResourceMonitor()
         let application = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: logicalCPUCount,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(30)
             ),
@@ -107,6 +110,28 @@ struct HarnessMain {
         return engineExit.processExitCode
     }
 }
+
+private final class HarnessResourceMonitor: InferenceResourceMonitoring, InferenceMemoryProbing {
+    var signal: InferenceResourceSignal { .healthy }
+
+    @MainActor
+    func observeChanges(
+        _ onChange: @escaping @MainActor @Sendable () -> Void
+    ) -> any InferenceResourceObservation {
+        HarnessEmptyResourceObservation()
+    }
+
+    func memoryFacts() throws -> InferenceMemoryFacts {
+        InferenceMemoryFacts(
+            physicalMemoryBytes: UInt64(16) << 30,
+            freePhysicalMemoryBytes: UInt64(8) << 30,
+            commitHeadroomBytes: UInt64(8) << 30,
+            lowMemorySignal: false
+        )
+    }
+}
+
+private final class HarnessEmptyResourceObservation: InferenceResourceObservation {}
 
 private enum HarnessInferenceSelection: Equatable {
     case deterministic
@@ -248,11 +273,12 @@ struct HarnessPortableInferenceProvider: EngineInferenceProviding {
 
     func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         try validate(settings: settings)
         do {
-            try await PortableModelPreparationService().prepare(configuration: configuration) { progress in
+            try await PortableModelPreparationService().prepare(configuration: configuration, acceleratedASR: nil) { progress in
                 let stage: EngineModelProgress.Stage = progress.stage == .validating ? .validating : .loading
                 onProgress(EngineModelProgress(stage: stage, completed: progress.completed, total: progress.total))
             }
@@ -274,6 +300,10 @@ struct HarnessPortableInferenceProvider: EngineInferenceProviding {
         await usageCounter.snapshot()
     }
 
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
+    }
+
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
         do {
             return try await clauseTaggerInspection.inspect()
@@ -291,11 +321,11 @@ struct HarnessPortableInferenceProvider: EngineInferenceProviding {
         }
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         try validate(settings: settings)
         let bundle: PortableSessionEngineBundle
         do {
-            bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter)
+            bundle = try PortableSessionEngineBundle(configuration: configuration, usageCounter: usageCounter, acceleratedASR: nil)
         } catch {
             throw EngineAdapterError(
                 code: .modelFailure,

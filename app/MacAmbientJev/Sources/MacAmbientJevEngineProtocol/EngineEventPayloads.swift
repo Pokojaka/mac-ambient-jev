@@ -104,6 +104,36 @@ public enum EngineSetupStatus: String, Codable, CaseIterable, Equatable, Sendabl
     case ready
 }
 
+public enum EngineResourceHoldReason: String, Codable, CaseIterable, Equatable, Sendable {
+    case thermal
+    case resourcePressure = "resource_pressure"
+    case monitorFailed = "monitor_failed"
+}
+
+public struct EngineResourceProtection: Codable, Equatable, Sendable {
+    public let holdReasons: [EngineResourceHoldReason]
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case holdReasons = "hold_reasons"
+    }
+
+    public init(holdReasons: [EngineResourceHoldReason]) throws {
+        try enginePayloadRequireUnique(holdReasons, "hold_reasons")
+        self.holdReasons = holdReasons
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try engineContainer(decoder, keyedBy: CodingKeys.self)
+        try self.init(holdReasons: container.decode([EngineResourceHoldReason].self, forKey: .holdReasons))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try enginePayloadRequireUnique(holdReasons, "hold_reasons")
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(holdReasons, forKey: .holdReasons)
+    }
+}
+
 public enum EngineRecoveryStatus: String, Codable, CaseIterable, Equatable, Sendable {
     case pending
     case running
@@ -284,7 +314,7 @@ public struct EngineFailure: Codable, Equatable, Sendable {
 public struct EngineCapabilities: Codable, Equatable, Sendable {
     public let sources: [EngineSource]
     public let asrSizes: [EngineASRSize]
-    public let executionProviders: [EngineExecutionProvider]
+    public let executionProviderKinds: [EngineExecutionProviderKind]
     public let maximumThreads: Int
     public let automaticInputVolume: EngineUnavailableCapability
     public let thermalMonitoring: EngineUnavailableCapability
@@ -292,7 +322,7 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case sources
         case asrSizes = "asr_sizes"
-        case executionProviders = "execution_providers"
+        case executionProviderKinds = "execution_provider_kinds"
         case maximumThreads = "maximum_threads"
         case automaticInputVolume = "automatic_input_volume"
         case thermalMonitoring = "thermal_monitoring"
@@ -301,21 +331,21 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
     public init(
         sources: [EngineSource],
         asrSizes: [EngineASRSize],
-        executionProviders: [EngineExecutionProvider],
+        executionProviderKinds: [EngineExecutionProviderKind],
         maximumThreads: Int,
         automaticInputVolume: EngineUnavailableCapability,
         thermalMonitoring: EngineUnavailableCapability
     ) throws {
         try enginePayloadRequire(!sources.isEmpty, "sources must not be empty")
         try enginePayloadRequire(!asrSizes.isEmpty, "asr_sizes must not be empty")
-        try enginePayloadRequire(!executionProviders.isEmpty, "execution_providers must not be empty")
+        try enginePayloadRequire(!executionProviderKinds.isEmpty, "execution_provider_kinds must not be empty")
         try enginePayloadRequireUnique(sources.map(\.rawValue), "sources")
         try enginePayloadRequireUnique(asrSizes.map(\.rawValue), "asr_sizes")
-        try enginePayloadRequireUnique(executionProviders.map(\.rawValue), "execution_providers")
+        try enginePayloadRequireUnique(executionProviderKinds.map(\.rawValue), "execution_provider_kinds")
         try enginePayloadRequire((1...4).contains(maximumThreads), "maximum_threads must be between 1 and 4")
         self.sources = sources
         self.asrSizes = asrSizes
-        self.executionProviders = executionProviders
+        self.executionProviderKinds = executionProviderKinds
         self.maximumThreads = maximumThreads
         self.automaticInputVolume = automaticInputVolume
         self.thermalMonitoring = thermalMonitoring
@@ -326,7 +356,7 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
         try self.init(
             sources: container.decode([EngineSource].self, forKey: .sources),
             asrSizes: container.decode([EngineASRSize].self, forKey: .asrSizes),
-            executionProviders: container.decode([EngineExecutionProvider].self, forKey: .executionProviders),
+            executionProviderKinds: container.decode([EngineExecutionProviderKind].self, forKey: .executionProviderKinds),
             maximumThreads: container.decode(Int.self, forKey: .maximumThreads),
             automaticInputVolume: container.decode(EngineUnavailableCapability.self, forKey: .automaticInputVolume),
             thermalMonitoring: container.decode(EngineUnavailableCapability.self, forKey: .thermalMonitoring)
@@ -337,7 +367,7 @@ public struct EngineCapabilities: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sources, forKey: .sources)
         try container.encode(asrSizes, forKey: .asrSizes)
-        try container.encode(executionProviders, forKey: .executionProviders)
+        try container.encode(executionProviderKinds, forKey: .executionProviderKinds)
         try container.encode(maximumThreads, forKey: .maximumThreads)
         try container.encode(automaticInputVolume, forKey: .automaticInputVolume)
         try container.encode(thermalMonitoring, forKey: .thermalMonitoring)
@@ -417,6 +447,8 @@ public struct EngineState: Codable, Equatable, Sendable {
     public let revision: EngineID
     public let screen: EngineScreen
     public let setup: EngineSetupStatus
+    public let profileSetup: EngineProfileSetup
+    public let resourceProtection: EngineResourceProtection
     public let recovery: EngineRecoveryStatus
     @EngineNullable public private(set) var recording: EngineRecordingState?
     public let queue: [EngineQueuedOperation]
@@ -427,6 +459,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         case revision
         case screen
         case setup
+        case profileSetup = "profile_setup"
+        case resourceProtection = "resource_protection"
         case recovery
         case recording
         case queue
@@ -438,6 +472,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         revision: EngineID,
         screen: EngineScreen,
         setup: EngineSetupStatus,
+        profileSetup: EngineProfileSetup,
+        resourceProtection: EngineResourceProtection,
         recovery: EngineRecoveryStatus,
         recording: EngineRecordingState?,
         queue: [EngineQueuedOperation],
@@ -448,6 +484,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         self.revision = revision
         self.screen = screen
         self.setup = setup
+        self.profileSetup = profileSetup
+        self.resourceProtection = resourceProtection
         self.recovery = recovery
         _recording = EngineNullable(wrappedValue: recording)
         self.queue = queue
@@ -461,6 +499,8 @@ public struct EngineState: Codable, Equatable, Sendable {
             revision: container.decode(EngineID.self, forKey: .revision),
             screen: container.decode(EngineScreen.self, forKey: .screen),
             setup: container.decode(EngineSetupStatus.self, forKey: .setup),
+            profileSetup: container.decode(EngineProfileSetup.self, forKey: .profileSetup),
+            resourceProtection: container.decode(EngineResourceProtection.self, forKey: .resourceProtection),
             recovery: container.decode(EngineRecoveryStatus.self, forKey: .recovery),
             recording: container.decode(EngineNullable<EngineRecordingState>.self, forKey: .recording).wrappedValue,
             queue: container.decode([EngineQueuedOperation].self, forKey: .queue),
@@ -474,6 +514,8 @@ public struct EngineState: Codable, Equatable, Sendable {
         try container.encode(revision, forKey: .revision)
         try container.encode(screen, forKey: .screen)
         try container.encode(setup, forKey: .setup)
+        try container.encode(profileSetup, forKey: .profileSetup)
+        try container.encode(resourceProtection, forKey: .resourceProtection)
         try container.encode(recovery, forKey: .recovery)
         try container.encode(_recording, forKey: .recording)
         try container.encode(queue, forKey: .queue)

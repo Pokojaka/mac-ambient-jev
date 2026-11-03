@@ -20,5 +20,8 @@
     <None Include="../../../MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1.ndjson"
           Link="Fixtures/wire-v1.ndjson"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/Fixtures/wire-v1-negative.ndjson"
+          Link="Fixtures/wire-v1-negative.ndjson"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

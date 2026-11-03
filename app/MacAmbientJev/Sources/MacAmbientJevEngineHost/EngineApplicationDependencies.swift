@@ -129,12 +129,21 @@ public struct EngineModelProgress: Sendable, Equatable {
 public protocol EngineInferenceProviding: Sendable {
     /// Verifies the installed models of the settings' profile and loads each once. Throws
     /// `EngineAdapterError` with `model_missing`, `model_corrupt` or `model_failure`. Never downloads.
-    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws
+    /// A non-nil `acceleratedASR` is the admitted accelerator's ASR engine and replaces the CPU ASR; nothing falls back to CPU.
+    func prepare(
+        settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
+        onProgress: @escaping @Sendable (EngineModelProgress) -> Void
+    ) async throws
     /// The engines of the profile. Models load on first use; a failure there fails the operation.
-    func makeInference(settings: EngineSettings) throws -> EngineInference
+    /// A non-nil `acceleratedASR` is the same engine passed to `prepare` and serves live and final ASR.
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference
     /// Returns current-process accounting shared by the process's `DecisionCoordinator`.
     func decisionUsage() async throws -> DecisionUsageSnapshot
     /// Returns the installed, validated clause-tagger identity after metadata validation and loading.
     /// This performs no inference or accounting and is independent of settings and preparation.
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity
+    /// Verifies, without loading or writing, the pinned files of each size's VAD, ASR and diarization, and of the clause tagger.
+    /// Each entry is `installed`, or `missing` / `corrupt` with a message naming the first failing file.
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus
 }

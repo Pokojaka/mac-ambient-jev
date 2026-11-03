@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 
 public enum PortableProcessingConfigurationError: Error, LocalizedError, Equatable {
     case invalidEnvironment(key: String, reason: String)
@@ -25,7 +26,7 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
 
     public let sileroModelURL: URL
     public let qwen3ModelDirectory: URL
-    public let qwen3Size: Qwen3ASRModelSize
+    public let qwen3Size: ASRModelSize
     public let diarizationModelDirectory: URL
     /// Non-nil exactly when decisions are requested.
     public let clauseTaggerModelDirectory: URL?
@@ -35,7 +36,7 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
     public init(
         sileroModelURL: URL,
         qwen3ModelDirectory: URL,
-        qwen3Size: Qwen3ASRModelSize,
+        qwen3Size: ASRModelSize,
         diarizationModelDirectory: URL,
         clauseTaggerModelDirectory: URL?,
         threads: Int
@@ -87,11 +88,11 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         return threads
     }
 
-    private static func qwen3Size(_ environment: [String: String]) throws -> Qwen3ASRModelSize {
+    private static func qwen3Size(_ environment: [String: String]) throws -> ASRModelSize {
         guard let value = environment[qwen3SizeKey] else {
             throw PortableProcessingConfigurationError.invalidEnvironment(key: qwen3SizeKey, reason: "必須です")
         }
-        guard let size = Qwen3ASRModelSize(rawValue: value) else {
+        guard let size = ASRModelSize(rawValue: value) else {
             throw PortableProcessingConfigurationError.invalidEnvironment(
                 key: qwen3SizeKey, reason: "0.6b または 1.7b を指定してください（指定: \(value)）"
             )

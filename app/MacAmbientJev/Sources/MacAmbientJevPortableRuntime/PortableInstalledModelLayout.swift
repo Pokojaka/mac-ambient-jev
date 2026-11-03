@@ -1,4 +1,5 @@
 import Foundation
+import MacAmbientJevCore
 import MacAmbientJevDiarization
 
 /// Where `models.prepare` expects the pinned model assets, derived from the bundled manifests and pins
@@ -19,7 +20,7 @@ public struct PortableInstalledModelLayout: Sendable, Equatable {
     }
 
     /// `qwen3-asr-<size>-int4-<commit>`, the directory `scripts/fetch_qwen3_asr_model.py` creates under `modelsRoot`.
-    public func qwen3Directory(size: Qwen3ASRModelSize) -> URL {
+    public func qwen3Directory(size: ASRModelSize) -> URL {
         modelsRoot.appending(path: "qwen3-asr-\(size.rawValue)-int4-\(size.commit)", directoryHint: .isDirectory)
     }
 
@@ -45,7 +46,7 @@ extension PortableProcessingConfiguration {
     /// Threads are validated by the same rule as `resolve`; the paths are not checked here, `PortableModelPreparationService` does.
     public static func installed(
         layout: PortableInstalledModelLayout,
-        qwen3Size: Qwen3ASRModelSize,
+        qwen3Size: ASRModelSize,
         threads: Int,
         logicalCPUCount: Int,
         withDecisions: Bool

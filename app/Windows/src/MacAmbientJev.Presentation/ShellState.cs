@@ -24,6 +24,9 @@ public sealed record ShellState
     public EngineFailure? LastError { get; init; }
     public DeviceLostNotice? DeviceLostNotice { get; init; }
     public string? CommandError { get; init; }
+    public ExecutionProviderProgress? ProviderBindingProgress { get; init; }
+    /// <summary>Only ever a non-Bound rebind result.</summary>
+    public ExecutionProviderRebindResult? ProviderBindingFailure { get; init; }
     public EngineClientFailure? EngineFailure { get; init; }
     public string? StoreFailure { get; init; }
     public ShellTranscriptState Transcript { get; init; } = new();
@@ -32,4 +35,7 @@ public sealed record ShellState
     public EngineSessionSummary? SessionInspection { get; init; }
     public ImmutableHashSet<EngineCommandName> Pending { get; init; } = ImmutableHashSet<EngineCommandName>.Empty;
     public bool IsPending(EngineCommandName command) => Pending.Contains(command);
+    public bool CanPrepareModels => ConfirmedSettings is not null && !IsPending(EngineCommandName.ModelsPrepare) &&
+        !IsPending(EngineCommandName.SettingsReplace) && Engine is { Recording: null } engine &&
+        engine.Presentation.PreparationPhase != EnginePreparationPhase.Preparing;
 }

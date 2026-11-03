@@ -14,11 +14,12 @@ public struct PortableSessionEngineBundle: Sendable {
     public let decisionProviderFactory: DecisionProviderFactory?
     public let contentPriority: ContentPriorityAccess
 
-    public init(configuration: PortableProcessingConfiguration, usageCounter: DecisionUsageCounter) throws {
+    /// A non-nil `acceleratedASR` serves live and final ASR in place of the CPU engine; VAD, diarization and the tagger stay on CPU.
+    public init(configuration: PortableProcessingConfiguration, usageCounter: DecisionUsageCounter, acceleratedASR: (any ASREngine)?) throws {
         try SileroVADModel.validate(at: configuration.sileroModelURL)
         let vadEnvironment = try ONNXEnvironment.shared()
         let engines = SessionProcessingEngines(
-            asr: ONNXQwen3ASREngine(
+            asr: acceleratedASR ?? ONNXQwen3ASREngine(
                 modelDirectory: configuration.qwen3ModelDirectory,
                 size: configuration.qwen3Size,
                 intraOpThreads: configuration.threads

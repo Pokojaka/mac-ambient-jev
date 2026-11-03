@@ -106,6 +106,7 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
 
     func prepare(
         settings: EngineSettings,
+        acceleratedASR: (any ASREngine)?,
         onProgress: @escaping @Sendable (EngineModelProgress) -> Void
     ) async throws {
         calls.increment("prepare")
@@ -113,7 +114,7 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
     }
 
-    func makeInference(settings: EngineSettings) throws -> EngineInference {
+    func makeInference(settings: EngineSettings, acceleratedASR: (any ASREngine)?) throws -> EngineInference {
         calls.increment("makeInference")
         let factory = decisionProviderFactory
         return EngineInference(
@@ -137,6 +138,10 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
         case let .snapshot(snapshot):
             return snapshot
         }
+    }
+
+    func installedModelStatus(asrSizes: [EngineASRSize]) async throws -> EngineModelsStatus {
+        preconditionFailure("models.status is not used by this test")
     }
 
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
@@ -171,10 +176,13 @@ final class DiagnosticsApplicationHarness {
         self.inference = inference
         let transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         self.transport = transport
+        let resourceMonitor = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
                 logicalCPUCount: 4,
+                resourceMonitor: resourceMonitor,
+                memoryProber: resourceMonitor,
                 sleep: { _ in },
                 shutdownPauseTimeout: .seconds(20)
             ),
@@ -244,6 +252,19 @@ final class DiagnosticsApplicationHarness {
 
     func hello() async throws {
         try await call("hello")
+    }
+
+    @discardableResult
+    func prepareModels() async throws -> EngineResult {
+        try await acknowledgeResourceWarning(
+            app,
+            workload: .load,
+            context: EngineRequestContext(
+                requestID: try EngineID(1),
+                events: EngineEventEmitter(transport: transport)
+            )
+        )
+        return try await call("models.prepare")
     }
 
     func state() async throws -> EngineState {
@@ -333,7 +354,7 @@ func withDiagnosticsHarness<T>(
 
 func diagnosticsEngineSettings(decisions: Bool = true, asrSize: EngineASRSize = .small) throws -> EngineSettings {
     try EngineSettings(
-        schemaVersion: 1, source: .microphone, device: .default, asrSize: asrSize,
+        schemaVersion: 2, source: .microphone, device: .default, asrSize: asrSize,
         executionProvider: .cpu, threads: 1, lowHeat: false,
         decisionsEnabled: decisions, automaticExport: false, exportDestinationPath: nil
     )

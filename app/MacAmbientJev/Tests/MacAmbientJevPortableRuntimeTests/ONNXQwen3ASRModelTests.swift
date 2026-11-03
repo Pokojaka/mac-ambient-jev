@@ -9,7 +9,7 @@ struct Qwen3ASRModelTestConfiguration {
     static let sizeEnvironmentKey = "QWEN3_ASR_ONNX_MODEL_SIZE"
 
     let directory: URL
-    let size: Qwen3ASRModelSize
+    let size: ASRModelSize
 
     init(environment: [String: String]) throws {
         guard let directoryPath = environment[Self.directoryEnvironmentKey] else {
@@ -61,7 +61,7 @@ struct Qwen3ASRModelTestConfiguration {
                 reason: "is required"
             )
         }
-        guard let size = Qwen3ASRModelSize(rawValue: sizeValue) else {
+        guard let size = ASRModelSize(rawValue: sizeValue) else {
             throw Qwen3ASRModelTestConfigurationError.invalid(
                 key: Self.sizeEnvironmentKey,
                 reason: "must be exactly 0.6b or 1.7b"
@@ -98,13 +98,13 @@ struct Qwen3ASRModelValidationTests {
         let invalidDirectory = root.appendingPathComponent("not-a-directory")
         try Data().write(to: invalidDirectory)
         let invalidDirectoryError = modelValidationError {
-            try Qwen3ASRModelSize.small.validate(directory: invalidDirectory)
+            try ASRModelSize.small.validate(directory: invalidDirectory)
         }
         #expect(invalidDirectoryError?.contains("パスがディレクトリではありません") == true)
 
         let modelDirectory = root.appendingPathComponent("missing-assets", isDirectory: true)
         try fileManager.createDirectory(at: modelDirectory, withIntermediateDirectories: false)
-        let modelSize = Qwen3ASRModelSize.small
+        let modelSize = ASRModelSize.small
         let firstFile = try #require(modelSize.files.first)
         let missingAssetError = modelValidationError {
             try modelSize.validate(directory: modelDirectory)
@@ -632,7 +632,7 @@ private func expectJapaneseText(_ text: String) throws {
 private func printFixtureMetrics(
     clipID: String,
     pass: String,
-    size: Qwen3ASRModelSize,
+    size: ASRModelSize,
     audioSeconds: Double,
     transcript: String,
     reference: String,

@@ -12,9 +12,17 @@ public enum EngineASRSize
     [WireValue("1.7b")] Large,
 }
 
-public enum EngineExecutionProvider
+public enum EngineExecutionProviderKind
 {
     [WireValue("cpu")] Cpu,
+    [WireValue("windows_ml")] WindowsML,
+}
+
+public enum EngineModelState
+{
+    [WireValue("installed")] Installed,
+    [WireValue("missing")] Missing,
+    [WireValue("corrupt")] Corrupt,
 }
 
 public enum EngineDeviceKind
@@ -44,6 +52,13 @@ public enum EngineCommandName
     [WireValue("settings.replace")] SettingsReplace,
     [WireValue("models.prepare")] ModelsPrepare,
     [WireValue("models.inspect")] ModelsInspect,
+    [WireValue("models.status")] ModelsStatus,
+    [WireValue("accelerators.bind")] AcceleratorsBind,
+    [WireValue("accelerators.verify")] AcceleratorsVerify,
+    [WireValue("profiles.evaluate")] ProfilesEvaluate,
+    [WireValue("profiles.decide")] ProfilesDecide,
+    [WireValue("resources.preflight")] ResourcesPreflight,
+    [WireValue("resources.acknowledge")] ResourcesAcknowledge,
     [WireValue("shutdown")] Shutdown,
 }
 

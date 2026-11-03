@@ -197,7 +197,7 @@ public sealed partial class ShellStoreTests
     }
 
     private static Fake NewEngine() => new(State(EngineSetupStatus.Ready, 1), Response(SettingsResult(1, Settings(2, false, false, false, null))));
-    private static async Task<ShellStore> Start(Fake engine, TimeProvider clock) { var store = new ShellStore(engine, clock); await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); return store; }
+    private static async Task<ShellStore> Start(Fake engine, TimeProvider clock) { var store = new ShellStore(engine, NoProviders(engine), clock); await store.Initialization.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); return store; }
     private static async Task<Request> SelectRequest(ShellStore store, Fake engine, string id)
     {
         await store.SelectSessionAsync(id); var request = await engine.NextRequestAsync();
