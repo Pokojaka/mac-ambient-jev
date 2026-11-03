@@ -138,7 +138,7 @@ final class AppState: ObservableObject {
         effects: self,
         processor: sessionProcessor,
         thermalMonitor: thermalMonitor,
-        resourceMonitor: nil
+        resourceHolds: nil
     )
     lazy var liveCoordinator: LiveTranscriptionCoordinator = LiveTranscriptionCoordinator(
         state: liveTranscription,

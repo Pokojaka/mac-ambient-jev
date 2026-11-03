@@ -202,7 +202,8 @@ private func makeRecoveryCoordinator(
     SessionProcessingCoordinator(
         effects: effects,
         processor: executor,
-        thermalMonitor: RecoveryTestThermalMonitor()
+        thermalMonitor: RecoveryTestThermalMonitor(),
+        resourceHolds: nil
     )
 }
 

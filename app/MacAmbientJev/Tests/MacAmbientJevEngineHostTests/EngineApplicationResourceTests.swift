@@ -133,4 +133,28 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
             try await f.shutdown()
         }
     }
+
+    @Test(arguments: Pressure.allCases)
+    fileprivate func pressureAtStopReleasesModelsOnceAndFinalizesAfterRecovery(_ pressure: Pressure) async throws {
+        let provider = FakeInferenceProvider(), resources = FakeResourceMonitor()
+        let f = try ResourceFixture(inference: provider, resources: resources)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        try await f.start(); try await f.prepare()
+        let recording = try await f.app.core.start(.init(source: .microphone, device: .default), context: f.context)
+        let id = try #require(UUID(uuidString: recording.sessionID))
+        try await #require(f.capture.session).appendSpeech(seconds: 2)
+        let unloadsBefore = provider.calls.count("asr.unload")
+        resources.setSignal(pressure.signal)
+        _ = try await f.app.core.stop(recording, context: f.context)
+        await f.app.core.processingCoordinator.waitUntilIdle()
+        let held = try #require(f.app.core.processingQueue.held.first)
+        guard case .finalize(let heldID, .reject) = held.request else { Issue.record("held \(held.request)"); return }
+        #expect(heldID == id && held.reason == pressure.hold)
+        #expect(provider.calls.count("asr.unload") - unloadsBefore == 1)
+        resources.setSignal(.healthy)
+        await f.app.core.processingCoordinator.waitUntilIdle()
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(sessionsRoot: f.paths.sessionsRoot, sessionID: id)
+        #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+        try await f.shutdown()
+    }
 }

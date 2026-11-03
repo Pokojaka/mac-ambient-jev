@@ -89,6 +89,7 @@ final class EngineApplicationCore {
     var resourceFinalizingSessionID: UUID?
     var finalizationResourceHoldReason: InferenceHoldReason?
     private var resourceObservation: (any InferenceResourceObservation)?
+    private var loggedResourceMonitorFailure: String?
     var isShuttingDown = false
     private(set) var mutationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -135,8 +136,9 @@ final class EngineApplicationCore {
     var onBackgroundEventStateChange: (@MainActor () -> Void)?
 
     lazy var processingCoordinator = SessionProcessingCoordinator(
-        effects: self, processor: gateway, thermalMonitor: thermalMonitor, resourceMonitor: resourceMonitor,
-        releaseResources: { [gateway] in await gateway.releaseIdleResources() }
+        effects: self, processor: gateway, thermalMonitor: thermalMonitor,
+        resourceHolds: InferenceResourceHolds(
+            monitor: resourceMonitor, release: { [gateway] in await gateway.releaseIdleResources() })
     )
     lazy var liveCoordinator = LiveTranscriptionCoordinator(
         state: liveTranscription, effects: self, processor: gateway, thermalMonitor: thermalMonitor,
@@ -169,10 +171,19 @@ final class EngineApplicationCore {
         resourceObservation = resourceMonitor.observeChanges { [weak self] in
             self?.resourceMonitorDidChange()
         }
+        logResourceMonitorFailureIfNew()
+    }
+
+    private func logResourceMonitorFailureIfNew() {
+        guard case .monitorFailed(let detail) = resourceMonitor.signal,
+              detail != loggedResourceMonitorFailure else { return }
+        loggedResourceMonitorFailure = detail
+        EngineLog.write("resource monitor failed: \(detail)")
     }
 
     private func resourceMonitorDidChange() {
         guard !isShuttingDown else { return }
+        logResourceMonitorFailureIfNew()
         if let currentSessionID = processingQueue.currentSessionID,
            currentSessionID == resourceFinalizingSessionID,
            let reason = resourceMonitor.signal.holdReason {

@@ -755,7 +755,8 @@ private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: Published
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: fixture.processor,
-        thermalMonitor: PublishedRetryNoThermalMonitor()
+        thermalMonitor: PublishedRetryNoThermalMonitor(),
+        resourceHolds: nil
     )
     var completionMetadata: ProcessingMetadata?
     var completionMetadataLoadError: String?

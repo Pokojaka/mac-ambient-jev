@@ -359,7 +359,8 @@ func criticalThermalHoldResumesInFIFOOrder() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceHolds: nil
     )
     let firstSessionID = UUID()
     let secondSessionID = UUID()
@@ -421,7 +422,8 @@ func pauseRetainsClaimAndCompletionReleasesIt() async throws {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceHolds: nil
     )
     let sessionID = UUID()
 
@@ -466,7 +468,8 @@ func failedFinalizationReleasesClaimWithoutExport() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceHolds: nil
     )
     let sessionID = UUID()
 
@@ -498,7 +501,8 @@ func completedFinishLiveRefreshesSavedSessions() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     let checkpoint = AudioCheckpoint(
         committedFrames: 0,
@@ -534,7 +538,8 @@ func pausedFinishLiveResumesAsStoredFinalization() async throws {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceHolds: nil
     )
     let sessionID = UUID()
     let checkpoint = AudioCheckpoint(
@@ -599,7 +604,8 @@ func pauseDuringLiveDrainSkipsFinishAndHoldsStoredFinalization() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceHolds: nil
     )
     let sessionID = UUID()
     let checkpoint = AudioCheckpoint(
@@ -645,7 +651,8 @@ func cancelledRetryIsHeldAndFollowingRequestIsNotDequeued() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     let firstSessionID = UUID()
     let nextSessionID = UUID()
@@ -677,7 +684,8 @@ func pausedRetryIsHeldWithoutCallingExecutor() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     let sessionID = UUID()
     effects.onEvent = { event in
@@ -710,7 +718,8 @@ func retryFailureIsForwardedUnchangedWithoutExport() async throws {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     var finishedResult: SessionProcessingResult?
     effects.onEvent = { event in
@@ -749,7 +758,8 @@ func postRetryPauseDoesNotHoldOrReplaceFailure() async throws {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     effects.onRefreshSavedSessions = { effects.pausesProcessing = true }
     var finishedResult: SessionProcessingResult?
@@ -798,7 +808,8 @@ private func terminalRetryOutcomeWinsOverLatePause(
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     let sessionID = UUID()
     var finishedEventObserved = false
@@ -867,7 +878,8 @@ func pauseOnFinishedNotificationSkipsAutoExport() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     let sessionID = UUID()
     effects.onEvent = { event in
@@ -960,7 +972,8 @@ func processingCompletionPublishesBeforeTaskReleaseThenAllowsIdleRelease() async
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: thermalMonitor
+        thermalMonitor: thermalMonitor,
+        resourceHolds: nil
     )
     var drainingObservations: [Bool] = []
     effects.onEvent = { event in
@@ -992,7 +1005,8 @@ func retainedFinalizeRequestRunsExactlyOneFinalization() async {
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
-        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair)
+        thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
     )
     let sessionID = UUID()
 
@@ -1015,8 +1029,8 @@ func inferenceResourceStoppedLiveRequeuesWholeFinalizationWithoutDrain() async t
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
-        resourceMonitor: monitor,
-        releaseResources: { eventLog.append("resourceRelease") }
+        resourceHolds: InferenceResourceHolds(
+            monitor: monitor, release: { eventLog.append("resourceRelease") })
     )
     let sessionID = UUID()
     let checkpoint = AudioCheckpoint(
@@ -1057,8 +1071,8 @@ func inferenceResourceFinalizationPausesAndReplaysWholeAttempt(
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
-        resourceMonitor: monitor,
-        releaseResources: { eventLog.append("resourceRelease") }
+        resourceHolds: InferenceResourceHolds(
+            monitor: monitor, release: { eventLog.append("resourceRelease") })
     )
     let sessionID = UUID()
     let claimed = effects.processingQueue.claimReprocessing(sessionID)
@@ -1112,7 +1126,8 @@ func modelHoldKeepsFIFOOrderAndClaimsUntilTheModelsAreReady() async {
         eventLog: eventLog
     )
     let coordinator = SessionProcessingCoordinator(
-        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal)
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal),
+        resourceHolds: nil
     )
     let first = UUID(), second = UUID(), retry = UUID()
     var queue = effects.processingQueue
@@ -1157,7 +1172,8 @@ func finishLiveHeldForModelsBecomesRejectingFinalize() async {
         scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog
     )
     let coordinator = SessionProcessingCoordinator(
-        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal)
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal),
+        resourceHolds: nil
     )
     let sessionID = UUID()
     var sessionIDsDuringWait: [Set<UUID>] = []
@@ -1192,7 +1208,7 @@ func modelHoldAndThermalHoldResumeOnlyWhenBothAllow() async {
         scriptedResults: [makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()],
         eventLog: eventLog
     )
-    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal)
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal, resourceHolds: nil)
     let first = UUID(), second = UUID()
 
     coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))

@@ -116,9 +116,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
             presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
             if let held = processingQueue.held.first(where: { $0.request.sessionID == request.sessionID }),
                held.reason == .resourcePressure || held.reason == .monitorFailed {
-                let waitingForCurrent = processingQueue.currentSessionID == request.sessionID
                 presentation.processingStatusText = held.reason.finalizationExplanation
-                    + (waitingForCurrent ? "（実行中の処理の終了待ち）" : "")
             }
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case .heldForModels:
@@ -196,8 +194,13 @@ extension EngineApplicationCore: SessionProcessingEffects {
     }
 
     private func processingStatusDidChange(_ text: String, sessionID: UUID) {
-        presentation.processingStatusText = resourceFinalizingSessionID == sessionID
-            ? finalizationResourceHoldReason.map { $0.finalizationExplanation + "（実行中の処理の終了待ち）" } ?? text : text
+        if resourceFinalizingSessionID == sessionID, let reason = finalizationResourceHoldReason {
+            // The coordinator's own paused status means the run has already stopped.
+            presentation.processingStatusText = text == reason.finalizationExplanation
+                ? text : reason.finalizationExplanation + "（実行中の処理の終了待ち）"
+        } else {
+            presentation.processingStatusText = text
+        }
         stateDidChange()
         let stage: EngineStage
         switch text {

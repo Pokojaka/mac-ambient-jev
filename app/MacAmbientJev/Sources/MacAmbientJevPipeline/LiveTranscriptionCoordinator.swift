@@ -78,7 +78,7 @@ public final class LiveTranscriptionCoordinator {
         effects: any LiveTranscriptionEffects,
         processor: any LiveTranscriptionExecuting,
         thermalMonitor: any ThermalMonitoring,
-        resourceMonitor: (any InferenceResourceMonitoring)? = nil,
+        resourceMonitor: (any InferenceResourceMonitoring)?,
         sleep: @escaping @MainActor (Duration) async throws -> Void
     ) {
         self.state = state

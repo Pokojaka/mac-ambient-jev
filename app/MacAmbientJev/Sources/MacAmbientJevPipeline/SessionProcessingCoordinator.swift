@@ -73,9 +73,8 @@ public final class SessionProcessingCoordinator {
     private weak var effects: (any SessionProcessingEffects)?
     private let processor: any SessionProcessingExecuting
     private let thermalMonitor: any ThermalMonitoring
-    private let resourceMonitor: (any InferenceResourceMonitoring)?
+    private let resourceHolds: InferenceResourceHolds?
     private var resourceObservation: (any InferenceResourceObservation)?
-    private let releaseResources: (@Sendable () async -> Void)?
     private var activeResourceHoldReason: InferenceHoldReason?
     private var resourceRecoveryEnabled = true
     private var task: Task<Void, Never>?
@@ -84,16 +83,14 @@ public final class SessionProcessingCoordinator {
         effects: any SessionProcessingEffects,
         processor: any SessionProcessingExecuting,
         thermalMonitor: any ThermalMonitoring,
-        resourceMonitor: (any InferenceResourceMonitoring)? = nil,
-        releaseResources: (@Sendable () async -> Void)? = nil
+        resourceHolds: InferenceResourceHolds?
     ) {
         self.effects = effects
         self.processor = processor
         self.thermalMonitor = thermalMonitor
-        self.resourceMonitor = resourceMonitor
-        self.releaseResources = releaseResources
-        if let resourceMonitor {
-            resourceObservation = resourceMonitor.observeChanges { [weak self] in
+        self.resourceHolds = resourceHolds
+        if let resourceHolds {
+            resourceObservation = resourceHolds.monitor.observeChanges { [weak self] in
                 self?.resourceMonitorDidChange()
             }
             resourceMonitorDidChange()
@@ -160,7 +157,7 @@ public final class SessionProcessingCoordinator {
     }
 
     private var currentHoldReason: InferenceHoldReason? {
-        resourceMonitor?.signal.holdReason ?? (thermalMonitor.isCritical ? .thermal : nil)
+        resourceHolds?.monitor.signal.holdReason ?? (thermalMonitor.isCritical ? .thermal : nil)
     }
 
     private func holdReasonForAttempt() -> InferenceHoldReason? {
@@ -307,6 +304,13 @@ public final class SessionProcessingCoordinator {
         }
     }
 
+    private func releaseHeldResources() async {
+        guard let resourceHolds else {
+            preconditionFailure("リソース監視中の一時停止に解放処理が設定されていません")
+        }
+        await resourceHolds.release()
+    }
+
     private var requiredEffects: any SessionProcessingEffects {
         guard let effects else {
             preconditionFailure("セッション処理の効果提供元が解放されています")
@@ -345,8 +349,12 @@ public final class SessionProcessingCoordinator {
             if request.finalizesTranscript, let reason = holdReasonForAttempt() {
                 let heldRequest: PendingProcessing
                 if case .finishLive(let sessionID, _) = request, reason != .thermal {
+                    // Same order as the model-held path: the live ASR task may still be inside a native call.
+                    effects.processingQueue.begin(request)
+                    await effects.waitForLiveASRDrain(sessionID: sessionID)
                     await processor.cancelLiveTranscription(sessionID: sessionID)
                     effects.cleanupLiveASRState(sessionID: sessionID)
+                    effects.processingQueue.completeCurrent()
                     heldRequest = .finalize(sessionID: sessionID, metadataPolicy: .reject)
                 } else {
                     heldRequest = request
@@ -355,6 +363,7 @@ public final class SessionProcessingCoordinator {
                 if reason != .thermal {
                     let statusHandler = effects.processingStatusHandler(sessionID: request.sessionID)
                     await statusHandler(.paused(reason))
+                    await releaseHeldResources()
                 }
                 continue
             }
@@ -470,10 +479,7 @@ public final class SessionProcessingCoordinator {
 
             if request.finalizesTranscript, finalization?.disposition == .paused,
                let reason = holdReasonForAttempt(), reason != .thermal {
-                guard let releaseResources else {
-                    preconditionFailure("リソース監視中の一時停止に解放処理が設定されていません")
-                }
-                await releaseResources()
+                await releaseHeldResources()
             }
 
             effects.processingDidChange(.finished(request, finalization))

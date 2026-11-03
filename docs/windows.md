@@ -620,7 +620,7 @@ monitor は Pipeline の [`InferenceResourceMonitoring`](../app/MacAmbientJev/So
 
 監視は専用の Foundation Thread で動き、[GetTickCount64](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-gettickcount64) の単調増加 millisecond clock と250 msの Thread.sleep で probe します。probe delay は予定時刻からの overshoot で、500 ms超が3回連続すると CPU が詰まっているとみなして pressure になります。low notification または Core の [`inferenceMemoryHeadroomIsAdequate`](../app/MacAmbientJev/Sources/MacAmbientJevCore/InferenceMemoryHeadroom.swift) による reserve 不足も pressure です。reserve は `max(1 GiB, ceil(physical memory の10%))` で、physical memory の空き容量と commit headroom の両方が reserve 以上である必要があります。pressure 後は high notification、not-low、十分な reserve、および各 delay が100 ms未満の状態が連続10秒続いた場合だけ healthy に戻り、条件が崩れると回復計時を reset します。
 
-native create / query / memory / close の失敗は診断文字列を保持した sticky な `InferenceResourceSignal.monitorFailed(String)` になり（例: `QueryMemoryResourceNotification failed (Win32 1234)`）、healthy に戻りません。monitor は両 handle を所有し、`stop()` は probe と直列化して両方を閉じる idempotent 操作で、deinit も stop します。停止後は handle に触れず、以前の failure がなければ signal は `monitorFailed("Resource monitor stopped")` となります。observer notification は MainActor のみで行い、probe は worker thread で実行します。
+native create / query / memory / close の失敗は診断文字列を持つ sticky な `InferenceResourceSignal.monitorFailed(String)` になり（例: `QueryMemoryResourceNotification failed (Win32 1234)`）、healthy に戻りません。engine は新しい診断文字列を engine log に書き出します。monitor は両 handle を所有し、`stop()` は probe と直列化して両方を閉じる idempotent 操作で、deinit も stop します。停止後は handle に触れず、以前の failure がなければ signal は `monitorFailed("Resource monitor stopped")` となります。observer notification は MainActor のみで行い、probe は worker thread で実行します。
 
 ## 音声 import API
 

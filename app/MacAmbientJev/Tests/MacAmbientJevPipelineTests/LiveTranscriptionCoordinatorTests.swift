@@ -544,6 +544,7 @@ func criticalLiveDrainWaitsWithoutDequeueThenResumesFIFOUsingLatestCheckpoint() 
         effects: effects,
         processor: processor,
         thermalMonitor: thermal,
+        resourceMonitor: nil,
         sleep: { duration in
             sleepLog.append(duration)
             await sleepGate.wait()
@@ -612,6 +613,7 @@ func seriousLiveDrainWaitsOnceFor750Milliseconds() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: thermal,
+        resourceMonitor: nil,
         sleep: { duration in
             sleepLog.append(duration)
             await sleepGate.wait()
@@ -661,6 +663,7 @@ func failureDuringRegistrationDoesNotResurrectDroppedBacklog() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: thermal,
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("登録競合テストで待機してはいけません") }
     )
     let enqueue = Task {
@@ -710,6 +713,7 @@ func failureDuringRegistrationDoesNotResurrectDroppedBacklog() async throws {
         effects: retainedEffects,
         processor: retainedProcessor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("登録失敗テストで待機してはいけません") }
     )
 
@@ -785,6 +789,7 @@ func pollingDeliversMicProgressBeforeASREnqueueAndStopOwnsPolling() async throws
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { duration in
             sleepLog.append(duration)
             await pollGate.wait()
@@ -867,6 +872,7 @@ func stopVADPollingDuringRegistrationKeepsPollAndFinalSegmentsQueued() async thr
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { duration in
             sleepLog.append(duration)
             await pollSleepGate.wait()
@@ -952,6 +958,7 @@ func stopVADPollingCancelsSleepWithoutPollingAgain() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { duration in
             sleepLog.append(duration)
             try await sleepGate.wait()
@@ -1005,6 +1012,7 @@ func cancelAndWaitCancelsQueuedDrainAndCleansSuppliedIdleSessions() async throws
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("キャンセルテストで待機してはいけません") }
     )
     let firstBatch = [makeSegment("seg_cancel_first", at: 0)]
@@ -1063,6 +1071,7 @@ func cleanupCancelsInFlightProcessingAndAllowsSuccess() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("成功処理テストで待機してはいけません") }
     )
     let batch = [makeSegment("seg_cleanup_success", at: 0)]
@@ -1126,6 +1135,7 @@ func cancelAndWaitFindsRetiredDrainAfterCleanup() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("退役ドレインのキャンセルテストで待機してはいけません") }
     )
     let batch = [makeSegment("seg_retired_cancel_and_wait", at: 0)]
@@ -1182,6 +1192,7 @@ func cleanupSuppressesFailureFromInFlightProcessing() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("失敗処理テストで待機してはいけません") }
     )
     let batch = [makeSegment("seg_cleanup_failure", at: 0)]
@@ -1248,6 +1259,7 @@ func cleanupOldDrainCannotReplaceStateOrRemoveNewSameSessionDrain() async throws
         effects: effects,
         processor: processor,
         thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+        resourceMonitor: nil,
         sleep: { _ in preconditionFailure("同一セッションの排他テストで待機してはいけません") }
     )
     let oldBatch = [makeSegment("seg_cleanup_old", at: 0)]
@@ -1338,6 +1350,7 @@ func measureLatestCheckpointRetentionDuringThermalStall() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: thermal,
+        resourceMonitor: nil,
         sleep: { _ in await thermalGate.wait() }
     )
     var chunkFiles: [String] = []
@@ -1428,6 +1441,7 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
         effects: effects,
         processor: processor,
         thermalMonitor: thermal,
+        resourceMonitor: nil,
         sleep: { _ in await sleepGate.wait() }
     )
     let segments = [
@@ -1537,6 +1551,7 @@ private struct ModelGateFixture {
             effects: effects,
             processor: processor,
             thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal),
+            resourceMonitor: nil,
             sleep: { _ in }
         )
     }

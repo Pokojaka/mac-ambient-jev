@@ -38,3 +38,14 @@ public protocol InferenceResourceMonitoring: Sendable {
         _ onChange: @escaping @MainActor @Sendable () -> Void
     ) -> any InferenceResourceObservation
 }
+
+/// Memory-pressure holds for finalization: what to watch and how to free the models when a hold starts.
+public struct InferenceResourceHolds: Sendable {
+    public let monitor: any InferenceResourceMonitoring
+    public let release: @Sendable () async -> Void
+
+    public init(monitor: any InferenceResourceMonitoring, release: @escaping @Sendable () async -> Void) {
+        self.monitor = monitor
+        self.release = release
+    }
+}
