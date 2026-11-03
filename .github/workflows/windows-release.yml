@@ -139,6 +139,7 @@ jobs:
       - name: Stage the application
         run: |
           $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'stage') | Out-Null
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-app.ps1 -Architecture '${{ matrix.architecture }}' -Destination (Join-Path $env:RUNNER_TEMP 'stage/MacAmbientJev')
           if ($LASTEXITCODE -ne 0) { throw "Windows ${{ matrix.architecture }} application staging failed" }
       - name: Zip and checksum
