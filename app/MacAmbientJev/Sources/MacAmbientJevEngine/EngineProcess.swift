@@ -110,6 +110,7 @@ enum EngineProcess {
                 configuration: EngineApplicationConfiguration(
                     paths: paths,
                     logicalCPUCount: logicalCPUCount,
+                    resourceMonitor: WindowsInferenceResourceMonitor(),
                     sleep: { try await Task.sleep(for: $0) },
                     shutdownPauseTimeout: shutdownPauseTimeout
                 ),

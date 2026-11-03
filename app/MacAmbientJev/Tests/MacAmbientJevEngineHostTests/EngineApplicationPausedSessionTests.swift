@@ -138,7 +138,7 @@ private final class PausedSessionFinalizationHarness {
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths,
-                logicalCPUCount: 4,
+                logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(30)
             ),

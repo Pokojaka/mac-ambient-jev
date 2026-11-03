@@ -140,7 +140,7 @@ public struct FileTranscriptionPipeline: Sendable {
             loader: ASRAudioLoader(reader: audio),
             pacingMode: .normal,
             sleep: { try await Task.sleep(for: $0) },
-            shouldPause: { false }
+            shouldPause: { nil }
         )
         let asrStart = clock.now
         let asrResult = try await coordinator.run(

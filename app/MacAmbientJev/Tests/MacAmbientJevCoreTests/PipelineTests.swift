@@ -81,7 +81,7 @@ private func makeCoordinator(
     asr: any ASREngine,
     pacingMode: ASRPacingMode,
     sleep: @escaping @Sendable (Duration) async throws -> Void,
-    shouldPause: @escaping @Sendable () async -> Bool
+    shouldPause: @escaping @Sendable () async -> InferenceHoldReason?
 ) throws -> PipelineCoordinator {
     PipelineCoordinator(
         sessionID: UUID(),
@@ -112,7 +112,7 @@ private func recognizedTexts(_ events: [TranscriptEvent]) -> [String] {
 }
 
 private let noSleep: @Sendable (Duration) async throws -> Void = { _ in }
-private let neverPause: @Sendable () async -> Bool = { false }
+private let neverPause: @Sendable () async -> InferenceHoldReason? = { nil }
 
 @Test
 func durableAudioCommitsWhileASRIsStalled() async throws {
@@ -196,8 +196,10 @@ func lowHeatRestsAfterPersistedCompletionOnlyBetweenSegments() async throws {
     }
 }
 
-@Test
-func criticalThermalPauseStopsBeforeRemainingSegmentsWithoutCompletingTheRun() async throws {
+@Test(arguments: [InferenceHoldReason.thermal, .resourcePressure, .monitorFailed])
+func resourcePauseInPipelineCoordinatorPreservesReasonBeforeRemainingSegments(
+    _ reason: InferenceHoldReason
+) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let audioDirectory = root.appending(path: "audio/processing")
@@ -210,12 +212,12 @@ func criticalThermalPauseStopsBeforeRemainingSegmentsWithoutCompletingTheRun() a
         asr: SequencedPipelineASR(), pacingMode: .normal, sleep: noSleep,
         shouldPause: {
             let log = try? String(contentsOf: eventsURL, encoding: .utf8)
-            return log?.contains(#""event_type":"asr.completed""#) == true
+            return log?.contains(#""event_type":"asr.completed""#) == true ? reason : nil
         }
     )
     let input = segments([("first", 0, 10), ("second", 10, 20)])
     let result = try await coordinator.run(segments: input, pendingSince: pendingNow(input), existingEvents: [])
-    #expect(result.disposition == .paused)
+    #expect(result.disposition == .paused(reason))
     #expect(result.completedCount == 1)
     #expect(result.metrics.initialPendingCount == 2)
     let log = try String(contentsOf: eventsURL, encoding: .utf8)

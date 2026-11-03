@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Synchronization
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
@@ -42,6 +43,30 @@ final class LockedBox<Value: Sendable>: @unchecked Sendable {
         value = newValue
         lock.unlock()
     }
+}
+
+final class FakeResourceMonitor: InferenceResourceMonitoring, Sendable {
+    private let signalStorage = Mutex<InferenceResourceSignal>(.healthy)
+    private let callbacks = Mutex<[UUID: @MainActor @Sendable () -> Void]>([:])
+    var signal: InferenceResourceSignal { signalStorage.withLock { $0 } }
+
+    @MainActor func setSignal(_ signal: InferenceResourceSignal) {
+        signalStorage.withLock { $0 = signal }
+        callbacks.withLock { Array($0.values) }.forEach { $0() }
+    }
+
+    @MainActor
+    func observeChanges(_ onChange: @escaping @MainActor @Sendable () -> Void) -> any InferenceResourceObservation {
+        let id = UUID()
+        callbacks.withLock { $0[id] = onChange }
+        return FakeResourceObservation { [weak self] in _ = self?.callbacks.withLock { $0.removeValue(forKey: id) } }
+    }
+}
+
+private final class FakeResourceObservation: InferenceResourceObservation {
+    private let cancel: @Sendable () -> Void
+    init(cancel: @escaping @Sendable () -> Void) { self.cancel = cancel }
+    deinit { cancel() }
 }
 
 struct FakeASR: ASREngine {
@@ -320,6 +345,7 @@ final class ApplicationHarness {
     let sink = ScriptedSink()
     let capture = FakeCapture()
     let inference = FakeInferenceProvider()
+    let resources = FakeResourceMonitor()
     let transport: EngineTransport
     let app: EngineApplication
     let controller: EngineController
@@ -332,7 +358,7 @@ final class ApplicationHarness {
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
+                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,

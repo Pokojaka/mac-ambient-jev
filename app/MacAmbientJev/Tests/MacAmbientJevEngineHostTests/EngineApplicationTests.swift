@@ -512,7 +512,7 @@ private final class FinalizationShutdownHarness {
         self.transport = transport
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, sleep: { try await Task.sleep(for: $0) },
+                paths: paths, logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(), sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20)
             ),
             capture: capture,
