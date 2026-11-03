@@ -19,7 +19,7 @@ do {
         modelOption: "--coreml-directory",
         requiresThreads: false
     )
-    let engine = FluidOfflineDiarizationEngine(modelDirectory: options.modelDirectory)
+    let engine = FluidOfflineDiarizationEngine(models: try MacModelStore(diarizationDirectory: options.modelDirectory))
     let run = try await DiarizationMeasurementRun.measure(engine: engine, audioURL: options.audioURL)
     try run.writeNew(to: options.outputURL)
 } catch {

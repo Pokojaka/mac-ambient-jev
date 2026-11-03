@@ -51,7 +51,7 @@ func canonicalCAFAudioSourceReadsBoundedRandomRangesWithoutAudioCopies() throws 
 func nativeQwenRejectsNoncanonicalRateBeforeModelLoading() async throws {
     let paths = AppPaths(applicationSupportURL: URL(fileURLWithPath: "/tmp/unused-support"),
         cacheURL: URL(fileURLWithPath: "/tmp/unused-cache"), sessionsRootOverride: nil)
-    let engine = NativeQwen3ASREngine(modelStore: ModelStore(paths: paths))
+    let engine = NativeQwen3ASREngine(models: try MacModelStore(paths: paths))
     await #expect(throws: CanonicalAudioError.self) {
         _ = try await engine.transcribe(ASRAudioInput(samples: [0], sampleRate: 48000))
     }

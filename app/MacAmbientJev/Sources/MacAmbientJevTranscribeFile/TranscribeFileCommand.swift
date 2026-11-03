@@ -233,8 +233,8 @@ internal enum TranscribeFileCommand {
         )
         let primaryData = try JSONSerialization.data(withJSONObject: payload.primary, options: [.prettyPrinted, .sortedKeys])
         let artifactData = try JSONSerialization.data(withJSONObject: payload.artifact, options: [.prettyPrinted, .sortedKeys])
-        try primaryData.write(to: options.outputURL, options: .atomic)
-        try artifactData.write(to: options.artifactOutputURL, options: .atomic)
+        try SessionFileAccess.writeOutputAtomically(primaryData, to: options.outputURL)
+        try SessionFileAccess.writeOutputAtomically(artifactData, to: options.artifactOutputURL)
 
         return TranscribeFileCommandResult(
             segmentTexts: pipelineResult.segments.map(\.text),

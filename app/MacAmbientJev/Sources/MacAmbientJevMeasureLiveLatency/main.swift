@@ -10,7 +10,6 @@ enum ReplayError: LocalizedError {
     case usage
     case invalidOption(String)
     case invalidFormat
-    case modelUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -22,7 +21,6 @@ enum ReplayError: LocalizedError {
             """
         case .invalidOption(let option): "Invalid option: \(option)"
         case .invalidFormat: "Audio input or output format is not supported."
-        case .modelUnavailable(let path): "Required cached model is missing: \(path)"
         }
     }
 }
@@ -189,15 +187,7 @@ struct MeasureLiveLatencyCommand {
             fileManager: .default
         )
         let fileManager = FileManager.default
-        let qwenDirectory = ModelStore(paths: paths).qwen3ASRCacheRoot
-        guard fileManager.fileExists(atPath: qwenDirectory.appending(path: "model.safetensors").path) else {
-            throw ReplayError.modelUnavailable(qwenDirectory.path)
-        }
-        let vadModel = paths.applicationSupportURL
-            .appending(path: "FluidAudio/Models/silero-vad/silero-vad-unified-256ms-v6.2.1.mlmodelc")
-        guard fileManager.fileExists(atPath: vadModel.path) else {
-            throw ReplayError.modelUnavailable(vadModel.path)
-        }
+        let models = try MacModelStore(paths: paths)
 
         let sourceInfo = try options.sourceURL.resourceValues(forKeys: [.fileSizeKey])
         let sourceFile = try AVAudioFile(
@@ -230,7 +220,7 @@ struct MeasureLiveLatencyCommand {
         var checkpoint = try await writer.checkpoint()
         let processor = NativeSessionProcessor(
             paths: replayPaths,
-            engines: .production(paths: paths),
+            engines: .production(models: models),
             audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
             contentPriority: .disabled,
             sleep: { try await Task.sleep(for: $0) }
@@ -245,6 +235,7 @@ struct MeasureLiveLatencyCommand {
             sampleRate: CanonicalAudio.sampleRate
         )
         let vadSession = try await MacLiveVADSessionFactory.make(
+            models: models,
             processingDirectory: processingDirectory,
             sessionURL: sessionDirectory,
             initialCheckpoint: checkpoint,

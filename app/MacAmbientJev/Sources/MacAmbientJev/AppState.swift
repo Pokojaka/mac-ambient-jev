@@ -88,25 +88,6 @@ final class AppState: ObservableObject {
         case error
     }
 
-    enum ModelPreparation: Equatable {
-        case idle
-        case preparing(Double)
-        case ready
-        case failed(String)
-
-        var statusText: String {
-            switch self {
-            case .idle: "録音開始時に準備します"
-            case .preparing(let progress) where progress < 0.8:
-                "音声認識モデルをダウンロード中（\(Int(progress * 100))%）"
-            case .preparing(let progress):
-                "音声認識モデルを読み込み中（\(Int(progress * 100))%）"
-            case .ready: "準備完了"
-            case .failed(let message): "準備できませんでした: \(message)"
-            }
-        }
-    }
-
     @Published var statusText = UserFacingStatus.idle.text
     @Published var statusTone: StatusTone = .neutral
     @Published var recording = RecordingLifecycle()
@@ -117,7 +98,7 @@ final class AppState: ObservableObject {
     @Published var micInputStatus: MicInputStatus?
     @Published var isMicrophoneSilent = false
     @Published var dropoutCount: UInt64 = 0
-    @Published var modelPreparation: ModelPreparation = .idle
+    @Published var modelPreparation = ModelPreparationStatus.initial
     @Published var processingState: ProcessingState = .idle
     @Published var processingStatusText: String?
     @Published var processingQueue = SessionProcessingQueue()
@@ -167,7 +148,8 @@ final class AppState: ObservableObject {
         resourceMonitor: nil,
         sleep: liveTranscriptionSleep
     )
-    var modelPreparationTask: Task<Void, Never>?
+    let modelPreparer: ModelPreparer
+    let modelProvisioning: any ModelProvisioning
     var idleReleaseTask: Task<Void, Never>?
     var failureStopTask: Task<Void, Never>?
     var startupMaintenanceTask: Task<Void, Never>?
@@ -180,6 +162,7 @@ final class AppState: ObservableObject {
         pausesProcessing: Bool,
         userDefaults: UserDefaults,
         engines: SessionProcessingEngines,
+        modelProvisioning: any ModelProvisioning,
         makeLiveVADSession: @escaping LiveVADFactory,
         thermalMonitor: any ThermalMonitoring,
         liveTranscriptionSleep: @escaping @MainActor (Duration) async throws -> Void,
@@ -195,6 +178,8 @@ final class AppState: ObservableObject {
         )
 
         self.paths = paths
+        self.modelProvisioning = modelProvisioning
+        self.modelPreparer = ModelPreparer(provisioning: modelProvisioning, asr: engines.asr)
         self.decisionUsageCounter = decisionUsageCounter
         self.captureEngine = captureEngine
         self.microphoneAccess = microphoneAccess
@@ -220,6 +205,7 @@ final class AppState: ObservableObject {
             sleep: { try await Task.sleep(for: $0) }
         )
         self.exportDirectoryPath = exportDestination.path
+        modelPreparer.onChange = { [weak self] status in self?.modelPreparationDidChange(status) }
         thermalObservation = thermalMonitor.observeChanges { [weak self] in
             self?.processingCoordinator.resumeHeldProcessing()
         }

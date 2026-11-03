@@ -5,6 +5,8 @@ import MacAmbientJevPipeline
 struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
     static let version = "FluidAudio@0.15.8"
 
+    let models: MacModelStore
+
     var provenance: RunProvenance {
         RunProvenance(
             engine: "fluidaudio-silero-vad",
@@ -27,6 +29,7 @@ struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
         runID: String
     ) async throws -> [SegmentReference] {
         let engine = try await FluidVADSegmentationEngine.make(
+            models: models,
             segmentationRunID: runID,
             canonicalSampleRate: reader.info.sampleRate,
             measureMicInputLevels: false

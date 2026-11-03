@@ -10,17 +10,20 @@ import MacAmbientJevRuntime
 import MacAmbientJevPipeline
 import UniformTypeIdentifiers
 
+struct LiveModelsNotFetched: Error {}
+
 extension AppState {
-    static func makeFluidLiveVADSession(
-        processingDirectory: URL, initialCheckpoint: AudioCheckpoint, measureMicInputLevels: Bool, sessionURL: URL
-    ) async throws -> any LiveVADProcessing {
-        try await MacLiveVADSessionFactory.make(
-            processingDirectory: processingDirectory,
-            sessionURL: sessionURL,
-            initialCheckpoint: initialCheckpoint,
-            measureMicInputLevels: measureMicInputLevels,
-            segmentationRunID: "seg_live_\(UUID().uuidString.lowercased())"
-        )
+    static func fluidLiveVADFactory(models: MacModelStore) -> LiveVADFactory {
+        { processingDirectory, initialCheckpoint, measureMicInputLevels, sessionURL in
+            try await MacLiveVADSessionFactory.make(
+                models: models,
+                processingDirectory: processingDirectory,
+                sessionURL: sessionURL,
+                initialCheckpoint: initialCheckpoint,
+                measureMicInputLevels: measureMicInputLevels,
+                segmentationRunID: "seg_live_\(UUID().uuidString.lowercased())"
+            )
+        }
     }
 
     func startLiveVAD(sessionID: UUID) async throws {
@@ -136,6 +139,12 @@ extension AppState: LiveTranscriptionEffects {
                liveTranscription.contentPriorityStatus[sessionID] == nil {
                 processingStatusText =
                     "録音中に発話を検出しています（\(segmentCount)区間）"
+            }
+        case .waitingForModels(let sessionID):
+            guard isCurrentRecording(sessionID) else { return }
+            processingStatusText = modelPreparation.waitingText
+            if displayedSessionID == sessionID {
+                transcriptViewModel.setStatus(modelPreparation.waitingText)
             }
         case .vadFailed(let sessionID, let message):
             processingStatusText =

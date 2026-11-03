@@ -14,7 +14,7 @@ actor NativeQwen3ASREngine: ASREngine {
     nonisolated var provenance: RunProvenance {
         RunProvenance(
             engine: Self.engineName,
-            model: ModelStore.qwen3ASRModelID,
+            model: models.entry(.asr).repository,
             version: Self.version,
             configuration: [
                 "language": Self.language,
@@ -23,13 +23,13 @@ actor NativeQwen3ASREngine: ASREngine {
         )
     }
 
-    private let modelStore: ModelStore
+    private let models: MacModelStore
     private var model: Qwen3ASRModel?
     private var preparationTask: Task<Void, Error>?
     private(set) var state: ASREngineState = .stopped
 
-    init(modelStore: ModelStore) {
-        self.modelStore = modelStore
+    init(models: MacModelStore) {
+        self.models = models
     }
 
     func prepare() async throws {
@@ -52,10 +52,11 @@ actor NativeQwen3ASREngine: ASREngine {
         state = .loadingModel
 
         let task = Task {
-            let cacheDirectory = try modelStore.prepareQwen3ASRDirectory()
+            let directory = try await models.verifiedDirectory(.asr)
             model = try await Qwen3ASRModel.fromPretrained(
-                modelId: ModelStore.qwen3ASRModelID,
-                cacheDir: cacheDirectory,
+                modelId: models.entry(.asr).repository,
+                cacheDir: directory,
+                offlineMode: true,
                 progressHandler: onProgress
             )
             state = .ready

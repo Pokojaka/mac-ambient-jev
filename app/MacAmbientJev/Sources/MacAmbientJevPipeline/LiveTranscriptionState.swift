@@ -40,6 +40,12 @@ public final class LiveTranscriptionState {
         queues[sessionID, default: []].append(segments)
     }
 
+    /// Drops the queued batches without recording a failure. Their segments stay registered, so
+    /// finalization recognizes them.
+    public func discardQueued(sessionID: UUID) {
+        queues[sessionID] = []
+    }
+
     public func hasQueued(sessionID: UUID) -> Bool {
         queues[sessionID]?.isEmpty == false
     }

@@ -21,6 +21,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     private let measureMicInputLevels: Bool
 
     static func make(
+        models: MacModelStore,
         segmentationRunID: String,
         canonicalSampleRate: Double,
         measureMicInputLevels: Bool
@@ -29,7 +30,8 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
               Double(VadManager.sampleRate) == CanonicalAudio.sampleRate else {
             throw CanonicalAudioError.noncanonicalFormat
         }
-        let manager = try await VadManager(config: Self.vadConfig)
+        let directory = try await models.verifiedDirectory(.vad)
+        let manager = try await FluidModelLoading.vadManager(from: directory, config: Self.vadConfig)
         return FluidVADSegmentationEngine(
             manager: manager,
             segmentationRunID: segmentationRunID,

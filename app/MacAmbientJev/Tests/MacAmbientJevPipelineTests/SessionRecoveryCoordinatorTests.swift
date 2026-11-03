@@ -59,7 +59,8 @@ private final class RecoveryCoordinatorEffects: SessionProcessingEffects, Sessio
         continuation?.resume()
     }
 
-    func prepareASRModel() {}
+    var modelsReady: Bool { true }
+    func prepareModels() {}
 
     func awaitIdleRelease() async {
         guard !idleReleased else { return }

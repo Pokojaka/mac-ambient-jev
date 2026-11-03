@@ -24,20 +24,12 @@ public actor FluidOfflineDiarizationEngine: DiarizationEngine {
         )
     }
 
-    private let modelDirectory: URL
+    private let models: MacModelStore
     private var manager: OfflineDiarizerManager?
     private let config = FluidOfflineDiarizationEngine.configuration
 
-    init(paths: AppPaths) {
-        self.init(modelDirectory: paths.modelsRoot.appending(
-            path: "fluidaudio-offline-diarizer",
-            directoryHint: .isDirectory
-        ))
-    }
-
-    /// `modelDirectory` holds the FluidAudio Core ML diarizer models.
-    public init(modelDirectory: URL) {
-        self.modelDirectory = modelDirectory
+    public init(models: MacModelStore) {
+        self.models = models
     }
 
     public func prepare() async throws {
@@ -51,16 +43,13 @@ public actor FluidOfflineDiarizationEngine: DiarizationEngine {
     private func preparedManager() async throws -> OfflineDiarizerManager {
         if let manager { return manager }
 
-        try FileManager.default.createDirectory(
-            at: modelDirectory,
-            withIntermediateDirectories: true
-        )
         try config.validate()
         guard Double(config.segmentation.sampleRate) == CanonicalAudio.sampleRate else {
             throw CanonicalAudioError.noncanonicalFormat
         }
+        let directory = try await models.verifiedDirectory(.diarization)
         let loading = OfflineDiarizerManager(config: config)
-        try await loading.prepareModels(directory: modelDirectory)
+        loading.initialize(models: try await FluidModelLoading.diarizerModels(from: directory))
         manager = loading
         return loading
     }

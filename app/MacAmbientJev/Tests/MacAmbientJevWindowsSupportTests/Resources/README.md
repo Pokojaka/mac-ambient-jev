@@ -33,14 +33,18 @@ python3 -B scripts/generate_windows_audio_fixtures.py --format m4a --output app/
 python3 -B scripts/generate_windows_audio_fixtures.py --format aac --output app/MacAmbientJev/Tests/MacAmbientJevWindowsSupportTests/Resources/windows_audio_fixture.aac
 ```
 
-FLAC は compression level 5 / `s16`、MP3 は `libmp3lame` 192 kbit/s、M4A は native AAC 192 kbit/s / AAC-LC、AAC は同じ native AAC encoder を ADTS container で出力します。現行の圧縮 fixture 合計は 34,804 bytes（100,000 bytes 未満）です。生成スクリプトは出力を一つずつ作成し、出力サイズが正であることと、同じ出力ディレクトリ内の圧縮 fixture 合計が 100,000 バイト未満であることを確認します。
+FLAC は compression level 5 / `s16`、MP3 は `libmp3lame` 192 kbit/s、M4A は native AAC 192 kbit/s / AAC-LC、AAC は同じ native AAC encoder を ADTS container で出力します。現行の圧縮 fixture 合計は 46747 bytes（100,000 bytes 未満）です。生成スクリプトは出力を一つずつ作成し、出力サイズが正であることと、同じ出力ディレクトリ内の圧縮 fixture 合計が 100,000 バイト未満であることを確認します。
 
 ## デコード時の期待値
 
 MP3 と AAC は lossy codec のため、デコードした PCM は量子化済み source と完全一致しません。375 Hz 正弦波の周期は `48000 / 375 = 128` source frames です。AAC encoder の priming は 1,024 frames（整数周期 8 周期）です。
 
-FLAC と Xing 情報による gapless decode を使う MP3 は、native decode が正確に 12,288 frames、16 kHz canonical timeline が正確に 4,096 frames です。M4A と ADTS AAC は native decode が正確に 13,312 frames（1,024 frames の AAC packet 13 個）、canonical timeline が正確に 4,437 frames です。FFmpeg 8.0 native AAC の untrimmed ADTS 参照も 13,312 decoded frames です。AAC priming は取り除かず、native frame extent から canonical boundary を算出して一致を確認します。
+FLAC と Xing 情報による gapless decode を使う MP3 は、native decode が正確に 12,288 frames、16 kHz canonical timeline が正確に 4,096 frames です。ADTS AAC は priming のメタデータがなく、native decode が正確に 13,312 frames（1,024 frames の AAC packet 13 個）、canonical timeline が正確に 4,437 frames です。FFmpeg 8.0 native AAC の untrimmed ADTS 参照も 13,312 decoded frames です。M4A は `elst`（media_time 1,024、segment duration 256 ms）が priming を除くため、native decode が正確に 12,288 frames、canonical timeline が正確に 4,096 frames です。
 
-M4A / AAC の source 信号は frame 3,072 から始まります。mono sample の `abs(sample) > 0.05` を最初に満たす native decode frame は 4,098 ±4、canonical frame は 1,366 ±2 が期待値です。ADTS 参照の native decode では最初の crossing は frame 4,098 です。初期 crossing の lossy decoder による小さな差だけを許す狭い許容幅であり、1,024-frame priming の追加・除去（canonical で約341 framesの移動）を許しません。
+M4A / AAC の source 信号は frame 3,072 から始まります。mono sample の `abs(sample) > 0.05` を最初に満たす native decode frame は、priming を含む ADTS では 4,098 ±4、priming を除く M4A では 3,074 ±4、canonical frame は ADTS で 1,366 ±2、M4A で 1,025 ±2 です。初期 crossing の lossy decoder による小さな差だけを許す狭い許容幅であり、1,024-frame priming の追加・除去（canonical で約341 framesの移動）を許しません。
 
-AAC / M4A の 16 kHz canonical samples では `2560..<4096` を正弦波の内部区間として検証します。canonical frame `f` の期待値は、source frame `Double(f) * 3 - 1024` における 48 kHz / 375 Hz sine、mono gain 0.375 です。FLAC / MP3 は canonical frames `768..<3328` を検証します。すべての形式で lossy decode の振幅誤差 tolerance は 0.06 です。
+## M4A の priming メタデータ fixture
+
+次の 2 つは、生成した合成信号（上と同じ marker 波形、48 kHz stereo、12,288 frames）を符号化したものです。`windows_audio_fixture_itunsmpb.m4a` は macOS の `afconvert -f m4af -d aac -b 192000` の出力で、`elst` がなく `iTunSMPB`（priming 2,112、remainder 960、valid frames 12,288）だけを持ちます。AVAudioFile は 12,288 frames、信号 onset 3,074 を返します。`windows_audio_fixture_no_edit_metadata.m4a` は FFmpeg の `-use_editlist 0`（mp4 muxer、native AAC 192 kbit/s）の出力で、`elst` も `iTunSMPB` もないため何も除かず 13,312 frames、onset 4,098 ±4 になります。
+
+AAC / M4A の 16 kHz canonical samples では `2560..<4096` を正弦波の内部区間として検証します。canonical frame `f` の期待値は、ADTS では source frame `Double(f) * 3 - 1024`、`elst` で priming を除く M4A では `Double(f) * 3` における 48 kHz / 375 Hz sine、mono gain 0.375 です。FLAC / MP3 は canonical frames `768..<3328` を検証します。すべての形式で lossy decode の振幅誤差 tolerance は 0.06 です。

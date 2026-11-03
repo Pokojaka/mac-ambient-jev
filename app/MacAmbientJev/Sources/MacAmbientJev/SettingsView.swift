@@ -18,6 +18,11 @@ struct SettingsView: View {
     @State private var isRetryingDeferred = false
     @State private var microphoneAccess = AVCaptureDevice.authorizationStatus(for: .audio)
 
+    private func modelStateColor(_ state: MacModelState) -> Color {
+        if case .failed = state { return .orange }
+        return .secondary
+    }
+
     var body: some View {
         Form {
             Section("アプリ情報") {
@@ -25,20 +30,33 @@ struct SettingsView: View {
                 LabeledContent("ビルド", value: Self.bundleString("CFBundleVersion"))
             }
 
-            Section("音声認識モデル") {
-                LabeledContent("状態", value: appState.modelPreparation.statusText)
-
-                if case .preparing(let progress) = appState.modelPreparation {
-                    ProgressView(value: progress)
-                        .accessibilityLabel("音声認識モデルの準備")
-                } else if appState.modelPreparation != .ready {
-                    Button("モデルを準備") {
-                        appState.prepareASRModel()
+            Section("モデル") {
+                ForEach(MacModel.allCases, id: \.self) { model in
+                    LabeledContent(model.displayName) {
+                        Text(appState.modelPreparation.state(model).text)
+                            .foregroundStyle(modelStateColor(appState.modelPreparation.state(model)))
+                            .multilineTextAlignment(.trailing)
                     }
-                    .help("音声認識モデル（約2.5 GB）をダウンロードしてアプリ内に保存")
                 }
 
-                Text("初回は約2.5 GBをアプリ内にダウンロードします。録音中でも音声の保存と発話検出は続きます。")
+                if appState.modelPreparation.phase == .downloading {
+                    ProgressView(value: appState.modelPreparation.fractionDone)
+                        .accessibilityLabel("モデルのダウンロード")
+                    Text(appState.modelPreparation.percentText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if appState.modelPreparation.phase != .ready {
+                    Button("モデルを取得") {
+                        appState.retryModelPreparation()
+                    }
+                    .disabled(appState.modelPreparation.phase == .downloading
+                        || appState.modelPreparation.phase == .loading)
+                    .help("音声認識・話者分離・発話区間検出のモデル（合計約2.5 GB）をダウンロードして確認する。失敗したときの再試行にも使う")
+                }
+
+                Text("モデルは合計約2.5 GBで、アプリ内にダウンロードします。モデルがなくても録音は保存され、そろった時点で文字起こしが自動で始まります。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -667,7 +667,8 @@ private final class PublishedRetryEffects: SessionProcessingEffects {
     private(set) var heldCount = 0
     private(set) var exportCount = 0
 
-    func prepareASRModel() {}
+    var modelsReady: Bool { true }
+    func prepareModels() {}
 
     func awaitIdleRelease() async {}
 
@@ -707,7 +708,7 @@ private final class PublishedRetryEffects: SessionProcessingEffects {
                 disposition: result?.disposition,
                 message: result?.message
             ))
-        case .backlogged, .began, .liveFailed, .next, .willFinishDrain, .drained:
+        case .backlogged, .heldForModels, .began, .liveFailed, .next, .willFinishDrain, .drained:
             break
         }
     }

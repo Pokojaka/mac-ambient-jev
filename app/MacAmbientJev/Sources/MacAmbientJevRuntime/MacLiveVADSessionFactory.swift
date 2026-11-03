@@ -4,6 +4,7 @@ import MacAmbientJevPipeline
 
 public enum MacLiveVADSessionFactory {
     public static func make(
+        models: MacModelStore,
         processingDirectory: URL,
         sessionURL: URL,
         initialCheckpoint: AudioCheckpoint,
@@ -11,6 +12,7 @@ public enum MacLiveVADSessionFactory {
         segmentationRunID: String
     ) async throws -> LiveVADSession {
         let engine = try await FluidVADSegmentationEngine.make(
+            models: models,
             segmentationRunID: segmentationRunID,
             canonicalSampleRate: initialCheckpoint.sampleRate,
             measureMicInputLevels: measureMicInputLevels

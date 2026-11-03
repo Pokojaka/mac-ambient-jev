@@ -220,7 +220,7 @@ struct CaptureSystemAudioCommand {
         var transcriptText: String?
         if options.transcribe, let result, errors.isEmpty {
             let processor = NativeSessionProcessor(
-                paths: paths, engines: .production(paths: paths),
+                paths: paths, engines: .production(models: try MacModelStore(paths: paths)),
                 audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()), contentPriority: .disabled,
                 sleep: { try await Task.sleep(for: $0) }
             )

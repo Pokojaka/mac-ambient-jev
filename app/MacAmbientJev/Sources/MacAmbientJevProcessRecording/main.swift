@@ -204,7 +204,7 @@ struct ProcessRecordingCommand {
         let timelineBuilder: any ImportedAudioTimelineBuilding = AudioFileTimelineBuilder()
         let makeResources: @Sendable (Bool) throws -> SessionFileProcessingResources = { withDecisions in
             try checkStart(pacingMode: pacingMode)
-            let engines = SessionProcessingEngines.production(paths: paths)
+            let engines = SessionProcessingEngines.production(models: try MacModelStore(paths: paths))
             let contentPriority: ContentPriorityAccess
             let decisionProviderFactory: DecisionProviderFactory?
             if withDecisions {

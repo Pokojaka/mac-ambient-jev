@@ -29,6 +29,7 @@ jobs:
           python3 -B scripts/test_fetch_clause_tagger.py
           python3 -B scripts/test_export_clause_tagger_onnx.py
           python3 -B scripts/test_build_app.py
+          python3 -B scripts/test_fetch_mac_vad_model.py
       - name: Swift toolchain fingerprint
         id: toolchain
         run: |
@@ -55,8 +56,20 @@ jobs:
             app/MacAmbientJev/.build/artifacts
             app/MacAmbientJev/.build/workspace-state.json
           key: swiftpm-sources-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
+      - name: Cache the pinned VAD model
+        id: vad-model
+        uses: actions/cache/restore@v4
+        with:
+          path: .build/mac-test-models
+          key: mac-vad-model-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json') }}
       - name: Verify V1 tests
         run: bash scripts/verify_v1_tests.sh
+      - name: Save the pinned VAD model
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vad-model.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/mac-test-models
+          key: ${{ steps.vad-model.outputs.cache-primary-key }}
       - name: Save SwiftPM sources
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-sources.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
