@@ -101,6 +101,7 @@ enum EngineProcess {
             defer { diagnostics.close() }
 
             let logicalCPUCount = ProcessInfo.processInfo.activeProcessorCount
+            let timeZone = try WindowsLocalTimeZone.current()
             let transport = EngineTransport(
                 source: WindowsPipeByteSource(handle: try WindowsPipeByteSource.standardInput()),
                 sink: WindowsPipeByteSink(handle: stdout),
@@ -112,7 +113,8 @@ enum EngineProcess {
                     logicalCPUCount: logicalCPUCount,
                     resourceMonitor: WindowsInferenceResourceMonitor(),
                     sleep: { try await Task.sleep(for: $0) },
-                    shutdownPauseTimeout: shutdownPauseTimeout
+                    shutdownPauseTimeout: shutdownPauseTimeout,
+                    timeZone: timeZone
                 ),
                 capture: WindowsEngineCapture(
                     factory: WindowsWASAPICaptureFactory(),

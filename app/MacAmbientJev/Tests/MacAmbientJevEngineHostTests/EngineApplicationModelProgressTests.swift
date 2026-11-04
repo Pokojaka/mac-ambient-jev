@@ -72,8 +72,7 @@ private final class ModelProgressFixture {
                 paths: paths,
                 logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20)
-            ),
+                shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: provider,
             events: events

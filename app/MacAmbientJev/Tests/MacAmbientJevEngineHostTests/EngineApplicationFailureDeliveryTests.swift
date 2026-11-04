@@ -39,8 +39,7 @@ extension EngineApplicationCore {
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
-                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(5)
-            ),
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(5), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: FakeCapture(), inference: FakeInferenceProvider(),
             events: EngineEventEmitter(transport: transport)
         )

@@ -140,8 +140,7 @@ private final class PausedSessionFinalizationHarness {
                 paths: paths,
                 logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(30)
-            ),
+                shutdownPauseTimeout: .seconds(30), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: PausedSessionInferenceProvider(gate: gate),
             events: events

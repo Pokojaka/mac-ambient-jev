@@ -368,8 +368,7 @@ final class ApplicationHarness {
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths, logicalCPUCount: 4, resourceMonitor: resources, sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20)
-            ),
+                shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: inference,
             events: EngineEventEmitter(transport: transport)

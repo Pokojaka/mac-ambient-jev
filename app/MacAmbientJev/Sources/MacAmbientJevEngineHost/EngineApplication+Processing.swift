@@ -34,8 +34,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
         isShuttingDown || setupStatus != .ready
     }
 
-    /// Finalizing work waits in the queue's model hold until the models are prepared.
-    var modelsReady: Bool { modelsPrepared }
+    /// Finalizing work waits in the queue's model hold until the models are prepared and no recording is active.
+    var modelsReady: Bool { modelsPrepared && recording.phase == .idle }
 
     func awaitIdleRelease() async {
         await idleReleaseTask?.value

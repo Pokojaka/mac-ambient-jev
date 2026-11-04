@@ -201,7 +201,7 @@ public struct SessionFileProcessingService: Sendable {
         )
         let retained: RetainedSession
         do {
-            retained = try RetainedSessionImporter(paths: validated).importRetainedSession(audioURL: request.audioURL)
+            retained = try RetainedSessionImporter(paths: validated, timeZone: .current).importRetainedSession(audioURL: request.audioURL)
         } catch let error as RetainedImportError {
             switch error {
             case .bootstrap(let underlying):

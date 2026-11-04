@@ -226,7 +226,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(listed.sessionID == recorded.id)
         #expect(listed.folderPath == resolved.path)
         #expect(listed.displayName == EngineApplicationCore.sessionDisplayName(
-            manifest.createdAt, timeZone: .current
+            manifest.createdAt, timeZone: harness.app.core.timeZone
         ))
         #expect(listed.statusText == "文字起こしあり")
         #expect(listed.canReprocess)

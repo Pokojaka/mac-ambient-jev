@@ -218,7 +218,7 @@ extension EngineApplicationCore: EngineSessionHandling {
                 sessionID: EngineFailures.wireID(sessionID),
                 status: status(of: session),
                 error: exportError,
-                displayName: Self.sessionDisplayName(session.createdAt, timeZone: TimeZone.current),
+                displayName: Self.sessionDisplayName(session.createdAt, timeZone: timeZone),
                 statusText: statusText,
                 folderPath: session.sessionURL.path,
                 exportPath: exportPath,
@@ -332,7 +332,7 @@ extension EngineApplicationCore: EngineSessionHandling {
             stateDidChange()
         }
         let audioURL = URL(fileURLWithPath: payload.inputPath)
-        let importer = RetainedSessionImporter(paths: .trustedApplication(paths))
+        let importer = RetainedSessionImporter(paths: .trustedApplication(paths), timeZone: timeZone)
         let retained: RetainedSession
         do {
             retained = try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try importer.importRetainedSession(audioURL: audioURL) }.value
