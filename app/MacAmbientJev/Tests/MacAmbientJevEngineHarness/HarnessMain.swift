@@ -80,8 +80,7 @@ struct HarnessMain {
                 paths: paths,
                 logicalCPUCount: logicalCPUCount, resourceMonitor: resourceMonitor,
                 sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(30)
-            ),
+                shutdownPauseTimeout: .seconds(30), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: inference,
             events: EngineEventEmitter(transport: transport)

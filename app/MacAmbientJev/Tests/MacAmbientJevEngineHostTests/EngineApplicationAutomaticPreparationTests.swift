@@ -117,4 +117,54 @@ private let microphone = "{\"source\":\"microphone\",\"device\":{\"kind\":\"defa
         #expect(h.app.core.modelsPrepared)
         #expect(try await h.shutdown() == .shutdownRequested)
     }
+
+    @Test func recordingStartsWhileAnImportWaitsForModelsAndTheImportFinalizesBeforeTheRecording() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await started(root, holdingPrepare: true)
+        let audio = root.appending(path: "input.wav")
+        try Data("RIFF-not-decoded-by-the-fake-timeline".utf8).write(to: audio)
+        let encodedPath = String(decoding: try JSONEncoder().encode(audio.path), as: UTF8.self)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import", payload: "{\"input_path\":\(encodedPath)}"
+        ) else {
+            Issue.record("session.import did not return a session")
+            return
+        }
+        try await waitForState(h, "the import held for the models") {
+            $0.queue.map(\.sessionID) == [imported.sessionID]
+                && $0.presentation.processingStatusText == ModelPreparationStatus.waitingForModelsText
+        }
+
+        let recordingID = try await recordTwoSeconds(h)
+
+        // Preparing the models during the recording does not start the held import.
+        h.inference.releasePrepare()
+        await h.awaitModels()
+        #expect(h.app.core.modelsPrepared)
+        #expect(h.app.core.processingQueue.modelHeld.map { $0.sessionID.uuidString.lowercased() } == [imported.sessionID])
+        #expect(!h.app.core.processingCoordinator.isDraining)
+
+        try await h.call("recording.stop", payload: "{\"session_id\":\"\(recordingID)\"}")
+        try await h.sink.changes.wait("both sessions finalized") {
+            let states = ((try? h.outputs) ?? []).compactMap { output -> EngineState? in
+                if case let .state(state) = output.event { state } else { nil }
+            }
+            return states.last.map { $0.queue.isEmpty } == true && h.inference.calls.count("asr") > 0
+        }
+        let sessions = try await h.sessions()
+        #expect(sessions.count == 2)
+        #expect(sessions.allSatisfy { $0.status == .finalized })
+
+        // The import leaves the queue no later than the recording's finalization does.
+        let queues = try h.outputs.compactMap { output -> [String]? in
+            if case let .state(state) = output.event { state.queue.map(\.sessionID) } else { nil }
+        }
+        let importQueued = try #require(queues.firstIndex { $0.contains(imported.sessionID) })
+        let recordingQueued = try #require(queues.firstIndex { $0.contains(recordingID) })
+        let importDone = try #require(queues[importQueued...].firstIndex { !$0.contains(imported.sessionID) })
+        let recordingDone = try #require(queues[recordingQueued...].firstIndex { !$0.contains(recordingID) })
+        #expect(importDone <= recordingDone)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
 }

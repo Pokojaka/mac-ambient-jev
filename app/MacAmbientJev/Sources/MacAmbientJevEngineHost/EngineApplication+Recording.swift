@@ -28,7 +28,7 @@ extension EngineApplicationCore: EngineRecordingHandling {
                 .busy, "起動時の保存データの整理と復旧が終わるまで録音を開始できません", stage: .capture, recoveryAction: .retry
             )
         }
-        guard isProcessingIdle else {
+        guard !hasRunnableOrRunningProcessing else {
             throw EngineFailures.commandError(
                 .busy, "文字起こしの確定処理が実行中のため録音を開始できません", stage: .capture, recoveryAction: .retry
             )
@@ -164,7 +164,7 @@ extension EngineApplicationCore: RecordingStartEffects {
     func bootstrapSession(sessionID: UUID) throws -> URL {
         guard let source = captureSourceForStart else { preconditionFailure("a recording start has no attempt") }
         let url = try SessionBootstrapper(fileManager: .default).createSession(
-            paths: paths, sessionID: sessionID, source: .recording(source), createdAt: Date(), timeZone: .current
+            paths: paths, sessionID: sessionID, source: .recording(source), createdAt: Date(), timeZone: timeZone
         )
         startAttempt?.sessionURL = url
         return url
@@ -390,6 +390,8 @@ extension EngineApplicationCore: RecordingFinishEffects {
         let sessionID = recording.sessionID
         recording.finish()
         activeRecording = nil
+        // Work held for models while this recording ran goes ahead of this recording's own finalization.
+        processingCoordinator.resumeModelHeldProcessing()
         presentation.isSilent = false
         presentation.isWaitingForDevice = false
         if let sessionID { finishOutcomes[sessionID] = outcome }

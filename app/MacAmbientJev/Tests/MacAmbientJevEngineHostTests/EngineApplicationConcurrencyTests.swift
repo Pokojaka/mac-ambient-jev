@@ -244,8 +244,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
-                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
-            ),
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: FakeCapture(), inference: GatedInferenceProvider(gate: gate),
             events: EngineEventEmitter(transport: transport)
         )
@@ -265,8 +264,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
-                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30)
-            ),
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: GatedASRInferenceProvider(gate: gate, calls: calls),
             events: events

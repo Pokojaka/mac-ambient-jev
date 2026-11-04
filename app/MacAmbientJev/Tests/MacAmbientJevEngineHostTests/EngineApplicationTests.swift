@@ -509,8 +509,7 @@ private final class FinalizationShutdownHarness {
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths, logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(), sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20)
-            ),
+                shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: GatedFinalizationInferenceProvider(gate: gate),
             events: EngineEventEmitter(transport: transport)

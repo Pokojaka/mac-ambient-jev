@@ -81,9 +81,11 @@ public enum RetainedImportError: LocalizedError {
 /// renders output; the caller finalizes the returned request.
 public struct RetainedSessionImporter: Sendable {
     private let validated: ValidatedSessionPaths
+    private let timeZone: TimeZone
 
-    public init(paths: ValidatedSessionPaths) {
+    public init(paths: ValidatedSessionPaths, timeZone: TimeZone) {
         self.validated = paths
+        self.timeZone = timeZone
     }
 
     public func importRetainedSession(audioURL: URL) throws -> RetainedSession {
@@ -95,7 +97,7 @@ public struct RetainedSessionImporter: Sendable {
                 sessionID: sessionID,
                 source: .imported(originalFilename: audioURL.lastPathComponent),
                 createdAt: Date(),
-                timeZone: .current
+                timeZone: timeZone
             )
         } catch {
             throw RetainedImportError.bootstrap(underlying: error)

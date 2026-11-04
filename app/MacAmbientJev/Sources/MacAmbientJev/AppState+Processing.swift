@@ -168,7 +168,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
         }
 
         do {
-            let retained = try RetainedSessionImporter(paths: .trustedApplication(paths))
+            let retained = try RetainedSessionImporter(paths: .trustedApplication(paths), timeZone: .current)
                 .importRetainedSession(audioURL: sourceURL)
 
             recording.finish()

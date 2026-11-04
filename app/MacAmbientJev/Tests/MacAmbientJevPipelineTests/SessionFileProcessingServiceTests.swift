@@ -854,7 +854,7 @@ struct SessionFileProcessingServiceTests {
         let bytes = Data([0x52, 0x49, 0x46, 0x46, 0x11, 0x22, 0x33, 0x44, 0x80, 0xfe])
         let audioURL = try environment.makeInput(bytes: bytes)
 
-        let retained = try RetainedSessionImporter(paths: .trustedApplication(environment.paths))
+        let retained = try RetainedSessionImporter(paths: .trustedApplication(environment.paths), timeZone: .current)
             .importRetainedSession(audioURL: audioURL)
 
         let originalURL = SessionLayout(sessionURL: retained.sessionURL).audioDirectory.appending(path: "original.wav")
@@ -879,7 +879,7 @@ struct SessionFileProcessingServiceTests {
         let missing = environment.root.appending(path: "missing.wav")
 
         do {
-            _ = try RetainedSessionImporter(paths: .trustedApplication(environment.paths))
+            _ = try RetainedSessionImporter(paths: .trustedApplication(environment.paths), timeZone: .current)
                 .importRetainedSession(audioURL: missing)
             Issue.record("a missing audio file must fail the import")
         } catch let error as RetainedImportError {

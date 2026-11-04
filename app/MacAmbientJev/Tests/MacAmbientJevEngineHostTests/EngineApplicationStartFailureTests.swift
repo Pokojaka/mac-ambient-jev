@@ -21,8 +21,7 @@ import MacAmbientJevPipeline
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
-                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20)
-            ),
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture, inference: FakeInferenceProvider(), events: events
         )
         return Fixture(root: root, app: app)

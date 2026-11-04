@@ -11,19 +11,23 @@ public struct EngineApplicationConfiguration: Sendable {
     public let sleep: @MainActor @Sendable (Duration) async throws -> Void
     /// How long shutdown waits for running finalization to stop at its next boundary before it fails.
     public let shutdownPauseTimeout: Duration
+    /// The zone of session folder names and display names.
+    public let timeZone: TimeZone
 
     public init(
         paths: AppPaths,
         logicalCPUCount: Int,
         resourceMonitor: any InferenceResourceMonitoring,
         sleep: @escaping @MainActor @Sendable (Duration) async throws -> Void,
-        shutdownPauseTimeout: Duration
+        shutdownPauseTimeout: Duration,
+        timeZone: TimeZone
     ) {
         self.paths = paths
         self.logicalCPUCount = logicalCPUCount
         self.resourceMonitor = resourceMonitor
         self.sleep = sleep
         self.shutdownPauseTimeout = shutdownPauseTimeout
+        self.timeZone = timeZone
     }
 }
 
@@ -76,6 +80,7 @@ final class EngineApplicationCore {
     let events: EngineEventEmitter
     let sleep: @MainActor @Sendable (Duration) async throws -> Void
     let shutdownPauseTimeout: Duration
+    let timeZone: TimeZone
     let gateway = EngineProcessorGateway()
     let thermalMonitor = WindowsNoThermalMonitoring()
     let completions = EngineCompletionRegistry()
@@ -177,6 +182,7 @@ final class EngineApplicationCore {
         self.events = events
         sleep = configuration.sleep
         shutdownPauseTimeout = configuration.shutdownPauseTimeout
+        timeZone = configuration.timeZone
         loadSettings()
         resourceObservation = resourceMonitor.observeChanges { [weak self] in
             self?.resourceMonitorDidChange()
@@ -442,13 +448,18 @@ final class EngineApplicationCore {
 
     /// No finalization, decision retry or live transcription is queued or running.
     var isProcessingIdle: Bool {
-        processingQueue.pending.isEmpty
-            && processingQueue.held.isEmpty
-            && processingQueue.modelHeld.isEmpty
-            && !processingCoordinator.isDraining
-            && processingQueue.currentSessionID == nil
-            && processingQueue.claimedSessionIDs.isEmpty
-            && liveCoordinator.isASRIdle
+        !hasRunnableOrRunningProcessing && processingQueue.modelHeld.isEmpty
+    }
+
+    /// Finalizing work that is queued, resource-held, draining, running or claimed. Work that only waits
+    /// for the models is not running, so a recording may start while it waits.
+    var hasRunnableOrRunningProcessing: Bool {
+        !processingQueue.pending.isEmpty
+            || !processingQueue.held.isEmpty
+            || processingCoordinator.isDraining
+            || processingQueue.currentSessionID != nil
+            || !processingQueue.claimedSessionIDs.isEmpty
+            || !liveCoordinator.isASRIdle
     }
 
     func profileDiffers(_ old: EngineSettings, _ new: EngineSettings) -> Bool {

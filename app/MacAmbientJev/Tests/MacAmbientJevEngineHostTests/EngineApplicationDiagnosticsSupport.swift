@@ -176,8 +176,7 @@ final class DiagnosticsApplicationHarness {
                 paths: paths,
                 logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
                 sleep: { _ in },
-                shutdownPauseTimeout: .seconds(20)
-            ),
+                shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: inference,
             events: EngineEventEmitter(transport: transport)

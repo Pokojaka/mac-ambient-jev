@@ -24,8 +24,7 @@ private enum Pressure: CaseIterable, Equatable, Sendable {
         let events = EngineEventEmitter(transport: transport)
         app = EngineApplication(configuration: EngineApplicationConfiguration(
             paths: paths, logicalCPUCount: 4, resourceMonitor: resources,
-            sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30)
-        ), capture: capture, inference: inference, events: events)
+            sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(30), timeZone: TimeZone(identifier: "Asia/Tokyo")!), capture: capture, inference: inference, events: events)
         context = EngineRequestContext(requestID: try EngineID(1), events: events)
     }
     func start() async throws {
