@@ -145,12 +145,13 @@ jobs:
       - name: Zip and checksum
         run: |
           $ErrorActionPreference = 'Stop'
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zipName = 'MacAmbientJev-Windows-${{ matrix.architecture }}-${{ steps.version.outputs.value }}.zip'
           $outputDirectory = Join-Path $env:RUNNER_TEMP 'release'
           New-Item -ItemType Directory -Path $outputDirectory | Out-Null
           $zipPath = Join-Path $outputDirectory $zipName
-          [System.IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $env:RUNNER_TEMP 'stage/MacAmbientJev'), $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+          # bsdtar writes '/' entry separators; .NET Framework ZipFile writes '\'.
+          & "$env:SystemRoot\System32\tar.exe" -a -c -f $zipPath -C (Join-Path $env:RUNNER_TEMP 'stage') MacAmbientJev
+          if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
           $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
           [System.IO.File]::WriteAllText("$zipPath.sha256", "$hash  $zipName`n", (New-Object System.Text.UTF8Encoding($false)))
           Write-Host "$hash  $zipName"
