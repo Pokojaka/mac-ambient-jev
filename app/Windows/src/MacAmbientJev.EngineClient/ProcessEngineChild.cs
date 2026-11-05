@@ -13,8 +13,11 @@ public sealed class ProcessEngineChild : IEngineChild
     private ProcessEngineChild(Process process)
     {
         _process = process;
+        ProcessId = process.Id;
         Exit = WaitForExitAsync(process);
     }
+
+    public int ProcessId { get; }
 
     public Stream StandardInput => _process.StandardInput.BaseStream;
     public Stream StandardOutput => _process.StandardOutput.BaseStream;

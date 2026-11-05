@@ -31,6 +31,8 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
     private readonly Queue<PendingRequest> _outbound = new();
     private readonly SemaphoreSlim _writeSignal = new(0);
     private readonly StderrRing _stderrRing = new();
+    private readonly IEngineObserver? _observer;
+    private readonly StderrLineSplitter? _stderrLines;
     private readonly OutputInbox _inbox = new();
     private readonly TaskCompletionSource _stdoutStarted = NewCompletion(), _stderrStarted = NewCompletion();
     private readonly TaskCompletionSource<EngineClientState> _completion = NewCompletion<EngineClientState>();
@@ -45,13 +47,15 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
     private readonly List<string> _additionalFailures = new();
     private bool _requestIDsExhausted, _admissionOpen = true, _shutdownTerminalObserved, _shutdownSucceeded, _inputClosed, _writerStopping, _writerInFlight;
 
-    public EngineProcessClient(IEngineChild child, EngineClientLimits limits)
+    public EngineProcessClient(IEngineChild child, EngineClientLimits limits, IEngineObserver? observer = null)
     {
         ArgumentNullException.ThrowIfNull(child);
         ArgumentNullException.ThrowIfNull(limits);
         limits.Validate();
         _child = child;
         _limits = limits;
+        _observer = observer;
+        _stderrLines = observer is null ? null : new StderrLineSplitter(observer.EngineStderrLine);
         _input = child.StandardInput ?? throw new ArgumentException("Engine child stdin must not be null.", nameof(child));
         _output = child.StandardOutput ?? throw new ArgumentException("Engine child stdout must not be null.", nameof(child));
         _error = child.StandardError ?? throw new ArgumentException("Engine child stderr must not be null.", nameof(child));
@@ -67,8 +71,14 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
         _writeSignal.Release();
     }
 
-    public static EngineProcessClient Start() =>
-        new(ProcessEngineChild.Start(EnginePathResolver.Resolve(), Array.Empty<string>()), EngineClientLimits.Production);
+    public static EngineProcessClient Start(IEngineObserver observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+        var enginePath = EnginePathResolver.Resolve();
+        var child = ProcessEngineChild.Start(enginePath, Array.Empty<string>());
+        observer.EngineStarted(enginePath, child.ProcessId);
+        return new EngineProcessClient(child, EngineClientLimits.Production, observer);
+    }
 
     public Task<EngineResult> Hello { get; }
 
@@ -258,8 +268,9 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
             while (true)
             {
                 var count = await read.ConfigureAwait(false);
-                if (count == 0) return;
+                if (count == 0) { _stderrLines?.Complete(); return; }
                 _stderrRing.Append(buffer.AsSpan(0, count));
+                _stderrLines?.Append(buffer.AsSpan(0, count));
                 read = _error.ReadAsync(buffer.AsMemory());
             }
         }
@@ -459,6 +470,7 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
             _exitCode = exitCode;
             _admissionOpen = false;
         }
+        _observer?.EngineExited(exitCode);
     }
 
     private async Task FinishCloseCoreAsync(TaskCompletionSource closeCompletion, Task<EngineResult>? shutdownTask, bool wasAlreadyFailed)
@@ -493,7 +505,11 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
     private bool FailLocked(string message, Exception? exception)
     {
         var detail = exception is null ? message : $"{message}: {exception.GetType().Name}: {exception.Message}";
-        if (_state != EngineClientState.Failed) { _state = EngineClientState.Failed; _failureMessage = detail; _admissionOpen = false; }
+        if (_state != EngineClientState.Failed)
+        {
+            _state = EngineClientState.Failed; _failureMessage = detail; _admissionOpen = false;
+            _observer?.ClientFailed(BuildFailureLocked());
+        }
         else AddSupplementalFailureLocked(detail);
         ClearOutboundLocked();
         if (!_writerStopping) { _writerStopping = true; _writeSignal.Release(); }
