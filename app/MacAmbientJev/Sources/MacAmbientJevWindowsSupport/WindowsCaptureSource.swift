@@ -276,6 +276,7 @@ public final class WindowsCaptureSource {
                 sampleRate: openedDevice.sampleRate,
                 channels: openedDevice.channels,
                 gapFrameCount: nil,
+                isInitialCapture: true,
                 monitorStartedAt: healthStart
             )
             currentSegment = openedSegment
@@ -444,6 +445,7 @@ public final class WindowsCaptureSource {
         sampleRate: Double,
         channels: Int,
         gapFrameCount: Int?,
+        isInitialCapture: Bool,
         monitorStartedAt: TimeInterval?
     ) throws -> Segment {
         try Self.validateEndpointID(endpointID)
@@ -472,7 +474,8 @@ public final class WindowsCaptureSource {
                 channels: channels,
                 epochQPC100ns: epochQPC100ns,
                 clock: clock,
-                loopback: source == .systemAudio
+                loopback: source == .systemAudio,
+                isInitialCapture: isInitialCapture
             )
         } else {
             segmentIngress = nil
@@ -949,6 +952,7 @@ public final class WindowsCaptureSource {
                 sampleRate: openedDevice.sampleRate,
                 channels: openedDevice.channels,
                 gapFrameCount: nil,
+                isInitialCapture: false,
                 monitorStartedAt: clock.now()
             )
             if source == .systemAudio {
@@ -1344,6 +1348,7 @@ public final class WindowsCaptureSource {
             sampleRate: sampleRate,
             channels: channels,
             gapFrameCount: gapFrames,
+            isInitialCapture: false,
             monitorStartedAt: nil
         )
         currentSegment = gapSegment
@@ -1520,7 +1525,7 @@ public final class WindowsCaptureSource {
         case .invalidPacket:
             return "Windows capture received an invalid audio packet"
         case .timestamp:
-            return "Windows capture received an invalid packet timestamp"
+            return "Windows capture received an invalid packet timestamp (check: \(ingress.timestampCheck))"
         case .unknownOutput:
             return "Windows loopback capture reported an unknown output state"
         case .workerStall:

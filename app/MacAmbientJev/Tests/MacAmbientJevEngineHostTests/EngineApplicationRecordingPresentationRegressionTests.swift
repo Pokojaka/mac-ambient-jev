@@ -24,7 +24,9 @@ struct SavedFinishToneCase: Sendable, CustomTestStringConvertible {
         ApplicationHarness(root: try ApplicationHarness.makeRoot())
     }
 
-    private func stopResult(didOverflow: Bool, releaseFailure: String?) -> AudioCaptureStopResult {
+    private func stopResult(
+        didOverflow: Bool, releaseFailure: String?, gaps: [AudioGapEvent] = []
+    ) -> AudioCaptureStopResult {
         let checkpoint = AudioCheckpoint(
             committedFrames: 32_000,
             sampleRate: 16_000,
@@ -32,14 +34,14 @@ struct SavedFinishToneCase: Sendable, CustomTestStringConvertible {
             sampleFormat: .float32LE,
             chunkFiles: ["audio-00000.f32le"],
             chunkFrameCounts: [32_000],
-            gapEvents: []
+            gapEvents: gaps
         )
         return AudioCaptureStopResult(
             checkpoint: checkpoint,
             didOverflow: didOverflow,
-            dropoutCount: 0,
-            gapCount: 0,
-            totalGapFrames: 0,
+            dropoutCount: UInt64(gaps.count),
+            gapCount: gaps.count,
+            totalGapFrames: gaps.reduce(0) { $0 + $1.frameCount },
             sleepAssertionHeld: false,
             writerFailure: nil,
             systemAudioReleaseFailure: releaseFailure
@@ -132,6 +134,45 @@ struct SavedFinishToneCase: Sendable, CustomTestStringConvertible {
         #expect(core.startAttempt?.error?.message == message)
         #expect(core.presentation.recordingStatusText == message)
         #expect(try core.presentationState().recordingTone == .error)
+    }
+
+    @Test(arguments: [nil, .overflow, .missingCallback, .invalidBuffer, .stopTail] as [AudioGapReason?])
+    func savedCheckpointGapsDrivePostStopWarning(reason: AudioGapReason?) throws {
+        let harness = try makeHarness()
+        defer { removeRoot(harness.root) }
+        let core = harness.app.core
+        let sessionID = UUID()
+        core.recording.start(sessionID: sessionID)
+        core.recording.didStart(sessionID: sessionID)
+        core.activeRecording = (.microphone, .default)
+        core.recordingDidStart(sessionID: sessionID)
+        let gaps = reason.map { [AudioGapEvent(startFrame: 512, frameCount: 512, reason: $0)] } ?? []
+        // No ring overflow is reported: a durable missing-callback gap must still warn after stop.
+        let result = stopResult(didOverflow: false, releaseFailure: nil, gaps: gaps)
+        #expect(result.didOverflow == (reason != nil))
+
+        core.recordingDidFinish(.saved(
+            result: result, failureMessage: nil, vadFailureText: nil, vadSegmentCount: 0
+        ))
+
+        let finished = try core.presentationState()
+        if reason != nil {
+            #expect(finished.recordingTone == .warning)
+            #expect(finished.recordingStatusText == "録音は保存しましたが、一部の音声が欠落した可能性があります。")
+            #expect(core.failures.count == 1)
+            let warning = try #require(core.failures.first)
+            #expect(warning.code == .captureFailure)
+            #expect(warning.severity == .warning)
+            #expect(warning.stage == .capture)
+            #expect(warning.sessionID == sessionID.uuidString.lowercased())
+            #expect(warning.recoveryAction == .none)
+            #expect(warning.message == "録音は保存しましたが、一部の音声が欠落した可能性があります")
+        } else {
+            #expect(finished.recordingTone == .neutral)
+            #expect(finished.recordingStatusText == "録音を保存しました（00:02）")
+            #expect(core.failures.isEmpty)
+        }
+        #expect(finished.failures == core.failures)
     }
 
     @Test(arguments: [

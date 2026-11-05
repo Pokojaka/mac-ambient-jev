@@ -142,7 +142,8 @@ final class WindowsEngineCaptureSession: EngineCaptureSession {
         }
         return AudioCaptureStopResult(
             checkpoint: checkpoint,
-            didOverflow: checkpoint.gapEvents.contains { $0.reason == .overflow },
+            // Stop-result consumers use this flag for any saved audio loss, not just ring overflow.
+            didOverflow: !checkpoint.gapEvents.isEmpty,
             dropoutCount: UInt64(checkpoint.gapEvents.count),
             gapCount: checkpoint.gapEvents.count,
             totalGapFrames: checkpoint.gapEvents.reduce(0) { $0 + $1.frameCount },
