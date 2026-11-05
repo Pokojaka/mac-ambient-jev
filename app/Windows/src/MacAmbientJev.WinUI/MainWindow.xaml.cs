@@ -20,6 +20,8 @@ public sealed partial class MainWindow : Window
     private readonly ShellLog _log;
     private bool _closeStarted, _allowFinalClose;
     private bool _toastRegistered, _deviceLostDialogInFlight, _focusDeviceSelector;
+    private bool? _focusStopAfterRecordingCommand;
+    private ShellState? _recordingFocusInitialState;
     private DeviceLostNotice? _toastedDeviceLostNotice; private ContentDialog? _deviceLostDialog;
 
     public MainWindow(ShellLog log)
@@ -132,6 +134,9 @@ public sealed partial class MainWindow : Window
         _scroll?.Refresh();
         SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
         RefreshSettingsButton();
+        // Command CanExecute notifications run after Refreshed; focus only after the bindings enable the target.
+        if (_focusStopAfterRecordingCommand is not null && !DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, RestoreRecordingFocus))
+            ShowFailure(new InvalidOperationException("録音操作後のフォーカス更新を予約できません。"));
         if (!_closeStarted && _focusDeviceSelector && DeviceSelector.IsEnabled && _context is { } context &&
             !context.State.IsPending(EngineCommandName.DevicesList))
         {
@@ -140,6 +145,48 @@ public sealed partial class MainWindow : Window
         }
         try { await ShowDeviceLostNoticeAsync(); }
         catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
+    }
+
+    private void OnStartRecordingClick(object sender, RoutedEventArgs args) => RequestRecordingFocus(true);
+    private void OnStopRecordingClick(object sender, RoutedEventArgs args) => RequestRecordingFocus(false);
+
+    private void RequestRecordingFocus(bool focusStop)
+    {
+        _recordingFocusInitialState = _store?.State;
+        _focusStopAfterRecordingCommand = focusStop;
+    }
+
+    private void FocusToolbarButton(AppBarButton button)
+    {
+        if (_closeStarted) return;
+        if (button.IsInOverflow && !Toolbar.IsOpen)
+        {
+            Toolbar.IsOpen = true;
+            if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => FocusToolbarButton(button)))
+                ShowFailure(new InvalidOperationException($"{button.Label}へのフォーカス移動を予約できません。"));
+            return;
+        }
+        if (!button.Focus(FocusState.Programmatic))
+            ShowFailure(new InvalidOperationException($"{button.Label}にフォーカスできません。"));
+    }
+
+    private void RestoreRecordingFocus()
+    {
+        if (_focusStopAfterRecordingCommand is not bool focusStop || _live is not { } live) return;
+        if (_closeStarted || _settingsDialog is not null || _deviceLostDialogInFlight || _store is not { State.Phase: ShellPhase.Running })
+        { _focusStopAfterRecordingCommand = null; return; }
+        var state = _store.State;
+        var targetCommand = focusStop ? live.StopRecording : live.StartRecording;
+        if (targetCommand.CanExecute(null))
+        {
+            _focusStopAfterRecordingCommand = null;
+            FocusToolbarButton(focusStop ? StopButton : StartButton);
+        }
+        // A terminal reply may precede its authoritative recording state event. Keep the intent
+        // until the target is enabled; only a new failure cancels it, not command completion.
+        else if ((state.LastError is not null && !ReferenceEquals(state.LastError, _recordingFocusInitialState?.LastError)) ||
+            (state.CommandError is not null && state.CommandError != _recordingFocusInitialState?.CommandError))
+            _focusStopAfterRecordingCommand = null;
     }
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
@@ -174,6 +221,7 @@ public sealed partial class MainWindow : Window
         {
             if (_settingsDialog is { } dialog) { dialog.Dispose(); _settingsDialog = null; }
             RefreshSettingsButton();
+            if (!_closeStarted && SettingsButton.IsEnabled) FocusToolbarButton(SettingsButton);
             try { await ShowDeviceLostNoticeAsync(); }
             catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
         }
@@ -212,7 +260,7 @@ public sealed partial class MainWindow : Window
             if (stderr.Length != 0) text.AppendLine().Append("標準エラー出力: ").Append(stderr);
             if (snapshot.Stderr.DiscardedBytes != 0) text.AppendLine().Append("標準エラー出力の破棄バイト数: ").Append(snapshot.Stderr.DiscardedBytes);
         }
-        WindowFailure.Text = text.ToString(); WindowFailure.Visibility = Visibility.Visible;
+        WindowFailure.Text = text.ToString(); WindowFailureScroller.Visibility = Visibility.Visible;
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)

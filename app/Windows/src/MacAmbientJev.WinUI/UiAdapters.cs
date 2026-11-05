@@ -122,6 +122,8 @@ internal sealed class TranscriptScrollAdapter : IDisposable
             if (viewers.Length != 1) throw new InvalidOperationException(viewers.Length == 0
                 ? "The transcript ListView template has no ScrollViewer." : "The transcript ListView template has multiple ScrollViewers.");
             _viewer = viewers[0];
+            // List items handle keyboard scrolling; the template viewer must not add a separate Pane tab stop.
+            _viewer.IsTabStop = false;
             foreach (var bar in nodes.OfType<ScrollBar>()) { bar.Scroll += OnScrollBarScroll; _scrollBars.Add(bar); }
             _viewer.DirectManipulationStarted += OnDirectManipulationStarted;
             if (_returnToLatestPending) Refresh();

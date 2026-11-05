@@ -54,6 +54,23 @@ public sealed partial class ShellStoreTests
         Assert.False(live.StartRecording.CanExecute(null)); Assert.False(diagnostics.Refresh.CanExecute(null));
     }
     [Fact]
+    public async Task RecordingSelectionAtLaunchUsesCachedChoiceInstances()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var live = new LiveViewModel(context);
+        var sources = live.Sources; var devices = live.Devices;
+        Assert.Same(Assert.Single(sources), live.SelectedSourceChoice);
+        Assert.Same(Assert.Single(devices), live.SelectedDeviceChoice);
+        Assert.Equal(EngineSource.Microphone, live.SelectedSourceChoice!.Value);
+        Assert.Equal(new EngineDevice.Default(), live.SelectedDeviceChoice!.Value);
+        live.SelectedSourceChoice = null; live.SelectedDeviceChoice = null;
+        Assert.Same(sources, live.Sources); Assert.Same(devices, live.Devices);
+        Assert.Same(sources[0], live.SelectedSourceChoice); Assert.Same(devices[0], live.SelectedDeviceChoice);
+        Assert.True(live.StartRecording.CanExecute(null));
+    }
+
+    [Fact]
     public async Task RecordingSelectionUsesCurrentSourceAndDeviceDraft()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
@@ -62,6 +79,7 @@ public sealed partial class ShellStoreTests
         Assert.Equal(EngineSource.Microphone, live.SelectedSource);
         Assert.Equal(new EngineDevice.Default(), live.SelectedDevice);
         Assert.Equal("既定のデバイス", Assert.Single(live.Devices).Label);
+        var initialSources = live.Sources;
 
         var capabilities = new EngineCapabilities([EngineSource.Microphone, EngineSource.SystemAudio], [EngineASRSize.Small],
             [EngineExecutionProvider.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None);
@@ -69,7 +87,11 @@ public sealed partial class ShellStoreTests
         engine.EmitBatch(new EngineOutput(1, new EngineID(1), null,
             new EngineEvent.Ready(new EngineReadyPayload(capabilities, State(EngineSetupStatus.Ready, 2)))));
         await capabilitiesChanged; dispatcher.Run();
+        live.SelectedSourceChoice = null;
         var sourceChoices = live.Sources;
+        Assert.NotSame(initialSources, sourceChoices);
+        Assert.NotSame(initialSources[0], live.SelectedSourceChoice);
+        Assert.Same(sourceChoices[0], live.SelectedSourceChoice);
         Assert.Equal(new[] { EngineSource.Microphone, EngineSource.SystemAudio }, sourceChoices.Select(choice => choice.Value));
         Assert.Equal(new[] { "マイク", "システム音声" }, sourceChoices.Select(choice => choice.Label));
 
@@ -97,7 +119,7 @@ public sealed partial class ShellStoreTests
         Assert.Same(sourceChoices, live.Sources);
 
         engine.AutoResponse = null;
-        live.SelectedDevice = microphoneChoice.Value;
+        live.SelectedDeviceChoice = microphoneChoice;
         Assert.True(live.StartRecording.CanExecute(null));
         live.StartRecording.Execute(null);
         var startExecution = live.StartRecording.Execution!; var startRequest = await engine.NextRequestAsync();
@@ -109,14 +131,15 @@ public sealed partial class ShellStoreTests
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run();
         Assert.Same(sourceChoices, live.Sources); Assert.Same(microphoneChoices, live.Devices);
 
-        live.SelectedDevice = null;
-        Assert.False(live.StartRecording.CanExecute(null));
-        live.SelectedDevice = microphoneChoice.Value;
+        live.SelectedDeviceChoice = null;
+        Assert.Same(microphoneChoice, live.SelectedDeviceChoice);
+        Assert.True(live.StartRecording.CanExecute(null));
         engine.AutoResponse = DevicesResponse;
         var systemDevicesPending = ChangedAfter(store, state => state.IsPending(EngineCommandName.DevicesList));
-        live.SelectedSource = EngineSource.SystemAudio;
-        Assert.Null(live.SelectedDevice);
-        Assert.Equal("既定のデバイス", Assert.Single(live.Devices).Label);
+        live.SelectedSourceChoice = Assert.Single(sourceChoices, choice => choice.Value == EngineSource.SystemAudio);
+        Assert.Equal(new EngineDevice.Default(), live.SelectedDevice);
+        Assert.Same(Assert.Single(live.Devices), live.SelectedDeviceChoice);
+        Assert.Equal("既定のデバイス", live.SelectedDeviceChoice!.Label);
         await systemDevicesPending;
         await live.RefreshDevices.Execution!;
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100)); dispatcher.Run();
@@ -124,13 +147,84 @@ public sealed partial class ShellStoreTests
         Assert.Equal(new[] { EngineSource.Microphone, EngineSource.SystemAudio }, requestedSources);
         Assert.DoesNotContain(live.Devices, choice => choice.Value is EngineDevice.Id id && id.ID == "mic-endpoint");
         Assert.Contains(live.Devices, choice => choice.Value is EngineDevice.Id id && id.ID == "system-endpoint");
-        live.SelectedDevice = microphoneChoice.Value;
+        Assert.Same(live.Devices[0], live.SelectedDeviceChoice);
+        live.SelectedSourceChoice = null; live.SelectedDeviceChoice = null;
+        Assert.Same(sourceChoices[1], live.SelectedSourceChoice);
+        Assert.Same(live.Devices[0], live.SelectedDeviceChoice);
+        Assert.True(live.StartRecording.CanExecute(null));
+        live.StartRecording.Execute(null);
+        startExecution = live.StartRecording.Execution!; startRequest = await engine.NextRequestAsync();
+        Assert.Equal(new EngineRecordingStartPayload(EngineSource.SystemAudio, new EngineDevice.Default()),
+            Assert.IsType<EngineCommand.RecordingStart>(startRequest.Command).Payload);
+        startRequest.Reject(Failure(EngineErrorCode.Busy, "busy", EngineRecoveryAction.Retry)); await startExecution;
+
+        live.SelectedDeviceChoice = microphoneChoice;
+        Assert.Equal(new EngineDevice.Id("mic-endpoint"), live.SelectedDevice);
+        Assert.Null(live.SelectedDeviceChoice);
         Assert.False(live.StartRecording.CanExecute(null));
-        live.SelectedDevice = null;
+        Assert.Equal("選択したデバイスは利用できません", live.StartDisabledReason);
+        live.SelectedDeviceChoice = null;
+        Assert.Equal(new EngineDevice.Id("mic-endpoint"), live.SelectedDevice);
         Assert.False(live.StartRecording.CanExecute(null));
-        live.SelectedSource = (EngineSource)999;
+        live.SelectedSourceChoice = new ShellSourceChoice((EngineSource)999, "Invalid source");
+        Assert.Null(live.SelectedSourceChoice);
         Assert.False(live.StartRecording.CanExecute(null));
         Assert.False(live.RefreshDevices.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task RefreshedDeviceChoicesPreserveSelectionIdentityWithoutDefaultingMissingDevices()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var live = new LiveViewModel(context);
+        async Task Refresh(EngineDeviceInfo[] endpoints)
+        {
+            engine.AutoResponse = command =>
+            {
+                Assert.IsType<EngineCommand.DevicesList>(command);
+                return new EngineResult.DevicesList(new EngineDevicesResult(EngineSource.Microphone, endpoints, null));
+            };
+            live.RefreshDevices.Execute(null); await live.RefreshDevices.Execution!;
+            if (dispatcher.PendingCount == 0)
+            {
+                await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(100));
+            }
+            dispatcher.Run();
+        }
+
+        await Refresh([new EngineDeviceInfo("mic", "Original name", false)]);
+        var originalChoices = live.Devices;
+        var original = Assert.Single(originalChoices, choice => choice.Value is EngineDevice.Id);
+        live.SelectedDeviceChoice = original;
+        Assert.Same(original, live.SelectedDeviceChoice);
+        await Refresh([new EngineDeviceInfo("mic", "Updated name", false)]);
+        // ItemsSource replacement can clear SelectedItem before the new selection is read.
+        live.SelectedDeviceChoice = null;
+        var refreshedChoices = live.Devices;
+        var refreshed = Assert.Single(refreshedChoices, choice => choice.Value is EngineDevice.Id);
+        Assert.NotSame(originalChoices, refreshedChoices); Assert.NotSame(original, refreshed);
+        Assert.Equal("Updated name", refreshed.Label);
+        Assert.Same(refreshed, live.SelectedDeviceChoice);
+        Assert.Equal(new EngineDevice.Id("mic"), live.SelectedDevice);
+        Assert.True(live.StartRecording.CanExecute(null));
+        live.SelectedDeviceChoice = original;
+        Assert.Same(refreshed, live.SelectedDeviceChoice);
+
+        await Refresh([]);
+        live.SelectedDeviceChoice = null;
+        Assert.Equal(new EngineDevice.Default(), Assert.Single(live.Devices).Value);
+        Assert.Equal(new EngineDevice.Id("mic"), live.SelectedDevice);
+        Assert.Null(live.SelectedDeviceChoice);
+        Assert.False(live.StartRecording.CanExecute(null));
+        Assert.Equal("選択したデバイスは利用できません", live.StartDisabledReason);
+        live.SelectedDeviceChoice = new ShellDeviceChoice(new EngineDevice.Id("unknown"), "Unknown device");
+        Assert.Equal(new EngineDevice.Id("unknown"), live.SelectedDevice);
+        Assert.Null(live.SelectedDeviceChoice); Assert.False(live.StartRecording.CanExecute(null));
+
+        live.SelectedDeviceChoice = Assert.Single(live.Devices);
+        Assert.Same(live.Devices[0], live.SelectedDeviceChoice);
+        Assert.True(live.StartRecording.CanExecute(null));
     }
 
     [Fact]
@@ -273,6 +367,13 @@ public sealed partial class ShellStoreTests
             new ShellTranscriptRowViewModel("c", c.Text, "03:10", "", ""),
             new ShellTranscriptRowViewModel("d", d.Text, "10:05", "OTHER", "")
         }, live.Rows);
+        Assert.Equal(new[]
+        {
+            "01:05, Speaker 1, こんにちは🌸\n次の行",
+            "02:05, 続き😊\n二行目",
+            "03:10, 空の見出し",
+            "10:05, OTHER, OTHER"
+        }, live.Rows.Select(row => row.AccessibleName));
         var stable = live.Rows[0]; var oldD = live.Rows[3];
         var progress = new EngineProgressPayload(EngineStage.ValidatingModels, 1, 2, null);
         engine.EmitBatch(Rows("session", EngineRowsKind.Changes), new EngineOutput(1, new EngineID(2), null, new EngineEvent.Progress(progress)));
@@ -289,6 +390,9 @@ public sealed partial class ShellStoreTests
             new ShellTranscriptRowViewModel("a", a.Text, "01:05", "Speaker 1", "発話文の続き待ち"),
             new ShellTranscriptRowViewModel("e", "追加", "00:02", "", "")
         }, live.Rows);
+        Assert.Equal("10:10, OTHER, OTHER updated", live.Rows[0].AccessibleName);
+        Assert.Equal("01:05, Speaker 1, こんにちは🌸\n次の行", live.Rows[1].AccessibleName);
+        Assert.Equal("00:02, 追加", live.Rows[2].AccessibleName);
         Assert.Same(stable, live.Rows[1]); Assert.NotSame(oldD, live.Rows[0]);
         async Task RenderScreen(EngineScreen screen, ulong revision, string expected)
         {
