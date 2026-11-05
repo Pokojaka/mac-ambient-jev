@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using MacAmbientJev.Protocol;
 
 namespace MacAmbientJev.EngineClient;
@@ -54,6 +56,42 @@ internal sealed class StderrRing
             Array.Copy(_buffer, 0, bytes, first, _count - first);
             return new StderrSnapshot(bytes, _discardedBytes);
         }
+    }
+}
+
+internal sealed class StderrLineSplitter(Action<string> onLine)
+{
+    internal const int MaxLineBytes = 64 * 1024;
+
+    private readonly MemoryStream _line = new();
+
+    internal void Append(ReadOnlySpan<byte> bytes)
+    {
+        while (bytes.Length != 0)
+        {
+            var lineFeed = bytes.IndexOf((byte)'\n');
+            _line.Write(lineFeed < 0 ? bytes : bytes[..lineFeed]);
+            if (lineFeed < 0)
+            {
+                if (_line.Length >= MaxLineBytes) Emit();
+                return;
+            }
+
+            Emit();
+            bytes = bytes[(lineFeed + 1)..];
+        }
+    }
+
+    internal void Complete()
+    {
+        if (_line.Length != 0) Emit();
+    }
+
+    private void Emit()
+    {
+        var text = Encoding.UTF8.GetString(_line.GetBuffer(), 0, (int)_line.Length).TrimEnd('\r');
+        _line.SetLength(0);
+        onLine(text);
     }
 }
 

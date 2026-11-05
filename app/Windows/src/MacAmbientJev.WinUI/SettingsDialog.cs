@@ -11,6 +11,9 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private readonly SettingsViewModel _settings;
     private readonly DiagnosticsViewModel _diagnostics;
     private readonly IPathPicker _pathPicker;
+    private readonly string _logFolder;
+    private readonly IFolderRevealer _folderRevealer;
+    private readonly Button _openLogs = new() { Content = "ログフォルダーを開く" };
     private readonly EngineCapabilities _capabilities;
     private readonly ComboBox _schema = Box(), _source = Box(), _device = Box(), _asr = Box(), _provider = Box(), _threads = Box();
     private readonly ComboBox _lowHeat = Box(), _decisions = Box(), _autoExport = Box(), _exportPath = Box();
@@ -26,8 +29,10 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private bool _deferredDeviceForce, _hydrating, _disposed, _loadingDevices, _privacyPending, _pickerPending, _reloadRunning, _commitRunning, _prepareRunning, _draftPostPending;
     private int _editVersion;
     private string? _localError;
-    public SettingsDialog(ShellUiContext context, SettingsViewModel settings, DiagnosticsViewModel diagnostics, IPathPicker pathPicker) {
+    public SettingsDialog(ShellUiContext context, SettingsViewModel settings, DiagnosticsViewModel diagnostics, IPathPicker pathPicker, string logFolder, string logPath, IFolderRevealer folderRevealer) {
         DefaultStyleKey = typeof(ContentDialog);
+        ArgumentException.ThrowIfNullOrEmpty(logFolder); ArgumentException.ThrowIfNullOrEmpty(logPath);
+        _logFolder = logFolder; _folderRevealer = folderRevealer ?? throw new ArgumentNullException(nameof(folderRevealer));
         _context = context ?? throw new ArgumentNullException(nameof(context)); _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics)); _pathPicker = pathPicker ?? throw new ArgumentNullException(nameof(pathPicker));
         _capabilities = settings.Capabilities ?? throw new InvalidOperationException("Engine capabilities are unavailable.");
@@ -44,7 +49,8 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         general.Children.Add(_settingsProgress); general.Children.Add(_prepare); general.Children.Add(_preparation); general.Children.Add(_generalError); general.Children.Add(_reload); general.Children.Add(_save);
         var diag = new StackPanel { Spacing = 8 }; _refresh.Content = _diagnostics.RefreshLabel; _inspect.Content = _diagnostics.InspectModelsLabel;
         _refresh.Click += OnRefresh; _inspect.Click += OnInspect; diag.Children.Add(_refresh); diag.Children.Add(_usageProgress); diag.Children.Add(_usage); diag.Children.Add(_inspect);
-        diag.Children.Add(_modelsProgress); diag.Children.Add(_models); diag.Children.Add(Text("エンジン / トランスポート")); diag.Children.Add(_transport); diag.Children.Add(_diagnosticError);
+        diag.Children.Add(_modelsProgress); diag.Children.Add(_models); diag.Children.Add(Text("エンジン / トランスポート")); diag.Children.Add(_transport);
+        diag.Children.Add(Text("ログファイル: " + logPath)); diag.Children.Add(_openLogs); _openLogs.Click += OnOpenLogs; diag.Children.Add(_diagnosticError);
         var tabs = new TabView { IsAddTabButtonVisible = false, CanReorderTabs = false, MaxWidth = 620 };
         tabs.TabItems.Add(new TabViewItem { Header = "一般", Content = View(general), IsClosable = false }); tabs.TabItems.Add(new TabViewItem { Header = "診断", Content = View(diag), IsClosable = false }); Content = tabs; Hydrate(context.Store.State.SettingsDraft);
         _schema.SelectionChanged += OnDraftChanged; _source.SelectionChanged += OnSourceChanged; _device.SelectionChanged += OnDraftChanged; _asr.SelectionChanged += OnDraftChanged;
@@ -242,6 +248,10 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         finally { if (!_disposed) { _prepareRunning = false; try { UpdateViews(); } catch (Exception error) { ReportError(error); } } }
     }
     private async void OnRefresh(object sender, RoutedEventArgs args) => await RunDiagnosticAsync(_diagnostics.Refresh);
+    private async void OnOpenLogs(object sender, RoutedEventArgs args) {
+        try { await _folderRevealer.RevealAsync(_logFolder); }
+        catch (Exception error) { ReportError(error); }
+    }
     private async void OnInspect(object sender, RoutedEventArgs args) => await RunDiagnosticAsync(_diagnostics.InspectModels);
     private async Task RunDiagnosticAsync(ShellCommand command) {
         try { if (_disposed || !command.CanExecute(null)) return; command.Execute(null); await (command.Execution ?? throw new InvalidOperationException("Diagnostic command did not start.")); if (!_disposed) UpdateViews(); }
@@ -267,6 +277,6 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
         if (_disposed) return; _disposed = true; _context.Refreshed -= OnRefreshed;
         _schema.SelectionChanged -= OnDraftChanged; _source.SelectionChanged -= OnSourceChanged; _device.SelectionChanged -= OnDraftChanged; _asr.SelectionChanged -= OnDraftChanged;
         _provider.SelectionChanged -= OnDraftChanged; _threads.SelectionChanged -= OnDraftChanged; _lowHeat.SelectionChanged -= OnDraftChanged; _decisions.SelectionChanged -= OnDraftChanged; _autoExport.SelectionChanged -= OnDraftChanged; _exportPath.SelectionChanged -= OnDraftChanged;
-        _save.Click -= OnSave; _reload.Click -= OnReload; _privacy.Click -= OnPrivacy; _prepare.Click -= OnPrepare; _pickExport.Click -= OnPickExport; _refresh.Click -= OnRefresh; _inspect.Click -= OnInspect;
+        _save.Click -= OnSave; _reload.Click -= OnReload; _privacy.Click -= OnPrivacy; _prepare.Click -= OnPrepare; _pickExport.Click -= OnPickExport; _refresh.Click -= OnRefresh; _inspect.Click -= OnInspect; _openLogs.Click -= OnOpenLogs;
     }
 }
