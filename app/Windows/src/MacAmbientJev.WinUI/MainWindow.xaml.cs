@@ -153,7 +153,7 @@ public sealed partial class MainWindow : Window
             _savedSessionsWindow = window;
             window.Closed += OnSavedSessionsClosed;
             window.Activate();
-            if (sessions.List.CanExecute(ShellPageMove.Reload)) sessions.List.Execute(ShellPageMove.Reload);
+            await (_store ?? throw new InvalidOperationException("The shell store is unavailable.")).SetSessionsVisibleAsync(true);
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
     }
@@ -183,11 +183,14 @@ public sealed partial class MainWindow : Window
         _context is { State.Capabilities: not null } && _store is
         { Initialization.IsCompleted: true, State: { Capabilities: not null, Phase: ShellPhase.Running or ShellPhase.EngineFailed } };
 
-    private void OnSavedSessionsClosed(object sender, WindowEventArgs args)
+    private async void OnSavedSessionsClosed(object sender, WindowEventArgs args)
     {
         var window = sender as Window ?? throw new InvalidOperationException("The closed saved sessions window is unavailable.");
         window.Closed -= OnSavedSessionsClosed;
         _savedSessionsWindow = null;
+        try { await (_store ?? throw new InvalidOperationException("The shell store is unavailable.")).SetSessionsVisibleAsync(false); }
+        catch (ObjectDisposedException) when (_store?.State.Phase == ShellPhase.Disposed) { }
+        catch (Exception exception) { await ReportFailureAsync(exception); }
     }
 
     private async Task ReportFailureAsync(Exception exception)

@@ -42,6 +42,8 @@ public sealed record ShellPageWindow<T> where T : class
 public sealed record ShellTranscriptState
 {
     public string? SessionID { get; init; }
+    public string? DisplayName { get; init; }
+    public string? UnavailableReason { get; init; }
     public EngineTranscriptPage? Tail { get; init; }
     public ShellPageWindow<EngineTranscriptPage> History { get; init; } = new();
     public bool HistoryStale { get; init; } = false;

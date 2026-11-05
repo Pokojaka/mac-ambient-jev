@@ -93,6 +93,8 @@ Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙�
 
 一覧は active ASR run のイベントログと active transcript payload を読み取り専用で検証する。ログが欠損・不正、または不完全な末尾を含む場合は破損状態となり、文字起こしを公開せず書き出しを無効にする。再処理は利用可能な原音声から行える。
 
+Windows では保存済み録音を選ぶと、文字起こしを録音名とともにメイン画面に表示する。録音中・録音の開始または停止中は一覧選択を無効にする。文字起こしが未生成・利用不能、または録音を読めない場合は、以前の録音の行を消去して理由を表示する。音声 import が受け付けられて session ID が返ると、その session を選択し、処理で生成・公開される行を完成前から順次表示する。新しい録音を開始すると、保存済み録音の表示は新しい live transcript に置き換わる。開いている一覧は import の受け付け、録音停止、処理完了に伴う engine state の変化から自動更新する（[Windows の保存済み録音](windows.md#winui-shell)）。
+
 ## 実装
 
 - [SessionExporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionExporter.swift): 音声書き出し、作業用フォルダー、公開と置き換え。

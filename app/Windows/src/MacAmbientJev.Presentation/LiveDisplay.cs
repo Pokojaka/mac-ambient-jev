@@ -35,7 +35,10 @@ public sealed partial class LiveViewModel
                 state.IsPending(EngineCommandName.DevicesList);
         }
     }
-    public string? BadgeText => Snapshot.Engine?.Screen switch
+    public string? TranscriptDisplayText => Snapshot.Transcript.DisplayName is { } name ? "表示中の録音: " + name : null;
+    public string? BadgeText => Snapshot.Transcript.DisplayName is not null
+        ? (IsEmpty ? null : "保存済み文字起こしを表示中")
+        : Snapshot.Engine?.Screen switch
     {
         null or EngineScreen.Idle => null,
         EngineScreen.Live => "ライブ（暫定）",

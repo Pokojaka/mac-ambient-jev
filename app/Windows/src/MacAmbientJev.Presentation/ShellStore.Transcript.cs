@@ -17,15 +17,18 @@ public sealed partial class ShellStore
         return Post(() => SelectSession(sessionID));
     }
 
-    private void SelectSession(string sessionID)
+    private void SelectSession(string? sessionID, string? displayName = null, string? unavailableReason = null)
     {
         var current = _working.Transcript;
-        if (current.SessionID == sessionID) return;
+        if (current.SessionID == sessionID && current.DisplayName == displayName && current.UnavailableReason == unavailableReason) return;
         if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
         _selectionGeneration = checked(_selectionGeneration + 1);
         _historyEpoch = checked(_historyEpoch + 1);
-        _working = _working with { Transcript = new ShellTranscriptState { SessionID = sessionID, Follow = current.Follow }, CommandError = null };
-        _tailDirty = true;
+        _working = _working with { Transcript = new ShellTranscriptState
+        {
+            SessionID = sessionID, DisplayName = displayName, UnavailableReason = unavailableReason, Follow = current.Follow
+        }, CommandError = null };
+        _tailDirty = sessionID is not null;
         EnsureTailWorker();
     }
 
@@ -87,12 +90,15 @@ public sealed partial class ShellStore
         });
     }
 
-    public Task<bool> ListSessionsAsync(ShellPageMove move)
+    public Task<bool> ListSessionsAsync(ShellPageMove move) => ListSessionsAsync(move, null);
+
+    private Task<bool> ListSessionsAsync(ShellPageMove move, Func<bool>? admit)
     {
         ValidateMove(move);
         string? cursor = null;
         return RunRequestAsync(() =>
         {
+            if (admit is not null && !admit()) return null;
             if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return null; }
             if (move != ShellPageMove.Reload)
             {
