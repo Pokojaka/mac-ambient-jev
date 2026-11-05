@@ -785,10 +785,19 @@ private func hiddenName(_ session: SavedSession, _ suffix: String) -> String {
     ".export-\(session.sessionID.uuidString.lowercased()).\(suffix)"
 }
 
+private func windowsAccessDeniedError(for destination: URL) -> CocoaError {
+    CocoaError(.fileReadUnknown, userInfo: [
+        NSFilePathErrorKey: destination.path,
+        NSUnderlyingErrorKey: NSError(domain: "NSWin32ErrorDomain", code: 5),
+        NSLocalizedDescriptionKey: "セッションファイルへのアクセスに失敗しました (Windows 5): \(destination.path)",
+    ])
+}
+
 /// Real directory operations, except where `failing` names a failure to inject.
 private func operations(
     failRemove: (@Sendable (URL) -> String?)? = nil,
-    failRename: (@Sendable (URL, URL) -> String?)? = nil
+    failRename: (@Sendable (URL, URL) -> String?)? = nil,
+    throwRename: (@Sendable (URL, URL) -> (any Error)?)? = nil
 ) -> SessionExporter.DirectoryOperations {
     SessionExporter.DirectoryOperations(
         remove: { url, root in
@@ -796,10 +805,58 @@ private func operations(
             try SessionExporter.DirectoryOperations.live.remove(url, root)
         },
         rename: { source, destination, root in
+            if let error = throwRename?(source, destination) { throw error }
             if let reason = failRename?(source, destination) { throw InjectedFailure(reason: reason) }
             try SessionExporter.DirectoryOperations.live.rename(source, destination, root)
         }
     )
+}
+
+@Test
+func windowsAccessDeniedDuringFreshPublicationExplainsFolderProtectionAndRemovesStaging() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let destination = fixture.exportRoot.appending(path: session.sessionURL.lastPathComponent, directoryHint: .isDirectory)
+    let staging = fixture.exportRoot.appending(path: hiddenName(session, "partial"), directoryHint: .isDirectory)
+    let originalError = windowsAccessDeniedError(for: destination).localizedDescription
+    let expected = SessionExportError.windowsPublicationAccessDenied(
+        destination: destination.path, originalError: originalError
+    )
+    let exporter = SessionExporter(operations: operations(throwRename: { source, _ in
+        source.lastPathComponent.hasSuffix(".partial") ? windowsAccessDeniedError(for: destination) : nil
+    }))
+
+    #expect(throws: expected) {
+        try exporter.export(session: session, to: fixture.exportRoot)
+    }
+
+    #expect(!FileManager.default.fileExists(atPath: staging.path))
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path).isEmpty)
+}
+
+@Test
+func windowsAccessDeniedDuringReplacementExplainsFolderProtectionAndRestoresPreviousBundle() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    let priorBytes = try fileBytes(in: prior)
+    let destination = prior
+    let originalError = windowsAccessDeniedError(for: destination).localizedDescription
+    let expected = SessionExportError.windowsPublicationAccessDenied(
+        destination: destination.path, originalError: originalError
+    )
+    let exporter = SessionExporter(operations: operations(throwRename: { source, _ in
+        source.lastPathComponent.hasSuffix(".partial") ? windowsAccessDeniedError(for: destination) : nil
+    }))
+
+    #expect(throws: expected) {
+        try exporter.export(session: session, to: fixture.exportRoot)
+    }
+
+    #expect(try fileBytes(in: prior) == priorBytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [prior.lastPathComponent])
 }
 
 @Test

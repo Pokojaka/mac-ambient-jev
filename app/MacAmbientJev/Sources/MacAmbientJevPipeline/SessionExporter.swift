@@ -28,6 +28,7 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
     case transcriptCorrupted(String)
     case noTranscript
     case stagingNotRemoved(path: String, exportFailure: String, cleanupFailure: String)
+    case windowsPublicationAccessDenied(destination: String, originalError: String)
     case previousExportNotRestored(path: String, exportFailure: String, restoreFailure: String)
     case previousExportNotRemoved(path: String, cleanupFailure: String)
 
@@ -43,6 +44,8 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
             "確定文字起こしがないため書き出せません"
         case .stagingNotRemoved(let path, let exportFailure, let cleanupFailure):
             "書き出せませんでした: \(exportFailure)。作業用フォルダー \(path) も削除できませんでした: \(cleanupFailure)"
+        case .windowsPublicationAccessDenied(let destination, let originalError):
+            "Windows が書き出しフォルダーを「\(destination)」へ移動することを拒否しました。セキュリティソフトのフォルダー保護（ランサムウェア保護など）がこのアプリをブロックしている可能性があります。別の書き出し先フォルダーを選ぶか、セキュリティソフトでこのアプリを許可してください。元のエラー: \(originalError)"
         case .previousExportNotRestored(let path, let exportFailure, let restoreFailure):
             "書き出せませんでした: \(exportFailure)。以前の書き出しを元の名前へ戻せませんでした（\(path) に残っています）: \(restoreFailure)"
         case .previousExportNotRemoved(let path, let cleanupFailure):
@@ -161,14 +164,37 @@ public struct SessionExporter: Sendable {
         }
     }
 
+    private func renameForPublication(
+        _ source: URL,
+        to destination: URL,
+        exportDestination: URL,
+        root: URL
+    ) throws {
+        do {
+            try operations.rename(source, destination, root)
+        } catch {
+            let cocoaError = error as NSError
+            if cocoaError.domain == NSCocoaErrorDomain,
+               let underlying = cocoaError.userInfo[NSUnderlyingErrorKey] as? NSError,
+               underlying.domain == "NSWin32ErrorDomain",
+               underlying.code == 5 {
+                throw SessionExportError.windowsPublicationAccessDenied(
+                    destination: exportDestination.path,
+                    originalError: error.localizedDescription
+                )
+            }
+            throw error
+        }
+    }
+
     private func publish(staging: URL, destination: URL, previous: URL, root: URL) throws {
         guard try SessionFileAccess.isDirectoryIfPresent(destination, relativeTo: root) != nil else {
-            try operations.rename(staging, destination, root)
+            try renameForPublication(staging, to: destination, exportDestination: destination, root: root)
             return
         }
-        try operations.rename(destination, previous, root)
+        try renameForPublication(destination, to: previous, exportDestination: destination, root: root)
         do {
-            try operations.rename(staging, destination, root)
+            try renameForPublication(staging, to: destination, exportDestination: destination, root: root)
         } catch let publishError {
             do {
                 try operations.rename(previous, destination, root)
