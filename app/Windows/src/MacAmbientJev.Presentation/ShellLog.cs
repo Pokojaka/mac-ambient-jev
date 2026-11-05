@@ -30,29 +30,34 @@ public sealed class ShellLog : IDisposable
     /// <summary>Gets the first write failure; after it the log writes nothing more.</summary>
     public Exception? Failure { get { lock (_gate) return _failure; } }
 
+    /// <summary>Gets a startup log-retention failure that was written to this log.</summary>
+    public Exception? StartupFailure { get; private set; }
+
     /// <summary>Raised once, on the writing thread, when a write fails.</summary>
     public event Action<Exception>? WriteFailed;
 
-    public static ShellLog Open(string logsDirectory, TimeProvider clock, int processId)
+    public static ShellLog Open(string logsDirectory, TimeProvider clock, int processId, Action<string> deleteFile)
     {
         ArgumentException.ThrowIfNullOrEmpty(logsDirectory);
         ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(deleteFile);
         System.IO.Directory.CreateDirectory(logsDirectory);
         var name = $"shell-{clock.GetLocalNow().ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture)}-{processId.ToString(CultureInfo.InvariantCulture)}.log";
         var path = System.IO.Path.Combine(logsDirectory, name);
         var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 1);
+        var log = new ShellLog(clock, stream, path);
         try
         {
             var older = System.IO.Directory.GetFiles(logsDirectory, "shell-*.log").Where(file => file != path).OrderBy(file => file, StringComparer.Ordinal).ToArray();
-            foreach (var file in older.Take(Math.Max(0, older.Length - (RetainedFiles - 1)))) File.Delete(file);
+            foreach (var file in older.Take(Math.Max(0, older.Length - (RetainedFiles - 1)))) deleteFile(file);
         }
-        catch
+        catch (Exception exception)
         {
-            stream.Dispose();
-            throw;
+            log.StartupFailure = exception;
+            log.Error("Old shell log pruning failed: " + exception);
         }
 
-        return new ShellLog(clock, stream, path);
+        return log;
     }
 
     public void Info(string message) => Write(ShellLogLevel.Info, message);

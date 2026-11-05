@@ -28,7 +28,8 @@ public sealed partial class MainWindow : Window
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
         InitializeComponent();
         _log.WriteFailed += OnLogWriteFailed;
-        if (_log.Failure is { } logFailure) ShowFailure(logFailure);
+        if (_log.StartupFailure is { } startupFailure) ShowFailure(startupFailure);
+        else if (_log.Failure is { } logFailure) ShowFailure(logFailure);
         try { AppNotificationManager.Default.Register(); _toastRegistered = true; }
         catch (Exception exception) { ShowFailure(exception); }
         AppIcon.Apply(AppWindow);
@@ -54,8 +55,11 @@ public sealed partial class MainWindow : Window
 
     private void OnLogWriteFailed(Exception exception)
     {
-        if (!DispatcherQueue.TryEnqueue(() => ShowFailure(exception)))
-            throw new InvalidOperationException("ログの書き込み失敗を画面に表示できません。", exception);
+        try
+        {
+            if (!DispatcherQueue.TryEnqueue(() => ShowFailure(exception))) return;
+        }
+        catch (Exception) { /* The log has stopped; only the unavailable display is being dropped. */ }
     }
 
     private void ShowDeviceLostToast(DeviceLostNotice notice)
