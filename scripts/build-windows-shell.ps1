@@ -85,7 +85,7 @@ try {
     } catch {
         throw "Required .NET SDK CLI 'dotnet' was not found on PATH: $($_.Exception.Message)"
     }
-    $dotnetExecutable = [string]$dotnetCommand.Source
+    $dotnetExecutable = [string]@($dotnetCommand)[0].Source
     if ([string]::IsNullOrWhiteSpace($dotnetExecutable) -or -not (Test-Path -LiteralPath $dotnetExecutable -PathType Leaf)) {
         throw "Resolved dotnet application does not exist: $dotnetExecutable"
     }
@@ -151,6 +151,11 @@ try {
     $machine = [System.BitConverter]::ToUInt16($peBytes, $peOffset + 4)
     if ($machine -ne $architectureDetails.PeMachine) {
         throw ('Published PE machine mismatch (found 0x{0:x4}, expected 0x{1:x4}): {2}' -f $machine, $architectureDetails.PeMachine, $executablePath)
+    }
+
+    $priPath = Join-Path -Path $destinationPath -ChildPath 'MacAmbientJev.pri'
+    if (-not (Test-Path -LiteralPath $priPath -PathType Leaf)) {
+        throw "Published WinUI app PRI is missing (the app cannot load its XAML without it): $priPath"
     }
 
     Write-Host ('Verified Windows shell architecture: {0} (PE machine 0x{1:x4})' -f $platform, $machine)
