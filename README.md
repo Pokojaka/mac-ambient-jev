@@ -34,7 +34,7 @@ macOS で講義や会話を録音し、音声ファイルも読み込める文�
 [Releases](https://github.com/Pokojaka/mac-ambient-jev/releases) からビルド済みの Windows 版を入手する。Windows 11 24H2 以降（x64 または ARM64）が必要。CPU で動作し、GPU は使わない。
 
 1. `MacAmbientJev-Windows-<x64|ARM64>-<version>.zip` をダウンロードする。同じ場所の `.sha256` と照合するには、PowerShell で `Get-FileHash -Algorithm SHA256 <zip>` を実行して値を比べる。
-2. zip を展開し、フォルダごと好きな場所に置いて `MacAmbientJev.exe` を開く。
+2. zip を展開し、フォルダごと好きな場所に置いて `MacAmbientJev.exe` を開く。zip は shell・engine・実行に必要な DLL と同梱モデルを含み、デバッグ用の `.pdb` は含まない。起動中にもう一度開くと、既存のウィンドウが前面に戻る。
 3. 署名していないので、SmartScreen の「Windows によって PC が保護されました」が出る。「詳細情報」→「実行」を押す。
 4. .NET 10 Desktop Runtime が必要。入っていなければ起動時に Windows が案内する。[Microsoft の公式ダウンロードページ](https://dotnet.microsoft.com/download/dotnet/10.0)の「.NET Desktop Runtime」から、PC のアーキテクチャに合うものを入れる。
 5. 最初に設定を保存すると、音声認識（選んだサイズ）と話者分離のモデルを自動でダウンロードする。大きさは 0.6B で約2.1 GB、1.7B で約4.2 GB（話者分離を含む）。途中で切れても次回は続きからダウンロードする。ダウンロード中も録音でき、「モデルの取得後に文字起こしします」と表示し、取得後に確定処理が自動で始まる。発話区間検出と発話文判定のモデルは zip に同梱されている。

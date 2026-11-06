@@ -5,12 +5,23 @@ param(
     [string]$Architecture,
 
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})(-[0-9A-Za-z][0-9A-Za-z.-]*)?$')]
+    [string]$Version,
+
+    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Destination
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$numericVersionParts = ($Version -replace '-.*$', '') -split '\.'
+foreach ($numericVersionPart in $numericVersionParts) {
+    if ([int]$numericVersionPart -gt 65535) {
+        throw "Version numeric components must each be at most 65535; found '$numericVersionPart' in '$Version'."
+    }
+}
 
 function Resolve-FullyQualifiedWindowsPath([string]$Path, [string]$Name) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
@@ -81,6 +92,26 @@ try {
     $runtimeIdentifier = [string]$architectureDetails.RuntimeIdentifier
 
     try {
+        $gitCommand = Get-Command -Name 'git' -CommandType Application -ErrorAction Stop
+    } catch {
+        throw "Required Git CLI 'git' was not found on PATH: $($_.Exception.Message)"
+    }
+    $gitExecutable = [string]@($gitCommand)[0].Source
+    if ([string]::IsNullOrWhiteSpace($gitExecutable) -or -not (Test-Path -LiteralPath $gitExecutable -PathType Leaf)) {
+        throw "Resolved git application does not exist: $gitExecutable"
+    }
+    $revisionResult = Invoke-NativeCapture -Name 'Read Git HEAD revision' -Executable $gitExecutable -ArgumentList @('rev-parse', 'HEAD') -DisplayOutput $false
+    if ($revisionResult.Lines.Count -ne 1) {
+        throw "git rev-parse HEAD returned $($revisionResult.Lines.Count) lines; expected exactly one full hash."
+    }
+    $revision = ([string]$revisionResult.Lines[0]).Trim()
+    if ($revision -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+        throw "git rev-parse HEAD did not return a full commit hash: '$revision'"
+    }
+    $informationalVersion = "$Version+$revision"
+    Write-Host "Windows shell informational version: $informationalVersion"
+
+    try {
         $dotnetCommand = Get-Command -Name 'dotnet' -CommandType Application -ErrorAction Stop
     } catch {
         throw "Required .NET SDK CLI 'dotnet' was not found on PATH: $($_.Exception.Message)"
@@ -126,9 +157,21 @@ try {
         $projectPath,
         '-c', 'Release',
         '--no-restore',
-        '--output', $destinationPath
+        '--output', $destinationPath,
+        # Version may contain a prerelease suffix; the SDK derives the numeric AssemblyVersion.
+        "-p:Version=$Version",
+        "-p:InformationalVersion=$informationalVersion",
+        '-p:IncludeSourceRevisionInInformationalVersion=false',
+        '-p:DebugType=None',
+        '-p:DebugSymbols=false',
+        '-p:CopyOutputSymbolsToPublishDirectory=false'
     ) + $projectPathProperties
     Invoke-NativeCapture -Name "Publish WinUI shell for $platform ($runtimeIdentifier)" -Executable $dotnetExecutable -ArgumentList $publishArguments -DisplayOutput $true | Out-Null
+
+    $pdbFiles = @(Get-ChildItem -LiteralPath $destinationPath -Recurse -File -Force | Where-Object { $_.Extension -ieq '.pdb' })
+    if ($pdbFiles.Count -ne 0) {
+        throw "Published Windows shell must not contain PDB files: $($pdbFiles.FullName -join ', ')"
+    }
 
     $executablePath = Join-Path -Path $destinationPath -ChildPath 'MacAmbientJev.exe'
     if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {

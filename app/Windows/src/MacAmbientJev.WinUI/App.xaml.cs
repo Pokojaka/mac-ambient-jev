@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using MacAmbientJev.Presentation;
 
@@ -6,7 +7,8 @@ namespace MacAmbientJev.WinUI;
 public partial class App : Microsoft.UI.Xaml.Application
 {
     private readonly ShellLog _log;
-    private Microsoft.UI.Xaml.Window? _window;
+    private MainWindow? _window;
+    private readonly TaskCompletionSource<MainWindow> _windowReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public App()
     {
@@ -18,7 +20,7 @@ public partial class App : Microsoft.UI.Xaml.Application
         TaskScheduler.UnobservedTaskException += (_, args) => _log.Error("TaskScheduler.UnobservedTaskException: " + args.Exception);
         _log.Info(
             "startup\n" +
-            $"version: {typeof(App).Assembly.GetName().Version}\n" +
+            $"version: {typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? throw new InvalidOperationException("The informational version is unavailable.")}\n" +
             $"os: {RuntimeInformation.OSDescription}\n" +
             $"architecture: {RuntimeInformation.ProcessArchitecture}\n" +
             $"runtime: {RuntimeInformation.FrameworkDescription}\n" +
@@ -31,12 +33,26 @@ public partial class App : Microsoft.UI.Xaml.Application
         }
     }
 
+    internal async Task ActivateFromRedirectAsync()
+    {
+        // A redirected launch can arrive before OnLaunched has created the window.
+        var window = await _windowReady.Task.ConfigureAwait(false);
+        if (!window.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (window.ActivateFromRedirect())
+                _log.Info("redirected activation: existing window activated");
+        }))
+            // The UI dispatcher refuses work only while the app is shutting down.
+            _log.Info("redirected activation ignored because the app is shutting down");
+    }
+
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
         try
         {
             _window = new MainWindow(_log);
             _window.Activate();
+            _windowReady.SetResult(_window);
         }
         catch (Exception exception)
         {

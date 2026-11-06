@@ -54,7 +54,7 @@ jobs:
           } else {
             $version = $env:DISPATCH_VERSION
           }
-          if ($version -cnotmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') { throw "Invalid version: '$version'" }
+          if ($version -cnotmatch '^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw "Invalid version: '$version'" }
           "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -140,7 +140,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'stage') | Out-Null
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-app.ps1 -Architecture '${{ matrix.architecture }}' -Destination (Join-Path $env:RUNNER_TEMP 'stage/MacAmbientJev')
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-app.ps1 -Architecture '${{ matrix.architecture }}' -Version '${{ steps.version.outputs.value }}' -Destination (Join-Path $env:RUNNER_TEMP 'stage/MacAmbientJev')
           if ($LASTEXITCODE -ne 0) { throw "Windows ${{ matrix.architecture }} application staging failed" }
       - name: Zip and checksum
         run: |

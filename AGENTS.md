@@ -31,8 +31,8 @@ C# の portable libraries / tests は WinUI や Swift の build を必要とせ�
 Windows 専用 WinUI shell の build / publish は Windows PowerShell 5.1（`powershell`）で実行します。`C:\builds` は事前に存在し、各 destination は未作成である必要があります。詳細と起動確認は [docs/testing.md](docs/testing.md) を参照してください。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Version 0.0.0-dev -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Version 0.0.0-dev -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
 ```
 
 Windows CI は Windows PowerShell 5.1（`powershell`）を使い、`pwsh` は使いません。[`scripts/test-windows.ps1`](scripts/test-windows.ps1) は Swift build / tests と Engine.Tests（実 engine smoke test と C#→Swift harness）を実行します。portable solution tests は別の CI job です（[詳細](docs/testing.md#windows-c-process-client-tests)）。
