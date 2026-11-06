@@ -77,6 +77,8 @@ stderr は NDJSON として解釈せず、独立 drain が 16 KiB read buffer �
 
 Windows の WinUI shell は、portable C# libraries / tests と分けた [`MacAmbientJev.WinUI` project](../app/Windows/src/MacAmbientJev.WinUI/MacAmbientJev.WinUI.csproj) で、[full `MacAmbientJev.Windows.slnx`](../app/Windows/MacAmbientJev.Windows.slnx) に含まれます。`net10.0-windows10.0.26100.0` を target とし、最低 OS version は `10.0.22000.0` です。app の build platform は `x64` と `ARM64`、runtime identifier は `win-x64` と `win-arm64` で、AnyCPU app はありません。実行ファイルは `MacAmbientJev.exe`、window title は `MacAmbientJev` です。
 
+[Program.Main](../app/Windows/src/MacAmbientJev.WinUI/Program.cs) は STA と WinRT COM wrappers を初期化し、Windows App SDK の **AppInstance.FindOrRegisterForKey("MacAmbientJev")** で単一 instance を登録します。既存 instance がある場合は、その process ID に **AllowSetForegroundWindow** で前面表示の許可を渡し、**RedirectActivationToAsync** を別 thread で待って終了します。この process は window・engine・ログファイルを作りません。登録・転送に失敗した場合は例外で終了し、2つ目の instance を起動しません。main instance だけが **Application.Start** と **DispatcherQueueSynchronizationContext** を構成し、App を作ります。UI 初期化中に届いた **AppInstance.Activated** も window の作成完了を待って UI thread に転送し、最小化されていれば復元し、window を表示して前面に戻します。
+
 WinUI shell の icon artwork は [source artwork](../app/MacAmbientJev/Assets/AppIcon.png)（1024×1024）を変更せず使用し、生成する [ICO file](../app/Windows/src/MacAmbientJev.WinUI/Assets/AppIcon.ico) は16、24、32、48、64、128、256 px の PNG frame を含みます。macOS では `sips` と Python 3 標準 library を使い、repository root から [icon generation script](../scripts/generate_windows_icon.sh) を実行して再生成します。source がない場合、または1024×1024でない場合、script は失敗します。生成 ICO は version 管理する資産であり、CI / build は再生成しません。
 
 ```bash
@@ -110,21 +112,21 @@ WinUI component は [Microsoft.WindowsAppSDK 2.5.1 metapackage nuspec](https://a
 repository root で次の script を実行し、architecture ごとに publish します。destination は絶対 Windows path で、未作成でなければならず、その親 directory はあらかじめ存在する必要があります（例では `C:\builds` が既存であること）。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Version 0.0.0-dev -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Version 0.0.0-dev -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
 ```
 
-[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は root `global.json` の pinned SDK `10.0.402` を検証し、`-p:Platform` と `-p:WindowsShellRuntimeIdentifier` を locked restore と `Release --no-restore` publish の両方に渡します。publish に `-r` は使いません。[Directory.Build.props](../app/Windows/Directory.Build.props) は WindowsShellRuntimeIdentifier を WinUI project に限って RuntimeIdentifier に割り当て、architecture ごとの `obj/<architecture>` と `bin/<architecture>` root に intermediate / output を分離します。WinUI の ProjectReference は output path、Platform、RuntimeIdentifier の global properties を取り除き、portable projects を platform-neutral に保ちます。script は native CLI の nonzero exit code を error として扱い、publish 後に exe の PE machine が要求 architecture と一致すること、および publish output 直下に `MacAmbientJev.pri` があることを検査します。PATH 上に `dotnet` が複数ある場合は、PATH 解決で最初に実行される `dotnet` を使います。
+[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は root `global.json` の pinned SDK `10.0.402` を検証し、`-p:Platform` と `-p:WindowsShellRuntimeIdentifier` を locked restore と `Release --no-restore` publish の両方に渡します。publish に `-r` は使いません。必須の `-Version` は release workflow と同じ `^[0-9A-Za-z][0-9A-Za-z._-]*$` で検証し、MSBuild の **Version** に渡します（numeric assembly version は SDK が導出します）。script は repository root で `git rev-parse HEAD` を実行し、失敗・不正な full commit hash を拒否します。**InformationalVersion** は `<version>+<full commit hash>` で、SDK による hash の重複追記は無効にします。git が必要で、CI とローカルの例は `0.0.0-dev` を使います。`DebugSymbols=false`、`DebugType=None`、`CopyOutputSymbolsToPublishDirectory=false` で symbol を publish せず、output を再帰検査して `.pdb` が1つでもあれば失敗します。[Directory.Build.props](../app/Windows/Directory.Build.props) は WindowsShellRuntimeIdentifier を WinUI project に限って RuntimeIdentifier に割り当て、architecture ごとの `obj/<architecture>` と `bin/<architecture>` root に intermediate / output を分離します。WinUI の ProjectReference は output path、Platform、RuntimeIdentifier の global properties を取り除き、portable projects を platform-neutral に保ちます。script は native CLI の nonzero exit code を error として扱い、publish 後に exe の PE machine が要求 architecture と一致すること、および publish output 直下に `MacAmbientJev.pri` があることを検査します。PATH 上に `dotnet` が複数ある場合は、PATH 解決で最初に実行される `dotnet` を使います。
 
 `portable-core.yml` の `windows-shell` job は `windows-2025` x64 host 上で Windows SDK `10.0.26100.0` の x64 / ARM64 build files を検証し、同じ script で両 architecture を build します。artifact は `windows-shell-x64` と `windows-shell-arm64` として別々に upload されます。CI artifact は WinUI shell のみで、engine payload は stage されません。
 
-shell を publish して engine と組み合わせる場合は [`stage-windows-app.ps1`](../scripts/stage-windows-app.ps1) を使います。wrapper は必須引数 `-Architecture x64|ARM64` と `-Destination` のみを受け取ります。Windows PowerShell 5.1 の child process として `build-windows-shell.ps1` を実行し、成功後に `stage-windows-engine.ps1` を実行します。destination の形式や事前条件の検証は各 child script が所有します。shell publish output は Destination root に残り、engine payload は Destination の `engine` directory 以下に resource directory 構成を保って stage されます。WinUI shell は combined layout の engine を起動し、protocol を介して接続します。実行途中で失敗した場合の部分出力は診断用に残し、自動削除しません。`windows-shell` CI artifact は shell のみで、engine payload を含みません。
+shell を publish して engine と組み合わせる場合は [`stage-windows-app.ps1`](../scripts/stage-windows-app.ps1) を使います。wrapper は必須引数 `-Version`、`-Architecture x64|ARM64`、`-Destination` を受け取り、version を shell build に渡します。Windows PowerShell 5.1 の child process として `build-windows-shell.ps1` を実行し、成功後に `stage-windows-engine.ps1` を実行します。destination の形式や事前条件の検証は各 child script が所有します。shell publish output は Destination root に残り、engine payload は Destination の `engine` directory 以下に resource directory 構成を保って stage されます。WinUI shell は combined layout の engine を起動し、protocol を介して接続します。実行途中で失敗した場合の部分出力は診断用に残し、自動削除しません。`windows-shell` CI artifact は shell のみで、engine payload を含みません。
 
 ARM64 の native Windows runner で combined app を stage する例です。`$env:TEMP` は既存 directory でなければならず、destination は GUID 名で新規作成します。destination の検証は child scripts が行い、wrapper の exit code を確認します。x64 では `ARM64` を `x64` に置き換えます。
 
 ```powershell
 $appDestination = Join-Path $env:TEMP ("windows-app-arm64-" + [guid]::NewGuid().ToString('N'))
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-app.ps1 -Architecture ARM64 -Destination $appDestination
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-windows-app.ps1 -Version 0.0.0-dev -Architecture ARM64 -Destination $appDestination
 if ($LASTEXITCODE -ne 0) { throw "ARM64 app staging failed with exit code $LASTEXITCODE" }
 ```
 
@@ -1162,7 +1164,7 @@ Qwen3-ASR と Community-1 は含めません（`models.prepare` がダウンロ�
 
 ### Windows release workflow
 
-[`windows-release.yml`](../.github/workflows/windows-release.yml) は tag `windows-v*` の push と、必須入力 `version` 付きの `workflow_dispatch` で起動します。version は tag から `windows-v` を除いた文字列、または入力値で、英数字で始まり英数字と `.` `_` `-` だけを含む必要があります。matrix は `x64`（`windows-2022`）と `ARM64`（`windows-11-arm`）で、`portable-core.yml` の `windows` job と同じ toolchain（.NET SDK、ARM64 の MSVC 14.44、Swift 6.2、Python 3.12）を準備し、[`stage-windows-app.ps1`](../scripts/stage-windows-app.ps1) で shell・engine・同梱モデルを stage します。stage 結果を最上位 folder `MacAmbientJev` として `MacAmbientJev-Windows-<arch>-<version>.zip` に固めて、`<zip>.sha256`（`<hex>  <zip 名>`）を書き、`windows-release-x64` / `windows-release-arm64` artifact として upload します。
+[`windows-release.yml`](../.github/workflows/windows-release.yml) は tag `windows-v*` の push と、必須入力 `version` 付きの `workflow_dispatch` で起動します。version は tag から `windows-v` を除いた文字列、または入力値で、英数字で始まり英数字と `.` `_` `-` だけを含む必要があります。matrix は `x64`（`windows-2022`）と `ARM64`（`windows-11-arm`）で、`portable-core.yml` の `windows` job と同じ toolchain（.NET SDK、ARM64 の MSVC 14.44、Swift 6.2、Python 3.12）を準備し、[`stage-windows-app.ps1`](../scripts/stage-windows-app.ps1) に解決済み version を渡して shell・engine・同梱モデルを stage します。配布 zip は shell・engine・依存 DLL・resource・同梱モデルを含み、デバッグ用の `.pdb` は含みません。stage 結果を最上位 folder `MacAmbientJev` として `MacAmbientJev-Windows-<arch>-<version>.zip` に固めて、`<zip>.sha256`（`<hex>  <zip 名>`）を書き、`windows-release-x64` / `windows-release-arm64` artifact として upload します。
 
 tag push の場合だけ、`contents: write` を持つ最後の job が両 artifact を取得し、SHA-256 を列挙した notes と共に `gh release create <tag> --draft` で draft release を作ります。`workflow_dispatch` は artifact を upload するだけで release を作りません。
 
@@ -1188,7 +1190,8 @@ WinUI shell は [ShellLog.cs](../app/Windows/src/MacAmbientJev.Presentation/Shel
 
 ログは App コンストラクターの InitializeComponent() より前に開き、Application.UnhandledException、AppDomain.CurrentDomain.UnhandledException、TaskScheduler.UnobservedTaskException の handler を登録します。記録するのは次です。
 
-- 起動: アプリのバージョン（WinUI assembly）、OS、プロセスのアーキテクチャ、.NET ランタイム、AppContext.BaseDirectory。
+- 起動: `version:` に WinUI assembly の informational version（配布 build では `<version>+<full commit hash>`）、OS、プロセスのアーキテクチャ、.NET ランタイム、AppContext.BaseDirectory。
+- 2回目以降の起動による既存 window の前面表示: main instance のログに `redirected activation: existing window activated` を1件記録。転送元 process はログファイルを開きません。
 - 未処理例外の ToString() 全文。App.InitializeComponent() と App.OnLaunched から出た例外も記録して再スローします。
 - MainWindow.ShowFailure で画面に出した失敗。
 - engine の起動（実行ファイルの path と pid）と終了（終了コード）、client が Failed になったこと（メッセージ、終了コード、最後の engine error）。これらは [IEngineObserver](../app/Windows/src/MacAmbientJev.EngineClient/ClientContracts.cs) を `EngineProcessClient.Start(observer)` に渡して受け取り、[EngineLogObserver](../app/Windows/src/MacAmbientJev.Presentation/ShellLog.cs) が書きます。

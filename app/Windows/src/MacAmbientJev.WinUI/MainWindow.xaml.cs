@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using MacAmbientJev.EngineClient;
 using MacAmbientJev.Presentation;
@@ -54,6 +55,21 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception exception) { ShowFailure(exception); }
     }
+
+    internal void ActivateFromRedirect()
+    {
+        if (AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+            presenter.Restore();
+        AppWindow.Show();
+        Activate();
+        // Windows may refuse the foreground change; the window is still shown and activated.
+        if (!SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)))
+            _log.Warn("既存のウィンドウを前面に表示できませんでした。");
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(nint window);
 
     private void OnLogWriteFailed(Exception exception)
     {

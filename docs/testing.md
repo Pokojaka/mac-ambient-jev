@@ -30,11 +30,11 @@ job は TRX を `always()` で upload します。期待最小数は2件であ�
 WinUI shell は Windows 専用の XAML / CLI build target で、portable C# libraries / tests とは別に検証します。Windows PowerShell 5.1（`powershell`）、.NET SDK `10.0.402`、Windows SDK `10.0.26100.0` が必要です（[WinAppSDK 2.5.1 の unpackaged app 要件](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)）。repository root から次を実行します。`C:\builds` は事前に存在し、各 destination は未作成である必要があります。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination C:\builds\windows-shell-x64
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Version 0.0.0-dev -Architecture x64 -Destination C:\builds\windows-shell-x64
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Version 0.0.0-dev -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
 ```
 
-[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は architecture ごとの RID（`win-x64` / `win-arm64`）で locked restore を行い、Release publish 後に出力 `MacAmbientJev.exe` の PE machine が指定 architecture と一致することと、publish output 直下に app の PRI `MacAmbientJev.pri` があることを検証します（csproj が `EnableMsixTooling=true` を設定するため PRI が publish されます）。起動には対象 architecture に合う .NET Desktop Runtime `10.0.x`（patch `10.0.13` 以降）が必要です。portable C# tests と異なり、これは WinUI shell の build / publish 検証であり、アプリの起動や画面表示を自動検証しません。
+[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は architecture ごとの RID（`win-x64` / `win-arm64`）で locked restore を行い、Release publish 後に出力 `MacAmbientJev.exe` の PE machine が指定 architecture と一致することと、publish output 直下に app の PRI `MacAmbientJev.pri` があることを検証します（csproj が `EnableMsixTooling=true` を設定するため PRI が publish されます）。必須の `-Version` は `^[0-9A-Za-z][0-9A-Za-z._-]*$` で検証し、assembly version の元になる MSBuild **Version** に渡します。git が必要で、`git rev-parse HEAD` の失敗時は停止し、informational version を `<version>+<full commit hash>` に設定します。symbol は publish せず、output に `.pdb` があれば失敗します。起動には対象 architecture に合う .NET Desktop Runtime `10.0.x`（patch `10.0.13` 以降）が必要です。portable C# tests と異なり、これは WinUI shell の build / publish 検証であり、アプリの起動や画面表示を自動検証しません。
 
 portable-core workflow の `windows-shell` job は `windows-2025` x64 host で x64 と ARM64（ARM64 は cross-build）を publish し、`windows-shell-x64` / `windows-shell-arm64` artifact を upload します。この job は WinUI app も Swift engine も起動しません。
 
@@ -47,6 +47,8 @@ Start-Sleep -Seconds 5
 Get-Process -Name MacAmbientJev | Select-Object Id, MainWindowTitle
 Stop-Process -Id $process.Id
 ```
+
+engine を含めた配布構成は [combined app staging](windows.md#winui-shell) で用意します。対話型 desktop では、起動中・最小化中のそれぞれで `MacAmbientJev.exe` をもう一度開き、既存 window が表示され前面に戻ること、shell / engine process とログファイルが増えないこと、main instance のログに `redirected activation: existing window activated` が1件増えることを確認します。初回ログの `version:` は指定 version と `git rev-parse HEAD` の full hash を `+` で結んだ値であること、配布 output / zip に `.pdb` がないことも確認します。
 
 WinUI は VM の SSH session 0 から起動できません。build / PE checks は GUI の動作を証明しません。GUI の起動・表示、file / folder picker、Explorer reveal、DPI は lead が interactive VM console で手動確認する必要があり、これらを確認済みとは主張しません。
 

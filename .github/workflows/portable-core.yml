@@ -229,11 +229,11 @@ jobs:
           }
       - name: Build Windows shell (x64)
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-x64')
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture x64 -Version '0.0.0-dev' -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-x64')
           if ($LASTEXITCODE -ne 0) { throw "Windows shell x64 build failed with exit code $LASTEXITCODE" }
       - name: Build Windows shell (ARM64)
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-arm64')
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Version '0.0.0-dev' -Destination (Join-Path $env:RUNNER_TEMP 'windows-shell-arm64')
           if ($LASTEXITCODE -ne 0) { throw "Windows shell ARM64 build failed with exit code $LASTEXITCODE" }
       - name: Upload Windows shell (x64)
         uses: actions/upload-artifact@v4
