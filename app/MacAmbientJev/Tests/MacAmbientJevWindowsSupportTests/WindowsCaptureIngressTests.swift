@@ -292,6 +292,107 @@ struct WindowsCaptureIngressTests {
         #expect(Array(samples[28_000...]) == expectedPCM)
     }
 
+    @Test(arguments: [false, true], [false, true])
+    func testLoopbackPauseShorterThanAccumulatedLeadPreservesEveryPCMFrame(
+        observedIdle: Bool, deviceDrift: Bool
+    ) throws {
+        let harness = try makeIngress(sampleRate: 16_000, loopback: true)
+        var expectedSamples: [Float] = []
+        var recordedSamples: [Float] = []
+        let previousHostFrame: Int
+        let nextDevicePosition: UInt64
+        if deviceDrift {
+            // Accelerate long-running drift using deltas within the existing 32-frame
+            // tolerance. The device timeline gains exactly 200 ms over raw QPC.
+            for index in 0...100 {
+                let pcm = [Float](repeating: index.isMultiple(of: 2) ? 0 : 0.25, count: 512)
+                receive(
+                    harness.ingress, samples: pcm, frameCount: 512, sampleRate: 16_000,
+                    devicePosition: UInt64(index * 512),
+                    qpc100ns: 10_000_000 + UInt64(index * 480 * 625)
+                )
+                expectedSamples.append(contentsOf: pcm)
+                recordedSamples.append(contentsOf: drain(harness.ring).flatMap(\.samples))
+            }
+            previousHostFrame = 48_000
+            nextDevicePosition = 51_712
+        } else {
+            harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
+            // Health has committed 500 ms; the packet starts at 300 ms, creating
+            // the same 200-ms lead without dropping its PCM into the idle silence.
+            receive(
+                harness.ingress, samples: [Float](repeating: 0.25, count: 512),
+                frameCount: 512, sampleRate: 16_000, qpc100ns: 13_000_000
+            )
+            expectedSamples = [Float](repeating: 0, count: 8_000)
+                + [Float](repeating: 0.25, count: 512)
+            recordedSamples = drain(harness.ring).flatMap(\.samples)
+            previousHostFrame = 4_800
+            nextDevicePosition = 512
+        }
+        #expect(harness.ingress.failure == nil)
+        let beforePause = harness.sink.lastEndFrame
+        let resumedHostFrame = previousHostFrame + 512 + 2_400 // 150-ms pause
+        #expect(beforePause - Int64(resumedHostFrame) == 800)
+        harness.clock.setMillis(10_250 + Int64(resumedHostFrame / 16))
+        harness.ingress.health(
+            watermarkQPC100ns: 10_000_000 + UInt64(resumedHostFrame * 625),
+            outputState: observedIdle ? 0 : 1, error: 0
+        )
+        #expect(harness.sink.lastEndFrame == beforePause)
+        for index in 0..<3 {
+            let value: Float = index == 0 ? 0.75 : (index == 1 ? 0 : -0.5)
+            let pcm = [Float](repeating: value, count: 1_024)
+            expectedSamples.append(contentsOf: pcm)
+            for offset in [0, 512] {
+                receive(
+                    harness.ingress, samples: Array(pcm[offset..<(offset + 512)]),
+                    frameCount: 512, sampleRate: 16_000,
+                    devicePosition: nextDevicePosition + UInt64(index * 1_024),
+                    qpc100ns: 10_000_000 + UInt64((resumedHostFrame + index * 1_024) * 625),
+                    packetOffset: offset, packetFrames: 1_024
+                )
+                recordedSamples.append(contentsOf: drain(harness.ring).flatMap(\.samples))
+            }
+        }
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == beforePause + 3_072)
+        #expect(recordedSamples == expectedSamples)
+        #expect(harness.ring.dropoutCount == 0)
+        #expect(harness.ring.overflowCount == 0)
+        #expect(harness.sink.invalidBufferCount.load(ordering: .acquiring) == 0)
+    }
+
+    @Test func testLoopbackForwardJumpCannotReuseConsumedLeadToOverlapMissingTail() throws {
+        let harness = try makeIngress(sampleRate: 16_000, loopback: true)
+        harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.25, count: 512),
+            frameCount: 512, sampleRate: 16_000, qpc100ns: 13_000_000
+        )
+        // Consume 150 ms of the 200-ms anchor lead, leaving only 50 ms (800 frames).
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.5, count: 512),
+            frameCount: 512, sampleRate: 16_000, devicePosition: 512, qpc100ns: 14_820_000
+        )
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 9_024)
+        #expect(drain(harness.ring).flatMap(\.samples).suffix(512).allSatisfy { $0 == 0.5 })
+        harness.ingress.health(watermarkQPC100ns: 14_820_000, outputState: 1, error: 0)
+        // Publish a missing tail, not idle silence. It cannot authorize another anchor shift.
+        harness.ingress.health(watermarkQPC100ns: 18_765_000, outputState: 0, error: 0)
+        #expect(harness.sink.lastEndFrame == 10_024)
+        receive(
+            harness.ingress, samples: [0.75], frameCount: 1, sampleRate: 16_000,
+            devicePosition: 1_024, qpc100ns: 15_390_000
+        )
+        // Raw host frame 8,624 overlaps by 1,400: more than the remaining lead + 32.
+        #expect(harness.ingress.failure == .timestamp)
+        #expect(harness.ingress.timestampCheck == .idleAnchorOverlap)
+        #expect(harness.sink.lastEndFrame == 10_024)
+        #expect(!drain(harness.ring).flatMap(\.samples).contains(0.75))
+    }
+
     @Test func testFirstPacketBeyondIdleReanchorGraceFailsWithoutWriting() throws {
         let harness = try makeIngress(sampleRate: 16_000, loopback: true)
         harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
@@ -484,6 +585,40 @@ struct WindowsCaptureIngressTests {
 
         #expect(harness.ingress.failure == .native)
         #expect(harness.ingress.nativeErrorCode == hresult)
+    }
+
+    @MainActor
+    @Test func testHealthTimestampFailureTextDoesNotDescribeThePreviousPacket() async throws {
+        let root = try makeWindowsCaptureTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = root.appending(path: "health-timestamp.f32le")
+        try writeScriptedFloatFixture([Float](repeating: 0.25, count: 512), to: fixture)
+        let events = scriptedPacketFragments(
+            file: fixture, sourceFrames: 512, devicePosition: 0, qpc100ns: 10_000_000
+        ) + scriptedPacketFragments(
+            file: fixture, sourceFrames: 512, devicePosition: 512,
+            qpc100ns: 10_106_667, flags: 1
+        ) + [
+            ScriptedFileCaptureEvent.heartbeat(
+                watermarkQPC100ns: 10_213_333, outputState: 1, error: 0
+            ),
+            .heartbeat(watermarkQPC100ns: 9_000_000, outputState: 0, error: 0)
+        ]
+        let harness = try makeWindowsCaptureTestSource(
+            root: root, source: .systemAudio, sampleRate: 48_000,
+            channels: 1, events: events, probe: ScriptedCaptureProbe()
+        )
+        try await harness.source.start()
+        let device = try #require(harness.factory.openedDevice)
+        for _ in 1..<events.count { try await device.step() }
+        await waitForWindowsCaptureTestCondition { harness.source.lastStopResult != nil }
+        let result = await harness.source.stop()
+        let message = try #require(result.errors.first { $0.contains("activeTailWatermark") })
+        #expect(message.contains("invalid health timestamp"))
+        #expect(message.contains("origin: health"))
+        #expect(!message.contains("qpcDeltaFrames"))
+        #expect(!message.contains("deviceDeltaFrames"))
+        #expect(!message.contains("packetFlags"))
     }
 
     @Test func testHeartbeatStallIsDetectedAtThreeSeconds() throws {

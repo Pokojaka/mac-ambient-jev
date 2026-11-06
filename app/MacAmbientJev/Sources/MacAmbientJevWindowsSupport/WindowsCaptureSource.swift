@@ -1526,6 +1526,11 @@ public final class WindowsCaptureSource {
             return "Windows capture received an invalid audio packet"
         case .timestamp:
             let details = ingress.timestampDetails
+            if details.fromHealth {
+                return "Windows capture received an invalid health timestamp "
+                    + "(check: \(ingress.timestampCheck), origin: health, "
+                    + "idleObserved: \(details.idleObserved))"
+            }
             let qpcDelta = details.qpcDeltaFrames.map { String($0) } ?? "unavailable"
             let deviceDelta = details.deviceDeltaFrames.map { String($0) } ?? "unavailable"
             return "Windows capture received an invalid packet timestamp "
