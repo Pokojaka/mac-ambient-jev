@@ -12,10 +12,10 @@
                 <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
                     <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
                 </AppBarButton>
-                <AppBarButton x:Name="StartButton" Label="{Binding StartLabel}" Command="{Binding StartRecording}" Click="OnStartRecordingClick" ToolTipService.ToolTip="{Binding StartDisabledReason}">
+                <AppBarButton x:Name="StartButton" Label="{Binding StartLabel}" Command="{Binding StartRecording}" ToolTipService.ToolTip="{Binding StartDisabledReason}">
                     <AppBarButton.Icon><SymbolIcon Symbol="Microphone" /></AppBarButton.Icon>
                 </AppBarButton>
-                <AppBarButton x:Name="StopButton" Label="{Binding StopLabel}" Command="{Binding StopRecording}" Click="OnStopRecordingClick" ToolTipService.ToolTip="録音中に停止できます">
+                <AppBarButton x:Name="StopButton" Label="{Binding StopLabel}" Command="{Binding StopRecording}" ToolTipService.ToolTip="録音中に停止できます">
                     <AppBarButton.Icon><SymbolIcon Symbol="Stop" /></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="{Binding RefreshDevicesLabel}" Command="{Binding RefreshDevices}" ToolTipService.ToolTip="選択中の音声ソースのデバイス一覧を更新します">

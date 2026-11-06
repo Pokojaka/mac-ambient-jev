@@ -7,6 +7,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 
@@ -21,9 +22,6 @@ public sealed partial class MainWindow : Window
     private readonly ShellLog _log;
     private bool _closeStarted, _allowFinalClose;
     private bool _toastRegistered, _deviceLostDialogInFlight, _focusDeviceSelector;
-    private bool? _focusStopAfterRecordingCommand;
-    private bool _recordingFocusRequestObservedPending;
-    private Task? _recordingFocusCommandExecution;
     private DeviceLostNotice? _toastedDeviceLostNotice; private ContentDialog? _deviceLostDialog;
 
     public MainWindow(ShellLog log)
@@ -153,12 +151,6 @@ public sealed partial class MainWindow : Window
         _scroll?.Refresh();
         SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
         RefreshSettingsButton();
-        // Command CanExecute notifications run after Refreshed; focus only after the bindings enable the target.
-        if (_focusStopAfterRecordingCommand is not null && !DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, RestoreRecordingFocus))
-        {
-            _log.Warn("録音操作後のフォーカス更新を予約できません。");
-            CancelRecordingFocus();
-        }
         if (!_closeStarted && _focusDeviceSelector && DeviceSelector.IsEnabled && _context is { } context &&
             !context.State.IsPending(EngineCommandName.DevicesList))
         {
@@ -167,26 +159,9 @@ public sealed partial class MainWindow : Window
         }
         try { await ShowDeviceLostNoticeAsync(); }
         catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
-    }
-
-    private void OnStartRecordingClick(object sender, RoutedEventArgs args) => RequestRecordingFocus(true);
-    private void OnStopRecordingClick(object sender, RoutedEventArgs args) => RequestRecordingFocus(false);
-
-    private void RequestRecordingFocus(bool focusStop)
-    {
-        var requestedCommand = focusStop ? EngineCommandName.RecordingStart : EngineCommandName.RecordingStop;
-        var command = focusStop ? _live?.StartRecording : _live?.StopRecording;
-        var state = _store?.State;
-        _recordingFocusRequestObservedPending = state?.IsPending(requestedCommand) == true;
-        _recordingFocusCommandExecution = command?.Execution;
-        _focusStopAfterRecordingCommand = focusStop;
-    }
-
-    private void CancelRecordingFocus()
-    {
-        _focusStopAfterRecordingCommand = null;
-        _recordingFocusRequestObservedPending = false;
-        _recordingFocusCommandExecution = null;
+        // Command CanExecute notifications run after Refreshed; inspect focus after bindings update.
+        if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, RestoreRecordingFocus))
+            _log.Warn("録音ボタンのフォーカス更新を予約できません。");
     }
 
     private void FocusToolbarButton(AppBarButton button)
@@ -204,27 +179,12 @@ public sealed partial class MainWindow : Window
 
     private void RestoreRecordingFocus()
     {
-        if (_focusStopAfterRecordingCommand is not bool focusStop || _live is not { } live) return;
-        if (_closeStarted || _settingsDialog is not null || _deviceLostDialogInFlight || _store is not { State.Phase: ShellPhase.Running })
-        { CancelRecordingFocus(); return; }
-        var state = _store.State;
-        var requestedCommand = focusStop ? EngineCommandName.RecordingStart : EngineCommandName.RecordingStop;
-        var requestCommand = focusStop ? live.StartRecording : live.StopRecording;
-        var targetCommand = focusStop ? live.StopRecording : live.StartRecording;
-        if (targetCommand.CanExecute(null))
-        {
-            CancelRecordingFocus();
-            FocusToolbarButton(focusStop ? StopButton : StartButton);
-            return;
-        }
-
-        if (state.IsPending(requestedCommand)) _recordingFocusRequestObservedPending = true;
-        var execution = requestCommand.Execution;
-        if (_recordingFocusCommandExecution is null && execution is not null)
-            _recordingFocusCommandExecution = execution;
-        var requestCompleted = _recordingFocusRequestObservedPending ||
-            _recordingFocusCommandExecution is { IsCompleted: true };
-        if (!state.IsPending(requestedCommand) && requestCompleted) CancelRecordingFocus();
+        if (_closeStarted) return;
+        var focusedElement = FocusManager.GetFocusedElement(Content.XamlRoot);
+        if (ReferenceEquals(focusedElement, StartButton) && !StartButton.IsEnabled && StopButton.IsEnabled)
+            FocusToolbarButton(StopButton);
+        else if (ReferenceEquals(focusedElement, StopButton) && !StopButton.IsEnabled && StartButton.IsEnabled)
+            FocusToolbarButton(StartButton);
     }
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
