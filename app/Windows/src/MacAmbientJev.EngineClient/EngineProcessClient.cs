@@ -158,6 +158,8 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
     }
 
     public Task<EngineClientState> Completion => _completion.Task;
+    /// <summary>Gets the process exit code as soon as the child process has exited.</summary>
+    public int? ProcessExitCode => _exit.IsCompletedSuccessfully ? _exit.Result : null;
     public EngineClientState State { get { lock (_gate) return _state; } }
     /// <summary>Gets the failure snapshot, if the client has failed.</summary>
     /// <remarks>After <see cref="Completion"/> finishes, the snapshot includes the final exit code and stderr. An immediate pending failure may have a null exit code and incomplete stderr.</remarks>
@@ -348,7 +350,8 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
             if ((_lastSequence == 0 && sequence != 1) || (_lastSequence != 0 && sequence <= _lastSequence))
                 throw new InvalidOperationException($"Invalid engine output sequence {sequence}; previous sequence was {_lastSequence}.");
             _lastSequence = sequence;
-            if (output.Event is EngineEvent.Error anyError) _lastEngineError = anyError.Payload;
+            if (output.RequestID is null && output.Event is EngineEvent.Error unsolicitedError)
+                _lastEngineError = unsolicitedError.Payload;
 
             switch (output.Event)
             {
