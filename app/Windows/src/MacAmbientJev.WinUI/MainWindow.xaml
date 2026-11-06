@@ -12,10 +12,10 @@
                 <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
                     <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
                 </AppBarButton>
-                <AppBarButton Label="{Binding StartLabel}" Command="{Binding StartRecording}" ToolTipService.ToolTip="{Binding StartDisabledReason}">
+                <AppBarButton x:Name="StartButton" Label="{Binding StartLabel}" Command="{Binding StartRecording}" Click="OnStartRecordingClick" ToolTipService.ToolTip="{Binding StartDisabledReason}">
                     <AppBarButton.Icon><SymbolIcon Symbol="Microphone" /></AppBarButton.Icon>
                 </AppBarButton>
-                <AppBarButton Label="{Binding StopLabel}" Command="{Binding StopRecording}" ToolTipService.ToolTip="録音中に停止できます">
+                <AppBarButton x:Name="StopButton" Label="{Binding StopLabel}" Command="{Binding StopRecording}" Click="OnStopRecordingClick" ToolTipService.ToolTip="録音中に停止できます">
                     <AppBarButton.Icon><SymbolIcon Symbol="Stop" /></AppBarButton.Icon>
                 </AppBarButton>
                 <AppBarButton Label="{Binding RefreshDevicesLabel}" Command="{Binding RefreshDevices}" ToolTipService.ToolTip="選択中の音声ソースのデバイス一覧を更新します">
@@ -27,8 +27,8 @@
             </CommandBar.PrimaryCommands>
             <CommandBar.Content>
                 <StackPanel Orientation="Horizontal" Spacing="8">
-                    <ComboBox Header="録音元" ItemsSource="{Binding Sources}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedSource, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="150" />
-                    <ComboBox x:Name="DeviceSelector" Header="デバイス" ItemsSource="{Binding Devices}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedDevice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="200" />
+                    <ComboBox Header="録音元" ItemsSource="{Binding Sources}" DisplayMemberPath="Label" AutomationProperties.Name="録音元" SelectedItem="{Binding SelectedSourceChoice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="150" />
+                    <ComboBox x:Name="DeviceSelector" Header="デバイス" ItemsSource="{Binding Devices}" DisplayMemberPath="Label" AutomationProperties.Name="デバイス" SelectedItem="{Binding SelectedDeviceChoice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="200" />
                     <ProgressRing IsActive="{Binding IsBusy}" Width="24" Height="24" VerticalAlignment="Bottom" />
                     <ProgressRing IsActive="{Binding IsImporting}" Width="24" Height="24" VerticalAlignment="Bottom" ToolTipService.ToolTip="{Binding ImportDisabledReason}" />
                 </StackPanel>
@@ -53,17 +53,21 @@
             </StackPanel>
         </StackPanel>
         <StackPanel Grid.Row="2" Spacing="4">
-            <ScrollViewer MaxHeight="72" VerticalScrollBarVisibility="Auto">
-                <TextBlock x:Name="WindowFailure" Visibility="Collapsed" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+            <ScrollViewer x:Name="WindowFailureScroller" MaxHeight="72" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" IsTabStop="True" AutomationProperties.Name="アプリのエラー">
+                <TextBlock x:Name="WindowFailure" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
             </ScrollViewer>
-            <ScrollViewer MaxHeight="96" VerticalScrollBarVisibility="Auto" Visibility="{Binding FailureText, Converter={StaticResource VisibilityConverter}}">
+            <ScrollViewer MaxHeight="96" VerticalScrollBarVisibility="Auto" Visibility="{Binding FailureText, Converter={StaticResource VisibilityConverter}}" IsTabStop="True" AutomationProperties.Name="エンジンのエラー">
                 <TextBlock Text="{Binding FailureText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
             </ScrollViewer>
         </StackPanel>
         <Grid Grid.Row="3">
-            <ListView x:Name="TranscriptList" ItemsSource="{Binding Rows}" SelectionMode="None" IsItemClickEnabled="False">
+            <ListView x:Name="TranscriptList" ItemsSource="{Binding Rows}" SelectionMode="None" IsItemClickEnabled="False" AutomationProperties.Name="文字起こし" ContainerContentChanging="OnTranscriptContainerContentChanging">
                 <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel ItemsUpdatingScrollMode="KeepItemsInView" /></ItemsPanelTemplate></ListView.ItemsPanel>
-                <ListView.ItemContainerStyle><Style TargetType="ListViewItem"><Setter Property="HorizontalContentAlignment" Value="Stretch" /></Style></ListView.ItemContainerStyle>
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    </Style>
+                </ListView.ItemContainerStyle>
                 <ListView.ItemTemplate>
                     <DataTemplate>
                         <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" Margin="4">
