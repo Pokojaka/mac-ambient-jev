@@ -61,12 +61,11 @@
             </ScrollViewer>
         </StackPanel>
         <Grid Grid.Row="3">
-            <ListView x:Name="TranscriptList" ItemsSource="{Binding Rows}" SelectionMode="None" IsItemClickEnabled="False" AutomationProperties.Name="文字起こし">
+            <ListView x:Name="TranscriptList" ItemsSource="{Binding Rows}" SelectionMode="None" IsItemClickEnabled="False" AutomationProperties.Name="文字起こし" ContainerContentChanging="OnTranscriptContainerContentChanging">
                 <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel ItemsUpdatingScrollMode="KeepItemsInView" /></ItemsPanelTemplate></ListView.ItemsPanel>
                 <ListView.ItemContainerStyle>
                     <Style TargetType="ListViewItem">
                         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                        <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}" />
                     </Style>
                 </ListView.ItemContainerStyle>
                 <ListView.ItemTemplate>
