@@ -315,7 +315,7 @@ public sealed partial class MainWindow : Window
     {
         while (true)
         {
-            if (client.State != EngineClientState.Closed && client.ProcessExitCode is int exitCode)
+            if (client.ProcessExitCode is int exitCode)
             {
                 _log.Info($"window closed after engine had already exited (exit code {exitCode})");
                 _ = closeTask.ContinueWith(task => _log.Error("engine close failed after exit: " + task.Exception), TaskContinuationOptions.OnlyOnFaulted);
@@ -324,7 +324,7 @@ public sealed partial class MainWindow : Window
             }
 
             try { await closeTask.WaitAsync(TimeSpan.FromSeconds(60)); FinalClose(); return; }
-            catch (Exception) when (client.State != EngineClientState.Closed && client.ProcessExitCode is not null)
+            catch (Exception) when (client.ProcessExitCode is int)
             {
                 continue;
             }
@@ -366,10 +366,6 @@ public sealed partial class MainWindow : Window
         _closeStarted = false;
         Root.IsHitTestVisible = true;
         ClosingStatus.Visibility = Visibility.Collapsed;
-        Toolbar.IsEnabled = true;
-        SavedSessionsButton.IsEnabled = _store?.State.Phase == ShellPhase.Running;
-        ReturnToLatestButton.IsEnabled = _live?.ReturnToLatest.CanExecute(null) == true;
-        RefreshSettingsButton();
     }
 
     private void FinalClose()
