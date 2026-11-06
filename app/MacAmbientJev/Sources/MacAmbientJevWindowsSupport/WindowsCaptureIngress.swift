@@ -118,6 +118,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private static let knownMissingFlag: UInt32 = 8
     private static let maximumCallbackFrames = 512
     private static let maximumPacketFrames = 65_536
+    private static let maximumClockDriftRatio = 200e-6
     private static let qpcUnitsPerSecond = 10_000_000.0
     private static let healthInterval: TimeInterval = CaptureHealth.stallInterval
     /// The 250 ms grace bounds normal delivery delay and observation lag for health fills;
@@ -182,9 +183,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     // Positive mapped-start lead over raw QPC, including health-anchor shifts and
     // faster device-clock drift; forward reanchors consume this current lead.
     private var timelineLeadFrames: Int64 = 0
-    // Nonnegative baseline lag behind raw QPC, rising at most one frame per native
-    // packet so slower device-clock drift is tracked without absorbing packet jitter.
-    private var clockLagFrames: Int64 = 0
+    // Nonnegative QPC lag baseline, slewed upward at no more than 200 ppm.
+    private var clockLagFrames: Double = 0
     private var currentPacketPosition: UInt64 = 0
     private var currentPacketQPC: UInt64 = 0
     private var currentPacketReadQPC: UInt64 = 0
@@ -428,7 +428,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         } else {
             packetDeviceDeltaFrames = nil
         }
-        guard packet.flags <= 15, packet.readQPC100ns >= packet.qpc100ns else {
+        guard packet.flags <= 15 else {
             fail(.invalidPacket)
             return
         }
@@ -454,7 +454,9 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return
         }
 
-        packetReadLagMilliseconds = Int64((packet.readQPC100ns - packet.qpc100ns) / 10_000)
+        packetReadLagMilliseconds = Self.readLagMilliseconds(
+            readQPC100ns: packet.readQPC100ns, packetQPC100ns: packet.qpc100ns
+        )
         let isNewPacket = packet.packetOffset == 0
         let packetStart: Int64
         let gap: PacketGap
@@ -874,25 +876,21 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
 
         let tolerance = max(2.0, sampleRate * 0.002)
         let forwardExcess = Double(qpcDelta) - Double(deviceDelta)
-        // The completed native packet, not its <=512-frame fragments, gives the
-        // device period. Contiguous unflagged loopback packets keep device mapping
-        // when lag relative to tracked clock drift is within [-tolerance, period).
-        // This admits both a late QPC and its snap-back without absorbing a pause.
+        // Use the completed previous packet's period, not its callback fragments.
         let devicePeriod = previousDeviceEnd - previousDevicePosition
         let lag = hostFrame - mapped
-        let (relativeLag, lagOverflow) = lag.subtractingReportingOverflow(clockLagFrames)
+        let relativeLag = Double(lag) - clockLagFrames
         let timestampJitter = loopback && packet.flags & Self.discontinuityFlag == 0
             && packet.devicePosition == previousDeviceEnd
-            && !lagOverflow && Double(relativeLag) >= -tolerance
-            && relativeLag < Int64(devicePeriod)
+            && relativeLag >= -tolerance && relativeLag < Double(devicePeriod)
         let difference = abs(forwardExcess)
         if difference > tolerance && !timestampJitter {
-            // Loopback device position counts delivered frames, not elapsed time. QPC
-            // therefore advances across pauses even if session activity is already active.
-            // Prior idle evidence selects silence; without it the span is counted missing.
+            // Idle evidence selects silence and raw QPC; otherwise exclude tracked lag.
             let flagged = packet.flags & Self.discontinuityFlag != 0
             if Double(qpcDelta) > Double(deviceDelta), loopback || flagged {
-                guard let frame = forwardReanchorFrame(hostFrame - clockLagFrames, tolerance: tolerance),
+                let targetFrame = idleLoopback
+                    ? hostFrame : hostFrame - Int64(clockLagFrames.rounded())
+                guard let frame = forwardReanchorFrame(targetFrame, tolerance: tolerance),
                       resetAnchor(
                           devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
                       ) != nil else {
@@ -905,10 +903,11 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         }
 
         timelineLeadFrames = max(0, mapped - hostFrame)
-        if lag < clockLagFrames {
-            clockLagFrames = max(0, lag)
+        if Double(lag) < clockLagFrames {
+            clockLagFrames = max(0, Double(lag))
         } else {
-            clockLagFrames += min(lag - clockLagFrames, 1)
+            let maximumIncrease = Double(devicePeriod) * Self.maximumClockDriftRatio
+            clockLagFrames += min(Double(lag) - clockLagFrames, maximumIncrease)
         }
         // Device and QPC can both advance across idle, so no clock-mismatch reanchor
         // is needed. The uncovered suffix is still observed idle, even when it is only
@@ -918,16 +917,14 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         )
     }
 
-    private func forwardReanchorFrame(_ hostFrame: Int64, tolerance: Double) -> Int64? {
+    private func forwardReanchorFrame(_ targetFrame: Int64, tolerance: Double) -> Int64? {
         let endFrame = sink.lastEndFrame
-        // The target is raw QPC minus tracked lag. A short pause may still not
-        // catch up with a timeline led by a health shift or faster device clock.
-        // Only the measured current lead permits overlap with PCM or missing audio.
-        if loopback, hostFrame < endFrame,
-           Double(endFrame - hostFrame) <= Double(timelineLeadFrames) + tolerance {
+        // Only current measured lead permits overlap with captured or missing audio.
+        if loopback, targetFrame < endFrame,
+           Double(endFrame - targetFrame) <= Double(timelineLeadFrames) + tolerance {
             return endFrame
         }
-        return idleReanchorFrame(hostFrame)
+        return idleReanchorFrame(targetFrame)
     }
 
     private func idleReanchorFrame(_ hostFrame: Int64) -> Int64? {
@@ -955,7 +952,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         anchorDevicePosition = devicePosition
         anchorFrame = frame
         timelineLeadFrames = max(0, frame - hostFrame)
-        clockLagFrames = max(0, hostFrame - frame)
+        clockLagFrames = max(0, Double(hostFrame - frame))
         return frame
     }
 
@@ -984,6 +981,16 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         }
         sink.silence(startFrame: endFrame, frameCount: count)
         return true
+    }
+
+    private static func readLagMilliseconds(
+        readQPC100ns: UInt64, packetQPC100ns: UInt64
+    ) -> Int64 {
+        // Divide the unsigned magnitude before conversion; the quotient fits Int64.
+        if readQPC100ns >= packetQPC100ns {
+            return Int64((readQPC100ns - packetQPC100ns) / 10_000)
+        }
+        return -Int64((packetQPC100ns - readQPC100ns) / 10_000)
     }
 
     private func frameForQPC(_ qpc: UInt64) -> Int64? {

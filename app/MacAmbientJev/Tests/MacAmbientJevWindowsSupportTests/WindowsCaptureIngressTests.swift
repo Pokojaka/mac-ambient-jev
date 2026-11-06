@@ -163,14 +163,23 @@ struct WindowsCaptureIngressTests {
         }
     }
 
-    @Test func testReadQPCBeforePacketQPCFailsInvalidPacket() throws {
-        let harness = try makeIngress()
+    @Test func testReadQPCBeforePacketQPCIsAcceptedAndReportsNegativeGapLag() throws {
+        let harness = try makeIngress(loopback: true)
+        receive(harness.ingress, samples: [0.25], frameCount: 1)
         receive(
-            harness.ingress, samples: [0.25], frameCount: 1,
-            readQPC100ns: 9_999_999
+            harness.ingress, samples: [0.75], frameCount: 1, devicePosition: 2,
+            qpc100ns: 10_000_417, readQPC100ns: 9_980_416
         )
-        #expect(harness.ingress.failure == .invalidPacket)
-        #expect(drain(harness.ring).isEmpty)
+
+        #expect(harness.ingress.failure == nil)
+        let diagnostic = harness.ingress.takeGapDiagnostics().first
+        #expect(diagnostic?.check == .packetTimeline)
+        #expect(diagnostic?.startFrame == 1)
+        #expect(diagnostic?.endFrame == 2)
+        #expect(diagnostic?.readLagMilliseconds == -2)
+        let details = try #require(diagnostic)
+        #expect(WindowsCaptureSource.describeGapDiagnostic(details, sampleRate: 48_000)
+            .contains("readLagMs: -2"))
     }
 
     @Test func testFragmentReadQPCMustMatchFirstFragment() throws {
@@ -463,10 +472,10 @@ struct WindowsCaptureIngressTests {
             harness.ingress, samples: [0.75], frameCount: 1, sampleRate: 16_000,
             devicePosition: 1_024, qpc100ns: 15_390_000
         )
-        // The 400-frame excess is sub-period jitter, but ordinary device mapping
-        // still overlaps the published missing tail. Jitter never exempts PCM overlap.
+        // Device mapping would start 400 frames ahead of QPC, so this is not jitter.
+        // The reanchor cannot overlap the published missing tail.
         #expect(harness.ingress.failure == .timestamp)
-        #expect(harness.ingress.timestampCheck == .pcmOverlap)
+        #expect(harness.ingress.timestampCheck == .idleAnchorOverlap)
         #expect(harness.sink.lastEndFrame == 10_024)
         #expect(!drain(harness.ring).flatMap(\.samples).contains(0.75))
     }
@@ -916,26 +925,122 @@ struct WindowsCaptureIngressTests {
 
     @Test func testLoopbackForwardReanchorExcludesTrackedClockLag() throws {
         let harness = try makeIngress(loopback: true)
+        let packetFrames = 480
         for index in 0..<100 {
+            let deviceFrame = index * packetFrames
+            let hostFrame = Int((Double(deviceFrame) / 0.9999).rounded())
             receive(
-                harness.ingress, samples: [Float](repeating: 0.25, count: 480), frameCount: 480,
-                devicePosition: UInt64(index * 480),
-                qpc100ns: 10_000_000 + UInt64((Double(index * 481) * 10_000_000 / 48_000).rounded())
+                harness.ingress, samples: [Float](repeating: 0.25, count: packetFrames),
+                frameCount: packetFrames, devicePosition: UInt64(deviceFrame),
+                qpc100ns: 10_000_000 + UInt64(
+                    (Double(hostFrame) * 10_000_000 / 48_000).rounded()
+                )
             )
             _ = drain(harness.ring)
         }
+        let lastHostFrame = Int((Double(99 * packetFrames) / 0.9999).rounded())
+        let rawReanchorFrame = lastHostFrame + 960
         receive(
-            harness.ingress, samples: [Float](repeating: 0.75, count: 480), frameCount: 480,
-            flags: 1, devicePosition: 48_000,
-            qpc100ns: 10_000_000 + UInt64((Double(48_000 + 99 + 960) * 10_000_000 / 48_000).rounded())
+            harness.ingress, samples: [Float](repeating: 0.75, count: packetFrames),
+            frameCount: packetFrames, flags: 1, devicePosition: 48_000,
+            qpc100ns: 10_000_000 + UInt64(
+                (Double(rawReanchorFrame) * 10_000_000 / 48_000).rounded()
+            )
         )
         #expect(harness.ingress.failure == nil)
         let diagnostics = harness.ingress.takeGapDiagnostics()
         #expect(diagnostics.count == 1)
         #expect(diagnostics.first?.check == .qpcForward)
-        #expect(diagnostics.first?.endFrame == 48_960)
+        #expect(diagnostics.first?.endFrame == 48_480)
+        #expect(diagnostics.first?.endFrame != Int64(rawReanchorFrame))
         #expect(diagnostics.first?.startFrame == 48_000)
-        #expect(drain(harness.ring).flatMap(\.samples) == [Float](repeating: 0.75, count: 480))
+        #expect(diagnostics.first?.idleObserved == false)
+        #expect(drain(harness.ring).flatMap(\.samples) == [Float](repeating: 0.75, count: packetFrames))
+    }
+
+    @Test func testIdleForwardReanchorTargetsRawQPCAndResetsClockLagBaseline() throws {
+        let harness = try makeIngress(loopback: true, ringCapacity: 128)
+        let packetFrames = 480
+        func qpc(_ frame: Int) -> UInt64 {
+            10_000_000 + UInt64((Double(frame) * 10_000_000 / 48_000).rounded())
+        }
+
+        var lastHostFrame = 0
+        for index in 0..<2_000 {
+            let deviceFrame = index * packetFrames
+            lastHostFrame = Int((Double(deviceFrame) / 0.9999).rounded())
+            receive(
+                harness.ingress, samples: [Float](repeating: 0.25, count: packetFrames),
+                frameCount: packetFrames, devicePosition: UInt64(deviceFrame),
+                qpc100ns: qpc(lastHostFrame)
+            )
+            _ = drain(harness.ring)
+        }
+        let endBeforeIdle = harness.sink.lastEndFrame
+        #expect(endBeforeIdle == 2_000 * packetFrames)
+        harness.ingress.health(watermarkQPC100ns: qpc(lastHostFrame), outputState: 0, error: 0)
+
+        let rawReanchorFrame = lastHostFrame + packetFrames + 1_200
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.75, count: packetFrames),
+            frameCount: packetFrames, devicePosition: UInt64(2_000 * packetFrames),
+            qpc100ns: qpc(rawReanchorFrame)
+        )
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == Int64(rawReanchorFrame + packetFrames))
+        #expect(harness.ring.dropoutCount == 0)
+        #expect(harness.ingress.takeGapDiagnostics().isEmpty)
+        let resumedBlocks = drain(harness.ring)
+        let silenceFrames = rawReanchorFrame - Int(endBeforeIdle)
+        let resumedSamples = resumedBlocks.flatMap(\.samples)
+        #expect(resumedSamples.count == silenceFrames + packetFrames)
+        #expect(resumedSamples[..<silenceFrames].allSatisfy { $0 == 0 })
+        #expect(resumedSamples[silenceFrames...].allSatisfy { $0 == 0.75 })
+
+        // At baseline zero, a 485-frame late start exceeds the 480-frame jitter window.
+        let secondRawFrame = rawReanchorFrame + packetFrames + 485
+        receive(
+            harness.ingress, samples: [Float](repeating: -0.5, count: packetFrames),
+            frameCount: packetFrames, devicePosition: UInt64(2_000 * packetFrames + packetFrames),
+            qpc100ns: qpc(secondRawFrame)
+        )
+        #expect(harness.ingress.failure == nil)
+        let diagnostic = harness.ingress.takeGapDiagnostics().first
+        #expect(diagnostic?.check == .qpcForward)
+        #expect(diagnostic?.startFrame == Int64(rawReanchorFrame + packetFrames))
+        #expect(diagnostic?.endFrame == Int64(secondRawFrame))
+    }
+
+    @Test func testSpacedUnflaggedQPCStepsCannotStayWithinJitterAllowance() throws {
+        let harness = try makeIngress(loopback: true, ringCapacity: 128)
+        let packetFrames = 480
+        func qpc(_ frame: Int) -> UInt64 {
+            10_000_000 + UInt64((Double(frame) * 10_000_000 / 48_000).rounded())
+        }
+
+        for index in 0...1_000 {
+            let deviceFrame = index * packetFrames
+            let qpcStepCount = index / 500
+            let hostFrame = deviceFrame + qpcStepCount * 400
+            receive(
+                harness.ingress, samples: [Float](repeating: 0.25, count: packetFrames),
+                frameCount: packetFrames, devicePosition: UInt64(deviceFrame),
+                qpc100ns: qpc(hostFrame)
+            )
+            if index == 500 {
+                #expect(harness.ingress.failure == nil)
+                #expect(harness.ingress.takeGapDiagnostics().isEmpty)
+                #expect(harness.ring.dropoutCount == 0)
+            }
+            if index < 1_000 { _ = drain(harness.ring) }
+        }
+
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.ring.dropoutCount == 1)
+        let diagnostic = harness.ingress.takeGapDiagnostics().first
+        #expect(diagnostic?.check == .qpcForward)
+        #expect(diagnostic?.startFrame == 1_000 * packetFrames)
+        #expect(diagnostic.map { $0.endFrame > $0.startFrame } == true)
     }
 
     @Test(arguments: [480, 481])
@@ -966,7 +1071,7 @@ struct WindowsCaptureIngressTests {
         #expect(diagnostics.count == 1)
         #expect(diagnostics.first?.check == .qpcForward)
         #expect(diagnostics.first?.startFrame == 288_960)
-        #expect(diagnostics.first?.endFrame == 288_960 + Int64(168 + jumpFrames))
+        #expect(diagnostics.first?.endFrame == 288_960 + Int64(169 + jumpFrames))
         #expect(diagnostics.first?.qpcDeltaFrames == Int64(480 + jumpFrames))
         #expect(diagnostics.first?.deviceDeltaFrames == 480)
         #expect(diagnostics.first?.packetFlags == flags)
@@ -989,7 +1094,7 @@ struct WindowsCaptureIngressTests {
         let diagnostics = harness.ingress.takeGapDiagnostics()
         #expect(diagnostics.count == 1)
         #expect(diagnostics.first?.startFrame == 289_440)
-        #expect(diagnostics.first?.endFrame == 289_945)
+        #expect(diagnostics.first?.endFrame == 289_947)
         #expect(drain(harness.ring).flatMap(\.samples) == [Float](repeating: 0.5, count: 960))
     }
 
