@@ -1525,7 +1525,13 @@ public final class WindowsCaptureSource {
         case .invalidPacket:
             return "Windows capture received an invalid audio packet"
         case .timestamp:
-            return "Windows capture received an invalid packet timestamp (check: \(ingress.timestampCheck))"
+            let details = ingress.timestampDetails
+            let qpcDelta = details.qpcDeltaFrames.map { String($0) } ?? "unavailable"
+            let deviceDelta = details.deviceDeltaFrames.map { String($0) } ?? "unavailable"
+            return "Windows capture received an invalid packet timestamp "
+                + "(check: \(ingress.timestampCheck), qpcDeltaFrames: \(qpcDelta), "
+                + "deviceDeltaFrames: \(deviceDelta), packetFlags: \(details.packetFlags), "
+                + "idleObserved: \(details.idleObserved))"
         case .unknownOutput:
             return "Windows loopback capture reported an unknown output state"
         case .workerStall:
