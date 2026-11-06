@@ -108,7 +108,8 @@ private struct NativeIngressHarness {
             channels: channels,
             epochQPC100ns: 10_000_000,
             clock: clock,
-            loopback: false
+            loopback: false,
+            isInitialCapture: true
         )
         self.ingress = ingress
         self.sink = sink
@@ -443,6 +444,7 @@ struct WindowsNativeCapturePacketTests {
             packetFrames: 2
         )])
         #expect(harness.ingress.failure == .timestamp)
+        #expect(harness.ingress.timestampCheck == .nativeTimestampError)
         #expect(harness.sink.lastEndFrame == 0)
         #expect(drain(harness.ring).isEmpty)
     }

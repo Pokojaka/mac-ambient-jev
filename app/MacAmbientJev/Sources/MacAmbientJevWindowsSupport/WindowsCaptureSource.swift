@@ -276,6 +276,7 @@ public final class WindowsCaptureSource {
                 sampleRate: openedDevice.sampleRate,
                 channels: openedDevice.channels,
                 gapFrameCount: nil,
+                isInitialCapture: true,
                 monitorStartedAt: healthStart
             )
             currentSegment = openedSegment
@@ -444,6 +445,7 @@ public final class WindowsCaptureSource {
         sampleRate: Double,
         channels: Int,
         gapFrameCount: Int?,
+        isInitialCapture: Bool,
         monitorStartedAt: TimeInterval?
     ) throws -> Segment {
         try Self.validateEndpointID(endpointID)
@@ -472,7 +474,8 @@ public final class WindowsCaptureSource {
                 channels: channels,
                 epochQPC100ns: epochQPC100ns,
                 clock: clock,
-                loopback: source == .systemAudio
+                loopback: source == .systemAudio,
+                isInitialCapture: isInitialCapture
             )
         } else {
             segmentIngress = nil
@@ -529,11 +532,39 @@ public final class WindowsCaptureSource {
         }
     }
 
+    nonisolated static func describeGapDiagnostic(
+        _ details: WindowsCaptureGapDetails, sampleRate: Double
+    ) -> String {
+        let qpcDelta = details.qpcDeltaFrames.map { String($0) } ?? "unavailable"
+        let deviceDelta = details.deviceDeltaFrames.map { String($0) } ?? "unavailable"
+        let packetFlags = details.fromHealth ? "unavailable" : String(details.packetFlags)
+        return "Windows capture counted gap (check: \(details.check), "
+            + "startFrame: \(details.startFrame), endFrame: \(details.endFrame), "
+            + "frameCount: \(details.endFrame - details.startFrame), sampleRate: \(sampleRate), "
+            + "qpcDeltaFrames: \(qpcDelta), deviceDeltaFrames: \(deviceDelta), "
+            + "packetFlags: \(packetFlags), idleObserved: \(details.idleObserved), "
+            + "origin: \(details.fromHealth ? "health" : "packet"))"
+    }
+
+    private func reportGapDiagnostics(_ segment: Segment) {
+        guard let ingress = segment.ingress else { return }
+        for details in ingress.takeGapDiagnostics() {
+            let message = Self.describeGapDiagnostic(details, sampleRate: segment.sampleRate)
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+        }
+        let droppedCount = ingress.takeDroppedGapDiagnosticCount()
+        if droppedCount > 0 {
+            let message = "Windows capture gap diagnostics dropped since last drain: \(droppedCount)"
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+        }
+    }
+
     private func pollActiveSegment() async throws {
         guard let currentSegment, let activeIngress = currentSegment.ingress else {
             scheduleTerminalFailure("Windows capture has no active ingress")
             return
         }
+        reportGapDiagnostics(currentSegment)
         if let failure = activeIngress.failure {
             let message = Self.describeIngressFailure(failure, ingress: activeIngress)
             if isDeviceLoss(failure, ingress: activeIngress), case .running = state {
@@ -551,6 +582,7 @@ public final class WindowsCaptureSource {
             return
         }
         guard !stopRequested, !isStopping else { return }
+        reportGapDiagnostics(currentSegment)
         if let failure = activeIngress.failure {
             let message = Self.describeIngressFailure(failure, ingress: activeIngress)
             if isDeviceLoss(failure, ingress: activeIngress), case .running = state {
@@ -657,6 +689,7 @@ public final class WindowsCaptureSource {
                 scheduleTerminalFailure("Windows capture wait contains a segment without an ingress")
                 return
             }
+            reportGapDiagnostics(candidateSegment)
             let timelyReadiness = try candidateHasTimelyReadiness(candidateIngress)
             let deadlinePassed = nowQPC100ns >= deadlineQPC100ns || now >= waitingDeadline
             if let failure = candidateIngress.failure,
@@ -949,6 +982,7 @@ public final class WindowsCaptureSource {
                 sampleRate: openedDevice.sampleRate,
                 channels: openedDevice.channels,
                 gapFrameCount: nil,
+                isInitialCapture: false,
                 monitorStartedAt: clock.now()
             )
             if source == .systemAudio {
@@ -967,6 +1001,7 @@ public final class WindowsCaptureSource {
         guard let candidateIngress = candidate.ingress else {
             preconditionFailure("A reopened Windows capture segment requires an ingress")
         }
+        defer { reportGapDiagnostics(candidate) }
         if try await fenceUnassignedDeviceIfQPCDeadlinePassed(openedDevice) { return }
 
         do {
@@ -1139,6 +1174,7 @@ public final class WindowsCaptureSource {
             errors.append(contentsOf: stopDevice(device))
             candidate.device = nil
         }
+        reportGapDiagnostics(candidate)
         currentSegment = nil
         ingress = nil
         return errors
@@ -1151,6 +1187,7 @@ public final class WindowsCaptureSource {
             errors.append(contentsOf: stopDevice(device))
             segment.device = nil
         }
+        reportGapDiagnostics(segment)
         segment.ring.finish(tailFrame: segment.sink.lastEndFrame)
         let (dropouts, dropoutOverflow) = cumulativeDropouts.addingReportingOverflow(segment.ring.dropoutCount)
         cumulativeDropouts = dropoutOverflow ? UInt64.max : dropouts
@@ -1190,6 +1227,7 @@ public final class WindowsCaptureSource {
     }
 
     private func finishUnassignedCandidateIfNeeded(_ candidate: Segment) async -> [String] {
+        reportGapDiagnostics(candidate)
         guard candidate.ingress?.isReady == true else { return [] }
         waitingGapFinalized = true
         waitingEndQPC100ns = nil
@@ -1275,6 +1313,7 @@ public final class WindowsCaptureSource {
                 for message in stopDevice(device) { appendError(message) }
                 currentSegment.device = nil
             }
+            reportGapDiagnostics(currentSegment)
             currentSegment.ring.finish(tailFrame: currentSegment.sink.lastEndFrame)
             let (dropouts, overflow) = cumulativeDropouts.addingReportingOverflow(currentSegment.ring.dropoutCount)
             cumulativeDropouts = overflow ? UInt64.max : dropouts
@@ -1344,6 +1383,7 @@ public final class WindowsCaptureSource {
             sampleRate: sampleRate,
             channels: channels,
             gapFrameCount: gapFrames,
+            isInitialCapture: false,
             monitorStartedAt: nil
         )
         currentSegment = gapSegment
@@ -1520,7 +1560,18 @@ public final class WindowsCaptureSource {
         case .invalidPacket:
             return "Windows capture received an invalid audio packet"
         case .timestamp:
-            return "Windows capture received an invalid packet timestamp"
+            let details = ingress.timestampDetails
+            if details.fromHealth {
+                return "Windows capture received an invalid health timestamp "
+                    + "(check: \(ingress.timestampCheck), origin: health, "
+                    + "idleObserved: \(details.idleObserved))"
+            }
+            let qpcDelta = details.qpcDeltaFrames.map { String($0) } ?? "unavailable"
+            let deviceDelta = details.deviceDeltaFrames.map { String($0) } ?? "unavailable"
+            return "Windows capture received an invalid packet timestamp "
+                + "(check: \(ingress.timestampCheck), qpcDeltaFrames: \(qpcDelta), "
+                + "deviceDeltaFrames: \(deviceDelta), packetFlags: \(details.packetFlags), "
+                + "idleObserved: \(details.idleObserved))"
         case .unknownOutput:
             return "Windows loopback capture reported an unknown output state"
         case .workerStall:

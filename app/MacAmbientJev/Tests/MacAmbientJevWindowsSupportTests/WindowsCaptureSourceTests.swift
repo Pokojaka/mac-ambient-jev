@@ -54,6 +54,69 @@ struct WindowsCaptureSourceTests {
         }
     }
 
+    @Test(arguments: [CaptureSource.microphone, .systemAudio])
+    func firstPacketStartupLatencyIsSavedWithoutLoss(source: CaptureSource) async throws {
+        let root = try makeWindowsCaptureTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = root.appending(path: "startup.f32le")
+        try writeScriptedFloatFixture([Float](repeating: 0.25, count: 512), to: fixture)
+        let probe = ScriptedCaptureProbe()
+        let harness = try makeWindowsCaptureTestSource(
+            root: root, source: source, sampleRate: 16_000, channels: 1,
+            events: scriptedPacketFragments(
+                file: fixture, sourceFrames: 512, devicePosition: 123_456,
+                qpc100ns: 11_250_000
+            ), probe: probe
+        )
+        try await harness.source.start()
+        let result = await harness.source.stop()
+        let checkpoint = try #require(result.checkpoint)
+        let audio = try checkpoint.chunkFiles.flatMap {
+            try readFloat32LEFile(root.appending(path: "audio").appending(path: $0))
+        }
+        #expect(checkpoint.committedFrames == 2_512)
+        #expect(checkpoint.gapEvents.isEmpty)
+        #expect(result.errors.isEmpty)
+        #expect(!result.healthyPrefixOnly)
+        #expect(audio[..<2_000].allSatisfy { $0 == 0 })
+        #expect(Array(audio[2_000...]) == [Float](repeating: 0.25, count: 512))
+        #expect(probe.dropoutCounts.allSatisfy { $0 == 0 })
+    }
+
+    @Test(arguments: [UInt32(4), UInt32(0)])
+    func timestampFailureReportsTheLatchedCheckAndEvidence(flags: UInt32) async throws {
+        let root = try makeWindowsCaptureTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = root.appending(path: "timestamp.f32le")
+        try writeScriptedFloatFixture([Float](repeating: 0.25, count: 512), to: fixture)
+        let qpc: UInt64 = flags == 4 ? 10_106_667 : 10_026_667
+        let events = scriptedPacketFragments(
+            file: fixture, sourceFrames: 512, devicePosition: 0, qpc100ns: 10_000_000
+        ) + scriptedPacketFragments(
+            file: fixture, sourceFrames: 512, devicePosition: 512,
+            qpc100ns: qpc, flags: flags
+        )
+        let harness = try makeWindowsCaptureTestSource(
+            root: root, source: .systemAudio, sampleRate: 48_000,
+            channels: 1, events: events, probe: ScriptedCaptureProbe()
+        )
+        try await harness.source.start()
+        let device = try #require(harness.factory.openedDevice)
+        try await device.step()
+        await waitForWindowsCaptureTestCondition { harness.source.lastStopResult != nil }
+        let result = await harness.source.stop()
+        let check = flags == 4 ? "nativeTimestampError" : "clockMismatch"
+        let qpcDelta = flags == 4 ? 512 : 128
+        #expect(result.errors.contains {
+            $0.contains(
+                "Windows capture received an invalid packet timestamp "
+                    + "(check: \(check), qpcDeltaFrames: \(qpcDelta), "
+                    + "deviceDeltaFrames: 512, packetFlags: \(flags), idleObserved: false)"
+            )
+        })
+        #expect(result.checkpoint?.committedFrames == 171)
+    }
+
     @Test func knownMissingExtentAndTrustedRestartPersistDurableGaps() async throws {
         let root = try makeWindowsCaptureTestDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -9,7 +9,8 @@ import MacAmbientJevWindowsSupport
 @testable import MacAmbientJevEngine
 
 @Suite(.timeLimit(.minutes(10))) @MainActor struct WindowsEngineCaptureTests {
-    @Test func forwardsIngressDropoutsWhileCaptureIsActive() async throws {
+    @Test(arguments: [false, true])
+    func stopResultReflectsCapturedMissingPackets(hasMissingPacket: Bool) async throws {
         let (root, sessionID, sessionURL) = try makeSession()
         defer { removeSessionRoot(root) }
 
@@ -39,13 +40,17 @@ import MacAmbientJevWindowsSupport
         )
 
         do {
-            device.sendKnownMissingPacket()
+            if hasMissingPacket {
+                device.sendPacketAfterMissingCallback()
+            }
             let session = try #require(capture as? WindowsEngineCaptureSession)
             await session.capture.poll()
-            try await callbackProbe.changes.wait("Windows capture dropout callback") {
-                callbackProbe.counts.contains { $0 > 0 }
+            if hasMissingPacket {
+                try await callbackProbe.changes.wait("Windows capture dropout callback") {
+                    callbackProbe.counts.contains { $0 > 0 }
+                }
             }
-            #expect(callbackProbe.counts.contains { $0 > 0 })
+            #expect(callbackProbe.counts.contains { $0 > 0 } == hasMissingPacket)
             _ = try await capture.committedCheckpoint()
         } catch {
             _ = try? await capture.stop()
@@ -53,8 +58,17 @@ import MacAmbientJevWindowsSupport
         }
 
         let result = try await capture.stop()
-        #expect(result.dropoutCount > 0)
-        #expect(!result.checkpoint.gapEvents.isEmpty)
+        let expectedGaps = hasMissingPacket
+            ? [AudioGapEvent(startFrame: 512, frameCount: 512, reason: .missingCallback)]
+            : []
+        #expect(result.checkpoint.gapEvents == expectedGaps)
+        #expect(result.checkpoint.committedFrames == (hasMissingPacket ? 1_536 : 512))
+        #expect(result.didOverflow == hasMissingPacket)
+        #expect(result.dropoutCount == UInt64(expectedGaps.count))
+        #expect(result.gapCount == expectedGaps.count)
+        #expect(result.totalGapFrames == (hasMissingPacket ? 512 : 0))
+        #expect(result.writerFailure == nil)
+        #expect(result.systemAudioReleaseFailure == nil)
     }
 
     @Test func microphoneAccessDeniedFailsStartWithSettingsGuidance() async throws {
@@ -93,32 +107,25 @@ import MacAmbientJevWindowsSupport
         }
     }
 
-    @Test func didOverflowReflectsAnyCheckpointGap() throws {
-        let overflow = try WindowsEngineCaptureSession.stopResult(
+    @Test(arguments: [nil, .overflow, .missingCallback, .invalidBuffer, .stopTail] as [AudioGapReason?])
+    func didOverflowReflectsAnyCheckpointGap(reason: AudioGapReason?) throws {
+        let gaps = reason.map { [gap($0, frames: 11)] } ?? []
+        let checkpoint = checkpoint(gaps: gaps)
+        let result = try WindowsEngineCaptureSession.stopResult(
             WindowsCaptureStopResult(
-                checkpoint: checkpoint(gaps: [gap(.overflow, frames: 7)]),
-                healthyPrefixOnly: false,
-                errors: []
-            )
-        )
-        let missingCallback = try WindowsEngineCaptureSession.stopResult(
-            WindowsCaptureStopResult(
-                checkpoint: checkpoint(gaps: [gap(.missingCallback, frames: 11)]),
-                healthyPrefixOnly: false,
-                errors: []
-            )
-        )
-        let noGap = try WindowsEngineCaptureSession.stopResult(
-            WindowsCaptureStopResult(
-                checkpoint: checkpoint(gaps: []),
+                checkpoint: checkpoint,
                 healthyPrefixOnly: false,
                 errors: []
             )
         )
 
-        #expect(overflow.didOverflow)
-        #expect(missingCallback.didOverflow)
-        #expect(!noGap.didOverflow)
+        #expect(result.checkpoint == checkpoint)
+        #expect(result.didOverflow == (reason != nil))
+        #expect(result.dropoutCount == UInt64(gaps.count))
+        #expect(result.gapCount == gaps.count)
+        #expect(result.totalGapFrames == (reason == nil ? 0 : 11))
+        #expect(result.writerFailure == nil)
+        #expect(result.systemAudioReleaseFailure == nil)
     }
 
     @Test func healthyPrefixMapsWriterDiagnosticsAndCheckpointStatistics() throws {
@@ -256,7 +263,6 @@ private struct WindowsEngineCaptureTestClock: CaptureClock {
 @MainActor
 private final class WindowsEngineCaptureTestDevice: WindowsCaptureDevice {
     private static let packetFrameCount = 512
-    private static let knownMissingPacketFlag: UInt32 = 8
     private static let qpcUnitsPerSecond: UInt64 = 10_000_000
 
     let endpointID = "engine-test-endpoint"
@@ -289,26 +295,31 @@ private final class WindowsEngineCaptureTestDevice: WindowsCaptureDevice {
         }
     }
 
-    func sendKnownMissingPacket() {
+    func sendPacketAfterMissingCallback() {
         guard !isFenced, let ingress, let firstPacketQPC100ns else {
             preconditionFailure("test capture device must be running before emitting a gap")
         }
+        // Skip a whole callback, then resume valid PCM with matching device/QPC positions.
+        let startFrame = 2 * Self.packetFrameCount
         let delta = UInt64(
-            (Double(Self.packetFrameCount) * Double(Self.qpcUnitsPerSecond) / sampleRate).rounded()
+            (Double(startFrame) * Double(Self.qpcUnitsPerSecond) / sampleRate).rounded()
         )
         let (qpc, overflow) = firstPacketQPC100ns.addingReportingOverflow(delta)
         precondition(!overflow, "test packet QPC must not overflow")
-        ingress.receive(WindowsCapturePacket(
-            samples: nil,
-            frameCount: Self.packetFrameCount,
-            channels: channels,
-            sampleRate: sampleRate,
-            flags: Self.knownMissingPacketFlag,
-            devicePosition: UInt64(Self.packetFrameCount),
-            qpc100ns: qpc,
-            packetOffset: 0,
-            packetFrames: Self.packetFrameCount
-        ))
+        let samples = [Float](repeating: -0.25, count: Self.packetFrameCount)
+        samples.withUnsafeBufferPointer { buffer in
+            ingress.receive(WindowsCapturePacket(
+                samples: UnsafePointer(buffer.baseAddress!),
+                frameCount: buffer.count,
+                channels: channels,
+                sampleRate: sampleRate,
+                flags: 0,
+                devicePosition: UInt64(startFrame),
+                qpc100ns: qpc,
+                packetOffset: 0,
+                packetFrames: buffer.count
+            ))
+        }
     }
 
     func stopJoin() throws {
