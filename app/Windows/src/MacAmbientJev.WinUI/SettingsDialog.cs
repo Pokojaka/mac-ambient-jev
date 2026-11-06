@@ -3,6 +3,7 @@ using System.Text;
 using MacAmbientJev.Presentation;
 using MacAmbientJev.Protocol;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 namespace MacAmbientJev.WinUI;
 internal sealed class SettingsDialog : ContentDialog, IDisposable
@@ -64,7 +65,7 @@ internal sealed class SettingsDialog : ContentDialog, IDisposable
     private static ProgressRing Ring() => new() { IsActive = false, Visibility = Visibility.Collapsed };
     private static TextBlock Text(string value = "") => new() { Text = value, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
     private static ScrollViewer View(UIElement content) => new() { Content = content, MaxHeight = 460, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-    private static void AddField(Panel panel, string label, ComboBox box) { panel.Children.Add(Text(label)); panel.Children.Add(box); }
+    private static void AddField(Panel panel, string label, ComboBox box) { AutomationProperties.SetName(box, label); panel.Children.Add(Text(label)); panel.Children.Add(box); }
     private static void Add(ComboBox box, object? value, string label) => box.Items.Add(new ComboBoxItem { Content = label, Tag = value });
     private static void Select(ComboBox box, object? value) { box.SelectedIndex = -1; for (var i = 0; i < box.Items.Count; i++) if (Equals(((ComboBoxItem)box.Items[i]).Tag, value)) { box.SelectedIndex = i; return; } }
     private void BuildChoices() {

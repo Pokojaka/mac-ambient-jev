@@ -7,7 +7,12 @@ using MacAmbientJev.Protocol;
 
 namespace MacAmbientJev.Presentation;
 
-public sealed record ShellTranscriptRowViewModel(string RowID, string Text, string TimeText, string HeadingText, string WaitingText);
+public sealed record ShellTranscriptRowViewModel(string RowID, string Text, string TimeText, string HeadingText, string WaitingText)
+{
+    public string AccessibleName => string.IsNullOrEmpty(HeadingText)
+        ? $"{TimeText}, {Text}"
+        : $"{TimeText}, {HeadingText}, {Text}";
+}
 
 public sealed partial class LiveViewModel
 {

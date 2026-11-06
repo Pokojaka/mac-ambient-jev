@@ -39,27 +39,34 @@ public sealed partial class LiveViewModel : ScreenViewModel
         InitializeDisplay();
     }
 
-    public EngineSource? SelectedSource
+    public EngineSource? SelectedSource => _selectedSource;
+    public EngineDevice? SelectedDevice => _selectedDevice;
+
+    public ShellSourceChoice? SelectedSourceChoice
     {
-        get => _selectedSource;
+        get => Sources.SingleOrDefault(choice => choice.Value == _selectedSource);
         set
         {
-            if (_selectedSource == value) return;
-            _selectedSource = value;
-            _selectedDevice = null;
+            // Replacing ItemsSource can write a transient null SelectedItem back to the binding.
+            // Only an explicit choice changes the semantic selection.
+            if (value is null || _selectedSource == value.Value) return;
+            _selectedSource = value.Value;
+            _selectedDevice = new EngineDevice.Default();
             _hasDeviceChoices = false;
             Context.RequestRefresh();
             if (RefreshDevices.CanExecute(null)) RefreshDevices.Execute(null);
         }
     }
 
-    public EngineDevice? SelectedDevice
+    public ShellDeviceChoice? SelectedDeviceChoice
     {
-        get => _selectedDevice;
+        get => Devices.SingleOrDefault(choice => Equals(choice.Value, _selectedDevice));
         set
         {
-            if (Equals(_selectedDevice, value)) return;
-            _selectedDevice = value;
+            // A list refresh must not erase the selected endpoint, even if it disappeared.
+            // An unavailable endpoint stays invalid rather than silently selecting the default.
+            if (value is null || Equals(_selectedDevice, value.Value)) return;
+            _selectedDevice = value.Value;
             Context.RequestRefresh();
         }
     }

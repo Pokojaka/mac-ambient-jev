@@ -5,7 +5,9 @@ using MacAmbientJev.Protocol;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 
@@ -131,6 +133,19 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
     }
+    private void OnTranscriptContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.InRecycleQueue)
+        {
+            AutomationProperties.SetName(args.ItemContainer, string.Empty);
+            return;
+        }
+
+        var row = args.Item as ShellTranscriptRowViewModel ??
+            throw new InvalidOperationException("A transcript container has an unexpected item type.");
+        AutomationProperties.SetName(args.ItemContainer, row.AccessibleName);
+    }
+
     private async void OnContextRefreshed(object? sender, EventArgs args)
     {
         _scroll?.Refresh();
@@ -140,10 +155,36 @@ public sealed partial class MainWindow : Window
             !context.State.IsPending(EngineCommandName.DevicesList))
         {
             _focusDeviceSelector = false;
-            if (!DeviceSelector.Focus(FocusState.Programmatic)) ShowFailure(new InvalidOperationException("録音デバイスの選択欄にフォーカスできません。"));
+            if (!DeviceSelector.Focus(FocusState.Programmatic)) _log.Warn("録音デバイスの選択欄にフォーカスできません。");
         }
         try { await ShowDeviceLostNoticeAsync(); }
         catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
+        // Command CanExecute notifications run after Refreshed; inspect focus after bindings update.
+        if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, RestoreRecordingFocus))
+            _log.Warn("録音ボタンのフォーカス更新を予約できません。");
+    }
+
+    private void FocusToolbarButton(AppBarButton button)
+    {
+        if (_closeStarted) return;
+        if (button.IsInOverflow && !Toolbar.IsOpen)
+        {
+            Toolbar.IsOpen = true;
+            if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => FocusToolbarButton(button)))
+                _log.Warn($"{button.Label}へのフォーカス移動を予約できません。");
+            return;
+        }
+        if (!button.Focus(FocusState.Programmatic)) _log.Warn($"{button.Label}にフォーカスできません。");
+    }
+
+    private void RestoreRecordingFocus()
+    {
+        if (_closeStarted) return;
+        var focusedElement = FocusManager.GetFocusedElement(Content.XamlRoot);
+        if (ReferenceEquals(focusedElement, StartButton) && !StartButton.IsEnabled && StopButton.IsEnabled)
+            FocusToolbarButton(StopButton);
+        else if (ReferenceEquals(focusedElement, StopButton) && !StopButton.IsEnabled && StartButton.IsEnabled)
+            FocusToolbarButton(StartButton);
     }
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
@@ -178,6 +219,7 @@ public sealed partial class MainWindow : Window
         {
             if (_settingsDialog is { } dialog) { dialog.Dispose(); _settingsDialog = null; }
             RefreshSettingsButton();
+            if (!_closeStarted && SettingsButton.IsEnabled) FocusToolbarButton(SettingsButton);
             try { await ShowDeviceLostNoticeAsync(); }
             catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
         }
@@ -219,7 +261,7 @@ public sealed partial class MainWindow : Window
             if (stderr.Length != 0) text.AppendLine().Append("標準エラー出力: ").Append(stderr);
             if (snapshot.Stderr.DiscardedBytes != 0) text.AppendLine().Append("標準エラー出力の破棄バイト数: ").Append(snapshot.Stderr.DiscardedBytes);
         }
-        WindowFailure.Text = text.ToString(); WindowFailure.Visibility = Visibility.Visible;
+        WindowFailure.Text = text.ToString(); WindowFailureScroller.Visibility = Visibility.Visible;
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
