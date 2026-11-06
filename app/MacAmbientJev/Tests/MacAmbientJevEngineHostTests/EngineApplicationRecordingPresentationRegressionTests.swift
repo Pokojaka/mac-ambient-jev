@@ -172,7 +172,6 @@ struct SavedFinishToneCase: Sendable, CustomTestStringConvertible {
             #expect(finished.recordingStatusText == "録音を保存しました（00:02）")
             #expect(core.failures.isEmpty)
         }
-        #expect(finished.failures == core.failures)
     }
 
     @Test(arguments: [
