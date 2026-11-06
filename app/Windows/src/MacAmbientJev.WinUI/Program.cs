@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -24,8 +23,8 @@ internal static class Program
         var instance = AppInstance.FindOrRegisterForKey("MacAmbientJev");
         if (!instance.IsCurrent)
         {
-            if (!AllowSetForegroundWindow(instance.ProcessId))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "既存のウィンドウを前面に表示する許可を渡せません。");
+            // Foreground permission is best effort; Windows may deny it when this launcher is not foreground.
+            _ = AllowSetForegroundWindow(instance.ProcessId);
             var activation = current.GetActivatedEventArgs();
             // Redirect on an MTA worker, not the STA waiting for its completion.
             // GetAwaiter().GetResult() propagates failures without launching another app.

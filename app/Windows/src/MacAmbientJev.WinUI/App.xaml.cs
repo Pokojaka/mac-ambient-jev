@@ -39,8 +39,8 @@ public partial class App : Microsoft.UI.Xaml.Application
         var window = await _windowReady.Task.ConfigureAwait(false);
         if (!window.DispatcherQueue.TryEnqueue(() =>
         {
-            window.ActivateFromRedirect();
-            _log.Info("redirected activation: existing window activated");
+            if (window.ActivateFromRedirect())
+                _log.Info("redirected activation: existing window activated");
         }))
             throw new InvalidOperationException("既存のウィンドウのアクティブ化を予約できません。");
     }

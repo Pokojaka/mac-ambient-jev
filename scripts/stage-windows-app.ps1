@@ -5,7 +5,7 @@ param(
     [string]$Architecture,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9A-Za-z][0-9A-Za-z._-]*$')]
+    [ValidatePattern('^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})(-[0-9A-Za-z][0-9A-Za-z.-]*)?$')]
     [string]$Version,
 
     [Parameter(Mandatory = $true)]
@@ -15,6 +15,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$numericVersionParts = ($Version -replace '-.*$', '') -split '\.'
+foreach ($numericVersionPart in $numericVersionParts) {
+    if ([int]$numericVersionPart -gt 65535) {
+        throw "Version numeric components must each be at most 65535; found '$numericVersionPart' in '$Version'."
+    }
+}
 
 $previousPreference = $ErrorActionPreference
 try {
