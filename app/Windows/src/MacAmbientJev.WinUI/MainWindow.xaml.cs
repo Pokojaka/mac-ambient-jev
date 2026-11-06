@@ -273,7 +273,12 @@ public sealed partial class MainWindow : Window
         _log.Info("shutdown started");
         Toolbar.IsEnabled = false; SavedSessionsButton.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
         ClosingStatus.Visibility = Visibility.Visible;
-        await ShutDownAsync();
+        try { await ShutDownAsync(); }
+        catch (Exception exception)
+        {
+            ShowFailure(exception, _client?.Failure);
+            RestoreWindowAfterCloseFailure();
+        }
     }
 
     private async Task ShutDownAsync()
@@ -310,7 +315,19 @@ public sealed partial class MainWindow : Window
     {
         while (true)
         {
+            if (client.State != EngineClientState.Closed && client.ProcessExitCode is int exitCode)
+            {
+                _log.Info($"window closed after engine had already exited (exit code {exitCode})");
+                _ = closeTask.ContinueWith(task => _log.Error("engine close failed after exit: " + task.Exception), TaskContinuationOptions.OnlyOnFaulted);
+                FinalClose();
+                return;
+            }
+
             try { await closeTask.WaitAsync(TimeSpan.FromSeconds(60)); FinalClose(); return; }
+            catch (Exception) when (client.State != EngineClientState.Closed && client.ProcessExitCode is not null)
+            {
+                continue;
+            }
             catch (Exception exception)
             {
                 ShowFailure(exception, client.Failure);
@@ -322,24 +339,37 @@ public sealed partial class MainWindow : Window
                     DefaultButton = ContentDialogButton.Primary, XamlRoot = Root.XamlRoot
                 };
                 Root.IsHitTestVisible = true;
-                var choice = await dialog.ShowAsync();
-                Root.IsHitTestVisible = false;
+                ContentDialogResult choice;
+                try { choice = await dialog.ShowAsync(); }
+                finally { Root.IsHitTestVisible = false; }
                 if (choice == ContentDialogResult.Secondary)
                 {
-                    try { client.ForceKill(); }
-                    catch (Exception killFailure) { ShowFailure(killFailure, client.Failure); continue; }
-                    await client.Completion;
-                    try { await closeTask; }
-                    catch (Exception closeFailure) { ShowFailure(closeFailure, client.Failure); }
+                    try { client.ForceKill(); await client.Completion; }
+                    catch (Exception forceKillFailure)
+                    {
+                        ShowFailure(forceKillFailure, client.Failure);
+                        continue;
+                    }
                     FinalClose(); return;
                 }
                 if (closeTask.IsCompleted)
                 {
                     try { await client.Completion.WaitAsync(TimeSpan.FromSeconds(60)); FinalClose(); return; }
-                    catch (TimeoutException waitFailure) { ShowFailure(waitFailure, client.Failure); }
+                    catch (Exception waitFailure) { ShowFailure(waitFailure, client.Failure); }
                 }
             }
         }
+    }
+
+    private void RestoreWindowAfterCloseFailure()
+    {
+        _closeStarted = false;
+        Root.IsHitTestVisible = true;
+        ClosingStatus.Visibility = Visibility.Collapsed;
+        Toolbar.IsEnabled = true;
+        SavedSessionsButton.IsEnabled = _store?.State.Phase == ShellPhase.Running;
+        ReturnToLatestButton.IsEnabled = _live?.ReturnToLatest.CanExecute(null) == true;
+        RefreshSettingsButton();
     }
 
     private void FinalClose()

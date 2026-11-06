@@ -305,6 +305,25 @@ public sealed class EngineProcessClientTests
     }
 
     [Fact]
+    public async Task RequestErrorIsNotRetainedInFailureSnapshotAfterEngineExit()
+    {
+        await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
+        await session.CompleteHelloAsync();
+        Assert.Null(session.Client.ProcessExitCode);
+        var requestTask = session.Client.SendAsync(new EngineCommand.StateGet(new EngineEmptyPayload()));
+        var request = await session.ReadRequestAsync(2, EngineCommandName.StateGet);
+        var requestError = Fixtures.Error(request.RequestID);
+        await session.EmitAsync(requestError, request.RequestID);
+        var exception = await Assert.ThrowsAsync<EngineRequestException>(
+            () => requestTask.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        Assert.Equal(requestError.Payload.Code, exception.Failure.Code);
+        session.EndProcess(7);
+        Assert.Equal(EngineClientState.Failed, await session.Client.Completion.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        Assert.Equal(7, session.Client.ProcessExitCode);
+        Assert.Null(session.Client.Failure!.LastEngineError);
+    }
+
+    [Fact]
     public async Task StderrFloodRetainsOnlyLatest256KiBAndCountsDiscardedBytes()
     {
         await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
@@ -340,6 +359,7 @@ public sealed class EngineProcessClientTests
         {
             session.Child.CompleteExit(0);
             Assert.True(session.Client.IsStillWaiting);
+            Assert.Equal(0, session.Client.ProcessExitCode);
             session.Child.ReleaseStdoutReads();
         }
         else
@@ -378,6 +398,18 @@ public sealed class EngineProcessClientTests
         session.Child.CompleteExit(0);
         await close.WaitAsync(Guard, TestContext.Current.CancellationToken);
         Assert.Equal(EngineClientState.Closed, await session.Client.Completion.WaitAsync(Guard, TestContext.Current.CancellationToken));
+        Assert.Equal(0, session.Child.KillCalls);
+    }
+
+    [Fact]
+    public async Task ForceKillOnExitedChildIsANoOp()
+    {
+        await using var session = new ClientSession(false, false, false, false, EngineClientLimits.Production);
+        await session.CompleteHelloAsync();
+        session.EndProcess(7);
+        await session.Client.Completion.WaitAsync(Guard, TestContext.Current.CancellationToken);
+        Assert.Equal(7, session.Client.ProcessExitCode);
+        Assert.Null(Record.Exception(session.Client.ForceKill));
         Assert.Equal(0, session.Child.KillCalls);
     }
 
