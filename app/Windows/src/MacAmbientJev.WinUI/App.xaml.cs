@@ -42,7 +42,8 @@ public partial class App : Microsoft.UI.Xaml.Application
             if (window.ActivateFromRedirect())
                 _log.Info("redirected activation: existing window activated");
         }))
-            throw new InvalidOperationException("既存のウィンドウのアクティブ化を予約できません。");
+            // The UI dispatcher refuses work only while the app is shutting down.
+            _log.Info("redirected activation ignored because the app is shutting down");
     }
 
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
