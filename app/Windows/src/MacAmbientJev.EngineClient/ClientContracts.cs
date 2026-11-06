@@ -12,6 +12,15 @@ public interface IEngineChild : IDisposable
     void Kill();
 }
 
+/// <summary>Receives engine lifecycle and stderr notifications from arbitrary threads; implementations must not throw.</summary>
+public interface IEngineObserver
+{
+    void EngineStarted(string enginePath, int processId);
+    void EngineStderrLine(string line);
+    void EngineExited(int exitCode);
+    void ClientFailed(EngineClientFailure failure);
+}
+
 /// <summary>Exposes correlated request results and a coalesced output inbox; lifetime ownership stays with the caller.</summary>
 public interface IEngineClient
 {

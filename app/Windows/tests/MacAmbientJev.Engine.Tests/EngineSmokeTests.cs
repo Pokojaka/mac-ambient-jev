@@ -25,14 +25,14 @@ public sealed class EngineSmokeTests
         try
         {
             using var child1 = ProcessEngineChild.Start(enginePath, ["--local-app-data", root]);
-            var client1 = new EngineProcessClient(child1, EngineClientLimits.Production);
+            var client1 = new EngineProcessClient(child1, EngineClientLimits.Production, new NoopEngineObserver());
             try
             {
                 var cancellationToken = TestContext.Current.CancellationToken;
                 var firstHello = Assert.IsType<EngineResult.Hello>(await client1.Hello.WaitAsync(Guard, cancellationToken));
                 Assert.Equal(EngineSetupStatus.SettingsRequired, firstHello.Result.State.Setup);
                 using var child2 = ProcessEngineChild.Start(enginePath, ["--local-app-data", root]);
-                var client2 = new EngineProcessClient(child2, EngineClientLimits.Production);
+                var client2 = new EngineProcessClient(child2, EngineClientLimits.Production, new NoopEngineObserver());
                 try
                 {
                     await Assert.ThrowsAsync<EngineClientFailedException>(() => client2.Hello.WaitAsync(Guard, cancellationToken));

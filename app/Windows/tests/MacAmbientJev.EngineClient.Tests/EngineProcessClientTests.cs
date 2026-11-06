@@ -443,7 +443,7 @@ public sealed class EngineProcessClientTests
         internal EngineProcessClient Client { get; }
         internal ClientSession(bool holdInputWrites, bool holdStdoutReads, bool failWrite, bool failFlush, EngineClientLimits limits) {
             Child = new FakeEngineChild(holdInputWrites, holdStdoutReads, failWrite, failFlush);
-            Client = new EngineProcessClient(Child, limits);
+            Client = new EngineProcessClient(Child, limits, new NoopObserver());
         }
         internal async Task<EngineRequest> ReadRequestAsync(ulong expectedID, EngineCommandName expectedCommand)
         {
@@ -482,6 +482,14 @@ public sealed class EngineProcessClientTests
             Child.ReleaseInputWrites(); Child.ReleaseStdoutReads(); EndProcess(0);
             await Client.Completion.WaitAsync(Guard, TestContext.Current.CancellationToken);
         }
+    }
+
+    private sealed class NoopObserver : IEngineObserver
+    {
+        public void EngineStarted(string enginePath, int processId) { }
+        public void EngineStderrLine(string line) { }
+        public void EngineExited(int exitCode) { }
+        public void ClientFailed(EngineClientFailure failure) { }
     }
 
     private static class Fixtures
