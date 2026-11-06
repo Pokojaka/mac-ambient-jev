@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -70,12 +71,8 @@ internal sealed class StderrLineSplitter(Action<string> onLine)
         while (bytes.Length != 0)
         {
             var lineFeed = bytes.IndexOf((byte)'\n');
-            _line.Write(lineFeed < 0 ? bytes : bytes[..lineFeed]);
-            if (lineFeed < 0)
-            {
-                if (_line.Length >= MaxLineBytes) Emit();
-                return;
-            }
+            AppendLineBytes(lineFeed < 0 ? bytes : bytes[..lineFeed]);
+            if (lineFeed < 0) return;
 
             Emit();
             bytes = bytes[(lineFeed + 1)..];
@@ -87,10 +84,51 @@ internal sealed class StderrLineSplitter(Action<string> onLine)
         if (_line.Length != 0) Emit();
     }
 
-    private void Emit()
+    private void AppendLineBytes(ReadOnlySpan<byte> bytes)
     {
-        var text = Encoding.UTF8.GetString(_line.GetBuffer(), 0, (int)_line.Length).TrimEnd('\r');
-        _line.SetLength(0);
+        while (bytes.Length != 0)
+        {
+            var available = MaxLineBytes - (int)_line.Length;
+            if (available == 0) EmitLongLinePrefix();
+            available = MaxLineBytes - (int)_line.Length;
+            var count = Math.Min(available, bytes.Length);
+            _line.Write(bytes[..count]);
+            bytes = bytes[count..];
+            if (_line.Length == MaxLineBytes) EmitLongLinePrefix();
+        }
+    }
+
+    private void EmitLongLinePrefix()
+    {
+        var bytes = _line.GetBuffer().AsSpan(0, (int)_line.Length);
+        var boundary = Utf8BoundaryAtOrBefore(bytes, MaxLineBytes);
+        if (boundary == 0) throw new InvalidOperationException("A stderr line has no UTF-8 boundary within its byte limit.");
+        EmitPrefix(boundary);
+    }
+
+    private static int Utf8BoundaryAtOrBefore(ReadOnlySpan<byte> bytes, int limit)
+    {
+        var position = 0;
+        var end = Math.Min(bytes.Length, limit);
+        while (position < end)
+        {
+            var status = Rune.DecodeFromUtf8(bytes[position..], out _, out var consumed);
+            if (status == OperationStatus.NeedMoreData || position + consumed > limit) break;
+            if (consumed == 0) throw new InvalidOperationException("UTF-8 decoding made no progress.");
+            position += consumed;
+        }
+        return position;
+    }
+
+    private void Emit() => EmitPrefix((int)_line.Length);
+
+    private void EmitPrefix(int byteCount)
+    {
+        var buffer = _line.GetBuffer();
+        var remaining = (int)_line.Length - byteCount;
+        var text = Encoding.UTF8.GetString(buffer, 0, byteCount).TrimEnd('\r');
+        buffer.AsSpan(byteCount, remaining).CopyTo(buffer);
+        _line.SetLength(remaining);
         onLine(text);
     }
 }
