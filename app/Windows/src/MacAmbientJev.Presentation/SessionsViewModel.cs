@@ -14,7 +14,7 @@ public sealed class SessionsViewModel : ScreenViewModel
     {
         _folderRevealer = folderRevealer ?? throw new ArgumentNullException(nameof(folderRevealer));
         List = Command(CanList, parameter => ListAsync((ShellPageMove)parameter!));
-        Select = Command(CanSelect, parameter => Context.Store.InspectSessionAsync(((EngineSessionSummary)parameter!).FolderID));
+        Select = Command(CanSelect, parameter => Context.Store.SelectSavedSessionAsync((EngineSessionSummary)parameter!));
         Reprocess = Command(parameter => CanRunAction(parameter, true), _ => Context.Store.ReprocessSessionAsync());
         RetryDecisions = Command(parameter => CanRunAction(parameter, false), _ => Context.Store.RetrySessionDecisionsAsync());
         RevealFolder = Command(CanRevealFolder, _ => RevealAsync(false));

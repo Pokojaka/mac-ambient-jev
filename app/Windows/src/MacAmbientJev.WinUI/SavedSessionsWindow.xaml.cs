@@ -6,6 +6,7 @@ using MacAmbientJev.Protocol;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
 
 namespace MacAmbientJev.WinUI;
 
@@ -52,6 +53,13 @@ public sealed partial class SavedSessionsWindow : Window
         if (SessionList.SelectedItem is not EngineSessionSummary summary) return;
         if (summary.FolderID == _sessions.SelectedFolderID) return;
         if (_sessions.Select.CanExecute(summary)) _sessions.Select.Execute(summary);
+    }
+
+    private void OnSessionContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.InRecycleQueue) { args.ItemContainer.ClearValue(AutomationProperties.NameProperty); return; }
+        if (args.Item is not EngineSessionSummary session) throw new InvalidOperationException("The saved sessions list contains an unexpected item.");
+        AutomationProperties.SetName(args.ItemContainer, $"{session.DisplayName}、{session.StatusText}");
     }
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
