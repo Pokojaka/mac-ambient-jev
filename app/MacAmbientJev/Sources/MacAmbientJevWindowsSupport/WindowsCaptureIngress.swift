@@ -845,9 +845,35 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             failTimestamp(.qpcDelta)
             return nil
         }
+        guard packet.devicePosition >= anchorDevicePosition else {
+            failTimestamp(.anchorDevicePosition)
+            return nil
+        }
+        let anchorDelta = packet.devicePosition - anchorDevicePosition
+        guard anchorDelta < UInt64(Int64.max) else {
+            failTimestamp(.anchorDelta)
+            return nil
+        }
+        let (mapped, overflow) = anchorFrame.addingReportingOverflow(Int64(anchorDelta))
+        guard !overflow, mapped >= 0 else {
+            failTimestamp(.mappedFrame)
+            return nil
+        }
+
         let tolerance = max(2.0, sampleRate * 0.002)
-        let difference = abs(Double(qpcDelta) - Double(deviceDelta))
-        if difference > tolerance {
+        let forwardExcess = Double(qpcDelta) - Double(deviceDelta)
+        // The completed native packet, not its <=512-frame callback fragments, gives
+        // an observed device period. Contiguous unflagged loopback packets can have
+        // sub-period QPC jitter at stream start without losing any device frames.
+        // Bound both this delta and the total lag so repeated jitter cannot drift
+        // indefinitely behind QPC; a larger mismatch takes the usual reanchor path.
+        let devicePeriod = previousDeviceEnd - previousDevicePosition
+        let timestampJitter = loopback && packet.flags & Self.discontinuityFlag == 0
+            && packet.devicePosition == previousDeviceEnd
+            && forwardExcess > 0 && forwardExcess < Double(devicePeriod)
+            && hostFrame - mapped < Int64(devicePeriod)
+        let difference = abs(forwardExcess)
+        if difference > tolerance && !timestampJitter {
             // Loopback device position counts delivered frames, not elapsed time. QPC
             // therefore advances across pauses even if session activity is already active.
             // Prior idle evidence selects silence; without it the span is counted missing.
@@ -865,20 +891,6 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
 
-        guard packet.devicePosition >= anchorDevicePosition else {
-            failTimestamp(.anchorDevicePosition)
-            return nil
-        }
-        let anchorDelta = packet.devicePosition - anchorDevicePosition
-        guard anchorDelta < UInt64(Int64.max) else {
-            failTimestamp(.anchorDelta)
-            return nil
-        }
-        let (mapped, overflow) = anchorFrame.addingReportingOverflow(Int64(anchorDelta))
-        guard !overflow, mapped >= 0 else {
-            failTimestamp(.mappedFrame)
-            return nil
-        }
         timelineLeadFrames = max(0, mapped - hostFrame)
         // Device and QPC can both advance across idle, so no clock-mismatch reanchor
         // is needed. The uncovered suffix is still observed idle, even when it is only

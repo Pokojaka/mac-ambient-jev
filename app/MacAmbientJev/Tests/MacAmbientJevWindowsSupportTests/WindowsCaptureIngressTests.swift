@@ -95,6 +95,36 @@ private func drain(_ ring: AudioBlockRing) -> [AudioBlock] {
     return result
 }
 
+// Six seconds of observed idle, then a fresh stream whose second native packet
+// has a late QPC but a contiguous device position. Keep the delivery grace and PCM.
+private func makeLoopbackStartupJitterIngress(
+    packetFrames: Int, jitterFrames: Int
+) throws -> IngressHarness {
+    let harness = try makeIngress(loopback: true)
+    for tick in 1...12 {
+        harness.clock.setMillis(10_000 + Int64(tick * 500))
+        harness.ingress.health(
+            watermarkQPC100ns: 10_000_000 + UInt64(tick * 5_000_000),
+            outputState: 0, error: 0
+        )
+        _ = drain(harness.ring)
+    }
+    harness.ingress.health(watermarkQPC100ns: 70_000_000, outputState: 1, error: 0)
+    for index in 0..<2 {
+        let hostOffset = index * (packetFrames + jitterFrames)
+        for offset in stride(from: 0, to: packetFrames, by: 512) {
+            let count = min(512, packetFrames - offset)
+            receive(
+                harness.ingress, samples: [Float](repeating: index == 0 ? 0.25 : 0.75, count: count),
+                frameCount: count, devicePosition: 123_456 + UInt64(index * packetFrames),
+                qpc100ns: 70_000_000 + UInt64((Double(hostOffset) * 10_000_000 / 48_000).rounded()),
+                packetOffset: offset, packetFrames: packetFrames
+            )
+        }
+    }
+    return harness
+}
+
 private func makeDurableIngressDrain(
     ring: AudioBlockRing, sampleRate: Double = 16_000
 ) throws -> (directory: URL, drain: AudioCaptureDrain) {
@@ -386,9 +416,10 @@ struct WindowsCaptureIngressTests {
             harness.ingress, samples: [0.75], frameCount: 1, sampleRate: 16_000,
             devicePosition: 1_024, qpc100ns: 15_390_000
         )
-        // Raw host frame 8,624 overlaps by 1,400: more than the remaining lead + 32.
+        // The 400-frame excess is sub-period jitter, but ordinary device mapping
+        // still overlaps the published missing tail. Jitter never exempts PCM overlap.
         #expect(harness.ingress.failure == .timestamp)
-        #expect(harness.ingress.timestampCheck == .idleAnchorOverlap)
+        #expect(harness.ingress.timestampCheck == .pcmOverlap)
         #expect(harness.sink.lastEndFrame == 10_024)
         #expect(!drain(harness.ring).flatMap(\.samples).contains(0.75))
     }
@@ -742,6 +773,97 @@ struct WindowsCaptureIngressTests {
         #expect(samples[..<480].allSatisfy { $0 == 0.25 })
         #expect(samples[480..<96_000].allSatisfy { $0 == 0 })
         #expect(samples[96_000..<96_480].allSatisfy { $0 == 0.75 })
+    }
+
+    @Test(arguments: [240, 480, 960], [169, 197])
+    func testLoopbackStartupQPCJitterPreservesContiguousPCM(
+        packetFrames: Int, jitterFrames: Int
+    ) throws {
+        let harness = try makeLoopbackStartupJitterIngress(
+            packetFrames: packetFrames, jitterFrames: jitterFrames
+        )
+        var blocks = drain(harness.ring)
+        // At 48 kHz with 480-frame packets, the second QPC delta is exactly
+        // 649 (or 677) frames while the device delta remains 480 frames.
+        // Later QPC deltas agree with the device; retain the device anchor.
+        for index in 2..<10 {
+            let hostOffset = index * packetFrames + jitterFrames
+            for offset in stride(from: 0, to: packetFrames, by: 512) {
+                let count = min(512, packetFrames - offset)
+                receive(
+                    harness.ingress, samples: [Float](repeating: 0.75, count: count),
+                    frameCount: count, devicePosition: 123_456 + UInt64(index * packetFrames),
+                    qpc100ns: 70_000_000 + UInt64((Double(hostOffset) * 10_000_000 / 48_000).rounded()),
+                    packetOffset: offset, packetFrames: packetFrames
+                )
+            }
+            blocks.append(contentsOf: drain(harness.ring))
+        }
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 288_000 + Int64(10 * packetFrames))
+        #expect(harness.ring.dropoutCount == 0)
+        #expect(harness.ring.overflowCount == 0)
+        #expect(harness.ingress.takeGapDiagnostics().isEmpty)
+        #expect(blocks.allSatisfy { $0.gap == nil && $0.gapBefore == nil })
+        let samples = blocks.flatMap(\.samples)
+        #expect(samples == [Float](repeating: 0, count: 12_000)
+            + [Float](repeating: 0.25, count: packetFrames)
+            + [Float](repeating: 0.75, count: 9 * packetFrames))
+    }
+
+    @Test(arguments: [480, 481])
+    func testLoopbackActiveJumpOfAtLeastOnePeriodAfterStartupJitterIsCounted(
+        jumpFrames: Int
+    ) throws {
+        try checkLoopbackGapAfterStartupJitter(jumpFrames: jumpFrames, flags: 0)
+    }
+
+    @Test func testLoopbackFlaggedSubperiodJumpAfterStartupJitterIsCounted() throws {
+        try checkLoopbackGapAfterStartupJitter(jumpFrames: 169, flags: 1)
+    }
+
+    private func checkLoopbackGapAfterStartupJitter(jumpFrames: Int, flags: UInt32) throws {
+        let harness = try makeLoopbackStartupJitterIngress(packetFrames: 480, jitterFrames: 169)
+        _ = drain(harness.ring)
+        #expect(harness.ring.dropoutCount == 0)
+        let hostOffset = 960 + 169 + jumpFrames
+        receive(
+            harness.ingress, samples: [Float](repeating: -0.5, count: 480), frameCount: 480,
+            flags: flags, devicePosition: 124_416,
+            qpc100ns: 70_000_000 + UInt64((Double(hostOffset) * 10_000_000 / 48_000).rounded())
+        )
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.ring.dropoutCount == 1)
+        #expect(harness.ring.overflowCount == 0)
+        let diagnostics = harness.ingress.takeGapDiagnostics()
+        #expect(diagnostics.count == 1)
+        #expect(diagnostics.first?.check == .qpcForward)
+        #expect(diagnostics.first?.startFrame == 288_960)
+        #expect(diagnostics.first?.endFrame == 288_960 + Int64(169 + jumpFrames))
+        #expect(diagnostics.first?.qpcDeltaFrames == Int64(480 + jumpFrames))
+        #expect(diagnostics.first?.deviceDeltaFrames == 480)
+        #expect(diagnostics.first?.packetFlags == flags)
+        #expect(diagnostics.first?.idleObserved == false)
+        #expect(drain(harness.ring).flatMap(\.samples) == [Float](repeating: -0.5, count: 480))
+    }
+
+    @Test func testRepeatedLoopbackStartupJitterCannotAccumulatePastOnePeriod() throws {
+        let harness = try makeLoopbackStartupJitterIngress(packetFrames: 480, jitterFrames: 169)
+        _ = drain(harness.ring)
+        for index in 2...3 {
+            receive(
+                harness.ingress, samples: [Float](repeating: 0.5, count: 480), frameCount: 480,
+                devicePosition: 123_456 + UInt64(index * 480),
+                qpc100ns: 70_000_000 + UInt64((Double(index * 649) * 10_000_000 / 48_000).rounded())
+            )
+            #expect(harness.ring.dropoutCount == (index == 2 ? 0 : 1))
+        }
+        #expect(harness.ingress.failure == nil)
+        let diagnostics = harness.ingress.takeGapDiagnostics()
+        #expect(diagnostics.count == 1)
+        #expect(diagnostics.first?.startFrame == 289_440)
+        #expect(diagnostics.first?.endFrame == 289_947)
+        #expect(drain(harness.ring).flatMap(\.samples) == [Float](repeating: 0.5, count: 960))
     }
 
     @Test(arguments: [0, 800, 4_000])
