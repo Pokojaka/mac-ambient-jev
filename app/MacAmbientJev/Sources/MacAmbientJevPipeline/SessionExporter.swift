@@ -28,7 +28,8 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
     case transcriptCorrupted(String)
     case noTranscript
     case stagingNotRemoved(path: String, exportFailure: String, cleanupFailure: String)
-    case windowsPublicationAccessDenied(destination: String, originalError: String)
+    case windowsStagingPublicationAccessDenied(staging: String, destination: String, originalError: String)
+    case windowsPreviousExportMoveAccessDenied(existingExport: String, previous: String, originalError: String)
     case previousExportNotRestored(path: String, exportFailure: String, restoreFailure: String)
     case previousExportNotRemoved(path: String, cleanupFailure: String)
 
@@ -44,8 +45,10 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
             "確定文字起こしがないため書き出せません"
         case .stagingNotRemoved(let path, let exportFailure, let cleanupFailure):
             "書き出せませんでした: \(exportFailure)。作業用フォルダー \(path) も削除できませんでした: \(cleanupFailure)"
-        case .windowsPublicationAccessDenied(let destination, let originalError):
-            "Windows が書き出しフォルダーを「\(destination)」へ移動することを拒否しました。セキュリティソフトのフォルダー保護（ランサムウェア保護など）がこのアプリをブロックしている可能性があります。別の書き出し先フォルダーを選ぶか、セキュリティソフトでこのアプリを許可してください。元のエラー: \(originalError)"
+        case .windowsStagingPublicationAccessDenied(let staging, let destination, let originalError):
+            "Windows が作業用フォルダー「\(staging)」を書き出し先「\(destination)」へ移動することを拒否しました。セキュリティソフトのフォルダー保護（ランサムウェア保護など）がこのアプリをブロックしている可能性があります。別の書き出し先フォルダーを選ぶか、セキュリティソフトでこのアプリを許可してください。元のエラー: \(originalError)"
+        case .windowsPreviousExportMoveAccessDenied(let existingExport, let previous, let originalError):
+            "Windows が既存の書き出しフォルダー「\(existingExport)」を「\(previous)」へ移動することを拒否しました。まず、その書き出し内のファイルが別のアプリで開かれていないか確認してください。セキュリティソフトのフォルダー保護（ランサムウェア保護など）がこのアプリをブロックしている可能性もあります。元のエラー: \(originalError)"
         case .previousExportNotRestored(let path, let exportFailure, let restoreFailure):
             "書き出せませんでした: \(exportFailure)。以前の書き出しを元の名前へ戻せませんでした（\(path) に残っています）: \(restoreFailure)"
         case .previousExportNotRemoved(let path, let cleanupFailure):
@@ -164,10 +167,15 @@ public struct SessionExporter: Sendable {
         }
     }
 
+    private enum PublicationMove {
+        case stagingToDestination(staging: URL, destination: URL)
+        case existingExportToPrevious(existingExport: URL, previous: URL)
+    }
+
     private func renameForPublication(
         _ source: URL,
         to destination: URL,
-        exportDestination: URL,
+        move: PublicationMove,
         root: URL
     ) throws {
         do {
@@ -178,10 +186,20 @@ public struct SessionExporter: Sendable {
                let underlying = cocoaError.userInfo[NSUnderlyingErrorKey] as? NSError,
                underlying.domain == "NSWin32ErrorDomain",
                underlying.code == 5 {
-                throw SessionExportError.windowsPublicationAccessDenied(
-                    destination: exportDestination.path,
-                    originalError: error.localizedDescription
-                )
+                switch move {
+                case .stagingToDestination(let staging, let destination):
+                    throw SessionExportError.windowsStagingPublicationAccessDenied(
+                        staging: staging.path,
+                        destination: destination.path,
+                        originalError: error.localizedDescription
+                    )
+                case .existingExportToPrevious(let existingExport, let previous):
+                    throw SessionExportError.windowsPreviousExportMoveAccessDenied(
+                        existingExport: existingExport.path,
+                        previous: previous.path,
+                        originalError: error.localizedDescription
+                    )
+                }
             }
             throw error
         }
@@ -189,12 +207,27 @@ public struct SessionExporter: Sendable {
 
     private func publish(staging: URL, destination: URL, previous: URL, root: URL) throws {
         guard try SessionFileAccess.isDirectoryIfPresent(destination, relativeTo: root) != nil else {
-            try renameForPublication(staging, to: destination, exportDestination: destination, root: root)
+            try renameForPublication(
+                staging,
+                to: destination,
+                move: .stagingToDestination(staging: staging, destination: destination),
+                root: root
+            )
             return
         }
-        try renameForPublication(destination, to: previous, exportDestination: destination, root: root)
+        try renameForPublication(
+            destination,
+            to: previous,
+            move: .existingExportToPrevious(existingExport: destination, previous: previous),
+            root: root
+        )
         do {
-            try renameForPublication(staging, to: destination, exportDestination: destination, root: root)
+            try renameForPublication(
+                staging,
+                to: destination,
+                move: .stagingToDestination(staging: staging, destination: destination),
+                root: root
+            )
         } catch let publishError {
             do {
                 try operations.rename(previous, destination, root)
