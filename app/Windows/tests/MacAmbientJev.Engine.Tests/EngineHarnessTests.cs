@@ -201,7 +201,7 @@ public sealed class EngineHarnessTests
         internal (ProcessEngineChild Child, EngineProcessClient Client) Start(string harness)
         {
             var child = ProcessEngineChild.Start(harness, ["--root", Root, "--fixture", Fixture, "--sample-rate", "16000", "--channels", "1", "--inference", "deterministic", "--threads", "1"]);
-            var client = new EngineProcessClient(child, EngineClientLimits.Production);
+            var client = new EngineProcessClient(child, EngineClientLimits.Production, new NoopEngineObserver());
             _started.Add((child, client)); return (child, client);
         }
         public async ValueTask DisposeAsync()
