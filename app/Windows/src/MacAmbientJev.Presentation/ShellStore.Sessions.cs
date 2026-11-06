@@ -47,7 +47,7 @@ public sealed partial class ShellStore
                 SelectSession(null, summary.DisplayName, "保存済み音声を使えないため、文字起こしを表示できません");
             else if (!metadata.HasTranscript)
                 SelectSession(null, summary.DisplayName, "この録音には確定文字起こしがありません");
-            else SelectSession(summary.SessionID, summary.DisplayName);
+            else SelectSession(summary.SessionID, summary.DisplayName, isImported: metadata.Source is EngineSessionSource.Imported);
         }, (name, exception, admission) =>
         {
             if (displayName is not null && generation == _selectionGeneration)

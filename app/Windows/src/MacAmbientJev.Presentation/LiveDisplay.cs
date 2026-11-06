@@ -36,16 +36,26 @@ public sealed partial class LiveViewModel
         }
     }
     public string? TranscriptDisplayText => Snapshot.Transcript.DisplayName is { } name ? "表示中の録音: " + name : null;
-    public string? BadgeText => Snapshot.Transcript.DisplayName is not null
-        ? (IsEmpty ? null : "保存済み文字起こしを表示中")
-        : Snapshot.Engine?.Screen switch
+    public string? BadgeText
     {
-        null or EngineScreen.Idle => null,
-        EngineScreen.Live => "ライブ（暫定）",
-        EngineScreen.Finalizing => "確定処理中",
-        EngineScreen.Finalized => "確定済み",
-        var screen => throw new InvalidOperationException($"Unknown engine screen: {screen}.")
-    };
+        get
+        {
+            var state = Snapshot;
+            var transcript = state.Transcript;
+            if (transcript.IsImported && state.Engine?.Queue.Any(operation => operation.SessionID == transcript.SessionID) == true)
+                return "読み込んだ音声を処理中";
+            if (transcript.DisplayName is not null)
+                return transcript.Tail is { Rows.Length: > 0 } ? "保存済み文字起こしを表示中" : null;
+            return state.Engine?.Screen switch
+            {
+                null or EngineScreen.Idle => null,
+                EngineScreen.Live => "ライブ（暫定）",
+                EngineScreen.Finalizing => "確定処理中",
+                EngineScreen.Finalized => "確定済み",
+                var screen => throw new InvalidOperationException($"Unknown engine screen: {screen}.")
+            };
+        }
+    }
     public string RefreshDevicesLabel => "デバイスを更新";
 
     public string? FailureText

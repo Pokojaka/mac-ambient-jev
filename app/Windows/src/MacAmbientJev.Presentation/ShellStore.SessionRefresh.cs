@@ -6,6 +6,7 @@ public sealed partial class ShellStore
 {
     // These flags are reducer-owned. The task is also observed by disposal.
     private bool _sessionsVisible, _sessionsDirty, _sessionsRefreshWorkerScheduled;
+    private string? _importDisplayNameSessionID;
     private Task? _sessionsRefreshTask;
 
     public Task SetSessionsVisibleAsync(bool visible) => Post(() =>
@@ -13,12 +14,12 @@ public sealed partial class ShellStore
         if (_sessionsVisible == visible) return;
         _sessionsVisible = visible;
         if (visible) InvalidateSessions();
-        else _sessionsDirty = false;
+        else _sessionsDirty = _importDisplayNameSessionID is not null;
     });
 
     private void InvalidateSessions()
     {
-        if (!_sessionsVisible) return;
+        if (!_sessionsVisible && _importDisplayNameSessionID is null) return;
         _sessionsDirty = true;
         EnsureSessionsRefreshWorker();
     }
@@ -26,12 +27,44 @@ public sealed partial class ShellStore
     private void ObserveSessionChanges(EngineState? previous, EngineState next)
     {
         if (previous is null || previous.Recording != next.Recording || previous.Recovery != next.Recovery ||
-            !previous.Queue.SequenceEqual(next.Queue) || !previous.Failures.SequenceEqual(next.Failures))
+            !previous.Queue.SequenceEqual(next.Queue) || !FailuresEqual(previous.Failures, next.Failures))
             InvalidateSessions();
     }
 
-    private bool CanRefreshSessions() => !_stop.IsCancellationRequested && _sessionsVisible && _sessionsDirty &&
+    private static bool FailuresEqual(EngineFailure[] previous, EngineFailure[] next)
+    {
+        if (previous.Length != next.Length) return false;
+        for (var index = 0; index < previous.Length; index++)
+        {
+            var left = previous[index];
+            var right = next[index];
+            if (left.Code != right.Code || left.Message != right.Message || left.Stage != right.Stage ||
+                left.RequestID != right.RequestID || left.SessionID != right.SessionID || left.Severity != right.Severity ||
+                left.RecoveryAction != right.RecoveryAction || !left.Details.SequenceEqual(right.Details) ||
+                !left.CleanupErrors.SequenceEqual(right.CleanupErrors))
+                return false;
+        }
+        return true;
+    }
+
+    private bool CanRefreshSessions() => !_stop.IsCancellationRequested && (_sessionsVisible || _importDisplayNameSessionID is not null) && _sessionsDirty &&
         _working.Phase == ShellPhase.Running && !_working.Pending.Contains(EngineCommandName.SessionList);
+
+    private void ResolveImportedDisplayName(EngineSessionListResult result)
+    {
+        if (_importDisplayNameSessionID is not { } sessionID) return;
+        var summary = result.Sessions.SingleOrDefault(item => StringComparer.Ordinal.Equals(item.SessionID, sessionID));
+        if (summary is null)
+        {
+            if (!_sessionsDirty)
+                throw new InvalidOperationException($"session.list did not return imported session '{sessionID}'.");
+            return;
+        }
+
+        _importDisplayNameSessionID = null;
+        if (_working.Transcript.SessionID == sessionID)
+            SelectSession(sessionID, summary.DisplayName, isImported: true);
+    }
 
     private void EnsureSessionsRefreshWorker()
     {

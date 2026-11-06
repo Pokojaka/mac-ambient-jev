@@ -52,31 +52,59 @@ public sealed partial class ShellStoreTests
     }
 
     [Fact]
-    public async Task AcceptedImportSelectsNewSessionAndShowsRowsAsProcessingProducesThem()
+    public async Task AcceptedImportUsesEngineNameAndShowsProcessingBadgeUntilComplete()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var live = new LiveViewModel(context);
         await SelectReady(store, engine, "previous", Page("previous", 1, "前の本文", null, null));
         var import = store.ImportAudioAsync(@"C:\音声\講義 録音.wav"); var accepted = await engine.NextRequestAsync();
         accepted.Complete(new EngineResult.SessionImport(new EngineSessionPayload("imported"))); Assert.True(await import);
-        Assert.Equal("imported", store.State.Transcript.SessionID); Assert.Equal("講義 録音.wav", store.State.Transcript.DisplayName);
+        Assert.Equal("imported", store.State.Transcript.SessionID); Assert.Null(store.State.Transcript.DisplayName);
         Assert.Null(store.State.Transcript.Tail); Assert.Null(store.State.SelectedFolderID);
+        var nextState = store.State.Engine! with
+        {
+            Revision = new EngineID(store.State.Engine!.Revision.Value + 1),
+            Queue = [new EngineQueuedOperation("imported", EngineStage.Asr)]
+        };
+        engine.EmitBatch(new EngineOutput(1, nextState.Revision, null, new EngineEvent.State(nextState)));
+        await ChangedTo(store, state => state.Engine?.Queue.Any(operation => operation.SessionID == "imported") == true);
+        var sessions = await engine.NextRequestAsync(); Assert.Equal(EngineCommandName.SessionList, sessions.Command.Name);
+        var summary = Readable("imported-folder", "imported", false, false, "処理中") with
+        {
+            DisplayName = "エンジン表示名",
+            Metadata = ((EngineSessionMetadata.Readable)Readable("imported-folder", "imported", false, false, "処理中").Metadata) with
+            {
+                Source = new EngineSessionSource.Imported("講義 録音.wav"), HasTranscript = false
+            }
+        };
+        sessions.Complete(new EngineResult.SessionList(new EngineSessionListResult([summary], null, null)));
+        await ChangedTo(store, state => state.Transcript.DisplayName == summary.DisplayName);
+        await RenderAsync(dispatcher, clock);
+        Assert.Equal("表示中の録音: エンジン表示名", live.TranscriptDisplayText);
+        Assert.Equal(summary.DisplayName, store.State.Sessions.Current!.Sessions[0].DisplayName);
+        Assert.Equal("読み込んだ音声を処理中", live.BadgeText);
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
         var initialWatch = await engine.NextRequestAsync(); Assert.Equal("imported", Assert.IsType<EngineCommand.TranscriptWatch>(initialWatch.Command).Payload.SessionID);
         initialWatch.Complete(new EngineResult.TranscriptWatch(Page("imported", 1, "", null, null) with { Rows = [] }));
         await ChangedTo(store, state => state.Transcript.Tail is { Rows.Length: 0 });
-        using (var emptyContext = new ShellUiContext(store, new TestDispatcher(), clock))
-        {
-            var emptyLive = new LiveViewModel(emptyContext);
-            Assert.True(emptyLive.IsEmpty); Assert.Contains("処理中の場合は、作成された行がここに表示されます", emptyLive.EmptyDescription);
-            Assert.DoesNotContain("録音を開始するか", emptyLive.EmptyDescription);
-        }
+        await RenderAsync(dispatcher, clock);
+        Assert.True(live.IsEmpty); Assert.Equal("読み込んだ音声を処理中", live.BadgeText);
+        Assert.Contains("処理中の場合は、作成された行がここに表示されます", live.EmptyDescription);
+        Assert.DoesNotContain("録音を開始するか", live.EmptyDescription);
         engine.EmitBatch(Rows("imported", EngineRowsKind.Changes));
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
         var updatedWatch = await engine.NextRequestAsync(); updatedWatch.Complete(new EngineResult.TranscriptWatch(Page("imported", 2, "読み込んだ音声の本文", null, null)));
         await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(2));
-        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var live = new LiveViewModel(context);
+        var finished = store.State.Engine! with
+        {
+            Revision = new EngineID(store.State.Engine!.Revision.Value + 1), Queue = [], Screen = EngineScreen.Finalized
+        };
+        engine.EmitBatch(new EngineOutput(1, finished.Revision, null, new EngineEvent.State(finished)));
+        await ChangedTo(store, state => state.Engine?.Revision == finished.Revision);
+        await RenderAsync(dispatcher, clock);
         Assert.Equal("読み込んだ音声の本文", Assert.Single(live.Rows).Text);
-        Assert.Equal("表示中の録音: 講義 録音.wav", live.TranscriptDisplayText);
+        Assert.Equal("表示中の録音: エンジン表示名", live.TranscriptDisplayText);
+        Assert.Equal("保存済み文字起こしを表示中", live.BadgeText);
     }
 
     [Fact]
@@ -156,13 +184,19 @@ public sealed partial class ShellStoreTests
         importing.Complete(new EngineResult.SessionImport(new EngineSessionPayload("imported"))); Assert.True(await import);
         var expectedSession = startCompletesFirst ? "live" : "imported";
         Assert.Equal(expectedSession, store.State.Transcript.SessionID);
+        if (!startCompletesFirst)
+        {
+            var sessions = await engine.NextRequestAsync(); Assert.Equal(EngineCommandName.SessionList, sessions.Command.Name);
+            sessions.Complete(new EngineResult.SessionList(new EngineSessionListResult(
+                [Readable("imported-folder", "imported", false, false, "処理中")], null, null)));
+        }
         var watch = await engine.NextRequestAsync(); Assert.Equal(expectedSession, Assert.IsType<EngineCommand.TranscriptWatch>(watch.Command).Payload.SessionID);
         watch.Complete(new EngineResult.TranscriptWatch(Page(expectedSession, 1, "表示する本文", null, null)));
         await ChangedTo(store, state => state.Transcript.Tail is not null);
         if (!startCompletesFirst)
         {
             starting.Reject(Failure(EngineErrorCode.Busy, "録音を開始できませんでした", EngineRecoveryAction.Retry)); Assert.False(await start);
-            Assert.Equal("講義.wav", store.State.Transcript.DisplayName);
+            Assert.Equal("Engine display", store.State.Transcript.DisplayName);
         }
         else Assert.Null(store.State.Transcript.DisplayName);
         Assert.Equal(expectedSession, store.State.Transcript.SessionID); Assert.Equal("表示する本文", Assert.Single(store.State.Transcript.Tail!.Rows).Text);

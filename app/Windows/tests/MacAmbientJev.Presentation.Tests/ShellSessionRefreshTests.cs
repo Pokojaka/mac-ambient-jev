@@ -83,7 +83,11 @@ public sealed partial class ShellStoreTests
         var initial = State(EngineSetupStatus.Ready, 1) with
         {
             Queue = [new EngineQueuedOperation("queued", EngineStage.Asr)],
-            Failures = [Failure(EngineErrorCode.ProcessingFailure, "retained failure", EngineRecoveryAction.Reprocess)]
+            Failures = [Failure(EngineErrorCode.ProcessingFailure, "retained failure", EngineRecoveryAction.Reprocess) with
+            {
+                Details = [new EngineErrorDetail("engine", "processing", "retained detail", null, null)],
+                CleanupErrors = [new EngineErrorDetail("filesystem", "cleanup", "retained cleanup", null, null)]
+            }]
         };
         var engine = new Fake(initial, Response(SettingsResult(1, Settings(2, false, false, false, null))));
         var clock = new ManualClock(); await using var store = await Start(engine, clock);
@@ -93,7 +97,11 @@ public sealed partial class ShellStoreTests
         {
             Revision = new EngineID(2), Screen = EngineScreen.Finalized,
             Queue = initial.Queue.Select(item => item with { }).ToArray(),
-            Failures = initial.Failures.Select(item => item with { }).ToArray(),
+            Failures = initial.Failures.Select(item => item with
+            {
+                Details = item.Details.Select(detail => detail with { }).ToArray(),
+                CleanupErrors = item.CleanupErrors.Select(detail => detail with { }).ToArray()
+            }).ToArray(),
             Presentation = initial.Presentation with { ProcessingStatusText = "presentation-only update" }
         };
         engine.EmitBatch(new EngineOutput(1, new EngineID(2), null, new EngineEvent.State(unchanged)),
@@ -166,7 +174,10 @@ public sealed partial class ShellStoreTests
             : new EngineResult.SessionImport(new EngineSessionPayload("completed-session")));
         Assert.True(await action);
         var refresh = await engine.NextRequestAsync(); AssertReload(refresh);
-        refresh.Complete(new EngineResult.SessionList(SessionPage("completed-session", null, null)));
+        refresh.Complete(stop
+            ? new EngineResult.SessionList(SessionPage("completed-session", null, null))
+            : new EngineResult.SessionList(new EngineSessionListResult(
+                [Readable("completed-folder", "completed-session", false, false, "処理中") with { DisplayName = "engine import name" }], null, null)));
         await SessionsRefreshIdle(store);
         if (stop) Assert.Same(transcript, store.State.Transcript);
         else { Assert.Equal("completed-session", store.State.Transcript.SessionID); Assert.Null(store.State.Transcript.Tail); }

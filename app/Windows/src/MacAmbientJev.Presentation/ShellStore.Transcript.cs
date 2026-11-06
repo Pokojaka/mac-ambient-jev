@@ -17,19 +17,24 @@ public sealed partial class ShellStore
         return Post(() => SelectSession(sessionID));
     }
 
-    private void SelectSession(string? sessionID, string? displayName = null, string? unavailableReason = null)
+    private void SelectSession(string? sessionID, string? displayName = null, string? unavailableReason = null,
+        bool isImported = false, bool startWatch = true)
     {
+        if (_importDisplayNameSessionID is { } importedSessionID && sessionID != importedSessionID)
+            _importDisplayNameSessionID = null;
         var current = _working.Transcript;
-        if (current.SessionID == sessionID && current.DisplayName == displayName && current.UnavailableReason == unavailableReason) return;
+        if (current.SessionID == sessionID && current.DisplayName == displayName && current.IsImported == isImported &&
+            current.UnavailableReason == unavailableReason && startWatch) return;
         if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
         _selectionGeneration = checked(_selectionGeneration + 1);
         _historyEpoch = checked(_historyEpoch + 1);
         _working = _working with { Transcript = new ShellTranscriptState
         {
-            SessionID = sessionID, DisplayName = displayName, UnavailableReason = unavailableReason, Follow = current.Follow
+            SessionID = sessionID, DisplayName = displayName, IsImported = isImported,
+            UnavailableReason = unavailableReason, Follow = current.Follow
         }, CommandError = null };
-        _tailDirty = sessionID is not null;
-        EnsureTailWorker();
+        _tailDirty = startWatch && sessionID is not null;
+        if (_tailDirty) EnsureTailWorker();
     }
 
     public Task UserScrolledAsync() => Post(() =>
@@ -112,6 +117,7 @@ public sealed partial class ShellStore
         {
             if (result is not EngineResult.SessionList list) throw new InvalidOperationException("session.list returned an unexpected result type.");
             _working = _working with { Sessions = _working.Sessions.Apply(list.Result, move), CommandError = null };
+            ResolveImportedDisplayName(list.Result);
         }, HandleRequestFailure);
     }
 

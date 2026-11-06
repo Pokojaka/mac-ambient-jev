@@ -73,7 +73,8 @@ public sealed partial class ShellStore : IAsyncDisposable
             if (recordingGeneration == _recordingGeneration)
             {
                 _working = _working with { SelectedFolderID = null, SessionInspection = null };
-                SelectSession(imported.Result.SessionID, inputPath[(inputPath.LastIndexOfAny(['/', '\\']) + 1)..]);
+                _importDisplayNameSessionID = imported.Result.SessionID;
+                SelectSession(imported.Result.SessionID, isImported: true, startWatch: false);
             }
             _working = _working with { CommandError = null };
             InvalidateSessions();
