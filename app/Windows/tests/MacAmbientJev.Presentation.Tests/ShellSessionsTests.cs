@@ -50,7 +50,7 @@ public sealed partial class ShellStoreTests
             _ => throw new NotSupportedException($"Unexpected command: {command.Name}.")
         }; };
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var vm = new SessionsViewModel(context, new TestFolderRevealer());
-        var candidate = Readable(folder, session, false, false, "一覧"); vm.Select.Execute(candidate); await vm.Select.Execution!; await RenderAsync(dispatcher, clock);
+        var candidate = Readable(folder, session, false, false, "一覧"); Assert.True(await store.InspectSessionAsync(folder)); await RenderAsync(dispatcher, clock);
         Assert.False(vm.Reprocess.CanExecute(null)); Assert.False(vm.RetryDecisions.CanExecute(null));
         var sent = engine.SentCount; Assert.False(await store.ReprocessSessionAsync()); Assert.False(await store.RetrySessionDecisionsAsync()); Assert.Equal(sent, engine.SentCount);
         var pending = new List<(EngineCommandName Name, bool Select, bool Reprocess, bool Retry)>();
@@ -92,7 +92,7 @@ public sealed partial class ShellStoreTests
         }; };
         var revealer = new TestFolderRevealer { Failure = new DirectoryNotFoundException(error) };
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var vm = new SessionsViewModel(context, revealer);
-        vm.Select.Execute(inspection); await vm.Select.Execution!; await RenderAsync(dispatcher, clock);
+        Assert.True(await store.InspectSessionAsync(folder)); await RenderAsync(dispatcher, clock);
         var sent = engine.SentCount; vm.RevealFolder.Execute(null); await vm.RevealFolder.Execution!; await RenderAsync(dispatcher, clock);
         Assert.Equal(path, revealer.RequestedPath); Assert.Equal(error, vm.CommandError);
         Assert.Equal(ShellPhase.Running, store.State.Phase); Assert.Null(store.State.StoreFailure);

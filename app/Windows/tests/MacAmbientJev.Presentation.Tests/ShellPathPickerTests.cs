@@ -20,7 +20,11 @@ public sealed partial class ShellStoreTests
         var request = await engine.NextRequestAsync(); await ChangedTo(store, state => state.IsPending(EngineCommandName.SessionImport));
         Assert.Equal(path, Assert.IsType<EngineCommand.SessionImport>(request.Command).Payload.InputPath); Assert.False(live.ImportAudio.CanExecute(picker));
         sent = engine.SentCount; Assert.False(await store.ImportAudioAsync(path)); Assert.Equal(sent, engine.SentCount);
-        request.Complete(new EngineResult.SessionImport(new EngineSessionPayload("imported-session"))); await execution; await RenderAsync(dispatcher, clock);
+        request.Complete(new EngineResult.SessionImport(new EngineSessionPayload("imported-session"))); await execution;
+        var sessions = await engine.NextRequestAsync(); Assert.Equal(EngineCommandName.SessionList, sessions.Command.Name);
+        sessions.Complete(new EngineResult.SessionList(new EngineSessionListResult(
+            [Readable("imported-folder", "imported-session", false, false, "処理中")], null, null)));
+        await ChangedTo(store, state => state.Transcript.DisplayName == "Engine display"); await RenderAsync(dispatcher, clock);
         Assert.False(store.State.IsPending(EngineCommandName.SessionImport));
     }
 

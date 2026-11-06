@@ -22,6 +22,7 @@ public sealed partial class ShellStore : IAsyncDisposable
     private readonly object _postGate = new();
     private ShellState _working = new(), _published = new();
     private ulong? _stateRevision;
+    private long _recordingGeneration;
     private bool _disposeRequested;
     private Task? _disposeTask;
     private readonly Task _reducerTask, _watcherTask, _initialization;
@@ -58,12 +59,26 @@ public sealed partial class ShellStore : IAsyncDisposable
     public Task<bool> ImportAudioAsync(string inputPath)
     {
         ArgumentException.ThrowIfNullOrEmpty(inputPath);
+        long recordingGeneration = 0;
         return RunRequestAsync(() =>
         {
             if (_working.Engine?.Recording is not null || _working.Pending.Contains(EngineCommandName.RecordingStart) || _working.Pending.Contains(EngineCommandName.RecordingStop))
             { _working = _working with { CommandError = "録音中または録音の開始・停止中は音声を取り込めません。" }; return null; }
+            recordingGeneration = _recordingGeneration;
             return new EngineCommand.SessionImport(new EngineImportPayload(inputPath));
-        });
+        }, (command, result) =>
+        {
+            if (result is not EngineResult.SessionImport imported) throw new InvalidOperationException("session.import returned an unexpected result type.");
+            // A pending (possibly failing) recording start is not a successful takeover.
+            if (recordingGeneration == _recordingGeneration)
+            {
+                _working = _working with { SelectedFolderID = null, SessionInspection = null };
+                _importDisplayNameSessionID = imported.Result.SessionID;
+                SelectSession(imported.Result.SessionID, isImported: true, startWatch: false);
+            }
+            _working = _working with { CommandError = null };
+            InvalidateSessions();
+        }, HandleRequestFailure);
     }
 
     public Task<bool> SetExportDestinationAsync(string path)
@@ -129,7 +144,8 @@ public sealed partial class ShellStore : IAsyncDisposable
         {
             await finalAcknowledgement.ConfigureAwait(false);
             var tailTask = _tailTask ?? Task.CompletedTask;
-            await Task.WhenAll(_initialization, _watcherTask, _reducerTask, tailTask).ConfigureAwait(false);
+            var sessionsRefreshTask = _sessionsRefreshTask ?? Task.CompletedTask;
+            await Task.WhenAll(_initialization, _watcherTask, _reducerTask, tailTask, sessionsRefreshTask).ConfigureAwait(false);
         }
         finally { _stop.Dispose(); }
     }
@@ -178,6 +194,7 @@ public sealed partial class ShellStore : IAsyncDisposable
             {
                 _working = _working with { Capabilities = hello.Result.Capabilities }; ApplyState(hello.Result.State);
                 if (!IsTerminal(_working.Phase)) _working = _working with { Phase = ShellPhase.Running };
+                EnsureSessionsRefreshWorker();
             }).ConfigureAwait(false);
             if (State.Phase == ShellPhase.Running) await ReloadSettingsAsync().ConfigureAwait(false);
         }
@@ -275,10 +292,12 @@ public sealed partial class ShellStore : IAsyncDisposable
         var revision = value.Revision.Value;
         if (_stateRevision is ulong previous && revision <= previous) return;
         _stateRevision = revision;
+        var previousEngine = _working.Engine;
         var next = _working with { Engine = value };
         if (_working.ConfirmedSettings is null && value.Setup == EngineSetupStatus.SettingsRequired && next.SettingsStatus != ShellSettingsStatus.Corrupt)
             next = next with { SettingsStatus = ShellSettingsStatus.Required };
         _working = next;
+        ObserveSessionChanges(previousEngine, value);
     }
 
     private Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory) => RunRequestAsync(commandFactory, ApplyResult, HandleRequestFailure);
@@ -333,9 +352,12 @@ public sealed partial class ShellStore : IAsyncDisposable
             case (EngineCommand.ModelsInspect, EngineResult.ModelsInspect models): _working = _working with { ModelsInspection = models.Result }; break;
             case (EngineCommand.SettingsGet, EngineResult.SettingsGet settings): ApplySettings(settings.Result, false); break;
             case (EngineCommand.SettingsReplace, EngineResult.SettingsReplace settings): ApplySettings(settings.Result, true); break;
-            case (EngineCommand.RecordingStart, EngineResult.RecordingStart started): SelectSession(started.Result.SessionID); break;
-            case (EngineCommand.SessionImport, EngineResult.SessionImport):
-            case (EngineCommand.RecordingStop, EngineResult.RecordingStop):
+            case (EngineCommand.RecordingStart, EngineResult.RecordingStart started):
+                _recordingGeneration = checked(_recordingGeneration + 1);
+                _working = _working with { SelectedFolderID = null, SessionInspection = null };
+                SelectSession(started.Result.SessionID);
+                break;
+            case (EngineCommand.RecordingStop, EngineResult.RecordingStop): InvalidateSessions(); break;
             case (EngineCommand.ModelsPrepare, EngineResult.ModelsPrepare): break;
             default: throw new InvalidOperationException($"{command.Name} returned unexpected result {result.GetType().Name}.");
         }
@@ -379,7 +401,11 @@ public sealed partial class ShellStore : IAsyncDisposable
         Phase = _working.Phase == ShellPhase.Disposed ? ShellPhase.Disposed : ShellPhase.EngineFailed,
         StoreFailure = _working.StoreFailure ?? $"{exception.GetType().Name}: {exception.Message}", Pending = ImmutableHashSet<EngineCommandName>.Empty
     };
-    private void RemovePending(EngineCommandName name) => _working = _working with { Pending = _working.Pending.Remove(name) };
+    private void RemovePending(EngineCommandName name)
+    {
+        _working = _working with { Pending = _working.Pending.Remove(name) };
+        EnsureSessionsRefreshWorker();
+    }
 
     private static bool IsTerminal(ShellPhase phase) => phase is ShellPhase.EngineFailed or ShellPhase.Closed or ShellPhase.Disposed;
 
