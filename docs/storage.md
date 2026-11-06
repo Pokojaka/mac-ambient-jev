@@ -6,7 +6,7 @@
 
 ## 保存場所とセッションフォルダー
 
-Windows の共通コアは LocalAppData/mac-ambient-jev 配下を使い、macOS の sandbox パスは構築しません。OS ごとの取得方法と Windows の実行範囲は [windows.md](windows.md) を参照してください。
+Windows の共通コアは LocalAppData/mac-ambient-jev 配下のセッション・モデルを使い、macOS の sandbox パスは構築しません。WinUI shell は同じ app root の logs フォルダーを所有します。OS ごとの取得方法と Windows の実行範囲は [windows.md](windows.md) を参照してください。
 
 GUI アプリは sandbox 内で動作し、標準のセッション保存先は `~/Library/Containers/app.mac-ambient-jev/Data/Library/Application Support/mac-ambient-jev/sessions` です。全てのセッション CLI は各モードで `--sessions-root DIRECTORY` を必須とし、CLI が既定保存先を選ぶことはありません。非 sandbox の `~/Library/Application Support/mac-ambient-jev/sessions` とその cache、および sandbox 側の app data/cache は CLI の保護対象です。明示 root はこれらの領域と祖先・子孫関係にならず、symlink 経由でも重ならない必要があります。各 Application Support の mac-ambient-jev 以下に sessions と音声処理モデルの models、各ユーザーの Caches 以下の mac-ambient-jev にキャッシュを置きます。発話文判定モデルはここに置かず、app bundle の Resources 内 `clause-tagger` ディレクトリから読みます（[発話文判定](decision-engine.md#モデルの同梱と更新)）。`AppPaths` は sessions root のみ上書きでき、models root は上書きできません。設定の「録音データ」と保存済み録音の詳細から sessions フォルダーを Finder で開けます。App の設定は UserDefaults / AppStorage にあり、セッション JSON のフィールドではありません。
 

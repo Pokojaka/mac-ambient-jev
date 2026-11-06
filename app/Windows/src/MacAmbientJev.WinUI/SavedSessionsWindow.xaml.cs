@@ -63,9 +63,9 @@ internal sealed class ExplorerFolderRevealer : IFolderRevealer
     public async Task RevealAsync(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        if (!Path.IsPathFullyQualified(path)) throw new ArgumentException("録音フォルダーのパスは絶対パスである必要があります。", nameof(path));
-        if (!Directory.Exists(path)) throw new DirectoryNotFoundException("録音フォルダが見つかりません: " + path);
+        if (!Path.IsPathFullyQualified(path)) throw new ArgumentException("フォルダーのパスは絶対パスである必要があります。", nameof(path));
+        if (!Directory.Exists(path)) throw new DirectoryNotFoundException("フォルダーが見つかりません: " + path);
         if (!await Windows.System.Launcher.LaunchFolderPathAsync(path))
-            throw new InvalidOperationException("録音フォルダーをエクスプローラーで開けませんでした: " + path);
+            throw new InvalidOperationException("フォルダーをエクスプローラーで開けませんでした: " + path);
     }
 }

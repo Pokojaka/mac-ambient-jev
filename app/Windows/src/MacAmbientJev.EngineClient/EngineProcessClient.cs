@@ -31,6 +31,9 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
     private readonly Queue<PendingRequest> _outbound = new();
     private readonly SemaphoreSlim _writeSignal = new(0);
     private readonly StderrRing _stderrRing = new();
+    private readonly IEngineObserver _observer;
+    private readonly StderrLineSplitter _stderrLines;
+    private bool _failureNotificationPending;
     private readonly OutputInbox _inbox = new();
     private readonly TaskCompletionSource _stdoutStarted = NewCompletion(), _stderrStarted = NewCompletion();
     private readonly TaskCompletionSource<EngineClientState> _completion = NewCompletion<EngineClientState>();
@@ -45,13 +48,16 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
     private readonly List<string> _additionalFailures = new();
     private bool _requestIDsExhausted, _admissionOpen = true, _shutdownTerminalObserved, _shutdownSucceeded, _inputClosed, _writerStopping, _writerInFlight;
 
-    public EngineProcessClient(IEngineChild child, EngineClientLimits limits)
+    public EngineProcessClient(IEngineChild child, EngineClientLimits limits, IEngineObserver observer)
     {
         ArgumentNullException.ThrowIfNull(child);
         ArgumentNullException.ThrowIfNull(limits);
+        ArgumentNullException.ThrowIfNull(observer);
         limits.Validate();
         _child = child;
         _limits = limits;
+        _observer = observer;
+        _stderrLines = new StderrLineSplitter(observer.EngineStderrLine);
         _input = child.StandardInput ?? throw new ArgumentException("Engine child stdin must not be null.", nameof(child));
         _output = child.StandardOutput ?? throw new ArgumentException("Engine child stdout must not be null.", nameof(child));
         _error = child.StandardError ?? throw new ArgumentException("Engine child stderr must not be null.", nameof(child));
@@ -67,8 +73,14 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
         _writeSignal.Release();
     }
 
-    public static EngineProcessClient Start() =>
-        new(ProcessEngineChild.Start(EnginePathResolver.Resolve(), Array.Empty<string>()), EngineClientLimits.Production);
+    public static EngineProcessClient Start(IEngineObserver observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+        var enginePath = EnginePathResolver.Resolve();
+        var child = ProcessEngineChild.Start(enginePath, Array.Empty<string>());
+        observer.EngineStarted(enginePath, child.ProcessId);
+        return new EngineProcessClient(child, EngineClientLimits.Production, observer);
+    }
 
     public Task<EngineResult> Hello { get; }
 
@@ -125,6 +137,7 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
             }
         }
         if (closeInput) CloseInputStream();
+        NotifyFailureObserver();
         if (wakeWriter) _writeSignal.Release();
         _ = Task.Run(() => FinishCloseCoreAsync(closeCompletion, shutdownTask, wasAlreadyFailed));
         return closeCompletion.Task;
@@ -137,7 +150,11 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
         lock (_gate) closeInput = FailLocked("Engine process was force-killed", null);
         try { _child.Kill(); }
         catch (Exception exception) { ReportFailure("Killing the engine child failed", exception); throw; }
-        finally { if (closeInput) CloseInputStream(); }
+        finally
+        {
+            if (closeInput) CloseInputStream();
+            NotifyFailureObserver();
+        }
     }
 
     public Task<EngineClientState> Completion => _completion.Task;
@@ -260,6 +277,7 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
                 var count = await read.ConfigureAwait(false);
                 if (count == 0) return;
                 _stderrRing.Append(buffer.AsSpan(0, count));
+                _stderrLines.Append(buffer.AsSpan(0, count));
                 read = _error.ReadAsync(buffer.AsMemory());
             }
         }
@@ -267,7 +285,12 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
         {
             ReportFailure("Engine stderr read failure", exception);
         }
-        finally { _stderrStarted.TrySetResult(); }
+        finally
+        {
+            try { _stderrLines.Complete(); }
+            catch (Exception exception) { ReportFailure("Flushing the final engine stderr line failed", exception); }
+            _stderrStarted.TrySetResult();
+        }
     }
 
     private async Task WriteLoopAsync()
@@ -402,6 +425,7 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
                 closeInput = FailLocked("Engine stdout reached EOF before a shutdown terminal response", null);
         }
         if (closeInput) CloseInputStream();
+        NotifyFailureObserver();
     }
 
     private async Task CoordinateAsync()
@@ -448,6 +472,7 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
                 SignalTerminalLocked();
                 finalState = _state;
             }
+            NotifyFailureObserver();
             _completion.TrySetResult(finalState);
         }
     }
@@ -459,6 +484,7 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
             _exitCode = exitCode;
             _admissionOpen = false;
         }
+        _observer?.EngineExited(exitCode);
     }
 
     private async Task FinishCloseCoreAsync(TaskCompletionSource closeCompletion, Task<EngineResult>? shutdownTask, bool wasAlreadyFailed)
@@ -488,18 +514,41 @@ public sealed class EngineProcessClient : IEngineClient, IAsyncDisposable
         bool closeInput;
         lock (_gate) closeInput = FailLocked(message, exception);
         if (closeInput) CloseInputStream();
+        NotifyFailureObserver();
     }
 
     private bool FailLocked(string message, Exception? exception)
     {
         var detail = exception is null ? message : $"{message}: {exception.GetType().Name}: {exception.Message}";
-        if (_state != EngineClientState.Failed) { _state = EngineClientState.Failed; _failureMessage = detail; _admissionOpen = false; }
+        if (_state != EngineClientState.Failed)
+        {
+            _state = EngineClientState.Failed; _failureMessage = detail; _admissionOpen = false;
+            _failureNotificationPending = true;
+        }
         else AddSupplementalFailureLocked(detail);
         ClearOutboundLocked();
         if (!_writerStopping) { _writerStopping = true; _writeSignal.Release(); }
         FailPendingLocked();
         SignalTerminalLocked();
         return ClaimInputCloseLocked();
+    }
+
+    private void NotifyFailureObserver()
+    {
+        EngineClientFailure failure;
+        lock (_gate)
+        {
+            if (!_failureNotificationPending) return;
+            _failureNotificationPending = false;
+            failure = BuildFailureLocked();
+        }
+
+        try { _observer.ClientFailed(failure); }
+        catch (Exception exception)
+        {
+            lock (_gate)
+                AddSupplementalFailureLocked($"Engine observer ClientFailed callback failed: {exception.GetType().Name}: {exception.Message}");
+        }
     }
 
     private void FailPendingLocked()
