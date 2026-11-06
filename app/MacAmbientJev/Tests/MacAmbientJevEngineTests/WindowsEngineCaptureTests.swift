@@ -289,6 +289,7 @@ private final class WindowsEngineCaptureTestDevice: WindowsCaptureDevice {
                 flags: 0,
                 devicePosition: 0,
                 qpc100ns: qpc,
+                readQPC100ns: qpc,
                 packetOffset: 0,
                 packetFrames: buffer.count
             ))
@@ -316,6 +317,7 @@ private final class WindowsEngineCaptureTestDevice: WindowsCaptureDevice {
                 flags: 0,
                 devicePosition: UInt64(startFrame),
                 qpc100ns: qpc,
+                readQPC100ns: qpc,
                 packetOffset: 0,
                 packetFrames: buffer.count
             ))

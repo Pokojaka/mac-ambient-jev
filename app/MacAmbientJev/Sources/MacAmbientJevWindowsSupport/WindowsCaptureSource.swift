@@ -538,11 +538,12 @@ public final class WindowsCaptureSource {
         let qpcDelta = details.qpcDeltaFrames.map { String($0) } ?? "unavailable"
         let deviceDelta = details.deviceDeltaFrames.map { String($0) } ?? "unavailable"
         let packetFlags = details.fromHealth ? "unavailable" : String(details.packetFlags)
+        let readLag = details.readLagMilliseconds.map { String($0) } ?? "unavailable"
         return "Windows capture counted gap (check: \(details.check), "
             + "startFrame: \(details.startFrame), endFrame: \(details.endFrame), "
             + "frameCount: \(details.endFrame - details.startFrame), sampleRate: \(sampleRate), "
             + "qpcDeltaFrames: \(qpcDelta), deviceDeltaFrames: \(deviceDelta), "
-            + "packetFlags: \(packetFlags), idleObserved: \(details.idleObserved), "
+            + "packetFlags: \(packetFlags), readLagMs: \(readLag), idleObserved: \(details.idleObserved), "
             + "origin: \(details.fromHealth ? "health" : "packet"))"
     }
 
