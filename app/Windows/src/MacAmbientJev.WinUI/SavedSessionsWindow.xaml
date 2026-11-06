@@ -19,7 +19,7 @@
             </StackPanel>
         </ScrollViewer>
         <Grid Grid.Row="2" ColumnDefinitions="320,*" ColumnSpacing="12">
-            <ListView x:Name="SessionList" ItemsSource="{Binding Pages.Current.Sessions}" SelectionMode="Single" SelectedValuePath="FolderID" SelectedValue="{Binding SelectedFolderID, Mode=OneWay}" IsEnabled="{Binding CanSelectSession}" ToolTipService.ToolTip="{Binding SelectionDisabledReason}" SelectionChanged="OnSessionSelectionChanged">
+            <ListView x:Name="SessionList" ItemsSource="{Binding Pages.Current.Sessions}" SelectionMode="Single" SelectedValuePath="FolderID" SelectedValue="{Binding SelectedFolderID, Mode=OneWay}" IsEnabled="{Binding CanSelectSession}" ToolTipService.ToolTip="{Binding SelectionDisabledReason}" SelectionChanged="OnSessionSelectionChanged" ContainerContentChanging="OnSessionContainerContentChanging">
                 <ListView.ItemsPanel>
                     <ItemsPanelTemplate><ItemsStackPanel /></ItemsPanelTemplate>
                 </ListView.ItemsPanel>

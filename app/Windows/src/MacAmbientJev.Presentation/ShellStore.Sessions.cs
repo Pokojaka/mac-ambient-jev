@@ -15,18 +15,46 @@ public sealed partial class ShellStore
         return InspectSavedSessionAsync(folderID, false);
     }
 
-    private Task<bool> InspectSavedSessionAsync(string folderID, bool refreshOnly) => RunRequestAsync(() =>
+    public Task<bool> SelectSavedSessionAsync(EngineSessionSummary session)
     {
-        if (refreshOnly && _working.SelectedFolderID != folderID) return null;
-        if (!CanUseSavedSelection(_working)) { _working = _working with { CommandError = "録音中または処理中は録音を選択できません。" }; return null; }
-        _working = _working with { SelectedFolderID = folderID, SessionInspection = null };
-        return new EngineCommand.SessionInspect(new EngineSessionInspectPayload(folderID));
-    }, (command, result) =>
+        ArgumentNullException.ThrowIfNull(session);
+        return InspectSavedSessionAsync(session.FolderID, false, session.DisplayName);
+    }
+
+    private Task<bool> InspectSavedSessionAsync(string folderID, bool refreshOnly, string? displayName = null)
     {
-        if (result is not EngineResult.SessionInspect inspection || inspection.Result.FolderID != folderID)
-            throw new InvalidOperationException("session.inspect returned an unexpected result or folder.");
-        _working = _working with { SessionInspection = inspection.Result, CommandError = null };
-    }, HandleRequestFailure);
+        long generation = 0;
+        return RunRequestAsync(() =>
+        {
+            if (refreshOnly && _working.SelectedFolderID != folderID) return null;
+            if (!CanUseSavedSelection(_working)) { _working = _working with { CommandError = "録音中または処理中は録音を選択できません。" }; return null; }
+            _working = _working with { SelectedFolderID = folderID, SessionInspection = null };
+            if (displayName is not null)
+            {
+                SelectSession(null, displayName, "保存済みの文字起こしを読み込んでいます");
+                generation = _selectionGeneration;
+            }
+            return new EngineCommand.SessionInspect(new EngineSessionInspectPayload(folderID));
+        }, (command, result) =>
+        {
+            if (result is not EngineResult.SessionInspect inspection || inspection.Result.FolderID != folderID)
+                throw new InvalidOperationException("session.inspect returned an unexpected result or folder.");
+            if (_working.SelectedFolderID != folderID) return;
+            _working = _working with { SessionInspection = inspection.Result, CommandError = null };
+            if (displayName is null || generation != _selectionGeneration) return;
+            var summary = inspection.Result;
+            if (summary.SessionID is null || summary.Metadata is not EngineSessionMetadata.Readable { Audio: EngineSessionAudio.Available } metadata)
+                SelectSession(null, summary.DisplayName, "保存済み音声を使えないため、文字起こしを表示できません");
+            else if (!metadata.HasTranscript)
+                SelectSession(null, summary.DisplayName, "この録音には確定文字起こしがありません");
+            else SelectSession(summary.SessionID, summary.DisplayName, isImported: metadata.Source is EngineSessionSource.Imported);
+        }, (name, exception, admission) =>
+        {
+            if (displayName is not null && generation == _selectionGeneration)
+                SelectSession(null, displayName, "保存済み文字起こしを読み込めませんでした");
+            HandleRequestFailure(name, exception, admission);
+        });
+    }
 
     public Task<bool> ReprocessSessionAsync() => RunSavedSessionActionAsync(false);
     public Task<bool> RetrySessionDecisionsAsync() => RunSavedSessionActionAsync(true);

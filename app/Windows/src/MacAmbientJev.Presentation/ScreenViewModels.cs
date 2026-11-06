@@ -138,7 +138,9 @@ public sealed partial class LiveViewModel : ScreenViewModel
         }
     }
     public string ReturnToLatestLabel => "最新へ戻る"; public string EmptyTitle => "文字起こしはまだありません";
-    public string EmptyDescription => "録音を開始するか、音声ファイルを読み込むとここに文字起こしが表示されます。";
+    public string EmptyDescription => Snapshot.Transcript.UnavailableReason ?? (Snapshot.Transcript.SessionID is null
+        ? "録音を開始するか、音声ファイルを読み込むか、保存済み録音を選ぶとここに文字起こしが表示されます。"
+        : "この録音には表示できる文字起こしがありません。処理中の場合は、作成された行がここに表示されます。");
     public ShellCommand StartRecording { get; } public ShellCommand StopRecording { get; } public ShellCommand ImportAudio { get; }
     public ShellCommand RefreshDevices { get; } public ShellCommand ReturnToLatest { get; } public ShellCommand ReadHistory { get; }
     public Task UserScrolledAsync() => Context.Store.UserScrolledAsync();

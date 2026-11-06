@@ -36,6 +36,7 @@
         </CommandBar>
         <StackPanel Grid.Row="1" Spacing="3">
             <TextBlock x:Name="ClosingStatus" Text="終了処理中" Visibility="Collapsed" />
+            <TextBlock Text="{Binding TranscriptDisplayText}" Visibility="{Binding TranscriptDisplayText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
             <TextBlock Text="{Binding StartDisabledReason}" Visibility="{Binding StartDisabledReason, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
             <TextBlock Text="{Binding RecordingStatusText}" Visibility="{Binding RecordingStatusText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
             <TextBlock Text="{Binding Presentation.PreparationStatusText}" Visibility="{Binding Presentation.PreparationStatusText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
