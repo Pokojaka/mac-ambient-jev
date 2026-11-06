@@ -34,7 +34,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-shell.ps1 -Architecture ARM64 -Destination C:\builds\windows-shell-arm64
 ```
 
-[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は architecture ごとの RID（`win-x64` / `win-arm64`）で locked restore を行い、Release publish 後に出力 `MacAmbientJev.exe` の PE machine が指定 architecture と一致することを検証します。起動には対象 architecture に合う .NET Desktop Runtime `10.0.x`（patch `10.0.13` 以降）が必要です。portable C# tests と異なり、これは WinUI shell の build / publish 検証であり、アプリの起動や画面表示を自動検証しません。
+[`build-windows-shell.ps1`](../scripts/build-windows-shell.ps1) は architecture ごとの RID（`win-x64` / `win-arm64`）で locked restore を行い、Release publish 後に出力 `MacAmbientJev.exe` の PE machine が指定 architecture と一致することと、publish output 直下に app の PRI `MacAmbientJev.pri` があることを検証します（csproj が `EnableMsixTooling=true` を設定するため PRI が publish されます）。起動には対象 architecture に合う .NET Desktop Runtime `10.0.x`（patch `10.0.13` 以降）が必要です。portable C# tests と異なり、これは WinUI shell の build / publish 検証であり、アプリの起動や画面表示を自動検証しません。
 
 portable-core workflow の `windows-shell` job は `windows-2025` x64 host で x64 と ARM64（ARM64 は cross-build）を publish し、`windows-shell-x64` / `windows-shell-arm64` artifact を upload します。この job は WinUI app も Swift engine も起動しません。
 

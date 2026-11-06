@@ -17,14 +17,19 @@ public sealed partial class MainWindow : Window
     private ShellUiContext? _context; private LiveViewModel? _live; private TranscriptScrollAdapter? _scroll;
     private SessionsViewModel? _sessions; private SavedSessionsWindow? _savedSessionsWindow;
     private SettingsViewModel? _settings; private DiagnosticsViewModel? _diagnostics; private SettingsDialog? _settingsDialog;
+    private readonly ShellLog _log;
     private bool _closeStarted, _allowFinalClose;
     private bool _toastRegistered, _deviceLostDialogInFlight, _focusDeviceSelector;
     private DeviceLostNotice? _toastedDeviceLostNotice; private ContentDialog? _deviceLostDialog;
 
-    public MainWindow()
+    public MainWindow(ShellLog log)
     {
+        _log = log ?? throw new ArgumentNullException(nameof(log));
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
         InitializeComponent();
+        _log.WriteFailed += OnLogWriteFailed;
+        if (_log.StartupFailure is { } startupFailure) ShowFailure(startupFailure);
+        else if (_log.Failure is { } logFailure) ShowFailure(logFailure);
         try { AppNotificationManager.Default.Register(); _toastRegistered = true; }
         catch (Exception exception) { ShowFailure(exception); }
         AppIcon.Apply(AppWindow);
@@ -35,7 +40,7 @@ public sealed partial class MainWindow : Window
             var handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
             _appWindow = AppWindow.GetFromWindowId(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(handle));
             _appWindow.Closing += OnAppWindowClosing;
-            _client = EngineProcessClient.Start();
+            _client = EngineProcessClient.Start(new EngineLogObserver(_log));
             _store = new ShellStore(_client);
             _context = new ShellUiContext(_store, new DispatcherQueueUiDispatcher(
                 DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("The UI dispatcher is unavailable.")), TimeProvider.System);
@@ -46,6 +51,15 @@ public sealed partial class MainWindow : Window
             _context.Refreshed += OnContextRefreshed;
         }
         catch (Exception exception) { ShowFailure(exception); }
+    }
+
+    private void OnLogWriteFailed(Exception exception)
+    {
+        try
+        {
+            if (!DispatcherQueue.TryEnqueue(() => ShowFailure(exception))) return;
+        }
+        catch (Exception) { /* The log has stopped; only the unavailable display is being dropped. */ }
     }
 
     private void ShowDeviceLostToast(DeviceLostNotice notice)
@@ -156,7 +170,7 @@ public sealed partial class MainWindow : Window
             var context = _context ?? throw new InvalidOperationException("The settings context is unavailable.");
             var settings = _settings ?? throw new InvalidOperationException("The settings view model is unavailable.");
             var diagnostics = _diagnostics ?? throw new InvalidOperationException("The diagnostics view model is unavailable.");
-            var dialog = new SettingsDialog(context, settings, diagnostics, new WindowsPathPicker(this)) { XamlRoot = Root.XamlRoot };
+            var dialog = new SettingsDialog(context, settings, diagnostics, new WindowsPathPicker(this), _log.Directory, _log.Path, new ExplorerFolderRevealer()) { XamlRoot = Root.XamlRoot };
             _settingsDialog = dialog; SettingsButton.IsEnabled = false; await dialog.ShowAsync();
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
@@ -190,6 +204,7 @@ public sealed partial class MainWindow : Window
 
     private void ShowFailure(Exception exception, EngineClientFailure? snapshot = null)
     {
+        _log.Error("window failure: " + exception + (snapshot is null ? "" : $"\n{snapshot.Message}\nexit code: {snapshot.ExitCode?.ToString() ?? "unknown"}"));
         var text = new StringBuilder().Append(exception.GetType().Name).Append(": ").Append(exception.Message);
         if (exception is EngineClientFailedException failed) snapshot = failed.Failure;
         if (snapshot is not null)
@@ -210,6 +225,7 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;
         if (_closeStarted) return;
         _closeStarted = true; Root.IsHitTestVisible = false;
+        _log.Info("shutdown started");
         Toolbar.IsEnabled = false; SavedSessionsButton.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
         ClosingStatus.Visibility = Visibility.Visible;
         await ShutDownAsync();
@@ -283,6 +299,7 @@ public sealed partial class MainWindow : Window
 
     private void FinalClose()
     {
+        _log.Info("shutdown finished");
         _allowFinalClose = true;
         if (_appWindow is not null) _appWindow.Closing -= OnAppWindowClosing;
         Close();

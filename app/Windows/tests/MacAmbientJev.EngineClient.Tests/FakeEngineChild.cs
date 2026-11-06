@@ -52,6 +52,11 @@ internal sealed class FakeEngineChild : IEngineChild
     internal Task EmitAsync(EngineOutput output) => _stdout.WriteAsync(EngineCodec.EncodeOutput(output));
     internal Task WriteRawStdoutAsync(byte[] bytes) => _stdout.WriteAsync(bytes);
     internal Task WriteStderrAsync(byte[] bytes) => _stderr.WriteAsync(bytes);
+    internal async Task WriteStderrThenFailAsync(byte[] bytes, Exception exception)
+    {
+        await _stderr.WriteAsync(bytes);
+        _stderr.Fail(exception);
+    }
     internal void CompleteStdout() => _stdout.Complete();
     internal void CompleteStderr() => _stderr.Complete();
     internal void CompleteExit(int code) => _exit.TrySetResult(code);
@@ -150,13 +155,18 @@ internal sealed class FakeEngineChild : IEngineChild
         internal BytePipe() => Reader = new PipeReader(this);
         internal Task WriteAsync(byte[] bytes) => _chunks.Writer.WriteAsync(bytes).AsTask();
         internal void Complete() => _chunks.Writer.TryComplete();
+        internal void Fail(Exception exception) => _chunks.Writer.TryComplete(exception);
         internal async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken token)
         {
             if (destination.IsEmpty) return 0;
             while (_current is null || _offset == _current.Length)
             {
                 try { _current = await _chunks.Reader.ReadAsync(token).ConfigureAwait(false); _offset = 0; }
-                catch (ChannelClosedException) { return 0; }
+                catch (ChannelClosedException exception)
+                {
+                    if (exception.InnerException is not null) throw new IOException("fake pipe read failed", exception.InnerException);
+                    return 0;
+                }
             }
             var count = Math.Min(destination.Length, _current.Length - _offset);
             _current.AsMemory(_offset, count).CopyTo(destination); _offset += count;
