@@ -96,7 +96,7 @@ private func drain(_ ring: AudioBlockRing) -> [AudioBlock] {
 }
 
 private func makeDurableIngressDrain(
-    ring: AudioBlockRing
+    ring: AudioBlockRing, sampleRate: Double = 16_000
 ) throws -> (directory: URL, drain: AudioCaptureDrain) {
     let directory = FileManager.default.temporaryDirectory
         .appending(path: "WindowsCaptureIngress-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -104,7 +104,7 @@ private func makeDurableIngressDrain(
         directory: directory, chunkDurationSeconds: 1, sessionURL: directory
     )
     let captureDrain = AudioCaptureDrain(
-        ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: 16_000)
+        ring: ring, writer: writer, converter: try CanonicalAudioResampler(sampleRate: sampleRate)
     )
     return (directory, captureDrain)
 }
@@ -815,6 +815,120 @@ struct WindowsCaptureIngressTests {
         #expect(samples[Int(resumedStart)...].allSatisfy { $0 == 0.75 })
     }
 
+    @Test(arguments: [44_100.0, 48_000.0], [UInt32(0), UInt32(1), UInt32(2), UInt32(3)])
+    func testElapsedDevicePositionResumeFillsSmallIdleSuffixWithoutHidingActiveLoss(
+        sampleRate: Double, resumeFlags: UInt32
+    ) async throws {
+        let harness = try makeIngress(sampleRate: sampleRate, loopback: true)
+        let durable = try makeDurableIngressDrain(ring: harness.ring, sampleRate: sampleRate)
+        defer { try? FileManager.default.removeItem(at: durable.directory) }
+        let rate = Int64(sampleRate)
+        let packetFrames = Int(rate / 100)
+        let epoch: UInt64 = 10_000_000
+        var millis: Int64 = 10_000
+        var nextFrame: Int64 = 0
+        var devicePosition: UInt64 = 0
+        let originFrame = rate * 3
+        let pcm = [Float](repeating: 0.75, count: packetFrames)
+        var resumedPCMStarts: [Int64] = []
+
+        func qpc(_ frame: Int64) -> UInt64 {
+            epoch + UInt64((Double(frame) * 10_000_000 / sampleRate).rounded())
+        }
+
+        func idle(seconds: Int) async throws {
+            harness.ingress.health(watermarkQPC100ns: qpc(nextFrame), outputState: 0, error: 0)
+            try await durable.drain.drainAvailable()
+            let start = nextFrame
+            for tick in 1...(seconds * 2) {
+                millis += 500
+                harness.clock.setMillis(millis)
+                harness.ingress.health(
+                    watermarkQPC100ns: qpc(start + Int64(tick) * rate / 2),
+                    outputState: 0, error: 0
+                )
+                try await durable.drain.drainAvailable()
+            }
+            nextFrame += Int64(seconds) * rate
+        }
+
+        func playback(seconds: Int, firstFlags: UInt32) async throws {
+            harness.ingress.health(watermarkQPC100ns: qpc(nextFrame), outputState: 1, error: 0)
+            for index in 0..<(seconds * 100) {
+                let flags = index == 0 ? firstFlags : 0
+                receive(
+                    harness.ingress,
+                    samples: flags & 2 == 0 ? pcm : nil,
+                    frameCount: packetFrames, sampleRate: sampleRate, flags: flags,
+                    devicePosition: devicePosition, qpc100ns: qpc(nextFrame)
+                )
+                nextFrame += Int64(packetFrames)
+                devicePosition += UInt64(packetFrames)
+                millis += 10
+                harness.clock.setMillis(millis)
+                harness.ingress.health(
+                    watermarkQPC100ns: qpc(nextFrame), outputState: 1, error: 0
+                )
+                if index % 10 == 9 { try await durable.drain.drainAvailable() }
+            }
+        }
+
+        try await idle(seconds: 3)
+        #expect(nextFrame == originFrame)
+        try await playback(seconds: 58, firstFlags: 0)
+        #expect(harness.ring.dropoutCount == 0)
+        for (seconds, canonicalSuffix, playbackSeconds) in [(6, 55, 15), (8, 66, 20)] {
+            try await idle(seconds: seconds)
+            let idleEnd = harness.sink.lastEndFrame
+            let suffix = Int64((Double(canonicalSuffix) * sampleRate / 16_000).rounded())
+            nextFrame = idleEnd + suffix
+            // Some devices advance their position across idle. QPC and device deltas
+            // agree, so this resume uses the ordinary anchor mapping, not a reanchor.
+            devicePosition = UInt64(nextFrame - originFrame)
+            resumedPCMStarts.append(try CanonicalAudio.boundary(nextFrame, sampleRate: sampleRate))
+            try await playback(seconds: playbackSeconds, firstFlags: resumeFlags)
+            #expect(harness.ingress.failure == nil)
+            #expect(harness.ring.dropoutCount == 0)
+            #expect(harness.sink.invalidBufferCount.load(ordering: .acquiring) == 0)
+        }
+
+        // A later active QPC jump with a device-contiguous packet is still real loss.
+        let activeLossStart = nextFrame
+        nextFrame += rate / 100
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.5, count: packetFrames),
+            frameCount: packetFrames, sampleRate: sampleRate,
+            devicePosition: devicePosition, qpc100ns: qpc(nextFrame)
+        )
+        nextFrame += Int64(packetFrames)
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.ring.overflowCount == 0)
+        #expect(harness.ring.dropoutCount == 1)
+        #expect(harness.sink.invalidBufferCount.load(ordering: .acquiring) == 1)
+        let diagnostics = harness.ingress.takeGapDiagnostics()
+        #expect(diagnostics.count == 1)
+        #expect(diagnostics.first?.check == .qpcForward)
+        #expect(diagnostics.first?.idleObserved == false)
+        let checkpoint = try await durable.drain.finish()
+        let canonicalLossStart = try CanonicalAudio.boundary(activeLossStart, sampleRate: sampleRate)
+        #expect(checkpoint.gapEvents == [
+            AudioGapEvent(startFrame: canonicalLossStart, frameCount: 160, reason: .invalidBuffer)
+        ])
+        #expect(checkpoint.committedFrames == (try CanonicalAudio.boundary(nextFrame, sampleRate: sampleRate)))
+        let samples = try ProcessingTimelineReader(
+            directory: durable.directory, checkpoint: checkpoint, sessionURL: durable.directory
+        ).readSamples(frameRange: 0..<checkpoint.committedFrames)
+        #expect(samples.count == Int(checkpoint.committedFrames))
+        // Interior windows avoid the stateful SRC transition at silence/PCM boundaries.
+        #expect(samples[16_000..<32_000].allSatisfy { $0 == 0 })
+        #expect(samples[64_000..<80_000].allSatisfy { abs($0 - 0.75) < 0.001 })
+        for start in resumedPCMStarts {
+            #expect(samples[Int(start + 1_600)..<Int(start + 17_600)].allSatisfy {
+                abs($0 - 0.75) < 0.001
+            })
+        }
+    }
+
     @Test func testFlaggedIdleLoopbackForwardMismatchFillsSilenceWithoutGap() throws {
         let harness = try makeIngress(loopback: true, ringCapacity: 256)
         receive(harness.ingress, samples: [Float](repeating: 0.25, count: 480), frameCount: 480)
@@ -1096,6 +1210,78 @@ struct WindowsCaptureIngressTests {
         #expect(block.gap?.startFrame == 0)
         #expect(block.gap?.frameCount == 3)
         #expect(harness.sink.invalidBufferCount.load(ordering: .relaxed) == 1)
+    }
+
+    @Test func testCountedGapEvidenceIsCompleteAndConsumedOnlyOnControlLane() throws {
+        let harness = try makeIngress(sampleRate: 16_000, loopback: true)
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.25, count: 160),
+            frameCount: 160, sampleRate: 16_000
+        )
+        receive(
+            harness.ingress, samples: [Float](repeating: 0.75, count: 160),
+            frameCount: 160, sampleRate: 16_000, flags: 1,
+            devicePosition: 160, qpc100ns: 10_200_000
+        )
+        let details = try #require(harness.ingress.takeGapDiagnostics().first)
+        #expect(details.check == .qpcForward)
+        #expect(details.startFrame == 160)
+        #expect(details.endFrame == 320)
+        #expect(details.qpcDeltaFrames == 320)
+        #expect(details.deviceDeltaFrames == 160)
+        #expect(details.packetFlags == 1)
+        #expect(!details.idleObserved)
+        #expect(!details.fromHealth)
+        #expect(harness.ingress.takeGapDiagnostics().isEmpty)
+        let message = WindowsCaptureSource.describeGapDiagnostic(details, sampleRate: 16_000)
+        #expect(message.contains("check: qpcForward"))
+        #expect(message.contains("startFrame: 160, endFrame: 320, frameCount: 160"))
+        #expect(message.contains("qpcDeltaFrames: 320, deviceDeltaFrames: 160"))
+        #expect(!message.contains("\n"))
+        #expect(harness.ring.dropoutCount == 1)
+    }
+
+    @Test func testHealthGapEvidenceDoesNotReusePreviousPacketFlagsOrDeltas() throws {
+        let harness = try makeIngress(sampleRate: 16_000, loopback: true)
+        harness.ingress.health(watermarkQPC100ns: 10_000_000, outputState: 1, error: 0)
+        receive(
+            harness.ingress, samples: nil, frameCount: 160, sampleRate: 16_000, flags: 3
+        )
+        harness.clock.setMillis(11_000)
+        harness.ingress.health(watermarkQPC100ns: 20_000_000, outputState: 0, error: 0)
+        let diagnostics = harness.ingress.takeGapDiagnostics()
+        let details = try #require(diagnostics.first)
+        #expect(diagnostics.count == 1)
+        #expect(details.check == .activeTail)
+        #expect(details.startFrame == 160)
+        #expect(details.endFrame == 12_000)
+        #expect(details.qpcDeltaFrames == nil)
+        #expect(details.deviceDeltaFrames == nil)
+        #expect(details.packetFlags == 0)
+        #expect(details.fromHealth)
+        let message = WindowsCaptureSource.describeGapDiagnostic(details, sampleRate: 16_000)
+        #expect(message.contains("qpcDeltaFrames: unavailable, deviceDeltaFrames: unavailable"))
+        #expect(message.contains("packetFlags: unavailable"))
+        #expect(message.contains("origin: health"))
+        #expect(harness.ring.dropoutCount == 1)
+    }
+
+    @Test func testGapDiagnosticsOverflowDoesNotStopCaptureAndReportsDropsOnce() throws {
+        let harness = try makeIngress(sampleRate: 16_000, ringCapacity: 256)
+        for index in 0..<65 {
+            receive(
+                harness.ingress, samples: nil, frameCount: 1, sampleRate: 16_000,
+                flags: 8, devicePosition: UInt64(index),
+                qpc100ns: 10_000_000 + UInt64(index * 625)
+            )
+        }
+
+        #expect(harness.ingress.failure == nil)
+        #expect(harness.sink.lastEndFrame == 65)
+        #expect(harness.ring.dropoutCount == 65)
+        #expect(harness.ingress.takeGapDiagnostics().count == 64)
+        #expect(harness.ingress.takeDroppedGapDiagnosticCount() == 1)
+        #expect(harness.ingress.takeDroppedGapDiagnosticCount() == 0)
     }
 
     @Test func testOverflowPreservesRingTail() throws {

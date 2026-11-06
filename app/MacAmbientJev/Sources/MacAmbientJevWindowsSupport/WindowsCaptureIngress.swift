@@ -85,6 +85,27 @@ public struct WindowsCaptureTimestampDetails: Sendable, Equatable {
     public let fromHealth: Bool
 }
 
+/// Allocation-free producer evidence. Frame coordinates and deltas use the device rate.
+public enum WindowsCaptureGapCheck: Int32, Sendable, Equatable {
+    case qpcForward
+    case deviceReset
+    case knownMissing
+    case activeTail
+    case packetTimeline
+    case reconnectIdle
+}
+
+public struct WindowsCaptureGapDetails: Sendable, Equatable {
+    public let check: WindowsCaptureGapCheck
+    public let startFrame: Int64
+    public let endFrame: Int64
+    public let qpcDeltaFrames: Int64?
+    public let deviceDeltaFrames: Int64?
+    public let packetFlags: UInt32
+    public let idleObserved: Bool
+    public let fromHealth: Bool
+}
+
 /// Synchronous, single-producer bridge from native Windows packet coordinates to the
 /// platform-free timestamped mono sink. It does not retain a packet's borrowed sample pointer.
 public final class WindowsCaptureIngress: @unchecked Sendable {
@@ -104,7 +125,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private enum PacketGap {
         case none
         case silence
-        case missing
+        case missing(WindowsCaptureGapCheck)
     }
 
     private struct PacketStartMapping {
@@ -138,6 +159,13 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private let heartbeatSeen = Atomic(false)
     private let firstBufferQPCBits = Atomic<UInt64>(UInt64.max)
     private let firstBufferTimeBits = Atomic<UInt64>(UInt64.max)
+    // Bounded SPSC evidence queue: producer publishes a complete fixed-size snapshot,
+    // control lane acquires it before formatting. Never overwrite unread evidence.
+    private static let gapDiagnosticCapacity = 64
+    private let gapDiagnostics: UnsafeMutablePointer<WindowsCaptureGapDetails?>
+    private let gapDiagnosticWrite = Atomic<UInt64>(0)
+    private let gapDiagnosticRead = Atomic<UInt64>(0)
+    private let droppedGapDiagnosticCount = Atomic<UInt64>(0)
 
     // All fields below are owned by the serialized receive/health producer.
     private let startedAt: TimeInterval
@@ -206,12 +234,16 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         self.isInitialCapture = isInitialCapture
         deliveryGraceFrames = Int64((sampleRate * Self.deliveryGraceSeconds).rounded(.up))
         startedAt = clock.now()
+        gapDiagnostics = .allocate(capacity: Self.gapDiagnosticCapacity)
+        gapDiagnostics.initialize(repeating: nil, count: Self.gapDiagnosticCapacity)
         channelPointers = .allocate(capacity: channels)
         strides = .allocate(capacity: channels)
         strides.initialize(repeating: channels, count: channels)
     }
 
     deinit {
+        gapDiagnostics.deinitialize(count: Self.gapDiagnosticCapacity)
+        gapDiagnostics.deallocate()
         if channelPointersInitialized {
             channelPointers.deinitialize(count: channels)
         }
@@ -241,6 +273,47 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             idleObserved: timestampIdleObserved.load(ordering: .acquiring),
             fromHealth: timestampFromHealth.load(ordering: .acquiring)
         )
+    }
+
+    /// Single control-lane consumer only; also drain after fencing the native producer.
+    public func takeGapDiagnostics() -> [WindowsCaptureGapDetails] {
+        var result: [WindowsCaptureGapDetails] = []
+        var read = gapDiagnosticRead.load(ordering: .relaxed)
+        let write = gapDiagnosticWrite.load(ordering: .acquiring)
+        while read < write {
+            let slot = Int(read % UInt64(Self.gapDiagnosticCapacity))
+            result.append(gapDiagnostics[slot]!)
+            gapDiagnostics[slot] = nil
+            read &+= 1
+        }
+        gapDiagnosticRead.store(read, ordering: .releasing)
+        return result
+    }
+
+    /// Control-lane consumer only; atomically takes the producer's dropped snapshot count.
+    public func takeDroppedGapDiagnosticCount() -> UInt64 {
+        droppedGapDiagnosticCount.exchange(0, ordering: .acquiringAndReleasing)
+    }
+
+    private func recordGap(
+        _ check: WindowsCaptureGapCheck, startFrame: Int64, endFrame: Int64,
+        fromHealth: Bool = false
+    ) {
+        guard endFrame > startFrame else { return }
+        let write = gapDiagnosticWrite.load(ordering: .relaxed)
+        let read = gapDiagnosticRead.load(ordering: .acquiring)
+        guard write &- read < UInt64(Self.gapDiagnosticCapacity) else {
+            _ = droppedGapDiagnosticCount.add(1, ordering: .relaxed)
+            return
+        }
+        gapDiagnostics[Int(write % UInt64(Self.gapDiagnosticCapacity))] = WindowsCaptureGapDetails(
+            check: check, startFrame: startFrame, endFrame: endFrame,
+            qpcDeltaFrames: fromHealth ? nil : packetQPCDeltaFrames,
+            deviceDeltaFrames: fromHealth ? nil : packetDeviceDeltaFrames,
+            packetFlags: fromHealth ? 0 : packetDiagnosticFlags,
+            idleObserved: idleObservedSincePacket, fromHealth: fromHealth
+        )
+        gapDiagnosticWrite.store(write &+ 1, ordering: .releasing)
     }
 
     public var lastHeartbeatMillis: Int64 {
@@ -450,16 +523,21 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         }
         switch gap {
         case .none:
-            break
+            // This path can also carry an ordinary device-timeline hole (including
+            // reconnect/startup); ring reconstruction counts it as missingCallback.
+            if packetStart - sink.lastEndFrame > 1 {
+                recordGap(.packetTimeline, startFrame: sink.lastEndFrame, endFrame: packetStart)
+            }
         case .silence:
             if !fillIdleReanchorGap(upTo: packetStart) { return }
-        case .missing:
+        case .missing(let check):
             let endFrame = sink.lastEndFrame
             guard packetStart >= endFrame,
                   let count = Int(exactly: packetStart - endFrame) else {
                 failTimestamp(.missingGapExtent)
                 return
             }
+            recordGap(check, startFrame: endFrame, endFrame: packetStart)
             trailingIdleSilenceStartFrame = nil
             sink.missing(startFrame: endFrame, frameCount: count)
         }
@@ -483,6 +561,10 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         if isSilent {
             sink.silence(startFrame: packetStart, frameCount: packet.frameCount)
         } else if isKnownMissing {
+            let endFrame = packetStart + Int64(packet.frameCount)
+            recordGap(
+                .knownMissing, startFrame: max(packetStart, sink.lastEndFrame), endFrame: endFrame
+            )
             sink.missing(startFrame: packetStart, frameCount: packet.frameCount)
         } else {
             let samples = packet.samples!
@@ -625,6 +707,9 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                     failTimestamp(.activeTailCount, fromHealth: true)
                     return
                 }
+                recordGap(
+                    .activeTail, startFrame: endFrame, endFrame: settledFrame, fromHealth: true
+                )
                 trailingIdleSilenceStartFrame = nil
                 sink.missing(startFrame: endFrame, frameCount: missingCount)
             }
@@ -644,6 +729,9 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                 failTimestamp(.reconnectIdleExtent, fromHealth: true)
                 return
             }
+            recordGap(
+                .reconnectIdle, startFrame: 0, endFrame: reconnectStartFrame, fromHealth: true
+            )
             trailingIdleSilenceStartFrame = nil
             sink.timestampGap(frameCount: gapFrameCount)
             self.reconnectStartFrame = nil
@@ -712,7 +800,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
         let idleLoopback = loopback && idleObservedSincePacket
-        let reanchorGap: PacketGap = loopback ? (idleLoopback ? .silence : .missing) : .none
+        let reanchorGap: PacketGap = loopback
+            ? (idleLoopback ? .silence : .missing(.qpcForward)) : .none
         guard let anchorDevicePosition, let anchorFrame,
               let previousDevicePosition,
               let previousDeviceEnd,
@@ -744,7 +833,10 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                    ) != nil else {
                 return nil
             }
-            return PacketStartMapping(frame: frame, gap: reanchorGap)
+            return PacketStartMapping(
+                frame: frame,
+                gap: loopback ? (idleLoopback ? .silence : .missing(.deviceReset)) : .none
+            )
         }
 
         let deviceDelta = packet.devicePosition - previousDevicePosition
@@ -788,7 +880,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
         timelineLeadFrames = max(0, mapped - hostFrame)
-        return PacketStartMapping(frame: mapped, gap: .none)
+        // Device and QPC can both advance across idle, so no clock-mismatch reanchor
+        // is needed. The uncovered suffix is still observed idle, even when it is only
+        // a few milliseconds and the resumed packet is SILENT or DISCONTINUITY flagged.
+        return PacketStartMapping(
+            frame: mapped, gap: idleLoopback && mapped > sink.lastEndFrame ? .silence : .none
+        )
     }
 
     private func forwardReanchorFrame(_ hostFrame: Int64, tolerance: Double) -> Int64? {
