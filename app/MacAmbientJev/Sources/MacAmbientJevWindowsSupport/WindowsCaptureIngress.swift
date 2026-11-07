@@ -185,7 +185,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private var timelineLeadFrames: Int64 = 0
     // Signed host-minus-mapped offset, slewed upward at no more than 200 ppm.
     private var clockOffsetFrames: Double = 0
-    // Frames the anchor was advanced past its target into published idle silence.
+    // Frames the last reanchor advanced past its target to the sink end.
     private var anchorShiftFrames: Int64 = 0
     private var currentPacketPosition: UInt64 = 0
     private var currentPacketQPC: UInt64 = 0
