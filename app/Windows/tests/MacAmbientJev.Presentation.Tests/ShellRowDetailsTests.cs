@@ -62,6 +62,20 @@ public sealed partial class ShellStoreTests
     }
 
     [Fact]
+    public async Task LiveRowDetailsReportsInvalidatedReadAsSupersededNotFailed()
+    {
+        var (engine, clock, instance) = await StartRowDetailsAsync(); await using var store = instance;
+        using var context = new ShellUiContext(store, new TestDispatcher(), clock);
+        var read = new LiveViewModel(context).ReadRowDetailsAsync("row"); var request = await engine.NextDetailsAsync();
+        var progress = new EngineProgressPayload(EngineStage.ValidatingModels, 2, 3, null);
+        engine.Inner.EmitBatch(Rows("A", EngineRowsKind.Changes), new EngineOutput(1, new EngineID(2), null, new EngineEvent.Progress(progress)));
+        await ChangedTo(store, state => state.Progress == progress);
+        request.Complete(new EngineResult.TranscriptRowDetails(DetailPage()));
+        Assert.IsType<RowDetailsRead<ShellTranscriptRowDetails>.Superseded>(await read);
+        Assert.Null(store.State.LastError); Assert.Null(store.State.CommandError);
+    }
+
+    [Fact]
     public async Task RowDetailsRejectsUnknownRowsAndMissingSessionWithoutSending()
     {
         var engine = new RowDetailsClient(NewEngine()); var clock = new ManualClock();

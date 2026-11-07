@@ -41,7 +41,8 @@ public sealed partial class MainWindow : Window
         UpdateWindowScale(resize: true);
         Root.SizeChanged += (_, _) => UpdateTitleBarTitle();
         Root.LayoutUpdated += (_, _) => AnchorRowDetails();
-        Root.PreviewKeyDown += OnRowDetailsKeyDown;
+        // Bubbling, so an open ComboBox drop-down handles its own Esc first.
+        Root.KeyDown += OnRowDetailsKeyDown;
         Root.ActualThemeChanged += (_, _) =>
         {
             if (_rowDetailsContent?.Parent is FlyoutPresenter presenter) presenter.RequestedTheme = Root.ActualTheme;
@@ -260,7 +261,9 @@ public sealed partial class MainWindow : Window
             var live = _live ?? throw new InvalidOperationException("文字起こし画面を利用できません。");
             CloseRowDetails();
             var content = new StackPanel { Spacing = 4, MaxWidth = 400 };
-            var presenter = new FlyoutPresenter { Content = content, RequestedTheme = Root.ActualTheme };
+            var presenter = new FlyoutPresenter { Content = content, RequestedTheme = Root.ActualTheme, IsTabStop = true,
+                TabFocusNavigation = KeyboardNavigationMode.Cycle };
+            AutomationProperties.SetName(presenter, "行の詳細");
             presenter.KeyDown += OnRowDetailsKeyDown;
             // A popup, unlike an open Flyout, can be moved: it follows the time button like a Mac popover.
             var popup = new Microsoft.UI.Xaml.Controls.Primitives.Popup
@@ -273,6 +276,9 @@ public sealed partial class MainWindow : Window
             ShowRowDetailsLoading(content);
             popup.Closed += (_, _) =>
             {
+                // Like a Flyout, return keyboard focus to the time button when it was inside the popup.
+                if (FocusManager.GetFocusedElement(Root.XamlRoot) is null or FlyoutPresenter && FindRowTimeButton() is { } anchor &&
+                    !anchor.Focus(FocusState.Programmatic)) _log.Warn("時刻ボタンにフォーカスを戻せません。");
                 if (ReferenceEquals(_rowDetailsPopup, popup))
                 {
                     _rowDetailsPopup = null; _rowDetailsTail = null; _rowDetailsRowID = null;
@@ -281,6 +287,7 @@ public sealed partial class MainWindow : Window
             };
             PlaceRowDetails(popup, button);
             popup.IsOpen = true;
+            if (!presenter.Focus(FocusState.Programmatic)) _log.Warn("行の詳細にフォーカスできません。");
             await RefreshRowDetailsAsync();
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
@@ -302,16 +309,20 @@ public sealed partial class MainWindow : Window
     // a resized popup, or a resized status area moves the anchor, and the popup follows it.
     private void AnchorRowDetails()
     {
-        if (_closeStarted || _rowDetailsPopup is not { IsOpen: true } popup || _rowDetailsRowID is not { } rowID ||
-            _live is not { } live) return;
-        var row = live.Rows.FirstOrDefault(candidate => candidate.RowID == rowID);
-        var button = row is not null && TranscriptList.ContainerFromItem(row) is ListViewItem container
-            ? FindDescendant<Button>(container) : null;
+        if (_closeStarted || _rowDetailsPopup is not { IsOpen: true } popup) return;
+        var button = FindRowTimeButton();
         if (button is null || !IsInTranscriptViewport(button)) { popup.IsOpen = false; return; }
         PlaceRowDetails(popup, button);
     }
 
-    // Right of the time button, vertically centred on it, and kept inside the window.
+    private Button? FindRowTimeButton()
+    {
+        var row = _live?.Rows.FirstOrDefault(candidate => candidate.RowID == _rowDetailsRowID);
+        return row is not null && TranscriptList.ContainerFromItem(row) is ListViewItem container
+            ? FindDescendant<Button>(container) : null;
+    }
+
+    // Right of the time button, vertically centred on it, and kept inside the window height.
     private void PlaceRowDetails(Microsoft.UI.Xaml.Controls.Primitives.Popup popup, FrameworkElement button)
     {
         var origin = button.TransformToVisual(null).TransformPoint(default);
