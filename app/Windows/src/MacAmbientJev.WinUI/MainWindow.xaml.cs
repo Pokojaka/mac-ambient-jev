@@ -29,7 +29,24 @@ public sealed partial class MainWindow : Window
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
+        Application.Current.Resources.Add("ProcessingAccessibleNameConverter", new ProcessingAccessibleNameConverter());
+        Application.Current.Resources.Add("ProcessingAccessibilityViewConverter", new ProcessingAccessibilityViewConverter());
+        Application.Current.Resources.Add("IconGlyphConverter", new IconGlyphConverter());
+        Application.Current.Resources.Add("IconVisibilityConverter", new IconVisibilityConverter());
+        Application.Current.Resources.Add("TopSpacingConverter", new TopSpacingConverter());
+        Application.Current.Resources.Add("FirstLineConverter", new FirstLineConverter());
         InitializeComponent();
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(UnifiedTitleBar);
+        UpdateWindowScale(resize: true);
+        Root.SizeChanged += (_, _) => UpdateTitleBarTitle();
+        Root.LayoutUpdated += (_, _) => AnchorRowDetails();
+        // Bubbling, so an open ComboBox drop-down handles its own Esc first.
+        Root.KeyDown += OnRowDetailsKeyDown;
+        Root.ActualThemeChanged += (_, _) =>
+        {
+            if (_rowDetailsContent?.Parent is FlyoutPresenter presenter) presenter.RequestedTheme = Root.ActualTheme;
+        };
         _log.WriteFailed += OnLogWriteFailed;
         if (_log.StartupFailure is { } startupFailure) ShowFailure(startupFailure);
         else if (_log.Failure is { } logFailure) ShowFailure(logFailure);
@@ -76,6 +93,28 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint window);
+
+    private double _windowScale;
+
+    private void UpdateWindowScale(bool resize = false)
+    {
+        var dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        if (dpi == 0) throw new InvalidOperationException("ウィンドウの表示倍率を取得できません。");
+        var scale = dpi / 96.0;
+        if (!resize && scale == _windowScale) return;
+        _windowScale = scale;
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.PreferredMinimumWidth = (int)Math.Ceiling(720 * scale);
+            presenter.PreferredMinimumHeight = (int)Math.Ceiling(480 * scale);
+        }
+        if (resize) AppWindow.Resize(new Windows.Graphics.SizeInt32((int)Math.Round(900 * scale), (int)Math.Round(620 * scale)));
+    }
+
+    private void UpdateTitleBarTitle() => UnifiedTitleBar.Title = Root.ActualWidth >= 960 ? "MacAmbientJev" : string.Empty;
 
     private void OnLogWriteFailed(Exception exception)
     {
@@ -142,6 +181,9 @@ public sealed partial class MainWindow : Window
     private async void OnRootLoaded(object sender, RoutedEventArgs args)
     {
         Root.Loaded -= OnRootLoaded;
+        Root.XamlRoot.Changed += (_, _) => UpdateWindowScale();
+        UpdateWindowScale();
+        UpdateTitleBarTitle();
         if (_closeStarted) return;
         try
         {
@@ -170,6 +212,19 @@ public sealed partial class MainWindow : Window
 
     private async void OnContextRefreshed(object? sender, EventArgs args)
     {
+        if (_rowDetailsTail is { } detailsTail)
+        {
+            var tail = _live?.Transcript.Tail;
+            if (_live?.Transcript.SessionID != detailsTail.SessionID ||
+                tail is null || !tail.Rows.Any(row => row.RowID == _rowDetailsRowID))
+                CloseRowDetails();
+            else if (tail.Revision != detailsTail.Revision)
+            {
+                _rowDetailsTail = tail;
+                ++_rowDetailsRequest;
+                _ = RefreshRowDetailsAsync();
+            }
+        }
         _scroll?.Refresh();
         SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
         RefreshSettingsButton();
@@ -181,33 +236,187 @@ public sealed partial class MainWindow : Window
         }
         try { await ShowDeviceLostNoticeAsync(); }
         catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
-        // Command CanExecute notifications run after Refreshed; inspect focus after bindings update.
-        if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, RestoreRecordingFocus))
-            _log.Warn("録音ボタンのフォーカス更新を予約できません。");
     }
 
-    private void FocusToolbarButton(AppBarButton button)
+    private void OnWindowDetailsClick(object sender, RoutedEventArgs args) =>
+        WindowFailureScroller.Visibility = WindowDetailsToggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+
+    private void OnEngineDetailsClick(object sender, RoutedEventArgs args) =>
+        EngineFailureScroller.Visibility = EngineDetailsToggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+
+    private long _rowDetailsRequest;
+    private bool _rowDetailsReading;
+    private Microsoft.UI.Xaml.Controls.Primitives.Popup? _rowDetailsPopup;
+    private EngineTranscriptPage? _rowDetailsTail;
+    private string? _rowDetailsRowID;
+    private StackPanel? _rowDetailsContent;
+
+    private async void OnRowTimeClick(object sender, RoutedEventArgs args)
     {
         if (_closeStarted) return;
-        if (button.IsInOverflow && !Toolbar.IsOpen)
+        try
         {
-            Toolbar.IsOpen = true;
-            if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => FocusToolbarButton(button)))
-                _log.Warn($"{button.Label}へのフォーカス移動を予約できません。");
-            return;
+            var button = sender as Button ?? throw new InvalidOperationException("時刻ボタンを利用できません。");
+            var row = button.DataContext as ShellTranscriptRowViewModel ?? throw new InvalidOperationException("文字起こしの行を利用できません。");
+            var live = _live ?? throw new InvalidOperationException("文字起こし画面を利用できません。");
+            CloseRowDetails();
+            var content = new StackPanel { Spacing = 4, MaxWidth = 400 };
+            var presenter = new FlyoutPresenter { Content = content, RequestedTheme = Root.ActualTheme, IsTabStop = true,
+                TabFocusNavigation = KeyboardNavigationMode.Cycle };
+            AutomationProperties.SetName(presenter, "行の詳細");
+            presenter.KeyDown += OnRowDetailsKeyDown;
+            // A popup, unlike an open Flyout, can be moved: it follows the time button like a Mac popover.
+            var popup = new Microsoft.UI.Xaml.Controls.Primitives.Popup
+            { Child = presenter, IsLightDismissEnabled = true, XamlRoot = Root.XamlRoot };
+            _rowDetailsPopup = popup;
+            _rowDetailsTail = live.Transcript.Tail;
+            _rowDetailsRowID = row.RowID;
+            _rowDetailsContent = content;
+            ++_rowDetailsRequest;
+            ShowRowDetailsLoading(content);
+            popup.Closed += (_, _) =>
+            {
+                // Like a Flyout, return keyboard focus to the time button when it was inside the popup.
+                if (FocusManager.GetFocusedElement(Root.XamlRoot) is null or FlyoutPresenter && FindRowTimeButton() is { } anchor &&
+                    !anchor.Focus(FocusState.Programmatic)) _log.Warn("時刻ボタンにフォーカスを戻せません。");
+                if (ReferenceEquals(_rowDetailsPopup, popup))
+                {
+                    _rowDetailsPopup = null; _rowDetailsTail = null; _rowDetailsRowID = null;
+                    _rowDetailsContent = null; ++_rowDetailsRequest;
+                }
+            };
+            PlaceRowDetails(popup, button);
+            popup.IsOpen = true;
+            if (!presenter.Focus(FocusState.Programmatic)) _log.Warn("行の詳細にフォーカスできません。");
+            await RefreshRowDetailsAsync();
         }
-        if (!button.Focus(FocusState.Programmatic)) _log.Warn($"{button.Label}にフォーカスできません。");
+        catch (Exception exception) { await ReportFailureAsync(exception); }
     }
 
-    private void RestoreRecordingFocus()
+    private void CloseRowDetails()
     {
-        if (_closeStarted) return;
-        var focusedElement = FocusManager.GetFocusedElement(Content.XamlRoot);
-        if (ReferenceEquals(focusedElement, StartButton) && !StartButton.IsEnabled && StopButton.IsEnabled)
-            FocusToolbarButton(StopButton);
-        else if (ReferenceEquals(focusedElement, StopButton) && !StopButton.IsEnabled && StartButton.IsEnabled)
-            FocusToolbarButton(StartButton);
+        if (_rowDetailsPopup is { } popup) popup.IsOpen = false;
     }
+
+    private void OnRowDetailsKeyDown(object sender, KeyRoutedEventArgs args)
+    {
+        if (args.Key != Windows.System.VirtualKey.Escape || _rowDetailsPopup is not { IsOpen: true }) return;
+        CloseRowDetails();
+        args.Handled = true;
+    }
+
+    // Runs after every layout pass, when containers are realized: a replaced live row, a Follow scroll,
+    // a resized popup, or a resized status area moves the anchor, and the popup follows it.
+    private void AnchorRowDetails()
+    {
+        if (_closeStarted || _rowDetailsPopup is not { IsOpen: true } popup) return;
+        var button = FindRowTimeButton();
+        if (button is null || !IsInTranscriptViewport(button)) { popup.IsOpen = false; return; }
+        PlaceRowDetails(popup, button);
+    }
+
+    private Button? FindRowTimeButton()
+    {
+        var row = _live?.Rows.FirstOrDefault(candidate => candidate.RowID == _rowDetailsRowID);
+        return row is not null && TranscriptList.ContainerFromItem(row) is ListViewItem container
+            ? FindDescendant<Button>(container) : null;
+    }
+
+    // Right of the time button, vertically centred on it, and kept inside the window height.
+    private void PlaceRowDetails(Microsoft.UI.Xaml.Controls.Primitives.Popup popup, FrameworkElement button)
+    {
+        var origin = button.TransformToVisual(null).TransformPoint(default);
+        var height = ((FrameworkElement)popup.Child).ActualHeight;
+        // Whole DIPs: the popup stores offsets as floats, and an inexact comparison would loop layout forever.
+        var x = Math.Round(origin.X + button.ActualWidth + 4);
+        var y = Math.Round(Math.Clamp(origin.Y + (button.ActualHeight - height) / 2, 0, Math.Max(0, Root.ActualHeight - height)));
+        if (Math.Abs(popup.HorizontalOffset - x) < 0.5 && Math.Abs(popup.VerticalOffset - y) < 0.5) return;
+        popup.HorizontalOffset = x;
+        popup.VerticalOffset = y;
+    }
+
+    private bool IsInTranscriptViewport(FrameworkElement element)
+    {
+        var bounds = element.TransformToVisual(TranscriptList).TransformBounds(
+            new Windows.Foundation.Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        return bounds.Bottom > 0 && bounds.Top < TranscriptList.ActualHeight;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T match) return match;
+            if (FindDescendant<T>(child) is { } nested) return nested;
+        }
+        return null;
+    }
+
+    private static void ShowRowDetailsLoading(StackPanel content)
+    {
+        content.Children.Clear();
+        var ring = new ProgressRing { IsActive = true, Width = 16, Height = 16 };
+        AutomationProperties.SetName(ring, "行の詳細を読み込み中");
+        content.Children.Add(ring);
+    }
+
+    private async Task RefreshRowDetailsAsync()
+    {
+        // The store is revision-strict and admits one request at a time. While it is pending,
+        // retain the latest row/revision intent and service it immediately after completion.
+        if (_rowDetailsReading) return;
+        _rowDetailsReading = true;
+        try
+        {
+            while (!_closeStarted && _rowDetailsPopup is not null && _rowDetailsRowID is { } rowID &&
+                _rowDetailsContent is { } content && _live is { } live)
+            {
+                var request = _rowDetailsRequest;
+                var read = await live.ReadRowDetailsAsync(rowID);
+                if (request != _rowDetailsRequest) continue;
+                if (_closeStarted || _rowDetailsPopup is null) return;
+                // A newer tail is on its way and its refresh requests again; keep the last details until then.
+                if (read is RowDetailsRead<ShellTranscriptRowDetails>.Superseded) return;
+                if (read is not RowDetailsRead<ShellTranscriptRowDetails>.Read { Details: var details })
+                {
+                    ShowRowDetailsFailure(content);
+                    return;
+                }
+                content.Children.Clear();
+                content.Children.Add(RowDetailsCaption(details.ClauseStateText));
+                if (details.SpeakerTexts.Length > 0)
+                {
+                    content.Children.Add(RowDetailsCaption("話者区間", true));
+                    foreach (var text in details.SpeakerTexts)
+                    {
+                        var span = RowDetailsCaption(text);
+                        Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(span, Microsoft.UI.Xaml.FontNumeralAlignment.Tabular);
+                        content.Children.Add(span);
+                    }
+                }
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            if (_rowDetailsContent is { } content) ShowRowDetailsFailure(content);
+            await ReportFailureAsync(exception);
+        }
+        finally { _rowDetailsReading = false; }
+    }
+
+    private static void ShowRowDetailsFailure(StackPanel content)
+    {
+        content.Children.Clear();
+        content.Children.Add(RowDetailsCaption("詳細を取得できませんでした。"));
+    }
+
+    private static TextBlock RowDetailsCaption(string text, bool strong = false) => new()
+    {
+        Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
+        Style = (Style)Application.Current.Resources[strong ? "SecondaryCaptionStrong" : "SecondaryCaption"]
+    };
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
     {
@@ -241,7 +450,8 @@ public sealed partial class MainWindow : Window
         {
             if (_settingsDialog is { } dialog) { dialog.Dispose(); _settingsDialog = null; }
             RefreshSettingsButton();
-            if (!_closeStarted && SettingsButton.IsEnabled) FocusToolbarButton(SettingsButton);
+            if (!_closeStarted && SettingsButton.IsEnabled && !SettingsButton.Focus(FocusState.Programmatic))
+                _log.Warn("設定にフォーカスできません。");
             try { await ShowDeviceLostNoticeAsync(); }
             catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
         }
@@ -283,7 +493,9 @@ public sealed partial class MainWindow : Window
             if (stderr.Length != 0) text.AppendLine().Append("標準エラー出力: ").Append(stderr);
             if (snapshot.Stderr.DiscardedBytes != 0) text.AppendLine().Append("標準エラー出力の破棄バイト数: ").Append(snapshot.Stderr.DiscardedBytes);
         }
-        WindowFailure.Text = text.ToString(); WindowFailureScroller.Visibility = Visibility.Visible;
+        WindowFailure.Text = text.ToString();
+        WindowFailureSummary.Text = FirstLineConverter.FirstLine(exception.Message);
+        WindowFailureRegion.Visibility = Visibility.Visible;
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -292,6 +504,8 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;
         if (_closeStarted) return;
         _closeStarted = true; Root.IsHitTestVisible = false;
+        ++_rowDetailsRequest;
+        CloseRowDetails();
         _log.Info("shutdown started");
         Toolbar.IsEnabled = false; SavedSessionsButton.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
         ClosingStatus.Visibility = Visibility.Visible;
@@ -387,6 +601,10 @@ public sealed partial class MainWindow : Window
     {
         _closeStarted = false;
         Root.IsHitTestVisible = true;
+        Toolbar.IsEnabled = true;
+        SavedSessionsButton.IsEnabled = _store?.State.Phase == ShellPhase.Running;
+        ReturnToLatestButton.IsEnabled = true;
+        RefreshSettingsButton();
         ClosingStatus.Visibility = Visibility.Collapsed;
     }
 

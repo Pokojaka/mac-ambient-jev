@@ -22,7 +22,7 @@ public sealed partial class ShellStoreTests
         await ChangedTo(store, state => state.Transcript.Tail is not null); await RenderAsync(dispatcher, clock);
         Assert.Equal("保存した講義の本文", Assert.Single(live.Rows).Text);
         Assert.Equal("表示中の録音: 講義 録音.wav", live.TranscriptDisplayText);
-        Assert.Equal("保存済み文字起こしを表示中", live.BadgeText);
+        Assert.Equal(new ShellTranscriptBadge(ShellTranscriptBadgeKind.Saved, "保存済み文字起こしを表示中"), live.TranscriptBadge);
         Assert.Same(summary, sessions.Inspection); Assert.Null(store.State.LastError);
     }
 
@@ -48,6 +48,7 @@ public sealed partial class ShellStoreTests
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var live = new LiveViewModel(context);
         Assert.Empty(live.Rows); Assert.True(live.IsEmpty); Assert.Equal(reason, live.EmptyDescription);
         Assert.Equal("表示中の録音: " + summary.DisplayName, live.TranscriptDisplayText);
+        Assert.Null(live.TranscriptBadge); Assert.True(live.HasTranscriptHeader);
         Assert.Null(store.State.Transcript.SessionID); Assert.Null(store.State.LastError);
     }
 
@@ -82,7 +83,7 @@ public sealed partial class ShellStoreTests
         await RenderAsync(dispatcher, clock);
         Assert.Equal("表示中の録音: エンジン表示名", live.TranscriptDisplayText);
         Assert.Equal(summary.DisplayName, store.State.Sessions.Current!.Sessions[0].DisplayName);
-        Assert.Equal("読み込んだ音声を処理中", live.BadgeText);
+        Assert.Equal(new ShellTranscriptBadge(ShellTranscriptBadgeKind.ImportedProcessing, "読み込んだ音声を処理中"), live.TranscriptBadge);
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
         var initialWatch = await engine.NextRequestAsync();
         var tailStart = clock.GetTimestamp();
@@ -90,7 +91,7 @@ public sealed partial class ShellStoreTests
         initialWatch.Complete(new EngineResult.TranscriptWatch(Page("imported", 1, "", null, null) with { Rows = [] }));
         await ChangedTo(store, state => state.Transcript.Tail is { Rows.Length: 0 });
         await RenderAsync(dispatcher, clock);
-        Assert.True(live.IsEmpty); Assert.Equal("読み込んだ音声を処理中", live.BadgeText);
+        Assert.True(live.IsEmpty); Assert.Equal(new ShellTranscriptBadge(ShellTranscriptBadgeKind.ImportedProcessing, "読み込んだ音声を処理中"), live.TranscriptBadge);
         Assert.Contains("処理中の場合は、作成された行がここに表示されます", live.EmptyDescription);
         Assert.DoesNotContain("録音を開始するか", live.EmptyDescription);
         engine.EmitBatch(Rows("imported", EngineRowsKind.Changes));
@@ -108,7 +109,7 @@ public sealed partial class ShellStoreTests
         await RenderAsync(dispatcher, clock);
         Assert.Equal("読み込んだ音声の本文", Assert.Single(live.Rows).Text);
         Assert.Equal("表示中の録音: エンジン表示名", live.TranscriptDisplayText);
-        Assert.Equal("保存済み文字起こしを表示中", live.BadgeText);
+        Assert.Equal(new ShellTranscriptBadge(ShellTranscriptBadgeKind.Saved, "保存済み文字起こしを表示中"), live.TranscriptBadge);
     }
 
     [Fact]

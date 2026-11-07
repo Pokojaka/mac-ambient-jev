@@ -1,90 +1,178 @@
-<Window
-    x:Class="MacAmbientJev.WinUI.MainWindow"
+<Window x:Class="MacAmbientJev.WinUI.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="MacAmbientJev">
-    <Grid x:Name="Root" Margin="12" RowSpacing="8" RowDefinitions="Auto,Auto,Auto,*">
-        <CommandBar x:Name="Toolbar" Grid.Row="0" DefaultLabelPosition="Right">
-            <CommandBar.PrimaryCommands>
-                <AppBarButton x:Name="ImportButton" Label="{Binding ImportLabel}" Command="{Binding ImportAudio}" ToolTipService.ToolTip="{Binding ImportDisabledReason}">
-                    <AppBarButton.Icon><SymbolIcon Symbol="OpenFile" /></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton x:Name="SavedSessionsButton" Label="保存済み録音" IsEnabled="False" Click="OnSavedSessionsClick" ToolTipService.ToolTip="保存済み録音の一覧と処理状態を確認します">
-                    <AppBarButton.Icon><SymbolIcon Symbol="Folder" /></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton x:Name="StartButton" Label="{Binding StartLabel}" Command="{Binding StartRecording}" ToolTipService.ToolTip="{Binding StartDisabledReason}">
-                    <AppBarButton.Icon><SymbolIcon Symbol="Microphone" /></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton x:Name="StopButton" Label="{Binding StopLabel}" Command="{Binding StopRecording}" ToolTipService.ToolTip="録音中に停止できます">
-                    <AppBarButton.Icon><SymbolIcon Symbol="Stop" /></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton Label="{Binding RefreshDevicesLabel}" Command="{Binding RefreshDevices}" ToolTipService.ToolTip="選択中の音声ソースのデバイス一覧を更新します">
-                    <AppBarButton.Icon><SymbolIcon Symbol="Refresh" /></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton x:Name="SettingsButton" Label="設定" IsEnabled="False" Click="OnSettingsClick" ToolTipService.ToolTip="一般設定と診断を開きます">
-                    <AppBarButton.Icon><SymbolIcon Symbol="Setting" /></AppBarButton.Icon>
-                </AppBarButton>
-            </CommandBar.PrimaryCommands>
-            <CommandBar.Content>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <ComboBox Header="録音元" ItemsSource="{Binding Sources}" DisplayMemberPath="Label" AutomationProperties.Name="録音元" SelectedItem="{Binding SelectedSourceChoice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="150" />
-                    <ComboBox x:Name="DeviceSelector" Header="デバイス" ItemsSource="{Binding Devices}" DisplayMemberPath="Label" AutomationProperties.Name="デバイス" SelectedItem="{Binding SelectedDeviceChoice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" MinWidth="200" />
-                    <ProgressRing IsActive="{Binding IsBusy}" Width="24" Height="24" VerticalAlignment="Bottom" />
-                    <ProgressRing IsActive="{Binding IsImporting}" Width="24" Height="24" VerticalAlignment="Bottom" ToolTipService.ToolTip="{Binding ImportDisabledReason}" />
+    xmlns:local="using:MacAmbientJev.WinUI" Title="MacAmbientJev">
+    <Grid x:Name="Root" RowDefinitions="Auto,Auto,Auto,Auto,Auto,*">
+        <TitleBar x:Name="UnifiedTitleBar" Title="MacAmbientJev" Grid.Row="0">
+            <TitleBar.IconSource><BitmapIconSource UriSource="ms-appx:///Assets/AppIcon.ico" ShowAsMonochrome="False" /></TitleBar.IconSource>
+            <TitleBar.RightHeader>
+                <ContentControl x:Name="Toolbar" IsTabStop="False" Margin="0,0,16,0">
+                <ContentControl.Resources>
+                    <!-- Mac toolbar buttons have no plate when disabled; only the glyph dims. -->
+                    <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="Transparent" />
+                    <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="Transparent" />
+                </ContentControl.Resources>
+                <StackPanel Orientation="Horizontal" Spacing="{StaticResource SpacingXS}" VerticalAlignment="Center">
+                    <Button x:Name="ImportButton" Style="{StaticResource ToolbarIconButton}" Command="{Binding ImportAudio}" AutomationProperties.Name="音声ファイルを読み込む" ToolTipService.ToolTip="{Binding ImportHelp}">
+                        <Grid Width="16" Height="16">
+                            <FontIcon Glyph="&#xE8A5;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" />
+                            <FontIcon Glyph="&#xE710;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="8" HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                        </Grid>
+                    </Button>
+                    <Button x:Name="SavedSessionsButton" Style="{StaticResource ToolbarIconButton}" IsEnabled="False" Click="OnSavedSessionsClick" AutomationProperties.Name="保存済み録音" ToolTipService.ToolTip="これまでの録音と読み込んだ音声を一覧で表示">
+                        <Grid Width="16" Height="16">
+                            <ContentControl Style="{StaticResource WaveformIcon}" Width="14" Height="14" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                            <FontIcon Glyph="&#xE720;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="8" HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                        </Grid>
+                    </Button>
+                    <Border CornerRadius="8" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" Background="{ThemeResource ControlAltFillColorSecondaryBrush}" Padding="2">
+                        <ListView ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSourceChoice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" SelectionMode="Single" IsTabStop="False" AutomationProperties.Name="録音元" ToolTipService.ToolTip="{Binding SourceHelp}" ItemContainerStyle="{StaticResource SegmentItem}" Padding="0">
+                            <ListView.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ListView.ItemsPanel>
+                            <ListView.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" FontSize="12" /></DataTemplate></ListView.ItemTemplate>
+                        </ListView>
+                    </Border>
+                    <ComboBox x:Name="DeviceSelector" ItemsSource="{Binding Devices}" DisplayMemberPath="Label" AutomationProperties.Name="デバイス" SelectedItem="{Binding SelectedDeviceChoice, Mode=TwoWay}" IsEnabled="{Binding CanChangeRecordingSelection}" Width="140" MinHeight="32" Padding="8,4" FontSize="12" />
+                    <Button Style="{StaticResource ToolbarIconButton}" Command="{Binding RefreshDevices}" AutomationProperties.Name="デバイスを更新" ToolTipService.ToolTip="選択中の音声ソースのデバイス一覧を更新します"><FontIcon Glyph="&#xE72C;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" /></Button>
+                    <!-- The wrapper keeps the disabled reason tooltip available while the button is disabled. -->
+                    <Grid Background="Transparent" ToolTipService.ToolTip="{Binding RecordingHelp}">
+                        <Button x:Name="RecordButton" Style="{StaticResource ToolbarIconButton}" Background="{ThemeResource ButtonBackground}" Foreground="{ThemeResource ButtonForeground}" BorderBrush="{ThemeResource ButtonBorderBrush}" CornerRadius="16" Command="{Binding ToggleRecording}" AutomationProperties.Name="{Binding RecordingLabel}">
+                            <Button.Resources>
+                                <ResourceDictionary>
+                                    <ResourceDictionary.ThemeDictionaries>
+                                        <ResourceDictionary x:Key="Light">
+                                            <SolidColorBrush x:Key="ButtonBackground" Color="#FF3B30" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#E6352B" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#CC2F26" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#80FF3B30" />
+                                            <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrush" Color="#FF3B30" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#E6352B" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#CC2F26" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#80FF3B30" />
+                                        </ResourceDictionary>
+                                        <ResourceDictionary x:Key="Dark">
+                                            <SolidColorBrush x:Key="ButtonBackground" Color="#FF453A" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#E63E34" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#CC372E" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#80FF453A" />
+                                            <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="White" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrush" Color="#FF453A" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#E63E34" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#CC372E" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#80FF453A" />
+                                        </ResourceDictionary>
+                                        <ResourceDictionary x:Key="HighContrast">
+                                            <SolidColorBrush x:Key="ButtonBackground" Color="{ThemeResource SystemColorHighlightColor}" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="{ThemeResource SystemColorHighlightColor}" />
+                                            <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="{ThemeResource SystemColorButtonFaceColor}" />
+                                            <SolidColorBrush x:Key="ButtonForeground" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                                            <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="{ThemeResource SystemColorGrayTextColor}" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="{ThemeResource SystemColorHighlightColor}" />
+                                            <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="{ThemeResource SystemColorGrayTextColor}" />
+                                        </ResourceDictionary>
+                                    </ResourceDictionary.ThemeDictionaries>
+                                </ResourceDictionary>
+                            </Button.Resources>
+                            <FontIcon Glyph="{Binding RecordingGlyph, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="20" />
+                        </Button>
+                    </Grid>
+                    <Button x:Name="SettingsButton" Style="{StaticResource ToolbarIconButton}" IsEnabled="False" Click="OnSettingsClick" AutomationProperties.Name="設定" ToolTipService.ToolTip="音声認識モデル、保存先、マイクの設定を表示"><FontIcon Glyph="&#xE713;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" /></Button>
                 </StackPanel>
-            </CommandBar.Content>
-        </CommandBar>
-        <StackPanel Grid.Row="1" Spacing="3">
-            <TextBlock x:Name="ClosingStatus" Text="終了処理中" Visibility="Collapsed" />
-            <TextBlock Text="{Binding TranscriptDisplayText}" Visibility="{Binding TranscriptDisplayText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-            <TextBlock Text="{Binding StartDisabledReason}" Visibility="{Binding StartDisabledReason, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding RecordingStatusText}" Visibility="{Binding RecordingStatusText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding Presentation.PreparationStatusText}" Visibility="{Binding Presentation.PreparationStatusText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding Presentation.RecoveryStatusText}" Visibility="{Binding Presentation.RecoveryStatusText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding Presentation.ProcessingStatusText}" Visibility="{Binding Presentation.ProcessingStatusText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding SilenceWarningText}" Visibility="{Binding SilenceWarningText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding AudioGapText}" Visibility="{Binding AudioGapText, Converter={StaticResource VisibilityConverter}}" TextWrapping="Wrap" />
-            <ItemsControl ItemsSource="{Binding LiveFailureNotices}">
-                <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" /></DataTemplate></ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <StackPanel Orientation="Horizontal" Spacing="10">
-                <TextBlock Text="{Binding BadgeText}" Visibility="{Binding BadgeText, Converter={StaticResource VisibilityConverter}}" />
-                <Button x:Name="ReturnToLatestButton" Content="{Binding ReturnToLatestLabel}" Command="{Binding ReturnToLatest}" ToolTipService.ToolTip="文字起こしの表示を最新に追従させます" Visibility="{Binding IsFollowing, Converter={StaticResource VisibilityConverter}, ConverterParameter=Invert}" />
-                <TextBlock Text="新しい更新があります" Visibility="{Binding HasNewUpdates, Converter={StaticResource VisibilityConverter}}" VerticalAlignment="Center" />
+                </ContentControl>
+            </TitleBar.RightHeader>
+        </TitleBar>
+        <StackPanel Grid.Row="1" Padding="{StaticResource MainSectionPadding}" Spacing="{StaticResource SpacingXS}">
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="{StaticResource SpacingSM}">
+                <Grid Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0">
+                    <FontIcon Glyph="{Binding RecordingTone, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{Binding RecordingTone, Converter={StaticResource IconVisibilityConverter}, ConverterParameter=RecordingSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                    <FontIcon Glyph="{Binding RecordingTone, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14" Foreground="{ThemeResource MacRedBrush}" Visibility="{Binding RecordingTone, Converter={StaticResource IconVisibilityConverter}, ConverterParameter=RecordingCritical}" AutomationProperties.AccessibilityView="Raw" />
+                    <FontIcon Glyph="{Binding RecordingTone, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="14" Foreground="{ThemeResource MacOrangeBrush}" Visibility="{Binding RecordingTone, Converter={StaticResource IconVisibilityConverter}, ConverterParameter=RecordingWarning}" AutomationProperties.AccessibilityView="Raw" />
+                </Grid>
+                <local:MainStatusText Grid.Column="1" Style="{StaticResource MainStatusTextStyle}" Text="{Binding RecordingStatusText}" Tone="{Binding RecordingTone}" FontSize="13" MaxLines="2" TextWrapping="Wrap" ToolTipService.ToolTip="{Binding RecordingStatusText}" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
+                    <ProgressRing IsActive="{Binding IsBusy}" Visibility="{Binding IsBusy, Converter={StaticResource VisibilityConverter}}" Width="16" Height="16" AutomationProperties.Name="処理中" />
+                </StackPanel>
+            </Grid>
+            <TextBlock Text="{Binding SilenceWarningText}" Style="{StaticResource WarningCaption}" Visibility="{Binding SilenceWarningText, Converter={StaticResource VisibilityConverter}}" />
+            <TextBlock Text="{Binding AudioGapText}" Style="{StaticResource WarningCaption}" Visibility="{Binding AudioGapText, Converter={StaticResource VisibilityConverter}}" />
+            <ItemsControl ItemsSource="{Binding LiveFailureNotices}" Visibility="{Binding HasLiveFailureNotices, Converter={StaticResource VisibilityConverter}}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Style="{StaticResource WarningCaption}" /></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8" Visibility="{Binding ProcessingStatusText, Converter={StaticResource VisibilityConverter}}">
+                <Grid Width="12" Height="12" AutomationProperties.Name="{Binding ProcessingIndicator, Converter={StaticResource ProcessingAccessibleNameConverter}}" AutomationProperties.AccessibilityView="{Binding ProcessingIndicator, Converter={StaticResource ProcessingAccessibilityViewConverter}}">
+                    <FontIcon Glyph="{Binding ProcessingIndicator, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{Binding ProcessingIndicator, Converter={StaticResource IconVisibilityConverter}, ConverterParameter=ProcessingSecondary}" AutomationProperties.AccessibilityView="Raw" />
+                    <ContentControl Style="{StaticResource WaveformIcon}" Width="12" Height="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{Binding ProcessingIndicator, Converter={StaticResource IconVisibilityConverter}, ConverterParameter=ProcessingRunning}" AutomationProperties.AccessibilityView="Raw" />
+                    <FontIcon Glyph="{Binding ProcessingIndicator, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="12" Foreground="{ThemeResource MacOrangeBrush}" Visibility="{Binding ProcessingIndicator, Converter={StaticResource IconVisibilityConverter}, ConverterParameter=ProcessingWarning}" AutomationProperties.AccessibilityView="Raw" />
+                </Grid>
+                <TextBlock Grid.Column="1" Text="{Binding ProcessingStatusText}" Style="{StaticResource SecondaryCaption}" MaxLines="2" ToolTipService.ToolTip="{Binding ProcessingStatusText}" />
+                <ProgressRing Grid.Column="2" Width="12" Height="12" IsActive="{Binding IsProcessing}" Visibility="{Binding IsProcessing, Converter={StaticResource VisibilityConverter}}" AutomationProperties.Name="文字起こし処理中" />
+            </Grid>
+            <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{Binding IsPreparingModels, Converter={StaticResource VisibilityConverter}}">
+                <ProgressRing IsActive="{Binding IsPreparingModels}" Width="12" Height="12" /><TextBlock Text="{Binding PreparationStatusText}" Style="{StaticResource SecondaryCaption}" />
+            </StackPanel>
+            <TextBlock Text="{Binding PreparationStatusText}" Style="{StaticResource WarningCaption}" Visibility="{Binding IsPreparationFailed, Converter={StaticResource VisibilityConverter}}" />
+            <TextBlock Text="{Binding RecoveryStatusText}" Style="{StaticResource SecondaryCaption}" Visibility="{Binding RecoveryStatusText, Converter={StaticResource VisibilityConverter}}" />
+            <TextBlock x:Name="ClosingStatus" Text="終了処理中" Style="{StaticResource SecondaryCaption}" Visibility="Collapsed" />
+            <StackPanel x:Name="WindowFailureRegion" Visibility="Collapsed" Spacing="4">
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                    <FontIcon Glyph="&#xEA39;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="12" Foreground="{ThemeResource MacRedBrush}" />
+                    <TextBlock x:Name="WindowFailureSummary" Grid.Column="1" Style="{StaticResource Caption}" Foreground="{ThemeResource MacRedBrush}" TextWrapping="Wrap" />
+                    <ToggleButton x:Name="WindowDetailsToggle" Grid.Column="2" Content="詳細" Click="OnWindowDetailsClick" FontSize="12" Padding="8,0" MinHeight="24" />
+                </Grid>
+                <ScrollViewer x:Name="WindowFailureScroller" MaxHeight="72" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" IsTabStop="True" AutomationProperties.Name="アプリのエラー"><TextBlock x:Name="WindowFailure" TextWrapping="Wrap" IsTextSelectionEnabled="True" Style="{StaticResource Caption}" /></ScrollViewer>
+            </StackPanel>
+            <StackPanel Visibility="{Binding FailureText, Converter={StaticResource VisibilityConverter}}" Spacing="4">
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                    <FontIcon Glyph="&#xEA39;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="12" Foreground="{ThemeResource MacRedBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding FailureText, Converter={StaticResource FirstLineConverter}}" Style="{StaticResource Caption}" Foreground="{ThemeResource MacRedBrush}" TextWrapping="Wrap" />
+                    <ToggleButton x:Name="EngineDetailsToggle" Grid.Column="2" Content="詳細" Click="OnEngineDetailsClick" FontSize="12" Padding="8,0" MinHeight="24" />
+                </Grid>
+                <ScrollViewer x:Name="EngineFailureScroller" MaxHeight="96" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" IsTabStop="True" AutomationProperties.Name="エンジンのエラー"><TextBlock Text="{Binding FailureText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Style="{StaticResource Caption}" /></ScrollViewer>
             </StackPanel>
         </StackPanel>
-        <StackPanel Grid.Row="2" Spacing="4">
-            <ScrollViewer x:Name="WindowFailureScroller" MaxHeight="72" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" IsTabStop="True" AutomationProperties.Name="アプリのエラー">
-                <TextBlock x:Name="WindowFailure" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-            </ScrollViewer>
-            <ScrollViewer MaxHeight="96" VerticalScrollBarVisibility="Auto" Visibility="{Binding FailureText, Converter={StaticResource VisibilityConverter}}" IsTabStop="True" AutomationProperties.Name="エンジンのエラー">
-                <TextBlock Text="{Binding FailureText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-            </ScrollViewer>
-        </StackPanel>
-        <Grid Grid.Row="3">
-            <ListView x:Name="TranscriptList" ItemsSource="{Binding Rows}" SelectionMode="None" IsItemClickEnabled="False" AutomationProperties.Name="文字起こし" ContainerContentChanging="OnTranscriptContainerContentChanging">
+        <Border Grid.Row="2" Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+        <Grid Grid.Row="3" Visibility="{Binding HasTranscriptHeader, Converter={StaticResource VisibilityConverter}}" Padding="{StaticResource MainSectionPadding}" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+            <StackPanel Orientation="Horizontal" Spacing="4" Visibility="{Binding TranscriptBadge.Text, Converter={StaticResource VisibilityConverter}}" VerticalAlignment="Center">
+                <FontIcon Glyph="{Binding TranscriptBadge.Kind, Converter={StaticResource IconGlyphConverter}}" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="12" AutomationProperties.AccessibilityView="Raw" /><TextBlock Text="{Binding TranscriptBadge.Text}" Style="{StaticResource CaptionStrong}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock Text="{Binding TranscriptDisplayText}" Style="{StaticResource SecondaryCaption}" Visibility="{Binding TranscriptDisplayText, Converter={StaticResource VisibilityConverter}}" />
+                <TextBlock Text="新しい更新があります" Style="{StaticResource SecondaryCaption}" Visibility="{Binding HasNewUpdates, Converter={StaticResource VisibilityConverter}}" />
+            </StackPanel>
+            <Button x:Name="ReturnToLatestButton" Grid.Column="2" Command="{Binding ReturnToLatest}" ToolTipService.ToolTip="最新の行までスクロールし、自動追従を再開" Visibility="{Binding IsFollowing, Converter={StaticResource VisibilityConverter}, ConverterParameter=Invert}" Padding="8,4" MinHeight="28">
+                <StackPanel Orientation="Horizontal" Spacing="4"><FontIcon Glyph="&#xE70D;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="12" /><TextBlock Text="{Binding ReturnToLatestLabel}" Style="{StaticResource Caption}" /></StackPanel>
+            </Button>
+        </Grid>
+        <Border Grid.Row="4" Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Visibility="{Binding HasTranscriptHeader, Converter={StaticResource VisibilityConverter}}" />
+        <Grid Grid.Row="5">
+            <ListView x:Name="TranscriptList" ItemsSource="{Binding Rows}" SelectionMode="None" IsItemClickEnabled="False" AutomationProperties.Name="文字起こし" ContainerContentChanging="OnTranscriptContainerContentChanging" Padding="{StaticResource TranscriptPadding}" ItemContainerStyle="{StaticResource TranscriptItem}">
                 <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel ItemsUpdatingScrollMode="KeepItemsInView" /></ItemsPanelTemplate></ListView.ItemsPanel>
-                <ListView.ItemContainerStyle>
-                    <Style TargetType="ListViewItem">
-                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    </Style>
-                </ListView.ItemContainerStyle>
-                <ListView.ItemTemplate>
-                    <DataTemplate>
-                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" Margin="4">
-                            <TextBlock Text="{Binding TimeText}" VerticalAlignment="Top" />
-                            <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock Text="{Binding HeadingText}" Visibility="{Binding HeadingText, Converter={StaticResource VisibilityConverter}}" />
-                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                                <TextBlock Text="{Binding WaitingText}" Visibility="{Binding WaitingText, Converter={StaticResource VisibilityConverter}}" />
-                            </StackPanel>
-                        </Grid>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
+                <ListView.ItemTemplate><DataTemplate>
+                    <Grid ColumnDefinitions="42,*" ColumnSpacing="12" Margin="{Binding TopSpacing, Converter={StaticResource TopSpacingConverter}}">
+                        <Button Width="42" VerticalAlignment="Top" Style="{StaticResource PlainTimeButton}" Click="OnRowTimeClick" AutomationProperties.Name="{Binding TimeAccessibleName}" ToolTipService.ToolTip="この行の発話文の判定状態と話者区間を表示">
+                            <TextBlock Text="{Binding TimeText}" Style="{StaticResource SecondaryCaption}" Typography.NumeralAlignment="Tabular" />
+                        </Button>
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="{Binding HeadingText}" Style="{StaticResource CaptionStrong}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{Binding HeadingText, Converter={StaticResource VisibilityConverter}}" />
+                            <TextBlock Text="{Binding Text}" Style="{StaticResource Body}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                            <TextBlock Text="{Binding WaitingText}" Style="{StaticResource SecondaryCaption}" Visibility="{Binding WaitingText, Converter={StaticResource VisibilityConverter}}" />
+                        </StackPanel>
+                    </Grid>
+                </DataTemplate></ListView.ItemTemplate>
             </ListView>
-            <StackPanel IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="4" Visibility="{Binding IsEmpty, Converter={StaticResource VisibilityConverter}}">
-                <TextBlock Text="{Binding EmptyTitle}" HorizontalAlignment="Center" Style="{ThemeResource SubtitleTextBlockStyle}" />
-                <TextBlock Text="{Binding EmptyDescription}" TextWrapping="Wrap" MaxWidth="480" HorizontalTextAlignment="Center" />
+            <StackPanel IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Margin="16" Visibility="{Binding IsEmpty, Converter={StaticResource VisibilityConverter}}">
+                <ContentControl Style="{StaticResource WaveformIcon}" Width="40" Height="40" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding EmptyTitle}" HorizontalAlignment="Center" Style="{StaticResource Title}" />
+                <TextBlock Text="{Binding EmptyDescription}" Style="{StaticResource Body}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" MaxWidth="480" HorizontalTextAlignment="Center" />
             </StackPanel>
         </Grid>
     </Grid>

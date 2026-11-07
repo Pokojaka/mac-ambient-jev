@@ -7,8 +7,12 @@ using MacAmbientJev.Protocol;
 
 namespace MacAmbientJev.Presentation;
 
-public sealed record ShellTranscriptRowViewModel(string RowID, string Text, string TimeText, string HeadingText, string WaitingText)
+public enum ShellTranscriptBadgeKind { Live, Finalizing, Finalized, Saved, ImportedProcessing }
+public sealed record ShellTranscriptBadge(ShellTranscriptBadgeKind Kind, string Text);
+
+public sealed record ShellTranscriptRowViewModel(string RowID, string Text, string TimeText, string HeadingText, string WaitingText, double TopSpacing)
 {
+    public string TimeAccessibleName => $"時刻 {TimeText}、詳細を表示";
     public string AccessibleName => string.IsNullOrEmpty(HeadingText)
         ? $"{TimeText}, {Text}"
         : $"{TimeText}, {HeadingText}, {Text}";
@@ -36,32 +40,34 @@ public sealed partial class LiveViewModel
         get
         {
             var state = Snapshot;
-            return state.IsPending(EngineCommandName.RecordingStart) || state.IsPending(EngineCommandName.RecordingStop) ||
-                state.IsPending(EngineCommandName.DevicesList);
+            return state.Engine?.Recording?.Phase is EngineRecordingPhase.Starting or EngineRecordingPhase.Stopping ||
+                state.IsPending(EngineCommandName.RecordingStart) || state.IsPending(EngineCommandName.RecordingStop) ||
+                state.IsPending(EngineCommandName.SessionImport) || state.IsPending(EngineCommandName.DevicesList);
         }
     }
     public string? TranscriptDisplayText => Snapshot.Transcript.DisplayName is { } name ? "表示中の録音: " + name : null;
-    public string? BadgeText
+    public ShellTranscriptBadge? TranscriptBadge
     {
         get
         {
             var state = Snapshot;
             var transcript = state.Transcript;
             if (transcript.IsImported && state.Engine?.Queue.Any(operation => operation.SessionID == transcript.SessionID) == true)
-                return "読み込んだ音声を処理中";
+                return new(ShellTranscriptBadgeKind.ImportedProcessing, "読み込んだ音声を処理中");
             if (transcript.DisplayName is not null)
-                return transcript.Tail is { Rows.Length: > 0 } ? "保存済み文字起こしを表示中" : null;
+                return transcript.Tail is { Rows.Length: > 0 } ? new(ShellTranscriptBadgeKind.Saved, "保存済み文字起こしを表示中") : null;
             return state.Engine?.Screen switch
             {
                 null or EngineScreen.Idle => null,
-                EngineScreen.Live => "ライブ（暫定）",
-                EngineScreen.Finalizing => "確定処理中",
-                EngineScreen.Finalized => "確定済み",
+                EngineScreen.Live => new(ShellTranscriptBadgeKind.Live, "ライブ（暫定）"),
+                EngineScreen.Finalizing => new(ShellTranscriptBadgeKind.Finalizing, "確定処理中"),
+                EngineScreen.Finalized => new(ShellTranscriptBadgeKind.Finalized, "確定済み"),
                 var screen => throw new InvalidOperationException($"Unknown engine screen: {screen}.")
             };
         }
     }
-    public string RefreshDevicesLabel => "デバイスを更新";
+    public bool HasTranscriptHeader => TranscriptBadge is not null || !string.IsNullOrEmpty(TranscriptDisplayText) ||
+        HasNewUpdates || !IsFollowing;
 
     public string? FailureText
     {
@@ -87,18 +93,21 @@ public sealed partial class LiveViewModel
         }
     }
 
-    public string? StartDisabledReason
+    public string? RecordingDisabledReason
     {
         get
         {
-            if (StartRecording.CanExecute(null)) return null;
+            if (ToggleRecording.CanExecute(null)) return null;
             var state = Snapshot;
+            if (state.Phase != ShellPhase.Running || state.Engine is null) return "エンジンの準備ができていません";
+            if (IsRecordingStopping) return "録音を保存しています";
+            if (IsRecordingStarting) return "録音を開始しています。開始が完了すると停止できます";
+            if (Recording is not null) return "録音操作を処理中です";
             if (_selectedSource is not EngineSource source) return "音声ソースを選択してください";
             if (state.Capabilities is { } capabilities && !capabilities.Sources.Contains(source)) return "この音声ソースは利用できません";
-            if (StartRecording.Execution is { IsCompleted: false } || state.IsPending(EngineCommandName.RecordingStart))
-                return "録音を開始しています";
+            if (ToggleRecording.Execution is { IsCompleted: false }) return "録音操作を処理中です";
             if (state.IsPending(EngineCommandName.RecordingStop) || state.IsPending(EngineCommandName.DevicesList) ||
-                state.IsPending(EngineCommandName.SettingsReplace)) return "処理中です";
+                state.IsPending(EngineCommandName.SettingsReplace) || state.IsPending(EngineCommandName.SessionImport)) return "処理中です";
             if (state.Capabilities is null) return "音声ソースを確認できません";
             if (_selectedDevice is null) return "デバイスを選択してください";
             if (_selectedDevice is EngineDevice.Id id &&
@@ -118,10 +127,12 @@ public sealed partial class LiveViewModel
         for (var i = 0; i < source.Length; i++)
         {
             var row = source[i];
+            var heading = HeadingText(row.Headings, previousHeadings);
             projected[i] = new ShellTranscriptRowViewModel(row.RowID, row.Text,
                 string.Format(CultureInfo.InvariantCulture, "{0:00}:{1:00}", row.StartMS / 60_000, row.StartMS / 1_000 % 60),
-                HeadingText(row.Headings, previousHeadings),
-                row.ClauseState == EngineClauseState.AwaitingNextSegment ? "発話文の続き待ち" : string.Empty);
+                heading,
+                row.ClauseState == EngineClauseState.AwaitingNextSegment ? "発話文の続き待ち" : string.Empty,
+                i == 0 ? 0 : heading.Length == 0 ? 4 : 12);
             previousHeadings = row.Headings;
         }
 

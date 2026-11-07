@@ -63,7 +63,7 @@ public sealed partial class ShellStoreTests
         Assert.Equal(new[] { "p1", "p2", "p3" }, store.State.Transcript.History.Pages.Select(p => p.Rows[0].Text));
         Assert.Equal(0, store.State.Transcript.History.Index);
         var sent = engine.SentCount; Assert.False(await store.ReadHistoryAsync(ShellPageMove.Previous));
-        Assert.Equal(sent, engine.SentCount); Assert.Contains("previous", store.State.CommandError!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sent, engine.SentCount); Assert.Equal("前の文字起こしページはありません。", store.State.CommandError);
     }
 
     [Theory]

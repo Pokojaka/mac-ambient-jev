@@ -35,6 +35,48 @@ public sealed partial class ShellStoreTests
     }
 
     [Fact]
+    public async Task SettingsPreconditionsExplainMissingDraftAndRevisionInJapaneseWithoutSending()
+    {
+        var engine = NewEngine(); await using var store = await Start(engine);
+        await store.SetSettingsDraftAsync(null); var sent = engine.SentCount;
+        Assert.False(await store.CommitSettingsAsync());
+        Assert.Equal("設定を読み込むか入力してから保存してください。", store.State.CommandError);
+        Assert.Equal(sent, engine.SentCount);
+
+        var unknown = new Fake(State(EngineSetupStatus.Ready, 1), Task.FromException<EngineResult>(
+            new EngineRequestException(Failure(EngineErrorCode.Busy, "設定を読み込めませんでした", EngineRecoveryAction.Retry))));
+        await using var unknownStore = await Start(unknown);
+        await unknownStore.SetSettingsDraftAsync(Settings(2, false, false, false, null)); sent = unknown.SentCount;
+        Assert.False(await unknownStore.CommitSettingsAsync());
+        Assert.Equal("保存済み設定の版を確認できません。設定を読み込み直してください。", unknownStore.State.CommandError);
+        Assert.Equal(sent, unknown.SentCount);
+    }
+
+    [Fact]
+    public async Task EngineAndTranscriptPreconditionsUseJapaneseMessagesWithoutSending()
+    {
+        var engine = NewEngine(); await using var store = await Start(engine); var sent = engine.SentCount;
+        Assert.False(await store.ReadHistoryAsync(ShellPageMove.Reload));
+        Assert.Equal("文字起こしの履歴を読み込む前に録音を選択してください。", store.State.CommandError);
+        await store.ReturnToLatestAsync();
+        Assert.Equal("エンジンが起動している間に録音を選択してください。", store.State.CommandError);
+        Assert.False(await store.ListSessionsAsync(ShellPageMove.Next));
+        Assert.Equal("次の録音一覧ページはありません。", store.State.CommandError);
+        Assert.False(await store.ListSessionsAsync(ShellPageMove.Previous));
+        Assert.Equal("前の録音一覧ページはありません。", store.State.CommandError);
+        Assert.Equal(sent, engine.SentCount);
+
+        var failure = new EngineClientFailure("停止", 1, null, new StderrSnapshot([], 0));
+        engine.SignalFailure(failure); engine.CompleteFailure(failure);
+        await ChangedTo(store, state => state.Phase == ShellPhase.EngineFailed);
+        Assert.False(await store.ReloadSettingsAsync());
+        Assert.Equal("エンジンが起動していません。", store.State.CommandError);
+        Assert.IsType<RowDetailsRead<ShellRowDetails>.Failed>(await store.ReadRowDetailsAsync("row"));
+        Assert.Equal("エンジンが起動していません。", store.State.CommandError);
+        Assert.Equal(sent, engine.SentCount);
+    }
+
+    [Fact]
     public async Task CommitSendsWholeDraftAndPreservesEditsMadeInFlight()
     {
         var old = Settings(2, false, false, false, null); var draft = Settings(3, true, true, false, "/draft");

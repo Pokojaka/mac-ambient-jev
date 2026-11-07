@@ -25,7 +25,7 @@ public sealed partial class ShellStore
         var current = _working.Transcript;
         if (current.SessionID == sessionID && current.DisplayName == displayName && current.IsImported == isImported &&
             current.UnavailableReason == unavailableReason && startWatch) return;
-        if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
+        if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "エンジンが起動していません。" }; return; }
         _selectionGeneration = checked(_selectionGeneration + 1);
         _historyEpoch = checked(_historyEpoch + 1);
         _working = _working with { Transcript = new ShellTranscriptState
@@ -43,7 +43,7 @@ public sealed partial class ShellStore
     public Task ReturnToLatestAsync() => Post(() =>
     {
         if (_working.Transcript.SessionID is null || _working.Phase != ShellPhase.Running)
-        { _working = _working with { CommandError = "Select a session while the engine is running." }; return; }
+        { _working = _working with { CommandError = "エンジンが起動している間に録音を選択してください。" }; return; }
         _working = _working with { Transcript = _working.Transcript with { Follow = true, NewUpdatesAvailable = false }, CommandError = null };
         _tailDirty = true;
         EnsureTailWorker();
@@ -58,18 +58,18 @@ public sealed partial class ShellStore
         long generation = 0, epoch = 0;
         return RunRequestAsync(() =>
         {
-            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return null; }
+            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "エンジンが起動していません。" }; return null; }
             var transcript = _working.Transcript;
-            if (transcript.SessionID is null) { _working = _working with { CommandError = "Select a session before reading transcript history." }; return null; }
+            if (transcript.SessionID is null) { _working = _working with { CommandError = "文字起こしの履歴を読み込む前に録音を選択してください。" }; return null; }
             if (move != ShellPageMove.Reload)
             {
                 var page = transcript.History.Current;
                 if (transcript.HistoryStale || page is null || page.SessionID != transcript.SessionID)
-                { _working = _working with { CommandError = "Reload transcript history before navigating." }; return null; }
+                { _working = _working with { CommandError = "ページを移動する前に文字起こしの履歴を読み込み直してください。" }; return null; }
                 requestedRevision = page.Revision;
                 cursor = move == ShellPageMove.Next ? page.NextCursor : page.PreviousCursor;
                 if (cursor is null)
-                { _working = _working with { CommandError = $"There is no {move.ToString().ToLowerInvariant()} transcript page." }; return null; }
+                { _working = _working with { CommandError = move == ShellPageMove.Next ? "次の文字起こしページはありません。" : "前の文字起こしページはありません。" }; return null; }
             }
             sessionID = transcript.SessionID;
             generation = _selectionGeneration;
@@ -104,13 +104,13 @@ public sealed partial class ShellStore
         return RunRequestAsync(() =>
         {
             if (admit is not null && !admit()) return null;
-            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return null; }
+            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "エンジンが起動していません。" }; return null; }
             if (move != ShellPageMove.Reload)
             {
                 var page = _working.Sessions.Current;
                 cursor = move == ShellPageMove.Next ? page?.NextCursor : page?.PreviousCursor;
                 if (cursor is null)
-                { _working = _working with { CommandError = $"There is no {move.ToString().ToLowerInvariant()} session page." }; return null; }
+                { _working = _working with { CommandError = move == ShellPageMove.Next ? "次の録音一覧ページはありません。" : "前の録音一覧ページはありません。" }; return null; }
             }
             return new EngineCommand.SessionList(new EngineSessionListPayload(cursor, 100));
         }, (command, result) =>
@@ -131,6 +131,7 @@ public sealed partial class ShellStore
     {
         var transcript = _working.Transcript;
         if (transcript.SessionID != payload.SessionID) return;
+        _rowDetailsEpoch = checked(_rowDetailsEpoch + 1);
         if (!transcript.Follow) transcript = transcript with { NewUpdatesAvailable = true };
         if (payload.Kind == EngineRowsKind.ReloadRequired)
         {

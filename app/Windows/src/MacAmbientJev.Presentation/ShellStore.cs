@@ -94,11 +94,11 @@ public sealed partial class ShellStore : IAsyncDisposable
 
     public Task<bool> CommitSettingsAsync() => RunRequestAsync(() =>
     {
-        if (_working.SettingsDraft is null) { _working = _working with { CommandError = "Settings must be loaded or explicitly drafted before commit." }; return null; }
+        if (_working.SettingsDraft is null) { _working = _working with { CommandError = "設定を読み込むか入力してから保存してください。" }; return null; }
         EngineID? expected;
         if (_working.SettingsStatus is ShellSettingsStatus.Required or ShellSettingsStatus.Corrupt) expected = null;
         else if (_working.ConfirmedSettings is not null) expected = _working.ConfirmedSettings.Revision;
-        else { _working = _working with { CommandError = "The confirmed settings revision is unknown." }; return null; }
+        else { _working = _working with { CommandError = "保存済み設定の版を確認できません。設定を読み込み直してください。" }; return null; }
         return new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(expected, _working.SettingsDraft));
     });
 
@@ -310,10 +310,10 @@ public sealed partial class ShellStore : IAsyncDisposable
         {
             command = commandFactory();
             if (command is null) return;
-            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
+            if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "エンジンが起動していません。" }; return; }
             var settings = command.Name is EngineCommandName.SettingsGet or EngineCommandName.SettingsReplace;
             if (_working.Pending.Contains(command.Name) || settings && (_working.Pending.Contains(EngineCommandName.SettingsGet) || _working.Pending.Contains(EngineCommandName.SettingsReplace)))
-            { _working = _working with { CommandError = "A request of this kind is already pending." }; return; }
+            { _working = _working with { CommandError = "同じ種類の操作を処理中です。" }; return; }
             _working = _working with { Pending = _working.Pending.Add(command.Name), CommandError = null };
             try { request = _client.SendAsync(command); }
             catch (Exception exception) { failure(command.Name, exception, true); }
