@@ -131,6 +131,7 @@ public sealed partial class ShellStore
     {
         var transcript = _working.Transcript;
         if (transcript.SessionID != payload.SessionID) return;
+        _rowDetailsEpoch = checked(_rowDetailsEpoch + 1);
         if (!transcript.Follow) transcript = transcript with { NewUpdatesAvailable = true };
         if (payload.Kind == EngineRowsKind.ReloadRequired)
         {

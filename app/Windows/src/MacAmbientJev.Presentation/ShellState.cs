@@ -8,6 +8,10 @@ public enum ShellPhase { Connecting, Running, EngineFailed, Closed, Disposed }
 public enum ShellSettingsStatus { Unknown, Required, Corrupt, Available }
 public sealed record DeviceLostNotice(string Message, string SessionID);
 
+/// <summary>A complete, revision-bound row-details snapshot returned by the engine.</summary>
+public sealed record ShellRowDetails(string SessionID, EngineID Revision, string RowID,
+    EngineClauseState ClauseState, string ClauseStateText, ImmutableArray<EngineTranscriptSpeakerSpan> Speakers);
+
 public sealed record ShellState
 {
     public ShellPhase Phase { get; init; } = ShellPhase.Connecting;

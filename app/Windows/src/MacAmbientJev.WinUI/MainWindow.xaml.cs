@@ -29,7 +29,22 @@ public sealed partial class MainWindow : Window
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
+        Application.Current.Resources.Add("MainGlyphConverter", new MainGlyphConverter());
+        Application.Current.Resources.Add("MainBrushConverter", new MainBrushConverter());
+        Application.Current.Resources.Add("RunningConverter", new ProcessingRunningConverter());
+        Application.Current.Resources.Add("RunningVisibilityConverter", new ProcessingRunningConverter { AsVisibility = true });
+        Application.Current.Resources.Add("TopSpacingConverter", new TopSpacingConverter());
+        Application.Current.Resources.Add("FirstLineConverter", new FirstLineConverter());
         InitializeComponent();
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(UnifiedTitleBar);
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(900, 620));
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.PreferredMinimumWidth = 720;
+            presenter.PreferredMinimumHeight = 480;
+        }
+        Root.ActualThemeChanged += (_, _) => _context?.RequestRefresh();
         _log.WriteFailed += OnLogWriteFailed;
         if (_log.StartupFailure is { } startupFailure) ShowFailure(startupFailure);
         else if (_log.Failure is { } logFailure) ShowFailure(logFailure);
@@ -159,6 +174,7 @@ public sealed partial class MainWindow : Window
     {
         if (args.InRecycleQueue)
         {
+            if (ReferenceEquals(args.ItemContainer, _rowDetailsContainer)) _rowDetailsFlyout?.Hide();
             AutomationProperties.SetName(args.ItemContainer, string.Empty);
             return;
         }
@@ -170,6 +186,9 @@ public sealed partial class MainWindow : Window
 
     private async void OnContextRefreshed(object? sender, EventArgs args)
     {
+        if (_rowDetailsTail is { } detailsTail && (_live is not { } live ||
+            live.Transcript.SessionID != detailsTail.SessionID || live.Transcript.Tail?.Revision != detailsTail.Revision))
+            _rowDetailsFlyout?.Hide();
         _scroll?.Refresh();
         SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
         RefreshSettingsButton();
@@ -181,32 +200,71 @@ public sealed partial class MainWindow : Window
         }
         try { await ShowDeviceLostNoticeAsync(); }
         catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
-        // Command CanExecute notifications run after Refreshed; inspect focus after bindings update.
-        if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, RestoreRecordingFocus))
-            _log.Warn("録音ボタンのフォーカス更新を予約できません。");
     }
 
-    private void FocusToolbarButton(AppBarButton button)
+    private void OnWindowDetailsClick(object sender, RoutedEventArgs args) =>
+        WindowFailureScroller.Visibility = WindowDetailsToggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+
+    private void OnEngineDetailsClick(object sender, RoutedEventArgs args) =>
+        EngineFailureScroller.Visibility = EngineDetailsToggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+
+    private long _rowDetailsRequest;
+    private Flyout? _rowDetailsFlyout;
+    private EngineTranscriptPage? _rowDetailsTail;
+    private DependencyObject? _rowDetailsContainer;
+
+    private async void OnRowTimeClick(object sender, RoutedEventArgs args)
     {
-        if (_closeStarted) return;
-        if (button.IsInOverflow && !Toolbar.IsOpen)
+        if (_closeStarted || _store?.State.IsPending(EngineCommandName.TranscriptRowDetails) == true) return;
+        var previousFlyout = _rowDetailsFlyout;
+        _rowDetailsFlyout = null;
+        previousFlyout?.Hide();
+        var request = ++_rowDetailsRequest;
+        Flyout? flyout = null;
+        try
         {
-            Toolbar.IsOpen = true;
-            if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => FocusToolbarButton(button)))
-                _log.Warn($"{button.Label}へのフォーカス移動を予約できません。");
-            return;
+            var button = sender as Button ?? throw new InvalidOperationException("The transcript time button is unavailable.");
+            var row = button.DataContext as ShellTranscriptRowViewModel ?? throw new InvalidOperationException("The transcript row is unavailable.");
+            var live = _live ?? throw new InvalidOperationException("The transcript view model is unavailable.");
+            var content = new StackPanel { Spacing = (double)Application.Current.Resources["SpacingXS"], MaxWidth = 400 };
+            content.Children.Add(new ProgressRing { IsActive = true, Width = 16, Height = 16 });
+            flyout = new Flyout { Content = content, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right };
+            _rowDetailsFlyout = flyout;
+            _rowDetailsTail = live.Transcript.Tail;
+            _rowDetailsContainer = TranscriptList.ContainerFromItem(row);
+            void OnAnchorUnloaded(object sender, RoutedEventArgs args) => flyout.Hide();
+            button.Unloaded += OnAnchorUnloaded;
+            flyout.Closed += (_, _) =>
+            {
+                button.Unloaded -= OnAnchorUnloaded;
+                if (ReferenceEquals(_rowDetailsFlyout, flyout))
+                { _rowDetailsFlyout = null; _rowDetailsTail = null; _rowDetailsContainer = null; ++_rowDetailsRequest; }
+            };
+            flyout.ShowAt(button);
+            var details = await live.ReadRowDetailsAsync(row.RowID);
+            if (_closeStarted || request != _rowDetailsRequest || details is null ||
+                live.Transcript.SessionID != details.SessionID || live.Transcript.Tail?.Revision != details.Revision ||
+                !button.IsLoaded || !ReferenceEquals(button.DataContext, row)) { flyout.Hide(); return; }
+            TextBlock Caption(string text, bool strong = false) => new()
+            {
+                Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
+                Style = (Style)Application.Current.Resources[strong ? "CaptionStrong" : "SecondaryCaption"],
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SecondaryTextBrush"]
+            };
+            content.Children.Clear();
+            content.Children.Add(Caption(details.ClauseStateText));
+            if (details.SpeakerTexts.Length > 0)
+            {
+                content.Children.Add(Caption("話者区間", true));
+                foreach (var text in details.SpeakerTexts)
+                {
+                    var span = Caption(text);
+                    Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(span, Microsoft.UI.Xaml.FontNumeralAlignment.Tabular);
+                    content.Children.Add(span);
+                }
+            }
         }
-        if (!button.Focus(FocusState.Programmatic)) _log.Warn($"{button.Label}にフォーカスできません。");
-    }
-
-    private void RestoreRecordingFocus()
-    {
-        if (_closeStarted) return;
-        var focusedElement = FocusManager.GetFocusedElement(Content.XamlRoot);
-        if (ReferenceEquals(focusedElement, StartButton) && !StartButton.IsEnabled && StopButton.IsEnabled)
-            FocusToolbarButton(StopButton);
-        else if (ReferenceEquals(focusedElement, StopButton) && !StopButton.IsEnabled && StartButton.IsEnabled)
-            FocusToolbarButton(StartButton);
+        catch (Exception exception) { flyout?.Hide(); await ReportFailureAsync(exception); }
     }
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
@@ -241,7 +299,8 @@ public sealed partial class MainWindow : Window
         {
             if (_settingsDialog is { } dialog) { dialog.Dispose(); _settingsDialog = null; }
             RefreshSettingsButton();
-            if (!_closeStarted && SettingsButton.IsEnabled) FocusToolbarButton(SettingsButton);
+            if (!_closeStarted && SettingsButton.IsEnabled && !SettingsButton.Focus(FocusState.Programmatic))
+                _log.Warn("設定にフォーカスできません。");
             try { await ShowDeviceLostNoticeAsync(); }
             catch (Exception exception) { ShowFailure(exception, _client?.Failure); }
         }
@@ -283,7 +342,9 @@ public sealed partial class MainWindow : Window
             if (stderr.Length != 0) text.AppendLine().Append("標準エラー出力: ").Append(stderr);
             if (snapshot.Stderr.DiscardedBytes != 0) text.AppendLine().Append("標準エラー出力の破棄バイト数: ").Append(snapshot.Stderr.DiscardedBytes);
         }
-        WindowFailure.Text = text.ToString(); WindowFailureScroller.Visibility = Visibility.Visible;
+        WindowFailure.Text = text.ToString();
+        WindowFailureSummary.Text = FirstLineConverter.FirstLine(exception.Message);
+        WindowFailureRegion.Visibility = Visibility.Visible;
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -292,6 +353,8 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;
         if (_closeStarted) return;
         _closeStarted = true; Root.IsHitTestVisible = false;
+        ++_rowDetailsRequest;
+        _rowDetailsFlyout?.Hide();
         _log.Info("shutdown started");
         Toolbar.IsEnabled = false; SavedSessionsButton.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
         ClosingStatus.Visibility = Visibility.Visible;

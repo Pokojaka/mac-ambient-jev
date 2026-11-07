@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using MacAmbientJev.EngineClient;
 using MacAmbientJev.Protocol;
 
@@ -5,6 +6,38 @@ namespace MacAmbientJev.Presentation;
 
 public sealed record ShellSourceChoice(EngineSource Value, string Label);
 public sealed record ShellDeviceChoice(EngineDevice Value, string Label);
+
+public enum ShellRecordingAction { Start, Stop }
+public enum ShellRecordingGlyph { Record, Stop }
+
+/// <summary>A toggle can stop an authoritative recording before its start request has completed.</summary>
+public sealed class ShellRecordingCommand : ICommand
+{
+    private readonly ShellCommand _start, _stop;
+    private readonly Func<ShellRecordingAction> _action;
+    private ShellCommand? _lastExecuted;
+
+    internal ShellRecordingCommand(ShellCommand start, ShellCommand stop, Func<ShellRecordingAction> action)
+    {
+        _start = start; _stop = stop; _action = action;
+    }
+
+    private ShellCommand Current => _action() == ShellRecordingAction.Stop ? _stop : _start;
+    public Task? Execution => _lastExecuted?.Execution;
+    public bool CanExecute(object? parameter) => Current.CanExecute(parameter);
+    public void Execute(object? parameter)
+    {
+        var command = Current;
+        if (!command.CanExecute(parameter)) return;
+        _lastExecuted = command;
+        command.Execute(parameter);
+    }
+    public event EventHandler? CanExecuteChanged
+    {
+        add { _start.CanExecuteChanged += value; _stop.CanExecuteChanged += value; }
+        remove { _start.CanExecuteChanged -= value; _stop.CanExecuteChanged -= value; }
+    }
+}
 
 public sealed partial class LiveViewModel : ScreenViewModel
 {
@@ -19,13 +52,14 @@ public sealed partial class LiveViewModel : ScreenViewModel
 
     public LiveViewModel(ShellUiContext context) : base(context)
     {
-        StartRecording = Command(CanStartRecording, _ => Context.Store.ExecuteAsync(
+        var start = Command(CanStartRecording, _ => Context.Store.ExecuteAsync(
             new EngineCommand.RecordingStart(CreateRecordingStartPayload())));
-        StopRecording = Command(CanStopRecording, _ =>
+        var stop = Command(CanStopRecording, _ =>
         {
             var recording = Context.Store.State.Engine?.Recording ?? throw new InvalidOperationException("There is no authoritative recording session to stop.");
             return Context.Store.ExecuteAsync(new EngineCommand.RecordingStop(new EngineSessionPayload(recording.SessionID)));
         });
+        ToggleRecording = new ShellRecordingCommand(start, stop, () => RecordingActionFor(Context.Store.State));
         ImportAudio = Command(CanImportAudio, ImportAudioAsync);
         RefreshDevices = Command(CanRefreshDevices, _ => Context.Store.ReloadDevicesAsync(
             _selectedSource ?? throw new InvalidOperationException("A source must be selected before loading devices.")));
@@ -119,19 +153,47 @@ public sealed partial class LiveViewModel : ScreenViewModel
             var state = Context.Store.State;
             return state.Phase == ShellPhase.Running && state.Engine is { Recording: null } &&
                 !state.IsPending(EngineCommandName.RecordingStart) && !state.IsPending(EngineCommandName.RecordingStop) &&
-                !state.IsPending(EngineCommandName.DevicesList);
+                !state.IsPending(EngineCommandName.DevicesList) && !state.IsPending(EngineCommandName.SessionImport);
         }
     }
 
     public EnginePresentationState? Presentation => Snapshot.Engine?.Presentation;
     public string? RecordingStatusText => Presentation?.RecordingStatusText;
+    public EngineRecordingTone? RecordingTone => Presentation?.RecordingTone;
+    public EngineProcessingIndicator? ProcessingIndicator => Presentation?.ProcessingIndicator;
+    public string? ProcessingStatusText => Presentation?.ProcessingStatusText;
+    public EnginePreparationPhase? PreparationPhase => Presentation?.PreparationPhase;
+    public string? PreparationStatusText => Presentation?.PreparationStatusText;
+    public string? RecoveryStatusText => Presentation?.RecoveryStatusText;
+    public bool HasProcessingStatus => ProcessingStatusText is not null;
+    public bool IsProcessing => ProcessingIndicator is EngineProcessingIndicator.Running or EngineProcessingIndicator.Backlogged;
+    public bool HasPreparationStatus => PreparationStatusText is not null;
+    public bool IsPreparingModels => PreparationPhase == EnginePreparationPhase.Preparing;
+    public bool IsPreparationFailed => PreparationPhase == EnginePreparationPhase.Failed;
     public string? SilenceWarningText => Presentation?.SilenceWarningText;
+    public bool HasSilenceWarning => Presentation?.SilenceWarningActive == true;
     public string? AudioGapText => Presentation?.AudioGapText;
+    public bool HasAudioGap => AudioGapText is not null;
     public IReadOnlyList<string>? LiveFailureNotices => Presentation?.LiveFailureNotices;
+    public bool HasLiveFailureNotices => LiveFailureNotices is { Count: > 0 };
     public ShellTranscriptState Transcript => Snapshot.Transcript;
     public EngineRecordingState? Recording => Snapshot.Engine?.Recording;
-    public string StartLabel => "録音を開始"; public string StopLabel => "録音を停止";
+    public bool IsRecording => Recording?.Phase is EngineRecordingPhase.Recording or EngineRecordingPhase.WaitingForDevice;
+    public bool IsRecordingStarting => Recording?.Phase == EngineRecordingPhase.Starting || Snapshot.IsPending(EngineCommandName.RecordingStart);
+    public bool IsRecordingStopping => Recording?.Phase == EngineRecordingPhase.Stopping || Snapshot.IsPending(EngineCommandName.RecordingStop);
+    public ShellRecordingAction RecordingAction => RecordingActionFor(Snapshot);
+    public ShellRecordingGlyph RecordingGlyph => RecordingAction == ShellRecordingAction.Stop ? ShellRecordingGlyph.Stop : ShellRecordingGlyph.Record;
+    public string RecordingLabel => RecordingAction == ShellRecordingAction.Stop ? "録音を停止" : "録音を開始";
+    public string RecordingHelp => RecordingAction == ShellRecordingAction.Stop
+        ? RecordingDisabledReason ?? "録音を終えて文字起こしを確定"
+        : RecordingDisabledReason ?? (_selectedSource == EngineSource.SystemAudio
+            ? "PC で再生中の音声を録音し、その場で文字起こし"
+            : "マイクの音声を録音し、その場で文字起こし");
     public string ImportLabel => "音声ファイルを読み込む"; public bool IsImporting => Snapshot.IsPending(EngineCommandName.SessionImport);
+    public string ImportHelp => ImportDisabledReason ?? "音声ファイルを読み込んで文字起こし";
+    public string SourceHelp => CanChangeRecordingSelection
+        ? "録音する音声をマイクかシステム音声から選択"
+        : "録音中は切り替え不可";
     public string? ImportDisabledReason
     {
         get
@@ -148,7 +210,7 @@ public sealed partial class LiveViewModel : ScreenViewModel
     public string EmptyDescription => Snapshot.Transcript.UnavailableReason ?? (Snapshot.Transcript.SessionID is null
         ? "録音を開始するか、音声ファイルを読み込むか、保存済み録音を選ぶとここに文字起こしが表示されます。"
         : "この録音には表示できる文字起こしがありません。処理中の場合は、作成された行がここに表示されます。");
-    public ShellCommand StartRecording { get; } public ShellCommand StopRecording { get; } public ShellCommand ImportAudio { get; }
+    public ShellRecordingCommand ToggleRecording { get; } public ShellCommand ImportAudio { get; }
     public ShellCommand RefreshDevices { get; } public ShellCommand ReturnToLatest { get; } public ShellCommand ReadHistory { get; }
     public Task UserScrolledAsync() => Context.Store.UserScrolledAsync();
 
@@ -170,7 +232,8 @@ public sealed partial class LiveViewModel : ScreenViewModel
         var engine = state.Engine;
         return engine is { Setup: EngineSetupStatus.Ready, Recovery: EngineRecoveryStatus.Completed, Recording: null } &&
             !state.IsPending(EngineCommandName.RecordingStart) && !state.IsPending(EngineCommandName.RecordingStop) &&
-            !state.IsPending(EngineCommandName.DevicesList) && !state.IsPending(EngineCommandName.SettingsReplace);
+            !state.IsPending(EngineCommandName.DevicesList) && !state.IsPending(EngineCommandName.SettingsReplace) &&
+            !state.IsPending(EngineCommandName.SessionImport);
     }
 
     private bool CanRefreshDevices(object? parameter)
@@ -202,9 +265,15 @@ public sealed partial class LiveViewModel : ScreenViewModel
     {
         if (parameter is not null) return false;
         var state = Context.Store.State;
+        // Starting cannot be cancelled by the engine protocol. Once capture is authoritative,
+        // stopping is valid even if recording.start has not returned its response yet.
         return state.Engine?.Recording is { Phase: EngineRecordingPhase.Recording or EngineRecordingPhase.WaitingForDevice } &&
-            !state.IsPending(EngineCommandName.RecordingStart) && !state.IsPending(EngineCommandName.RecordingStop);
+            !state.IsPending(EngineCommandName.RecordingStop);
     }
+
+    private static ShellRecordingAction RecordingActionFor(ShellState state) =>
+        state.Engine?.Recording is not null || state.IsPending(EngineCommandName.RecordingStart) || state.IsPending(EngineCommandName.RecordingStop)
+            ? ShellRecordingAction.Stop : ShellRecordingAction.Start;
 
     private bool CanReadHistory(object? parameter)
     {
