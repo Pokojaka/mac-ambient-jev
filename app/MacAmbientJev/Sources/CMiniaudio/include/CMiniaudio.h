@@ -55,6 +55,12 @@ typedef struct mja_capture_config_values {
     int32_t loopback;
 } mja_capture_config_values;
 
+typedef struct mja_capture_stream_info {
+    uint32_t buffer_frames;
+    uint32_t period_frames;
+    int32_t mmcss_registered;
+} mja_capture_stream_info;
+
 typedef struct mja_capture_cleanup_errors {
     int32_t stop;
     int32_t environment;
@@ -76,6 +82,7 @@ typedef struct mja_capture_packet {
     uint32_t flags;
     uint64_t device_position;
     uint64_t qpc_100ns;
+    uint64_t read_qpc_100ns;
     uint32_t packet_offset;
     uint32_t packet_frames;
 } mja_capture_packet;
@@ -103,8 +110,8 @@ typedef void (*mja_capture_device_fn)(void *user, const char *id, const char *na
  * sample_rate must be positive, channels 1...254, packet_frames 1...65536,
  * and flags may contain only the three native packet bits above. native_samples
  * may be NULL only for a silent packet. scratch must hold at least
- * 512 * channels floats. device_position and qpc_100ns remain the original
- * packet coordinates; packet_offset identifies each fragment. Silent packets
+ * 512 * channels floats. device_position, qpc_100ns, and read_qpc_100ns remain
+ * the original packet coordinates; packet_offset identifies each fragment. Silent packets
  * emit NULL samples; the packet and converted sample storage are borrowed only
  * during each callback. */
 int32_t mja_capture_convert_packet(
@@ -116,6 +123,7 @@ int32_t mja_capture_convert_packet(
     uint32_t flags,
     uint64_t device_position,
     uint64_t qpc_100ns,
+    uint64_t read_qpc_100ns,
     float *scratch,
     uint32_t scratch_sample_capacity,
     mja_capture_packet_fn callback,
@@ -136,7 +144,9 @@ int32_t mja_capture_inspect_config(int32_t loopback, mja_capture_config_values *
  * float audio. Packet frame counts, offsets, and device_position are measured
  * in audio frames; qpc_100ns and watermark_qpc_100ns use the QPC
  * 100-nanosecond units. device_position and qpc_100ns identify the native
- * packet's first frame. packet_offset is the frame offset within that packet
+ * packet's first frame. read_qpc_100ns is sampled immediately after a successful
+ * native GetBuffer and is shared by every fragment of that packet.
+ * packet_offset is the frame offset within that packet
  * and packet_frames is that packet's total frame count. Packet and health callbacks are serial
  * on the native producer; they must not allocate or block. Health is emitted
  * after each drain-all pass; capture liveness must be checked independently.
@@ -151,6 +161,10 @@ int32_t mja_capture_inspect_config(int32_t loopback, mja_capture_config_values *
  */
 int32_t mja_capture_open(int32_t loopback, const char *endpoint_id, int32_t select_default, mja_capture_packet_fn packet_callback, mja_capture_health_fn health_callback, void *user, mja_capture **out, uint32_t *rate, uint32_t *channels, mja_capture_cleanup_errors *cleanup_errors);
 int32_t mja_capture_start(mja_capture *capture);
+/* Available after successful start and before stop_join. The buffer size is queried
+ * from the capture IAudioClient; period_frames is miniaudio's actual capture period.
+ * mmcss_registered reports a non-NULL MMCSS handle immediately after start, not merely a requested scheduling configuration. */
+int32_t mja_capture_get_stream_info(const mja_capture *capture, mja_capture_stream_info *info);
 int32_t mja_capture_stop_join(mja_capture *capture, mja_capture_cleanup_errors *cleanup_errors);
 /* Returns the resolved endpoint ID borrowed until destroy, or NULL for NULL/empty capture. */
 const char *mja_capture_endpoint_id(const mja_capture *capture);

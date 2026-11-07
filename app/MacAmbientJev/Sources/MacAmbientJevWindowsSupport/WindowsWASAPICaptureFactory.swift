@@ -303,6 +303,7 @@ private final class WindowsCaptureCallbackHolder: @unchecked Sendable {
                 flags: packet.flags,
                 devicePosition: packet.device_position,
                 qpc100ns: packet.qpc_100ns,
+                readQPC100ns: packet.read_qpc_100ns,
                 packetOffset: Int(packet.packet_offset),
                 packetFrames: Int(packet.packet_frames)
             )
@@ -391,6 +392,17 @@ private final class WindowsWASAPICaptureDevice: WindowsCaptureDevice {
                 code: result
             )
         }
+        var info = mja_capture_stream_info()
+        let infoResult = mja_capture_get_stream_info(capture, &info)
+        guard infoResult == 0 else {
+            throw WindowsCaptureAdapterError.native(
+                operation: "mja_capture_get_stream_info", code: infoResult
+            )
+        }
+        let message = "Windows capture stream (sampleRate: \(Int(sampleRate)), channels: \(channels), "
+            + "bufferFrames: \(info.buffer_frames), periodFrames: \(info.period_frames), "
+            + "mmcss: \(info.mmcss_registered != 0))\n"
+        FileHandle.standardError.write(Data(message.utf8))
     }
 
     func stopJoin() throws {

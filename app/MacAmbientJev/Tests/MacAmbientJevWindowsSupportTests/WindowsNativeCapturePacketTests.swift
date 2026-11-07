@@ -14,6 +14,7 @@ private struct NativePacketSnapshot: Sendable, Equatable {
     let flags: UInt32
     let devicePosition: UInt64
     let qpc100ns: UInt64
+    let readQPC100ns: UInt64
     let packetOffset: UInt32
     let packetFrames: UInt32
 }
@@ -43,6 +44,7 @@ private final class NativePacketCollector: @unchecked Sendable {
             flags: packet.flags,
             devicePosition: packet.device_position,
             qpc100ns: packet.qpc_100ns,
+            readQPC100ns: packet.read_qpc_100ns,
             packetOffset: packet.packet_offset,
             packetFrames: packet.packet_frames
         ))
@@ -55,6 +57,7 @@ private final class NativePacketCollector: @unchecked Sendable {
             flags: packet.flags,
             devicePosition: packet.device_position,
             qpc100ns: packet.qpc_100ns,
+            readQPC100ns: packet.read_qpc_100ns,
             packetOffset: Int(packet.packet_offset),
             packetFrames: Int(packet.packet_frames)
         ))
@@ -144,6 +147,7 @@ private func convertNativePacket(
             flags,
             devicePosition,
             qpc100ns,
+            qpc100ns + 20_000,
             scratchBuffer.baseAddress,
             declaredCapacity,
             nativePacketTrampoline,
@@ -308,6 +312,7 @@ struct WindowsNativeCapturePacketTests {
             #expect(collector.packets.map(\.flags) == Array(repeating: flags, count: 3))
             #expect(collector.packets.map(\.devicePosition) == Array(repeating: devicePosition, count: 3))
             #expect(collector.packets.map(\.qpc100ns) == Array(repeating: qpc100ns, count: 3))
+            #expect(collector.packets.map(\.readQPC100ns) == Array(repeating: qpc100ns + 20_000, count: 3))
             #expect(collector.packets.compactMap(\.samples).flatMap { $0 } == samples)
 
             let blocks = drain(harness.ring)
@@ -440,6 +445,7 @@ struct WindowsNativeCapturePacketTests {
             flags: flags,
             devicePosition: devicePosition,
             qpc100ns: qpc100ns,
+            readQPC100ns: qpc100ns + 20_000,
             packetOffset: 0,
             packetFrames: 2
         )])

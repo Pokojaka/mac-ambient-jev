@@ -33,6 +33,8 @@ struct mja_capture {
     uint32_t sample_rate;
     uint32_t channels;
     uint64_t qpc_frequency;
+    mja_capture_stream_info stream_info;
+    int32_t stream_info_ready;
     float *scratch;
 };
 
@@ -359,6 +361,7 @@ int32_t mja_capture_convert_packet(
     uint32_t flags,
     uint64_t device_position,
     uint64_t qpc_100ns,
+    uint64_t read_qpc_100ns,
     float *scratch,
     uint32_t scratch_sample_capacity,
     mja_capture_packet_fn callback,
@@ -449,6 +452,7 @@ int32_t mja_capture_convert_packet(
         packet.flags = flags;
         packet.device_position = device_position;
         packet.qpc_100ns = qpc_100ns;
+        packet.read_qpc_100ns = read_qpc_100ns;
         packet.packet_offset = packet_offset;
         packet.packet_frames = packet_frames;
         callback(user, &packet);
@@ -475,7 +479,8 @@ static int32_t mja_capture_deliver_packet(
     ma_uint32 packet_frames,
     DWORD native_flags,
     ma_uint64 device_position,
-    ma_uint64 qpc_100ns)
+    ma_uint64 qpc_100ns,
+    uint64_t read_qpc_100ns)
 {
     mja_capture_conversion_context conversion;
 
@@ -496,6 +501,7 @@ static int32_t mja_capture_deliver_packet(
         (uint32_t)native_flags,
         (uint64_t)device_position,
         (uint64_t)qpc_100ns,
+        read_qpc_100ns,
         conversion.scratch,
         conversion.scratch_sample_capacity,
         conversion.callback,
@@ -600,6 +606,7 @@ static int32_t mja_capture_packet_read(void *opaque_device, uint32_t *frames_rea
         DWORD native_flags = 0;
         ma_uint64 device_position = 0;
         ma_uint64 qpc_100ns = 0;
+        uint64_t read_qpc_100ns = 0;
         HRESULT hr = ma_IAudioCaptureClient_GetBuffer(
             capture_client,
             &native_data,
@@ -617,21 +624,25 @@ static int32_t mja_capture_packet_read(void *opaque_device, uint32_t *frames_rea
             return mja_capture_fail(capture, (int32_t)hr, observed_qpc_100ns, output_state);
         }
 
-        if (packet_frames == 0) {
-            packet_error = MA_INVALID_DATA;
-        } else if (packet_frames > MJA_CAPTURE_MAX_PACKET_FRAMES) {
-            packet_error = MA_OUT_OF_RANGE;
-        } else if (packets_read >= MJA_CAPTURE_MAX_PACKETS_PER_PASS) {
-            packet_error = MJA_CAPTURE_ERROR_DRAIN_LIMIT;
-        } else {
-            packets_read += 1;
-            packet_error = mja_capture_deliver_packet(
-                capture,
-                native_data,
-                packet_frames,
-                native_flags,
-                device_position,
-                qpc_100ns);
+        packet_error = mja_capture_qpc_now_100ns(capture, &read_qpc_100ns);
+        if (packet_error == MA_SUCCESS) {
+            if (packet_frames == 0) {
+                packet_error = MA_INVALID_DATA;
+            } else if (packet_frames > MJA_CAPTURE_MAX_PACKET_FRAMES) {
+                packet_error = MA_OUT_OF_RANGE;
+            } else if (packets_read >= MJA_CAPTURE_MAX_PACKETS_PER_PASS) {
+                packet_error = MJA_CAPTURE_ERROR_DRAIN_LIMIT;
+            } else {
+                packets_read += 1;
+                packet_error = mja_capture_deliver_packet(
+                    capture,
+                    native_data,
+                    packet_frames,
+                    native_flags,
+                    device_position,
+                    qpc_100ns,
+                    read_qpc_100ns);
+            }
         }
 
         release_hr = ma_IAudioCaptureClient_ReleaseBuffer(capture_client, packet_frames);
@@ -952,13 +963,53 @@ int32_t mja_capture_open(
 
 int32_t mja_capture_start(mja_capture *capture)
 {
+    ma_uint32 buffer_frames = 0;
+    HRESULT hr;
+    ma_result result;
+
     if (capture == NULL) {
         return MA_INVALID_ARGS;
     }
     if (!capture->device_initialized || capture->joined) {
         return MA_INVALID_OPERATION;
     }
-    return ma_device_start(&capture->device);
+    capture->stream_info_ready = 0;
+    if (capture->device.wasapi.pAudioClientCapture == NULL) {
+        return MA_INVALID_OPERATION;
+    }
+    hr = ma_IAudioClient_GetBufferSize(
+        (ma_IAudioClient *)capture->device.wasapi.pAudioClientCapture, &buffer_frames);
+    if (FAILED(hr)) {
+        return (int32_t)hr;
+    }
+    if (buffer_frames == 0 || capture->device.capture.internalPeriodSizeInFrames == 0) {
+        return MA_INVALID_DATA;
+    }
+    result = ma_device_start(&capture->device);
+    if (result != MA_SUCCESS) {
+        return result;
+    }
+    capture->stream_info.buffer_frames = buffer_frames;
+    capture->stream_info.period_frames = capture->device.capture.internalPeriodSizeInFrames;
+    capture->stream_info.mmcss_registered = capture->device.wasapi.hAvrtHandle != NULL ? 1 : 0;
+    capture->stream_info_ready = 1;
+    return MA_SUCCESS;
+}
+
+int32_t mja_capture_get_stream_info(const mja_capture *capture, mja_capture_stream_info *info)
+{
+    if (info == NULL) {
+        return MA_INVALID_ARGS;
+    }
+    memset(info, 0, sizeof(*info));
+    if (capture == NULL) {
+        return MA_INVALID_ARGS;
+    }
+    if (!capture->device_initialized || capture->joined || !capture->stream_info_ready) {
+        return MA_INVALID_OPERATION;
+    }
+    *info = capture->stream_info;
+    return MA_SUCCESS;
 }
 
 int32_t mja_capture_stop_join(

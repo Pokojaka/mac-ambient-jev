@@ -283,6 +283,7 @@ final class ScriptedFileCaptureDevice: WindowsCaptureDevice {
                 flags: flags,
                 devicePosition: devicePosition,
                 qpc100ns: qpc100ns,
+                readQPC100ns: qpc100ns,
                 packetOffset: originalOffset,
                 packetFrames: originalFrames
             )
@@ -299,6 +300,7 @@ final class ScriptedFileCaptureDevice: WindowsCaptureDevice {
                     flags: flags,
                     devicePosition: devicePosition,
                     qpc100ns: qpc100ns,
+                    readQPC100ns: qpc100ns,
                     packetOffset: originalOffset,
                     packetFrames: originalFrames
                 )

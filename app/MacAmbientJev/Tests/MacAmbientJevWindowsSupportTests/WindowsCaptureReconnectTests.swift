@@ -1895,6 +1895,7 @@ private final class ReconnectFakeDevice: WindowsCaptureDevice {
                 flags: flags,
                 devicePosition: devicePosition,
                 qpc100ns: qpc100ns,
+                readQPC100ns: qpc100ns,
                 packetOffset: 0,
                 packetFrames: 512
             )
