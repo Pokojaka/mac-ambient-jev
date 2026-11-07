@@ -84,7 +84,9 @@ public sealed partial class ShellStoreTests
         Assert.Equal(summary.DisplayName, store.State.Sessions.Current!.Sessions[0].DisplayName);
         Assert.Equal("読み込んだ音声を処理中", live.BadgeText);
         await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
-        var initialWatch = await engine.NextRequestAsync(); Assert.Equal("imported", Assert.IsType<EngineCommand.TranscriptWatch>(initialWatch.Command).Payload.SessionID);
+        var initialWatch = await engine.NextRequestAsync();
+        var tailStart = clock.GetTimestamp();
+        Assert.Equal("imported", Assert.IsType<EngineCommand.TranscriptWatch>(initialWatch.Command).Payload.SessionID);
         initialWatch.Complete(new EngineResult.TranscriptWatch(Page("imported", 1, "", null, null) with { Rows = [] }));
         await ChangedTo(store, state => state.Transcript.Tail is { Rows.Length: 0 });
         await RenderAsync(dispatcher, clock);
@@ -92,7 +94,9 @@ public sealed partial class ShellStoreTests
         Assert.Contains("処理中の場合は、作成された行がここに表示されます", live.EmptyDescription);
         Assert.DoesNotContain("録音を開始するか", live.EmptyDescription);
         engine.EmitBatch(Rows("imported", EngineRowsKind.Changes));
-        await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
+        var tailDue = tailStart + TimeSpan.FromMilliseconds(250).Ticks;
+        await clock.WaitForTimerDueAtAsync(tailDue);
+        clock.Advance(TimeSpan.FromTicks(tailDue - clock.GetTimestamp()));
         var updatedWatch = await engine.NextRequestAsync(); updatedWatch.Complete(new EngineResult.TranscriptWatch(Page("imported", 2, "読み込んだ音声の本文", null, null)));
         await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(2));
         var finished = store.State.Engine! with
