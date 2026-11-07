@@ -5,12 +5,23 @@ using Microsoft.UI.Xaml.Data;
 
 namespace MacAmbientJev.WinUI;
 
+// Like the Mac idle processing icon, the idle indicator is hidden from assistive technology.
+public sealed class ProcessingAccessibilityViewConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, string language) => value switch
+    {
+        null or EngineProcessingIndicator.Idle => Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw,
+        EngineProcessingIndicator => Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Content,
+        _ => throw new ArgumentException("Processing indicator is required.", nameof(value))
+    };
+    public object ConvertBack(object? value, Type targetType, object? parameter, string language) => throw new NotSupportedException();
+}
+
 public sealed class ProcessingAccessibleNameConverter : IValueConverter
 {
     public object Convert(object? value, Type targetType, object? parameter, string language) => value switch
     {
-        null => string.Empty,
-        EngineProcessingIndicator.Idle => "文字起こし待機中",
+        null or EngineProcessingIndicator.Idle => string.Empty,
         EngineProcessingIndicator.Running => "文字起こし処理中",
         EngineProcessingIndicator.Backlogged => "文字起こし待機中",
         EngineProcessingIndicator.Complete => "文字起こし完了",

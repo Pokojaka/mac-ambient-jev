@@ -30,6 +30,7 @@ public sealed partial class MainWindow : Window
         _log = log ?? throw new ArgumentNullException(nameof(log));
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
         Application.Current.Resources.Add("ProcessingAccessibleNameConverter", new ProcessingAccessibleNameConverter());
+        Application.Current.Resources.Add("ProcessingAccessibilityViewConverter", new ProcessingAccessibilityViewConverter());
         Application.Current.Resources.Add("IconGlyphConverter", new IconGlyphConverter());
         Application.Current.Resources.Add("IconVisibilityConverter", new IconVisibilityConverter());
         Application.Current.Resources.Add("TopSpacingConverter", new TopSpacingConverter());
@@ -218,7 +219,10 @@ public sealed partial class MainWindow : Window
             {
                 _rowDetailsTail = tail;
                 ++_rowDetailsRequest;
-                await RefreshRowDetailsAsync();
+                _ = RefreshRowDetailsAsync();
+                // A changed live row gets a new container; move the flyout to its new time button.
+                if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, ReanchorRowDetails))
+                    _log.Warn("行の詳細の表示位置の更新を予約できません。");
             }
         }
         _scroll?.Refresh();
@@ -259,11 +263,7 @@ public sealed partial class MainWindow : Window
             _rowDetailsFlyout = null;
             previousFlyout?.Hide();
             var content = new StackPanel { Spacing = 4, MaxWidth = 400, RequestedTheme = Root.ActualTheme };
-            var flyout = new Flyout
-            {
-                Content = content, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right,
-                OverlayInputPassThroughElement = TranscriptList
-            };
+            var flyout = new Flyout { Content = content, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right };
             _rowDetailsFlyout = flyout;
             _rowDetailsTail = live.Transcript.Tail;
             _rowDetailsRowID = row.RowID;
@@ -282,6 +282,28 @@ public sealed partial class MainWindow : Window
             await RefreshRowDetailsAsync();
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
+    }
+
+    private void ReanchorRowDetails()
+    {
+        if (_closeStarted || _rowDetailsFlyout is not { } flyout || _rowDetailsRowID is not { } rowID || _live is not { } live) return;
+        var row = live.Rows.FirstOrDefault(candidate => candidate.RowID == rowID);
+        var button = row is not null && TranscriptList.ContainerFromItem(row) is ListViewItem container
+            ? FindDescendant<Button>(container) : null;
+        // A row virtualized out of view has no anchor; close like a transient Mac popover.
+        if (button is null) { flyout.Hide(); return; }
+        if (!ReferenceEquals(flyout.Target, button)) flyout.ShowAt(button);
+    }
+
+    private static T? FindDescendant<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T match) return match;
+            if (FindDescendant<T>(child) is { } nested) return nested;
+        }
+        return null;
     }
 
     private static void ShowRowDetailsLoading(StackPanel content)
@@ -304,18 +326,18 @@ public sealed partial class MainWindow : Window
                 _rowDetailsContent is { } content && _live is { } live)
             {
                 var request = _rowDetailsRequest;
-                ShowRowDetailsLoading(content);
+                var requestedTail = _store?.State.Transcript.Tail;
                 var details = await live.ReadRowDetailsAsync(rowID);
                 if (request != _rowDetailsRequest) continue;
                 if (_closeStarted || _rowDetailsFlyout is null) return;
-                content.Children.Clear();
                 if (details is null)
                 {
-                    content.Children.Add(RowDetailsCaption("詳細を取得できませんでした。"));
+                    // A newer tail is on its way and its refresh re-requests; keep the last details until then.
+                    if (!ReferenceEquals(_store?.State.Transcript.Tail, requestedTail)) return;
+                    ShowRowDetailsFailure(content);
                     return;
                 }
-                if (live.Transcript.SessionID != details.SessionID || live.Transcript.Tail?.Revision != details.Revision)
-                    return;
+                content.Children.Clear();
                 content.Children.Add(RowDetailsCaption(details.ClauseStateText));
                 if (details.SpeakerTexts.Length > 0)
                 {
@@ -330,8 +352,18 @@ public sealed partial class MainWindow : Window
                 return;
             }
         }
-        catch (Exception exception) { await ReportFailureAsync(exception); }
+        catch (Exception exception)
+        {
+            if (_rowDetailsContent is { } content) ShowRowDetailsFailure(content);
+            await ReportFailureAsync(exception);
+        }
         finally { _rowDetailsReading = false; }
+    }
+
+    private static void ShowRowDetailsFailure(StackPanel content)
+    {
+        content.Children.Clear();
+        content.Children.Add(RowDetailsCaption("詳細を取得できませんでした。"));
     }
 
     private static TextBlock RowDetailsCaption(string text, bool strong = false) => new()
