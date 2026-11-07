@@ -226,6 +226,18 @@ public sealed partial class ShellStoreTests
             var timer = new ManualTimer(this, callback, state); lock (_gate) _timers.Add(timer); timer.Change(dueTime, period); return timer;
         }
         public async Task WaitForTimerAsync() => await _registrations.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        public async Task WaitForTimerDueAtAsync(long timestamp)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, timeout.Token);
+            while (true)
+            {
+                lock (_gate)
+                    if (_timers.Any(timer => timer.DueTimestamp == timestamp)) return;
+                await _registrations.Reader.WaitToReadAsync(linked.Token);
+                _registrations.Reader.TryRead(out _);
+            }
+        }
         public void Advance(TimeSpan amount)
         {
             if (amount < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(amount)); List<(TimerCallback Callback, object? State)> ready;
