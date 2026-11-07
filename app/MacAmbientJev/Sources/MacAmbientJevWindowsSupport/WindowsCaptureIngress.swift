@@ -773,9 +773,10 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         return max(0, timelineFrame(forHostFrame: frame) - deliveryGraceFrames)
     }
 
-    /// The single signed QPC-to-timeline conversion for an established device clock.
+    /// QPC-to-timeline conversion. Only a timeline behind QPC (device clock drift) is
+    /// subtracted; a lead from an idle-overlap anchor keeps the raw-QPC delivery grace.
     private func timelineFrame(forHostFrame hostFrame: Int64) -> Int64 {
-        hostFrame - Int64(clockOffsetFrames.rounded())
+        hostFrame - Int64(max(0, clockOffsetFrames).rounded())
     }
 
     /// Consumer-side liveness check. `now` is supplied explicitly for deterministic tests.
@@ -891,7 +892,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             && relativeLag >= -tolerance && relativeLag < Double(devicePeriod)
         let difference = abs(forwardExcess)
         if difference > tolerance && !timestampJitter {
-            // Idle evidence selects silence; every forward target uses the same clock offset.
+            // Idle evidence selects silence; the target excludes tracked drift lag.
             let flagged = packet.flags & Self.discontinuityFlag != 0
             if Double(qpcDelta) > Double(deviceDelta), loopback || flagged {
                 let targetFrame = timelineFrame(forHostFrame: hostFrame)
