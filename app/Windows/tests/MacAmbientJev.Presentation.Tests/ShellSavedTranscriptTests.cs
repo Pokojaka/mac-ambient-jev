@@ -48,6 +48,7 @@ public sealed partial class ShellStoreTests
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var live = new LiveViewModel(context);
         Assert.Empty(live.Rows); Assert.True(live.IsEmpty); Assert.Equal(reason, live.EmptyDescription);
         Assert.Equal("表示中の録音: " + summary.DisplayName, live.TranscriptDisplayText);
+        Assert.Null(live.TranscriptBadge); Assert.True(live.HasTranscriptHeader);
         Assert.Null(store.State.Transcript.SessionID); Assert.Null(store.State.LastError);
     }
 

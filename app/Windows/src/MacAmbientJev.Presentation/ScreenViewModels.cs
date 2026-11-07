@@ -56,19 +56,18 @@ public sealed partial class LiveViewModel : ScreenViewModel
             new EngineCommand.RecordingStart(CreateRecordingStartPayload())));
         var stop = Command(CanStopRecording, _ =>
         {
-            var recording = Context.Store.State.Engine?.Recording ?? throw new InvalidOperationException("There is no authoritative recording session to stop.");
+            var recording = Context.Store.State.Engine?.Recording ?? throw new InvalidOperationException("停止する録音がありません。");
             return Context.Store.ExecuteAsync(new EngineCommand.RecordingStop(new EngineSessionPayload(recording.SessionID)));
         });
         ToggleRecording = new ShellRecordingCommand(start, stop, () => RecordingActionFor(Context.Store.State));
         ImportAudio = Command(CanImportAudio, ImportAudioAsync);
         RefreshDevices = Command(CanRefreshDevices, _ => Context.Store.ReloadDevicesAsync(
-            _selectedSource ?? throw new InvalidOperationException("A source must be selected before loading devices.")));
+            _selectedSource ?? throw new InvalidOperationException("デバイス一覧を読み込む前に音声ソースを選択してください。")));
         ReturnToLatest = Command(_ =>
         {
             var state = Context.Store.State;
             return state.Transcript.SessionID is not null && !state.Transcript.Follow && !state.IsPending(EngineCommandName.TranscriptWatch);
         }, _ => Context.Store.ReturnToLatestAsync());
-        ReadHistory = Command(CanReadHistory, parameter => Context.Store.ReadHistoryAsync((ShellPageMove)parameter!));
         _readOnlyRows = new System.Collections.ObjectModel.ReadOnlyObservableCollection<ShellTranscriptRowViewModel>(_rows);
         InitializeDisplay();
     }
@@ -165,20 +164,15 @@ public sealed partial class LiveViewModel : ScreenViewModel
     public EnginePreparationPhase? PreparationPhase => Presentation?.PreparationPhase;
     public string? PreparationStatusText => Presentation?.PreparationStatusText;
     public string? RecoveryStatusText => Presentation?.RecoveryStatusText;
-    public bool HasProcessingStatus => ProcessingStatusText is not null;
     public bool IsProcessing => ProcessingIndicator is EngineProcessingIndicator.Running or EngineProcessingIndicator.Backlogged;
-    public bool HasPreparationStatus => PreparationStatusText is not null;
     public bool IsPreparingModels => PreparationPhase == EnginePreparationPhase.Preparing;
     public bool IsPreparationFailed => PreparationPhase == EnginePreparationPhase.Failed;
     public string? SilenceWarningText => Presentation?.SilenceWarningText;
-    public bool HasSilenceWarning => Presentation?.SilenceWarningActive == true;
     public string? AudioGapText => Presentation?.AudioGapText;
-    public bool HasAudioGap => AudioGapText is not null;
     public IReadOnlyList<string>? LiveFailureNotices => Presentation?.LiveFailureNotices;
     public bool HasLiveFailureNotices => LiveFailureNotices is { Count: > 0 };
     public ShellTranscriptState Transcript => Snapshot.Transcript;
     public EngineRecordingState? Recording => Snapshot.Engine?.Recording;
-    public bool IsRecording => Recording?.Phase is EngineRecordingPhase.Recording or EngineRecordingPhase.WaitingForDevice;
     public bool IsRecordingStarting => Recording?.Phase == EngineRecordingPhase.Starting || Snapshot.IsPending(EngineCommandName.RecordingStart);
     public bool IsRecordingStopping => Recording?.Phase == EngineRecordingPhase.Stopping || Snapshot.IsPending(EngineCommandName.RecordingStop);
     public ShellRecordingAction RecordingAction => RecordingActionFor(Snapshot);
@@ -189,7 +183,6 @@ public sealed partial class LiveViewModel : ScreenViewModel
         : RecordingDisabledReason ?? (_selectedSource == EngineSource.SystemAudio
             ? "PC で再生中の音声を録音し、その場で文字起こし"
             : "マイクの音声を録音し、その場で文字起こし");
-    public string ImportLabel => "音声ファイルを読み込む"; public bool IsImporting => Snapshot.IsPending(EngineCommandName.SessionImport);
     public string ImportHelp => ImportDisabledReason ?? "音声ファイルを読み込んで文字起こし";
     public string SourceHelp => CanChangeRecordingSelection
         ? "録音する音声をマイクかシステム音声から選択"
@@ -211,12 +204,12 @@ public sealed partial class LiveViewModel : ScreenViewModel
         ? "録音を開始するか、音声ファイルを読み込むか、保存済み録音を選ぶとここに文字起こしが表示されます。"
         : "この録音には表示できる文字起こしがありません。処理中の場合は、作成された行がここに表示されます。");
     public ShellRecordingCommand ToggleRecording { get; } public ShellCommand ImportAudio { get; }
-    public ShellCommand RefreshDevices { get; } public ShellCommand ReturnToLatest { get; } public ShellCommand ReadHistory { get; }
+    public ShellCommand RefreshDevices { get; } public ShellCommand ReturnToLatest { get; }
     public Task UserScrolledAsync() => Context.Store.UserScrolledAsync();
 
     private EngineRecordingStartPayload CreateRecordingStartPayload() => new(
-        _selectedSource ?? throw new InvalidOperationException("A source must be selected before recording."),
-        _selectedDevice ?? throw new InvalidOperationException("A device must be selected before recording."));
+        _selectedSource ?? throw new InvalidOperationException("録音を開始する前に音声ソースを選択してください。"),
+        _selectedDevice ?? throw new InvalidOperationException("録音を開始する前にデバイスを選択してください。"));
 
     private bool CanStartRecording(object? parameter)
     {
@@ -275,21 +268,6 @@ public sealed partial class LiveViewModel : ScreenViewModel
         state.Engine?.Recording is not null || state.IsPending(EngineCommandName.RecordingStart) || state.IsPending(EngineCommandName.RecordingStop)
             ? ShellRecordingAction.Stop : ShellRecordingAction.Start;
 
-    private bool CanReadHistory(object? parameter)
-    {
-        if (parameter is not ShellPageMove move) return false;
-        var state = Context.Store.State;
-        if (state.IsPending(EngineCommandName.TranscriptRead) || state.Transcript.SessionID is null) return false;
-        if (move == ShellPageMove.Reload) return true;
-        var transcript = state.Transcript; var page = transcript.History.Current;
-        if (transcript.HistoryStale || page?.SessionID != transcript.SessionID) return false;
-        return move switch
-        {
-            ShellPageMove.Next => page.NextCursor is not null,
-            ShellPageMove.Previous => page.PreviousCursor is not null,
-            _ => false
-        };
-    }
 }
 
 public sealed class ProcessingQueueViewModel : ScreenViewModel

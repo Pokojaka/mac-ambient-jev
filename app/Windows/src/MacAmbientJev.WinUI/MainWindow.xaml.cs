@@ -29,22 +29,20 @@ public sealed partial class MainWindow : Window
     {
         _log = log ?? throw new ArgumentNullException(nameof(log));
         Application.Current.Resources.Add("VisibilityConverter", new VisibilityConverter());
-        Application.Current.Resources.Add("MainGlyphConverter", new MainGlyphConverter());
-        Application.Current.Resources.Add("MainBrushConverter", new MainBrushConverter());
-        Application.Current.Resources.Add("RunningConverter", new ProcessingRunningConverter());
-        Application.Current.Resources.Add("RunningVisibilityConverter", new ProcessingRunningConverter { AsVisibility = true });
+        Application.Current.Resources.Add("ProcessingAccessibleNameConverter", new ProcessingAccessibleNameConverter());
+        Application.Current.Resources.Add("IconGlyphConverter", new IconGlyphConverter());
+        Application.Current.Resources.Add("IconVisibilityConverter", new IconVisibilityConverter());
         Application.Current.Resources.Add("TopSpacingConverter", new TopSpacingConverter());
         Application.Current.Resources.Add("FirstLineConverter", new FirstLineConverter());
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(UnifiedTitleBar);
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(900, 620));
-        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        UpdateWindowScale(resize: true);
+        Root.SizeChanged += (_, _) => UpdateTitleBarTitle();
+        Root.ActualThemeChanged += (_, _) =>
         {
-            presenter.PreferredMinimumWidth = 720;
-            presenter.PreferredMinimumHeight = 480;
-        }
-        Root.ActualThemeChanged += (_, _) => _context?.RequestRefresh();
+            if (_rowDetailsContent is { } content) content.RequestedTheme = Root.ActualTheme;
+        };
         _log.WriteFailed += OnLogWriteFailed;
         if (_log.StartupFailure is { } startupFailure) ShowFailure(startupFailure);
         else if (_log.Failure is { } logFailure) ShowFailure(logFailure);
@@ -91,6 +89,28 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(nint window);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint window);
+
+    private double _windowScale;
+
+    private void UpdateWindowScale(bool resize = false)
+    {
+        var dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        if (dpi == 0) throw new InvalidOperationException("ウィンドウの表示倍率を取得できません。");
+        var scale = dpi / 96.0;
+        if (!resize && scale == _windowScale) return;
+        _windowScale = scale;
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.PreferredMinimumWidth = (int)Math.Ceiling(720 * scale);
+            presenter.PreferredMinimumHeight = (int)Math.Ceiling(480 * scale);
+        }
+        if (resize) AppWindow.Resize(new Windows.Graphics.SizeInt32((int)Math.Round(900 * scale), (int)Math.Round(620 * scale)));
+    }
+
+    private void UpdateTitleBarTitle() => UnifiedTitleBar.Title = Root.ActualWidth >= 960 ? "MacAmbientJev" : string.Empty;
 
     private void OnLogWriteFailed(Exception exception)
     {
@@ -157,6 +177,9 @@ public sealed partial class MainWindow : Window
     private async void OnRootLoaded(object sender, RoutedEventArgs args)
     {
         Root.Loaded -= OnRootLoaded;
+        Root.XamlRoot.Changed += (_, _) => UpdateWindowScale();
+        UpdateWindowScale();
+        UpdateTitleBarTitle();
         if (_closeStarted) return;
         try
         {
@@ -174,7 +197,6 @@ public sealed partial class MainWindow : Window
     {
         if (args.InRecycleQueue)
         {
-            if (ReferenceEquals(args.ItemContainer, _rowDetailsContainer)) _rowDetailsFlyout?.Hide();
             AutomationProperties.SetName(args.ItemContainer, string.Empty);
             return;
         }
@@ -186,9 +208,19 @@ public sealed partial class MainWindow : Window
 
     private async void OnContextRefreshed(object? sender, EventArgs args)
     {
-        if (_rowDetailsTail is { } detailsTail && (_live is not { } live ||
-            live.Transcript.SessionID != detailsTail.SessionID || live.Transcript.Tail?.Revision != detailsTail.Revision))
-            _rowDetailsFlyout?.Hide();
+        if (_rowDetailsTail is { } detailsTail)
+        {
+            var tail = _live?.Transcript.Tail;
+            if (_live?.Transcript.SessionID != detailsTail.SessionID ||
+                tail is null || !tail.Rows.Any(row => row.RowID == _rowDetailsRowID))
+                _rowDetailsFlyout?.Hide();
+            else if (tail.Revision != detailsTail.Revision)
+            {
+                _rowDetailsTail = tail;
+                ++_rowDetailsRequest;
+                await RefreshRowDetailsAsync();
+            }
+        }
         _scroll?.Refresh();
         SavedSessionsButton.IsEnabled = !_closeStarted && _store?.State.Phase == ShellPhase.Running;
         RefreshSettingsButton();
@@ -209,63 +241,104 @@ public sealed partial class MainWindow : Window
         EngineFailureScroller.Visibility = EngineDetailsToggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
 
     private long _rowDetailsRequest;
+    private bool _rowDetailsReading;
     private Flyout? _rowDetailsFlyout;
     private EngineTranscriptPage? _rowDetailsTail;
-    private DependencyObject? _rowDetailsContainer;
+    private string? _rowDetailsRowID;
+    private StackPanel? _rowDetailsContent;
 
     private async void OnRowTimeClick(object sender, RoutedEventArgs args)
     {
-        if (_closeStarted || _store?.State.IsPending(EngineCommandName.TranscriptRowDetails) == true) return;
-        var previousFlyout = _rowDetailsFlyout;
-        _rowDetailsFlyout = null;
-        previousFlyout?.Hide();
-        var request = ++_rowDetailsRequest;
-        Flyout? flyout = null;
+        if (_closeStarted) return;
         try
         {
-            var button = sender as Button ?? throw new InvalidOperationException("The transcript time button is unavailable.");
-            var row = button.DataContext as ShellTranscriptRowViewModel ?? throw new InvalidOperationException("The transcript row is unavailable.");
-            var live = _live ?? throw new InvalidOperationException("The transcript view model is unavailable.");
-            var content = new StackPanel { Spacing = (double)Application.Current.Resources["SpacingXS"], MaxWidth = 400 };
-            content.Children.Add(new ProgressRing { IsActive = true, Width = 16, Height = 16 });
-            flyout = new Flyout { Content = content, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right };
+            var button = sender as Button ?? throw new InvalidOperationException("時刻ボタンを利用できません。");
+            var row = button.DataContext as ShellTranscriptRowViewModel ?? throw new InvalidOperationException("文字起こしの行を利用できません。");
+            var live = _live ?? throw new InvalidOperationException("文字起こし画面を利用できません。");
+            var previousFlyout = _rowDetailsFlyout;
+            _rowDetailsFlyout = null;
+            previousFlyout?.Hide();
+            var content = new StackPanel { Spacing = 4, MaxWidth = 400, RequestedTheme = Root.ActualTheme };
+            var flyout = new Flyout
+            {
+                Content = content, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right,
+                OverlayInputPassThroughElement = TranscriptList
+            };
             _rowDetailsFlyout = flyout;
             _rowDetailsTail = live.Transcript.Tail;
-            _rowDetailsContainer = TranscriptList.ContainerFromItem(row);
-            void OnAnchorUnloaded(object sender, RoutedEventArgs args) => flyout.Hide();
-            button.Unloaded += OnAnchorUnloaded;
+            _rowDetailsRowID = row.RowID;
+            _rowDetailsContent = content;
+            ++_rowDetailsRequest;
+            ShowRowDetailsLoading(content);
             flyout.Closed += (_, _) =>
             {
-                button.Unloaded -= OnAnchorUnloaded;
                 if (ReferenceEquals(_rowDetailsFlyout, flyout))
-                { _rowDetailsFlyout = null; _rowDetailsTail = null; _rowDetailsContainer = null; ++_rowDetailsRequest; }
+                {
+                    _rowDetailsFlyout = null; _rowDetailsTail = null; _rowDetailsRowID = null;
+                    _rowDetailsContent = null; ++_rowDetailsRequest;
+                }
             };
             flyout.ShowAt(button);
-            var details = await live.ReadRowDetailsAsync(row.RowID);
-            if (_closeStarted || request != _rowDetailsRequest || details is null ||
-                live.Transcript.SessionID != details.SessionID || live.Transcript.Tail?.Revision != details.Revision ||
-                !button.IsLoaded || !ReferenceEquals(button.DataContext, row)) { flyout.Hide(); return; }
-            TextBlock Caption(string text, bool strong = false) => new()
+            await RefreshRowDetailsAsync();
+        }
+        catch (Exception exception) { await ReportFailureAsync(exception); }
+    }
+
+    private static void ShowRowDetailsLoading(StackPanel content)
+    {
+        content.Children.Clear();
+        var ring = new ProgressRing { IsActive = true, Width = 16, Height = 16 };
+        AutomationProperties.SetName(ring, "行の詳細を読み込み中");
+        content.Children.Add(ring);
+    }
+
+    private async Task RefreshRowDetailsAsync()
+    {
+        // The store is revision-strict and admits one request at a time. While it is pending,
+        // retain the latest row/revision intent and service it immediately after completion.
+        if (_rowDetailsReading) return;
+        _rowDetailsReading = true;
+        try
+        {
+            while (!_closeStarted && _rowDetailsFlyout is not null && _rowDetailsRowID is { } rowID &&
+                _rowDetailsContent is { } content && _live is { } live)
             {
-                Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
-                Style = (Style)Application.Current.Resources[strong ? "CaptionStrong" : "SecondaryCaption"],
-                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SecondaryTextBrush"]
-            };
-            content.Children.Clear();
-            content.Children.Add(Caption(details.ClauseStateText));
-            if (details.SpeakerTexts.Length > 0)
-            {
-                content.Children.Add(Caption("話者区間", true));
-                foreach (var text in details.SpeakerTexts)
+                var request = _rowDetailsRequest;
+                ShowRowDetailsLoading(content);
+                var details = await live.ReadRowDetailsAsync(rowID);
+                if (request != _rowDetailsRequest) continue;
+                if (_closeStarted || _rowDetailsFlyout is null) return;
+                content.Children.Clear();
+                if (details is null)
                 {
-                    var span = Caption(text);
-                    Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(span, Microsoft.UI.Xaml.FontNumeralAlignment.Tabular);
-                    content.Children.Add(span);
+                    content.Children.Add(RowDetailsCaption("詳細を取得できませんでした。"));
+                    return;
                 }
+                if (live.Transcript.SessionID != details.SessionID || live.Transcript.Tail?.Revision != details.Revision)
+                    return;
+                content.Children.Add(RowDetailsCaption(details.ClauseStateText));
+                if (details.SpeakerTexts.Length > 0)
+                {
+                    content.Children.Add(RowDetailsCaption("話者区間", true));
+                    foreach (var text in details.SpeakerTexts)
+                    {
+                        var span = RowDetailsCaption(text);
+                        Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(span, Microsoft.UI.Xaml.FontNumeralAlignment.Tabular);
+                        content.Children.Add(span);
+                    }
+                }
+                return;
             }
         }
-        catch (Exception exception) { flyout?.Hide(); await ReportFailureAsync(exception); }
+        catch (Exception exception) { await ReportFailureAsync(exception); }
+        finally { _rowDetailsReading = false; }
     }
+
+    private static TextBlock RowDetailsCaption(string text, bool strong = false) => new()
+    {
+        Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
+        Style = (Style)Application.Current.Resources[strong ? "SecondaryCaptionStrong" : "SecondaryCaption"]
+    };
 
     private async void OnSavedSessionsClick(object sender, RoutedEventArgs args)
     {
@@ -450,6 +523,10 @@ public sealed partial class MainWindow : Window
     {
         _closeStarted = false;
         Root.IsHitTestVisible = true;
+        Toolbar.IsEnabled = true;
+        SavedSessionsButton.IsEnabled = _store?.State.Phase == ShellPhase.Running;
+        ReturnToLatestButton.IsEnabled = true;
+        RefreshSettingsButton();
         ClosingStatus.Visibility = Visibility.Collapsed;
     }
 

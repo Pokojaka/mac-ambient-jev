@@ -8,6 +8,50 @@ namespace MacAmbientJev.Presentation.Tests;
 public sealed partial class ShellStoreTests
 {
     [Fact]
+    public async Task RowTopSpacingSeparatesTurnsAndResetsWhenFirstRowIsRemoved()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var live = new LiveViewModel(context);
+        var first = Row("first", 0, "最初") with { Headings = [EngineSpeakerLabel.Speaker1] };
+        var continuing = Row("continuing", 1000, "続き") with { Headings = [EngineSpeakerLabel.Speaker1] };
+        var heading = Row("heading", 2000, "別の話者") with { Headings = [EngineSpeakerLabel.Speaker2] };
+        await SelectReady(store, engine, "A", Page("A", 1, "", null, null) with { Rows = [first, continuing, heading] });
+        await RenderAsync(dispatcher, clock);
+        Assert.Equal(new double[] { 0, 4, 12 }, live.Rows.Select(row => row.TopSpacing));
+        Assert.Equal(string.Empty, live.Rows[1].HeadingText);
+
+        await store.ReturnToLatestAsync(); await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
+        (await engine.NextRequestAsync()).Complete(new EngineResult.TranscriptWatch(
+            Page("A", 2, "", null, null) with { Rows = [continuing, heading] }));
+        await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(2));
+        await RenderAsync(dispatcher, clock);
+        Assert.Equal(new[] { "continuing", "heading" }, live.Rows.Select(row => row.RowID));
+        Assert.Equal(new double[] { 0, 12 }, live.Rows.Select(row => row.TopSpacing));
+        Assert.Equal("Speaker 1", live.Rows[0].HeadingText);
+    }
+
+    [Fact]
+    public async Task TranscriptHeaderTracksUpdatesAndReturnToLatestWithoutBadgeOrDisplayName()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
+        var live = new LiveViewModel(context);
+        Assert.False(live.HasTranscriptHeader);
+        await SelectReady(store, engine, "A", Page("A", 1, "本文", null, null));
+        await RenderAsync(dispatcher, clock);
+        Assert.False(live.HasTranscriptHeader);
+        await live.UserScrolledAsync(); await RenderAsync(dispatcher, clock);
+        Assert.False(live.IsFollowing); Assert.True(live.HasTranscriptHeader);
+        engine.EmitBatch(Rows("A", EngineRowsKind.Changes));
+        await ChangedTo(store, state => state.Transcript.NewUpdatesAvailable);
+        await RenderAsync(dispatcher, clock);
+        Assert.True(live.HasNewUpdates); Assert.True(live.HasTranscriptHeader);
+        await store.ReturnToLatestAsync(); await RenderAsync(dispatcher, clock);
+        Assert.True(live.IsFollowing); Assert.False(live.HasNewUpdates); Assert.False(live.HasTranscriptHeader);
+    }
+
+    [Fact]
     public async Task ToggleStopsAuthoritativeCaptureWhileStartResponseIsPending()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
@@ -47,10 +91,9 @@ public sealed partial class ShellStoreTests
         var sent = engine.SentCount;
         live.ToggleRecording.Execute(null);
         Assert.Equal(sent, engine.SentCount); // Engine rejects stopping Starting; do not send an invalid request.
-        Assert.False(live.IsRecording);
         await CapturePhase(EngineRecordingPhase.Recording, 3);
         Assert.False(startExecution.IsCompleted);
-        Assert.True(live.ToggleRecording.CanExecute(null)); Assert.True(live.IsRecording);
+        Assert.True(live.ToggleRecording.CanExecute(null));
         Assert.Null(live.RecordingDisabledReason);
         Assert.Equal("録音を終えて文字起こしを確定", live.RecordingHelp);
         live.ToggleRecording.Execute(null); var stopExecution = live.ToggleRecording.Execution!;
@@ -92,7 +135,7 @@ public sealed partial class ShellStoreTests
         Assert.Equal(ShellRecordingGlyph.Stop, live.RecordingGlyph);
         Assert.Equal(canStop, live.ToggleRecording.CanExecute(null));
         Assert.Equal(starting, live.IsRecordingStarting); Assert.Equal(stopping, live.IsRecordingStopping);
-        Assert.Equal(canStop, live.IsRecording); Assert.Equal(starting || stopping, live.IsBusy);
+        Assert.Equal(starting || stopping, live.IsBusy);
         Assert.False(live.CanChangeRecordingSelection);
         Assert.Equal("録音中は切り替え不可", live.SourceHelp);
     }
@@ -122,17 +165,14 @@ public sealed partial class ShellStoreTests
             Assert.Equal(indicator is EngineProcessingIndicator.Running or EngineProcessingIndicator.Backlogged, live.IsProcessing);
             Assert.Equal(preparation == EnginePreparationPhase.Preparing, live.IsPreparingModels);
             Assert.Equal(preparation == EnginePreparationPhase.Failed, live.IsPreparationFailed);
-            Assert.Equal(presentation.PreparationStatusText is not null, live.HasPreparationStatus);
-            Assert.True(live.HasProcessingStatus); Assert.True(live.HasSilenceWarning);
-            Assert.True(live.HasAudioGap); Assert.True(live.HasLiveFailureNotices);
+            Assert.True(live.HasLiveFailureNotices);
             Assert.False(live.IsBusy); // Model/transcript processing does not block capture operations.
         }
         var cleared = State(EngineSetupStatus.Ready, ++revision);
         engine.EmitBatch(new EngineOutput(1, cleared.Revision, null, new EngineEvent.State(cleared)));
         await ChangedTo(store, current => current.Engine?.Revision == cleared.Revision);
         await RenderAsync(dispatcher, clock);
-        Assert.False(live.HasProcessingStatus); Assert.False(live.HasPreparationStatus);
-        Assert.False(live.HasSilenceWarning); Assert.False(live.HasAudioGap); Assert.False(live.HasLiveFailureNotices);
+        Assert.False(live.HasLiveFailureNotices);
     }
 
     [Theory]
@@ -148,5 +188,6 @@ public sealed partial class ShellStoreTests
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock);
         var live = new LiveViewModel(context);
         Assert.Equal(kind, live.TranscriptBadge?.Kind); Assert.Equal(text, live.TranscriptBadge?.Text);
+        Assert.Equal(kind is not null, live.HasTranscriptHeader);
     }
 }

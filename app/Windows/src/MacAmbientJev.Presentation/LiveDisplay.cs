@@ -66,7 +66,8 @@ public sealed partial class LiveViewModel
             };
         }
     }
-    public string RefreshDevicesLabel => "デバイスを更新";
+    public bool HasTranscriptHeader => TranscriptBadge is not null || !string.IsNullOrEmpty(TranscriptDisplayText) ||
+        HasNewUpdates || !IsFollowing;
 
     public string? FailureText
     {

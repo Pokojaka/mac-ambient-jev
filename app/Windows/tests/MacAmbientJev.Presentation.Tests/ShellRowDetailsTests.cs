@@ -24,6 +24,7 @@ public sealed partial class ShellStoreTests
         Assert.Equal("row", payload.RowID); Assert.Null(payload.Cursor); Assert.Equal(200, payload.Limit);
         Assert.True(store.State.IsPending(EngineCommandName.TranscriptRowDetails));
         Assert.Null(await live.ReadRowDetailsAsync("row")); Assert.Equal(1, engine.DetailCount);
+        Assert.Equal("同じ種類の操作を処理中です。", store.State.CommandError);
         request.Complete(new EngineResult.TranscriptRowDetails(DetailPage(clause, text) with
         {
             Speakers = [new("internal-1", "Speaker 1", 0, 850), new("internal-1", "Speaker 1", 700, 1500)],
@@ -65,14 +66,27 @@ public sealed partial class ShellStoreTests
     {
         var engine = new RowDetailsClient(NewEngine()); var clock = new ManualClock();
         await using var store = new ShellStore(engine, clock); await store.Initialization;
-        Assert.Null(await store.ReadRowDetailsAsync("row")); Assert.NotNull(store.State.CommandError);
+        Assert.Null(await store.ReadRowDetailsAsync("row"));
+        Assert.Equal("詳細を表示する文字起こしの行を選択してください。", store.State.CommandError);
         await SelectReady(store, engine.Inner, "A", Page("A", 11, "row", null, null));
-        Assert.Null(await store.ReadRowDetailsAsync("absent")); Assert.NotNull(store.State.CommandError);
+        Assert.Null(await store.ReadRowDetailsAsync("absent"));
+        Assert.Equal("詳細を表示する文字起こしの行を選択してください。", store.State.CommandError);
         Assert.Equal(0, engine.DetailCount); Assert.Equal(ShellPhase.Running, store.State.Phase);
     }
 
+    [Fact]
+    public async Task RowDetailsStaleRevisionWhileTailIsCurrentIsNotShownAsAnError()
+    {
+        var (engine, _, instance) = await StartRowDetailsAsync(); await using var store = instance;
+        var tail = store.State.Transcript.Tail;
+        var read = store.ReadRowDetailsAsync("row"); var request = await engine.NextDetailsAsync();
+        request.Reject(Failure(EngineErrorCode.StaleRevision, "engine moved ahead", EngineRecoveryAction.Retry));
+        Assert.Null(await read); Assert.Null(store.State.LastError); Assert.Null(store.State.CommandError);
+        Assert.Same(tail, store.State.Transcript.Tail);
+        Assert.False(store.State.IsPending(EngineCommandName.TranscriptRowDetails)); Assert.Equal(1, engine.DetailCount);
+    }
+
     [Theory]
-    [InlineData(EngineErrorCode.StaleRevision)]
     [InlineData(EngineErrorCode.InvalidCursor)]
     [InlineData(EngineErrorCode.RowTooLarge)]
     [InlineData(EngineErrorCode.Busy)]
@@ -132,16 +146,65 @@ public sealed partial class ShellStoreTests
         Assert.Null(await read); Assert.Equal(1, engine.DetailCount); Assert.Null(store.State.StoreFailure);
     }
 
-    [Fact]
-    public async Task RowDetailsDiscardsReplyWhenTailRevisionChanges()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RowDetailsDiscardsObsoleteReplyThenRerequestsSameRowAtNewTailRevision(bool error)
     {
         var (engine, clock, instance) = await StartRowDetailsAsync(); await using var store = instance;
         var read = store.ReadRowDetailsAsync("row"); var request = await engine.NextDetailsAsync();
         await store.ReturnToLatestAsync(); await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
         var watch = await engine.Inner.NextRequestAsync(); watch.Complete(new EngineResult.TranscriptWatch(Page("A", 12, "row", null, null)));
         await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(12));
+        Assert.Null(await store.ReadRowDetailsAsync("row"));
+        Assert.Equal("同じ種類の操作を処理中です。", store.State.CommandError);
+        Assert.Equal(1, engine.DetailCount); // The caller waits for the old strict-store request to settle.
+        if (error) request.Reject(Failure(EngineErrorCode.StaleRevision, "obsolete error", EngineRecoveryAction.Retry));
+        else request.Complete(new EngineResult.TranscriptRowDetails(DetailPage()));
+        Assert.Null(await read); Assert.Null(store.State.LastError);
+        Assert.False(store.State.IsPending(EngineCommandName.TranscriptRowDetails));
+
+        var refresh = store.ReadRowDetailsAsync("row"); var current = await engine.NextDetailsAsync();
+        var payload = Assert.IsType<EngineCommand.TranscriptRowDetails>(current.Command).Payload;
+        Assert.Equal("A", payload.SessionID); Assert.Equal("row", payload.RowID); Assert.Equal(new EngineID(12), payload.Revision);
+        current.Complete(new EngineResult.TranscriptRowDetails(DetailPage() with { Revision = new EngineID(12), ClauseStateText = "更新後の判定" }));
+        var details = Assert.IsType<ShellRowDetails>(await refresh);
+        Assert.Equal(new EngineID(12), details.Revision); Assert.Equal("更新後の判定", details.ClauseStateText);
+        Assert.Equal(2, engine.DetailCount); Assert.Null(store.State.CommandError); Assert.Null(store.State.StoreFailure);
+    }
+
+    [Fact]
+    public async Task RowDetailsCanReadAnotherDisplayedRowAfterPendingRequestCompletes()
+    {
+        var (engine, clock, instance) = await StartRowDetailsAsync(); await using var store = instance;
+        await store.ReturnToLatestAsync(); await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
+        (await engine.Inner.NextRequestAsync()).Complete(new EngineResult.TranscriptWatch(
+            Page("A", 12, "row", null, null) with { Rows = [Row("row", 0, "最初"), Row("other", 1000, "別の行")] }));
+        await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(12));
+        var first = store.ReadRowDetailsAsync("row"); var request = await engine.NextDetailsAsync();
+        Assert.Null(await store.ReadRowDetailsAsync("other")); Assert.Equal(1, engine.DetailCount);
+        request.Complete(new EngineResult.TranscriptRowDetails(DetailPage() with { Revision = new EngineID(12) }));
+        Assert.NotNull(await first);
+        var switched = store.ReadRowDetailsAsync("other"); request = await engine.NextDetailsAsync();
+        var payload = Assert.IsType<EngineCommand.TranscriptRowDetails>(request.Command).Payload;
+        Assert.Equal("other", payload.RowID); Assert.Equal(new EngineID(12), payload.Revision);
+        request.Complete(new EngineResult.TranscriptRowDetails(DetailPage() with { Revision = new EngineID(12), RowID = "other" }));
+        Assert.Equal("other", Assert.IsType<ShellRowDetails>(await switched).RowID);
+        Assert.Equal(2, engine.DetailCount); Assert.Null(store.State.CommandError);
+    }
+
+    [Fact]
+    public async Task RowDetailsDiscardsReplyAndRejectsNewReadWhenRowWasRemoved()
+    {
+        var (engine, clock, instance) = await StartRowDetailsAsync(); await using var store = instance;
+        var read = store.ReadRowDetailsAsync("row"); var request = await engine.NextDetailsAsync();
+        await store.ReturnToLatestAsync(); await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
+        (await engine.Inner.NextRequestAsync()).Complete(new EngineResult.TranscriptWatch(Page("A", 12, "replacement", null, null)));
+        await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(12));
         request.Complete(new EngineResult.TranscriptRowDetails(DetailPage()));
-        Assert.Null(await read); Assert.Null(store.State.LastError); Assert.Equal(1, engine.DetailCount);
+        Assert.Null(await read); Assert.Null(await store.ReadRowDetailsAsync("row"));
+        Assert.Equal("詳細を表示する文字起こしの行を選択してください。", store.State.CommandError);
+        Assert.Equal(1, engine.DetailCount); Assert.Null(store.State.LastError); Assert.Null(store.State.StoreFailure);
     }
 
     [Theory]

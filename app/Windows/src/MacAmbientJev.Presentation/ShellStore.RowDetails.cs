@@ -22,13 +22,13 @@ public sealed partial class ShellStore
         await Post(() =>
         {
             if (_working.Phase != ShellPhase.Running)
-            { _working = _working with { CommandError = "The engine is not running." }; return; }
+            { _working = _working with { CommandError = "エンジンが起動していません。" }; return; }
             if (_working.Pending.Contains(name))
-            { _working = _working with { CommandError = "A request of this kind is already pending." }; return; }
+            { _working = _working with { CommandError = "同じ種類の操作を処理中です。" }; return; }
             var transcript = _working.Transcript;
             if (transcript.Tail is not { } tail || tail.SessionID != transcript.SessionID ||
                 !tail.Rows.Any(row => row.RowID == rowID))
-            { _working = _working with { CommandError = "Select a displayed transcript row before reading its details." }; return; }
+            { _working = _working with { CommandError = "詳細を表示する文字起こしの行を選択してください。" }; return; }
             generation = _selectionGeneration;
             epoch = _rowDetailsEpoch;
             payload = new EngineTranscriptRowDetailsPayload(tail.SessionID, tail.Revision, rowID, null, 200);
@@ -59,7 +59,10 @@ public sealed partial class ShellStore
             {
                 await Post(() =>
                 {
-                    if (exception is EngineRequestException && !IsCurrent()) RemovePending(name);
+                    // The engine can publish a newer revision before this store receives it; the
+                    // caller re-requests when the new tail arrives, so a stale revision is not an error.
+                    if (exception is EngineRequestException { Failure.Code: EngineErrorCode.StaleRevision } ||
+                        exception is EngineRequestException && !IsCurrent()) RemovePending(name);
                     else HandleRequestFailure(name, exception, false);
                 }).ConfigureAwait(false);
                 return null;
